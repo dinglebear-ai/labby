@@ -763,7 +763,10 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "Maximum wall-clock time for one Code Mode execution.",
             SettingsApplyMode::Partial,
             1,
-            60_000,
+            // Derived from the shared validation ceiling so the editor can
+            // never reject a value config.toml accepts.
+            i64::try_from(labby_runtime::gateway_config::MAX_CODE_MODE_TIMEOUT_MS)
+                .unwrap_or(i64::MAX),
             Some("30000"),
         ),
         number_editable(
@@ -1794,6 +1797,36 @@ mod tests {
         for field in settings_fields() {
             assert!(seen.insert(field.key), "duplicate field {}", field.key);
         }
+    }
+
+    /// The settings editor must accept exactly the range config.toml accepts;
+    /// a second hand-written ceiling silently rejects values the file allows.
+    #[test]
+    fn code_mode_timeout_setting_bounds_match_config_validation() {
+        use labby_runtime::gateway_config::CodeModeConfig;
+        let field = settings_fields()
+            .into_iter()
+            .find(|field| field.key == "code_mode.timeout_ms")
+            .expect("code mode timeout setting");
+        let max = field.max.expect("bounded setting");
+        let accepted = CodeModeConfig {
+            timeout_ms: u64::try_from(max).unwrap(),
+            ..CodeModeConfig::default()
+        };
+        assert!(accepted.validate().is_ok(), "settings max must validate");
+        let rejected = CodeModeConfig {
+            timeout_ms: u64::try_from(max).unwrap() + 1,
+            ..CodeModeConfig::default()
+        };
+        assert!(
+            rejected.validate().is_err(),
+            "settings max must be the config ceiling, not below it"
+        );
+        assert_eq!(field.min, Some(1));
+        assert_eq!(
+            max,
+            i64::try_from(labby_runtime::gateway_config::MAX_CODE_MODE_TIMEOUT_MS).unwrap()
+        );
     }
 
     #[test]

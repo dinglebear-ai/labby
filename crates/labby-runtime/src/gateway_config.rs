@@ -46,6 +46,12 @@ fn default_code_mode_trace_params() -> bool {
     true
 }
 
+/// Ceiling for `code_mode.timeout_ms`. It matches the upstream request
+/// timeout ceiling because a Code Mode run drives upstream tool calls, and the
+/// settings editor derives its bound from this constant so config.toml and the
+/// editor can never disagree.
+pub const MAX_CODE_MODE_TIMEOUT_MS: u64 = 300_000;
+
 fn default_code_mode_timeout_ms() -> u64 {
     30_000
 }
@@ -294,7 +300,7 @@ impl CodeModeConfig {
         // Matches upstream_request_timeout_ms (1..=300_000). A Code Mode run
         // drives upstream tool calls, so a ceiling below a single call's own
         // budget made the enclosing run expire before the call it waited on.
-        if !(1..=300_000).contains(&self.timeout_ms) {
+        if !(1..=MAX_CODE_MODE_TIMEOUT_MS).contains(&self.timeout_ms) {
             return Err(ConfigError::InvalidCodeModeTimeout {
                 value: self.timeout_ms,
             });
@@ -1434,7 +1440,10 @@ pub enum ConfigError {
         /// Explanation of the transport validation failure.
         reason: String,
     },
-    #[error("gateway code_mode.timeout_ms={value} is invalid — expected 1..=300000")]
+    #[error(
+        "gateway code_mode.timeout_ms={value} is invalid — expected 1..={max}",
+        max = MAX_CODE_MODE_TIMEOUT_MS
+    )]
     /// Code Mode timeout falls outside the supported range.
     InvalidCodeModeTimeout {
         /// Rejected timeout in milliseconds.
@@ -2378,6 +2387,33 @@ client_secret_env = "SECRET"
         assert!(cfg.trace_params);
         assert_eq!(cfg.timeout_ms, 30_000);
         assert_eq!(cfg.token_estimate_divisor, 4);
+    }
+
+    #[test]
+    fn code_mode_timeout_range_boundaries() {
+        for (timeout_ms, accepted) in [
+            (0, false),
+            (1, true),
+            (MAX_CODE_MODE_TIMEOUT_MS, true),
+            (MAX_CODE_MODE_TIMEOUT_MS + 1, false),
+        ] {
+            let cfg = CodeModeConfig {
+                timeout_ms,
+                ..CodeModeConfig::default()
+            };
+            let result = cfg.validate();
+            assert_eq!(
+                result.is_ok(),
+                accepted,
+                "timeout_ms={timeout_ms}: {result:?}"
+            );
+            if !accepted {
+                assert!(matches!(
+                    result,
+                    Err(ConfigError::InvalidCodeModeTimeout { value }) if value == timeout_ms
+                ));
+            }
+        }
     }
 
     #[test]
