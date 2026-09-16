@@ -353,6 +353,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         requested_service_count = args.services.len(),
         "starting labby serve bootstrap"
     );
+    log_inherited_app_surface_defaults(&config_path, config);
 
     crate::registry::set_runtime_built_in_upstream_apis_enabled(
         config.services.built_in_upstream_apis_enabled,
@@ -975,6 +976,39 @@ fn resolve_web_ui_auth_disabled(
     // the bypass.
     let _ = (web_assets_enabled, oauth_enabled);
     Ok(false)
+}
+
+/// Name the Labby-owned app surfaces whose `config.toml` section is absent
+/// and which therefore run at their on-by-default posture. One INFO line at
+/// startup, only when something is inherited, so an install upgraded from a
+/// release where Code Mode and the MCP App UIs defaulted off can see why they
+/// appeared. A missing file inherits everything; an unreadable one is the
+/// loader's error to report.
+fn log_inherited_app_surface_defaults(config_path: &Path, config: &LabConfig) {
+    let raw = match std::fs::read_to_string(config_path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(_) => return,
+    };
+    let inherited = crate::config::inherited_app_surface_sections(&raw);
+    if inherited.is_empty() {
+        return;
+    }
+    tracing::info!(
+        subsystem = "startup",
+        phase = "bootstrap.app_surface_defaults",
+        inherited_sections = ?inherited,
+        code_mode_enabled = config.code_mode.enabled,
+        code_mode_ui_enabled = config.code_mode.mcp_ui_enabled,
+        mcp_apps_manager = config.mcp_apps.manager,
+        mcp_apps_add_server = config.mcp_apps.add_server,
+        mcp_apps_server_logs = config.mcp_apps.server_logs,
+        mcp_apps_gateway_status = config.mcp_apps.gateway_status,
+        mcp_apps_settings = config.mcp_apps.settings,
+        "config.toml declares no [code_mode] or [mcp_apps] section; Code Mode and \
+         the Labby-owned MCP App UIs default to enabled — set the switches to \
+         false to opt out"
+    );
 }
 
 #[cfg(unix)]

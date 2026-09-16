@@ -2432,6 +2432,34 @@ client_secret_env = "SECRET"
     }
 
     #[test]
+    fn documented_labby_app_defaults_match_code() {
+        // GATEWAY.md is the operator-facing statement of the Labby-owned app
+        // surface defaults. Code Mode and every managed MCP App now default
+        // on, so the doc must not still promise an off-by-default posture.
+        let doc = include_str!("../../../docs/services/GATEWAY.md");
+        assert!(CodeModeConfig::default().enabled);
+        assert!(CodeModeConfig::default().mcp_ui_enabled);
+        assert_eq!(
+            McpAppsConfig::default(),
+            McpAppsConfig {
+                manager: true,
+                add_server: true,
+                server_logs: true,
+                gateway_status: true,
+                settings: true,
+            }
+        );
+        assert!(
+            !doc.contains("defaults to `false` and must be explicitly enabled"),
+            "docs/services/GATEWAY.md still documents the retired off-by-default app posture"
+        );
+        assert!(
+            doc.contains("defaults to `true`") || doc.contains("enabled by default"),
+            "docs/services/GATEWAY.md must state that Labby-owned app surfaces default on"
+        );
+    }
+
+    #[test]
     fn mcp_apps_config_supports_independent_visibility_switches() {
         let cfg: McpAppsConfig = toml::from_str(
             "manager = true\nadd_server = false\nserver_logs = true\ngateway_status = false\nsettings = false\n",
