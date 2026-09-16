@@ -1401,6 +1401,33 @@ if authenticated_action; then exit 93; fi
         ):
             self.assertIn("shopt -s nullglob", release_steps[name]["run"], name)
 
+    def test_version_sync_gate_covers_desktop_manifests(self) -> None:
+        # The desktop shell follows the root workspace release, but nothing on
+        # main compared its three manifests to Cargo.toml: they sat at 1.18.2
+        # while the workspace shipped 1.20.1, and the release-please generic
+        # marker on its own line never rewrote src-tauri/Cargo.toml.
+        script = self.text("scripts/check-version-sync.sh")
+        desktop = (
+            "apps/labby-desktop/package.json",
+            "apps/labby-desktop/src-tauri/tauri.conf.json",
+            "apps/labby-desktop/src-tauri/Cargo.toml",
+        )
+        for path in desktop:
+            self.assertIn(path, script)
+        result = subprocess.run(["bash", "scripts/check-version-sync.sh"], cwd=ROOT,
+                                text=True, capture_output=True, check=False)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        for path in desktop:
+            self.assertIn(path, result.stdout)
+        # release-please's generic updater rewrites only the annotated line.
+        cargo = self.text("apps/labby-desktop/src-tauri/Cargo.toml")
+        self.assertRegex(cargo, r'(?m)^version = "[^"]+" # x-release-please-version$')
+        self.assertNotRegex(cargo, r"(?m)^# x-release-please-version$")
+        # The lockfile records the same version for the desktop package.
+        lock = self.text("apps/labby-desktop/src-tauri/Cargo.lock")
+        version = re.search(r'(?m)^version = "([^"]+)"', cargo).group(1)
+        self.assertIn(f'name = "labby-desktop"\nversion = "{version}"', lock)
+
     def test_desktop_release_builds_enforce_the_reviewed_lockfile(self) -> None:
         workflow = yaml.safe_load(self.text(".github/workflows/build-desktop.yml"))
         commands = [step["run"] for step in workflow["jobs"]["build"]["steps"]
