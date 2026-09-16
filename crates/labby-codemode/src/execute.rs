@@ -1397,7 +1397,8 @@ mod tests {
                 CodeModeCaller::TrustedLocal,
                 CodeModeSurface::Cli,
                 &ToolScope::default(),
-                ExecCtx::none(),            )
+                ExecCtx::none(),
+            )
             .await
             .expect("a host list_tools failure must fail open, not propagate as an error");
         assert_eq!(result, json!({ "dts": null }));

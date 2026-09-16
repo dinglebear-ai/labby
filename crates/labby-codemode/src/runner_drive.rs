@@ -1397,7 +1397,8 @@ async fn handle_completed_tool_call(
                         error_kind: None,
                         ui,
                     },
-                ));            }
+                ));
+            }
             write_runner_input_by_deadline(
                 stdin,
                 &CodeModeRunnerInput::ToolResult {

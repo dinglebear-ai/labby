@@ -1397,7 +1397,8 @@ mod tests {
 
     #[test]
     fn read_resolved_rejects_non_utf8_snippet_files() {
-        let dir = tempfile::tempdir().expect("temp snippets");        let path = dir.path().join("demo.js");
+        let dir = tempfile::tempdir().expect("temp snippets");
+        let path = dir.path().join("demo.js");
         fs::write(&path, [0xff, 0xfe, 0xfd]).expect("write non-UTF8 fixture");
 
         let error = read_resolved("demo", SnippetSource::User, path)

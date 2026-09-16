@@ -1397,7 +1397,8 @@ mod tests {
         let before = pool.catalog.read().await["alpha"].clone();
 
         let stale_rows = vec![Resource::new("file:///stale", "stale")];
-        assert!(            pool.apply_observed_resource_list_success(&stale, &stale_rows)
+        assert!(
+            pool.apply_observed_resource_list_success(&stale, &stale_rows)
                 .await
                 .is_none()
         );

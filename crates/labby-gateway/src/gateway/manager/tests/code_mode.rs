@@ -1397,7 +1397,8 @@ async fn palette_search_reports_truncation_when_global_inspection_budget_is_exha
                         tool: rmcp::model::Tool::new(
                             name,
                             "ordinary fixture",
-                            Arc::new(serde_json::Map::new()),                        ),
+                            Arc::new(serde_json::Map::new()),
+                        ),
                         input_schema: None,
                         output_schema: None,
                         upstream_name: Arc::clone(&upstream_name),
@@ -2796,7 +2797,8 @@ async fn one_shot_cli_catalog_keeps_an_upstream_whose_tools_landed_before_the_cu
     let (tools, logs) = with_captured_logs(|| {
         tokio::time::timeout(
             BUDGET_GUARD,
-            manager.code_mode_catalog_tools_cached(None, None),        )
+            manager.code_mode_catalog_tools_cached(None, None),
+        )
     })
     .await;
     let tools = tools
