@@ -122,18 +122,19 @@ impl AgentExecutor for LlmAgentExecutor {
             .await
             .map_err(|error| execution_error(&request, "create_session", error))?;
 
-        guard
+        if let Err(error) = guard
             .check(
                 AuthoritySafeBoundary::BeforeExternalEffect,
                 system_now_millis(),
             )
             .await
-            .inspect_err(|_| {
-                drop(tokio::spawn(cancel_and_close(
-                    self.backend.clone(),
-                    session_id.clone(),
-                )));
-            })?;
+        {
+            // The provider session already exists at this point. Cleanup is part
+            // of the execution lifecycle, not detached best-effort work that can
+            // be lost during runtime shutdown.
+            cancel_and_close(&self.backend, &session_id).await;
+            return Err(error);
+        }
 
         let chat = self.backend.chat(&session_id, &payload.model, &prompt);
         tokio::pin!(chat);
@@ -156,8 +157,7 @@ impl AgentExecutor for LlmAgentExecutor {
                         )
                         .await
                     {
-                        drop(self.backend.cancel_session(&session_id).await);
-                        drop(self.backend.close_session(&session_id).await);
+                        cancel_and_close(&self.backend, &session_id).await;
                         return Err(error);
                     }
                 }
@@ -192,6 +192,10 @@ impl AgentExecutor for LlmAgentExecutor {
             external_effects: 3,
         })
     }
+
+    async fn cancel(&self, request: &AgentExecutionRequest) {
+        cancel_and_close(&self.backend, &request.session.session_id).await;
+    }
 }
 
 fn render_prompt(agent_id: &str, version: u64, instructions: &str, input: &str) -> String {
@@ -205,9 +209,21 @@ fn render_prompt(agent_id: &str, version: u64, instructions: &str, input: &str) 
     )
 }
 
-async fn cancel_and_close(backend: OpenAiBackend, session_id: String) {
-    drop(backend.cancel_session(&session_id).await);
-    drop(backend.close_session(&session_id).await);
+async fn cancel_and_close(backend: &OpenAiBackend, session_id: &str) {
+    if let Err(error) = backend.cancel_session(session_id).await {
+        tracing::warn!(
+            session_id,
+            kind = error.kind(),
+            "Agent provider session cancel failed during cleanup"
+        );
+    }
+    if let Err(error) = backend.close_session(session_id).await {
+        tracing::warn!(
+            session_id,
+            kind = error.kind(),
+            "Agent provider session close failed during cleanup"
+        );
+    }
 }
 
 fn execution_error(

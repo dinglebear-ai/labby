@@ -504,6 +504,54 @@
               "ty": "string",
               "required": true,
               "description": ""
+            },
+            {
+              "name": "content_digest",
+              "ty": "string",
+              "required": false,
+              "description": ""
+            },
+            {
+              "name": "repository_digest",
+              "ty": "string",
+              "required": false,
+              "description": ""
+            },
+            {
+              "name": "image_digest",
+              "ty": "string",
+              "required": false,
+              "description": ""
+            },
+            {
+              "name": "harness_digest",
+              "ty": "string",
+              "required": false,
+              "description": ""
+            },
+            {
+              "name": "loadout_digest",
+              "ty": "string",
+              "required": false,
+              "description": ""
+            },
+            {
+              "name": "catalog_generation",
+              "ty": "string",
+              "required": false,
+              "description": ""
+            },
+            {
+              "name": "instructions",
+              "ty": "string",
+              "required": false,
+              "description": ""
+            },
+            {
+              "name": "model",
+              "ty": "string",
+              "required": false,
+              "description": ""
             }
           ],
           "returns": "object"

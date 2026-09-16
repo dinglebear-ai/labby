@@ -28,6 +28,30 @@ test('agent and task lists use authenticated authoritative action endpoints', as
   assert.deepEqual(JSON.parse(await requests[1]!.text()), { action: 'tasks.list', params: {} })
 })
 
+test('agent and task lists follow authoritative pagination cursors', async () => {
+  authenticate()
+  const requests: Array<{ action: string; params: Record<string, unknown> }> = []
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body)) as { action: string; params: Record<string, unknown> }
+    requests.push(body)
+    const cursor = body.params.cursor
+    if (body.action === 'agents.list') {
+      return Response.json(cursor ? { agents: [{ agent_id: 'a-2' }], next_cursor: null } : { agents: [{ agent_id: 'a-1' }], next_cursor: 'a-1' })
+    }
+    return Response.json(cursor ? { tasks: [{ task_id: 't-2' }], next_cursor: null } : { tasks: [{ task_id: 't-1' }], next_cursor: 't-1' })
+  }
+
+  assert.deepEqual((await listAgents()).map(agent => agent.agent_id), ['a-1', 'a-2'])
+  assert.deepEqual((await listTasks()).map(task => task.task_id), ['t-1', 't-2'])
+  assert.deepEqual(requests.map(request => request.params), [{}, { cursor: 'a-1' }, {}, { cursor: 't-1' }])
+})
+
+test('repeated pagination cursors fail closed', async () => {
+  authenticate()
+  globalThis.fetch = async () => Response.json({ agents: [{ agent_id: 'a-1' }], next_cursor: 'same' })
+  await assert.rejects(listAgents(), /repeated pagination cursor/)
+})
+
 test('denials do not become empty authoritative lists', async () => {
   authenticate()
   globalThis.fetch = async () => Response.json({ message: 'access denied' }, { status: 403 })

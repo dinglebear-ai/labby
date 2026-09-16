@@ -32,7 +32,10 @@ use labby_runtime::{
     authority::{AuthorityEpochVector, AuthoritySafeBoundary},
 };
 use serde_json::{Value, json};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    future::{Future, ready},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 const fn param(name: &'static str) -> ParamSpec {
     ParamSpec {
@@ -95,7 +98,17 @@ pub const ACTIONS: &[ActionSpec] = &[
     action(
         "agents.update",
         "Create the next immutable Agent revision",
-        &[param("agent_id")],
+        &[
+            param("agent_id"),
+            optional_param("content_digest"),
+            optional_param("repository_digest"),
+            optional_param("image_digest"),
+            optional_param("harness_digest"),
+            optional_param("loadout_digest"),
+            optional_param("catalog_generation"),
+            optional_param("instructions"),
+            optional_param("model"),
+        ],
     ),
     action("agents.suspend", "Suspend an Agent", &[param("agent_id")]),
     action("agents.delete", "Delete an Agent", &[param("agent_id")]),
@@ -150,6 +163,33 @@ pub(crate) async fn dispatch(
     match name {
         "agents.create" => {
             reject_server_assigned(&params)?;
+            let requested_owner = owner(&params)?;
+            let requested_id = required(&params, "agent_id")?;
+            // Authorize before any content-addressed payload write. The final
+            // transactional put re-authorizes at commit, but this preflight
+            // prevents denied callers and duplicate identifiers from leaving
+            // orphaned immutable payloads behind.
+            authorize(
+                &context,
+                name,
+                &requested_owner,
+                &requested_id,
+                Capability::ScopeCreate,
+                now,
+            )
+            .await?;
+            // An identifier that is already taken must look exactly like an
+            // authorization failure so `agents.create` cannot be used as an
+            // existence oracle across owners.
+            if context
+                .store
+                .get_agent_definition(requested_id.clone())
+                .await
+                .map_err(map)?
+                .is_some()
+            {
+                return Err(denied());
+            }
             let params = materialize_llm_payload(&context.store, params, None)?;
             let definition = definition(&params, None)?;
             let request = authority_request(
@@ -160,18 +200,6 @@ pub(crate) async fn dispatch(
                 Capability::ScopeCreate,
                 now,
             )?;
-            // An identifier that is already taken must look exactly like an
-            // authorization failure so `agents.create` cannot be used as an
-            // existence oracle across owners.
-            if context
-                .store
-                .get_agent_definition(definition.id.clone())
-                .await
-                .map_err(map)?
-                .is_some()
-            {
-                return Err(denied());
-            }
             context
                 .store
                 .authorize_and_put_agent_definition(
@@ -226,6 +254,17 @@ pub(crate) async fn dispatch(
         "agents.update" => {
             reject_server_assigned(&params)?;
             let prior = load(&context, &params).await?;
+            // As with create, keep CAS writes behind a current authority
+            // decision. The store still re-authorizes atomically at commit.
+            authorize(
+                &context,
+                name,
+                &prior.owner,
+                &prior.id,
+                Capability::ScopeManage,
+                now,
+            )
+            .await?;
             let params = materialize_llm_payload(&context.store, params, Some(&prior))?;
             let definition = definition(&params, Some(&prior))?;
             let request = authority_request(
@@ -282,12 +321,24 @@ pub(crate) async fn dispatch(
             Ok(json!({"agent_id":definition.id,"state":state_name(state)}))
         }
         "agents.run" => {
+            let definition = load(&context, &params).await?;
+            // Authorize before any recovery write, provider construction, or
+            // caller-input validation so unauthorized callers cannot trigger
+            // durable side effects or distinguish active definitions by error.
+            let lease = authorize(
+                &context,
+                name,
+                &definition.owner,
+                &definition.id,
+                Capability::ScopeOperate,
+                now,
+            )
+            .await?;
             context
                 .store
                 .recover_expired_agent_sessions(i64::try_from(now).map_err(|_| internal())?)
                 .await
                 .map_err(map)?;
-            let definition = load(&context, &params).await?;
             if definition.state != AgentState::Active {
                 return Err(denied());
             }
@@ -299,15 +350,6 @@ pub(crate) async fn dispatch(
                     .unwrap_or_default()
                     .to_owned(),
             )?;
-            let lease = authorize(
-                &context,
-                name,
-                &definition.owner,
-                &definition.id,
-                Capability::ScopeOperate,
-                now,
-            )
-            .await?;
             let epochs = refresh_authority_epochs(
                 &context.store,
                 context.identity.clone(),
@@ -319,7 +361,7 @@ pub(crate) async fn dispatch(
             lease
                 .validate_at(AuthoritySafeBoundary::BeforeCommit, now, &epochs)
                 .map_err(|_| denied())?;
-            let session_id = format!("{}-{now}", definition.id);
+            let session_id = format!("{}-{}", definition.id, uuid::Uuid::new_v4());
             let lease_expires_at = lease.expires_at_millis();
             let authority_fingerprint = epochs.fingerprint().as_str().to_owned();
             let run_context = context.clone();
@@ -490,12 +532,12 @@ impl AgentAuthority for LiveExecutionAuthority {
 /// compile the branch out entirely; setting the variable there has no effect.
 pub(crate) struct DisabledExecutor;
 impl AgentExecutor for DisabledExecutor {
-    async fn execute(
+    fn execute(
         &self,
         _: AgentExecutionRequest,
         _: ExecutionGuard<'_>,
-    ) -> Result<AgentExecutionOutput, AgentRuntimeError> {
-        if deterministic_executor_enabled() {
+    ) -> impl Future<Output = Result<AgentExecutionOutput, AgentRuntimeError>> + Send {
+        ready(if deterministic_executor_enabled() {
             Ok(AgentExecutionOutput {
                 digest: format!("sha256:{}", "0".repeat(64)),
                 bytes: 0,
@@ -503,7 +545,7 @@ impl AgentExecutor for DisabledExecutor {
             })
         } else {
             Err(AgentRuntimeError::ExecutorFailed)
-        }
+        })
     }
 }
 
@@ -532,6 +574,12 @@ impl AgentExecutor for ConfiguredExecutor {
             Self::Llm(executor) => executor.execute(request, guard).await,
             Self::Deterministic(executor) => executor.execute(request, guard).await,
             Self::Unavailable => Err(AgentRuntimeError::ExecutorFailed),
+        }
+    }
+
+    async fn cancel(&self, request: &AgentExecutionRequest) {
+        if let Self::Llm(executor) = self {
+            executor.cancel(request).await;
         }
     }
 }
@@ -656,11 +704,15 @@ fn materialize_llm_payload(
     }
 
     let payloads = AgentPayloadStore::for_access_store(store);
-    let inherited = prior.and_then(|definition| {
-        payloads
-            .load_agent(&definition.revision.content_digest)
-            .ok()
-    });
+    let inherited = match prior {
+        Some(definition) if explicit_instructions.is_none() || explicit_model.is_none() => {
+            // A partial revision update must inherit from the exact pinned
+            // payload. Missing/corrupt content is a hard failure; silently
+            // defaulting would mutate an immutable revision's effective model.
+            Some(payloads.load_agent(&definition.revision.content_digest)?)
+        }
+        _ => None,
+    };
     let instructions = explicit_instructions
         .or_else(|| {
             inherited
@@ -878,7 +930,7 @@ pub(crate) fn map_agent_runtime_error(error: &AgentRuntimeError) -> ToolError {
         },
         AgentRuntimeError::ExecutorFailed => ToolError::Sdk {
             sdk_kind: "service_unavailable".into(),
-            message: "Agent execution backend is not configured".into(),
+            message: "Agent execution backend failed".into(),
         },
         // The session no longer matches the pinned definition, the lease is
         // not bound to this execution, or the granted capability cannot
@@ -1112,7 +1164,7 @@ mod tests {
         );
         assert_eq!(
             envelope(&map_agent_runtime_error(&AgentRuntimeError::ExecutorFailed))["message"],
-            "Agent execution backend is not configured"
+            "Agent execution backend failed"
         );
     }
 
@@ -1257,6 +1309,44 @@ mod tests {
             .unwrap();
         assert_eq!(created["authority_epoch"], 1);
         assert_eq!(created["publication_epoch"], 1);
+    }
+
+    #[tokio::test]
+    async fn partial_llm_revision_update_fails_when_inherited_payload_is_missing() {
+        let (_directory, store, _owner) = fixture().await;
+        let prior = definition(&agent_params("legacy-agent"), None).unwrap();
+        let error = materialize_llm_payload(
+            &store,
+            json!({"agent_id":"legacy-agent","instructions":"new instructions"}),
+            Some(&prior),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), "unavailable");
+    }
+
+    #[tokio::test]
+    async fn unauthorized_run_is_denied_before_input_validation() {
+        let (_dir, store, owner) = fixture().await;
+        dispatch(
+            agent_context(&store, &owner),
+            "agents.create",
+            agent_params("private-agent"),
+        )
+        .await
+        .unwrap();
+        let stranger = agent_context(&store, &browser("stranger-subject"));
+        let error = dispatch(
+            stranger,
+            "agents.run",
+            json!({
+                "agent_id":"private-agent",
+                "input": "x".repeat(crate::dispatch::agent_payloads::MAX_TASK_INPUT_BYTES + 1),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), "forbidden");
+        assert_eq!(envelope(&error)["message"], "access denied");
     }
 
     #[tokio::test]

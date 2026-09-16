@@ -5419,6 +5419,30 @@
         "properties": {
           "agent_id": {
             "type": "string"
+          },
+          "catalog_generation": {
+            "type": "string"
+          },
+          "content_digest": {
+            "type": "string"
+          },
+          "harness_digest": {
+            "type": "string"
+          },
+          "image_digest": {
+            "type": "string"
+          },
+          "instructions": {
+            "type": "string"
+          },
+          "loadout_digest": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "repository_digest": {
+            "type": "string"
           }
         }
       },

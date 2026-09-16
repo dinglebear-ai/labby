@@ -32,7 +32,7 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `agents` | `agents.run` | false | false | false |  | `resource_capability` | `scope.operate` | `agent` | `agent_id*: string`<br>`input: string` | `object` | mcp, api |
 | `agents` | `agents.session.status` | false | false | false |  | `resource_capability` | `scope.read` | `agent` | `agent_id*: string`<br>`session_id*: string` | `object` | mcp, api |
 | `agents` | `agents.suspend` | false | false | false |  | `resource_capability` | `scope.manage` | `agent` | `agent_id*: string` | `object` | mcp, api |
-| `agents` | `agents.update` | false | false | false |  | `resource_capability` | `scope.manage` | `agent` | `agent_id*: string` | `object` | mcp, api |
+| `agents` | `agents.update` | false | false | false |  | `resource_capability` | `scope.manage` | `agent` | `agent_id*: string`<br>`content_digest: string`<br>`repository_digest: string`<br>`image_digest: string`<br>`harness_digest: string`<br>`loadout_digest: string`<br>`catalog_generation: string`<br>`instructions: string`<br>`model: string` | `object` | mcp, api |
 | `agents` | `help` | true | false | false |  | `transport` | `-` | `-` |  | `HelpPayload` | mcp, api |
 | `agents` | `schema` | true | false | false |  | `transport` | `-` | `-` | `action*: string` | `ActionSpec` | mcp, api |
 | `artifacts` | `artifacts.activate` | false | false | false |  | `transport` | `-` | `-` | `artifact_id*: string`<br>`expected_revision_id*: string`<br>`expected_library_version*: integer`<br>`idempotency_key*: string` | `SkillMutationReceipt` | mcp, api, web |

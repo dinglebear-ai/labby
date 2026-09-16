@@ -1,7 +1,7 @@
 ---
 title: "Setup Service"
 created: "2026-08-18"
-updated: "2026-09-11"
+updated: "2026-09-15"
 ---
 
 # Setup Service
@@ -20,6 +20,64 @@ The generated [action catalog](../generated/action-catalog.md) is authoritative 
 - install, uninstall, inspect, and synchronize the checked-in Claude plugin integration
 - repair supported setup state
 - project observational access-store health into setup checks without owning access-store repair
+
+## Google OAuth and ChatGPT web
+
+Labby's supported ChatGPT web connection requires the server to run in OAuth mode and to have a publicly reachable HTTPS origin. A bearer-only Labby server is appropriate for local or explicitly token-configured CLI clients, but it is not the supported ChatGPT web connection path.
+
+For Google OAuth, choose the final public Labby origin before creating provider credentials. If the public origin is `https://labby.example.com`, Labby's Google callback is exactly:
+
+```text
+https://labby.example.com/auth/google/callback
+```
+
+Configure Google in this order:
+
+1. Open the project in Google Auth Platform and complete the Branding page with the application name and support/contact information.
+2. Choose the Audience appropriate for the deployment. For an External application that is still in testing, add the Google accounts that must be able to sign in as test users.
+3. Under Clients, create an OAuth 2.0 client of type **Web application**.
+4. Add the exact Labby callback URL above to **Authorized redirect URIs**. Do not add a wildcard, path variant, query string, or trailing slash after `callback`.
+5. Copy the generated Client ID and Client secret. Treat the secret as a credential and do not put it in `config.toml`, shell history, or documentation.
+6. Use the Google scopes Labby expects: `openid`, `email`, and `profile` (the defaults).
+7. Start Labby setup and select Google OAuth. Interactive setup now prints the exact redirect URI before asking for the provider credentials.
+
+Interactive setup:
+
+```bash
+labby setup
+# role: Server
+# authentication: Google OAuth
+# public URL: https://labby.example.com
+```
+
+Unattended setup keeps provider secrets in environment variables rather than command-line arguments:
+
+```bash
+export LABBY_GOOGLE_CLIENT_ID='...apps.googleusercontent.com'
+export LABBY_GOOGLE_CLIENT_SECRET='...'
+export LABBY_AUTH_ADMIN_EMAIL='operator@example.com'
+
+labby setup \
+  --role server \
+  --oauth google \
+  --public-url https://labby.example.com \
+  --no-desktop \
+  --yes
+```
+
+The configured admin email must be the verified Google identity that should receive the initial administrative scope. Labby generates the remaining local OAuth encryption material during setup. Google access and refresh tokens remain server-side.
+
+After the service is reachable through HTTPS, verify discovery before adding ChatGPT:
+
+```bash
+curl -fsS https://labby.example.com/.well-known/oauth-authorization-server
+curl -fsS https://labby.example.com/.well-known/oauth-protected-resource
+curl -i https://labby.example.com/mcp
+```
+
+An unauthenticated `/mcp` request should challenge the caller and point it at Labby's OAuth resource metadata. The reverse proxy must pass the OAuth discovery endpoints and `POST /register`, `/authorize`, `/token`, and `/mcp` to Labby. A WAF or proxy that blocks dynamic client registration can make ChatGPT discovery appear to work while authorization fails; use the DCR diagnostics in [OAuth](../runtime/OAUTH.md) when that happens.
+
+In ChatGPT web, create a custom MCP app in the workspace's developer/app settings, use `https://labby.example.com/mcp` as the MCP endpoint, select OAuth, scan tools, and complete the Google authorization flow. Availability and exact ChatGPT UI labels are workspace/plan dependent and may change; Labby's durable requirement is OAuth plus the public HTTPS `/mcp` endpoint.
 
 ## macOS server and automatic updates
 
@@ -125,6 +183,47 @@ Legacy snake-case plugin action aliases remain in the action catalog for compati
 ## CLI
 
 `labby setup` is the supported operator entrypoint. Use `labby setup --help` and the generated [CLI help](../generated/cli-help.md) for the exact current command grammar.
+
+Bare `labby setup` prompts for a server or client role. Server setup uses a native
+service by default; Linux x86_64 hosts with a reachable Incus daemon can select
+`--deployment incus`. A server binds to `127.0.0.1:8765` unless explicitly changed.
+Google and Authelia configuration require provider credentials and a public URL.
+Client setup saves the selected gateway URL and uses browser OAuth or a bearer
+token. The optional desktop app is downloaded from the matching release and its
+provenance is verified before installation.
+
+For a fresh bearer-only server, explicit setup creates the durable first owner
+for its static credential. It preserves an existing owner and refuses a blocked
+access store. OAuth deployments retain their authenticated owner-bootstrap flow.
+Browser token sign-in exchanges the configured bearer for an HttpOnly session
+cookie; the bearer is not retained by the browser, and restarting Labby invalidates
+those derived sessions. Mixed browser identities must be signed out before
+switching authentication methods.
+
+Run setup as your ordinary user. Native Linux setup requests elevation for the
+service portion, then installs an optional desktop app as the original user.
+OAuth client setup requires a browser; `--no-browser` rejects that combination
+before changing configuration. A bearer client can be configured without a browser.
+
+```bash
+# Inspect a native server setup without changing host state.
+labby setup --role server --oauth none --no-desktop --yes --dry-run
+
+# Connect this machine to an existing OAuth gateway.
+labby setup --role client --server-url https://labby.example.com --oauth google --no-desktop --yes
+
+# Keep the existing web setup entrypoint.
+labby setup wizard
+```
+
+The Linux/macOS release installer invokes this same setup flow after verifying
+and installing the binary. This contract requires an installer-bearing release that includes the first-run role interface; public `v1.13.3` predates it and rejects `labby setup --role ...`. The verified installer also requires an attestation-capable, authenticated GitHub CLI; Ubuntu 26.04's packaged `gh 2.46.0` is too old. Verify `gh attestation verify --help` and `gh auth status --hostname github.com` before bootstrap. Unattended callers must select `LABBY_SETUP_ROLE`;
+other shell options include `LABBY_SETUP_DEPLOYMENT`, `LABBY_SETUP_HOST`,
+`LABBY_SETUP_PORT`, `LABBY_SETUP_SERVER_URL`, `LABBY_SETUP_PUBLIC_URL`,
+`LABBY_SETUP_OAUTH`, `LABBY_SETUP_DESKTOP`, and `LABBY_SETUP_NO_BROWSER`.
+Provider/client secrets use the normal credential environment variables, not
+command-line arguments. Set `LABBY_INSTALL_NO_SETUP=1` to install only the binary.
+Updates set this flag automatically so they cannot restart onboarding.
 
 ## Related Docs
 

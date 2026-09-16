@@ -1,7 +1,7 @@
 ---
 title: "Gateway Management"
 created: "2026-07-30"
-updated: "2026-09-07"
+updated: "2026-09-15"
 ---
 
 # Gateway Management
@@ -83,9 +83,10 @@ loss.
 
 The gateway validates that the `command` basename of any stdio upstream is in a
 built-in allowlist (`npx`, `uvx`, `docker`, `node`, `bun`, `python`, `python3`,
-`deno`, `pipx`, `dnx`, `ssh`) before writing the config. SSH can therefore be
-used directly as a stdio transport for MCP services that speak MCP over a
-remote command. `[gateway]` knobs in `config.toml` control this:
+`deno`, `pipx`, `dnx`, `ssh`, `claude`) before writing the config. Claude Code
+is intentionally allowed so a local `claude mcp serve` endpoint works without
+disabling the spawn guard. SSH can be used directly as a stdio transport for
+MCP services that speak MCP over a remote command. `[gateway]` knobs in `config.toml` control this:
 
 ```toml
 [[upstream]]
@@ -114,6 +115,66 @@ auto_reconnect = true
 The guard applies only to stdio upstreams. HTTP upstreams are never checked.
 See [`docs/runtime/CONFIG.md`](../runtime/CONFIG.md) for the full `[gateway]`
 config reference.
+
+#### Claude Code MCP
+
+Claude Code exposes its native MCP server with `claude mcp serve`. Prefer the
+native, current Claude Code binary on the target machine and verify its path
+before persisting the upstream. A local Claude Code MCP on the same host as
+Labby needs no spawn-guard override:
+
+```bash
+claude doctor
+command -v claude
+labby gateway add \
+  --name claude-local \
+  --command /absolute/path/to/claude \
+  --arg=mcp \
+  --arg=serve
+labby gateway test --name claude-local
+```
+
+For a Claude Code MCP on another machine, use `ssh` as the local stdio command
+and invoke the remote native Claude binary directly. Use a dedicated key,
+`BatchMode=yes`, a dedicated known-hosts file, strict host-key verification,
+and a bounded connect/keepalive policy. Do not rely on an interactive shell
+profile to locate Claude:
+
+```toml
+[[upstream]]
+name = "claude-remote"
+enabled = true
+command = "/usr/bin/ssh"
+args = [
+  "-i", "/home/labby/.ssh/labby-claude-remote",
+  "-o", "IdentitiesOnly=yes",
+  "-o", "UserKnownHostsFile=/home/labby/.ssh/known_hosts.claude-remote",
+  "-T", "-S", "none",
+  "-o", "ControlMaster=no",
+  "-o", "BatchMode=yes",
+  "-o", "ConnectTimeout=10",
+  "-o", "ServerAliveInterval=30",
+  "-o", "ServerAliveCountMax=3",
+  "-o", "StrictHostKeyChecking=yes",
+  "user@remote-host",
+  "/absolute/path/to/claude", "mcp", "serve",
+]
+proxy_resources = true
+proxy_prompts = true
+proxy_skills = false
+```
+
+The same definition can be created with `labby gateway add --command /usr/bin/ssh`
+and repeated `--arg` options. Validate the raw non-interactive SSH command as
+the Labby service account first, then run `labby gateway test --name
+claude-remote`. After the upstream is reachable, use one safe Claude MCP tool
+to verify `hostname`, `whoami`, platform, and current working directory so a
+Windows, WSL, macOS, or Linux target cannot be silently confused with a
+similarly named machine.
+
+Keep `disable_spawn_guard = false` (the default). A global bypass allows any
+configured command to execute and is unnecessary for either the built-in
+`claude` or `ssh` integration.
 
 ## Tool, Resource, and Prompt Exposure
 

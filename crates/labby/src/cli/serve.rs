@@ -979,15 +979,14 @@ fn resolve_web_ui_auth_disabled(
         return Ok(disabled);
     }
 
-    // This is `true` for the default bearer-only (no OAuth), embedded-web-UI
-    // deployment shape — e.g. the Unraid plugin's rc.labby-started `labby
-    // serve` before OAuth is set up. Since GET /auth/session is registered
-    // unconditionally (api/router.rs), that default makes auth_session()
-    // return a synthetic authenticated-admin session to unauthenticated
-    // callers reaching the HTTP port. No real /v1/* access is granted
-    // (gated separately by needs_auth), but it renders a misleading
-    // "logged in" UI shell. Tracked in lab-0bl3m; not changed here.
-    Ok(web_assets_enabled && !oauth_enabled)
+    // Authentication is enabled by default whenever the hosted UI is served.
+    // Bearer-only installs now exchange the static operator credential for a
+    // short-lived HttpOnly browser session, so there is no reason to render a
+    // synthetic authenticated shell merely because OAuth is absent. Explicit
+    // dev/test overrides above remain available when an operator truly wants
+    // the bypass.
+    let _ = (web_assets_enabled, oauth_enabled);
+    Ok(false)
 }
 
 #[cfg(unix)]
@@ -2993,7 +2992,7 @@ mod tests {
             )
             .unwrap()
         );
-        assert!(resolve_web_ui_auth_disabled(&WebPreferences::default(), true, false).unwrap());
+        assert!(!resolve_web_ui_auth_disabled(&WebPreferences::default(), true, false).unwrap());
         assert!(!resolve_web_ui_auth_disabled(&WebPreferences::default(), true, true).unwrap());
         assert!(!resolve_web_ui_auth_disabled(&WebPreferences::default(), false, false).unwrap());
     }
@@ -3449,6 +3448,7 @@ mod tests {
                 LabConfig {
                     code_mode: crate::config::CodeModeConfig {
                         enabled: true,
+                        mcp_ui_enabled: false,
                         ..crate::config::CodeModeConfig::default()
                     },
                     ..LabConfig::default()
@@ -3458,8 +3458,8 @@ mod tests {
             .await;
         let state = AppState::new().with_gateway_manager(std::sync::Arc::clone(&manager));
 
-        // `mcp_ui_enabled` defaults to false (Labby-owned apps are opt-in), and
-        // a manager-backed server reads the published config rather than the
+        // Start with the inspector explicitly disabled for this transition test.
+        // A manager-backed server reads the published config rather than the
         // mirrored session atomic, so the config is what a fresh listing must
         // observe.
         let notifier = PeerNotifier::default();
