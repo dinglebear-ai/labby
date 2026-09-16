@@ -1347,6 +1347,12 @@
         "description": "Stable item identifier"
       },
       {
+        "name": "expected_version",
+        "ty": "string",
+        "required": true,
+        "description": "Current Artifact state version required for optimistic concurrency"
+      },
+      {
         "name": "upstream_artifact_id",
         "ty": "string",
         "required": false,
@@ -1904,10 +1910,22 @@
         "description": "Opaque remote continuation cursor"
       },
       {
+        "name": "kind",
+        "ty": "string",
+        "required": false,
+        "description": "Supported Artifact kind filter"
+      },
+      {
         "name": "limit",
         "ty": "integer",
         "required": false,
         "description": "Bounded remote page size"
+      },
+      {
+        "name": "query",
+        "ty": "string",
+        "required": false,
+        "description": "Case-insensitive remote catalog query containing 3 to 200 characters"
       }
     ],
     "returns": "RemoteArtifactPage",
@@ -2350,6 +2368,12 @@
         "description": "Stable item identifier"
       },
       {
+        "name": "expected_version",
+        "ty": "string",
+        "required": true,
+        "description": "Current Artifact state version required for optimistic concurrency"
+      },
+      {
         "name": "declared",
         "ty": "string|null",
         "required": false,
@@ -2434,6 +2458,12 @@
         "ty": "string",
         "required": true,
         "description": "Stable item identifier"
+      },
+      {
+        "name": "expected_version",
+        "ty": "string",
+        "required": true,
+        "description": "Current Artifact state version required for optimistic concurrency"
       },
       {
         "name": "state",
@@ -2942,7 +2972,7 @@
   {
     "service": "bundles",
     "action": "bundles.add",
-    "description": "Add an Artifact to a bundle draft",
+    "description": "Add an ingested Skill to a bundle draft",
     "destructive": false,
     "requires_admin": true,
     "required_scopes": [
@@ -2968,13 +2998,13 @@
         "name": "namespace",
         "ty": "string",
         "required": true,
-        "description": "Artifact namespace"
+        "description": "Skill namespace"
       },
       {
         "name": "name",
         "ty": "string",
         "required": true,
-        "description": "Artifact name"
+        "description": "Skill name"
       }
     ],
     "returns": "Bundle",
@@ -2992,7 +3022,7 @@
   {
     "service": "bundles",
     "action": "bundles.create",
-    "description": "Create an empty curated Artifact bundle",
+    "description": "Create an empty curated Skill bundle",
     "destructive": false,
     "requires_admin": true,
     "required_scopes": [
@@ -3116,7 +3146,7 @@
   {
     "service": "bundles",
     "action": "bundles.list",
-    "description": "List curated Artifact bundles with publication drift",
+    "description": "List curated Skill bundles with publication drift",
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
@@ -3184,7 +3214,7 @@
   {
     "service": "bundles",
     "action": "bundles.remove",
-    "description": "Remove an Artifact from a bundle draft",
+    "description": "Remove an ingested Skill from a bundle draft",
     "destructive": false,
     "requires_admin": true,
     "required_scopes": [
@@ -3210,13 +3240,13 @@
         "name": "namespace",
         "ty": "string",
         "required": true,
-        "description": "Artifact namespace"
+        "description": "Skill namespace"
       },
       {
         "name": "name",
         "ty": "string",
         "required": true,
-        "description": "Artifact name"
+        "description": "Skill name"
       }
     ],
     "returns": "Bundle",
@@ -3425,6 +3455,78 @@
   },
   {
     "service": "dev_containers",
+    "action": "dev_containers.build",
+    "description": "Build and publish a new immutable image revision",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.operate",
+    "resource_family": "dev_container",
+    "params": [
+      {
+        "name": "template_id",
+        "ty": "string",
+        "required": true,
+        "description": "Administrator-approved template identifier"
+      },
+      {
+        "name": "expected_revision",
+        "ty": "integer",
+        "required": true,
+        "description": "Draft revision used for compare-and-swap"
+      },
+      {
+        "name": "request_id",
+        "ty": "string",
+        "required": true,
+        "description": "Caller-unique build intent identifier"
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "dev_containers",
+    "action": "dev_containers.build.get",
+    "description": "Read bounded image build progress",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "dev_container",
+    "params": [
+      {
+        "name": "build_id",
+        "ty": "string",
+        "required": true,
+        "description": "Opaque image build identifier"
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "dev_containers",
     "action": "dev_containers.create",
     "description": "Create from an approved template",
     "destructive": false,
@@ -3509,6 +3611,174 @@
   },
   {
     "service": "dev_containers",
+    "action": "dev_containers.draft.create",
+    "description": "Create an image draft from an approved immutable base",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.create",
+    "resource_family": "dev_container",
+    "params": [
+      {
+        "name": "template_id",
+        "ty": "string",
+        "required": true,
+        "description": "Administrator-approved template identifier"
+      },
+      {
+        "name": "base_template_id",
+        "ty": "string",
+        "required": true,
+        "description": "Existing administrator-approved immutable base template"
+      },
+      {
+        "name": "owner_kind",
+        "ty": "installation|team|project|personal",
+        "required": true,
+        "description": "Single durable owner scope"
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": true,
+        "description": "Owner identifier resolved against caller authority"
+      },
+      {
+        "name": "definition",
+        "ty": "object",
+        "required": true,
+        "description": "Bounded image definition using approved catalog identifiers"
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "dev_containers",
+    "action": "dev_containers.draft.update",
+    "description": "Replace a draft definition at an exact revision",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.operate",
+    "resource_family": "dev_container",
+    "params": [
+      {
+        "name": "template_id",
+        "ty": "string",
+        "required": true,
+        "description": "Administrator-approved template identifier"
+      },
+      {
+        "name": "expected_revision",
+        "ty": "integer",
+        "required": true,
+        "description": "Draft revision used for compare-and-swap"
+      },
+      {
+        "name": "definition",
+        "ty": "object",
+        "required": true,
+        "description": "Bounded image definition using approved catalog identifiers"
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "dev_containers",
+    "action": "dev_containers.environment.replace",
+    "description": "Replace a draft environment using literals or opaque secret references",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.operate",
+    "resource_family": "dev_container",
+    "params": [
+      {
+        "name": "template_id",
+        "ty": "string",
+        "required": true,
+        "description": "Administrator-approved template identifier"
+      },
+      {
+        "name": "expected_revision",
+        "ty": "integer",
+        "required": true,
+        "description": "Draft revision used for compare-and-swap"
+      },
+      {
+        "name": "environment",
+        "ty": "object[]",
+        "required": true,
+        "description": "Literal values or opaque secret references"
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "dev_containers",
+    "action": "dev_containers.launch_reference",
+    "description": "Return the configured Incus endpoint, project and immutable image fingerprint",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "dev_container",
+    "params": [
+      {
+        "name": "template_id",
+        "ty": "string",
+        "required": true,
+        "description": "Administrator-approved template identifier"
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "dev_containers",
     "action": "dev_containers.list",
     "description": "List Dev Containers visible to the caller",
     "destructive": false,
@@ -3529,6 +3799,48 @@
         "ty": "string",
         "required": false,
         "description": "Page size from 1 through 100"
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "dev_containers",
+    "action": "dev_containers.rebuild",
+    "description": "Rebuild and publish a new immutable image revision",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.operate",
+    "resource_family": "dev_container",
+    "params": [
+      {
+        "name": "template_id",
+        "ty": "string",
+        "required": true,
+        "description": "Administrator-approved template identifier"
+      },
+      {
+        "name": "expected_revision",
+        "ty": "integer",
+        "required": true,
+        "description": "Draft revision used for compare-and-swap"
+      },
+      {
+        "name": "request_id",
+        "ty": "string",
+        "required": true,
+        "description": "Caller-unique build intent identifier"
       }
     ],
     "returns": "object",
@@ -3619,6 +3931,84 @@
         "ty": "string",
         "required": true,
         "description": "Opaque Dev Container identifier"
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "dev_containers",
+    "action": "dev_containers.templates.get",
+    "description": "Get one authorized image draft and its environment references",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "dev_container",
+    "params": [
+      {
+        "name": "template_id",
+        "ty": "string",
+        "required": true,
+        "description": "Administrator-approved template identifier"
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "dev_containers",
+    "action": "dev_containers.templates.list",
+    "description": "List image drafts in one authorized owner scope",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "dev_container",
+    "params": [
+      {
+        "name": "owner_kind",
+        "ty": "installation|team|project|personal",
+        "required": true,
+        "description": "Single durable owner scope"
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": true,
+        "description": "Owner identifier resolved against caller authority"
+      },
+      {
+        "name": "cursor",
+        "ty": "string",
+        "required": false,
+        "description": "Exclusive instance identifier cursor"
+      },
+      {
+        "name": "limit",
+        "ty": "string",
+        "required": false,
+        "description": "Page size from 1 through 100"
       }
     ],
     "returns": "object",
@@ -4532,6 +4922,31 @@
       "mcp": true,
       "api": true,
       "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "gateway",
+    "action": "gateway.host.metrics",
+    "description": "Sample daemon-visible host CPU, memory, root filesystem usage and network rates; unsupported fields are null",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
+    "params": [],
+    "returns": "HostMetrics",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -6489,6 +6904,24 @@
         "description": "Restrict to one actor subject"
       },
       {
+        "name": "client_name",
+        "ty": "string",
+        "required": false,
+        "description": "Restrict to one exact self-reported MCP client name"
+      },
+      {
+        "name": "client_version",
+        "ty": "string",
+        "required": false,
+        "description": "Restrict to one exact self-reported MCP client version"
+      },
+      {
+        "name": "agent_id",
+        "ty": "string",
+        "required": false,
+        "description": "Restrict to one exact trusted Agent definition ID"
+      },
+      {
         "name": "outcome",
         "ty": "string",
         "required": false,
@@ -6591,6 +7024,24 @@
         "ty": "string",
         "required": false,
         "description": "Restrict to one actor subject"
+      },
+      {
+        "name": "client_name",
+        "ty": "string",
+        "required": false,
+        "description": "Restrict to one exact self-reported MCP client name"
+      },
+      {
+        "name": "client_version",
+        "ty": "string",
+        "required": false,
+        "description": "Restrict to one exact self-reported MCP client version"
+      },
+      {
+        "name": "agent_id",
+        "ty": "string",
+        "required": false,
+        "description": "Restrict to one exact trusted Agent definition ID"
       },
       {
         "name": "outcome",
@@ -7644,6 +8095,12 @@
         "ty": "string",
         "required": false,
         "description": "Exact tracing level filter, such as INFO, WARN, or ERROR"
+      },
+      {
+        "name": "levels",
+        "ty": "string[]",
+        "required": false,
+        "description": "Exact tracing levels to include; mutually exclusive with level"
       },
       {
         "name": "target",
@@ -9950,6 +10407,336 @@
     "params": [
       {
         "name": "task_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "tasks",
+    "action": "tasks.schedule_arm",
+    "description": "Arm a Task schedule",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.operate",
+    "resource_family": "task",
+    "params": [
+      {
+        "name": "schedule_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "tasks",
+    "action": "tasks.schedule_create",
+    "description": "Create a durable recurring Task schedule",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.create",
+    "resource_family": "task",
+    "params": [
+      {
+        "name": "schedule_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "name",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "owner_kind",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "agent_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "input",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "schedule",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "project_id",
+        "ty": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "armed",
+        "ty": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "retry_policy",
+        "ty": "string",
+        "required": false,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "tasks",
+    "action": "tasks.schedule_delete",
+    "description": "Delete a Task schedule and its schedule history",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.delete",
+    "resource_family": "task",
+    "params": [
+      {
+        "name": "schedule_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "tasks",
+    "action": "tasks.schedule_edit",
+    "description": "Edit a Task schedule's name, input, agent, cadence, or retry policy",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.operate",
+    "resource_family": "task",
+    "params": [
+      {
+        "name": "schedule_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "name",
+        "ty": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "agent_id",
+        "ty": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "input",
+        "ty": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "schedule",
+        "ty": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "retry_policy",
+        "ty": "string",
+        "required": false,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "tasks",
+    "action": "tasks.schedule_get",
+    "description": "Get a Task schedule and its retained template",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "task",
+    "params": [
+      {
+        "name": "schedule_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "tasks",
+    "action": "tasks.schedule_list",
+    "description": "List caller-visible Task schedules",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "task",
+    "params": [
+      {
+        "name": "cursor",
+        "ty": "string",
+        "required": false,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "tasks",
+    "action": "tasks.schedule_pause",
+    "description": "Pause a Task schedule",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.operate",
+    "resource_family": "task",
+    "params": [
+      {
+        "name": "schedule_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "tasks",
+    "action": "tasks.schedule_run_now",
+    "description": "Enqueue one immediate occurrence of a Task schedule",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.operate",
+    "resource_family": "task",
+    "params": [
+      {
+        "name": "schedule_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "idempotency_key",
         "ty": "string",
         "required": true,
         "description": ""

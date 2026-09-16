@@ -1,32 +1,29 @@
 'use client'
 
 import dynamic from 'next/dynamic'
-import { useDeferredValue, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useDeferredValue, useEffect, useMemo, useState } from 'react'
 import {
-  Activity,
   ArrowLeft,
-  Cable,
   Download,
+  MoreHorizontal,
   LayoutGrid,
   List,
   Plus,
   RefreshCw,
   Search,
   SlidersHorizontal,
-  TriangleAlert,
   Table2,
-  Wrench,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { AppHeader } from '@/components/app-header'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { GatewayFleetMetadata } from './gateway-fleet-metadata'
 import { useGateways, useGatewayMutations } from '@/lib/hooks/use-gateways'
 import type { Gateway, CreateGatewayInput, UpdateGatewayInput, DiscoveredMcpServer } from '@/lib/types/gateway'
 import { cn, getErrorMessage } from '@/lib/utils'
 import {
-  AURORA_DISPLAY_NUMBER,
-  AURORA_MEDIUM_PANEL,
   AURORA_PAGE_FRAME,
   AURORA_PAGE_SHELL,
   AURORA_STRONG_PANEL,
@@ -56,6 +53,7 @@ import { CleanupResultPanel } from './cleanup-result-panel'
 import { gatewayActionTone } from './gateway-theme'
 import { CodeModeHeaderToggle } from './code-mode-toggle'
 import { gatewayBatchActions } from './gateway-batch-actions'
+import { gatewayDisplayName } from '@/lib/gateway-display-name'
 
 const DEFAULT_GATEWAY_LENS: GatewayPrimaryLens = 'enabled'
 const DEFAULT_DENSITY: 'comfortable' | 'condensed' = 'comfortable'
@@ -215,7 +213,8 @@ export function GatewayListContent() {
     const tools = sum((gateway) => gateway.status.discovered_tool_count)
 
     const serverStates = items.map((gateway) => {
-      const base = { id: gateway.id, name: gateway.name }
+      const base = { id: gateway.id, name: gatewayDisplayName(gateway.name) }
+      if (gateway.enabled === false) return { ...base, color: 'var(--aurora-text-muted)', state: 'disabled' }
       if (!gateway.status.connected) {
         return { ...base, color: 'var(--aurora-error)', state: 'disconnected' }
       }
@@ -259,7 +258,7 @@ export function GatewayListContent() {
   )
 
   const gatewayOptions = useMemo(
-    () => items.map((gateway) => ({ value: gateway.id, label: gateway.name })),
+    () => items.map((gateway) => ({ value: gateway.id, label: gatewayDisplayName(gateway.name) })),
     [items],
   )
 
@@ -706,6 +705,15 @@ export function GatewayListView({
   onDelete,
 }: GatewayListViewProps) {
   const [layout, setLayout] = useState<GatewayLayout>('table')
+  const [showToolbar, setShowToolbar] = useState(false)
+  useEffect(() => {
+    const revealSearch = () => { setShowToolbar(true); requestAnimationFrame(() => document.querySelector<HTMLInputElement>('input[name="gateways-search"]')?.focus()) }
+    const keydown = (event: KeyboardEvent) => {
+      if (event.key === '/' && !(event.target instanceof HTMLElement && (event.target.isContentEditable || /INPUT|TEXTAREA|SELECT/.test(event.target.tagName)))) { event.preventDefault(); revealSearch() }
+    }
+    window.addEventListener('keydown', keydown)
+    return () => { window.removeEventListener('keydown', keydown) }
+  }, [])
 
   useEffect(() => {
     try {
@@ -769,44 +777,8 @@ export function GatewayListView({
           AURORA_PAGE_SHELL,
         )}
       >
-        <div className={cn(AURORA_PAGE_FRAME, 'relative z-10 gap-4')}>
-          <section className={cn(AURORA_MEDIUM_PANEL, 'p-1.5 lg:hidden')}>
-            <div className="grid grid-cols-4 gap-1">
-              <MobileSummaryChip
-                metric="enabled"
-                value={summary.enabled}
-                icon={<Cable className="size-3.5" />}
-                active={!showToolsView && gatewayFilters.primaryLens === 'enabled'}
-                onClick={() => onPrimaryLensChange('enabled')}
-              />
-              <MobileSummaryChip
-                metric="healthy"
-                value={summary.healthy}
-                icon={<Activity className="size-3.5" />}
-                active={!showToolsView && gatewayFilters.primaryLens === 'healthy'}
-                onClick={() => onPrimaryLensChange('healthy')}
-              />
-              <MobileSummaryChip
-                metric="disconnected"
-                value={summary.disconnected}
-                icon={<TriangleAlert className="size-3.5" />}
-                active={!showToolsView && gatewayFilters.primaryLens === 'disconnected'}
-                onClick={() => onPrimaryLensChange('disconnected')}
-              />
-              <MobileSummaryChip
-                metric="tools"
-                value={summary.tools}
-                icon={<Wrench className="size-3.5" />}
-                active={showToolsView}
-                onClick={() => onPrimaryLensChange('tools')}
-              />
-            </div>
-          </section>
-
-          {/* Desktop: the mock's Gateway hero — fleet + exposure stat groups
-              welded to the card's bottom edge. The fleet cells are the same
-              lens filters the old summary cards were. */}
-          <div className="hidden lg:block">
+        <div className={cn(AURORA_PAGE_FRAME, 'relative z-10 gap-[30px]')}>
+          <div>
             <GatewayHero
               totalServers={summary.totalServers}
               healthy={summary.healthy}
@@ -825,34 +797,20 @@ export function GatewayListView({
               toolsViewActive={showToolsView}
               onLensChange={onPrimaryLensChange}
               actions={
-                <>
-                  <CodeModeHeaderToggle />
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    title="Reload visible servers"
-                    aria-label="Reload visible servers"
-                    disabled={isReloadingVisible || filteredGateways.length === 0}
-                    onClick={() => onReloadVisible(filteredGateways)}
-                  >
-                    <RefreshCw className={cn('size-3.5', isReloadingVisible && 'animate-spin')} />
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    title="Scan MCP configs"
-                    aria-label="Scan MCP configs"
-                    disabled={isDiscoveringConfigs || isImportingConfigs}
-                    onClick={onDiscoverConfigs}
-                  >
-                    <Search className={cn('size-3.5', isDiscoveringConfigs && 'animate-pulse')} />
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    title="Download gateway diagnostics snapshot"
-                    aria-label="Download gateway diagnostics snapshot"
-                    onClick={() => {
+                <div className="flex flex-col items-end gap-[9px]">
+                  <div className="inline-flex gap-1">
+                    <Button variant="outline" size="icon" data-visible-label className="size-6 rounded-lg" title="Reload visible servers" aria-label="Reload visible servers" disabled={isReloadingVisible || filteredGateways.length === 0} onClick={() => onReloadVisible(filteredGateways)}><RefreshCw className={cn('size-3', isReloadingVisible && 'animate-spin')} /></Button>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild><Button variant="outline" size="icon" data-visible-label className="size-6 rounded-lg" title="Gateway actions" aria-label="Gateway actions, search and filters"><MoreHorizontal className="size-3" /></Button></DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onClick={onCreate}><Plus className="size-3.5"/>Add server</DropdownMenuItem>
+                        <DropdownMenuItem disabled={isDiscoveringConfigs || isImportingConfigs} onClick={onDiscoverConfigs}><Search className="size-3.5"/>Scan MCP configs</DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => setShowToolbar((value) => !value)}><SlidersHorizontal className="size-3.5"/>{showToolbar ? 'Hide search and view controls' : 'Search, filters and views'}</DropdownMenuItem>
+                        <DropdownMenuSeparator/>
+                        <div className="px-2 py-1.5"><CodeModeHeaderToggle /></div>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                    <Button variant="outline" size="icon" data-visible-label className="size-6 rounded-lg" title="Download gateway diagnostics snapshot" aria-label="Download gateway diagnostics snapshot" onClick={() => {
                       const blob = new Blob([JSON.stringify(filteredGateways, null, 2)], { type: 'application/json' })
                       const href = URL.createObjectURL(blob)
                       const anchor = document.createElement('a')
@@ -860,27 +818,16 @@ export function GatewayListView({
                       anchor.download = 'labby-gateway-snapshot.json'
                       anchor.click()
                       URL.revokeObjectURL(href)
-                    }}
-                  >
-                    <Download className="size-3.5" />
-                  </Button>
-                  <Button
-                    onClick={onCreate}
-                    variant="outline"
-                    size="icon"
-                    className={cn(gatewayActionTone('accent'), 'size-9 border')}
-                    title="Add server"
-                    aria-label="Add server"
-                  >
-                    <Plus className="size-3.5" />
-                  </Button>
-                </>
+                    }}><Download className="size-3" /></Button>
+                  </div>
+                  <GatewayFleetMetadata />
+                </div>
               }
             />
           </div>
 
           <div className="grid gap-4">
-            <div className="flex min-w-0 flex-col items-stretch gap-2 sm:flex-row sm:items-start" data-gateway-filters="all-viewports">
+            {showToolbar || activeSearch || mobileSheetOpen ? <div className="flex min-w-0 flex-col items-stretch gap-2 sm:flex-row sm:items-start" data-gateway-filters="all-viewports">
               <div className="min-w-0 sm:flex-1">
               <GatewayFilters
               mode={showToolsView ? 'tools' : 'gateways'}
@@ -924,7 +871,7 @@ export function GatewayListView({
                   ))}
                 </div>
               ) : null}
-            </div>
+            </div> : null}
 
             {/* Keep intrinsic table contents from widening the page grid. */}
             <div className="min-w-0">
@@ -1092,38 +1039,5 @@ function McpConfigImportReviewPanel({
         <p className="mt-3 text-xs text-aurora-text-muted">No external MCP configs found.</p>
       )}
     </section>
-  )
-}
-
-function MobileSummaryChip({
-  metric,
-  value,
-  icon,
-  active,
-  onClick,
-}: {
-  metric: 'enabled' | 'configured' | 'healthy' | 'disconnected' | 'tools'
-  value: number
-  icon: ReactNode
-  active: boolean
-  onClick: () => void
-}) {
-  return (
-    <button
-      type="button"
-      data-mobile-summary={metric}
-      onClick={onClick}
-      className={cn(
-        'flex h-10 items-center justify-center gap-1.5 rounded-aurora-1 border px-2 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary/34',
-        'h-9 px-1.5 text-[13px]',
-        active
-          ? 'border-aurora-accent-primary/36 bg-aurora-accent-primary/12 text-aurora-text-primary'
-          : 'border-aurora-border-strong bg-aurora-control-surface text-aurora-text-muted hover:bg-aurora-hover-bg hover:text-aurora-text-primary',
-      )}
-      aria-pressed={active}
-    >
-      {icon}
-      <span className={cn(AURORA_DISPLAY_NUMBER, 'text-[13px] leading-none text-current')}>{value}</span>
-    </button>
   )
 }

@@ -114,6 +114,7 @@ export interface GatewayDiscovery {
 }
 
 export interface GatewayWarning {
+  occurrence_id?: string
   code: string
   message: string
   timestamp: string

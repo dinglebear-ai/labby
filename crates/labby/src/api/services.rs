@@ -45,6 +45,7 @@ pub mod access_bootstrap_proof;
 pub mod access_credentials;
 pub mod agents;
 pub(crate) mod owner_link;
+pub mod phoenix;
 pub mod projects;
 pub mod tasks;
 

@@ -6,6 +6,7 @@ const WINDOW_SHORT: Record<MetricsWindow, string> = {
   '1h': '1h',
   '24h': '24h',
   '7d': '7d',
+  '30d': '30d',
 }
 
 /** Rolling-window pill toggle for the Activity panels. */

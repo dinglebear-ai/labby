@@ -78,3 +78,6 @@ labby-auth = { path = "../labby-auth", features = ["upstream-oauth-rmcp"] }
 
 [lints]
 workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["fs", "param"] }

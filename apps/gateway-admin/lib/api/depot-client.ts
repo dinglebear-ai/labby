@@ -4,6 +4,9 @@ import { z } from 'zod'
 import { getBrowserSessionEpoch, getBrowserSessionState, getSessionCsrfToken } from '../auth/session-store'
 import { gatewayRequestInit } from './gateway-request'
 import { refreshBrowserSession } from './service-action-client'
+import { mockDepotLibraryArtifactIds, mockDepotProviderOptions, mockGetArtifact, mockListArtifacts } from './depot-mock-data'
+
+const USE_MOCK_DATA = process.env.NEXT_PUBLIC_MOCK_DATA === 'true'
 
 const COMPATIBILITY_SCHEMA = 'labby.depot-compatibility/v1'
 const FEDERATED_SCHEMA = 'labby.depot-compatibility/v2'
@@ -136,6 +139,13 @@ export type DepotArtifact = {
   currentRevisionId?: string
   contentDigest?: string
   revisionCount?: number
+  sourceOrigin?: string | null
+  publisherVerified?: boolean
+  metrics?: { stars?: number; installs?: number; forks?: number }
+  readme?: { state: 'available'; kind: 'readme' | 'skill'; path: 'README.md' | 'SKILL.md'; revisionId: string; content: string } | { state: 'unavailable'; reason: 'absent' | 'not_distributable' | 'too_large' | 'storage_unavailable' | 'invalid_text' }
+  provenance?: { originalFormat?: string | null; originalVersion?: string | null }
+  upstreamBehind?: number
+  updatedLabel?: string
   descriptor?: {
     id?: string
     kind?: string
@@ -149,23 +159,34 @@ export type DepotArtifact = {
     id?: string
     contentDigest?: string
     createdAt?: string
+    fileCount?: number
     components?: Array<{ id?: string; kind?: string; path?: string; mediaType?: string; size?: number }>
   }
   publication?: { state?: string; visibility?: string; distribution?: string }
-  license?: { redistribution?: string; reviewState?: string; takedownState?: string }
-  lineage?: { following?: boolean; upstreamArtifactId?: string }
+  license?: { declared?: string | null; redistribution?: string; reviewState?: string; takedownState?: string }
+  lineage?: { following?: boolean; upstreamArtifactId?: string; forkedFromArtifactId?: string | null }
 }
+
+const controlReadmeSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('available'), kind: z.enum(['readme', 'skill']), path: z.enum(['README.md', 'SKILL.md']), revisionId: bounded(512).min(1), content: z.string().max(65_536) }).passthrough(),
+  z.object({ state: z.literal('unavailable'), reason: z.enum(['absent', 'not_distributable', 'too_large', 'storage_unavailable', 'invalid_text']) }).passthrough(),
+])
 
 const artifactSchema: z.ZodType<DepotArtifact, z.ZodTypeDef, unknown> = z.object({
   id: z.string().optional(), kind: z.string().optional(), namespace: z.string().optional(),
   name: z.string().optional(), title: optionalCatalogText, description: optionalCatalogText,
   currentRevisionId: z.string().optional(), contentDigest: z.string().optional(),
   revisionCount: z.number().int().nonnegative().optional(),
+  sourceOrigin: optionalCatalogText, publisherVerified: z.boolean().optional(),
+  metrics: z.object({ stars: z.number().safe().int().nonnegative().optional(), installs: z.number().safe().int().nonnegative().optional(), forks: z.number().safe().int().nonnegative().optional() }).passthrough().optional(),
+  readme: controlReadmeSchema.optional(),
+  provenance: z.object({ originalFormat: optionalCatalogText, originalVersion: optionalCatalogText }).passthrough().optional(),
+  upstreamBehind: z.number().int().nonnegative().optional(), updatedLabel: optionalCatalogText,
   descriptor: z.object({ id: z.string().optional(), kind: z.string().optional(), namespace: z.string().optional(), name: z.string().optional(), title: optionalCatalogText, description: optionalCatalogText, tags: descriptorTags.optional() }).passthrough().optional(),
-  currentRevision: z.object({ id: z.string().optional(), contentDigest: z.string().optional(), createdAt: optionalCatalogText, components: z.array(z.object({ id: z.string().optional(), kind: z.string().optional(), path: z.string().optional(), mediaType: z.string().optional(), size: z.number().nonnegative().optional() }).passthrough()).optional() }).passthrough().optional(),
+  currentRevision: z.object({ id: z.string().optional(), contentDigest: z.string().optional(), createdAt: optionalCatalogText, fileCount: z.number().int().nonnegative().optional(), components: z.array(z.object({ id: z.string().optional(), kind: z.string().optional(), path: z.string().optional(), mediaType: z.string().optional(), size: z.number().nonnegative().optional() }).passthrough()).optional() }).passthrough().optional(),
   publication: z.object({ state: z.string().optional(), visibility: z.string().optional(), distribution: z.string().optional() }).passthrough().optional(),
-  license: z.object({ redistribution: z.string().optional(), reviewState: z.string().optional(), takedownState: z.string().optional() }).passthrough().optional(),
-  lineage: z.object({ following: z.boolean().optional(), upstreamArtifactId: optionalCatalogText }).passthrough().optional(),
+  license: z.object({ declared: optionalCatalogText, redistribution: z.string().optional(), reviewState: z.string().optional(), takedownState: z.string().optional() }).passthrough().optional(),
+  lineage: z.object({ following: z.boolean().optional(), upstreamArtifactId: optionalCatalogText, forkedFromArtifactId: optionalCatalogText.nullable() }).passthrough().optional(),
 }).passthrough().refine((artifact) => Boolean(artifact.id?.trim() || artifact.descriptor?.id?.trim()), { message: 'artifact identity is missing' })
 
 const listSchema = contractSchema.extend({ result: z.object({ artifacts: z.array(artifactSchema), nextCursor: z.string().optional(), total: z.number().int().nonnegative().optional() }).passthrough() })
@@ -175,17 +196,17 @@ export type DepotStatus = z.infer<typeof depotStatusSchema>
 
 async function parse(response: Response): Promise<unknown> {
   let body: unknown
-  try { body = await response.json() } catch { throw new Error(`Depot returned invalid JSON (${response.status})`) }
+  try { body = await response.json() } catch { throw new Error(`Labby catalog returned invalid JSON (${response.status})`) }
   if (!response.ok) {
     const error = body && typeof body === 'object' ? body as Record<string, unknown> : {}
-    const summary = typeof error.error === 'string' ? error.error : typeof error.message === 'string' ? error.message : `Depot request failed (${response.status})`
+    const summary = typeof error.error === 'string' ? error.error : typeof error.message === 'string' ? error.message : `Labby catalog request failed (${response.status})`
     throw new Error(safeDepotError(summary, response.status))
   }
   return body
 }
 
 function safeDepotError(value: string, status: number): string {
-  return /^[a-z][a-z0-9_]{0,127}$/.test(value) ? `Depot request failed (${status}, ${value})` : `Depot request failed (${status})`
+  return /^[a-z][a-z0-9_]{0,127}$/.test(value) ? `Labby catalog request failed (${status}, ${value})` : `Labby catalog request failed (${status})`
 }
 
 function validate<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, value: unknown, label: string): T {
@@ -193,7 +214,7 @@ function validate<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, value: unknown
   if (result.success) return result.data
   const issue = result.error.issues[0]
   const path = issue?.path.length ? ` at ${issue.path.join('.')}` : ''
-  throw new Error(`Depot returned an incompatible ${label}${path}: ${issue?.message ?? 'invalid response'}`)
+  throw new Error(`Labby catalog returned an incompatible ${label}${path}: ${issue?.message ?? 'invalid response'}`)
 }
 
 export async function depotStatus(signal?: AbortSignal): Promise<DepotStatus> {
@@ -243,7 +264,30 @@ export async function depotOperations(signal?: AbortSignal): Promise<DepotOperat
   return validate(operationsSchema, await parse(response), 'operation catalog response').operations
 }
 
+function mockControlArtifact(item: FederatedArtifact): DepotArtifact {
+  return {
+    id: item.id ?? item.artifactId, kind: item.kind, namespace: item.namespace, name: item.name, title: item.title, description: item.description,
+    currentRevisionId: item.currentRevisionId, contentDigest: item.contentDigest, revisionCount: item.revisionCount,
+    sourceOrigin: item.sourceOrigin, publisherVerified: item.publisherVerified, metrics: item.metrics, readme: item.readme, provenance: item.provenance,
+    upstreamBehind: item.upstreamBehind, updatedLabel: item.updatedLabel, descriptor: item.descriptor, publication: item.publication, license: item.license,
+    lineage: item.lineage ? { following: item.lineage.following, upstreamArtifactId: item.lineage.upstreamArtifactId ?? undefined, forkedFromArtifactId: item.lineage.forkedFromArtifactId } : undefined,
+    currentRevision: item.currentRevision ? { id: item.currentRevision.id, contentDigest: item.currentRevision.contentDigest, createdAt: item.updatedAt ?? item.currentRevision.authoredAt ?? undefined, fileCount: item.currentRevision.fileCount } : undefined,
+  }
+}
+
 export async function depotCall<T>(operation: string, params: Record<string, unknown>, signal?: AbortSignal, destructiveIntent?: { confirmed: true; idempotencyKey: string }): Promise<T> {
+  if (USE_MOCK_DATA && operation === 'depot.artifacts.list') {
+    const query = typeof params.query === 'string' ? params.query : undefined
+    const artifacts = mockListArtifacts({ query }).items.filter(item => mockDepotLibraryArtifactIds.has(item.artifactId)).map(mockControlArtifact)
+    return validate(listSchema, { schemaVersion: COMPATIBILITY_SCHEMA, result: { artifacts, total: artifacts.length } }, 'mock artifact list response') as T
+  }
+  if (USE_MOCK_DATA && operation === 'depot.artifacts.get') {
+    const artifactId = typeof params.artifactId === 'string' ? params.artifactId : ''
+    const found = mockListArtifacts().items.find(item => item.artifactId === artifactId && mockDepotLibraryArtifactIds.has(item.artifactId))
+    if (!found) throw new Error('Artifact not found')
+    const detail = mockGetArtifact(found.providerId, found.artifactId)
+    return validate(detailSchema, { schemaVersion: COMPATIBILITY_SCHEMA, result: { artifact: mockControlArtifact(detail.artifact) } }, 'mock artifact detail response') as T
+  }
   const init = gatewayRequestInit(operation, params, undefined, signal)
   init.body = JSON.stringify({ operation, params, ...(destructiveIntent ? { destructiveIntent } : {}) })
   const value = await parse(await fetch('/v1/depot/operations', init))
@@ -376,6 +420,7 @@ const federatedArtifactSchema = z.object({
   // Optional catalog display evidence, never an authorization or trust decision.
   publisherVerified: z.boolean().optional(),
   metrics: z.object({ stars: z.number().safe().int().nonnegative().optional(), installs: z.number().safe().int().nonnegative().optional(), forks: z.number().safe().int().nonnegative().optional() }).strict().optional(),
+  upstreamBehind: z.number().safe().int().nonnegative().optional(), updatedLabel: bounded(32).optional(),
   description: bounded(16384).optional(), currentRevisionId: bounded(512).optional(),
   contentDigest: bounded(512).optional(),
   createdAt: bounded(128).nullish(), updatedAt: bounded(128).nullish(),
@@ -448,11 +493,11 @@ async function requestV2<T>(path: string, init: RequestInit, schema: z.ZodType<T
     const response = await fetch(path, { credentials: 'same-origin', cache: 'no-store', ...init, headers })
     const requestId = response.headers.get('x-request-id') ?? undefined
     let body: unknown
-    try { body = await response.json() } catch { throw new DepotClientError(response.status, 'invalid_response', `Depot returned invalid JSON (${response.status})`, undefined, requestId) }
+    try { body = await response.json() } catch { throw new DepotClientError(response.status, 'invalid_response', `Labby catalog returned invalid JSON (${response.status})`, undefined, requestId) }
     if (epoch !== getBrowserSessionEpoch()) throw new DepotSessionChangedError('Session changed')
     if (!response.ok) {
       const error = z.object({ kind: bounded(128), message: bounded(4096), recovery: z.unknown().optional() }).passthrough().safeParse(body)
-      throw new DepotClientError(response.status, error.success ? error.data.kind : 'request_failed', error.success ? error.data.message : `Depot request failed (${response.status})`, error.success ? error.data.recovery : undefined, requestId)
+      throw new DepotClientError(response.status, error.success ? error.data.kind : 'request_failed', error.success ? error.data.message : `Labby catalog request failed (${response.status})`, error.success ? error.data.recovery : undefined, requestId)
     }
     return validate(schema, body, label)
   }
@@ -475,6 +520,7 @@ async function requestV2<T>(path: string, init: RequestInit, schema: z.ZodType<T
 }
 
 export async function listArtifacts(input: { provider?: string; query?: string; kind?: string; limit?: number; cursor?: string } = {}, signal?: AbortSignal): Promise<DiscoveryPage> {
+  if (USE_MOCK_DATA) return structuredClone(mockListArtifacts(input))
   const query = input.query ?? ''
   if (query.length > 200 || (query.length > 0 && query.length < 3)) throw new Error('Query must be empty or contain 3 to 200 characters')
   const kind = input.kind === 'all' ? undefined : input.kind
@@ -482,15 +528,16 @@ export async function listArtifacts(input: { provider?: string; query?: string; 
   const provider = input.provider ?? 'all'
   if (provider !== 'all' && !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(provider)) throw new Error('Invalid provider')
   const page = await requestV2('/v1/depot/discover', { method: 'POST', signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider: provider === 'all' ? null : provider, query, kind, limit: input.limit ?? 50, cursor: input.cursor }) }, discoverySchema, 'discovery response', 'retry-once')
-  if (page.scope !== provider) throw new Error('Depot returned the wrong discovery scope')
-  if (provider !== 'all' && page.items.some(item => item.providerId !== provider)) throw new Error('Depot returned an artifact from the wrong provider')
-  if (kind && page.items.some(item => (item.kind ?? item.descriptor?.kind) !== kind)) throw new Error('Depot returned an artifact of the wrong kind')
+  if (page.scope !== provider) throw new Error('Labby catalog returned the wrong discovery scope')
+  if (provider !== 'all' && page.items.some(item => item.providerId !== provider)) throw new Error('Labby catalog returned an artifact from the wrong provider')
+  if (kind && page.items.some(item => (item.kind ?? item.descriptor?.kind) !== kind)) throw new Error('Labby catalog returned an artifact of the wrong kind')
   return page
 }
 
 export async function getArtifact(providerId: string, artifactId: string, signal?: AbortSignal) {
+  if (USE_MOCK_DATA) return structuredClone(mockGetArtifact(providerId, artifactId))
   const value = await requestV2('/v1/depot/artifacts/detail', { method: 'POST', signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ providerId, artifactId }) }, detailV2Schema, 'artifact detail response', 'retry-once')
-  if (value.providerId !== providerId || value.artifactId !== artifactId || value.artifact.id !== artifactId) throw new Error('Depot returned the wrong artifact identity')
+  if (value.providerId !== providerId || value.artifactId !== artifactId || value.artifact.id !== artifactId) throw new Error('Labby catalog returned the wrong artifact identity')
   return value
 }
 
@@ -499,6 +546,7 @@ export async function listProviders(signal?: AbortSignal): Promise<DepotProvider
 }
 
 export async function listProviderOptions(signal?: AbortSignal): Promise<DepotProviderOption[]> {
+  if (USE_MOCK_DATA) return structuredClone(mockDepotProviderOptions)
   const providers = await requestV2('/v1/depot/providers', { signal }, z.array(z.union([providerOptionSchema, providerSchema])).max(16), 'provider options response')
   return providers.map(({ id, name, enabled, health }) => ({ id, name, enabled, health }))
 }

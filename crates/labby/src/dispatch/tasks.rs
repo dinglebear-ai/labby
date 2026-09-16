@@ -1,5 +1,7 @@
 //! Authenticated, owner-scoped Agent Task surface shared by HTTP and MCP.
 
+pub(crate) mod schedules;
+
 use crate::{
     access::{
         AccessStoreError, ActionAuthoritySpec, AuthorityCeiling, AuthorityRequest,
@@ -108,6 +110,64 @@ pub const ACTIONS: &[ActionSpec] = &[
         "Read an Agent Task result",
         &[param("task_id")],
     ),
+    action(
+        "tasks.schedule_create",
+        "Create a durable recurring Task schedule",
+        &[
+            param("schedule_id"),
+            param("name"),
+            param("owner_kind"),
+            param("owner_id"),
+            param("agent_id"),
+            param("input"),
+            param("schedule"),
+            optional_param("project_id"),
+            optional_param("armed"),
+            optional_param("retry_policy"),
+        ],
+    ),
+    action(
+        "tasks.schedule_list",
+        "List caller-visible Task schedules",
+        &[optional_param("cursor")],
+    ),
+    action(
+        "tasks.schedule_get",
+        "Get a Task schedule and its retained template",
+        &[param("schedule_id")],
+    ),
+    action(
+        "tasks.schedule_edit",
+        "Edit a Task schedule's name, input, agent, cadence, or retry policy",
+        &[
+            param("schedule_id"),
+            optional_param("name"),
+            optional_param("agent_id"),
+            optional_param("input"),
+            optional_param("schedule"),
+            optional_param("retry_policy"),
+        ],
+    ),
+    action(
+        "tasks.schedule_arm",
+        "Arm a Task schedule",
+        &[param("schedule_id")],
+    ),
+    action(
+        "tasks.schedule_pause",
+        "Pause a Task schedule",
+        &[param("schedule_id")],
+    ),
+    action(
+        "tasks.schedule_run_now",
+        "Enqueue one immediate occurrence of a Task schedule",
+        &[param("schedule_id"), param("idempotency_key")],
+    ),
+    action(
+        "tasks.schedule_delete",
+        "Delete a Task schedule and its schedule history",
+        &[param("schedule_id")],
+    ),
 ];
 
 /// Exact capability the shared evaluator demands for `action`. The generated
@@ -115,9 +175,19 @@ pub const ACTIONS: &[ActionSpec] = &[
 /// action is platform-scoped, so none requires `lab:admin`.
 pub(crate) fn required_capability(action: &str) -> Option<Capability> {
     Some(match action {
-        "tasks.create" => Capability::ScopeCreate,
-        "tasks.list" | "tasks.get" | "tasks.result" => Capability::ScopeRead,
-        "tasks.queue" | "tasks.cancel" => Capability::ScopeOperate,
+        "tasks.create" | "tasks.schedule_create" => Capability::ScopeCreate,
+        "tasks.list"
+        | "tasks.get"
+        | "tasks.result"
+        | "tasks.schedule_list"
+        | "tasks.schedule_get" => Capability::ScopeRead,
+        "tasks.queue"
+        | "tasks.cancel"
+        | "tasks.schedule_edit"
+        | "tasks.schedule_arm"
+        | "tasks.schedule_pause"
+        | "tasks.schedule_run_now" => Capability::ScopeOperate,
+        "tasks.schedule_delete" => Capability::ScopeDelete,
         _ => return None,
     })
 }
@@ -142,6 +212,9 @@ pub(crate) async fn dispatch(
     }
     if !ACTIONS.iter().any(|a| a.name == name) {
         return Err(unknown(name));
+    }
+    if name.starts_with("tasks.schedule_") {
+        return schedules::dispatch_schedule(context, name, params).await;
     }
     let now = now()?;
     match name {
@@ -289,14 +362,12 @@ pub(crate) async fn dispatch(
             }
             Ok(result)
         }
-        "tasks.queue" | "tasks.cancel" => {
+        "tasks.queue" => {
             let record = load(&context, &params).await?;
-            if name == "tasks.queue" {
-                // Refuse to move a Task out of `created` when its pinned Agent
-                // revision has already drifted; the authoritative re-check
-                // happens again inside `execute_queued` before the lease.
-                pinned_definition(&context, &record).await?;
-            }
+            queue_authorized_task(context, record, None, now).await
+        }
+        "tasks.cancel" => {
+            let record = load(&context, &params).await?;
             let request = authority_request(
                 &context,
                 name,
@@ -307,97 +378,7 @@ pub(crate) async fn dispatch(
             )?;
             let task_id = record.intent.id.clone();
             let transition_now = i64::try_from(now).map_err(|_| internal())?;
-            let response_state = if name == "tasks.queue" {
-                // Own the durable queue transition before awaiting it from the
-                // request. AccessStore work may commit on its blocking worker
-                // even when this request future is dropped; keeping the
-                // transition, cancellation registration, and execution handoff
-                // in one spawned owner closes that post-commit abandonment gap.
-                let attempt = record.attempt.saturating_add(1);
-                let owned_context = context.clone();
-                let owned_record = record.clone();
-                tokio::spawn(async move {
-                    let authority_lease = match owned_record.state {
-                        TaskState::Created => owned_context
-                            .store
-                            .authorize_and_transition_agent_task(
-                                request,
-                                task_id.clone(),
-                                TaskState::Created,
-                                TaskState::Queued,
-                                owned_context.identity.safe_fingerprint(),
-                                owned_record.attempt,
-                                transition_now,
-                            )
-                            .await
-                            .map_err(map)?,
-                        TaskState::Queued => {
-                            let lease = authorize_action(&owned_context.store, request)
-                                .await
-                                .map_err(map)?;
-                            // A queued row with an in-process owner is already
-                            // being handed to the scheduler. A queued row with
-                            // no owner is a crash/restart handoff gap and may be
-                            // safely resumed by this freshly authorized caller.
-                            if task_has_live_owner(&task_id) {
-                                return Ok::<(), ToolError>(());
-                            }
-                            lease
-                        }
-                        _ => return Err(denied()),
-                    };
-                    let cancellation = Cancellation::new();
-                    register_task_cancellation(task_id.clone(), attempt, cancellation.clone());
-                    let execution_context = owned_context.clone();
-                    let execution_record = owned_record.clone();
-                    tokio::spawn(async move {
-                        let result = execute_queued(
-                            &execution_context,
-                            &execution_record,
-                            authority_lease,
-                            cancellation,
-                            now,
-                        )
-                        .await;
-                        unregister_task_cancellation(&task_id, attempt);
-                        if let Err(error) = result {
-                            tracing::warn!(
-                                task_id = %task_id,
-                                kind = error.kind(),
-                                "detached Agent Task attempt did not complete normally"
-                            );
-                            // A failure before lease acquisition otherwise leaves
-                            // a durable queued row with no owner. Expire only when
-                            // this attempt still owns the queued state; concurrent
-                            // cancellation or execution wins through the state fence.
-                            if let Ok(Some(current)) = execution_context
-                                .store
-                                .get_agent_task(task_id.clone())
-                                .await
-                                && current.state == TaskState::Queued
-                            {
-                                drop(
-                                    execution_context
-                                        .store
-                                        .transition_agent_task(
-                                            task_id,
-                                            TaskState::Queued,
-                                            TaskState::Expired,
-                                            execution_context.identity.safe_fingerprint(),
-                                            current.attempt,
-                                            i64::try_from(system_now_millis()).unwrap_or(i64::MAX),
-                                        )
-                                        .await,
-                                );
-                            }
-                        }
-                    });
-                    Ok::<(), ToolError>(())
-                })
-                .await
-                .map_err(|_| internal())??;
-                "queued"
-            } else {
+            let response_state = {
                 // The transition and same-process live-token signal must have
                 // the same owned lifetime. Otherwise the durable Cancelling row
                 // can commit after a dropped request without the executor ever
@@ -415,6 +396,7 @@ pub(crate) async fn dispatch(
                             owned_context.identity.safe_fingerprint(),
                             owned_record.attempt,
                             transition_now,
+                            None,
                         )
                         .await
                         .map_err(map)?;
@@ -444,6 +426,122 @@ pub(crate) async fn dispatch(
         }
         _ => Err(unknown(name)),
     }
+}
+
+/// Move a Task from `created` (or resume an ownerless `queued` row) into the
+/// fenced execution path. `schedule_admission` carries the scheduler's claim
+/// fence for occurrences it admits; the store refuses to queue a scheduled
+/// Task without it and refuses a fence that no longer matches the schedule.
+pub(crate) async fn queue_authorized_task(
+    context: TaskDispatchContext,
+    record: crate::access::TaskRecord,
+    schedule_admission: Option<crate::access::task_schedule::ScheduleAdmission>,
+    now: u64,
+) -> Result<Value, ToolError> {
+    // Refuse to move a Task out of `created` when its pinned Agent revision
+    // has already drifted; the authoritative re-check happens again inside
+    // `execute_queued` before the lease.
+    pinned_definition(&context, &record).await?;
+    let request = authority_request(
+        &context,
+        "tasks.queue",
+        &record.intent.owner,
+        record.intent.id.clone(),
+        Capability::ScopeOperate,
+        now,
+    )?;
+    let task_id = record.intent.id.clone();
+    let transition_now = i64::try_from(now).map_err(|_| internal())?;
+    // Own the durable queue transition before awaiting it from the request.
+    // AccessStore work may commit on its blocking worker even when this
+    // request future is dropped; keeping the transition, cancellation
+    // registration, and execution handoff in one spawned owner closes that
+    // post-commit abandonment gap.
+    let attempt = record.attempt.saturating_add(1);
+    let owned_context = context.clone();
+    let owned_record = record.clone();
+    tokio::spawn(async move {
+        let authority_lease = match owned_record.state {
+            TaskState::Created => owned_context
+                .store
+                .authorize_and_transition_agent_task(
+                    request,
+                    task_id.clone(),
+                    TaskState::Created,
+                    TaskState::Queued,
+                    owned_context.identity.safe_fingerprint(),
+                    owned_record.attempt,
+                    transition_now,
+                    schedule_admission,
+                )
+                .await
+                .map_err(map)?,
+            TaskState::Queued => {
+                let lease = authorize_action(&owned_context.store, request)
+                    .await
+                    .map_err(map)?;
+                // A queued row with an in-process owner is already
+                // being handed to the scheduler. A queued row with
+                // no owner is a crash/restart handoff gap and may be
+                // safely resumed by this freshly authorized caller.
+                if task_has_live_owner(&task_id) {
+                    return Ok::<(), ToolError>(());
+                }
+                lease
+            }
+            _ => return Err(denied()),
+        };
+        let cancellation = Cancellation::new();
+        register_task_cancellation(task_id.clone(), attempt, cancellation.clone());
+        let execution_context = owned_context.clone();
+        let execution_record = owned_record.clone();
+        tokio::spawn(async move {
+            let result = execute_queued(
+                &execution_context,
+                &execution_record,
+                authority_lease,
+                cancellation,
+                now,
+            )
+            .await;
+            unregister_task_cancellation(&task_id, attempt);
+            if let Err(error) = result {
+                tracing::warn!(
+                    task_id = %task_id,
+                    kind = error.kind(),
+                    "detached Agent Task attempt did not complete normally"
+                );
+                // A failure before lease acquisition otherwise leaves
+                // a durable queued row with no owner. Expire only when
+                // this attempt still owns the queued state; concurrent
+                // cancellation or execution wins through the state fence.
+                if let Ok(Some(current)) = execution_context
+                    .store
+                    .get_agent_task(task_id.clone())
+                    .await
+                    && current.state == TaskState::Queued
+                {
+                    drop(
+                        execution_context
+                            .store
+                            .transition_agent_task(
+                                task_id,
+                                TaskState::Queued,
+                                TaskState::Expired,
+                                execution_context.identity.safe_fingerprint(),
+                                current.attempt,
+                                i64::try_from(system_now_millis()).unwrap_or(i64::MAX),
+                            )
+                            .await,
+                    );
+                }
+            }
+        });
+        Ok::<(), ToolError>(())
+    })
+    .await
+    .map_err(|_| internal())??;
+    Ok(json!({"task_id":record.intent.id,"state":"queued"}))
 }
 
 /// Materialize the caller's raw `input` in the Task-input CAS namespace. An
@@ -673,19 +771,33 @@ async fn execute_queued(
     };
     let _ = ledger.recover_expired(now).await.map_err(|_| internal())?;
     let executor = configured_task_executor(&context.store, &record.intent.input_digest);
-    execute_task(
-        &TASK_SCHEDULER,
-        &ledger,
-        &LiveExecutionAuthority {
-            store: context.store.clone(),
-            identity: context.identity.clone(),
-            owner: record.intent.owner.clone(),
-            definition,
-        },
-        &executor,
-        task,
-        cancellation,
-        now,
+    let attribution = labby_runtime::usage_actor::UsageAttribution {
+        // Task telemetry is attributed by trusted agent/task/harness identities below.
+        // Do not derive a user pseudonym from the durable creator principal here.
+        inbound_actor: None,
+        actor_kind: Some("agent".into()),
+        surface: Some("task".into()),
+        agent_id: Some(definition.id.to_string()),
+        task_id: Some(record.intent.id.to_string()),
+        harness_id: Some(definition.revision.harness_digest.clone()),
+        ..Default::default()
+    };
+    labby_runtime::usage_actor::scope_attributed(
+        attribution,
+        execute_task(
+            &TASK_SCHEDULER,
+            &ledger,
+            &LiveExecutionAuthority {
+                store: context.store.clone(),
+                identity: context.identity.clone(),
+                owner: record.intent.owner.clone(),
+                definition,
+            },
+            &executor,
+            task,
+            cancellation,
+            now,
+        ),
     )
     .await
     .map(drop)
@@ -1060,7 +1172,8 @@ mod tests {
 
     #[test]
     fn catalog_is_complete() {
-        assert_eq!(ACTIONS.len(), 6);
+        // Six durable Task actions plus the eight `tasks.schedule_*` actions.
+        assert_eq!(ACTIONS.len(), 14);
         assert!(ACTIONS.iter().all(|a| a.name.starts_with("tasks.")));
         let create = ACTIONS
             .iter()

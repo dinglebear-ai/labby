@@ -200,7 +200,9 @@ sleep 120
         // child-local descriptor keeps a replacement updater excluded.
         assert_eq!(acquire_update_lock(dir.path()).is_err(), !legacy);
         killpg(installer_group, Signal::SIGKILL).unwrap();
-        tokio::time::timeout(Duration::from_secs(2), async {
+        // Reaping the killed installer process group can lag on loaded macOS CI
+        // runners even though the lock descriptor is released as the processes exit.
+        tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 if acquire_update_lock(dir.path()).is_ok() {
                     break;

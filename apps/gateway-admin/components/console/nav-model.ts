@@ -1,5 +1,6 @@
 import {
   Cable,
+  Archive,
   CirclePlus,
   Clock3,
   Container,
@@ -16,7 +17,7 @@ import {
 } from 'lucide-react'
 
 /**
- * Unified Labby + Depot information architecture. Depot owns Discover,
+ * Unified Labby information architecture. Labby owns Discover,
  * Create, and Library; Loadouts and Snippets are Library tabs rather than
  * parallel sidebar products. Workspace collects the agent-facing execution
  * surfaces. Logs and distributed request traces live in a dedicated
@@ -62,7 +63,7 @@ const CONSOLE_NAV_SOURCE: ConsoleNavSectionSource[] = [
     id: 'Control Plane',
     label: 'Control Plane',
     items: [
-      { id: 'Overview', label: 'Overview', href: '/', icon: LayoutDashboard, contextLine: '16 servers · 127 calls', capability: 'scope.read' },
+      { id: 'Overview', label: 'Overview', href: '/', icon: LayoutDashboard, capability: 'scope.read' },
       {
         id: 'Gateway',
         label: 'Gateway',
@@ -82,17 +83,9 @@ const CONSOLE_NAV_SOURCE: ConsoleNavSectionSource[] = [
     ],
   },
   {
-    id: 'Catalog',
-    label: 'Catalog',
+    id: 'Observability',
+    label: 'Observability',
     items: [
-      {
-        id: 'Tools',
-        label: 'Tools',
-        href: '/tools',
-        icon: SearchCode,
-        tooltipDetail: 'live Code Mode catalog',
-        capability: 'scope.read',
-      },
       {
         id: 'Activity',
         label: 'Activity',
@@ -101,12 +94,6 @@ const CONSOLE_NAV_SOURCE: ConsoleNavSectionSource[] = [
         tooltipDetail: 'calls, latency, cost and throughput',
         capability: 'audit.read',
       },
-    ],
-  },
-  {
-    id: 'Observability',
-    label: 'Observability',
-    items: [
       {
         id: 'Logs',
         label: 'Logs',
@@ -127,14 +114,14 @@ const CONSOLE_NAV_SOURCE: ConsoleNavSectionSource[] = [
   },
   {
     id: 'Depot',
-    label: 'Depot',
+    label: 'Labby',
     items: [
       {
         id: 'Discover',
         label: 'Discover',
         href: '/depot',
         icon: SearchCode,
-        tooltipDetail: 'search the Depot Bazaar',
+        tooltipDetail: 'search the Labby catalog',
         capability: 'scope.read',
       },
       {
@@ -158,7 +145,7 @@ const CONSOLE_NAV_SOURCE: ConsoleNavSectionSource[] = [
         label: 'Administration',
         href: '/administration',
         icon: ShieldCheck,
-        tooltipDetail: 'Depot authority and canonical operations',
+        tooltipDetail: 'Labby authority and canonical operations',
         capability: 'platform.manage',
       },
     ],
@@ -170,6 +157,7 @@ const CONSOLE_NAV_SOURCE: ConsoleNavSectionSource[] = [
       { id: 'Agents', label: 'Agents', href: '/agents', icon: Bot, capability: 'scope.operate' },
       { id: 'Tasks', label: 'Tasks', href: '/tasks', icon: Clock3, capability: 'scope.operate' },
       { id: 'Dev Containers', label: 'Dev Containers', href: '/dev-containers', icon: Container, capability: 'scope.operate' },
+      { id: 'Stash', label: 'Stash', href: '/stash', icon: Archive, capability: 'scope.read' },
     ],
   },
 ]
@@ -208,11 +196,11 @@ export const consoleNavItems: ConsoleNavItem[] = consoleNavSections.flatMap(
   (section) => section.items,
 )
 
-export function capabilityAwareNavSections(capabilities: readonly string[]): ConsoleNavSection[] {
+export function capabilityAwareNavSections(capabilities: readonly string[], stashSupported = true): ConsoleNavSection[] {
   const allowed = new Set(capabilities)
   let flatIndex = 0
   return consoleNavSections
-    .map((section) => ({ ...section, items: section.items.filter((item) => !item.capability || allowed.has(item.capability)) }))
+    .map((section) => ({ ...section, items: section.items.filter((item) => (item.id !== 'Stash' || stashSupported) && (!item.capability || allowed.has(item.capability))) }))
     .filter((section) => section.items.length > 0)
     .map((section) => ({
       ...section,
@@ -238,7 +226,7 @@ const DIRECT_ROUTE_MANIFEST: ReadonlyArray<readonly [prefix: string, capability:
   ['/loadouts', 'scope.read'],
   ['/snippets', 'scope.read'],
   ['/projects', 'scope.read'],
-  ['/stash', 'scope.read'],
+  ['/tools', 'scope.read'],
   ['/docs', 'platform.manage'],
   ['/design-system', 'platform.manage'],
   ['/settings', 'platform.manage'],

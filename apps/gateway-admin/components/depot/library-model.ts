@@ -2,7 +2,7 @@ import type { DepotArtifact } from '@/lib/api/depot-client'
 
 export type LibraryKind = 'all' | string
 export type LibrarySort = 'catalog' | 'name' | 'kind'
-export type ArtifactType = 'mcp' | 'acp' | 'agent' | 'skill' | 'command' | 'plugin' | 'marketplace' | 'prompt'
+export type ArtifactType = 'mcp' | 'acp' | 'agent' | 'skill' | 'command' | 'plugin' | 'marketplace' | 'prompt' | 'resource' | 'app'
 
 const KIND_ALIASES: Record<string, ArtifactType> = {
   mcp_server: 'mcp', mcpserver: 'mcp',
@@ -76,4 +76,33 @@ export function artifactExportFilename(artifact: DepotArtifact): string {
 
 export function serializeArtifact(artifact: DepotArtifact): string {
   return `${JSON.stringify(artifact, null, 2)}\n`
+}
+
+export type LibraryView = 'all' | 'forks' | 'behind' | 'published' | 'team' | 'private'
+
+/** These are facets of loaded records, never claims about unseen catalog pages. */
+export function filterLibraryView(artifacts: DepotArtifact[], view: LibraryView): DepotArtifact[] {
+  return artifacts.filter((artifact) => {
+    if (view === 'all') return true
+    if (view === 'forks') return Boolean(artifact.lineage?.forkedFromArtifactId)
+    if (view === 'behind') return (artifact.upstreamBehind ?? 0) > 0
+    return artifact.publication?.visibility === (view === 'published' ? 'public' : view)
+  })
+}
+
+export function libraryRevisionDate(artifact: DepotArtifact): string | undefined {
+  const value = artifact.currentRevision?.createdAt
+  return value && Number.isFinite(Date.parse(value)) ? value : undefined
+}
+
+export function libraryUpdatedLabel(artifact: DepotArtifact, now = Date.now()): string {
+  if (artifact.updatedLabel) return artifact.updatedLabel
+  const value = libraryRevisionDate(artifact)
+  if (!value) return '—'
+  const elapsed = Math.max(0, now - Date.parse(value))
+  const hours = Math.floor(elapsed / 3_600_000)
+  if (hours < 24) return `${Math.max(1, hours)}h`
+  const days = Math.floor(hours / 24)
+  if (days < 7) return `${days}d`
+  return `${Math.floor(days / 7)}w`
 }

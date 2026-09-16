@@ -5,7 +5,8 @@ import { readFile } from 'node:fs/promises'
 import { installTestDom, renderClient } from '@/lib/testing/dom-test-utils.tsx'
 import { __setBrowserSessionStateForTests } from '@/lib/auth/session-store.ts'
 import type { AuthoritySnapshot } from '@/lib/auth/authority.ts'
-import { StashPageContent } from './stash-page-content.tsx'
+let StashPageContent: typeof import('./stash-page-content.tsx').StashPageContent
+test.before(async () => { ({ StashPageContent } = await import('./stash-page-content.tsx')) })
 
 installTestDom()
 const originalFetch = globalThis.fetch
@@ -72,7 +73,7 @@ test('Stash accessibility gate covers names, status, upload equivalence, and red
 
   const status = view.container.querySelector('[role="status"][aria-live="polite"]')
   assert.ok(status, 'mutation results require a polite live region')
-  const uploadButtons = [...view.container.querySelectorAll('button')].filter(button => /upload|drop files here/i.test(button.textContent || ''))
+  const uploadButtons = [...view.container.querySelectorAll('button')].filter(button => /upload|drop files here/i.test(button.textContent || '') || /upload/i.test(button.getAttribute('aria-label') || ''))
   assert.equal(uploadButtons.length >= 2, true, 'button and drop-zone upload paths must both be operable controls')
   const dropTarget = uploadButtons.find(button => /drop files here/i.test(button.textContent || ''))
   assert.ok(dropTarget)
@@ -336,7 +337,8 @@ test('download intercepts the link, fetches with owner headers, and never puts a
   try {
     const view = await renderClient(<StashPageContent />)
     await waitFor(() => assert.match(view.container.textContent || '', /report\.txt/))
-    const link = view.container.querySelector<HTMLAnchorElement>('a[aria-label="Download report.txt"]')
+    await act(async () => { view.container.querySelector<HTMLButtonElement>('[aria-label="Actions for report.txt"]')!.dispatchEvent(new window.PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' })) })
+    const link = document.querySelector<HTMLAnchorElement>('a[aria-label="Download report.txt"]')
     assert.ok(link)
     assert.equal(link.getAttribute('href'), '/v1/stash/files/report/content')
     assert.equal(link.getAttribute('download'), 'report.txt')
@@ -374,7 +376,8 @@ test('a failed download is surfaced through the structured error banner', async 
   }
   const view = await renderClient(<StashPageContent />)
   await waitFor(() => assert.match(view.container.textContent || '', /report\.txt/))
-  const link = view.container.querySelector<HTMLAnchorElement>('a[aria-label="Download report.txt"]')
+  await act(async () => { view.container.querySelector<HTMLButtonElement>('[aria-label="Actions for report.txt"]')!.dispatchEvent(new window.PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' })) })
+  const link = document.querySelector<HTMLAnchorElement>('a[aria-label="Download report.txt"]')
   assert.ok(link)
   await act(async () => { link.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true })) })
   await waitFor(() => assert.match(view.container.querySelector('[role="alert"]')?.textContent || '', /Stash is busy/))

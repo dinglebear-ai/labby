@@ -400,7 +400,7 @@ async fn runtime_view_ignores_method_not_found_capability_errors() {
 /// prompts. That is the confusion that hid bead lab-zfyxk.
 #[tokio::test]
 async fn genuine_prompt_discovery_failures_warn_without_marking_the_server_down() {
-    let pool = UpstreamPool::new();
+    let pool = crate::upstream::pool::testsupport::static_catalog_pool("partial-upstream").await;
     let mut entry = fixture_upstream_entry("partial-upstream", HashMap::new());
     entry.prompt_health = UpstreamHealth::Unhealthy {
         consecutive_failures: 1,
@@ -457,7 +457,7 @@ async fn absent_prompt_capability_produces_no_warning() {
 
 #[tokio::test]
 async fn custom_gateway_connected_includes_resources_and_prompts() {
-    let pool = UpstreamPool::new();
+    let pool = crate::upstream::pool::testsupport::static_catalog_pool("partial-upstream").await;
     let mut upstream = fixture_http_upstream("partial-upstream");
     upstream.url = Some("http://127.0.0.1:9001/mcp".to_string());
     upstream.proxy_resources = true;
@@ -531,10 +531,15 @@ async fn oauth_upstream_with_empty_shared_catalog_is_not_reported_as_warming() {
 
 #[tokio::test]
 async fn runtime_view_reports_zero_capability_healthy_upstream_connected() {
-    let pool = UpstreamPool::new();
+    let pool = crate::upstream::pool::testsupport::static_catalog_pool("empty-upstream").await;
     let upstream = fixture_http_upstream("empty-upstream");
     pool.seed_lazy_upstreams(std::slice::from_ref(&upstream))
         .await;
+    pool.insert_entry_for_tests(
+        "empty-upstream",
+        fixture_upstream_entry("empty-upstream", HashMap::new()),
+    )
+    .await;
 
     let runtime = runtime_view(Some(&pool), "empty-upstream", None).await;
     let value = serde_json::to_value(runtime).expect("runtime serializes");

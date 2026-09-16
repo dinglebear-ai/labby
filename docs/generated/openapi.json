@@ -5944,10 +5944,14 @@
       "ArtifactsArtifactsFollowParams": {
         "type": "object",
         "required": [
-          "id"
+          "id",
+          "expected_version"
         ],
         "properties": {
           "connection_id": {
+            "type": "string"
+          },
+          "expected_version": {
             "type": "string"
           },
           "following": {
@@ -6163,8 +6167,14 @@
           "cursor": {
             "type": "string"
           },
+          "kind": {
+            "type": "string"
+          },
           "limit": {
             "type": "integer"
+          },
+          "query": {
+            "type": "string"
           }
         }
       },
@@ -6353,7 +6363,8 @@
       "ArtifactsArtifactsSet_licenseParams": {
         "type": "object",
         "required": [
-          "id"
+          "id",
+          "expected_version"
         ],
         "properties": {
           "connection_id": {
@@ -6376,6 +6387,9 @@
             }
           },
           "evidence_at": {
+            "type": "string"
+          },
+          "expected_version": {
             "type": "string"
           },
           "id": {
@@ -6415,7 +6429,8 @@
       "ArtifactsArtifactsSet_publicationParams": {
         "type": "object",
         "required": [
-          "id"
+          "id",
+          "expected_version"
         ],
         "properties": {
           "connection_id": {
@@ -6427,6 +6442,9 @@
               "metadata",
               "bytes"
             ]
+          },
+          "expected_version": {
+            "type": "string"
           },
           "id": {
             "type": "string"
@@ -7206,6 +7224,15 @@
           "action": {
             "type": "string",
             "enum": [
+              "dev_containers.templates.list",
+              "dev_containers.templates.get",
+              "dev_containers.draft.create",
+              "dev_containers.draft.update",
+              "dev_containers.environment.replace",
+              "dev_containers.build",
+              "dev_containers.rebuild",
+              "dev_containers.build.get",
+              "dev_containers.launch_reference",
               "dev_containers.create",
               "dev_containers.list",
               "dev_containers.start",
@@ -7216,6 +7243,36 @@
           },
           "params": {
             "type": "object"
+          }
+        }
+      },
+      "Dev_containersDev_containersBuildGetParams": {
+        "type": "object",
+        "required": [
+          "build_id"
+        ],
+        "properties": {
+          "build_id": {
+            "type": "string"
+          }
+        }
+      },
+      "Dev_containersDev_containersBuildParams": {
+        "type": "object",
+        "required": [
+          "template_id",
+          "expected_revision",
+          "request_id"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "template_id": {
+            "type": "string"
           }
         }
       },
@@ -7265,6 +7322,88 @@
           }
         }
       },
+      "Dev_containersDev_containersDraftCreateParams": {
+        "type": "object",
+        "required": [
+          "template_id",
+          "base_template_id",
+          "owner_kind",
+          "owner_id",
+          "definition"
+        ],
+        "properties": {
+          "base_template_id": {
+            "type": "string"
+          },
+          "definition": {
+            "type": "object"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "owner_kind": {
+            "type": "string",
+            "enum": [
+              "installation",
+              "team",
+              "project",
+              "personal"
+            ]
+          },
+          "template_id": {
+            "type": "string"
+          }
+        }
+      },
+      "Dev_containersDev_containersDraftUpdateParams": {
+        "type": "object",
+        "required": [
+          "template_id",
+          "expected_revision",
+          "definition"
+        ],
+        "properties": {
+          "definition": {
+            "type": "object"
+          },
+          "expected_revision": {
+            "type": "integer"
+          },
+          "template_id": {
+            "type": "string"
+          }
+        }
+      },
+      "Dev_containersDev_containersEnvironmentReplaceParams": {
+        "type": "object",
+        "required": [
+          "template_id",
+          "expected_revision",
+          "environment"
+        ],
+        "properties": {
+          "environment": {
+            "type": "string"
+          },
+          "expected_revision": {
+            "type": "integer"
+          },
+          "template_id": {
+            "type": "string"
+          }
+        }
+      },
+      "Dev_containersDev_containersLaunch_referenceParams": {
+        "type": "object",
+        "required": [
+          "template_id"
+        ],
+        "properties": {
+          "template_id": {
+            "type": "string"
+          }
+        }
+      },
       "Dev_containersDev_containersListParams": {
         "type": "object",
         "properties": {
@@ -7272,6 +7411,25 @@
             "type": "string"
           },
           "limit": {
+            "type": "string"
+          }
+        }
+      },
+      "Dev_containersDev_containersRebuildParams": {
+        "type": "object",
+        "required": [
+          "template_id",
+          "expected_revision",
+          "request_id"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "template_id": {
             "type": "string"
           }
         }
@@ -7306,6 +7464,44 @@
         "properties": {
           "instance_id": {
             "type": "string"
+          }
+        }
+      },
+      "Dev_containersDev_containersTemplatesGetParams": {
+        "type": "object",
+        "required": [
+          "template_id"
+        ],
+        "properties": {
+          "template_id": {
+            "type": "string"
+          }
+        }
+      },
+      "Dev_containersDev_containersTemplatesListParams": {
+        "type": "object",
+        "required": [
+          "owner_kind",
+          "owner_id"
+        ],
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "string"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "owner_kind": {
+            "type": "string",
+            "enum": [
+              "installation",
+              "team",
+              "project",
+              "personal"
+            ]
           }
         }
       },
@@ -7590,6 +7786,7 @@
               "gateway.oauth.wait",
               "gateway.mcp.enable",
               "gateway.mcp.list",
+              "gateway.host.metrics",
               "gateway.clients.list",
               "gateway.mcp.disable",
               "gateway.mcp.restart",
@@ -8380,7 +8577,16 @@
           "actor": {
             "type": "string"
           },
+          "agent_id": {
+            "type": "string"
+          },
           "capability": {
+            "type": "string"
+          },
+          "client_name": {
+            "type": "string"
+          },
+          "client_version": {
             "type": "string"
           },
           "cursor": {
@@ -8424,10 +8630,19 @@
           "actor": {
             "type": "string"
           },
+          "agent_id": {
+            "type": "string"
+          },
           "bucket_count": {
             "type": "integer"
           },
           "capability": {
+            "type": "string"
+          },
+          "client_name": {
+            "type": "string"
+          },
+          "client_version": {
             "type": "string"
           },
           "include_facets": {
@@ -8927,6 +9142,12 @@
           },
           "level": {
             "type": "string"
+          },
+          "levels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           },
           "limit": {
             "type": "integer"
@@ -9990,7 +10211,15 @@
               "tasks.get",
               "tasks.queue",
               "tasks.cancel",
-              "tasks.result"
+              "tasks.result",
+              "tasks.schedule_create",
+              "tasks.schedule_list",
+              "tasks.schedule_get",
+              "tasks.schedule_edit",
+              "tasks.schedule_arm",
+              "tasks.schedule_pause",
+              "tasks.schedule_run_now",
+              "tasks.schedule_delete"
             ]
           },
           "params": {
@@ -10083,6 +10312,143 @@
         ],
         "properties": {
           "task_id": {
+            "type": "string"
+          }
+        }
+      },
+      "TasksTasksSchedule_armParams": {
+        "type": "object",
+        "required": [
+          "schedule_id"
+        ],
+        "properties": {
+          "schedule_id": {
+            "type": "string"
+          }
+        }
+      },
+      "TasksTasksSchedule_createParams": {
+        "type": "object",
+        "required": [
+          "schedule_id",
+          "name",
+          "owner_kind",
+          "owner_id",
+          "agent_id",
+          "input",
+          "schedule"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "armed": {
+            "type": "string"
+          },
+          "input": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "owner_kind": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "retry_policy": {
+            "type": "string"
+          },
+          "schedule": {
+            "type": "string"
+          },
+          "schedule_id": {
+            "type": "string"
+          }
+        }
+      },
+      "TasksTasksSchedule_deleteParams": {
+        "type": "object",
+        "required": [
+          "schedule_id"
+        ],
+        "properties": {
+          "schedule_id": {
+            "type": "string"
+          }
+        }
+      },
+      "TasksTasksSchedule_editParams": {
+        "type": "object",
+        "required": [
+          "schedule_id"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "input": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "retry_policy": {
+            "type": "string"
+          },
+          "schedule": {
+            "type": "string"
+          },
+          "schedule_id": {
+            "type": "string"
+          }
+        }
+      },
+      "TasksTasksSchedule_getParams": {
+        "type": "object",
+        "required": [
+          "schedule_id"
+        ],
+        "properties": {
+          "schedule_id": {
+            "type": "string"
+          }
+        }
+      },
+      "TasksTasksSchedule_listParams": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string"
+          }
+        }
+      },
+      "TasksTasksSchedule_pauseParams": {
+        "type": "object",
+        "required": [
+          "schedule_id"
+        ],
+        "properties": {
+          "schedule_id": {
+            "type": "string"
+          }
+        }
+      },
+      "TasksTasksSchedule_run_nowParams": {
+        "type": "object",
+        "required": [
+          "schedule_id",
+          "idempotency_key"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "schedule_id": {
             "type": "string"
           }
         }

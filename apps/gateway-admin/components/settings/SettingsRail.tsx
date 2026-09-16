@@ -54,7 +54,7 @@ export function settingsRailEntries(session: BrowserSessionState): RailEntry[] {
     ...(session.isConfiguredAdmin
       ? [{ href: '/settings/authentication/', label: 'Authentication', icon: KeyRound }]
       : []),
-    { href: '/settings/depot/', label: 'Depot', icon: Warehouse },
+    { href: '/settings/depot/', label: 'Labby', icon: Warehouse },
   ]
 }
 

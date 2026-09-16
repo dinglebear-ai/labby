@@ -1,10 +1,16 @@
 'use client'
 
 import * as React from 'react'
+import dynamic from 'next/dynamic'
 
-import { ConsoleShellProvider } from '@/components/console/console-shell-context'
+import { ConsoleShellProvider, useConsoleShell } from '@/components/console/console-shell-context'
 import { ConsoleSidebar } from '@/components/console/console-sidebar'
 import { ConsoleTopbar } from '@/components/console/console-topbar'
+
+const ConsoleGlobalTools = dynamic(
+  () => import('@/components/console/console-global-tools').then((module) => module.ConsoleGlobalTools),
+  { ssr: false },
+)
 
 /**
  * The Gateway Console frame: a full-viewport flex row of sidebar + main column,
@@ -15,6 +21,15 @@ import { ConsoleTopbar } from '@/components/console/console-topbar'
 export function ConsoleShell({ children }: { children: React.ReactNode }) {
   return (
     <ConsoleShellProvider>
+      <ConsoleShellFrame>{children}</ConsoleShellFrame>
+    </ConsoleShellProvider>
+  )
+}
+
+function ConsoleShellFrame({ children }: { children: React.ReactNode }) {
+  const { phoenixDocked } = useConsoleShell()
+
+  return (
       <div
         className="console-root"
         data-screen-label="Gateway Console"
@@ -31,6 +46,8 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
         <ConsoleSidebar />
 
         <div
+          data-console-main-column="1"
+          data-phoenix-docked={phoenixDocked ? 'right' : 'float'}
           style={{
             flex: 1,
             minWidth: 0,
@@ -46,9 +63,10 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
             <div
               data-main-scroll="1"
               style={{
-                maxWidth: 1740,
-                margin: '0 auto',
-                padding: '20px 24px 40px',
+                width: '100%',
+                maxWidth: 'none',
+                margin: 0,
+                padding: '12px 22px 40px 11px',
                 display: 'flex',
                 flexDirection: 'column',
                 gap: 16,
@@ -57,8 +75,15 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
               {children}
             </div>
           </main>
+          <ConsoleGlobalTools />
         </div>
+        {phoenixDocked ? (
+          <div
+            aria-hidden="true"
+            data-phoenix-dock-spacer="right"
+            className="hidden w-[min(420px,36vw)] shrink-0 sm:block"
+          />
+        ) : null}
       </div>
-    </ConsoleShellProvider>
   )
 }

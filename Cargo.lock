@@ -2299,6 +2299,7 @@ dependencies = [
  "reqwest",
  "rmcp",
  "rusqlite",
+ "rustix",
  "rustls",
  "serde",
  "serde_json",

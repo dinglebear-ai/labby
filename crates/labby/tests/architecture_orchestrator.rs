@@ -67,6 +67,14 @@ const SHARED_NON_SERVICES: &[&str] = &[
     // Skill Library import path so both reach one verdict per source. It
     // declares no actions and dispatches nothing.
     "artifact_sources",
+    // `agent_payloads`, `agent_llm` and `phoenix_openai` are the Agent
+    // execution substrate: the content-addressed payload store, the LLM
+    // executor and the OpenAI-compatible provider client. `agents`, `tasks`
+    // and the Phoenix assistant all consume them; none declares actions or
+    // dispatches anything itself.
+    "agent_payloads",
+    "agent_llm",
+    "phoenix_openai",
     "helpers",
     "redact",
     "path_safety",
@@ -79,7 +87,9 @@ const SHARED_NON_SERVICES: &[&str] = &[
 /// added service is forced through review (an unlisted service dir triggers a
 /// failure in `services_list_is_current`).
 const KNOWN_SERVICES: &[&str] = &[
+    "agents",
     "browser",
+    "dev_containers",
     "doctor",
     "fs",
     "gateway",
@@ -89,6 +99,7 @@ const KNOWN_SERVICES: &[&str] = &[
     "skill_library",
     "skills",
     "snippets",
+    "tasks",
 ];
 
 /// Allowed cross-service edges: `(consumer, permitted_sibling)`.
@@ -129,6 +140,10 @@ const ALLOWED_EDGES: &[(&str, &str)] = &[
     // canonical Artifact action catalog for surface filtering; it does not
     // own or dispatch Artifact mutations.
     ("skills", "artifacts"),
+    // tasks → agents: a queued Agent Task resolves and executes its pinned
+    //   Agent revision through the canonical Agent runtime. Tasks owns durable
+    //   scheduling and settlement; Agents owns definition and executor semantics.
+    ("tasks", "agents"),
     // skill_library → artifact_control: the local transactional library owns
     // the process-scoped provider-neutral relay used by remote Artifact
     // discovery and acquisition.

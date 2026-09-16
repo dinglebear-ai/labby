@@ -20,6 +20,8 @@ type ConsoleShellContextValue = {
   mobileNavOpen: boolean
   setMobileNavOpen: (open: boolean) => void
   toggleMobileNav: () => void
+  phoenixDocked: boolean
+  setPhoenixDocked: (docked: boolean) => void
   crumbSlot: HTMLElement | null
   setCrumbSlot: (node: HTMLElement | null) => void
   actionSlot: HTMLElement | null
@@ -44,6 +46,7 @@ export function ConsoleShellProvider({ children }: { children: React.ReactNode }
   // persisted sidebar choice still wins after mount.
   const [collapsed, setCollapsed] = React.useState(true)
   const [mobileNavOpen, setMobileNavOpen] = React.useState(false)
+  const [phoenixDocked, setPhoenixDocked] = React.useState(false)
   const [crumbSlot, setCrumbSlot] = React.useState<HTMLElement | null>(null)
   const [actionSlot, setActionSlot] = React.useState<HTMLElement | null>(null)
 
@@ -81,12 +84,14 @@ export function ConsoleShellProvider({ children }: { children: React.ReactNode }
       mobileNavOpen,
       setMobileNavOpen,
       toggleMobileNav,
+      phoenixDocked,
+      setPhoenixDocked,
       crumbSlot,
       setCrumbSlot,
       actionSlot,
       setActionSlot,
     }),
-    [collapsed, toggleCollapsed, mobileNavOpen, toggleMobileNav, crumbSlot, actionSlot],
+    [collapsed, toggleCollapsed, mobileNavOpen, toggleMobileNav, phoenixDocked, crumbSlot, actionSlot],
   )
 
   return <ConsoleShellContext.Provider value={value}>{children}</ConsoleShellContext.Provider>

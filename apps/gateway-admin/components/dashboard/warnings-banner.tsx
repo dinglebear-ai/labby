@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { AlertTriangle, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { useGatewayNotifications } from '@/lib/notification-acknowledgements'
 
 const STORAGE_KEY = 'dashboard:warnings-dismissed'
 
@@ -15,13 +16,16 @@ const STORAGE_KEY = 'dashboard:warnings-dismissed'
 export function WarningsBanner({
   count,
   signature,
+  notificationKeys = [],
   href = '/gateways',
 }: {
   count: number
   signature: string
+  notificationKeys?: string[]
   href?: string
 }) {
   const [dismissed, setDismissed] = useState(false)
+  const { isDismissed } = useGatewayNotifications()
 
   useEffect(() => {
     try {
@@ -31,7 +35,8 @@ export function WarningsBanner({
     }
   }, [signature])
 
-  if (count <= 0 || dismissed) return null
+  const acknowledgedInBell = notificationKeys.length > 0 && notificationKeys.every(isDismissed)
+  if (count <= 0 || dismissed || acknowledgedInBell) return null
 
   const dismiss = () => {
     try {

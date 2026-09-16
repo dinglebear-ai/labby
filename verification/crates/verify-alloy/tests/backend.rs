@@ -33,6 +33,10 @@ fn plan(timeout: u64) -> CheckPlan {
     }
 }
 
+// Receipt-validation tests exercise parser and filesystem hardening, not deadline behavior.
+// Leave enough room for the integrity/version probe when the CI test binary runs in parallel.
+const RECEIPT_VALIDATION_TIMEOUT_MS: u64 = 5_000;
+
 #[test]
 fn metadata_is_honest_and_missing_skips() {
     let (_dir, backend) = fixture("#!/bin/sh\nexit 99\n");
@@ -89,10 +93,12 @@ fn malformed_receipt_is_an_error() {
     let (_dir, backend) = fixture(
         "#!/bin/sh\ncase \"$*\" in *version*) echo 6.2.0; exit;; esac\nwhile [ \"$#\" -gt 0 ]; do [ \"$1\" = -o ] && { shift; out=\"$1\"; }; shift; done\nmkdir -p \"$out\"; echo '{}' > \"$out/receipt.json\"\n",
     );
-    assert!(!matches!(
-        backend.run(&plan(1000)).verdict,
-        Verdict::Bounded { .. } | Verdict::Falsified { .. }
-    ));
+    let report = backend.run(&plan(RECEIPT_VALIDATION_TIMEOUT_MS));
+    assert!(
+        matches!(report.verdict, Verdict::Error { .. }),
+        "malformed receipt returned {:?}",
+        report.verdict,
+    );
 }
 
 #[test]
@@ -106,18 +112,22 @@ fn malformed_solution_and_symlink_receipts_are_errors() {
             body
         );
         let (_dir, backend) = fixture(&script);
-        assert!(matches!(
-            backend.run(&plan(1000)).verdict,
-            Verdict::Error { .. }
-        ));
+        let report = backend.run(&plan(RECEIPT_VALIDATION_TIMEOUT_MS));
+        assert!(
+            matches!(report.verdict, Verdict::Error { .. }),
+            "malformed receipt body {body:?} returned {:?}",
+            report.verdict,
+        );
     }
     let (_dir, backend) = fixture(
         "#!/bin/sh\ncase \"$*\" in *version*) echo 6.2.0; exit;; esac\nwhile [ \"$#\" -gt 0 ]; do [ \"$1\" = -o ] && { shift; out=\"$1\"; }; shift; done\nmkdir -p \"$out\"; ln -s /etc/passwd \"$out/receipt.json\"\n",
     );
-    assert!(!matches!(
-        backend.run(&plan(1000)).verdict,
-        Verdict::Bounded { .. } | Verdict::Falsified { .. }
-    ));
+    let report = backend.run(&plan(RECEIPT_VALIDATION_TIMEOUT_MS));
+    assert!(
+        matches!(report.verdict, Verdict::Error { .. }),
+        "symlink receipt returned {:?}",
+        report.verdict,
+    );
 }
 
 #[test]

@@ -215,10 +215,11 @@ impl GatewayHeaderRecoveryMetricsView {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GatewayRuntimeView {
     pub name: String,
-    /// Whether the upstream completed discovery and remains routable.
+    /// Whether the shared upstream pool currently owns a live transport.
     ///
-    /// Capability counts are not a connection signal: a valid MCP server may
-    /// advertise zero tools, resources, and prompts.
+    /// Capability counts and routability health are not connection signals: a
+    /// valid MCP server may advertise zero capabilities, while a seeded or
+    /// cached catalog may exist without an open transport.
     #[serde(default)]
     pub connected: bool,
     #[serde(default)]
@@ -344,6 +345,18 @@ pub struct GatewayUsageToolCount {
 pub struct GatewayUsageActorCount {
     pub actor: String,
     pub calls: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribution: Option<labby_runtime::usage_actor::UsageAttribution>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GatewayUsageAttributionFilters {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -374,6 +387,7 @@ pub struct GatewayUsageTimeBucket {
     pub ts_unix: i64,
     pub calls: i64,
     pub failed: i64,
+    pub outcomes: Vec<GatewayUsageErrorCount>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -410,6 +424,10 @@ pub struct GatewayUsageMetricsView {
     pub p99_elapsed_ms: i64,
     pub distinct_tools: i64,
     pub distinct_actors: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribution_filters: Option<GatewayUsageAttributionFilters>,
+    #[serde(default)]
+    pub actor_populations: std::collections::BTreeMap<String, i64>,
     pub peak_per_min: i64,
     pub top_tools: Vec<GatewayUsageToolCount>,
     pub least_tools: Vec<GatewayUsageToolCount>,
@@ -435,11 +453,15 @@ pub struct GatewayUsageCallView {
     pub elapsed_ms: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_bytes: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribution: Option<labby_runtime::usage_actor::UsageAttribution>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GatewayUsageCallsView {
     pub calls: Vec<GatewayUsageCallView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribution_filters: Option<GatewayUsageAttributionFilters>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total_matching: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -593,6 +615,8 @@ pub struct GatewayClientView {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GatewayMcpRuntimeView {
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub notification_incidents: std::collections::HashMap<String, String>,
     pub name: String,
     #[serde(default)]
     pub enabled: bool,

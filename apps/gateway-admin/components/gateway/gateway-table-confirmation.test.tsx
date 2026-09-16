@@ -110,29 +110,29 @@ const gateway: Gateway = {
 test('column keyboard and drag moves persist while responsive hiding retains all columns', async () => {
   installDom()
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1500 })
-  window.localStorage.setItem('labby-gateway-col-order-v2', JSON.stringify(['endpoint', 'endpoint', 'unknown']))
+  window.localStorage.setItem('labby-gateway-col-order-v3', JSON.stringify(['exposed', 'endpoint', 'uptime']))
   const { GatewayTable } = await import('./gateway-table')
   const view = await renderClient(<GatewayTable gateways={[gateway]} density="comfortable" onEdit={() => {}} onTest={() => {}} onReload={() => {}} onCleanup={() => {}} onClearCleanupHistory={() => {}} onToggleEnabled={() => {}} onDelete={() => {}}/>)
   const columns = () => [...view.container.querySelectorAll('[data-gateway-column]')].map(node => node.getAttribute('data-gateway-column'))
   try {
-    assert.deepEqual(columns(), ['endpoint', 'clients', 'exposed', 'uptime'])
+    assert.deepEqual(columns(), ['exposed', 'endpoint', 'uptime'])
     const handle = view.container.querySelector('[aria-label="Reorder endpoint column"]')!
     await act(async () => { handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })) })
-    assert.deepEqual(columns(), ['clients', 'endpoint', 'exposed', 'uptime'])
-    assert.deepEqual(JSON.parse(window.localStorage.getItem('labby-gateway-col-order-v2')!), columns())
-    const source = view.container.querySelector('[aria-label="Reorder exposed column"]')!
+    assert.deepEqual(columns(), ['exposed', 'uptime', 'endpoint'])
+    assert.deepEqual(JSON.parse(window.localStorage.getItem('labby-gateway-col-order-v3')!), columns())
+    const source = view.container.querySelector('[aria-label="Reorder endpoint column"]')!
     await act(async () => { source.dispatchEvent(new Event('dragstart', { bubbles: true })) })
-    await act(async () => { view.container.querySelector('[data-gateway-column="clients"]')!.dispatchEvent(new Event('drop', { bubbles: true })) })
-    assert.deepEqual(columns(), ['exposed', 'clients', 'endpoint', 'uptime'])
+    await act(async () => { view.container.querySelector('[data-gateway-column="exposed"]')!.dispatchEvent(new Event('drop', { bubbles: true })) })
+    assert.deepEqual(columns(), ['endpoint', 'exposed', 'uptime'])
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1150 })
     await act(async () => { window.dispatchEvent(new Event('resize')) })
-    assert.deepEqual(columns(), ['exposed', 'endpoint'])
+    assert.deepEqual(columns(), ['endpoint', 'exposed'])
     const row = view.container.querySelector<HTMLElement>('[data-gwrow]')!
     assert.equal(row.style.gridTemplateColumns, view.container.querySelector<HTMLElement>('[data-gwhead]')!.style.gridTemplateColumns)
-    assert.ok(row.children[2].textContent?.includes('Tools:'))
+    assert.ok(row.querySelector('[data-gateway-cell="exposed"]')?.textContent?.includes('Tools:'))
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1500 })
     await act(async () => { window.dispatchEvent(new Event('resize')) })
-    assert.deepEqual(columns(), ['exposed', 'clients', 'endpoint', 'uptime'])
+    assert.deepEqual(columns(), ['endpoint', 'exposed', 'uptime'])
   } finally { await view.unmount() }
 })
 
@@ -154,9 +154,12 @@ test('gateway table asks before disabling an enabled server', async () => {
     />,
   )
 
-  const disableButton = [...view.container.querySelectorAll('button')]
-    .find((button) => button.textContent?.includes('Disable server'))
-  click(disableButton ?? null)
+  const menuTrigger = [...view.container.querySelectorAll('button')]
+    .find((button) => button.textContent?.includes('More actions'))
+  await openDropdown(menuTrigger ?? null)
+  const disableMenuItem = [...document.body.querySelectorAll('[role="menuitem"]')]
+    .find((item) => item.textContent?.includes('Disable server'))
+  click(disableMenuItem ?? null)
 
   assert.equal(disableCalls, 0)
   assert.match(document.body.textContent ?? '', /Disable server\?/)
@@ -190,9 +193,12 @@ test('gateway table does not re-enable a server that changes state while disable
   }
   const view = await renderClient(<GatewayTable gateways={[gateway]} {...props} />)
 
-  const disableButton = [...view.container.querySelectorAll('button')]
-    .find((button) => button.textContent?.includes('Disable server'))
-  click(disableButton ?? null)
+  const menuTrigger = [...view.container.querySelectorAll('button')]
+    .find((button) => button.textContent?.includes('More actions'))
+  await openDropdown(menuTrigger ?? null)
+  const disableMenuItem = [...document.body.querySelectorAll('[role="menuitem"]')]
+    .find((item) => item.textContent?.includes('Disable server'))
+  click(disableMenuItem ?? null)
 
   await view.rerender(<GatewayTable gateways={[{ ...gateway, enabled: false }]} {...props} />)
 

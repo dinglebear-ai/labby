@@ -1,7 +1,7 @@
 import type { AuthoritySnapshot } from '@/lib/auth/authority'
 
-/** Owner selection File Stash accepts: a Team stash or the principal's own stash. */
-export type StashOwnerSelection = { kind: 'team' | 'personal'; id: string }
+/** Explicit File Stash owner selection. Personal is implicit from verified identity. */
+export type StashOwnerSelection = { kind: 'team'; id: string }
 
 export type StashOwnerResolution =
   /** `owner` is undefined when the session carries no authority projection; the server then applies its own default. */
@@ -24,7 +24,7 @@ export function resolveStashOwner(authority: AuthoritySnapshot | undefined): Sta
         ? { ok: true, owner: { kind: 'team', id: authority.activeTeamId } }
         : { ok: false, reason: 'project_without_team' }
     case 'personal':
-      return { ok: true, owner: { kind: 'personal', id: authority.principalId } }
+      return { ok: true, owner: undefined }
     case 'installation':
       return { ok: false, reason: 'installation' }
   }

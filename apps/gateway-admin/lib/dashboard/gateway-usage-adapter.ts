@@ -1,5 +1,6 @@
 import type {
   ActorUsageEntry,
+  ActorKind,
   CallSurface,
   DashboardMetrics,
   ErrorKindCount,
@@ -8,7 +9,55 @@ import type {
   MetricsWindow,
   ToolUsageEntry,
   UpstreamUsage,
+  UsageAttribution,
+  UsageAttributionFilters,
 } from '@/lib/types/metrics'
+
+export function usageActorKind(value?: UsageAttribution | null): ActorKind {
+  return value?.actor_kind === 'agent' ? 'agent' : value?.actor_kind === 'client' ? 'client' : value?.actor_kind === 'subject' ? 'subject' : 'unknown'
+}
+
+export function usageActorLabel(actor: string, value?: UsageAttribution | null): string {
+  if (value?.agent_id) return value.agent_id.replace(/[-_]+/g, ' ')
+  if (value?.client_name) return value.client_name
+  if (value?.inbound_actor) return `Subject ${value.inbound_actor.replace(/^sub:/, '')}`
+  return actor === 'unattributed' ? 'Unattributed' : actor
+}
+
+export function usageActorEntry(actor: {
+  actor: string
+  calls: number
+  attribution?: UsageAttribution | null
+}): ActorUsageEntry {
+  const value = actor.attribution
+  return {
+    id: JSON.stringify([
+      actor.actor,
+      value?.actor_kind,
+      value?.surface,
+      value?.client_name,
+      value?.client_version,
+      value?.agent_id,
+      value?.harness_id,
+    ]),
+    // The usage API filters on the durable redacted actor tag. Human labels
+    // are presentation only and must never replace this drill-down identity.
+    filter_id: actor.actor,
+    label: usageActorLabel(actor.actor, value),
+    kind: usageActorKind(value),
+    calls: actor.calls,
+    ...(value ? { attribution: value } : {}),
+    detail: [
+      value?.inbound_actor ?? actor.actor,
+      value?.client_name && `Self-reported MCP client: ${value.client_name}${value.client_version ? ` ${value.client_version}` : ''}`,
+      value?.agent_id && `Agent ID: ${value.agent_id}`,
+      value?.task_id && `Task ID: ${value.task_id}`,
+      value?.harness_id && `Harness: ${value.harness_id}`,
+      value?.upstream_subject_tag && `OAuth subject: ${value.upstream_subject_tag}`,
+      !value && 'Legacy identity provenance unknown',
+    ].filter(Boolean).join(' · '),
+  }
+}
 
 export interface GatewayUsageToolCount {
   upstream: string
@@ -30,10 +79,12 @@ export interface GatewayUsageMetrics {
   p99_elapsed_ms: number
   distinct_tools: number
   distinct_actors: number
+  attribution_filters?: UsageAttributionFilters
+  actor_populations?: Record<string, number>
   peak_per_min: number
   top_tools: GatewayUsageToolCount[]
   least_tools: GatewayUsageToolCount[]
-  top_actors: Array<{ actor: string; calls: number }>
+  top_actors: Array<{ actor: string; calls: number; attribution?: UsageAttribution | null }>
   slowest_tools: Array<{
     upstream: string
     tool: string
@@ -45,7 +96,12 @@ export interface GatewayUsageMetrics {
   errors: Array<{ kind: string; calls: number }>
   upstreams: Array<{ upstream: string; calls: number; failed: number }>
   hourly: Array<{ hour: number; calls: number }>
-  timeseries: Array<{ ts_unix: number; calls: number; failed: number }>
+  timeseries: Array<{
+    ts_unix: number
+    calls: number
+    failed: number
+    outcomes?: Array<{ kind: string; calls: number }>
+  }>
   facets: {
     tools: Array<{ upstream: string; tool: string }>
     capabilities?: string[]
@@ -65,6 +121,7 @@ export interface GatewayUsageCall {
   operation?: string
   subject_scoped?: boolean
   actor: string
+  attribution?: UsageAttribution | null
   surface?: CallSurface
   outcome: string
   elapsed_ms: number
@@ -73,6 +130,7 @@ export interface GatewayUsageCall {
 
 export interface GatewayUsageCalls {
   calls: GatewayUsageCall[]
+  attribution_filters?: UsageAttributionFilters
   total_matching?: number | null
   next_cursor?: string | null
 }
@@ -81,6 +139,7 @@ const WINDOW_MS: Record<MetricsWindow, number> = {
   '1h': 60 * 60 * 1000,
   '24h': 24 * 60 * 60 * 1000,
   '7d': 7 * 24 * 60 * 60 * 1000,
+  '30d': 30 * 24 * 60 * 60 * 1000,
 }
 
 type UsageDimension = Pick<GatewayUsageToolCount, 'upstream' | 'tool' | 'capability' | 'operation' | 'subject_scoped'>
@@ -127,12 +186,7 @@ export function aggregateGatewayUsage(
 ): DashboardMetrics {
   const tools = summary.top_tools.map(mapTool)
   const least = summary.least_tools.map(mapTool)
-  const actors: ActorUsageEntry[] = summary.top_actors.map((actor) => ({
-    id: actor.actor,
-    label: actor.actor,
-    kind: 'agent',
-    calls: actor.calls,
-  }))
+  const actors: ActorUsageEntry[] = summary.top_actors.map(usageActorEntry)
   const errors: ErrorKindCount[] = summary.errors.map((error) => ({
     kind: error.kind,
     count: error.calls,
@@ -166,7 +220,7 @@ export function aggregateGatewayUsage(
       tokens: false,
       surfaces: false,
       fan_out: false,
-      actor_kinds: false,
+      actor_kinds: summary.actor_populations !== undefined,
       complete_window_analytics: true,
     },
     tool_calls: {
@@ -177,7 +231,10 @@ export function aggregateGatewayUsage(
     tools: { top: tools, least, distinct: summary.distinct_tools },
     tokens: { input: 0, output: 0, total: 0, avg_per_call: 0 },
     actors: {
-      agent: { active: summary.distinct_actors, top: actors },
+      agent: { active: summary.actor_populations?.agent ?? 0, top: actors.filter(actor => actor.kind === 'agent') },
+      subject: { active: summary.actor_populations?.subject ?? 0, top: actors.filter(actor => actor.kind === 'subject') },
+      client: { active: summary.actor_populations?.client ?? 0, top: actors.filter(actor => actor.kind === 'client') },
+      unknown: { active: summary.actor_populations?.unknown ?? summary.distinct_actors, top: actors.filter(actor => actor.kind === 'unknown') },
       device: { active: 0, top: [] },
       ip: { active: 0, top: [] },
     },
@@ -207,11 +264,17 @@ export function aggregateGatewayUsage(
       busiest_hour: busiestHour,
     },
     hourly,
-    agents_seen: { new: 0, returning: summary.distinct_actors },
+    agents_seen: { new: 0, returning: summary.actor_populations?.agent ?? 0 },
     timeseries: summary.timeseries.map((bucket) => ({
       ts: bucket.ts_unix * 1000,
       calls: bucket.calls,
       failed: bucket.failed,
+      ...(bucket.outcomes ? {
+        outcomes: bucket.outcomes.map((outcome) => ({
+          kind: outcome.kind,
+          count: outcome.calls,
+        })),
+      } : {}),
     })),
   }
 }
