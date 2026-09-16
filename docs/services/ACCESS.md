@@ -1,7 +1,7 @@
 ---
 title: "Access Service"
 created: "2026-08-23"
-updated: "2026-09-13"
+updated: "2026-09-16"
 ---
 
 # Access Service
@@ -87,23 +87,50 @@ Access actions use the canonical agent error envelope
    default Project member) or **Admin** (Initial Team admin, default Project
    admin, and platform administrator). API: `POST /v1/auth/allowed-emails`
    with `{"email": "...", "role": "member" | "admin"}`; `role` defaults to
-   `member`. Only a configured admin's browser session may do this.
+   `member`. The role vocabulary is `labby_auth::AllowedUserRole`, enforced
+   by the auth store and by a schema `CHECK` on `allowed_users.role`; other
+   values are refused with `validation_failed`. Emails are trimmed and
+   Unicode-lowercased with one shared fold (`labby_auth::util::normalize_email`)
+   on every store and lookup path. Only a configured admin's browser session
+   (one whose email is in `LABBY_AUTH_ADMIN_EMAIL`; `/auth/session` reports
+   this as `is_configured_admin`) may read or change the allowlist. Platform
+   administration alone (`is_admin`) is refused with `forbidden`, and the web
+   UI offers the Authentication panel only to configured admins.
 2. **The teammate signs in.** On their first `GET /auth/session` the server
    matches the provider-verified email (never the session's display email)
    against the allowlist and creates the Principal, Team membership, Project
    membership, and any platform-admin grant in one transaction
-   (`crates/labby/src/access/team_provision.rs`, `provision_allowlisted`).
-   The session projects `ready` immediately. Emails listed in
-   `LABBY_AUTH_ADMIN_EMAIL` are admitted as `admin` the same way. An identity
-   that already has a Principal — for example one admitted earlier by the
-   Viewer domain policy or by MCP auto-provision — is never upgraded by the
-   allowlist; change its access with `access.team.member.role.set`,
-   `access.team.member.add`, or `access.platform_admin.grant`.
+   (`crates/labby/src/access/team_provision.rs`, `provision_allowlisted`),
+   audited as `access.allowlist.provision`. The allowlist is re-checked
+   under the access writer immediately before provisioning, so an entry
+   removed after the session's first lookup admits nothing. A writer held by
+   another commit is waited for up to two seconds; only exhausting that
+   deadline is logged as a warning. The session projects `ready`
+   immediately. Emails listed in `LABBY_AUTH_ADMIN_EMAIL` are admitted as
+   `admin` the same way. An identity that already has a Principal — for
+   example one admitted earlier by the Viewer domain policy or by MCP
+   auto-provision — is never upgraded by the allowlist; change its access
+   with `access.team.member.role.set`, `access.team.member.add`, or
+   `access.platform_admin.grant`. A `revoked` Initial Team membership also
+   blocks allowlist re-admission.
 3. **Later changes** use the `access` service: `access.team.member.role.set`,
    `access.platform_admin.grant` / `.revoke`, `access.team.member.remove`.
-   Removing the allowlist entry (`DELETE /v1/auth/allowed-emails/:email`)
-   signs the identity out and blocks future sign-in; it does not delete the
-   Principal.
+4. **Removing the entry** (`DELETE /v1/auth/allowed-emails/:email`) revokes
+   sign-in and the durable access the entry granted, in that order of
+   evidence: for every provider-verified identity of the email it sets the
+   Initial Team membership to `revoked`, the default-Project membership to
+   `disabled`, and any platform administrator grant to `revoked`, in one
+   access-store transaction audited as `access.allowlist.revoke`; then it
+   removes the allowlist row and revokes the identity's browser sessions and
+   renewable credentials. The access writer is held until the row is gone so
+   a first sign-in racing the removal cannot re-provision. The Principal row
+   is kept for audit history, and Team `owner` authority is never touched.
+   Re-adding the email later does **not** re-provision the identity, because
+   its revoked Initial Team membership blocks allowlist admission; restore
+   access explicitly with `access.team.member.add` (or `.role.set`) and
+   `access.platform_admin.grant`. If the access store is unavailable the
+   removal fails with `service_unavailable` and the entry stays, so a retry
+   revokes everything together.
 
 "No access yet" appears for an identity that signed in but is on neither the
 allowlist nor the admin list, for example one admitted by

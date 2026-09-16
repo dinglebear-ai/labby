@@ -1,7 +1,7 @@
 ---
 title: "HTTP Auth Modes"
 created: "2026-07-30"
-updated: "2026-09-13"
+updated: "2026-09-16"
 ---
 
 # HTTP Auth Modes
@@ -817,14 +817,20 @@ current binding unless `--project-id` replaces it or `--clear-project-id`
 explicitly removes it.
 
 Allowlist removal is an immediate revocation boundary for renewable browser
-and upstream credentials. `DELETE /v1/auth/allowed-emails/{email}` resolves
-every subject associated with the email, then atomically removes the allowlist
-entry, browser sessions, local refresh grants, pending authorization codes, and
-central Google provider credentials while advancing the provider revocation
-epochs. Before the request succeeds, Labby also evicts the subjects from its
-OAuth client cache and drains their generic, subject-scoped, relay, and
-task-retained upstream peers. A later upstream use must therefore authorize
-again instead of reusing an old credential or connection.
+and upstream credentials and for the durable access the entry granted.
+`DELETE /v1/auth/allowed-emails/{email}` first revokes, in the access store,
+the Initial Team membership, default-Project membership, and platform
+administrator grant that allowlist admission created for every
+provider-verified identity of the email (audited as
+`access.allowlist.revoke`; see [Access](../services/ACCESS.md#onboard-a-teammate-no-access-yet)),
+then resolves every subject associated with the email and atomically removes
+the allowlist entry, browser sessions, local refresh grants, pending
+authorization codes, and central Google provider credentials while advancing
+the provider revocation epochs. Before the request succeeds, Labby also evicts
+the subjects from its OAuth client cache and drains their generic,
+subject-scoped, relay, and task-retained upstream peers. A later upstream use
+must therefore authorize again instead of reusing an old credential or
+connection.
 
 Already-issued signed access tokens are stateless and therefore remain usable
 only until their configured `LABBY_AUTH_ACCESS_TOKEN_TTL_SECS` expiry (3600
