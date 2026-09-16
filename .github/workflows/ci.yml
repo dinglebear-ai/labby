@@ -1252,11 +1252,14 @@ jobs:
         with:
           node-version: "22"
       - name: Confirm pool toolchain and kache
-        # The pool image bakes Rust 1.97.1 and kache; prove both before use
-        # rather than silently compiling without the wrapper.
+        # The pool image bakes Rust 1.97.1 for the runner user and kache on
+        # PATH. Cargo's bin directory is not on a job step's PATH, so publish
+        # it here, then prove both tools before use rather than silently
+        # compiling without the wrapper.
         run: |
           set -euo pipefail
-          rustup show active-toolchain
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.cargo/bin/rustup" show active-toolchain
           kache --version
       - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
         with:
