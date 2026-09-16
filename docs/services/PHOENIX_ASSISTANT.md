@@ -1,5 +1,6 @@
 ---
 title: Phoenix Assistant UI and App Server Event Contract
+created: "2026-09-16"
 updated: 2026-09-16
 ---
 
