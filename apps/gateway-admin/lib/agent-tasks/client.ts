@@ -19,6 +19,8 @@ export type AgentRunResult = {
   status: string
   output_digest: string
   output?: string | null
+  /** True when the inline output was cut at the 256 KiB cap; the digest keys the full bytes. */
+  output_truncated?: boolean
   authority_expires_at: number
 }
 
@@ -45,7 +47,7 @@ export type TaskView = {
   error_code?: string | null
 }
 
-export type TaskResult = TaskView & { output?: string | null }
+export type TaskResult = TaskView & { output?: string | null; output_truncated?: boolean }
 
 export type CreateAgentInput = {
   agentId: string

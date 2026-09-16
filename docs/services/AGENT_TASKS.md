@@ -47,7 +47,9 @@ and a hard Agent runtime timeout invokes executor cleanup so an abandoned chat
 does not leave its provider session behind. Direct `agents.run` input is bound
 only to that run; the immutable Agent instructions remain pinned to the selected
 revision. Successful text output is stored content-addressed and returned with
-its digest. Each owner scope may have at most four live direct runs; a fifth
+its digest; at most 256 KiB is returned inline, and a longer output is cut at a
+character boundary with `output_truncated: true` while `output_digest` remains
+the key to the full stored bytes. Each owner scope may have at most four live direct runs; a fifth
 concurrent `agents.run` is rejected with `queue_saturated` instead of opening
 another provider session. `agents.session.cancel` signals a live run so the
 executor stops at its next safe boundary, cancels and closes the provider
@@ -72,8 +74,11 @@ a live attempt. The durable attempt fence is bounded by the configured maximum r
 rechecked against the current clock at acquire and settlement. Provider
 or payload failures happen inside the owned queued attempt and settle through
 the normal runtime as `failed` instead of bypassing durable queue admission. Terminal `tasks.result` responses
-include materialized output text when available as well as the immutable output
-digest. Current authority is required for every list, get, cancellation, and
+include the immutable output digest plus up to 256 KiB of materialized output
+text inline, with `output_truncated` marking a longer output. A recorded digest
+whose bytes are missing, oversized, or fail verification is reported as an
+error (`unavailable`, `protocol_error`, or `internal_error`), never as a digest
+with silently absent text. Current authority is required for every list, get, cancellation, and
 result operation.
 
 Authenticated HTTP exposes `POST /v1/agents` and `POST /v1/tasks` with the same

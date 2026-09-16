@@ -7,7 +7,7 @@ use crate::{
     },
     dispatch::{
         access_errors::map_store_error,
-        agent_payloads::AgentPayloadStore,
+        agent_payloads::{AgentPayloadStore, inline_output},
         agents::{
             LiveExecutionAuthority, configured_task_executor, execution_safe_boundaries,
             map_agent_runtime_error, reject_server_assigned, request_safe_boundaries,
@@ -277,11 +277,15 @@ pub(crate) async fn dispatch(
                 return Err(denied());
             }
             let mut result = render_result(&record);
-            if let Some(digest) = record.output_digest.as_deref()
-                && let Ok(output) =
-                    AgentPayloadStore::for_access_store(&context.store).load_output(digest)
-            {
-                result["output"] = Value::String(output);
+            if let Some(digest) = record.output_digest.as_deref() {
+                // A recorded digest whose bytes are missing, oversized, or no
+                // longer verify is an error with its own stable kind; the
+                // caller must never receive a digest with silently absent text.
+                let output =
+                    AgentPayloadStore::for_access_store(&context.store).load_output(digest)?;
+                let (inline, truncated) = inline_output(output);
+                result["output"] = Value::String(inline);
+                result["output_truncated"] = Value::Bool(truncated);
             }
             Ok(result)
         }
@@ -1254,6 +1258,102 @@ mod tests {
             .await
             .unwrap();
         assert_summary_shape(&got);
+    }
+
+    /// Seed a terminal succeeded Task whose durable record names `digest`.
+    async fn seed_succeeded_task(
+        store: &AccessStore,
+        owner: &VerifiedIdentity,
+        task_id: &str,
+        digest: &str,
+    ) {
+        dispatch(
+            task_context(store, owner),
+            "tasks.create",
+            task_params(task_id, "agent-1"),
+        )
+        .await
+        .unwrap();
+        // The test statement helper takes a static SQL string; a leaked
+        // per-test statement is the smallest way to seed a terminal row.
+        let statement: &'static str = Box::leak(
+            format!(
+                "UPDATE agent_tasks SET state='succeeded',output_digest='{digest}' WHERE task_id='{task_id}'"
+            )
+            .into_boxed_str(),
+        );
+        store.execute_test_statement(statement).await.unwrap();
+    }
+    fn output_path(store: &AccessStore, digest: &str) -> std::path::PathBuf {
+        store
+            .storage_dir()
+            .join("agent-payloads")
+            .join("outputs")
+            .join("sha256")
+            .join(digest.trim_start_matches("sha256:"))
+    }
+
+    #[tokio::test]
+    async fn result_reports_corrupt_output_instead_of_omitting_it() {
+        let (_dir, store, owner) = fixture().await;
+        create_agent(&store, &owner, "agent-1").await;
+        let payloads = AgentPayloadStore::for_access_store(&store);
+        let digest = payloads.store_output("hello").unwrap();
+        seed_succeeded_task(&store, &owner, "corrupt-output", &digest).await;
+        // Bytes that no longer match the recorded digest are corruption.
+        std::fs::write(output_path(&store, &digest), b"tampered").unwrap();
+        let error = dispatch(
+            task_context(&store, &owner),
+            "tasks.result",
+            json!({"task_id":"corrupt-output"}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), "internal_error");
+        // A recorded digest whose bytes are gone is an outage, not silence.
+        std::fs::remove_file(output_path(&store, &digest)).unwrap();
+        let error = dispatch(
+            task_context(&store, &owner),
+            "tasks.result",
+            json!({"task_id":"corrupt-output"}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), "unavailable");
+    }
+
+    #[tokio::test]
+    async fn result_output_is_bounded_or_paged() {
+        let (_dir, store, owner) = fixture().await;
+        create_agent(&store, &owner, "agent-1").await;
+        let payloads = AgentPayloadStore::for_access_store(&store);
+        let inline_cap = crate::dispatch::agent_payloads::MAX_INLINE_OUTPUT_BYTES;
+        let big = "x".repeat(inline_cap + 4 * 1024);
+        let big_digest = payloads.store_output(&big).unwrap();
+        seed_succeeded_task(&store, &owner, "big-output", &big_digest).await;
+        let result = dispatch(
+            task_context(&store, &owner),
+            "tasks.result",
+            json!({"task_id":"big-output"}),
+        )
+        .await
+        .unwrap();
+        let inline = result["output"].as_str().unwrap();
+        assert!(inline.len() <= inline_cap, "inline output must be bounded");
+        assert_eq!(result["output_truncated"], true);
+        assert_eq!(result["output_digest"], big_digest, "full retrieval key");
+
+        let small_digest = payloads.store_output("small").unwrap();
+        seed_succeeded_task(&store, &owner, "small-output", &small_digest).await;
+        let result = dispatch(
+            task_context(&store, &owner),
+            "tasks.result",
+            json!({"task_id":"small-output"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["output"], "small");
+        assert_eq!(result["output_truncated"], false);
     }
 
     // B-I11: runtime failures keep their typed reason.

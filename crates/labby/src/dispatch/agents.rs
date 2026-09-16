@@ -8,7 +8,7 @@ use crate::{
     dispatch::{
         access_errors::map_store_error,
         agent_llm::{LlmAgentExecutor, current_harness_digest},
-        agent_payloads::{AgentPayloadStore, DEFAULT_MODEL},
+        agent_payloads::{AgentPayloadStore, DEFAULT_MODEL, inline_output},
         error::ToolError,
     },
 };
@@ -572,15 +572,25 @@ async fn run_agent_session(
         .await
         .map_err(map)?;
     match result {
-        Ok(output) => Ok(json!({
-            "agent_id":run_definition.id,
-            "agent_version":run_definition.revision.version,
-            "session_id":run_session_id,
-            "status":next,
-            "output_digest":output.digest,
-            "output":run_executor.output(&output.digest),
-            "authority_expires_at":lease_expires_at
-        })),
+        Ok(output) => {
+            let (text, truncated) = match run_executor.output(&output.digest)? {
+                Some(text) => {
+                    let (text, truncated) = inline_output(text);
+                    (Value::String(text), truncated)
+                }
+                None => (Value::Null, false),
+            };
+            Ok(json!({
+                "agent_id":run_definition.id,
+                "agent_version":run_definition.revision.version,
+                "session_id":run_session_id,
+                "status":next,
+                "output_digest":output.digest,
+                "output":text,
+                "output_truncated":truncated,
+                "authority_expires_at":lease_expires_at
+            }))
+        }
         Err(error) => Err(map_agent_runtime_error(&error)),
     }
 }
@@ -691,10 +701,13 @@ pub(crate) enum ConfiguredExecutor {
 }
 
 impl ConfiguredExecutor {
-    pub(crate) fn output(&self, digest: &str) -> Option<String> {
+    /// Materialized output text for a completed run. Only the LLM executor
+    /// stores text; a stored digest that fails to load is an error, never a
+    /// silently absent field.
+    pub(crate) fn output(&self, digest: &str) -> Result<Option<String>, ToolError> {
         match self {
-            Self::Llm(executor) => executor.output(digest).ok(),
-            Self::Deterministic(_) | Self::Unavailable => None,
+            Self::Llm(executor) => executor.output(digest).map(Some),
+            Self::Deterministic(_) | Self::Unavailable => Ok(None),
         }
     }
 }
