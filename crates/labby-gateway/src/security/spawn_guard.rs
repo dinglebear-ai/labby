@@ -17,6 +17,7 @@ use labby_runtime::error::ToolError;
 /// Runtime hints / commands the gateway is allowed to execute as stdio upstreams.
 pub const ALLOWED_RUNTIME_HINTS: &[&str] = &[
     "npx", "uvx", "docker", "dnx", "pipx", "node", "bun", "python", "python3", "deno", "ssh",
+    "claude",
 ];
 
 /// Environment variables that upstream processes must not override.
@@ -376,6 +377,22 @@ mod tests {
     fn command_accepts_bun() {
         assert!(validate_stdio_command("bun", &[], false).is_ok());
         assert!(validate_stdio_command("/opt/homebrew/bin/bun", &[], false).is_ok());
+    }
+
+    #[test]
+    fn command_accepts_claude_code_mcp() {
+        assert!(validate_stdio_command("claude", &[], false).is_ok());
+        assert!(validate_stdio_command("/home/labby/.local/bin/claude", &[], false).is_ok());
+        assert!(
+            validate_stdio_spec(
+                "/home/labby/.local/bin/claude",
+                &["mcp".to_string(), "serve".to_string()],
+                &BTreeMap::new(),
+                &[],
+                false,
+            )
+            .is_ok()
+        );
     }
 
     #[test]

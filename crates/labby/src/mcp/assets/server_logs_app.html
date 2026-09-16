@@ -22,8 +22,9 @@ html.browser #rows{max-height:calc(100vh - 224px)}
 .dot{width:6px;height:6px;border-radius:50%;background:var(--muted);box-shadow:0 0 4px currentColor;flex:none}
 .dot.ok{background:var(--ok);color:var(--ok)}
 .dot.err{background:var(--err);color:var(--err)}
-.toolbar{flex-wrap:wrap;border-bottom:1px solid color-mix(in srgb,var(--border) 35%,transparent);padding:7px 10px}
-.chrome{padding:6px 10px;border-bottom:1px solid color-mix(in srgb,var(--border) 35%,transparent);overflow-x:auto;scrollbar-width:none}
+.toolbar{flex-wrap:nowrap;border-bottom:1px solid color-mix(in srgb,var(--border) 35%,transparent);padding:6px 8px}
+.advanced{border-bottom:1px solid color-mix(in srgb,var(--border) 35%,transparent);background:color-mix(in srgb,var(--bg) 8%,transparent)}.advanced>summary{display:flex;align-items:center;gap:6px;min-height:28px;padding:4px 9px;list-style:none;color:var(--muted);font-size:10px;font-weight:750;cursor:pointer}.advanced>summary::-webkit-details-marker{display:none}.advanced>summary:before{content:"+";display:grid;place-items:center;width:14px;height:14px;border:1px solid color-mix(in srgb,var(--border) 60%,transparent);border-radius:4px;font-size:10px}.advanced[open]>summary:before{content:"−"}.advanced-body{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:0 8px 7px}.advanced-label{font-size:9px;color:var(--muted);font-weight:800;text-transform:uppercase;letter-spacing:.07em}
+.chrome{padding:5px 8px;border-bottom:1px solid color-mix(in srgb,var(--border) 35%,transparent);overflow-x:auto;scrollbar-width:none}
 .control,.select{height:26px;border:1px solid color-mix(in srgb,var(--border) 65%,transparent);border-radius:6px;background:color-mix(in srgb,var(--bg) 38%,var(--control));color:var(--text);font:inherit;font-size:11px;outline:none}
 .control{padding:0 8px;min-width:110px;flex:1}
 .control.short{max-width:120px;flex:0 1 90px}
@@ -41,12 +42,12 @@ html.browser #rows{max-height:calc(100vh - 224px)}
 .sv{font-size:11px;font-weight:700}
 #rows{max-height:420px;overflow:auto;scrollbar-width:thin;scrollbar-color:var(--border2) transparent}
 .empty{margin:0;padding:16px 12px;text-align:center;color:var(--muted);font-size:12px}
-details{border-top:1px solid color-mix(in srgb,var(--border) 27%,transparent)}
-details:first-child{border-top:none}
-summary{display:grid;grid-template-columns:54px 78px minmax(0,1fr) 92px 13px;align-items:center;gap:8px;padding:6px 10px;list-style:none;cursor:pointer}
-summary::-webkit-details-marker{display:none}
-summary:hover{background:color-mix(in srgb,var(--accent) 5%,transparent)}
-details[open] .chev{transform:rotate(90deg)}
+#rows details{border-top:1px solid color-mix(in srgb,var(--border) 27%,transparent)}
+#rows details:first-child{border-top:none}
+#rows summary{display:grid;grid-template-columns:54px 78px minmax(0,1fr) 92px 13px;align-items:center;gap:8px;padding:6px 10px;list-style:none;cursor:pointer}
+#rows summary::-webkit-details-marker{display:none}
+#rows summary:hover{background:color-mix(in srgb,var(--accent) 5%,transparent)}
+#rows details[open] .chev{transform:rotate(90deg)}
 .lvl{font-size:9.5px;font-weight:850;letter-spacing:.08em;text-transform:uppercase}
 .lvl.ERROR{color:var(--err)}.lvl.WARN{color:var(--warn)}.lvl.INFO{color:var(--ok)}.lvl.DEBUG,.lvl.TRACE{color:var(--accent2)}
 .time,.service,.file{font-size:10.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -60,6 +61,9 @@ details[open] .chev{transform:rotate(90deg)}
 pre{margin:0;max-height:180px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;border-radius:8px;padding:8px 10px;border:1px solid color-mix(in srgb,var(--border) 50%,var(--bg));background:color-mix(in srgb,var(--bg) 55%,var(--control));font-family:"JetBrains Mono",ui-monospace,monospace;font-size:10.5px;line-height:1.5;color:var(--text)}
 mark{border-radius:3px;background:color-mix(in srgb,var(--accent) 34%,transparent);color:var(--text);padding:0 1px}
 .foot{border-top:1px solid color-mix(in srgb,var(--border) 45%,transparent);padding:6px 10px}
+@media(max-width:560px){.head{padding:7px 8px}.sub{display:none}.toolbar{gap:5px}.toolbar .select{max-width:82px;flex:none}.toolbar .control{min-width:0}.toggle{font-size:10px}.advanced>summary{min-height:26px}.advanced-body{display:grid;grid-template-columns:1fr 1fr}.advanced-body .control.short{max-width:none;min-width:0}.advanced-body .select.view{max-width:none}.chrome{display:none}#rows{max-height:360px}#rows summary{grid-template-columns:46px minmax(0,1fr) auto 13px;gap:6px;padding:7px 8px}#rows summary .service{display:none}.detail{padding:3px 8px 8px 28px}.file{max-width:42vw}.foot{padding:5px 8px}}
+@media(max-width:360px){.toolbar .select{max-width:68px}.toggle{font-size:0}.toggle input{width:16px;height:16px}.advanced-body{grid-template-columns:1fr}#rows summary{grid-template-columns:44px minmax(0,1fr) 13px}#rows summary .time{display:none}}
+@media(prefers-reduced-motion:reduce){.chev{transition:none}}
 </style>
 </head>
 <body>
@@ -72,32 +76,22 @@ mark{border-radius:3px;background:color-mix(in srgb,var(--accent) 34%,transparen
     <span class="msg" id="msg"></span>
   </div>
   <div class="toolbar">
-    <select class="select" id="level" aria-label="Level">
-      <option value="">Level</option>
-      <option>ERROR</option>
-      <option>WARN</option>
-      <option>INFO</option>
-      <option>DEBUG</option>
-      <option>TRACE</option>
-    </select>
-    <input class="control short" id="service" placeholder="Service" autocomplete="off" spellcheck="false">
-    <input class="control short" id="action" placeholder="Action" autocomplete="off" spellcheck="false">
-    <input class="control short" id="kind" placeholder="Kind" autocomplete="off" spellcheck="false">
-    <input class="control" id="query" placeholder="Search" autocomplete="off" spellcheck="false">
-    <select class="select view" id="views" aria-label="Saved view">
-      <option value="">Views</option>
-    </select>
-    <button type="button" class="iconbtn" id="saveView" aria-label="Save view" title="Save view">
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></svg>
-    </button>
-    <button type="button" class="iconbtn" id="deleteView" aria-label="Delete view" title="Delete view">
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5"/><path d="M14 11v5"/></svg>
-    </button>
-    <button type="button" class="iconbtn primary" id="reload" aria-label="Reload" title="Reload">
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
-    </button>
+    <select class="select" id="level" aria-label="Level"><option value="">All levels</option><option>ERROR</option><option>WARN</option><option>INFO</option><option>DEBUG</option><option>TRACE</option></select>
+    <input class="control" id="query" placeholder="Search logs" autocomplete="off" spellcheck="false">
     <label class="toggle"><input id="auto" type="checkbox">Live</label>
+    <button type="button" class="iconbtn primary" id="reload" aria-label="Reload" title="Reload"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button>
   </div>
+  <details class="advanced">
+    <summary>More filters &amp; saved views</summary>
+    <div class="advanced-body">
+      <input class="control short" id="service" placeholder="Service" autocomplete="off" spellcheck="false">
+      <input class="control short" id="action" placeholder="Action" autocomplete="off" spellcheck="false">
+      <input class="control short" id="kind" placeholder="Kind" autocomplete="off" spellcheck="false">
+      <select class="select view" id="views" aria-label="Saved view"><option value="">Saved views</option></select>
+      <button type="button" class="iconbtn" id="saveView" aria-label="Save view" title="Save current filters"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></svg></button>
+      <button type="button" class="iconbtn" id="deleteView" aria-label="Delete view" title="Delete selected view"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5"/><path d="M14 11v5"/></svg></button>
+    </div>
+  </details>
   <div class="chrome">
     <span class="stat"><span class="sl">Mode</span><span class="sv" id="modePill">...</span></span>
     <span class="stat"><span class="sl">Scope</span><span class="sv" id="scopePill">lab:admin</span></span>

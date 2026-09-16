@@ -384,3 +384,23 @@ fn every_host_update_entry_point_pins_and_sanitizes_installer_control() {
         );
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn updates_explicitly_skip_first_run_configuration() {
+    let temp = tempfile::tempdir().unwrap();
+    let script = temp.path().join("install.sh");
+    fs::write(
+        &script,
+        "test \"$LABBY_INSTALL_NO_SETUP\" = 1 || { echo 'update attempted onboarding' >&2; exit 1; }\n",
+    )
+    .unwrap();
+    let output = installer_command(&script, "v1.17.0", temp.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

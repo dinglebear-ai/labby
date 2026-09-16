@@ -61,7 +61,23 @@
   "packages": {
     ".": {
       "package-name": "labby",
-      "changelog-path": "CHANGELOG.md"
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "apps/labby-desktop/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "apps/labby-desktop/src-tauri/tauri.conf.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "generic",
+          "path": "apps/labby-desktop/src-tauri/Cargo.toml"
+        }
+      ]
     }
   },
   "always-update": true
