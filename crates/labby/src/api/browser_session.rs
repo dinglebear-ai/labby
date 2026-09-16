@@ -78,6 +78,15 @@ fn static_bearer_login_available(state: &AppState) -> bool {
         })
 }
 
+/// Whether the login screen may offer browser token sign-in to this request.
+/// The static bearer must be usable, and the exchange it leads to must be one
+/// [`bearer_exchange_allowed`] would accept over this transport; advertising
+/// it over plaintext from another host would invite the operator to paste the
+/// long-lived credential into a request the server then refuses.
+fn bearer_login_advertised(state: &AppState, headers: &HeaderMap) -> bool {
+    static_bearer_login_available(state) && bearer_exchange_allowed(state, headers)
+}
+
 fn static_browser_session(
     state: &AppState,
     headers: &HeaderMap,
@@ -439,6 +448,9 @@ async fn fallback_session_identity(
 /// Presentation fields for an authenticated session, independent of authority.
 struct SessionView {
     login_available: bool,
+    /// Whether this browser may offer bearer token sign-in from where it
+    /// stands; see [`bearer_login_advertised`].
+    bearer_login_available: bool,
     user: SessionUser,
     project_id: Option<String>,
     expires_at: i64,
@@ -646,7 +658,7 @@ async fn project_session(
         &view,
         &authority,
         owner_bootstrap_available,
-        static_bearer_login_available(state),
+        view.bearer_login_available,
     )
 }
 
@@ -1013,6 +1025,7 @@ pub async fn auth_session(
                     };
                     let view = SessionView {
                         login_available,
+                        bearer_login_available: bearer_login_advertised(&state, &headers),
                         user: SessionUser {
                             sub: binding.principal_id.clone(),
                             email: session.email.clone(),
@@ -1055,6 +1068,7 @@ pub async fn auth_session(
             };
             let view = SessionView {
                 login_available,
+                bearer_login_available: bearer_login_advertised(&state, &headers),
                 user: SessionUser {
                     sub: "static-bearer".to_owned(),
                     email: None,
@@ -1115,6 +1129,7 @@ pub async fn auth_session(
             };
             let view = SessionView {
                 login_available,
+                bearer_login_available: bearer_login_advertised(&state, &headers),
                 user: SessionUser {
                     sub: "static-bearer".to_owned(),
                     email: None,
@@ -1131,7 +1146,7 @@ pub async fn auth_session(
 
     let Some(auth_state) = oauth_state(&state) else {
         let response =
-            unauthenticated_session_response(false, static_bearer_login_available(&state));
+            unauthenticated_session_response(false, bearer_login_advertised(&state, &headers));
         log_auth_dispatch("session.get", request_id.as_deref(), start, None, None);
         return response;
     };
@@ -1144,6 +1159,7 @@ pub async fn auth_session(
                 let caller = oauth_cookie_caller(auth_state, &session, identity);
                 let view = SessionView {
                     login_available,
+                    bearer_login_available: bearer_login_advertised(&state, &headers),
                     user: SessionUser {
                         sub: session.subject.clone(),
                         email: session.email.clone(),
@@ -1230,6 +1246,7 @@ async fn authenticated_context_session(
     };
     let view = SessionView {
         login_available: false,
+        bearer_login_available: bearer_login_advertised(state, headers),
         user: SessionUser {
             sub: context.sub.clone(),
             email: context.email.clone(),
@@ -1778,6 +1795,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unauthenticated_session_does_not_advertise_bearer_login_over_plaintext_remote_host() {
+        // The login screen offers the bearer form only when the exchange it
+        // leads to would be accepted: HTTPS via the public URL or a direct
+        // loopback hop. A bearer-only install reached over plain HTTP from
+        // another host must not invite the operator to paste the token.
+        let state = AppState::new()
+            .with_bearer_token(Some(std::sync::Arc::from("operator-token")))
+            .with_static_browser_session_state(
+                labby_auth::static_session::StaticBrowserSessionState::new(false),
+            );
+        let session = |host: &'static str, forwarded: bool| {
+            let state = state.clone();
+            async move {
+                let mut headers = HeaderMap::new();
+                headers.insert(header::HOST, HeaderValue::from_static(host));
+                if forwarded {
+                    headers.insert("x-forwarded-proto", HeaderValue::from_static("http"));
+                }
+                let response = auth_session(State(state), headers, None, None)
+                    .await
+                    .into_response();
+                assert_eq!(response.status(), StatusCode::OK);
+                let body = axum::body::to_bytes(response.into_body(), 16384)
+                    .await
+                    .unwrap();
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap()
+            }
+        };
+        let remote = session("192.168.1.20:8765", false).await;
+        assert_eq!(remote["authenticated"], false);
+        assert_eq!(remote["bearer_login_available"], false, "{remote}");
+        let proxied = session("127.0.0.1:8765", true).await;
+        assert_eq!(proxied["bearer_login_available"], false, "{proxied}");
+        let local = session("localhost:8765", false).await;
+        assert_eq!(local["bearer_login_available"], true, "{local}");
+
+        // Operators must be able to find the requirement and the TLS-proxy
+        // unlock without reading source.
+        for (doc, path) in [
+            (
+                include_str!("../../../../docs/services/SETUP.md"),
+                "docs/services/SETUP.md",
+            ),
+            (include_str!("../../../../README.md"), "README.md"),
+        ] {
+            assert!(
+                doc.contains("HTTPS or a direct loopback connection"),
+                "{path} must document when browser token sign-in is offered"
+            );
+            assert!(
+                doc.contains("LABBY_PUBLIC_URL=https://"),
+                "{path} must document that an HTTPS public URL unlocks it behind a TLS proxy"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn static_browser_exchange_introspection_and_logout() {
         let state = AppState::new()
             .with_bearer_token(Some(std::sync::Arc::from("operator-token")))
@@ -2021,6 +2095,9 @@ mod tests {
             .with_project_session_state(session_state)
             .with_bearer_token(Some(std::sync::Arc::from("operator-token")));
         let mut headers = HeaderMap::new();
+        // A browser always sends Host; bearer login is advertised only where
+        // the exchange would be accepted, so this is a direct loopback hop.
+        headers.insert(header::HOST, HeaderValue::from_static("localhost:8765"));
         headers.insert(
             header::COOKIE,
             HeaderValue::from_static("__Host-labby-session=project-session"),
@@ -2108,6 +2185,7 @@ mod tests {
             });
         let view = |sub: &str| SessionView {
             login_available: false,
+            bearer_login_available: false,
             user: SessionUser {
                 sub: sub.to_owned(),
                 email: None,
@@ -2267,6 +2345,7 @@ mod tests {
         };
         let view = |sub: &str| SessionView {
             login_available: true,
+            bearer_login_available: false,
             user: SessionUser {
                 sub: sub.to_owned(),
                 email: None,

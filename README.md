@@ -145,7 +145,9 @@ and off by default; if the published desktop package is unavailable, setup repor
 that and still completes.
 For Labby's supported ChatGPT web connection, configure the server in OAuth mode
 and expose it through a publicly reachable HTTPS `LABBY_PUBLIC_URL`; bearer-only
-mode is for local/CLI clients and is not the supported ChatGPT web path.
+mode is for local/CLI clients and is not the supported ChatGPT web path. The web
+UI offers bearer token sign-in only over HTTPS or a direct loopback connection;
+behind a TLS-terminating proxy, set `LABBY_PUBLIC_URL=https://...` to unlock it.
 The PowerShell installer installs the binary; run setup separately as shown above.
 
 For unattended shell installs, set `LABBY_SETUP_ROLE=server` or `client` and the

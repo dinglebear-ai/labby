@@ -203,7 +203,13 @@ access store. OAuth deployments retain their authenticated owner-bootstrap flow.
 Browser token sign-in exchanges the configured bearer for an HttpOnly session
 cookie; the bearer is not retained by the browser, and restarting Labby invalidates
 those derived sessions. Mixed browser identities must be signed out before
-switching authentication methods.
+switching authentication methods. Browser token sign-in is offered only over
+HTTPS or a direct loopback connection: a bearer-only server reached over plain
+HTTP from another host, or through a reverse proxy that does not terminate TLS,
+does not show the token form and refuses the exchange with `forbidden`. When a
+TLS-terminating proxy fronts Labby, set `LABBY_PUBLIC_URL=https://labby.example.com`
+so the exchange is accepted behind it. Bearer tokens presented directly in the
+`Authorization` header by CLI and MCP clients are unaffected.
 
 Run setup as your ordinary user. Native Linux setup requests elevation for the
 service portion, then installs an optional desktop app as the original user.
