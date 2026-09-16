@@ -206,6 +206,40 @@ test('principal projection defaults to personal ownership and capabilities drive
   assert.equal(sessionHasCapability('platform.manage'), true)
 })
 
+test('is_configured_admin is carried separately from platform administration', async () => {
+  const payload = (isConfiguredAdmin: boolean) =>
+    JSON.stringify({
+      authenticated: true,
+      authority_state: 'ready',
+      user: { sub: 'admin-user', email: 'admin@example.com' },
+      expires_at: 123,
+      csrf_token: 'csrf-123',
+      principal_id: 'principal-admin',
+      organization_id: 'org-1',
+      teams: [],
+      projects: [],
+      capabilities: ['platform.manage'],
+      authority_generation: 2,
+      is_admin: true,
+      is_configured_admin: isConfiguredAdmin,
+    })
+
+  globalThis.fetch = (async () => new Response(payload(false), { status: 200 })) as FetchMock
+  let state = await loadBrowserSession()
+  assert.equal(state.status === 'authenticated' ? state.isAdmin : undefined, true)
+  assert.equal(state.status === 'authenticated' ? state.isConfiguredAdmin : undefined, false)
+
+  globalThis.fetch = (async () => new Response(payload(true), { status: 200 })) as FetchMock
+  state = await loadBrowserSession()
+  assert.equal(state.status === 'authenticated' ? state.isConfiguredAdmin : undefined, true)
+
+  // Servers that predate the field never grant the operator-only controls.
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ ...JSON.parse(payload(true)), is_configured_admin: undefined }), { status: 200 })) as FetchMock
+  state = await loadBrowserSession()
+  assert.equal(state.status === 'authenticated' ? state.isConfiguredAdmin : undefined, false)
+})
+
 test('loadBrowserSession falls back to unauthenticated when /auth/session fails', async () => {
   __setBrowserSessionStateForTests({ status: 'loading' })
   globalThis.fetch = (async () =>

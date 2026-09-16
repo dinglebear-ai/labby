@@ -434,6 +434,16 @@ struct SessionCaller {
 }
 
 impl SessionCaller {
+    /// The predicate the administrator-list and allowlist routes enforce
+    /// (`auth_admin::require_admin`): a browser session whose email is in
+    /// `LABBY_AUTH_ADMIN_EMAIL`.
+    fn is_configured_admin(&self, state: &AppState) -> bool {
+        self.via_session
+            && state.auth_config.as_ref().is_some_and(|config| {
+                labby_auth::is_configured_admin_email(&config.admin_emails, self.email.as_deref())
+            })
+    }
+
     fn bootstrap_caller(&self) -> OwnerBootstrapCaller<'_> {
         OwnerBootstrapCaller {
             via_session: self.via_session,
@@ -459,6 +469,11 @@ struct SessionBody<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     remediation: Option<&'static str>,
     is_admin: bool,
+    /// The caller is a browser session whose email is listed in
+    /// `LABBY_AUTH_ADMIN_EMAIL`: the only caller the administrator-list and
+    /// allowlist routes accept. Independent of `is_admin`, which any
+    /// `platform.manage` principal holds.
+    is_configured_admin: bool,
     user: &'a SessionUser,
     project_id: Option<&'a str>,
     owner: Option<OwnerRef<'a>>,
@@ -506,6 +521,7 @@ fn authenticated_session_body(
     view: &SessionView,
     authority: &SessionAuthority,
     owner_bootstrap_available: bool,
+    is_configured_admin: bool,
 ) -> Result<serde_json::Value, ToolError> {
     let project_id = view.project_id.as_deref();
     let mut body = SessionBody {
@@ -515,6 +531,7 @@ fn authenticated_session_body(
         authority: None,
         remediation: None,
         is_admin: false,
+        is_configured_admin,
         user: &view.user,
         project_id,
         owner: None,
@@ -600,6 +617,7 @@ async fn project_session(
             .map(|config| config.admin_emails.as_slice()),
     )
     .is_ok();
+    let is_configured_admin = caller.is_configured_admin(state);
     let mut authority =
         resolve_session_authority(state, caller.identity.clone(), caller.transport_admin).await?;
     if matches!(authority, SessionAuthority::Unprovisioned)
@@ -610,7 +628,12 @@ async fn project_session(
     }
     let owner_bootstrap_available = admitted
         && state.access_runtime.owner_bootstrap_offer().await == OwnerBootstrapOffer::Available;
-    authenticated_session_body(&view, &authority, owner_bootstrap_available)
+    authenticated_session_body(
+        &view,
+        &authority,
+        owner_bootstrap_available,
+        is_configured_admin,
+    )
 }
 
 /// Durable admission for a browser session whose provider-verified email is
@@ -878,6 +901,7 @@ pub async fn auth_session(
             "authenticated": true,
             "login_available": false,
             "is_admin": true,
+            "is_configured_admin": true,
             "dev_authority_bypass": true,
             "user": {
                 "sub": "labby-dev",
@@ -1426,7 +1450,7 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(ready, SessionAuthority::Ready(_)));
-        let body = authenticated_session_body(&view("owner"), &ready, false).unwrap();
+        let body = authenticated_session_body(&view("owner"), &ready, false, false).unwrap();
         assert_eq!(body["authority_state"], "ready");
         assert_eq!(body["is_admin"], true);
         assert_eq!(body["owner_bootstrap_available"], false);
@@ -1654,6 +1678,67 @@ mod tests {
         // stays unprovisioned: there is no evidence to admit against.
         let body = fixture.session("unverified-sub", "eli@example.com").await;
         assert_eq!(body["authority_state"], "unprovisioned");
+    }
+
+    /// Finding 3: the administrator list and the allowlist accept only a
+    /// browser session whose email is in `LABBY_AUTH_ADMIN_EMAIL`. The body
+    /// says so explicitly, because `is_admin` (`platform.manage`) is also true
+    /// for every allowlist-admitted admin, who must not be offered those
+    /// controls.
+    #[tokio::test]
+    async fn session_body_reports_whether_the_caller_is_a_configured_admin() {
+        let fixture = AllowlistFixture::new().await;
+        fixture
+            .auth_state
+            .store
+            .upsert_bound_verified_inbound_identity(
+                "owner-sub",
+                "owner@example.com",
+                2,
+                fixture.auth_state.inbound_provider_binding(),
+            )
+            .await
+            .unwrap();
+
+        let body = fixture.session("eli-sub", "eli@example.com").await;
+        assert_eq!(body["authority_state"], "ready");
+        assert_eq!(
+            body["is_admin"], true,
+            "allowlist admin is a platform admin"
+        );
+        assert_eq!(
+            body["is_configured_admin"], false,
+            "an allowlist admin is not a configured admin"
+        );
+
+        let body = fixture.session("owner-sub", "owner@example.com").await;
+        assert_eq!(body["authority_state"], "ready");
+        assert_eq!(body["is_admin"], true);
+        assert_eq!(body["is_configured_admin"], true);
+
+        // The transport credential is the local operator but never a
+        // configured-admin browser session.
+        let operator = SessionCaller {
+            identity: labby_auth::VerifiedIdentity::local_credential(
+                labby_auth::Authenticator::StaticBearer,
+                "static-bearer:primary",
+            )
+            .unwrap(),
+            via_session: false,
+            subject: "static-bearer".into(),
+            email: None,
+            scopes: Vec::new(),
+            transport_admin: true,
+        };
+        let body = project_session(
+            &fixture.state,
+            operator,
+            AllowlistFixture::view("static-bearer"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(body["is_admin"], true);
+        assert_eq!(body["is_configured_admin"], false);
     }
 
     /// Finding 2: the allowlist lookup and the durable provisioning live in

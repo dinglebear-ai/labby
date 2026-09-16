@@ -30,6 +30,14 @@ export type BrowserSessionState =
       ownerBootstrapAvailable?: boolean
       /** Compatibility presentation flag derived only from server-projected capabilities. */
       isAdmin?: boolean
+      /**
+       * The server accepts this browser session for the operator-only
+       * administrator list and allowlist routes: its email is listed in
+       * `LABBY_AUTH_ADMIN_EMAIL`. Independent of `isAdmin`, which every
+       * allowlist-admitted admin holds. Absent on older servers, which never
+       * grants those controls.
+       */
+      isConfiguredAdmin?: boolean
       projectId?: string
     }
   | { status: 'unauthenticated' }
@@ -52,6 +60,7 @@ type SessionPayload =
       authority_state?: string | null
       remediation?: string | null
       owner_bootstrap_available?: boolean | null
+      is_configured_admin?: boolean | null
       project_id?: string | null
       principal_id?: string | null
       active_owner?: { kind?: string; id?: string } | null
@@ -167,6 +176,7 @@ function normalizePayload(payload: SessionPayload): BrowserSessionState {
       ownerBootstrapAvailable: payload.owner_bootstrap_available === true,
     }),
     isAdmin: authority?.capabilities.includes('platform.manage') ?? false,
+    isConfiguredAdmin: payload.is_configured_admin === true,
     // Project-bound sessions can carry an explicit server-selected project
     // without the durable authority projection. Preserve that binding without
     // manufacturing authority or choosing from the caller's membership list.
