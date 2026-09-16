@@ -414,7 +414,7 @@ impl DepotClient {
                 .filter(|key| valid_idempotency_key(key))
                 .ok_or(DepotError::DestructiveIntentRequired)?;
             return self
-                .call_destructive(operation, params, actor, key, subject)
+                .call_destructive(operation, params, actor, key, policy, subject)
                 .await;
         }
         self.call_upstream(operation, params, actor, None, policy, subject)
@@ -427,6 +427,7 @@ impl DepotClient {
         params: Value,
         actor: &str,
         idempotency_key: &str,
+        policy: OperationPolicy,
         subject: Option<DepotDelegationSubject<'_>>,
     ) -> Result<Value, DepotError> {
         let digest: [u8; 32] = Sha256::digest(
@@ -478,13 +479,7 @@ impl DepotClient {
                 params,
                 actor,
                 Some(idempotency_key),
-                OperationPolicy {
-                    read_only: false,
-                    destructive: true,
-                    requires_write: true,
-                    requires_operator: false,
-                    transport_available: true,
-                },
+                policy,
                 subject,
             )
             .await;
@@ -1284,6 +1279,60 @@ mod tests {
                     transport_available: true,
                 },
                 None,
+                &browser_authorization(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(seen_jtis.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn browser_destructive_operator_call_preserves_operator_delegation() {
+        let server = MockServer::start().await;
+        let seen_jtis = Arc::new(StdMutex::new(Vec::new()));
+        Mock::given(method("POST"))
+            .and(path("/api/operations/depot.maintenance.gc"))
+            .and(ExactDelegation {
+                operation: "depot.maintenance.gc",
+                scope: "skills:read depot:operator",
+                params: json!({}),
+                seen_jtis: Arc::clone(&seen_jtis),
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result":{"ok":true}})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let temp = tempfile::tempdir().unwrap();
+        let keys =
+            Arc::new(SigningKeys::load_or_create(&temp.path().join("delegation-key.der")).unwrap());
+        let mut client =
+            DepotClient::for_test(Url::parse(&server.uri()).unwrap(), "shared-read-bearer");
+        client.delegation = Some(Arc::new(DepotDelegationSigner {
+            keys,
+            target: DepotDelegationTarget {
+                issuer: "https://team-labby.example".into(),
+                audience: "https://depot.example".into(),
+                deployment_id: "depot-lime-prod".into(),
+                account_id: "account-lime".into(),
+                tenant_id: "tenant-lime".into(),
+                team_id: Some("team-lime".into()),
+            },
+        }));
+
+        client
+            .call_with_browser_authorization(
+                "depot.maintenance.gc",
+                json!({}),
+                "browser-actor",
+                OperationPolicy {
+                    read_only: false,
+                    destructive: true,
+                    requires_write: false,
+                    requires_operator: true,
+                    transport_available: true,
+                },
+                Some("operator-gc-1"),
                 &browser_authorization(),
             )
             .await
