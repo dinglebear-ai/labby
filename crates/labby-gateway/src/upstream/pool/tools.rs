@@ -393,13 +393,17 @@ impl UpstreamPool {
     }
 
     pub(super) async fn has_healthy_tools_for_upstream(&self, upstream: &str) -> bool {
+        let _binding = self.connection_catalog_binding.read().await;
+        let connections = self.connections.read().await;
         let catalog = self.catalog.read().await;
         catalog.get(upstream).is_some_and(|entry| {
-            entry.tool_health.is_routable()
-                && entry
-                    .tools
-                    .values()
-                    .any(|tool| entry.exposure_policy.matches(tool.tool.name.as_ref()))
+            // A successfully bound catalog can legitimately contain zero tools
+            // (or expose none). Neither case requires restarting its peer.
+            let connected = connections.get(upstream).is_some_and(|connection| {
+                connection.incarnation.is_some()
+                    && connection.incarnation == catalog.incarnation(upstream)
+            });
+            entry.tool_health.is_routable() && (connected || !entry.tools.is_empty())
         })
     }
 

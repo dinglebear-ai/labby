@@ -76,6 +76,10 @@ pub(crate) struct CatalogCache {
     /// build without them still loads.
     #[serde(default)]
     failures: HashMap<String, CachedUpstreamFailure>,
+    /// Last admitted cold probe, used to give untouched servers first turn on
+    /// the next one-shot invocation. This is scheduling, never failure state.
+    #[serde(default)]
+    pub(crate) probe_cursor: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -257,12 +261,22 @@ pub(crate) async fn merge_and_store(
     updates: Vec<CatalogCacheUpdate>,
     failures: Vec<CatalogCacheFailure>,
 ) {
-    if updates.is_empty() && failures.is_empty() {
+    merge_and_store_with_cursor(path, updates, failures, None).await;
+}
+
+pub(crate) async fn merge_and_store_with_cursor(
+    path: PathBuf,
+    updates: Vec<CatalogCacheUpdate>,
+    failures: Vec<CatalogCacheFailure>,
+    probe_cursor: Option<String>,
+) {
+    if updates.is_empty() && failures.is_empty() && probe_cursor.is_none() {
         return;
     }
-    if let Err(error) =
-        tokio::task::spawn_blocking(move || merge_and_store_blocking(&path, updates, failures))
-            .await
+    if let Err(error) = tokio::task::spawn_blocking(move || {
+        merge_and_store_blocking_with_cursor(&path, updates, failures, probe_cursor)
+    })
+    .await
     {
         tracing::warn!(
             surface = "dispatch",
@@ -274,12 +288,22 @@ pub(crate) async fn merge_and_store(
     }
 }
 
+#[cfg(test)]
 fn merge_and_store_blocking(
     path: &Path,
     updates: Vec<CatalogCacheUpdate>,
     failures: Vec<CatalogCacheFailure>,
 ) {
-    if let Err(error) = merge_and_store_locked(path, updates, failures) {
+    merge_and_store_blocking_with_cursor(path, updates, failures, None);
+}
+
+fn merge_and_store_blocking_with_cursor(
+    path: &Path,
+    updates: Vec<CatalogCacheUpdate>,
+    failures: Vec<CatalogCacheFailure>,
+    probe_cursor: Option<String>,
+) {
+    if let Err(error) = merge_and_store_locked_with_cursor(path, updates, failures, probe_cursor) {
         tracing::warn!(
             surface = "dispatch",
             service = "gateway",
@@ -291,10 +315,11 @@ fn merge_and_store_blocking(
     }
 }
 
-fn merge_and_store_locked(
+fn merge_and_store_locked_with_cursor(
     path: &Path,
     updates: Vec<CatalogCacheUpdate>,
     failures: Vec<CatalogCacheFailure>,
+    probe_cursor: Option<String>,
 ) -> std::io::Result<()> {
     let _process_guard = CACHE_WRITE_LOCK
         .lock()
@@ -316,7 +341,10 @@ fn merge_and_store_locked(
     let mut cache = CatalogCache::load_from(path);
     cache.version = CACHE_VERSION;
     let saved_at_unix = now_unix();
-    let mut changed = false;
+    let mut changed = probe_cursor.is_some() && cache.probe_cursor != probe_cursor;
+    if probe_cursor.is_some() {
+        cache.probe_cursor = probe_cursor;
+    }
     for update in updates {
         // A successful probe clears any suppression for that upstream.
         changed |= cache.failures.remove(&update.upstream_name).is_some();
@@ -489,6 +517,7 @@ mod tests {
     #[test]
     fn fresh_tools_round_trips_through_serde() {
         let mut cache = CatalogCache {
+            probe_cursor: None,
             version: CACHE_VERSION,
             upstreams: HashMap::new(),
             failures: HashMap::new(),
@@ -520,6 +549,7 @@ mod tests {
     fn fresh_tools_round_trips_output_schema_through_serde() {
         let output_schema = typed_output_schema();
         let mut cache = CatalogCache {
+            probe_cursor: None,
             version: CACHE_VERSION,
             upstreams: HashMap::new(),
             failures: HashMap::new(),
@@ -573,6 +603,7 @@ mod tests {
     #[test]
     fn fresh_tools_rejects_fingerprint_mismatch_and_expired_entries() {
         let mut cache = CatalogCache {
+            probe_cursor: None,
             version: CACHE_VERSION,
             upstreams: HashMap::new(),
             failures: HashMap::new(),
@@ -605,6 +636,7 @@ mod tests {
     #[test]
     fn identical_update_renews_saved_at_so_expired_entries_become_fresh() {
         let mut cache = CatalogCache {
+            probe_cursor: None,
             version: CACHE_VERSION,
             upstreams: HashMap::new(),
             failures: HashMap::new(),
@@ -792,6 +824,7 @@ mod tests {
 
     fn empty_cache() -> CatalogCache {
         CatalogCache {
+            probe_cursor: None,
             version: CACHE_VERSION,
             upstreams: HashMap::new(),
             failures: HashMap::new(),

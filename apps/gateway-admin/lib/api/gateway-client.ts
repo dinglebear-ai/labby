@@ -37,6 +37,7 @@ import {
   humanizeProbeError,
   normalizeGateway,
   normalizeServerView,
+  matchTool,
   previewExposurePolicy,
   probeStatusFromRuntime,
 } from '../server/gateway-adapter.ts'
@@ -472,6 +473,50 @@ export const gatewayApi = {
     return hydrated
   },
 
+  async hydrateToolInventory(gateways: Gateway[], signal?: AbortSignal): Promise<Gateway[]> {
+    const results = await safeFanout(
+      gateways,
+      async (gateway) => gateway.source === 'in_process'
+        ? gateway.discovery.tools
+        : (await gatewayAction<Array<string | BackendGatewayToolRow>>(
+            'gateway.discovered_tools',
+            { name: gateway.id },
+            signal,
+          )).map((tool) => ({
+            name: typeof tool === 'string' ? tool : tool.name,
+            description: typeof tool === 'string' ? undefined : tool.description ?? undefined,
+            exposed: matchTool(
+              typeof tool === 'string' ? tool : tool.name,
+              gateway.config.expose_tools,
+            ) !== null,
+            matched_by: matchTool(
+              typeof tool === 'string' ? tool : tool.name,
+              gateway.config.expose_tools,
+            ),
+          })),
+    )
+
+    return results.map((result) => {
+      if (result.ok) {
+        return {
+          ...result.item,
+          discovery: { ...result.item.discovery, tools: result.value },
+        }
+      }
+      if (signal?.aborted) throw result.error
+      const message = result.error instanceof Error
+        ? result.error.message
+        : 'Failed to load this server tool inventory'
+      return {
+        ...result.item,
+        warnings: [
+          ...result.item.warnings.filter((warning) => warning.code !== 'tool_inventory_unavailable'),
+          { code: 'tool_inventory_unavailable', message, timestamp: new Date().toISOString() },
+        ],
+      }
+    })
+  },
+
   async get(id: string, signal?: AbortSignal): Promise<Gateway> {
     let serverView: BackendServerView
     try {
@@ -491,7 +536,7 @@ export const gatewayApi = {
 
     const [view, runtimeRows] = await Promise.all([
       gatewayAction<BackendGatewayView>('gateway.get', { name: id }, signal),
-      gatewayAction<BackendGatewayMcpRuntimeView[]>('gateway.mcp.list', {}, signal),
+      gatewayAction<BackendGatewayMcpRuntimeView[]>('gateway.mcp.list', { name: id }, signal),
     ])
     return normalizeGatewaySnapshotView(
       view,
@@ -557,14 +602,15 @@ export const gatewayApi = {
 
   async reload(id: string, signal?: AbortSignal): Promise<ReloadGatewayResult> {
     const before = await gatewayAction<BackendGatewayView>('gateway.get', { name: id }, signal)
-    await gatewayAction('gateway.reload', confirmGatewayParams({}), signal)
-    const after = await gatewayAction<BackendGatewayView>('gateway.get', { name: id }, signal)
-
+    const result = await gatewayAction<{ completed: boolean; gateway?: BackendGatewayView }>(
+      'gateway.mcp.restart', confirmGatewayParams({ name: id }), signal,
+    )
     return {
-      success: true,
-      message: 'Gateway reloaded successfully',
+      success: result.completed,
+      pending: !result.completed,
+      message: result.completed ? 'Server restarted successfully' : 'Server restart is still running; runtime status will update when it reconnects.',
       previous_tool_count: before.runtime.tool_count,
-      new_tool_count: after.runtime.tool_count,
+      new_tool_count: result.gateway?.runtime.tool_count ?? before.runtime.tool_count,
     }
   },
 

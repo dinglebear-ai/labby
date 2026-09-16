@@ -50,6 +50,57 @@ test('same-ID configuration edits create a fresh runtime cache entry', () => {
   assert.notDeepEqual(gatewaysRuntimeRequestKey(true, true, oldRows), gatewaysRuntimeRequestKey(true, true, newRows))
 })
 
+test('tools view hydrates full tool records on demand', async () => {
+  const { SWRConfig } = await import('swr')
+  const { useGateways } = await import('./use-gateways')
+  const { mockGateways } = await import('../api/mock-data')
+  installTestDom()
+  const original = {
+    list: gatewayApi.list,
+    hydrateRuntime: gatewayApi.hydrateRuntime,
+    hydrateToolInventory: gatewayApi.hydrateToolInventory,
+    refreshStatus: gatewayApi.refreshStatus,
+  }
+  const summaryOnly = {
+    ...mockGateways[0],
+    discovery: { ...mockGateways[0].discovery, tools: [] },
+    status: { ...mockGateways[0].status, discovered_tool_count: 1, exposed_tool_count: 1 },
+  }
+  let inventoryCalls = 0
+  gatewayApi.list = async () => [summaryOnly]
+  gatewayApi.hydrateRuntime = async rows => rows
+  gatewayApi.hydrateToolInventory = async rows => {
+    inventoryCalls += 1
+    return rows.map(row => ({
+      ...row,
+      discovery: { ...row.discovery, tools: [{ name: 'search', exposed: true, matched_by: '*' }] },
+    }))
+  }
+  gatewayApi.refreshStatus = async () => undefined
+  function Harness() {
+    const result = useGateways(true, true)
+    return React.createElement('span', null, result.data?.[0]?.discovery.tools[0]?.name ?? 'loading')
+  }
+  const view = await renderClient(React.createElement(
+    SWRConfig,
+    { value: { provider: () => new Map(), shouldRetryOnError: false } },
+    React.createElement(Harness),
+  ))
+  try {
+    for (let attempt = 0; attempt < 50 && view.container.textContent !== 'search'; attempt += 1) {
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)) })
+    }
+    assert.equal(view.container.textContent, 'search')
+    assert.equal(inventoryCalls, 1)
+  } finally {
+    await view.unmount()
+    gatewayApi.list = original.list
+    gatewayApi.hydrateRuntime = original.hydrateRuntime
+    gatewayApi.hydrateToolInventory = original.hydrateToolInventory
+    gatewayApi.refreshStatus = original.refreshStatus
+  }
+})
+
 test('same-ID edits replace hydrated rows even when catalog polling is inactive', async () => {
   const { SWRConfig, useSWRConfig } = await import('swr')
   const { useGateways } = await import('./use-gateways')
@@ -89,5 +140,57 @@ test('same-ID edits replace hydrated rows even when catalog polling is inactive'
     gatewayApi.list = originalList
     gatewayApi.hydrateRuntime = originalHydrate
     gatewayApi.refreshStatus = originalRefresh
+  }
+})
+
+test('a mounted gateway table observes runtime-only changes after sixty seconds', async () => {
+  const { SWRConfig } = await import('swr')
+  const { useGateways } = await import('./use-gateways')
+  const { mockGateways } = await import('../api/mock-data')
+  installTestDom()
+  const original = { list: gatewayApi.list, hydrate: gatewayApi.hydrateRuntime, refresh: gatewayApi.refreshStatus,
+    interval: window.setInterval, clearInterval: window.clearInterval, timeout: window.setTimeout, clearTimeout: window.clearTimeout }
+  let now = 0
+  let nextId = 1
+  const timers = new Map<number, { run: () => void; at: number; interval: number }>()
+  window.setInterval = ((run: () => void, delay: number) => { const id = nextId++; timers.set(id, { run, at: now + delay, interval: delay }); return id }) as typeof window.setInterval
+  window.setTimeout = ((run: () => void, delay: number) => { const id = nextId++; timers.set(id, { run, at: now + delay, interval: 0 }); return id }) as typeof window.setTimeout
+  window.clearInterval = window.clearTimeout = ((id: number) => { timers.delete(id) }) as typeof window.clearInterval
+  const row = { ...mockGateways[0], id: 'runtime-only-polling' }
+  let count = 1
+  gatewayApi.list = async () => [row]
+  gatewayApi.hydrateRuntime = async rows => rows.map(row => ({ ...row, status: { ...row.status, discovered_tool_count: count } }))
+  gatewayApi.refreshStatus = async () => undefined
+  function Harness() { const result = useGateways(); return React.createElement('span', null, result.data?.[0]?.status.discovered_tool_count ?? 'loading') }
+  const view = await renderClient(React.createElement(SWRConfig, { value: { provider: () => new Map(), dedupingInterval: 0, shouldRetryOnError: false } }, React.createElement(Harness)))
+  const settle = async (expected: string) => {
+    for (let attempt = 0; attempt < 50 && view.container.textContent !== expected; attempt++) {
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)) })
+    }
+    assert.equal(view.container.textContent, expected)
+  }
+  const advance = async (until: number) => {
+    while (true) {
+      const pending = [...timers].filter(([, timer]) => timer.at <= until).sort((a, b) => a[1].at - b[1].at)[0]
+      if (!pending) break
+      const [id, timer] = pending
+      now = timer.at
+      if (timer.interval) timer.at += timer.interval
+      else timers.delete(id)
+      await act(async () => { timer.run(); await new Promise(resolve => setTimeout(resolve, 1)) })
+    }
+    now = until
+  }
+  try {
+    await settle('1')
+    await advance(61_000)
+    count = 7
+    await advance(66_000)
+    await settle('7')
+  } finally {
+    await view.unmount()
+    gatewayApi.list = original.list; gatewayApi.hydrateRuntime = original.hydrate; gatewayApi.refreshStatus = original.refresh
+    window.setInterval = original.interval; window.clearInterval = original.clearInterval
+    window.setTimeout = original.timeout; window.clearTimeout = original.clearTimeout
   }
 })
