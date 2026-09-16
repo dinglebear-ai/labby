@@ -49,6 +49,12 @@ class TootieIncusBuildScriptTest(unittest.TestCase):
         self.assertNotIn("incus restart", text)
         self.assertNotIn("incus stop", text)
 
+    def test_frontend_build_id_is_bound_to_exact_revision(self) -> None:
+        text = SCRIPT.read_text()
+        self.assertIn("NEXT_BUILD_ID='$commit'", text)
+        self.assertIn("cat apps/gateway-admin/.next/BUILD_ID", text)
+        self.assertIn("= '$commit'", text)
+
 
 if __name__ == "__main__":
     unittest.main()

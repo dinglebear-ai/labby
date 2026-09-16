@@ -184,7 +184,8 @@ cd '$container_work'
 tar -xf source.tar
 test \"\$(cat REVISION)\" = '$commit'
 npx --yes pnpm@9.15.9 --dir apps/gateway-admin install --frozen-lockfile
-npx --yes pnpm@9.15.9 --dir apps/gateway-admin build
+NEXT_BUILD_ID='$commit' npx --yes pnpm@9.15.9 --dir apps/gateway-admin build
+test "\$(cat apps/gateway-admin/.next/BUILD_ID)" = '$commit'
 CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \\
     cargo build --workspace --all-features --release --locked
 test -x target/release/labby
