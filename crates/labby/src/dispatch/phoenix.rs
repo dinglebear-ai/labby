@@ -1,4 +1,4 @@
-//! Container-local Codex App Server adapter for the Phoenix assistant.
+//! Provider adapter for the Phoenix assistant.
 
 use std::{collections::HashMap, ffi::OsString, sync::Arc, time::Duration};
 
@@ -8,9 +8,10 @@ use serde_json::{Value, json};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
 use crate::{
-    config::PhoenixPreferences,
+    config::{PhoenixPreferences, PhoenixProvider},
     dispatch::{
         error::ToolError,
+        phoenix_openai::OpenAiBackend,
         phoenix_runtime::{AppServerRuntime, LaunchSpec},
     },
 };
@@ -185,13 +186,24 @@ struct Message {
     created_at_ms: u64,
 }
 
+#[derive(Clone)]
+enum SessionBackend {
+    Codex {
+        thread_id: String,
+        runtime: AppServerRuntime,
+    },
+    OpenAi {
+        session_id: String,
+        backend: OpenAiBackend,
+    },
+}
+
 struct Session {
     owner: String,
-    thread_id: String,
+    backend: SessionBackend,
     turn_in_progress: bool,
     closing: bool,
     active_turn_id: Option<String>,
-    runtime: AppServerRuntime,
     messages: Vec<Message>,
     events: Vec<Value>,
     model: Option<String>,
@@ -204,6 +216,7 @@ struct Session {
 pub(crate) struct PhoenixRuntime {
     config: PhoenixPreferences,
     local_mcp_url: Arc<str>,
+    openai: Option<OpenAiBackend>,
     sessions: Arc<Mutex<HashMap<String, Arc<Mutex<Session>>>>>,
     capacity: Arc<Semaphore>,
 }
@@ -219,9 +232,18 @@ impl PhoenixRuntime {
         config: PhoenixPreferences,
         local_mcp_url: impl Into<Arc<str>>,
     ) -> Self {
+        Self::new_with_backends(config, local_mcp_url, OpenAiBackend::from_env())
+    }
+
+    fn new_with_backends(
+        config: PhoenixPreferences,
+        local_mcp_url: impl Into<Arc<str>>,
+        openai: Option<OpenAiBackend>,
+    ) -> Self {
         Self {
             config,
             local_mcp_url: local_mcp_url.into(),
+            openai,
             sessions: Arc::new(Mutex::new(HashMap::new())),
             capacity: Arc::new(Semaphore::new(MAX_SESSIONS)),
         }
@@ -306,63 +328,99 @@ impl PhoenixRuntime {
     }
 
     fn available(&self) -> bool {
-        self.config.enabled
-            && self
-                .config
-                .command
-                .as_ref()
-                .is_some_and(|path| executable(path))
-            && self
-                .config
-                .codex_home
-                .as_ref()
-                .is_some_and(|path| path.is_dir())
-            && self
-                .config
-                .workspace_root
-                .as_ref()
-                .is_some_and(|path| path.is_dir())
+        if !self.config.enabled {
+            return false;
+        }
+        match self.config.provider {
+            PhoenixProvider::CodexAppServer => {
+                self.config
+                    .command
+                    .as_ref()
+                    .is_some_and(|path| executable(path))
+                    && self
+                        .config
+                        .codex_home
+                        .as_ref()
+                        .is_some_and(|path| path.is_dir())
+                    && self
+                        .config
+                        .workspace_root
+                        .as_ref()
+                        .is_some_and(|path| path.is_dir())
+            }
+            PhoenixProvider::OpenAiCompatible => self.openai.is_some(),
+        }
     }
 
     fn status(&self) -> Value {
-        json!({
-            "enabled": self.config.enabled,
-            "available": self.available(),
-            "runtime": "container_local",
-            "service": "codex-app-server",
-            "sandbox": "read-only",
-            "protocol": {
-                "schema": APP_SERVER_PROTOCOL_SCHEMA,
-                "runtime_version": self.detected_version(),
-                "adapter": 2,
-                "experimental_api": true,
-            },
-            "mcp": {
-                "name": "labby",
-                "transport": "streamable_http",
-                "scope": "container_loopback",
-                "authentication": "bearer_token_env",
-                "configured": std::env::var_os(LOCAL_MCP_TOKEN_ENV).is_some(),
-            },
-            "capabilities": {
-                "session_lifecycle": ["list", "start", "read", "close"],
-                "turn_lifecycle": ["start", "steer", "interrupt", "completed"],
-                "operations": ["review"],
-                "review": ["uncommitted_changes", "base_branch", "commit", "custom"],
-                "diagnostics": ["account", "rate_limits", "usage", "config", "mcp_server_status"],
-                "server_requests": ["deterministic_decline", "audit_event"],
-                "preserved_events": [
-                    "items", "agent_message", "reasoning", "plan", "diff",
-                    "token_usage", "mcp_status", "mcp_tool_progress", "warnings", "errors"
-                ],
-                "inputs": ["text", "image_data_url", "audio_data_url"],
-                "unsupported": [
-                    "approvals", "elicitation_response",
-                    "realtime", "local_path_attachments", "account_mutation", "filesystem_mutation",
-                    "remote_control"
-                ],
-            },
-        })
+        match self.config.provider {
+            PhoenixProvider::CodexAppServer => json!({
+                "enabled": self.config.enabled,
+                "available": self.available(),
+                "runtime": "container_local",
+                "service": "codex-app-server",
+                "sandbox": "read-only",
+                "protocol": {
+                    "schema": APP_SERVER_PROTOCOL_SCHEMA,
+                    "runtime_version": self.detected_version(),
+                    "adapter": 2,
+                    "experimental_api": true,
+                },
+                "mcp": {
+                    "name": "labby",
+                    "transport": "streamable_http",
+                    "scope": "container_loopback",
+                    "authentication": "bearer_token_env",
+                    "configured": std::env::var_os(LOCAL_MCP_TOKEN_ENV).is_some(),
+                },
+                "capabilities": {
+                    "session_lifecycle": ["list", "start", "read", "close"],
+                    "turn_lifecycle": ["start", "steer", "interrupt", "completed"],
+                    "operations": ["review"],
+                    "review": ["uncommitted_changes", "base_branch", "commit", "custom"],
+                    "diagnostics": ["account", "rate_limits", "usage", "config", "mcp_server_status"],
+                    "server_requests": ["deterministic_decline", "audit_event"],
+                    "preserved_events": [
+                        "items", "agent_message", "reasoning", "plan", "diff",
+                        "token_usage", "mcp_status", "mcp_tool_progress", "warnings", "errors"
+                    ],
+                    "inputs": ["text", "image_data_url", "audio_data_url"],
+                    "unsupported": [
+                        "approvals", "elicitation_response",
+                        "realtime", "local_path_attachments", "account_mutation", "filesystem_mutation",
+                        "remote_control"
+                    ],
+                },
+            }),
+            PhoenixProvider::OpenAiCompatible => json!({
+                "enabled": self.config.enabled,
+                "available": self.available(),
+                "runtime": "remote_http",
+                "service": "openai-compatible",
+                "sandbox": "remote",
+                "protocol": {
+                    "schema": "openai-v1",
+                    "runtime_version": Value::Null,
+                    "adapter": 1,
+                    "experimental_api": false,
+                },
+                "capabilities": {
+                    "session_lifecycle": ["list", "start", "read", "close"],
+                    "turn_lifecycle": ["start", "interrupt", "completed"],
+                    "operations": [],
+                    "review": [],
+                    "diagnostics": [],
+                    "server_requests": [],
+                    "preserved_events": [],
+                    "inputs": ["text"],
+                    "unsupported": [
+                        "steer", "review", "diagnostics", "image_data_url", "audio_data_url",
+                        "approvals", "elicitation_response", "realtime", "local_path_attachments",
+                        "account_mutation", "filesystem_mutation", "remote_control"
+                    ],
+                },
+            }),
+        }
     }
 
     fn detected_version(&self) -> Option<String> {
@@ -383,15 +441,48 @@ impl PhoenixRuntime {
 
     async fn models(&self) -> Result<Value, ToolError> {
         self.require_available()?;
-        let runtime = initialized_app_server(&self.config, &self.local_mcp_url).await?;
-        let response = runtime
-            .request("model/list", json!({"limit":100,"includeHidden":false}))
-            .await?;
-        let models = response
-            .get("data")
-            .and_then(Value::as_array)
-            .ok_or_else(protocol_error)?;
-        Ok(json!({"models": models}))
+        match self.config.provider {
+            PhoenixProvider::CodexAppServer => {
+                let runtime = initialized_app_server(&self.config, &self.local_mcp_url).await?;
+                let response = runtime
+                    .request("model/list", json!({"limit":100,"includeHidden":false}))
+                    .await?;
+                let models = response
+                    .get("data")
+                    .and_then(Value::as_array)
+                    .ok_or_else(protocol_error)?;
+                Ok(json!({"models": models}))
+            }
+            PhoenixProvider::OpenAiCompatible => {
+                let backend = self.openai_backend()?;
+                let raw = backend.models().await?;
+                let configured = self.config.model.as_deref();
+                let models = raw
+                    .iter()
+                    .filter_map(|model| {
+                        let id = model.get("id")?.as_str()?;
+                        let effort = model
+                            .pointer("/gateway/thinking_effort")
+                            .and_then(Value::as_str)
+                            .unwrap_or("default");
+                        Some(json!({
+                            "id": id,
+                            "model": id,
+                            "displayName": id,
+                            "description": "OpenAI-compatible provider model",
+                            "isDefault": configured.map_or(id == "chatgpt-browser", |value| value == id),
+                            "inputModalities": ["text"],
+                            "defaultReasoningEffort": effort,
+                            "supportedReasoningEfforts": [{
+                                "reasoningEffort": effort,
+                                "description": "Provider-defined reasoning profile"
+                            }]
+                        }))
+                    })
+                    .collect::<Vec<_>>();
+                Ok(json!({"models": models}))
+            }
+        }
     }
 
     async fn start(
@@ -408,12 +499,30 @@ impl PhoenixRuntime {
         })?;
         validate_selection("model", model.as_deref())?;
         validate_selection("effort", effort.as_deref())?;
+        match self.config.provider {
+            PhoenixProvider::CodexAppServer => {
+                self.start_codex(owner, model, effort, capacity).await
+            }
+            PhoenixProvider::OpenAiCompatible => {
+                self.start_openai(owner, model, effort, capacity).await
+            }
+        }
+    }
+
+    async fn start_codex(
+        &self,
+        owner: &str,
+        model: Option<String>,
+        effort: Option<String>,
+        capacity: OwnedSemaphorePermit,
+    ) -> Result<Value, ToolError> {
         let runtime = initialized_app_server(&self.config, &self.local_mcp_url).await?;
         let workspace_root = self
             .config
             .workspace_root
             .as_ref()
             .ok_or_else(|| unavailable("Phoenix workspace is not configured"))?;
+        let selected_model = model.or_else(|| self.config.model.clone());
         let mut params = json!({
             "cwd": workspace_root,
             "approvalPolicy": "never",
@@ -422,7 +531,7 @@ impl PhoenixRuntime {
             "threadSource": "appServer",
             "developerInstructions": "You are Phoenix, Labby's concise operator assistant. You run only inside the Labby container. Treat the workspace as read-only, never request access to another machine or device, and explain any action that requires an operator.",
         });
-        if let Some(model) = model.as_ref().or(self.config.model.as_ref()) {
+        if let Some(model) = selected_model.as_ref() {
             params["model"] = Value::String(model.clone());
         }
         let started = runtime.request("thread/start", params).await?;
@@ -436,14 +545,52 @@ impl PhoenixRuntime {
             session_id.clone(),
             Arc::new(Mutex::new(Session {
                 owner: owner.to_owned(),
-                thread_id,
+                backend: SessionBackend::Codex { thread_id, runtime },
                 turn_in_progress: false,
                 closing: false,
                 active_turn_id: None,
-                runtime,
                 messages: Vec::new(),
                 events: Vec::new(),
-                model,
+                model: selected_model,
+                effort,
+                title: None,
+                _capacity: capacity,
+            })),
+        );
+        Ok(json!({"session_id":session_id,"status":"ready","messages":[]}))
+    }
+
+    async fn start_openai(
+        &self,
+        owner: &str,
+        requested_model: Option<String>,
+        effort: Option<String>,
+        capacity: OwnedSemaphorePermit,
+    ) -> Result<Value, ToolError> {
+        let backend = self.openai_backend()?;
+        let models = backend.models().await?;
+        let selected_model = select_openai_model(
+            &models,
+            requested_model.as_deref(),
+            self.config.model.as_deref(),
+            effort.as_deref(),
+        )?;
+        let session_id = format!("phoenix-{}", uuid::Uuid::new_v4());
+        backend.create_session(&session_id).await?;
+        self.sessions.lock().await.insert(
+            session_id.clone(),
+            Arc::new(Mutex::new(Session {
+                owner: owner.to_owned(),
+                backend: SessionBackend::OpenAi {
+                    session_id: session_id.clone(),
+                    backend,
+                },
+                turn_in_progress: false,
+                closing: false,
+                active_turn_id: None,
+                messages: Vec::new(),
+                events: Vec::new(),
+                model: Some(selected_model),
                 effort,
                 title: None,
                 _capacity: capacity,
@@ -488,10 +635,21 @@ impl PhoenixRuntime {
             return Err(invalid("title", "title must contain 1-120 characters"));
         }
         let session = self.session(owner, session_id).await?;
-        let mut state = session.lock().await;
-        if state.closing {
-            return Err(unavailable("Phoenix session is closing"));
+        let backend = {
+            let state = session.lock().await;
+            if state.closing {
+                return Err(unavailable("Phoenix session is closing"));
+            }
+            state.backend.clone()
+        };
+        if let SessionBackend::OpenAi {
+            session_id,
+            backend,
+        } = backend
+        {
+            backend.rename_session(&session_id, title).await?;
         }
+        let mut state = session.lock().await;
         state.title = Some(title.to_owned());
         Ok(render_session(session_id, &state))
     }
@@ -510,7 +668,7 @@ impl PhoenixRuntime {
         session: Arc<Mutex<Session>>,
         session_id: String,
     ) -> Result<Value, ToolError> {
-        let (runtime, thread_id) = {
+        let backend = {
             let mut state = session.lock().await;
             if state.turn_in_progress {
                 return Err(unavailable(
@@ -521,12 +679,19 @@ impl PhoenixRuntime {
                 return Err(unavailable("Phoenix session is already closing"));
             }
             state.closing = true;
-            (state.runtime.clone(), state.thread_id.clone())
+            state.backend.clone()
         };
-        if let Err(error) = runtime
-            .request("thread/close", json!({"threadId":thread_id}))
-            .await
-        {
+        let close_result = match backend {
+            SessionBackend::Codex { thread_id, runtime } => runtime
+                .request("thread/close", json!({"threadId":thread_id}))
+                .await
+                .map(|_| ()),
+            SessionBackend::OpenAi {
+                session_id,
+                backend,
+            } => backend.close_session(&session_id).await,
+        };
+        if let Err(error) = close_result {
             session.lock().await.closing = false;
             return Err(error);
         }
@@ -551,8 +716,19 @@ impl PhoenixRuntime {
         if input.trim().is_empty() || input.len() > MAX_INPUT_BYTES {
             return Err(invalid("input", "input must contain 1-32768 bytes"));
         }
-        let protocol_inputs = turn_inputs(input, attachments)?;
         let session = self.session(owner, session_id).await?;
+        let openai = matches!(session.lock().await.backend, SessionBackend::OpenAi { .. });
+        let protocol_inputs = if openai {
+            if attachments_present(attachments) {
+                return Err(invalid(
+                    "attachments",
+                    "OpenAI-compatible Phoenix providers currently accept text-only Assistant messages",
+                ));
+            }
+            Vec::new()
+        } else {
+            turn_inputs(input, attachments)?
+        };
         let session_id = session_id.to_owned();
         let input = input.to_owned();
         tokio::spawn(
@@ -568,7 +744,7 @@ impl PhoenixRuntime {
         input: String,
         protocol_inputs: Vec<Value>,
     ) -> Result<Value, ToolError> {
-        let (runtime, thread_id, model, effort) = {
+        let (backend, model, effort) = {
             let mut state = session.lock().await;
             if state.closing {
                 return Err(unavailable("Phoenix session is closing"));
@@ -578,12 +754,53 @@ impl PhoenixRuntime {
             }
             state.turn_in_progress = true;
             (
-                state.runtime.clone(),
-                state.thread_id.clone(),
+                state.backend.clone(),
                 state.model.clone(),
                 state.effort.clone(),
             )
         };
+        match backend {
+            SessionBackend::Codex { thread_id, runtime } => {
+                Self::run_codex_turn(
+                    session,
+                    session_id,
+                    input,
+                    protocol_inputs,
+                    runtime,
+                    thread_id,
+                    model,
+                    effort,
+                )
+                .await
+            }
+            SessionBackend::OpenAi {
+                session_id: upstream_session_id,
+                backend,
+            } => {
+                Self::run_openai_turn(
+                    session,
+                    session_id,
+                    upstream_session_id,
+                    input,
+                    backend,
+                    model,
+                )
+                .await
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_codex_turn(
+        session: Arc<Mutex<Session>>,
+        session_id: String,
+        input: String,
+        protocol_inputs: Vec<Value>,
+        runtime: AppServerRuntime,
+        thread_id: String,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Result<Value, ToolError> {
         let mut events = runtime.subscribe();
         let started = runtime
             .request("turn/start", {
@@ -618,11 +835,7 @@ impl PhoenixRuntime {
         {
             let mut state = session.lock().await;
             state.active_turn_id = Some(turn_id.clone());
-            state.messages.push(Message {
-                role: "user",
-                text: input,
-                created_at_ms: now_millis(),
-            });
+            push_message(&mut state, "user", input);
         }
         let result = tokio::time::timeout(
             TURN_TIMEOUT,
@@ -633,16 +846,12 @@ impl PhoenixRuntime {
             Ok(Ok(result)) => result,
             Ok(Err(error)) => {
                 drop(runtime.interrupt(&thread_id, &turn_id).await);
-                let mut state = session.lock().await;
-                state.turn_in_progress = false;
-                state.active_turn_id = None;
+                clear_active_turn(&session).await;
                 return Err(error);
             }
             Err(_) => {
                 drop(runtime.interrupt(&thread_id, &turn_id).await);
-                let mut state = session.lock().await;
-                state.turn_in_progress = false;
-                state.active_turn_id = None;
+                clear_active_turn(&session).await;
                 return Err(unavailable(
                     "Phoenix turn exceeded the five minute runtime limit",
                 ));
@@ -651,29 +860,73 @@ impl PhoenixRuntime {
         let mut state = session.lock().await;
         state.turn_in_progress = false;
         state.active_turn_id = None;
-        state.messages.push(Message {
-            role: "assistant",
-            text: result.output,
-            created_at_ms: now_millis(),
-        });
-        if state.messages.len() > MAX_MESSAGES {
-            let excess = state.messages.len() - MAX_MESSAGES;
-            state.messages.drain(..excess);
+        push_message(&mut state, "assistant", result.output);
+        Ok(render_session(&session_id, &state))
+    }
+
+    async fn run_openai_turn(
+        session: Arc<Mutex<Session>>,
+        session_id: String,
+        upstream_session_id: String,
+        input: String,
+        backend: OpenAiBackend,
+        model: Option<String>,
+    ) -> Result<Value, ToolError> {
+        let model =
+            model.ok_or_else(|| unavailable("Phoenix OpenAI provider has no selected model"))?;
+        let turn_id = format!("openai-{}", uuid::Uuid::new_v4());
+        {
+            let mut state = session.lock().await;
+            state.active_turn_id = Some(turn_id);
+            push_message(&mut state, "user", input.clone());
         }
+        let result = tokio::time::timeout(
+            TURN_TIMEOUT,
+            backend.chat(&upstream_session_id, &model, &input),
+        )
+        .await;
+        let output = match result {
+            Ok(Ok(output)) => output,
+            Ok(Err(error)) => {
+                clear_active_turn(&session).await;
+                return Err(error);
+            }
+            Err(_) => {
+                drop(backend.cancel_session(&upstream_session_id).await);
+                clear_active_turn(&session).await;
+                return Err(unavailable(
+                    "Phoenix turn exceeded the five minute runtime limit",
+                ));
+            }
+        };
+        let mut state = session.lock().await;
+        state.turn_in_progress = false;
+        state.active_turn_id = None;
+        push_message(&mut state, "assistant", output);
         Ok(render_session(&session_id, &state))
     }
 
     async fn interrupt(&self, owner: &str, session_id: &str) -> Result<Value, ToolError> {
         let session = self.session(owner, session_id).await?;
-        let (runtime, thread_id, turn_id) = {
+        let (backend, turn_id) = {
             let state = session.lock().await;
             let turn_id = state
                 .active_turn_id
                 .clone()
                 .ok_or_else(|| invalid("session_id", "Phoenix session has no active turn"))?;
-            (state.runtime.clone(), state.thread_id.clone(), turn_id)
+            (state.backend.clone(), turn_id)
         };
-        runtime.interrupt(&thread_id, &turn_id).await?;
+        match backend {
+            SessionBackend::Codex { thread_id, runtime } => {
+                runtime.interrupt(&thread_id, &turn_id).await?;
+            }
+            SessionBackend::OpenAi {
+                session_id,
+                backend,
+            } => {
+                backend.cancel_session(&session_id).await?;
+            }
+        }
         Ok(json!({"session_id":session_id,"status":"interrupting","turn_id":turn_id}))
     }
 
@@ -687,7 +940,6 @@ impl PhoenixRuntime {
         if input.trim().is_empty() || input.len() > MAX_INPUT_BYTES {
             return Err(invalid("input", "input must contain 1-32768 bytes"));
         }
-        let protocol_inputs = turn_inputs(input, attachments)?;
         let session = self.session(owner, session_id).await?;
         let (runtime, thread_id, turn_id) = {
             let state = session.lock().await;
@@ -695,8 +947,18 @@ impl PhoenixRuntime {
                 .active_turn_id
                 .clone()
                 .ok_or_else(|| invalid("session_id", "Phoenix session has no active turn"))?;
-            (state.runtime.clone(), state.thread_id.clone(), turn_id)
+            match &state.backend {
+                SessionBackend::Codex { thread_id, runtime } => {
+                    (runtime.clone(), thread_id.clone(), turn_id)
+                }
+                SessionBackend::OpenAi { .. } => {
+                    return Err(unavailable(
+                        "OpenAI-compatible Phoenix providers do not support steering active turns",
+                    ));
+                }
+            }
         };
+        let protocol_inputs = turn_inputs(input, attachments)?;
         let response = runtime
             .request(
                 "turn/steer",
@@ -740,8 +1002,18 @@ impl PhoenixRuntime {
             if state.turn_in_progress {
                 return Err(unavailable("Phoenix session already has an active turn"));
             }
+            let (runtime, thread_id) = match &state.backend {
+                SessionBackend::Codex { thread_id, runtime } => {
+                    (runtime.clone(), thread_id.clone())
+                }
+                SessionBackend::OpenAi { .. } => {
+                    return Err(unavailable(
+                        "OpenAI-compatible Phoenix providers do not support Codex reviews",
+                    ));
+                }
+            };
             state.turn_in_progress = true;
-            (state.runtime.clone(), state.thread_id.clone())
+            (runtime, thread_id)
         };
         let mut events = runtime.subscribe();
         let response = runtime
@@ -811,6 +1083,11 @@ impl PhoenixRuntime {
 
     async fn diagnostics(&self) -> Result<Value, ToolError> {
         self.require_available()?;
+        if self.config.provider == PhoenixProvider::OpenAiCompatible {
+            return Err(unavailable(
+                "OpenAI-compatible Phoenix providers do not expose Codex diagnostics",
+            ));
+        }
         let runtime = initialized_app_server(&self.config, &self.local_mcp_url).await?;
         let workspace_root = self
             .config
@@ -863,14 +1140,29 @@ impl PhoenixRuntime {
         Ok(session)
     }
 
+    fn openai_backend(&self) -> Result<OpenAiBackend, ToolError> {
+        self.openai.clone().ok_or_else(|| {
+            unavailable(format!(
+                "Phoenix OpenAI-compatible provider requires {}",
+                crate::dispatch::phoenix_openai::BASE_URL_ENV
+            ))
+        })
+    }
+
     fn require_available(&self) -> Result<(), ToolError> {
         if self.available() {
-            Ok(())
-        } else {
-            Err(unavailable(
-                "Phoenix requires an enabled container-local Codex App Server runtime",
-            ))
+            return Ok(());
         }
+        let requirement = match self.config.provider {
+            PhoenixProvider::CodexAppServer => {
+                "an enabled container-local Codex App Server runtime".to_owned()
+            }
+            PhoenixProvider::OpenAiCompatible => format!(
+                "an enabled OpenAI-compatible provider configured with {}",
+                crate::dispatch::phoenix_openai::BASE_URL_ENV
+            ),
+        };
+        Err(unavailable(format!("Phoenix requires {requirement}")))
     }
 }
 
@@ -878,6 +1170,84 @@ impl Default for PhoenixRuntime {
     fn default() -> Self {
         Self::new(PhoenixPreferences::default())
     }
+}
+
+fn openai_model_id(model: &Value) -> Option<&str> {
+    model.get("id").and_then(Value::as_str)
+}
+
+fn select_openai_model(
+    models: &[Value],
+    requested: Option<&str>,
+    configured: Option<&str>,
+    effort: Option<&str>,
+) -> Result<String, ToolError> {
+    let find_id = |candidate: &str| {
+        models
+            .iter()
+            .filter_map(openai_model_id)
+            .find(|id| *id == candidate)
+            .map(str::to_owned)
+    };
+    if let Some(requested) = requested {
+        return find_id(requested).ok_or_else(|| {
+            invalid(
+                "model",
+                "selected model is not advertised by the OpenAI-compatible provider",
+            )
+        });
+    }
+    if let Some(configured) = configured {
+        return find_id(configured).ok_or_else(|| {
+            invalid(
+                "model",
+                "configured Phoenix model is not advertised by the OpenAI-compatible provider",
+            )
+        });
+    }
+    if let Some(effort) = effort
+        && let Some(id) = models.iter().find_map(|model| {
+            (model
+                .pointer("/gateway/thinking_effort")
+                .and_then(Value::as_str)
+                == Some(effort))
+            .then(|| openai_model_id(model))
+            .flatten()
+        })
+    {
+        return Ok(id.to_owned());
+    }
+    models
+        .iter()
+        .find_map(openai_model_id)
+        .map(str::to_owned)
+        .ok_or_else(|| unavailable("OpenAI-compatible Phoenix provider advertised no models"))
+}
+
+fn attachments_present(attachments: Option<&Value>) -> bool {
+    match attachments {
+        None | Some(Value::Null) => false,
+        Some(Value::Array(values)) => !values.is_empty(),
+        Some(_) => true,
+    }
+}
+
+fn push_message(session: &mut Session, role: &'static str, text: String) {
+    session.messages.push(Message {
+        role,
+        text,
+        created_at_ms: now_millis(),
+    });
+    if session.messages.len() > MAX_MESSAGES {
+        let excess = session.messages.len() - MAX_MESSAGES;
+        session.messages.drain(..excess);
+    }
+}
+
+async fn clear_active_turn(session: &Arc<Mutex<Session>>) {
+    let mut state = session.lock().await;
+    state.turn_in_progress = false;
+    state.active_turn_id = None;
 }
 
 fn render_session(session_id: &str, session: &Session) -> Value {
@@ -1342,6 +1712,10 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use std::fs;
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{method, path},
+    };
 
     #[tokio::test]
     async fn unavailable_by_default_and_sessions_are_owner_scoped() {
@@ -1368,12 +1742,152 @@ mod tests {
     fn config_boundary_requires_executable_and_container_directories() {
         let runtime = PhoenixRuntime::new(PhoenixPreferences {
             enabled: true,
+            provider: PhoenixProvider::CodexAppServer,
             command: Some("/missing/codex".into()),
             codex_home: Some("/missing/codex-home".into()),
             workspace_root: Some("/missing/workspace".into()),
             model: None,
         });
         assert!(!runtime.available());
+    }
+
+    #[tokio::test]
+    async fn openai_compatible_provider_drives_assistant_session_lifecycle() {
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "object": "list",
+                "data": [{
+                    "id": "chatgpt-browser-medium",
+                    "object": "model",
+                    "gateway": {"thinking_effort": "medium"}
+                }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(|request: &wiremock::Request| match request.url.path() {
+                "/v1/sessions" => {
+                    ResponseTemplate::new(200).set_body_json(json!({"status":"ready"}))
+                }
+                "/v1/chat/completions" => ResponseTemplate::new(200).set_body_json(json!({
+                    "choices": [{
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "EXGPT_ADAPTER_OK"},
+                        "finish_reason": "stop"
+                    }]
+                })),
+                path if path.starts_with("/v1/sessions/") && path.ends_with("/close") => {
+                    ResponseTemplate::new(200).set_body_json(json!({"status":"closed"}))
+                }
+                _ => ResponseTemplate::new(404),
+            })
+            .mount(&server)
+            .await;
+
+        let backend = OpenAiBackend::from_url(&format!("{}/v1", server.uri()), None).unwrap();
+        let runtime = PhoenixRuntime::new_with_backends(
+            PhoenixPreferences {
+                enabled: true,
+                provider: PhoenixProvider::OpenAiCompatible,
+                model: Some("chatgpt-browser-medium".into()),
+                ..PhoenixPreferences::default()
+            },
+            LOCAL_MCP_URL,
+            Some(backend),
+        );
+
+        let status = runtime
+            .dispatch("principal-a", "phoenix.status", json!({}))
+            .await
+            .unwrap();
+        assert_eq!(status["available"], true);
+        assert_eq!(status["runtime"], "remote_http");
+        assert_eq!(status["service"], "openai-compatible");
+
+        let models = runtime
+            .dispatch("principal-a", "phoenix.models.list", json!({}))
+            .await
+            .unwrap();
+        assert_eq!(models["models"][0]["id"], "chatgpt-browser-medium");
+        assert_eq!(models["models"][0]["defaultReasoningEffort"], "medium");
+
+        let started = runtime
+            .dispatch("principal-a", "phoenix.session.start", json!({}))
+            .await
+            .unwrap();
+        let session_id = started["session_id"].as_str().unwrap();
+        let completed = runtime
+            .dispatch(
+                "principal-a",
+                "phoenix.turn.send",
+                json!({"session_id": session_id, "input": "ping exgpt"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(completed["messages"][0]["role"], "user");
+        assert_eq!(completed["messages"][1]["text"], "EXGPT_ADAPTER_OK");
+
+        let closed = runtime
+            .dispatch(
+                "principal-a",
+                "phoenix.session.close",
+                json!({"session_id": session_id}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(closed["status"], "closed");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live OpenAI-compatible Phoenix provider"]
+    async fn openai_compatible_provider_live_round_trip() {
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let backend = OpenAiBackend::from_env()
+            .expect("set LABBY_PHOENIX_OPENAI_BASE_URL for the live Phoenix provider test");
+        let runtime = PhoenixRuntime::new_with_backends(
+            PhoenixPreferences {
+                enabled: true,
+                provider: PhoenixProvider::OpenAiCompatible,
+                model: Some("chatgpt-browser-medium".into()),
+                ..PhoenixPreferences::default()
+            },
+            LOCAL_MCP_URL,
+            Some(backend),
+        );
+
+        let started = runtime
+            .dispatch("principal-live", "phoenix.session.start", json!({}))
+            .await
+            .unwrap();
+        let session_id = started["session_id"].as_str().unwrap().to_owned();
+        let completed = runtime
+            .dispatch(
+                "principal-live",
+                "phoenix.turn.send",
+                json!({
+                    "session_id": session_id,
+                    "input": "Reply exactly LABBY_PHOENIX_EXGPT_OK"
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            completed["messages"][1]["text"].as_str().map(str::trim),
+            Some("LABBY_PHOENIX_EXGPT_OK")
+        );
+
+        let closed = runtime
+            .dispatch(
+                "principal-live",
+                "phoenix.session.close",
+                json!({"session_id": session_id}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(closed["status"], "closed");
     }
 
     #[test]
@@ -1427,6 +1941,7 @@ done
         fs::set_permissions(&command, fs::Permissions::from_mode(0o700)).unwrap();
         let runtime = PhoenixRuntime::new(PhoenixPreferences {
             enabled: true,
+            provider: PhoenixProvider::CodexAppServer,
             command: Some(command),
             codex_home: Some(root.path().to_path_buf()),
             workspace_root: Some(root.path().to_path_buf()),
@@ -1561,6 +2076,7 @@ printf '{"id":%s,"error":{"code":-32000,"message":"rejected"}}\n' "$id"
         fs::set_permissions(&command, fs::Permissions::from_mode(0o700)).unwrap();
         let runtime = PhoenixRuntime::new(PhoenixPreferences {
             enabled: true,
+            provider: PhoenixProvider::CodexAppServer,
             command: Some(command),
             codex_home: Some(root.path().to_path_buf()),
             workspace_root: Some(root.path().to_path_buf()),
@@ -1626,6 +2142,7 @@ done
         fs::set_permissions(&command, fs::Permissions::from_mode(0o700)).unwrap();
         let runtime = PhoenixRuntime::new(PhoenixPreferences {
             enabled: true,
+            provider: PhoenixProvider::CodexAppServer,
             command: Some(command),
             codex_home: Some(root.path().to_path_buf()),
             workspace_root: Some(root.path().to_path_buf()),
@@ -1703,6 +2220,7 @@ done
         fs::set_permissions(&command, fs::Permissions::from_mode(0o700)).unwrap();
         let runtime = PhoenixRuntime::new(PhoenixPreferences {
             enabled: true,
+            provider: PhoenixProvider::CodexAppServer,
             command: Some(command),
             codex_home: Some(root.path().to_path_buf()),
             workspace_root: Some(root.path().to_path_buf()),

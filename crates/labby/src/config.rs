@@ -577,16 +577,31 @@ pub struct AgentPreferences {
     pub harnesses: Vec<AgentHarnessConfig>,
 }
 
+/// Backend used by the Phoenix assistant.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PhoenixProvider {
+    /// Launch a container-local Codex App Server.
+    #[default]
+    CodexAppServer,
+    /// Use an operator-configured OpenAI-compatible HTTP endpoint.
+    #[serde(rename = "openai_compatible")]
+    OpenAiCompatible,
+}
+
 /// Operator-owned launch boundary for Phoenix.
 ///
-/// Every path is resolved inside the Labby runtime environment. The browser
-/// never supplies an executable, Codex home, or workspace path.
+/// Every local path is resolved inside the Labby runtime environment. The browser
+/// never supplies an executable, Codex home, workspace path, or provider endpoint.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PhoenixPreferences {
     /// Phoenix stays unavailable until an operator explicitly enables it.
     #[serde(default)]
     pub enabled: bool,
+    /// Backend selected by the operator.
+    #[serde(default)]
+    pub provider: PhoenixProvider,
     /// Absolute path to the Codex CLI installed in the Labby container.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<PathBuf>,
@@ -606,14 +621,16 @@ impl PhoenixPreferences {
         if !self.enabled {
             return Ok(());
         }
-        let paths = [&self.command, &self.codex_home, &self.workspace_root];
-        if paths
-            .iter()
-            .any(|path| path.as_ref().is_none_or(|path| !path.is_absolute()))
-        {
-            return Err(ConfigError::InvalidProxyConfig {
-                reason: "invalid [phoenix] configuration: enabled Phoenix requires absolute command, codex_home, and workspace_root paths".into(),
-            });
+        if self.provider == PhoenixProvider::CodexAppServer {
+            let paths = [&self.command, &self.codex_home, &self.workspace_root];
+            if paths
+                .iter()
+                .any(|path| path.as_ref().is_none_or(|path| !path.is_absolute()))
+            {
+                return Err(ConfigError::InvalidProxyConfig {
+                    reason: "invalid [phoenix] configuration: enabled Codex App Server provider requires absolute command, codex_home, and workspace_root paths".into(),
+                });
+            }
         }
         if self.model.as_ref().is_some_and(|model| {
             model.is_empty() || model.len() > 128 || model.contains(char::is_whitespace)
@@ -3155,6 +3172,12 @@ mod tests {
         )
         .unwrap();
         configured.validate().unwrap();
+
+        let openai_compatible: LabConfig = toml::from_str(
+            "[phoenix]\nenabled = true\nprovider = \"openai_compatible\"\nmodel = \"chatgpt-browser-medium\"\n",
+        )
+        .unwrap();
+        openai_compatible.validate().unwrap();
     }
 
     #[test]
