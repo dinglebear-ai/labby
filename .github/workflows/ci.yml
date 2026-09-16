@@ -974,6 +974,13 @@ jobs:
         with:
           install_args: just
       - run: just docs-check
+      - name: Enforce the CI workflow contract from a gating job
+        # crates/labby/tests/ci_changed_paths.rs pins the routing classifier,
+        # the ci-gate shape, and the non-blocking job list. It also runs in
+        # the non-blocking `test` shards, where a regression cannot block a
+        # merge; running it here, on the lib this job already built, makes it
+        # part of ci-gate.
+        run: cargo test -p labby --all-features --locked --test ci_changed_paths
 
   verification:
     name: Verification workspace

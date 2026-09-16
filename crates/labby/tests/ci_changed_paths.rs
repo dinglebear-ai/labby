@@ -1334,6 +1334,58 @@ fn merge_gate_shards_heavy_suites_to_stay_under_ten_minutes() {
     );
 }
 
+/// The non-blocking suites are kept off `ci-gate` on purpose, and that only
+/// stays safe while each of them also carries `continue-on-error: true`:
+/// without it a red suite still fails the CI run that release-please reads.
+#[test]
+fn non_blocking_jobs_declare_continue_on_error() {
+    let workflow = ci_workflow_yaml(&ci_workflow_text());
+    for job in NON_BLOCKING_JOBS {
+        assert_eq!(
+            workflow["jobs"][*job]["continue-on-error"].as_bool(),
+            Some(true),
+            "non-blocking job `{job}` must declare continue-on-error: true"
+        );
+    }
+}
+
+/// This contract must be able to block a merge. The workspace suite that
+/// also runs it is non-blocking, so a gating job has to execute it too.
+#[test]
+fn ci_contract_runs_inside_a_gating_job() {
+    let text = ci_workflow_text();
+    let workflow = ci_workflow_yaml(&text);
+    let gate_needs: BTreeSet<String> = workflow["jobs"]["ci-gate"]["needs"]
+        .as_array()
+        .expect("ci-gate declares needs")
+        .iter()
+        .map(|need| need.as_str().expect("job name").to_string())
+        .collect();
+    let command = "cargo test -p labby --all-features --locked --test ci_changed_paths";
+    let host = workflow["jobs"]
+        .as_object()
+        .expect("jobs")
+        .iter()
+        .find(|(_, job)| {
+            job["steps"]
+                .as_array()
+                .map(|steps| {
+                    steps.iter().any(|step| {
+                        step["run"]
+                            .as_str()
+                            .is_some_and(|run| run.contains(command))
+                    })
+                })
+                .unwrap_or(false)
+        })
+        .map(|(name, _)| name.clone())
+        .expect("a job runs the ci_changed_paths contract");
+    assert!(
+        gate_needs.contains(&host) && !NON_BLOCKING_JOBS.contains(&host.as_str()),
+        "the CI contract runs only in `{host}`, which cannot block a merge"
+    );
+}
+
 /// A stand-in for a base commit whose classifier predates the `unraid` key.
 #[cfg(unix)]
 const STALE_CLASSIFIER: &str = r#"import argparse
