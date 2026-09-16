@@ -599,6 +599,7 @@ impl GatewayManager {
         let mut updates = Vec::new();
         let mut connected = 0usize;
         let mut failures = Vec::new();
+        let mut failed_upstream_names = Vec::new();
         let mut failed_probes = Vec::new();
         let budget_exhausted = loop {
             match tokio::time::timeout_at(deadline, probes.next()).await {
@@ -625,6 +626,7 @@ impl GatewayManager {
                         "upstream connect failed; omitting from codemode proxy and \
                          suppressing retries briefly"
                     );
+                    failed_upstream_names.push(upstream.name.clone());
                     failures.push(format!("{}: {error}", upstream.name));
                     // Only this arm is a real failure. The budget-exhausted
                     // paths below are not, and must not be suppressed.
@@ -724,6 +726,15 @@ impl GatewayManager {
                     details.join("; ")
                 ),
             });
+        }
+        if !failed_upstream_names.is_empty() {
+            tracing::warn!(
+                surface = "dispatch",
+                service = "gateway",
+                action = "code_mode.catalog_cache",
+                failed_upstreams = ?failed_upstream_names,
+                "one-shot Code Mode catalog is partial because upstream probes failed"
+            );
         }
         if !suppressed.is_empty() {
             warn_suppressed(&suppressed);

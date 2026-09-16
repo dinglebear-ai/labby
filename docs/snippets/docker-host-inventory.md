@@ -104,30 +104,39 @@ async (o = {}) => {
 			"-o PreferredAuthentications=publickey",
 			"-o PasswordAuthentication=no",
 			"-o KbdInteractiveAuthentication=no",
+			"-o ForwardAgent=no",
+			"-o ClearAllForwardings=yes",
 			"-o ConnectionAttempts=1",
 			"-o ConnectTimeout=" + i.connect_timeout_seconds,
 		].join(" "),
 		ssh = (r) =>
 			callTool(bash, {
-				command: "ssh " + opts + " " + q(i.alias) + " " + q(r),
+				command: "ssh " + opts + " -- " + q(i.alias) + " " + q(r),
 				timeout: i.command_timeout_ms,
 			});
-	const id = txt(
-			await ssh(
-				"hostname; whoami; uname -s; command -v docker || true; docker version --format '{{.Server.Version}}' 2>/dev/null || true; command -v timeout || true",
-			),
-		)
-			.split("\n")
-			.map((x) => x.trim()),
-		host = {
-			alias: i.alias,
-			hostname: id[0] || null,
-			user: id[1] || null,
-			platform: id[2] || null,
-			docker_path: id[3] || null,
-			docker_version: id[4] || null,
-			timeout_path: id[5] || null,
-		};
+	const hostProbe = [
+		'printf "hostname=%s\n" "$(hostname)"',
+		'printf "user=%s\n" "$(whoami)"',
+		'printf "platform=%s\n" "$(uname -s)"',
+		'printf "docker_path=%s\n" "$(command -v docker 2>/dev/null || true)"',
+		'printf "docker_version=%s\n" "$(docker version --format \'{{.Server.Version}}\' 2>/dev/null || true)"',
+		'printf "timeout_path=%s\n" "$(command -v timeout 2>/dev/null || true)"',
+	].join("; ");
+	const fields = {};
+	for (const line of txt(await ssh(hostProbe)).split("\n")) {
+		const n = line.indexOf("=");
+		if (n < 1) continue;
+		fields[line.slice(0, n)] = line.slice(n + 1).trim();
+	}
+	const host = {
+		alias: i.alias,
+		hostname: fields.hostname || null,
+		user: fields.user || null,
+		platform: fields.platform || null,
+		docker_path: fields.docker_path || null,
+		docker_version: fields.docker_version || null,
+		timeout_path: fields.timeout_path || null,
+	};
 	if (!host.hostname)
 		throw new Error("SSH probe returned no hostname for " + i.alias);
 	if (!host.docker_path)

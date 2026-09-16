@@ -232,6 +232,15 @@ fn exit_signal(_status: Option<&ExitStatus>) -> Option<i32> {
     None
 }
 
+const fn termination_is_clean(
+    expected: bool,
+    success: bool,
+    killed_after_timeout: bool,
+    invalidated_count: usize,
+) -> bool {
+    expected && invalidated_count == 0 && (success || killed_after_timeout)
+}
+
 async fn log_termination(
     upstream: String,
     generation: u64,
@@ -249,7 +258,12 @@ async fn log_termination(
     let success = status.is_some_and(ExitStatus::success);
     let invalidated_count = invalidated_requests.len();
 
-    if invalidated_count == 0 {
+    if termination_is_clean(
+        expected,
+        success,
+        exit.killed_after_timeout,
+        invalidated_count,
+    ) {
         tracing::info!(
             surface = "dispatch",
             service = "upstream.pool",
@@ -266,7 +280,7 @@ async fn log_termination(
             invalidated_count,
             stderr_tail = %stderr_tail,
             success,
-            "stdio upstream child terminated without affected requests"
+            "stdio upstream child terminated cleanly"
         );
     } else {
         tracing::warn!(
@@ -285,7 +299,8 @@ async fn log_termination(
             invalidated_count,
             invalidated_requests = ?invalidated_requests,
             stderr_tail = %stderr_tail,
-            "stdio upstream child terminated with affected requests"
+            success,
+            "stdio upstream child terminated unexpectedly or with affected requests"
         );
     }
 }
@@ -413,8 +428,11 @@ impl Drop for DiagnosticChildTransport {
                 upstream,
                 generation,
                 pid,
+                // Dropping the transport is owner-initiated teardown. A child that
+                // exits on its own is observed by `receive*` as `transport_eof`
+                // before Drop and remains unexpected.
                 "transport_drop",
-                false,
+                true,
                 diagnostics,
                 invalidated,
                 exit,
@@ -469,6 +487,16 @@ impl Transport<RoleClient> for DiagnosticChildTransport {
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn termination_severity_distinguishes_expected_teardown_from_unexpected_exit() {
+        assert!(termination_is_clean(true, true, false, 0));
+        assert!(termination_is_clean(true, false, true, 0));
+        assert!(!termination_is_clean(false, true, false, 0));
+        assert!(!termination_is_clean(false, false, false, 0));
+        assert!(!termination_is_clean(true, false, false, 0));
+        assert!(!termination_is_clean(true, true, false, 1));
+    }
 
     #[test]
     fn inflight_registry_is_scoped_to_connection_generation() {

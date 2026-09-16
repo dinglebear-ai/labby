@@ -344,13 +344,15 @@ pub fn resolve_snippet(
     if let Some(path) = find_snippet_file(builtin_dir, name) {
         return read_resolved(name, SnippetSource::Builtin, path);
     }
+    tracing::debug!(
+        snippet = %name,
+        user_dir = %user_dir.display(),
+        builtin_dir = %builtin_dir.display(),
+        "saved snippet was not found in configured authorities"
+    );
     Err(ToolError::Sdk {
         sdk_kind: "not_found".to_string(),
-        message: format!(
-            "snippet `{name}` not found; searched user snippets at `{}` and built-ins at `{}`",
-            user_dir.display(),
-            builtin_dir.display()
-        ),
+        message: format!("snippet `{name}` not found"),
     })
 }
 
@@ -1076,21 +1078,15 @@ mod tests {
     }
 
     #[test]
-    fn resolve_snippet_not_found_reports_searched_authorities() {
+    fn resolve_snippet_not_found_does_not_expose_filesystem_authorities() {
         let lab_home = tempfile::tempdir().expect("lab home");
         let builtin = tempfile::tempdir().expect("builtin snippets");
         let error = resolve_snippet(lab_home.path(), builtin.path(), "missing")
             .expect_err("missing snippet must fail");
         let message = format!("{error}");
         assert!(message.contains("missing"));
-        assert!(
-            message.contains(&user_snippet_dir(lab_home.path()).display().to_string()),
-            "error must identify the user snippet authority: {message}"
-        );
-        assert!(
-            message.contains(&builtin.path().display().to_string()),
-            "error must identify the builtin snippet authority: {message}"
-        );
+        assert!(!message.contains(&user_snippet_dir(lab_home.path()).display().to_string()));
+        assert!(!message.contains(&builtin.path().display().to_string()));
     }
 
     #[test]
@@ -1194,6 +1190,43 @@ mod tests {
             !code.contains("__LABBY_DOCKER_LOG_SECTION_9D81__"),
             "static framing lets container output spoof parser boundaries"
         );
+    }
+
+    #[test]
+    fn homelab_inventory_snippets_pin_ssh_safety_and_artifact_redaction() {
+        let lab_home = tempfile::tempdir().expect("temp lab home");
+        let builtin = builtin_snippet_dir();
+        let ssh = code_for_snippet(
+            &resolve_snippet(lab_home.path(), &builtin, "homelab-ssh-targets")
+                .expect("resolve ssh targets"),
+        )
+        .expect("valid ssh targets source");
+        let docker = code_for_snippet(
+            &resolve_snippet(lab_home.path(), &builtin, "docker-host-inventory")
+                .expect("resolve docker host inventory"),
+        )
+        .expect("valid docker host source");
+        let aggregate = code_for_snippet(
+            &resolve_snippet(lab_home.path(), &builtin, "homelab-docker-inventory")
+                .expect("resolve aggregate inventory"),
+        )
+        .expect("valid aggregate source");
+
+        for code in [&ssh, &docker] {
+            assert!(code.contains("-o ForwardAgent=no"));
+            assert!(code.contains("-o ClearAllForwardings=yes"));
+            assert!(code.contains("ssh ") && code.contains(" -- "));
+            assert!(code.contains("docker_path=%s"));
+            assert!(code.contains("timeout_path=%s"));
+        }
+        assert!(ssh.contains("ssh -G -- "));
+        assert!(ssh.contains("config_file_limit_reached"));
+        assert!(ssh.contains("config_truncated"));
+        assert!(aggregate.contains("delete artifactInput.ssh_config"));
+        assert!(aggregate.contains("parsed_config_file_count"));
+        assert!(aggregate.contains("identity_files_configured"));
+        assert!(aggregate.contains("artifactTargets"));
+        assert!(aggregate.contains("ssh_config_supplied"));
     }
 
     #[test]
@@ -1364,8 +1397,7 @@ mod tests {
 
     #[test]
     fn read_resolved_rejects_non_utf8_snippet_files() {
-        let dir = tempfile::tempdir().expect("temp snippets");
-        let path = dir.path().join("demo.js");
+        let dir = tempfile::tempdir().expect("temp snippets");        let path = dir.path().join("demo.js");
         fs::write(&path, [0xff, 0xfe, 0xfd]).expect("write non-UTF8 fixture");
 
         let error = read_resolved("demo", SnippetSource::User, path)

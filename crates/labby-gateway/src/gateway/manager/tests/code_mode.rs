@@ -1397,8 +1397,7 @@ async fn palette_search_reports_truncation_when_global_inspection_budget_is_exha
                         tool: rmcp::model::Tool::new(
                             name,
                             "ordinary fixture",
-                            Arc::new(serde_json::Map::new()),
-                        ),
+                            Arc::new(serde_json::Map::new()),                        ),
                         input_schema: None,
                         output_schema: None,
                         upstream_name: Arc::clone(&upstream_name),
@@ -2503,7 +2502,7 @@ fn budget_warning(logs: &str) -> Option<&str> {
 /// in flight. Only that it never lands in the catalog or the cache matters
 /// here; the failure-reporting path is pinned by
 /// `one_shot_cli_catalog_errors_when_every_uncached_upstream_fails_fast`.
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn one_shot_cli_catalog_bounds_cold_connects_and_persists_completed_upstreams() {
     let stalled = stalled_http_upstream("alpha").await;
     // `fixture_http_upstream` points at 127.0.0.1:9, which nothing listens on.
@@ -2740,7 +2739,7 @@ async fn one_shot_cli_catalog_keeps_config_order_and_serves_repeat_runs_from_cac
 /// A cached upstream keeps the run partial rather than failed when a
 /// straggler misses the budget: the cached tools are served without a
 /// connect and the straggler is named.
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn one_shot_cli_catalog_serves_cached_upstreams_when_a_straggler_misses_the_budget() {
     let responder = OneShotHttpResponder::new("ping", Duration::ZERO);
     let (_server, healthy) = cold_http_upstream("omega", responder.clone()).await;
@@ -2783,7 +2782,7 @@ async fn one_shot_cli_catalog_serves_cached_upstreams_when_a_straggler_misses_th
 /// An upstream whose tools landed before the budget ended is connected even if
 /// the connect's trailing prompt-cache refresh is what the deadline cut off:
 /// its tools are served and cached, and nothing is reported as unfinished.
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn one_shot_cli_catalog_keeps_an_upstream_whose_tools_landed_before_the_cutoff() {
     let responder = OneShotHttpResponder::new("ping", Duration::ZERO)
         .with_prompts_delay(Duration::from_mins(2));
@@ -2797,8 +2796,7 @@ async fn one_shot_cli_catalog_keeps_an_upstream_whose_tools_landed_before_the_cu
     let (tools, logs) = with_captured_logs(|| {
         tokio::time::timeout(
             BUDGET_GUARD,
-            manager.code_mode_catalog_tools_cached(None, None),
-        )
+            manager.code_mode_catalog_tools_cached(None, None),        )
     })
     .await;
     let tools = tools
@@ -2914,7 +2912,7 @@ async fn one_shot_cli_catalog_names_unattempted_upstreams_when_stalled_probes_fi
 /// A fresh cache entry with zero tools (a resource- or prompt-only upstream)
 /// still counts as served from cache: a straggler missing the budget leaves
 /// the run partial with an empty tool list, not failed.
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn one_shot_cli_catalog_treats_a_cached_zero_tool_upstream_as_served() {
     let quiet = fixture_http_upstream("omega");
     let cache_dir = tempfile::tempdir().expect("tempdir");
@@ -2955,7 +2953,7 @@ async fn one_shot_cli_catalog_treats_a_cached_zero_tool_upstream_as_served() {
 /// `fixture_http_upstream` points at the discard port, so the probe fails fast
 /// rather than stalling — this is the failure path, distinct from the
 /// budget-exhaustion paths, and the only one the negative cache may suppress.
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn a_failed_probe_is_suppressed_on_the_next_one_shot_run() {
     let cache_dir = tempfile::tempdir().expect("tempdir");
     let cache_path = cache_dir.path().join("codemode-catalog.json");
@@ -2966,16 +2964,20 @@ async fn a_failed_probe_is_suppressed_on_the_next_one_shot_run() {
     let (manager, _pool) =
         one_shot_manager_at(vec![dead.clone(), healthy], 4_000, cache_path.clone()).await;
 
-    let first = manager
-        .code_mode_catalog_tools_cached(None, None)
-        .await
-        .expect("first run should serve the healthy upstream");
+    let (first, first_logs) =
+        with_captured_logs(|| manager.code_mode_catalog_tools_cached(None, None)).await;
+    let first = first.expect("first run should serve the healthy upstream");
     assert_eq!(
         first
             .iter()
             .map(|tool| tool.tool.name.as_ref())
             .collect::<Vec<_>>(),
         vec!["ping"]
+    );
+    assert!(
+        first_logs.contains("catalog is partial because upstream probes failed")
+            && first_logs.contains("dead"),
+        "partial one-shot catalog must emit one actionable failed-upstream warning: {first_logs}"
     );
 
     // The failure is now on disk, and the healthy upstream is cached, so the

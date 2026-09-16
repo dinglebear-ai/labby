@@ -191,6 +191,8 @@ pub(crate) struct RunnerConfig {
     pub max_log_bytes: usize,
     pub trace_params: bool,
     pub capability_filter: ToolScope,
+    /// Effective total byte budget for source resolved through `codemode.run`.
+    pub snippet_max_bytes: usize,
     /// Durable-run execution id, minted by the caller (binary/gateway). `None`
     /// on the write-free/standalone path; flows into every [`ExecCtx`] so the
     /// host's `record_step` can key its per-execution journal buffer.
@@ -283,6 +285,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         max_log_bytes: usize,
         trace_params: bool,
         capability_filter: ToolScope,
+        snippet_max_bytes: usize,
         execution_id: Option<Arc<str>>,
     ) -> Result<CodeModeExecutionResponse, CodeModeExecutionError> {
         // Read the openapi registry/client from the host at the config-build site
@@ -318,6 +321,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             max_log_bytes,
             trace_params,
             capability_filter,
+            snippet_max_bytes: snippet_max_bytes.min(MAX_SNIPPET_RESOLVED_BYTES_PER_RUN),
             execution_id,
             openapi_registry,
             openapi_http_client,
@@ -1393,8 +1397,7 @@ async fn handle_completed_tool_call(
                         error_kind: None,
                         ui,
                     },
-                ));
-            }
+                ));            }
             write_runner_input_by_deadline(
                 stdin,
                 &CodeModeRunnerInput::ToolResult {
@@ -1468,6 +1471,7 @@ mod tests {
             max_log_bytes: 4096,
             trace_params: false,
             capability_filter: ToolScope::default(),
+            snippet_max_bytes: MAX_SNIPPET_RESOLVED_BYTES_PER_RUN,
             execution_id: None,
             openapi_registry: labby_openapi::OpenApiRegistry::default(),
             openapi_http_client: labby_openapi::http::build_dispatch_client()

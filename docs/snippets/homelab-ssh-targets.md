@@ -174,6 +174,14 @@ async (o = {}) => {
 				}
 		}
 	}
+	const config_truncated = queue.length > 0;
+	if (config_truncated) {
+		warnings.push({
+			type: "config_file_limit_reached",
+			limit: 16,
+			remaining: queue.length,
+		});
+	}
 	for (const raw of input.extra_hosts) {
 		const alias = String(raw || "").trim();
 		if (alias && !input.exclude_hosts.includes(alias) && !aliases.has(alias))
@@ -193,7 +201,7 @@ async (o = {}) => {
 				};
 				for (const line of text(
 					await callTool(bashTool.id, {
-						command: "ssh -G " + quote(target.alias),
+						command: "ssh -G -- " + quote(target.alias),
 						timeout: input.command_timeout_ms,
 					}),
 				).split("\n")) {
@@ -233,6 +241,8 @@ async (o = {}) => {
 		"-o PreferredAuthentications=publickey",
 		"-o PasswordAuthentication=no",
 		"-o KbdInteractiveAuthentication=no",
+		"-o ForwardAgent=no",
+		"-o ClearAllForwardings=yes",
 		"-o ConnectionAttempts=1",
 		"-o ConnectTimeout=" + input.connect_timeout_seconds,
 	].join(" ");
@@ -245,18 +255,27 @@ async (o = {}) => {
 				failure_kind: "config_failed",
 			};
 		try {
-			const probe =
-				"hostname; whoami; uname -s; command -v docker || true; docker version --format '{{.Server.Version}}' 2>/dev/null || true; command -v timeout || true";
-			const lines = text(
+			const probe = [
+				'printf "hostname=%s\n" "$(hostname)"',
+				'printf "user=%s\n" "$(whoami)"',
+				'printf "platform=%s\n" "$(uname -s)"',
+				'printf "docker_path=%s\n" "$(command -v docker 2>/dev/null || true)"',
+				'printf "docker_version=%s\n" "$(docker version --format \'{{.Server.Version}}\' 2>/dev/null || true)"',
+				'printf "timeout_path=%s\n" "$(command -v timeout 2>/dev/null || true)"',
+			].join("; ");
+			const fields = {};
+			for (const line of text(
 				await callTool(bashTool.id, {
 					command:
-						"ssh " + opts + " " + quote(target.alias) + " " + quote(probe),
+						"ssh " + opts + " -- " + quote(target.alias) + " " + quote(probe),
 					timeout: Math.min(input.command_timeout_ms, 12000),
 				}),
-			)
-				.split("\n")
-				.map((x) => x.trim());
-			if (!lines[0])
+			).split("\n")) {
+				const n = line.indexOf("=");
+				if (n < 1) continue;
+				fields[line.slice(0, n)] = line.slice(n + 1).trim();
+			}
+			if (!fields.hostname)
 				return {
 					...target,
 					ssh_reachable: false,
@@ -269,12 +288,12 @@ async (o = {}) => {
 				ssh_reachable: true,
 				key_auth_working: true,
 				remote: {
-					hostname: lines[0] || null,
-					user: lines[1] || null,
-					platform: lines[2] || null,
-					docker_path: lines[3] || null,
-					docker_version: lines[4] || null,
-					timeout_path: lines[5] || null,
+					hostname: fields.hostname || null,
+					user: fields.user || null,
+					platform: fields.platform || null,
+					docker_path: fields.docker_path || null,
+					docker_version: fields.docker_version || null,
+					timeout_path: fields.timeout_path || null,
 				},
 			};
 		} catch (e) {
@@ -291,10 +310,12 @@ async (o = {}) => {
 	return {
 		schema_version: "labby.homelab.ssh_targets.v1",
 		ok: true,
+		partial: warnings.length > 0,
 		controller: { ...controller, ssh_config: root },
 		discovery: {
 			parsed_config_files: Array.from(seen),
 			warnings,
+			config_truncated,
 			configured_aliases: targets.length,
 			key_auth_configured: targets.filter((x) => x.key_auth_configured).length,
 			key_auth_working: targets.filter((x) => x.key_auth_working).length,

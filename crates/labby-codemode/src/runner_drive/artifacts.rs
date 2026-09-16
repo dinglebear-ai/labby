@@ -148,7 +148,7 @@ async fn resolve_snippet_for_runner<H: CodeModeHost>(
     let resolved = host.resolve_snippet(name, input).await?;
     let (name, code, input) = (resolved.name, resolved.code, resolved.input);
     state.snippet_resolved_bytes = state.snippet_resolved_bytes.saturating_add(code.len());
-    if state.snippet_resolved_bytes > MAX_SNIPPET_RESOLVED_BYTES_PER_RUN {
+    if state.snippet_resolved_bytes > cfg.snippet_max_bytes {
         return Err(ToolError::Sdk {
             sdk_kind: "snippet_budget_exceeded".to_string(),
             message: "resolved snippet code budget exceeded".to_string(),

@@ -154,13 +154,65 @@ async (o = {}) => {
 		for (const [k, v] of Object.entries(inv.summary?.image_update_states || {}))
 			updates[k] = (updates[k] || 0) + v;
 	}
+	const artifactInput = { ...input };
+	delete artifactInput.ssh_config;
+	artifactInput.ssh_config_supplied = Boolean(input.ssh_config);
+	const sourceController = discovery.controller || {};
+	const artifactController = {
+		upstream: sourceController.upstream || null,
+		hostname: sourceController.hostname || null,
+		user: sourceController.user || null,
+		platform: sourceController.platform || null,
+		ssh_path: sourceController.ssh_path || null,
+		ssh_config_supplied: Boolean(sourceController.ssh_config),
+	};
+	const sanitizeEffective = (effective) =>
+		effective
+			? {
+				hostname: effective.hostname || null,
+				user: effective.user || null,
+				port: effective.port || 22,
+				identity_files_configured: (effective.identity_files || []).length,
+				identity_agent_configured: Boolean(
+					effective.identity_agent && effective.identity_agent !== "none",
+				),
+			}
+			: null;
+	const redactLocal = (value) => {
+		let text = String(value || "");
+		for (const local of [input.ssh_config, sourceController.home, sourceController.cwd])
+			if (local) text = text.split(String(local)).join("<redacted-local-path>");
+		return text;
+	};
+	const sanitizeTarget = (target) => ({
+		alias: target.alias,
+		source_count: (target.sources || []).length,
+		effective: sanitizeEffective(target.effective),
+		key_auth_configured: target.key_auth_configured,
+		key_auth_working: target.key_auth_working,
+		ssh_reachable: target.ssh_reachable,
+		failure_kind: target.failure_kind || null,
+		error: target.error ? redactLocal(target.error) : null,
+		remote: target.remote || null,
+	});
+	const artifactDiscovery = { ...(discovery.discovery || {}) };
+	artifactDiscovery.parsed_config_file_count = (
+		artifactDiscovery.parsed_config_files || []
+	).length;
+	delete artifactDiscovery.parsed_config_files;
+	artifactDiscovery.warnings = (artifactDiscovery.warnings || []).map((warning) => ({
+		type: warning.type,
+		limit: warning.limit,
+		remaining: warning.remaining,
+	}));
+	const artifactTargets = (discovery.targets || []).map(sanitizeTarget);
 	const report = {
 		schema_version: "labby.homelab.docker_inventory.v1",
 		generated_at: new Date().toISOString(),
-		input,
-		controller: discovery.controller,
+		input: artifactInput,
+		controller: artifactController,
 		discovery: {
-			...discovery.discovery,
+			...artifactDiscovery,
 			unique_reachable_devices: new Set(
 				(discovery.targets || [])
 					.filter((t) => t?.ssh_reachable && t.remote?.hostname)
@@ -173,7 +225,7 @@ async (o = {}) => {
 			).size,
 			docker_hosts: devices.length,
 		},
-		ssh_targets: discovery.targets || [],
+		ssh_targets: artifactTargets,
 		devices,
 		host_failures: hostFailures,
 		summary: {
@@ -193,6 +245,7 @@ async (o = {}) => {
 		schema_version: report.schema_version,
 		ok: hostsWithErrors === 0,
 		partial:
+			discovery.partial === true ||
 			(report.discovery.ssh_unreachable || 0) > 0 ||
 			hostsWithErrors > 0 ||
 			(updates.unknown || 0) > 0,
@@ -215,10 +268,10 @@ async (o = {}) => {
 			.filter((t) => !t.ssh_reachable)
 			.map((t) => ({
 				alias: t.alias,
-				effective: t.effective,
+				effective: sanitizeEffective(t.effective),
 				key_auth_configured: t.key_auth_configured,
 				failure_kind: t.failure_kind,
-				error: t.error,
+				error: t.error ? redactLocal(t.error) : null,
 			})),
 	};
 }
