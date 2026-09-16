@@ -46,7 +46,9 @@ session create, cancel, and close extensions in addition to
 and a hard Agent runtime timeout invokes executor cleanup so an abandoned chat
 does not leave its provider session behind. Direct `agents.run` input is bound
 only to that run; the immutable Agent instructions remain pinned to the selected
-revision. Successful text output is stored content-addressed and returned with
+revision and travel to the provider as the system turn, while the run input is
+sent as a separate user turn, so input can never rewrite the pinned revision
+inside a shared prompt. Successful text output is stored content-addressed and returned with
 its digest; at most 256 KiB is returned inline, and a longer output is cut at a
 character boundary with `output_truncated: true` while `output_digest` remains
 the key to the full stored bytes. Each owner scope may have at most four live direct runs; a fifth

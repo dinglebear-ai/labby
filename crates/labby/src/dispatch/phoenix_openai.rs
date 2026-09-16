@@ -22,6 +22,24 @@ pub(crate) struct OpenAiBackend {
     api_key: Option<String>,
 }
 
+/// One chat turn. Pinned Agent instructions travel as `System` and caller
+/// input as `User`, so the provider's role boundary keeps the caller from
+/// rewriting the revision inside a shared prompt.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ChatMessage<'a> {
+    System(&'a str),
+    User(&'a str),
+}
+
+impl ChatMessage<'_> {
+    fn to_value(self) -> Value {
+        match self {
+            Self::System(content) => json!({"role": "system", "content": content}),
+            Self::User(content) => json!({"role": "user", "content": content}),
+        }
+    }
+}
+
 /// Process-wide provider base URL for unit tests. The crate forbids unsafe
 /// code and `std::env::set_var` is unsafe in edition 2024, so tests that need
 /// a resolvable harness digest pin the URL here instead of mutating the
@@ -147,8 +165,12 @@ impl OpenAiBackend {
         &self,
         session_id: &str,
         model: &str,
-        input: &str,
+        messages: &[ChatMessage<'_>],
     ) -> Result<String, ToolError> {
+        let messages = messages
+            .iter()
+            .map(|message| message.to_value())
+            .collect::<Vec<_>>();
         let value = self
             .send_json(
                 reqwest::Method::POST,
@@ -156,7 +178,7 @@ impl OpenAiBackend {
                 Some(json!({
                     "model": model,
                     "stream": false,
-                    "messages": [{"role": "user", "content": input}],
+                    "messages": messages,
                     "gateway": {"session_id": session_id}
                 })),
             )
