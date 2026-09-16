@@ -533,6 +533,10 @@ Each upstream has independent health tracking.
   bounded exponential backoff after failures.
 - A failed heartbeat removes the stale connection and starts a fresh MCP
   transport. This covers stdio child-process restarts and HTTP reconnects.
+- The heartbeat itself never holds the upstream's connect gate; only the
+  reconnect does, and the prompt/resource cache refresh after a reconnect or a
+  `gateway.mcp.restart` runs once the gate is released, so callers waiting to
+  connect are not parked behind a slow listing.
 - Recovery tasks are disabled by default. Ephemeral `gateway.test` probes never
   create background tasks.
 
