@@ -35,17 +35,20 @@ loopback URL is therefore valid only for a co-located provider. Embedded URL
 credentials, query strings, and fragments are rejected, and the API key is sent
 separately as bearer authentication. ExGPT-style providers must expose the
 session create, cancel, and close extensions in addition to
-`/v1/chat/completions`. Direct `agents.run` input is bound only to
-that run; the immutable Agent instructions remain pinned to the selected
+`/v1/chat/completions`. Session lifecycle calls use a short bounded timeout,
+and a hard Agent runtime timeout invokes executor cleanup so an abandoned chat
+does not leave its provider session behind. Direct `agents.run` input is bound
+only to that run; the immutable Agent instructions remain pinned to the selected
 revision. Successful text output is stored content-addressed and returned with
 its digest.
 
 Agent Tasks capture an exact Agent revision, normalized input digest, catalog
 generation, owner, creator, and authority fingerprint. Callers may supply raw
 UTF-8 `input`; Labby materializes it in the Task-input CAS namespace and stores
-the resulting `input_digest`. The legacy digest-only form remains supported only
-for content already materialized in that same Task-input namespace. Task
-idempotency keys are scoped to the owner and bind the full immutable intent.
+the resulting `input_digest`. The legacy digest-only form remains accepted for
+compatibility; execution requires that digest to already be materialized in the
+same Task-input namespace. Task idempotency keys are scoped to the owner and
+bind the full immutable intent.
 Queue, cancellation, execution, and settlement use fenced state transitions;
 terminal settlement is exactly once. A freshly authorized `tasks.queue` may
 resume a durable `queued` Task that has no live in-process owner, closing the

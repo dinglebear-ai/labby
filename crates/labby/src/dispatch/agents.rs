@@ -576,6 +576,12 @@ impl AgentExecutor for ConfiguredExecutor {
             Self::Unavailable => Err(AgentRuntimeError::ExecutorFailed),
         }
     }
+
+    async fn cancel(&self, request: &AgentExecutionRequest) {
+        if let Self::Llm(executor) = self {
+            executor.cancel(request).await;
+        }
+    }
 }
 
 pub(crate) fn configured_executor(

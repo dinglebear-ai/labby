@@ -192,6 +192,10 @@ impl AgentExecutor for LlmAgentExecutor {
             external_effects: 3,
         })
     }
+
+    async fn cancel(&self, request: &AgentExecutionRequest) {
+        cancel_and_close(&self.backend, &request.session.session_id).await;
+    }
 }
 
 fn render_prompt(agent_id: &str, version: u64, instructions: &str, input: &str) -> String {
@@ -206,8 +210,20 @@ fn render_prompt(agent_id: &str, version: u64, instructions: &str, input: &str) 
 }
 
 async fn cancel_and_close(backend: &OpenAiBackend, session_id: &str) {
-    drop(backend.cancel_session(session_id).await);
-    drop(backend.close_session(session_id).await);
+    if let Err(error) = backend.cancel_session(session_id).await {
+        tracing::warn!(
+            session_id,
+            kind = error.kind(),
+            "Agent provider session cancel failed during cleanup"
+        );
+    }
+    if let Err(error) = backend.close_session(session_id).await {
+        tracing::warn!(
+            session_id,
+            kind = error.kind(),
+            "Agent provider session close failed during cleanup"
+        );
+    }
 }
 
 fn execution_error(

@@ -8,6 +8,7 @@ use crate::dispatch::error::ToolError;
 pub(crate) const BASE_URL_ENV: &str = "LABBY_PHOENIX_OPENAI_BASE_URL";
 pub(crate) const API_KEY_ENV: &str = "LABBY_PHOENIX_OPENAI_API_KEY";
 const REQUEST_TIMEOUT: Duration = Duration::from_mins(5);
+const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_ERROR_BODY_BYTES: usize = 8 * 1024;
 // A 16 MiB UTF-8 completion can expand close to 6x when JSON-escaped. Keep
@@ -88,7 +89,7 @@ impl OpenAiBackend {
     }
 
     pub(crate) async fn create_session(&self, session_id: &str) -> Result<(), ToolError> {
-        self.send_json(
+        self.send_session_json(
             reqwest::Method::POST,
             "sessions",
             Some(json!({"id": session_id, "url": "https://chatgpt.com/"})),
@@ -99,7 +100,7 @@ impl OpenAiBackend {
 
     pub(crate) async fn close_session(&self, session_id: &str) -> Result<(), ToolError> {
         let path = format!("sessions/{}/close", encode_path_segment(session_id));
-        self.send_json(reqwest::Method::POST, &path, Some(json!({})))
+        self.send_session_json(reqwest::Method::POST, &path, Some(json!({})))
             .await?;
         Ok(())
     }
@@ -110,14 +111,14 @@ impl OpenAiBackend {
         title: &str,
     ) -> Result<(), ToolError> {
         let path = format!("sessions/{}/title", encode_path_segment(session_id));
-        self.send_json(reqwest::Method::PUT, &path, Some(json!({"title": title})))
+        self.send_session_json(reqwest::Method::PUT, &path, Some(json!({"title": title})))
             .await?;
         Ok(())
     }
 
     pub(crate) async fn cancel_session(&self, session_id: &str) -> Result<(), ToolError> {
         let path = format!("sessions/{}/cancel", encode_path_segment(session_id));
-        self.send_json(reqwest::Method::POST, &path, Some(json!({})))
+        self.send_session_json(reqwest::Method::POST, &path, Some(json!({})))
             .await?;
         Ok(())
     }
@@ -151,17 +152,41 @@ impl OpenAiBackend {
         self.send_json(reqwest::Method::GET, path, None).await
     }
 
+    async fn send_session_json(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Value, ToolError> {
+        self.send_json_with_timeout(method, path, body, SESSION_REQUEST_TIMEOUT)
+            .await
+    }
+
     async fn send_json(
         &self,
         method: reqwest::Method,
         path: &str,
         body: Option<Value>,
     ) -> Result<Value, ToolError> {
+        self.send_json_with_timeout(method, path, body, REQUEST_TIMEOUT)
+            .await
+    }
+
+    async fn send_json_with_timeout(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Value>,
+        request_timeout: Duration,
+    ) -> Result<Value, ToolError> {
         let url = self
             .base_url
             .join(path)
             .map_err(|_| protocol("failed to construct OpenAI-compatible endpoint URL"))?;
-        let mut request = self.http.request(method, url.clone());
+        let mut request = self
+            .http
+            .request(method, url.clone())
+            .timeout(request_timeout);
         if let Some(api_key) = self.api_key.as_deref() {
             request = request.bearer_auth(api_key);
         }
@@ -278,5 +303,33 @@ mod tests {
         assert!(OpenAiBackend::from_url("file:///tmp/provider", None).is_err());
         assert!(OpenAiBackend::from_url("https://user:secret@example.test/v1", None).is_err());
         assert!(OpenAiBackend::from_url("https://example.test/v1?token=secret", None).is_err());
+    }
+
+    #[tokio::test]
+    async fn provider_session_cleanup_uses_cancel_and_close_routes() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let server = MockServer::start().await;
+        for route in [
+            "/v1/sessions/session-1/cancel",
+            "/v1/sessions/session-1/close",
+        ] {
+            Mock::given(method("POST"))
+                .and(path(route))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let backend = OpenAiBackend::from_url(&format!("{}/v1", server.uri()), None).unwrap();
+
+        backend.cancel_session("session-1").await.unwrap();
+        backend.close_session("session-1").await.unwrap();
+
+        server.verify().await;
     }
 }
