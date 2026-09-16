@@ -6,7 +6,7 @@ use tracing::{info, warn};
 use super::{add_column_if_missing, hash_token, sqlite_error};
 use crate::error::AuthError;
 
-pub(crate) const SCHEMA_VERSION: i64 = 17;
+pub(crate) const SCHEMA_VERSION: i64 = 18;
 
 pub(super) fn run_migrations(conn: &Connection) -> Result<(), AuthError> {
     run_migrations_inner(conn, None)
@@ -413,7 +413,68 @@ fn run_migrations_inner(conn: &Connection, fault: Option<&str>) -> Result<(), Au
             .map_err(sqlite_error)?;
         transaction.commit().map_err(sqlite_error)?;
     }
+    if current < 18 {
+        migrate_v18(conn)?;
+    }
     Ok(())
+}
+
+/// v18: enforce the allowlist role vocabulary (`member`, `admin`) in the
+/// schema. The vocabulary is [`crate::AllowedUserRole`]; the
+/// CHECK literal here and in the base schema must list the same values.
+///
+/// An `allowed_users` table created before the constraint existed is rebuilt
+/// in place with its rows. A row whose role is outside the vocabulary was
+/// never admitted; rather than widen it to `member` or drop it, the migration
+/// refuses and names the table so the operator corrects the row.
+fn migrate_v18(conn: &Connection) -> Result<(), AuthError> {
+    let transaction = conn.unchecked_transaction().map_err(sqlite_error)?;
+    let definition: Option<String> = transaction
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'allowed_users'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(sqlite_error)?;
+    let lacks_check = definition.is_some_and(|sql| !sql.to_ascii_uppercase().contains("CHECK"));
+    if lacks_check {
+        let unknown_roles: i64 = transaction
+            .query_row(
+                "SELECT count(*) FROM allowed_users WHERE role NOT IN ('member', 'admin')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(sqlite_error)?;
+        if unknown_roles > 0 {
+            return Err(AuthError::Storage(format!(
+                "auth database migration v18 refused: {unknown_roles} allowed_users row(s) carry a \
+                 role outside `member`/`admin`; set each such row's role to `member` or `admin` \
+                 (or delete the row) and restart"
+            )));
+        }
+        transaction
+            .execute_batch(
+                "CREATE TABLE allowed_users_v18 (
+                   email       TEXT PRIMARY KEY NOT NULL,
+                   added_by    TEXT NOT NULL,
+                   created_at  INTEGER NOT NULL,
+                   role        TEXT NOT NULL DEFAULT 'member' CHECK(role IN ('member', 'admin'))
+                 );
+                 INSERT INTO allowed_users_v18 (email, added_by, created_at, role)
+                   SELECT email, added_by, created_at, role FROM allowed_users;
+                 DROP TABLE allowed_users;
+                 ALTER TABLE allowed_users_v18 RENAME TO allowed_users;
+                 CREATE INDEX IF NOT EXISTS idx_allowed_users_email_nocase
+                   ON allowed_users(email COLLATE NOCASE);",
+            )
+            .map_err(sqlite_error)?;
+        info!("migration v18: rebuilt allowed_users with the role CHECK constraint");
+    }
+    transaction
+        .execute_batch("PRAGMA user_version = 18;")
+        .map_err(sqlite_error)?;
+    transaction.commit().map_err(sqlite_error)
 }
 
 fn migrate_v15(

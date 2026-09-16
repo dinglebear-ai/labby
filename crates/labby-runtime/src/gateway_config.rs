@@ -46,6 +46,12 @@ fn default_code_mode_trace_params() -> bool {
     true
 }
 
+/// Ceiling for `code_mode.timeout_ms`. It matches the upstream request
+/// timeout ceiling because a Code Mode run drives upstream tool calls, and the
+/// settings editor derives its bound from this constant so config.toml and the
+/// editor can never disagree.
+pub const MAX_CODE_MODE_TIMEOUT_MS: u64 = 300_000;
+
 fn default_code_mode_timeout_ms() -> u64 {
     30_000
 }
@@ -101,28 +107,40 @@ fn default_mcp_scopes() -> Vec<String> {
 /// control tool stays available when its manager UI is disabled. Code Mode keeps
 /// its existing `CodeModeConfig::mcp_ui_enabled` field for backward-compatible
 /// config.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpAppsConfig {
     /// Attach MCP App metadata to the always-available `mcp_app` control tool and advertise its UI resources.
     /// The control tool itself remains available when this is false.
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub manager: bool,
     /// Advertise the synthetic Add Server app tool and its UI resources.
-    /// Labby-owned app surfaces are opt-in by default.
-    #[serde(default)]
+    /// Fresh installs expose the complete Labby app surface by default.
+    #[serde(default = "default_true")]
     pub add_server: bool,
     /// Attach the Server Logs app metadata and advertise its UI resources.
-    /// Labby-owned app surfaces are opt-in by default.
-    #[serde(default)]
+    /// Fresh installs expose the complete Labby app surface by default.
+    #[serde(default = "default_true")]
     pub server_logs: bool,
     /// Advertise the synthetic Gateway Status app tool and its UI resources.
-    /// Labby-owned app surfaces are opt-in by default.
-    #[serde(default)]
+    /// Fresh installs expose the complete Labby app surface by default.
+    #[serde(default = "default_true")]
     pub gateway_status: bool,
     /// Advertise the schema-backed Settings app tool and its UI resources.
-    /// Labby-owned app surfaces are opt-in by default.
-    #[serde(default)]
+    /// Fresh installs expose the complete Labby app surface by default.
+    #[serde(default = "default_true")]
     pub settings: bool,
+}
+
+impl Default for McpAppsConfig {
+    fn default() -> Self {
+        Self {
+            manager: true,
+            add_server: true,
+            server_logs: true,
+            gateway_status: true,
+            settings: true,
+        }
+    }
 }
 
 // ─── Code Mode ───────────────────────────────────────────────────────────────
@@ -183,7 +201,8 @@ impl SemanticSearchConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CodeModeConfig {
     /// Whether the MCP gateway advertises `codemode`.
-    #[serde(default)]
+    /// Code Mode is part of the standard Labby surface on fresh installs.
+    #[serde(default = "default_true")]
     pub enabled: bool,
     /// Retired compatibility field, retained so existing configs still parse.
     ///
@@ -196,8 +215,8 @@ pub struct CodeModeConfig {
     pub trusted_read_only_tools: Vec<String>,
     /// Whether the explicit `codemode_ui` MCP App tool and resources are advertised.
     /// The text-only `codemode` executor remains available when this is false.
-    /// Labby-owned MCP Apps are opt-in, so this defaults to false.
-    #[serde(default)]
+    /// The inspector is enabled by default so Code Mode has a useful first-run UI.
+    #[serde(default = "default_true")]
     pub mcp_ui_enabled: bool,
     /// Whether Code Mode call traces include redacted/capped tool params.
     #[serde(default = "default_code_mode_trace_params")]
@@ -265,9 +284,9 @@ pub struct CodeModeConfig {
 impl Default for CodeModeConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             trusted_read_only_tools: Vec::new(),
-            mcp_ui_enabled: false,
+            mcp_ui_enabled: true,
             trace_params: default_code_mode_trace_params(),
             result_shape_policy: CodeModeResultShapePolicy::Off,
             timeout_ms: default_code_mode_timeout_ms(),
@@ -291,7 +310,10 @@ impl Default for CodeModeConfig {
 impl CodeModeConfig {
     /// Validate Code Mode limits and semantic-search settings.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        if !(1..=60_000).contains(&self.timeout_ms) {
+        // Matches upstream_request_timeout_ms (1..=300_000). A Code Mode run
+        // drives upstream tool calls, so a ceiling below a single call's own
+        // budget made the enclosing run expire before the call it waited on.
+        if !(1..=MAX_CODE_MODE_TIMEOUT_MS).contains(&self.timeout_ms) {
             return Err(ConfigError::InvalidCodeModeTimeout {
                 value: self.timeout_ms,
             });
@@ -1431,7 +1453,10 @@ pub enum ConfigError {
         /// Explanation of the transport validation failure.
         reason: String,
     },
-    #[error("gateway code_mode.timeout_ms={value} is invalid — expected 1..=60000")]
+    #[error(
+        "gateway code_mode.timeout_ms={value} is invalid — expected 1..={max}",
+        max = MAX_CODE_MODE_TIMEOUT_MS
+    )]
     /// Code Mode timeout falls outside the supported range.
     InvalidCodeModeTimeout {
         /// Rejected timeout in milliseconds.
@@ -1753,7 +1778,7 @@ pub struct GatewayPreferences {
     #[serde(default)]
     pub auto_reconnect: bool,
     /// Extra commands allowed as stdio upstream programs beyond the built-in list
-    /// (npx, uvx, docker, node, python, python3, deno, pipx, dnx).
+    /// (npx, uvx, docker, node, python, python3, deno, pipx, dnx, ssh, claude).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_stdio_commands: Vec<String>,
     /// Disable all stdio spawn-guard command validation.
@@ -2369,12 +2394,39 @@ client_secret_env = "SECRET"
         let cfg: CodeModeConfig = toml::from_str("").unwrap();
         let expected = CodeModeConfig::default();
         assert_eq!(cfg, expected);
-        assert!(!cfg.enabled);
+        assert!(cfg.enabled);
         assert!(cfg.trusted_read_only_tools.is_empty());
-        assert!(!cfg.mcp_ui_enabled);
+        assert!(cfg.mcp_ui_enabled);
         assert!(cfg.trace_params);
         assert_eq!(cfg.timeout_ms, 30_000);
         assert_eq!(cfg.token_estimate_divisor, 4);
+    }
+
+    #[test]
+    fn code_mode_timeout_range_boundaries() {
+        for (timeout_ms, accepted) in [
+            (0, false),
+            (1, true),
+            (MAX_CODE_MODE_TIMEOUT_MS, true),
+            (MAX_CODE_MODE_TIMEOUT_MS + 1, false),
+        ] {
+            let cfg = CodeModeConfig {
+                timeout_ms,
+                ..CodeModeConfig::default()
+            };
+            let result = cfg.validate();
+            assert_eq!(
+                result.is_ok(),
+                accepted,
+                "timeout_ms={timeout_ms}: {result:?}"
+            );
+            if !accepted {
+                assert!(matches!(
+                    result,
+                    Err(ConfigError::InvalidCodeModeTimeout { value }) if value == timeout_ms
+                ));
+            }
+        }
     }
 
     #[test]
@@ -2401,18 +2453,18 @@ client_secret_env = "SECRET"
         )
         .unwrap();
         assert!(cfg.mcp_ui_enabled);
-        assert!(!cfg.enabled);
+        assert!(cfg.enabled);
     }
 
     #[test]
-    fn mcp_apps_config_defaults_all_managed_apps_disabled() {
+    fn mcp_apps_config_defaults_all_managed_apps_enabled() {
         let cfg: McpAppsConfig = toml::from_str("").unwrap();
         assert_eq!(cfg, McpAppsConfig::default());
-        assert!(!cfg.manager);
-        assert!(!cfg.add_server);
-        assert!(!cfg.server_logs);
-        assert!(!cfg.gateway_status);
-        assert!(!cfg.settings);
+        assert!(cfg.manager);
+        assert!(cfg.add_server);
+        assert!(cfg.server_logs);
+        assert!(cfg.gateway_status);
+        assert!(cfg.settings);
     }
 
     #[test]

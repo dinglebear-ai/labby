@@ -11,7 +11,7 @@ use crate::{
     config::{PhoenixPreferences, PhoenixProvider},
     dispatch::{
         error::ToolError,
-        phoenix_openai::OpenAiBackend,
+        phoenix_openai::{ChatMessage, OpenAiBackend},
         phoenix_runtime::{AppServerRuntime, LaunchSpec},
     },
 };
@@ -882,7 +882,7 @@ impl PhoenixRuntime {
         }
         let result = tokio::time::timeout(
             TURN_TIMEOUT,
-            backend.chat(&upstream_session_id, &model, &input),
+            backend.chat(&upstream_session_id, &model, &[ChatMessage::User(&input)]),
         )
         .await;
         let output = match result {

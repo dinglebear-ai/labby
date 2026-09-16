@@ -6,6 +6,7 @@ export {
   __setBrowserSessionStateForTests,
   AUTHORITY_WORKSPACE_CHANGED_EVENT,
   LogoutRevocationError,
+  exchangeBearerBrowserSession,
   getBrowserSessionContextIdentity,
   getBrowserSessionState,
   getProjectBoundSessionScope,

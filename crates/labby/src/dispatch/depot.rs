@@ -108,6 +108,30 @@ pub struct OperationPolicy {
     pub transport_available: bool,
 }
 
+impl OperationPolicy {
+    /// Delegation scope a call under this policy must carry.
+    ///
+    /// Operator scope is preserved verbatim. A destructive operation implies
+    /// at least write delegation even when the catalog advertised it under a
+    /// read or none scope: destructive intent must never travel under the
+    /// shared bearer plus an actor header.
+    pub fn delegation_scope(&self) -> Option<DepotDelegationScope> {
+        if self.requires_operator {
+            Some(DepotDelegationScope::Operator)
+        } else if self.requires_write || self.destructive {
+            Some(DepotDelegationScope::Write)
+        } else {
+            None
+        }
+    }
+
+    /// Whether the call needs a subject-bound delegation (and therefore the
+    /// browser route's admin mutation gate).
+    pub fn requires_delegation(&self) -> bool {
+        self.delegation_scope().is_some()
+    }
+}
+
 struct OperationCatalogSnapshot {
     observed_at: tokio::time::Instant,
     policies: HashMap<String, OperationPolicy>,
@@ -414,7 +438,7 @@ impl DepotClient {
                 .filter(|key| valid_idempotency_key(key))
                 .ok_or(DepotError::DestructiveIntentRequired)?;
             return self
-                .call_destructive(operation, params, actor, key, subject)
+                .call_destructive(operation, params, actor, key, policy, subject)
                 .await;
         }
         self.call_upstream(operation, params, actor, None, policy, subject)
@@ -427,6 +451,7 @@ impl DepotClient {
         params: Value,
         actor: &str,
         idempotency_key: &str,
+        policy: OperationPolicy,
         subject: Option<DepotDelegationSubject<'_>>,
     ) -> Result<Value, DepotError> {
         let digest: [u8; 32] = Sha256::digest(
@@ -478,13 +503,7 @@ impl DepotClient {
                 params,
                 actor,
                 Some(idempotency_key),
-                OperationPolicy {
-                    read_only: false,
-                    destructive: true,
-                    requires_write: true,
-                    requires_operator: false,
-                    transport_available: true,
-                },
+                policy,
                 subject,
             )
             .await;
@@ -522,20 +541,13 @@ impl DepotClient {
         policy: OperationPolicy,
         subject: Option<DepotDelegationSubject<'_>>,
     ) -> Result<Value, DepotError> {
-        let delegation_scope = if policy.requires_operator {
-            Some(DepotDelegationScope::Operator)
-        } else if policy.requires_write {
-            Some(DepotDelegationScope::Write)
-        } else {
-            None
-        };
         self.request_with_idempotency(
             reqwest::Method::POST,
             &format!("api/operations/{operation}"),
             Some(params),
             actor,
             idempotency_key,
-            delegation_scope,
+            policy.delegation_scope(),
             subject,
         )
         .await
@@ -1190,6 +1202,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn destructive_call_without_write_or_operator_scope_is_refused() {
+        // A catalog entry may advertise `destructiveHint: true` under a
+        // read/none required scope. Destructive intent must still travel as
+        // at least a write delegation; it must never fall back to the shared
+        // bearer plus an actor header.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/operations/depot.x.purge"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result":{}})))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let client = DepotClient::for_test(
+            Url::parse(&server.uri()).unwrap(),
+            "shared-read-bearer-must-not-be-forwarded",
+        );
+        let result = client
+            .call(
+                "depot.x.purge",
+                json!({}),
+                "actor",
+                OperationPolicy {
+                    read_only: false,
+                    destructive: true,
+                    requires_write: false,
+                    requires_operator: false,
+                    transport_available: true,
+                },
+                Some("key-1"),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(DepotError::DelegationUnavailable)),
+            "{result:?}"
+        );
+        server.verify().await;
+    }
+
+    #[test]
+    fn destructive_policy_implies_at_least_write_delegation() {
+        let base = OperationPolicy {
+            read_only: false,
+            destructive: false,
+            requires_write: false,
+            requires_operator: false,
+            transport_available: true,
+        };
+        assert_eq!(base.delegation_scope(), None);
+        assert!(!base.requires_delegation());
+        let destructive = OperationPolicy {
+            destructive: true,
+            ..base
+        };
+        assert_eq!(
+            destructive.delegation_scope(),
+            Some(DepotDelegationScope::Write)
+        );
+        assert!(destructive.requires_delegation());
+        let write = OperationPolicy {
+            requires_write: true,
+            ..base
+        };
+        assert_eq!(write.delegation_scope(), Some(DepotDelegationScope::Write));
+        // Operator scope is preserved even when the operation is destructive.
+        let operator = OperationPolicy {
+            destructive: true,
+            requires_operator: true,
+            ..base
+        };
+        assert_eq!(
+            operator.delegation_scope(),
+            Some(DepotDelegationScope::Operator)
+        );
+    }
+
+    #[tokio::test]
     async fn write_forwards_only_a_fresh_delegation_and_no_actor_header() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -1284,6 +1372,60 @@ mod tests {
                     transport_available: true,
                 },
                 None,
+                &browser_authorization(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(seen_jtis.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn browser_destructive_operator_call_preserves_operator_delegation() {
+        let server = MockServer::start().await;
+        let seen_jtis = Arc::new(StdMutex::new(Vec::new()));
+        Mock::given(method("POST"))
+            .and(path("/api/operations/depot.maintenance.gc"))
+            .and(ExactDelegation {
+                operation: "depot.maintenance.gc",
+                scope: "skills:read depot:operator",
+                params: json!({}),
+                seen_jtis: Arc::clone(&seen_jtis),
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result":{"ok":true}})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let temp = tempfile::tempdir().unwrap();
+        let keys =
+            Arc::new(SigningKeys::load_or_create(&temp.path().join("delegation-key.der")).unwrap());
+        let mut client =
+            DepotClient::for_test(Url::parse(&server.uri()).unwrap(), "shared-read-bearer");
+        client.delegation = Some(Arc::new(DepotDelegationSigner {
+            keys,
+            target: DepotDelegationTarget {
+                issuer: "https://team-labby.example".into(),
+                audience: "https://depot.example".into(),
+                deployment_id: "depot-lime-prod".into(),
+                account_id: "account-lime".into(),
+                tenant_id: "tenant-lime".into(),
+                team_id: Some("team-lime".into()),
+            },
+        }));
+
+        client
+            .call_with_browser_authorization(
+                "depot.maintenance.gc",
+                json!({}),
+                "browser-actor",
+                OperationPolicy {
+                    read_only: false,
+                    destructive: true,
+                    requires_write: false,
+                    requires_operator: true,
+                    transport_available: true,
+                },
+                Some("operator-gc-1"),
                 &browser_authorization(),
             )
             .await

@@ -182,7 +182,6 @@ static RESOLVED_INSTALL_ANDROID_SDK: AtomicBool = AtomicBool::new(false);
 static RESOLVED_SYMBOLS: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 static RESOLVED_PROTECTED_MCP_TIMEOUT_SECS: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
 static RESOLVED_CATALOG_NOTIFICATION_TIMEOUT_MS: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
-static RESOLVED_AGENT_HARNESSES: OnceLock<Mutex<Vec<AgentHarnessConfig>>> = OnceLock::new();
 #[derive(Clone)]
 pub(crate) struct ResolvedDevContainerConfig {
     pub catalog: labby_runtime::dev_container_image_runtime::ApprovedProvisionCatalog,
@@ -213,17 +212,6 @@ fn resolved_protected_mcp_timeout_cell() -> &'static Mutex<Option<u64>> {
 
 fn resolved_catalog_notification_timeout_cell() -> &'static Mutex<Option<u64>> {
     RESOLVED_CATALOG_NOTIFICATION_TIMEOUT_MS.get_or_init(|| Mutex::new(None))
-}
-
-fn resolved_agent_harnesses_cell() -> &'static Mutex<Vec<AgentHarnessConfig>> {
-    RESOLVED_AGENT_HARNESSES.get_or_init(|| Mutex::new(Vec::new()))
-}
-
-pub(crate) fn resolved_agent_harnesses() -> Vec<AgentHarnessConfig> {
-    resolved_agent_harnesses_cell()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
 }
 
 fn resolved_dev_container_config_cell() -> &'static Mutex<ResolvedDevContainerConfig> {
@@ -277,9 +265,6 @@ pub(crate) fn install_resolved_preferences(config: &LabConfig) {
             || config.setup.install_android_sdk.unwrap_or(false),
         Ordering::Release,
     );
-    *resolved_agent_harnesses_cell()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = config.agents.harnesses.clone();
     let dev_container_catalog = config
         .dev_containers
         .catalog()
@@ -494,9 +479,6 @@ pub struct LabConfig {
     /// Optional server-held exact-revision Skill acquisition connections.
     #[serde(default)]
     pub artifacts: ArtifactPreferences,
-    /// Explicitly approved local coding-agent harness subprocesses.
-    #[serde(default)]
-    pub agents: AgentPreferences,
     /// Container-local Codex App Server used by the Phoenix assistant.
     #[serde(default)]
     pub phoenix: PhoenixPreferences,
@@ -568,15 +550,6 @@ impl Default for LabConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AgentPreferences {
-    /// Empty by default. An Agent cannot execute until its pinned harness
-    /// digest matches one of these operator-owned descriptors.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub harnesses: Vec<AgentHarnessConfig>,
-}
-
 /// Backend used by the Phoenix assistant.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -641,171 +614,6 @@ impl PhoenixPreferences {
             });
         }
         Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AgentHarnessConfig {
-    pub id: String,
-    /// Exact Agent definition pins this operator-provisioned harness is
-    /// approved to execute. Admission compares every field before spawning.
-    pub content_digest: String,
-    pub repository_digest: String,
-    pub image_digest: String,
-    pub loadout_digest: String,
-    pub catalog_generation: String,
-    /// Absolute executable path. It is never sourced from an Agent definition
-    /// or caller input.
-    pub command: PathBuf,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub args: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cwd: Option<PathBuf>,
-    /// Process environment names copied into the child. Values remain in the
-    /// server environment and are never serialized into config or discovery.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub inherit_env: Vec<String>,
-}
-
-impl AgentHarnessConfig {
-    /// Content address for the complete non-secret launch descriptor. Agent
-    /// revisions pin this value, so an operator command/argv/cwd change cannot
-    /// silently alter an existing Agent's execution environment.
-    #[must_use]
-    pub fn digest(&self) -> String {
-        use sha2::{Digest as _, Sha256};
-        let canonical = serde_json::json!({
-            "schema_version": 1,
-            "id": self.id,
-            "content_digest": self.content_digest,
-            "repository_digest": self.repository_digest,
-            "image_digest": self.image_digest,
-            "loadout_digest": self.loadout_digest,
-            "catalog_generation": self.catalog_generation,
-            "command": self.command,
-            "args": self.args,
-            "cwd": self.cwd,
-            "inherit_env": self.inherit_env,
-        });
-        let bytes = serde_json::to_vec(&canonical).expect("agent harness descriptor serializes");
-        format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
-    }
-
-    #[must_use]
-    pub(crate) fn matches_definition(
-        &self,
-        definition: &labby_primitives::agent::AgentDefinition,
-    ) -> bool {
-        self.digest() == definition.revision.harness_digest
-            && self.content_digest == definition.revision.content_digest
-            && self.repository_digest == definition.revision.repository_digest
-            && self.image_digest == definition.revision.image_digest
-            && self.loadout_digest == definition.revision.loadout_digest
-            && self.catalog_generation == definition.revision.catalog_generation
-    }
-}
-
-impl AgentPreferences {
-    fn validate(&self) -> Result<(), ConfigError> {
-        if self.harnesses.len() > 16 {
-            return Err(invalid_agent_config(
-                "at most 16 harnesses may be configured",
-            ));
-        }
-        let mut ids = std::collections::HashSet::new();
-        let mut digests = std::collections::HashSet::new();
-        for harness in &self.harnesses {
-            let id_valid = !harness.id.is_empty()
-                && harness.id.len() <= 64
-                && harness
-                    .id
-                    .chars()
-                    .all(|value| value.is_ascii_alphanumeric() || matches!(value, '-' | '_'));
-            if !id_valid || !ids.insert(harness.id.clone()) {
-                return Err(invalid_agent_config(
-                    "harness ids must be unique 1-64 character ASCII identifiers",
-                ));
-            }
-            if !harness.command.is_absolute()
-                || harness.command.as_os_str().is_empty()
-                || harness.args.len() > 64
-                || harness.args.iter().any(|arg| {
-                    arg.len() > 4096
-                        || arg.contains('\0')
-                        || arg.contains('\n')
-                        || arg.contains('\r')
-                })
-                || harness.cwd.as_ref().is_some_and(|cwd| !cwd.is_absolute())
-            {
-                return Err(invalid_agent_config(
-                    "harness command/cwd must be absolute and argv must be bounded literal values",
-                ));
-            }
-            if ![
-                &harness.content_digest,
-                &harness.repository_digest,
-                &harness.image_digest,
-                &harness.loadout_digest,
-            ]
-            .into_iter()
-            .all(|digest| valid_sha256_digest(digest))
-                || harness.catalog_generation.is_empty()
-                || harness.catalog_generation.len() > 256
-                || harness.catalog_generation != harness.catalog_generation.trim()
-                || harness.catalog_generation.chars().any(char::is_control)
-            {
-                return Err(invalid_agent_config(
-                    "harness definition pins must be exact sha256 digests and a bounded catalog generation",
-                ));
-            }
-            let mut env_names = std::collections::HashSet::new();
-            for name in &harness.inherit_env {
-                let valid = !name.is_empty()
-                    && name.len() <= 128
-                    && name.starts_with(|c: char| c.is_ascii_uppercase())
-                    && name
-                        .chars()
-                        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-                    && !name.starts_with("LABBY_")
-                    && !matches!(
-                        name.as_str(),
-                        "LD_PRELOAD"
-                            | "LD_LIBRARY_PATH"
-                            | "DYLD_INSERT_LIBRARIES"
-                            | "DYLD_LIBRARY_PATH"
-                            | "RUSTC_WRAPPER"
-                            | "IFS"
-                            | "SHELL"
-                            | "PWD"
-                    );
-                if !valid || !env_names.insert(name) {
-                    return Err(invalid_agent_config(
-                        "harness inherited environment names must be unique safe uppercase names",
-                    ));
-                }
-            }
-            if !digests.insert(harness.digest()) {
-                return Err(invalid_agent_config(
-                    "configured harness descriptors must be unique",
-                ));
-            }
-        }
-        Ok(())
-    }
-}
-
-fn valid_sha256_digest(value: &str) -> bool {
-    value.len() == 71
-        && value.starts_with("sha256:")
-        && value[7..]
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-fn invalid_agent_config(reason: impl Into<String>) -> ConfigError {
-    ConfigError::InvalidProxyConfig {
-        reason: format!("invalid [agents] configuration: {}", reason.into()),
     }
 }
 
@@ -967,7 +775,6 @@ impl LabConfig {
             });
         }
         self.code_mode.validate()?;
-        self.agents.validate()?;
         self.phoenix.validate()?;
         self.dev_containers
             .validate()
@@ -1037,9 +844,18 @@ impl LabConfig {
     /// `upstream_request_timeout_ms` past 30s got no effect, because the
     /// transport killed the response first and discarded a tool call that had
     /// already succeeded.
+    ///
+    /// Two more inner deadlines ride on a single hosted request and are covered
+    /// the same way: a Code Mode run (`code_mode.timeout_ms`, carried by the
+    /// `/mcp` request that started it) and a synchronous `agents.run`, which
+    /// holds its request for the fixed Agent runtime bound.
     pub fn http_request_timeout(&self) -> Duration {
         self.upstream_request_timeout()
             .max(self.upstream_relay_timeout())
+            .max(Duration::from_millis(self.code_mode.timeout_ms))
+            .max(Duration::from_millis(
+                labby_runtime::agent_runtime::AGENT_MAX_RUNTIME_MILLIS,
+            ))
             .saturating_add(HTTP_REQUEST_TIMEOUT_MARGIN)
     }
 
@@ -2852,12 +2668,36 @@ fn config_lock_path(path: &Path) -> PathBuf {
     lock
 }
 
+/// Names of the variables the process environment already carried when the
+/// first `load_dotenv` ran. dotenvy never overrides an existing variable, so
+/// these came from outside `.env` (a service manager, a container spec, the
+/// shell) and win over the file for the lifetime of the process.
+static PROCESS_ENV_KEYS_BEFORE_DOTENV: OnceLock<std::collections::BTreeSet<String>> =
+    OnceLock::new();
+
+/// Whether `key` was set in the process environment before `.env` was loaded,
+/// so an edit to `.env` cannot change its effective value. False until
+/// `load_dotenv` has run.
+#[must_use]
+pub fn env_key_set_outside_dotenv(key: &str) -> bool {
+    PROCESS_ENV_KEYS_BEFORE_DOTENV
+        .get()
+        .is_some_and(|keys| keys.contains(key))
+}
+
 /// Load `.env` files into the process environment.
 ///
 /// Called after `load_toml()` and tracing init. Env vars loaded here
 /// override config.toml values at the point of use (each consumer checks
 /// env first, then falls back to config).
 pub fn load_dotenv() -> Result<()> {
+    // Names only, never values: the settings surface uses this to tell an
+    // externally managed variable from one `.env` supplied.
+    PROCESS_ENV_KEYS_BEFORE_DOTENV.get_or_init(|| {
+        std::env::vars_os()
+            .filter_map(|(key, _)| key.into_string().ok())
+            .collect()
+    });
     // Candidates are ordered from authoritative installation state to the
     // implicit development fallback. dotenvy preserves values loaded by an
     // earlier candidate. An explicit LABBY_HOME excludes the CWD fallback.
@@ -3353,35 +3193,6 @@ mod tests {
             resolved_catalog_notification_timeout(),
             Duration::from_millis(DEFAULT_CATALOG_NOTIFICATION_TIMEOUT_MS)
         );
-    }
-
-    #[test]
-    fn agent_harnesses_require_absolute_operator_owned_launch_descriptors() {
-        let mut config = LabConfig::default();
-        config.agents.harnesses.push(AgentHarnessConfig {
-            id: "codex".into(),
-            content_digest: format!("sha256:{}", "a".repeat(64)),
-            repository_digest: format!("sha256:{}", "b".repeat(64)),
-            image_digest: format!("sha256:{}", "c".repeat(64)),
-            loadout_digest: format!("sha256:{}", "d".repeat(64)),
-            catalog_generation: "catalog-1".into(),
-            command: PathBuf::from("codex"),
-            args: vec!["exec".into(), "-".into()],
-            cwd: None,
-            inherit_env: vec!["OPENAI_API_KEY".into()],
-        });
-        assert!(config.validate().is_err());
-
-        config.agents.harnesses[0].command = PathBuf::from("/usr/local/bin/codex");
-        assert!(config.validate().is_ok());
-        let first = config.agents.harnesses[0].digest();
-        config.agents.harnesses[0].args.push("--json".into());
-        assert_ne!(config.agents.harnesses[0].digest(), first);
-
-        config.agents.harnesses[0]
-            .inherit_env
-            .push("LD_PRELOAD".into());
-        assert!(config.validate().is_err());
     }
 
     fn parse_normalized_config(toml: &str) -> LabConfig {
@@ -4837,6 +4648,41 @@ upstream_request_timeout_ms = 60000
                 cfg.upstream_relay_timeout(),
             );
         }
+    }
+
+    /// A Code Mode run is carried by the HTTP request that started it, so the
+    /// transport backstop must also cover `code_mode.timeout_ms`; otherwise a
+    /// long run outlives its own response.
+    #[test]
+    fn http_request_timeout_never_undercuts_code_mode_timeout() {
+        let cfg = toml::from_str::<LabConfig>(
+            "upstream_request_timeout_ms = 60000\nupstream_relay_timeout_ms = 60000\n[code_mode]\ntimeout_ms = 180000\n",
+        )
+        .expect("config parses");
+        cfg.validate().expect("config validates");
+        let http = cfg.http_request_timeout();
+        assert!(
+            http > Duration::from_millis(cfg.code_mode.timeout_ms),
+            "http timeout {http:?} must exceed the Code Mode deadline {} ms",
+            cfg.code_mode.timeout_ms
+        );
+    }
+
+    /// A synchronous `agents.run` holds its HTTP request for the whole Agent
+    /// runtime bound, which is fixed product policy rather than configuration.
+    #[test]
+    fn http_request_timeout_covers_the_agent_runtime_bound() {
+        let cfg = toml::from_str::<LabConfig>(
+            "upstream_request_timeout_ms = 60000\nupstream_relay_timeout_ms = 60000\n",
+        )
+        .expect("config parses");
+        cfg.validate().expect("config validates");
+        let bound = Duration::from_millis(labby_runtime::agent_runtime::AGENT_MAX_RUNTIME_MILLIS);
+        assert!(
+            cfg.http_request_timeout() > bound,
+            "http timeout {:?} must exceed the Agent runtime bound {bound:?}",
+            cfg.http_request_timeout()
+        );
     }
 
     /// The 5 minute relay default is the binding constraint out of the box, so

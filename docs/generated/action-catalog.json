@@ -680,39 +680,51 @@
         "description": ""
       },
       {
-        "name": "content_digest",
+        "name": "instructions",
         "ty": "string",
         "required": true,
+        "description": ""
+      },
+      {
+        "name": "model",
+        "ty": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "content_digest",
+        "ty": "string",
+        "required": false,
         "description": ""
       },
       {
         "name": "repository_digest",
         "ty": "string",
-        "required": true,
+        "required": false,
         "description": ""
       },
       {
         "name": "image_digest",
         "ty": "string",
-        "required": true,
+        "required": false,
         "description": ""
       },
       {
         "name": "harness_digest",
         "ty": "string",
-        "required": true,
+        "required": false,
         "description": ""
       },
       {
         "name": "loadout_digest",
         "ty": "string",
-        "required": true,
+        "required": false,
         "description": ""
       },
       {
         "name": "catalog_generation",
         "ty": "string",
-        "required": true,
+        "required": false,
         "description": ""
       }
     ],
@@ -731,8 +743,8 @@
   {
     "service": "agents",
     "action": "agents.delete",
-    "description": "Delete an Agent",
-    "destructive": false,
+    "description": "Permanently delete an Agent definition",
+    "destructive": true,
     "requires_admin": false,
     "required_scopes": [],
     "authorization_boundary": "resource_capability",
@@ -776,29 +788,6 @@
         "description": ""
       }
     ],
-    "returns": "object",
-    "surface_availability": {
-      "cli": false,
-      "mcp": true,
-      "api": true,
-      "web_ui": false
-    },
-    "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
-    "inventory_scope": "global_inventory_not_active_runtime_exposure",
-    "builtin": false
-  },
-  {
-    "service": "agents",
-    "action": "agents.harnesses",
-    "description": "List explicitly configured Agent harnesses and their pinning digests",
-    "destructive": false,
-    "requires_admin": false,
-    "required_scopes": [],
-    "authorization_boundary": "resource_capability",
-    "required_capability": "scope.read",
-    "resource_family": "agent",
-    "params": [],
     "returns": "object",
     "surface_availability": {
       "cli": false,
@@ -867,13 +856,7 @@
       {
         "name": "input",
         "ty": "string",
-        "required": true,
-        "description": ""
-      },
-      {
-        "name": "idempotency_key",
-        "ty": "string",
-        "required": true,
+        "required": false,
         "description": ""
       }
     ],
@@ -891,44 +874,8 @@
   },
   {
     "service": "agents",
-    "action": "agents.session.get",
-    "description": "Read retained Agent session metadata",
-    "destructive": false,
-    "requires_admin": false,
-    "required_scopes": [],
-    "authorization_boundary": "resource_capability",
-    "required_capability": "scope.read",
-    "resource_family": "agent",
-    "params": [
-      {
-        "name": "agent_id",
-        "ty": "string",
-        "required": true,
-        "description": ""
-      },
-      {
-        "name": "session_id",
-        "ty": "string",
-        "required": true,
-        "description": ""
-      }
-    ],
-    "returns": "object",
-    "surface_availability": {
-      "cli": false,
-      "mcp": true,
-      "api": true,
-      "web_ui": false
-    },
-    "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
-    "inventory_scope": "global_inventory_not_active_runtime_exposure",
-    "builtin": false
-  },
-  {
-    "service": "agents",
-    "action": "agents.session.resume",
-    "description": "Start a reauthorized session from retained input",
+    "action": "agents.session.cancel",
+    "description": "Request cancellation of a running Agent session",
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
@@ -944,12 +891,6 @@
       },
       {
         "name": "session_id",
-        "ty": "string",
-        "required": true,
-        "description": ""
-      },
-      {
-        "name": "idempotency_key",
         "ty": "string",
         "required": true,
         "description": ""
@@ -988,120 +929,6 @@
         "name": "session_id",
         "ty": "string",
         "required": true,
-        "description": ""
-      }
-    ],
-    "returns": "object",
-    "surface_availability": {
-      "cli": false,
-      "mcp": true,
-      "api": true,
-      "web_ui": false
-    },
-    "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
-    "inventory_scope": "global_inventory_not_active_runtime_exposure",
-    "builtin": false
-  },
-  {
-    "service": "agents",
-    "action": "agents.session.stop",
-    "description": "Cancel a running Agent session and retain partial evidence",
-    "destructive": false,
-    "requires_admin": false,
-    "required_scopes": [],
-    "authorization_boundary": "resource_capability",
-    "required_capability": "scope.operate",
-    "resource_family": "agent",
-    "params": [
-      {
-        "name": "agent_id",
-        "ty": "string",
-        "required": true,
-        "description": ""
-      },
-      {
-        "name": "session_id",
-        "ty": "string",
-        "required": true,
-        "description": ""
-      }
-    ],
-    "returns": "object",
-    "surface_availability": {
-      "cli": false,
-      "mcp": true,
-      "api": true,
-      "web_ui": false
-    },
-    "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
-    "inventory_scope": "global_inventory_not_active_runtime_exposure",
-    "builtin": false
-  },
-  {
-    "service": "agents",
-    "action": "agents.session.transcript",
-    "description": "Read the bounded retained transcript for an Agent session",
-    "destructive": false,
-    "requires_admin": false,
-    "required_scopes": [],
-    "authorization_boundary": "resource_capability",
-    "required_capability": "scope.read",
-    "resource_family": "agent",
-    "params": [
-      {
-        "name": "agent_id",
-        "ty": "string",
-        "required": true,
-        "description": ""
-      },
-      {
-        "name": "session_id",
-        "ty": "string",
-        "required": true,
-        "description": ""
-      }
-    ],
-    "returns": "object",
-    "surface_availability": {
-      "cli": false,
-      "mcp": true,
-      "api": true,
-      "web_ui": false
-    },
-    "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
-    "inventory_scope": "global_inventory_not_active_runtime_exposure",
-    "builtin": false
-  },
-  {
-    "service": "agents",
-    "action": "agents.sessions.list",
-    "description": "List retained sessions for a caller-visible Agent",
-    "destructive": false,
-    "requires_admin": false,
-    "required_scopes": [],
-    "authorization_boundary": "resource_capability",
-    "required_capability": "scope.read",
-    "resource_family": "agent",
-    "params": [
-      {
-        "name": "agent_id",
-        "ty": "string",
-        "required": true,
-        "description": ""
-      },
-      {
-        "name": "cursor",
-        "ty": "string",
-        "required": false,
-        "description": ""
-      },
-      {
-        "name": "limit",
-        "ty": "string",
-        "required": false,
         "description": ""
       }
     ],
@@ -1162,6 +989,54 @@
         "name": "agent_id",
         "ty": "string",
         "required": true,
+        "description": ""
+      },
+      {
+        "name": "content_digest",
+        "ty": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "repository_digest",
+        "ty": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "image_digest",
+        "ty": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "harness_digest",
+        "ty": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "loadout_digest",
+        "ty": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "catalog_generation",
+        "ty": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "instructions",
+        "ty": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "model",
+        "ty": "string",
+        "required": false,
         "description": ""
       }
     ],
@@ -5866,7 +5741,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": false
+      "web_ui": true
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -6568,7 +6443,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -10407,7 +10282,7 @@
       {
         "name": "input_digest",
         "ty": "string",
-        "required": true,
+        "required": false,
         "description": ""
       }
     ],
@@ -10552,7 +10427,7 @@
   {
     "service": "tasks",
     "action": "tasks.schedule_arm",
-    "description": "Arm a task schedule from its next future occurrence",
+    "description": "Arm a Task schedule",
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
@@ -10582,7 +10457,7 @@
   {
     "service": "tasks",
     "action": "tasks.schedule_create",
-    "description": "Create an explicitly delegated durable Agent Task schedule",
+    "description": "Create a durable recurring Task schedule",
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
@@ -10615,12 +10490,6 @@
         "description": ""
       },
       {
-        "name": "project_id",
-        "ty": "string",
-        "required": false,
-        "description": ""
-      },
-      {
         "name": "agent_id",
         "ty": "string",
         "required": true,
@@ -10634,21 +10503,27 @@
       },
       {
         "name": "schedule",
-        "ty": "object",
+        "ty": "string",
         "required": true,
-        "description": "Once, interval, timezone-aware weekly, or five-field cron cadence"
+        "description": ""
+      },
+      {
+        "name": "project_id",
+        "ty": "string",
+        "required": false,
+        "description": ""
       },
       {
         "name": "armed",
-        "ty": "boolean",
+        "ty": "string",
         "required": false,
-        "description": "Arm the cadence after creation"
+        "description": ""
       },
       {
         "name": "retry_policy",
-        "ty": "object",
+        "ty": "string",
         "required": false,
-        "description": "max_retries 0..10; fixed backoff_ms 60000..86400000"
+        "description": ""
       }
     ],
     "returns": "object",
@@ -10666,7 +10541,7 @@
   {
     "service": "tasks",
     "action": "tasks.schedule_delete",
-    "description": "Delete a task schedule and its schedule history",
+    "description": "Delete a Task schedule and its schedule history",
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
@@ -10696,7 +10571,7 @@
   {
     "service": "tasks",
     "action": "tasks.schedule_edit",
-    "description": "Edit a task schedule",
+    "description": "Edit a Task schedule's name, input, agent, cadence, or retry policy",
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
@@ -10717,28 +10592,28 @@
         "description": ""
       },
       {
-        "name": "input",
-        "ty": "string",
-        "required": false,
-        "description": ""
-      },
-      {
         "name": "agent_id",
         "ty": "string",
         "required": false,
         "description": ""
       },
       {
-        "name": "schedule",
-        "ty": "object",
+        "name": "input",
+        "ty": "string",
         "required": false,
-        "description": "Replacement cadence"
+        "description": ""
+      },
+      {
+        "name": "schedule",
+        "ty": "string",
+        "required": false,
+        "description": ""
       },
       {
         "name": "retry_policy",
-        "ty": "object",
+        "ty": "string",
         "required": false,
-        "description": "max_retries 0..10; fixed backoff_ms 60000..86400000"
+        "description": ""
       }
     ],
     "returns": "object",
@@ -10756,7 +10631,7 @@
   {
     "service": "tasks",
     "action": "tasks.schedule_get",
-    "description": "Read a task schedule and its input",
+    "description": "Get a Task schedule and its retained template",
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
@@ -10786,7 +10661,7 @@
   {
     "service": "tasks",
     "action": "tasks.schedule_list",
-    "description": "List visible task schedules",
+    "description": "List caller-visible Task schedules",
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
@@ -10816,7 +10691,7 @@
   {
     "service": "tasks",
     "action": "tasks.schedule_pause",
-    "description": "Pause future task occurrences",
+    "description": "Pause a Task schedule",
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
@@ -10846,7 +10721,7 @@
   {
     "service": "tasks",
     "action": "tasks.schedule_run_now",
-    "description": "Create one idempotent immediate task occurrence",
+    "description": "Enqueue one immediate occurrence of a Task schedule",
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],

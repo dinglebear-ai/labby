@@ -1,7 +1,7 @@
 ---
 title: "Agent Tasks and Schedules"
 created: "2026-09-13"
-updated: "2026-09-13"
+updated: "2026-09-16"
 ---
 
 # Agent Tasks and Schedules
@@ -11,12 +11,11 @@ and recurring schedule definitions. Tasks are distinct from Depot ingestion
 jobs. Every Task and schedule belongs to the same `team`, `project`, or
 `personal` owner as its Agent; `installation` is not a valid owner.
 
-Task execution uses the Agent process harness described in
-[Agent Definitions and Sessions](./AGENTS.md). A Task or schedule record is not
-evidence that a runtime exists. Queue admission fails with
-`executor_unavailable` when the pinned Agent has no exact, available harness.
-A due schedule records that admission failure and does not pretend that a run
-occurred.
+Task execution uses the shared Assistant LLM provider described in
+[Agent Tasks](./AGENT_TASKS.md). A Task or schedule record is not evidence that
+a provider is reachable. A queued attempt whose provider is unavailable settles
+`failed` through the normal runtime. A due schedule records an admission
+failure and does not pretend that a run occurred.
 
 Use the runtime `help` and `schema` actions, or the generated
 [action catalog](../generated/action-catalog.md), for the complete action
@@ -25,8 +24,10 @@ schemas and required capabilities.
 ## Durable Task lifecycle
 
 `tasks.create` accepts a caller-provided Task ID and idempotency key, an owner,
-an active Agent ID, the exact input, and its canonical SHA-256 digest. Input must
-be nonempty, no larger than 1 MiB, and byte-for-byte equal to `input_digest`.
+an active Agent ID, and the exact raw UTF-8 input. Input must be nonempty and no
+larger than 1 MiB; Labby materializes it in the Task-input CAS namespace and
+stores the resulting `input_digest`. A supplied `input_digest` is verification
+only and must match the supplied bytes.
 Labby captures the Agent's current immutable version, content digest, and catalog
 generation in the Task intent.
 
@@ -195,7 +196,7 @@ five minutes and has no effect while `max_retries` is zero.
 
 Only a terminal `failed` Task with error code `execution_failed` is eligible.
 Cancellation, expiration, authority failure, invalid input or definitions,
-resource limits, and missing executors require operator intervention. Each retry
+resource limits, and an unconfigured provider require operator intervention. Each retry
 has a distinct immutable Task ID and attempt record, waits the fixed delay after
 the scheduler observes failure, and revalidates the original pinned Agent
 revision and current authority. Editing, pausing, or deleting the schedule

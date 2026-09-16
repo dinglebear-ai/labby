@@ -344,6 +344,92 @@ impl GatewayManager {
         Ok(state)
     }
 
+    /// Complete admitted runtime restarts independently of the request lifetime.
+    /// Desired configuration is never toggled to express a transient restart.
+    pub async fn restart_mcp_upstream(
+        &self,
+        name: &str,
+        scope: crate::gateway::params::GatewayEnrichmentScope,
+        owner: Option<UpstreamRuntimeOwner>,
+        wait: Duration,
+    ) -> Result<serde_json::Value, ToolError> {
+        scope.ensure_visible(name)?;
+        let manager = self.clone();
+        let name = name.to_owned();
+        let mut task = tokio::spawn(async move {
+            let _mutation_guard = manager.acquire_config_mutation().await?;
+            let upstream = manager
+                .upstream_config(&name)
+                .await
+                .ok_or_else(|| ToolError::Sdk {
+                    sdk_kind: "not_found".to_owned(),
+                    message: format!("upstream MCP server '{name}' was not found"),
+                })?;
+            if !upstream.enabled {
+                return Err(ToolError::InvalidParam {
+                    message: format!(
+                        "upstream MCP server '{name}' is disabled; enable it before restarting its connection"
+                    ),
+                    param: "name".to_owned(),
+                });
+            }
+            let pool = manager.current_pool().await.ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "service_unavailable".to_owned(),
+                message: "gateway runtime is not initialized".to_owned(),
+            })?;
+            pool.restart_upstream(&upstream, scope.oauth_subject.as_deref(), owner.as_ref())
+                .await
+                .map_err(|error| ToolError::Sdk {
+                    sdk_kind: "upstream_connect_error".to_owned(),
+                    message: error.to_string(),
+                })?;
+            if upstream.oauth.is_some()
+                && let Some(subject) = scope.oauth_subject.as_deref()
+            {
+                let configs = std::slice::from_ref(&upstream);
+                let resources = async {
+                    if upstream.proxy_resources {
+                        pool.subject_scoped_resources(configs, subject).await;
+                    }
+                };
+                let prompts = async {
+                    if upstream.proxy_prompts {
+                        pool.subject_scoped_prompts(configs, subject, &[]).await;
+                    }
+                };
+                tokio::join!(resources, prompts);
+            }
+            let cfg = manager.config.read().await.clone();
+            manager.reconcile_runtime_state(&cfg, Some(&pool)).await?;
+            manager.get_scoped(&name, &scope).await
+        });
+        match tokio::time::timeout(wait, &mut task).await {
+            Ok(result) => {
+                let gateway = result.map_err(|error| {
+                    ToolError::internal_message(format!("gateway restart task failed: {error}"))
+                })??;
+                Ok(serde_json::json!({ "completed": true, "gateway": gateway }))
+            }
+            Err(_) => {
+                tokio::spawn(async move {
+                    match task.await {
+                        Ok(Ok(_)) => tracing::info!(
+                            action = "gateway.mcp.restart",
+                            "background restart completed"
+                        ),
+                        Ok(Err(error)) => {
+                            tracing::warn!(action = "gateway.mcp.restart", error = %error, "background restart failed")
+                        }
+                        Err(error) => {
+                            tracing::warn!(action = "gateway.mcp.restart", error = %error, "background restart task failed")
+                        }
+                    }
+                });
+                Ok(serde_json::json!({ "completed": false }))
+            }
+        }
+    }
+
     pub async fn mcp_runtime_list(
         &self,
         name: Option<&str>,
@@ -357,6 +443,28 @@ impl GatewayManager {
         // Runtime inspection reports the current snapshot. It must not start or
         // connect upstreams; refresh/test/reload own active discovery.
         let persisted = self.reconcile_runtime_state(&cfg, pool.as_deref()).await?;
+        let patterns: Vec<String> = cfg
+            .upstream
+            .iter()
+            .filter(|upstream| {
+                upstream.command.is_some()
+                    && name.is_none_or(|name| name == upstream.name)
+                    && scope
+                        .route_visible_upstreams
+                        .as_ref()
+                        .is_none_or(|visible| visible.contains(&upstream.name))
+            })
+            .flat_map(|upstream| upstream_cleanup_patterns(upstream, false))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let process_matches = if patterns.is_empty() {
+            Vec::new()
+        } else {
+            tokio::task::spawn_blocking(move || matching_processes(&patterns))
+                .await
+                .unwrap_or_default()
+        };
         let mut rows = Vec::with_capacity(cfg.upstream.len());
         for upstream in &cfg.upstream {
             if name.is_some_and(|name| name != upstream.name)
@@ -367,8 +475,22 @@ impl GatewayManager {
             {
                 continue;
             }
-            let (summary, health) =
+            let (mut summary, health) =
                 upstream_summary_with_health(pool.as_deref(), &upstream.name).await;
+            let scoped = if upstream.oauth.is_some() {
+                Some(match pool.as_deref() {
+                    Some(pool) => {
+                        pool.cached_subject_summary(upstream, scope.oauth_subject.as_deref())
+                            .await
+                    }
+                    None => Default::default(),
+                })
+            } else {
+                None
+            };
+            if let Some(scoped) = &scoped {
+                summary = scoped.summary;
+            }
             let runtime = match pool.as_deref() {
                 Some(pool) => pool.upstream_runtime_metadata(&upstream.name).await,
                 None => None,
@@ -383,16 +505,9 @@ impl GatewayManager {
                 .iter()
                 .filter(|entry| Some(entry.pid) != live_pid)
                 .count();
-            // I-M2: likely_stale_process_groups does a synchronous /proc
-            // scan; offload to a blocking thread so we don't stall the executor.
             let live_stale_groups = if upstream.command.is_some() {
-                let upstream_clone = upstream.clone();
                 let live_runtime = live_pid.zip(runtime.as_ref().and_then(|meta| meta.pgid));
-                tokio::task::spawn_blocking(move || {
-                    likely_stale_process_groups(&upstream_clone, live_runtime)
-                })
-                .await
-                .unwrap_or_default()
+                likely_stale_process_groups(upstream, live_runtime, &process_matches)
             } else {
                 BTreeSet::new()
             };
@@ -423,17 +538,23 @@ impl GatewayManager {
                         .unwrap_or(entry.observed_at_epoch_secs)
                 })
             };
-            let last_error = operator_visible_upstream_error(match pool.as_deref() {
-                Some(pool) => pool.upstream_last_error(&upstream.name).await,
-                None => None,
-            });
+            let last_error = if scoped.is_some() {
+                None
+            } else {
+                operator_visible_upstream_error(match pool.as_deref() {
+                    Some(pool) => pool.upstream_last_error(&upstream.name).await,
+                    None => None,
+                })
+            };
             let exposing_capabilities = summary.exposed_tool_count > 0
                 || summary.exposed_resource_count > 0
                 || summary.exposed_prompt_count > 0
                 || summary.exposed_skill_count > 0;
             let health_ok = health.map(|health| health.is_routable()).unwrap_or(false);
-            let connected =
-                upstream.enabled && last_error.is_none() && (exposing_capabilities || health_ok);
+            let connected = scoped.as_ref().map_or_else(
+                || upstream.enabled && last_error.is_none() && (exposing_capabilities || health_ok),
+                |scoped| scoped.connected,
+            );
             rows.push(super::types::GatewayMcpRuntimeView {
                 notification_incidents,
                 name: upstream.name.clone(),
@@ -553,6 +674,23 @@ impl GatewayManager {
                 let result = pool
                     .reprobe_tools_for_upstream_as(&upstream, oauth_subject, None)
                     .await;
+                if result.is_ok()
+                    && upstream.oauth.is_some()
+                    && let Some(subject) = oauth_subject
+                {
+                    let configs = std::slice::from_ref(&upstream);
+                    let resources = async {
+                        if upstream.proxy_resources {
+                            pool.subject_scoped_resources(configs, subject).await;
+                        }
+                    };
+                    let prompts = async {
+                        if upstream.proxy_prompts {
+                            pool.subject_scoped_prompts(configs, subject, &[]).await;
+                        }
+                    };
+                    tokio::join!(resources, prompts);
+                }
                 (name, result)
             })
             .buffer_unordered(concurrency);
@@ -683,11 +821,15 @@ fn local_cleanup_patterns() -> Vec<String> {
 fn likely_stale_process_groups(
     upstream: &UpstreamConfig,
     live_runtime: Option<(u32, u32)>,
+    matches: &[GatewayCleanupMatch],
 ) -> BTreeSet<String> {
     let patterns = upstream_cleanup_patterns(upstream, false);
     let mut groups = BTreeSet::new();
-    for matched in matching_processes(&patterns) {
-        for pid in matched.pids {
+    for matched in matches
+        .iter()
+        .filter(|matched| patterns.contains(&matched.pattern))
+    {
+        for &pid in &matched.pids {
             let group = process_group_id(pid).unwrap_or(pid);
             if live_runtime.is_some_and(|(live_pid, live_pgid)| {
                 group == live_pgid || process_has_ancestor(pid, live_pid)
@@ -737,6 +879,7 @@ fn stale_incident_identity(identities: &BTreeSet<String>) -> Option<String> {
 fn likely_stale_process_groups(
     _upstream: &UpstreamConfig,
     _live_runtime: Option<(u32, u32)>,
+    _matches: &[GatewayCleanupMatch],
 ) -> BTreeSet<String> {
     BTreeSet::new()
 }
@@ -1240,8 +1383,17 @@ mod tests {
     async fn runtime_state_failure_does_not_publish_candidate_pool_or_config() {
         let dir = tempfile::tempdir().expect("tempdir");
         let config_path = dir.path().join("config.toml");
-        crate::gateway::config::write_gateway_config(&config_path, &GatewayConfig::default())
-            .expect("seed config");
+        crate::gateway::config::write_gateway_config(
+            &config_path,
+            &GatewayConfig {
+                code_mode: labby_runtime::gateway_config::CodeModeConfig {
+                    enabled: false,
+                    ..Default::default()
+                },
+                ..GatewayConfig::default()
+            },
+        )
+        .expect("seed config");
         let manager = GatewayManager::new(config_path.clone(), GatewayRuntimeHandle::default());
         manager
             .reload_with_origin(None, None)

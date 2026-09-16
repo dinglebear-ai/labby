@@ -7,10 +7,20 @@ use crate::types::{
 };
 
 pub(super) fn row_to_allowed_user(row: &rusqlite::Row<'_>) -> rusqlite::Result<AllowedUserRow> {
+    let role: String = row.get(3)?;
     Ok(AllowedUserRow {
         email: row.get(0)?,
         added_by: row.get(1)?,
         created_at: row.get(2)?,
+        // The schema CHECK keeps this total; a value outside the vocabulary
+        // is a store integrity failure, not a row to skip.
+        role: crate::types::AllowedUserRole::parse(&role).ok_or_else(|| {
+            rusqlite::Error::FromSqlConversionFailure(
+                3,
+                rusqlite::types::Type::Text,
+                format!("allowed_users.role `{role}` is outside the vocabulary").into(),
+            )
+        })?,
     })
 }
 

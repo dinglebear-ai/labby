@@ -26,7 +26,7 @@ authoritative Labby Control Plane. Read `README.md` and the repository-root
   including legacy origin migration.
 - `src-tauri/tauri.conf.json` — desktop window and bundle identity.
 
-The desktop version is independent of the root Rust workspace. Keep it aligned
+The desktop version follows the root Rust workspace release. Keep it aligned
 across `package.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, and
 `src-tauri/tauri.conf.json`.
 

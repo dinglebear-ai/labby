@@ -1,6 +1,7 @@
-import { performServiceAction, type ServiceActionError } from '@/lib/api/service-action-client'
-import { captureGatewayAuthority } from '@/lib/api/gateway-request'
-import { getSessionAuthority } from '@/lib/auth/session-store'
+import { getSessionCsrfToken } from '@/lib/auth/session-store'
+import { assertGatewayAuthorityCurrent, captureGatewayAuthority } from '@/lib/api/gateway-request'
+
+export type OwnerKind = 'personal' | 'team' | 'project'
 
 export type AgentView = {
   agent_id: string
@@ -8,184 +9,212 @@ export type AgentView = {
   owner_id: string
   version: number
   state: string
-  content_digest: string
-  repository_digest: string
-  image_digest: string
-  harness_digest: string
-  harness_id?: string | null
-  loadout_digest: string
-  catalog_generation: string
-}
-export type TaskView = { task_id: string; owner_kind: string; owner_id: string; agent_id: string; agent_version: number; state: string; attempt: number; output_digest?: string | null; error_code?: string | null }
-
-export type AgentHarnessView = {
-  id: string
-  digest: string
-  available: boolean
-  content_digest: string
-  repository_digest: string
-  image_digest: string
-  loadout_digest: string
   catalog_generation: string
 }
 
-export type AgentSessionView = {
+export type AgentRunResult = {
   agent_id: string
   agent_version: number
   session_id: string
   status: string
-  input_digest: string
-  output_digest?: string | null
-  error_code?: string | null
-  resumed_from_session_id?: string | null
+  output_digest: string
+  output?: string | null
+  /** True when the inline output was cut at the 256 KiB cap; the digest keys the full bytes. */
+  output_truncated?: boolean
   authority_expires_at: number
-  created_at: number
-  updated_at: number
-  completed_at?: number | null
 }
 
-export type AgentTranscriptView = {
+export type AgentSessionStatus = {
   agent_id: string
   session_id: string
-  status: string
+  status: unknown
+}
+
+export type AgentSessionCancel = AgentSessionStatus & {
+  /** True when a live in-process run was signalled; false reports the durable status unchanged. */
+  cancel_requested: boolean
+}
+
+export type TaskView = {
+  task_id: string
+  owner_kind: string
+  owner_id: string
+  agent_id: string
+  agent_version: number
+  state: string
+  attempt: number
+  output_digest?: string | null
+  error_code?: string | null
+}
+
+export type TaskResult = TaskView & { output?: string | null; output_truncated?: boolean }
+
+export type CreateAgentInput = {
+  agentId: string
+  ownerKind: OwnerKind
+  ownerId: string
+  instructions: string
+  model?: string
+}
+
+export type UpdateAgentInput = {
+  agentId: string
+  instructions?: string
+  model?: string
+}
+
+export type CreateTaskInput = {
+  taskId: string
+  idempotencyKey: string
+  ownerKind: OwnerKind
+  ownerId: string
+  agentId: string
   input: string
-  transcript?: string | null
-  truncated: boolean
 }
 
-export type AgentRunResult = Pick<AgentSessionView, 'agent_id' | 'agent_version' | 'session_id' | 'status' | 'input_digest' | 'authority_expires_at'> & {
-  resumed_from_session_id?: string | null
-}
-
-export type AgentSessionStatusResult = Pick<AgentSessionView, 'agent_id' | 'session_id' | 'status'>
-
-export class AgentTaskClientError extends Error implements ServiceActionError {
-  constructor(
-    message: string,
-    public readonly status: number,
-    public readonly code?: string,
-    public readonly param?: string,
-  ) {
-    super(message)
-    this.name = 'AgentTaskClientError'
-  }
-}
-
-async function action<T>(service: 'agents' | 'tasks', name: string, params: Record<string, unknown> = {}, signal?: AbortSignal): Promise<T> {
-  const authority = getSessionAuthority() ? captureGatewayAuthority(signal) : undefined
+async function responseError(service: 'agents' | 'tasks', response: Response): Promise<Error> {
+  const prefix = service + ' request failed (' + response.status + ')'
+  let message = prefix
   try {
-    return await performServiceAction<T, AgentTaskClientError>({
-    action: name,
-    params,
-    signal: authority?.signal ?? signal,
-    serviceLabel: service === 'agents' ? 'Agent' : 'Task',
-    url: `/v1/${service}`,
-    createError: (message, status, code, param) => new AgentTaskClientError(message === 'An error occurred' ? `${service === 'agents' ? 'Agent' : 'Task'} request failed (${status})` : message, status, code, param),
-  })
+    const value = await response.json() as { message?: unknown; error?: { message?: unknown } }
+    if (typeof value.message === 'string' && value.message.trim()) message = prefix + ': ' + value.message
+    else if (typeof value.error?.message === 'string' && value.error.message.trim()) message = prefix + ': ' + value.error.message
+  } catch {
+    // Preserve the status-shaped fallback when the response is not JSON.
+  }
+  return new Error(message)
+}
+
+async function action<T>(
+  service: 'agents' | 'tasks',
+  name: string,
+  params: Record<string, unknown> = {},
+  signal?: AbortSignal,
+): Promise<T> {
+  const authority = captureGatewayAuthority(signal)
+  const headers = new Headers({ 'content-type': 'application/json' })
+  const csrf = getSessionCsrfToken()
+  if (csrf) headers.set('x-csrf-token', csrf)
+  try {
+    const response = await fetch('/v1/' + service + '/', {
+      method: 'POST',
+      credentials: 'include',
+      cache: 'no-store',
+      headers,
+      body: JSON.stringify({ action: name, params }),
+      signal: authority.signal,
+    })
+    if (!response.ok) throw await responseError(service, response)
+    const value = await response.json() as T
+    assertGatewayAuthorityCurrent(authority.generation)
+    return value
   } finally {
-    authority?.finish()
+    authority.finish()
   }
 }
 
-const AGENT_PAGE_LIMIT = '100'
-const MAX_AGENT_PAGES = 100
-
-async function allAgentPages<T>(
-  name: 'agents.list' | 'agents.sessions.list',
-  key: 'agents' | 'sessions',
-  params: Record<string, unknown>,
+async function listAll<T>(
+  service: 'agents' | 'tasks',
+  name: 'agents.list' | 'tasks.list',
+  field: 'agents' | 'tasks',
   signal?: AbortSignal,
 ): Promise<T[]> {
-  const rows: T[] = []
-  const visited = new Set<string>()
+  const items: T[] = []
+  const seenCursors = new Set<string>()
   let cursor: string | undefined
-  for (let page = 0; page < MAX_AGENT_PAGES; page++) {
-    const result = await action<Partial<Record<'agents' | 'sessions', T[]>> & { next_cursor?: string | null }>(
-      'agents',
+  while (true) {
+    const page = await action<{ agents?: T[]; tasks?: T[]; next_cursor?: string | null }>(
+      service,
       name,
-      { ...params, limit: AGENT_PAGE_LIMIT, ...(cursor ? { cursor } : {}) },
+      cursor ? { cursor } : {},
       signal,
     )
-    rows.push(...(result[key] ?? []))
-    if (!result.next_cursor) return rows
-    if (visited.has(result.next_cursor)) {
-      throw new Error('The Agent server repeated a pagination cursor. Refresh to retry.')
+    const pageItems = page[field]
+    if (!Array.isArray(pageItems)) throw new Error(service + ' request failed: malformed list response')
+    items.push(...pageItems)
+    const nextCursor = page.next_cursor
+    if (!nextCursor) return items
+    if (seenCursors.has(nextCursor)) {
+      throw new Error(service + ' request failed: repeated pagination cursor')
     }
-    cursor = result.next_cursor
-    visited.add(cursor)
+    seenCursors.add(nextCursor)
+    cursor = nextCursor
   }
-  throw new Error('The Agent inventory exceeds the bounded listing limit.')
 }
 
 export async function listAgents(signal?: AbortSignal): Promise<AgentView[]> {
-  return allAgentPages<AgentView>('agents.list', 'agents', {}, signal)
-}
-export async function listTasks(signal?: AbortSignal): Promise<TaskView[]> {
-  return (await action<{ tasks: TaskView[] }>('tasks', 'tasks.list', {}, signal)).tasks
+  return listAll<AgentView>('agents', 'agents.list', 'agents', signal)
 }
 
-export async function listAgentHarnesses(signal?: AbortSignal): Promise<AgentHarnessView[]> {
-  return (await action<{ harnesses: AgentHarnessView[] }>('agents', 'agents.harnesses', {}, signal)).harnesses
+export async function getAgent(agentId: string, signal?: AbortSignal): Promise<AgentView> {
+  return action<AgentView>('agents', 'agents.get', { agent_id: agentId }, signal)
 }
 
-export async function createAgentFromHarness(agentId: string, harness: AgentHarnessView, signal?: AbortSignal): Promise<AgentView> {
-  const owner = getSessionAuthority()?.activeOwner
-  if (!owner || owner.kind === 'installation') throw new DOMException('An Agent owner workspace is unavailable', 'InvalidStateError')
+export async function createAgent(input: CreateAgentInput, signal?: AbortSignal): Promise<AgentView> {
   return action<AgentView>('agents', 'agents.create', {
-    agent_id: agentId,
-    owner_kind: owner.kind,
-    owner_id: owner.id,
-    content_digest: harness.content_digest,
-    repository_digest: harness.repository_digest,
-    image_digest: harness.image_digest,
-    harness_digest: harness.digest,
-    loadout_digest: harness.loadout_digest,
-    catalog_generation: harness.catalog_generation,
+    agent_id: input.agentId,
+    owner_kind: input.ownerKind,
+    owner_id: input.ownerId,
+    instructions: input.instructions,
+    ...(input.model?.trim() ? { model: input.model.trim() } : {}),
   }, signal)
 }
 
-export async function listAgentSessions(agentId: string, signal?: AbortSignal): Promise<AgentSessionView[]> {
-  return allAgentPages<AgentSessionView>('agents.sessions.list', 'sessions', { agent_id: agentId }, signal)
-}
-
-export async function listVisibleAgentSessions(agents: readonly AgentView[], signal?: AbortSignal): Promise<AgentSessionView[]> {
-  const pages = await Promise.all(agents.map(agent => listAgentSessions(agent.agent_id, signal)))
-  return pages.flat().sort((left, right) => right.updated_at - left.updated_at)
-}
-
-export async function runAgent(agentId: string, input: string, idempotencyKey: string, signal?: AbortSignal): Promise<AgentRunResult> {
-  return action<AgentRunResult>('agents', 'agents.run', { agent_id: agentId, input, idempotency_key: idempotencyKey }, signal)
-}
-
-export async function getAgentSession(agentId: string, sessionId: string, signal?: AbortSignal): Promise<AgentSessionView> {
-  return action<AgentSessionView>('agents', 'agents.session.get', { agent_id: agentId, session_id: sessionId }, signal)
-}
-
-export async function getAgentTranscript(agentId: string, sessionId: string, signal?: AbortSignal): Promise<AgentTranscriptView> {
-  return action<AgentTranscriptView>('agents', 'agents.session.transcript', { agent_id: agentId, session_id: sessionId }, signal)
-}
-
-export async function stopAgentSession(agentId: string, sessionId: string, signal?: AbortSignal): Promise<AgentSessionStatusResult> {
-  return action<AgentSessionStatusResult>('agents', 'agents.session.stop', { agent_id: agentId, session_id: sessionId }, signal)
-}
-
-const pendingResumeKeys = new Map<string, string>()
-
-function resumeIntent(agentId: string, sessionId: string) {
-  const authority = getSessionAuthority()
-  const owner = authority?.activeOwner
-  return [authority?.principalId ?? '', owner?.kind ?? '', owner?.id ?? '', agentId, sessionId].join('\u0000')
-}
-
-export async function resumeAgentSession(agentId: string, sessionId: string, signal?: AbortSignal): Promise<AgentRunResult> {
-  const intent = resumeIntent(agentId, sessionId)
-  const idempotencyKey = pendingResumeKeys.get(intent) ?? crypto.randomUUID()
-  pendingResumeKeys.set(intent, idempotencyKey)
-  const result = await action<AgentRunResult>('agents', 'agents.session.resume', {
-    agent_id: agentId,
-    session_id: sessionId,
-    idempotency_key: idempotencyKey,
+export async function updateAgent(input: UpdateAgentInput, signal?: AbortSignal): Promise<AgentView> {
+  return action<AgentView>('agents', 'agents.update', {
+    agent_id: input.agentId,
+    ...(input.instructions?.trim() ? { instructions: input.instructions } : {}),
+    ...(input.model?.trim() ? { model: input.model.trim() } : {}),
   }, signal)
-  pendingResumeKeys.delete(intent)
-  return result
+}
+
+export async function suspendAgent(agentId: string, signal?: AbortSignal): Promise<{ agent_id: string; state: string }> {
+  return action('agents', 'agents.suspend', { agent_id: agentId }, signal)
+}
+
+export async function deleteAgent(agentId: string, signal?: AbortSignal): Promise<{ agent_id: string; state: string }> {
+  return action('agents', 'agents.delete', { agent_id: agentId }, signal)
+}
+
+export async function runAgent(agentId: string, input = '', signal?: AbortSignal): Promise<AgentRunResult> {
+  return action<AgentRunResult>('agents', 'agents.run', { agent_id: agentId, ...(input ? { input } : {}) }, signal)
+}
+
+export async function getAgentSessionStatus(agentId: string, sessionId: string, signal?: AbortSignal): Promise<AgentSessionStatus> {
+  return action('agents', 'agents.session.status', { agent_id: agentId, session_id: sessionId }, signal)
+}
+
+export async function cancelAgentSession(agentId: string, sessionId: string, signal?: AbortSignal): Promise<AgentSessionCancel> {
+  return action('agents', 'agents.session.cancel', { agent_id: agentId, session_id: sessionId }, signal)
+}
+
+export async function listTasks(signal?: AbortSignal): Promise<TaskView[]> {
+  return listAll<TaskView>('tasks', 'tasks.list', 'tasks', signal)
+}
+
+export async function getTask(taskId: string, signal?: AbortSignal): Promise<TaskView> {
+  return action<TaskView>('tasks', 'tasks.get', { task_id: taskId }, signal)
+}
+
+export async function createTask(input: CreateTaskInput, signal?: AbortSignal): Promise<{ task_id: string; state: string }> {
+  return action('tasks', 'tasks.create', {
+    task_id: input.taskId,
+    idempotency_key: input.idempotencyKey,
+    owner_kind: input.ownerKind,
+    owner_id: input.ownerId,
+    agent_id: input.agentId,
+    input: input.input,
+  }, signal)
+}
+
+export async function queueTask(taskId: string, signal?: AbortSignal): Promise<{ task_id: string; state: string }> {
+  return action('tasks', 'tasks.queue', { task_id: taskId }, signal)
+}
+
+export async function cancelTask(taskId: string, signal?: AbortSignal): Promise<{ task_id: string; state: string }> {
+  return action('tasks', 'tasks.cancel', { task_id: taskId }, signal)
+}
+
+export async function getTaskResult(taskId: string, signal?: AbortSignal): Promise<TaskResult> {
+  return action<TaskResult>('tasks', 'tasks.result', { task_id: taskId }, signal)
 }

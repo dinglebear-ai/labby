@@ -271,6 +271,46 @@ impl ArtifactControlPlane {
         Self::from_configs(config, &crate::config::depot::DepotPreferences::default())
     }
 
+    /// Bootstrap optional remote authorities independently of the local library.
+    pub(crate) fn from_host_configs(
+        config: &ArtifactPreferences,
+        depot: &crate::config::depot::DepotPreferences,
+    ) -> Result<Self, ToolError> {
+        let mut result = Self::from_configs(&ArtifactPreferences::default(), depot)?;
+        let mut ids = std::collections::BTreeSet::new();
+        for source in &config.sources {
+            if source.id == "public" && depot.validate_public_acquisition(config).is_err() {
+                tracing::warn!(connection_id = %source.id, "public acquisition binding invalid; control source disabled");
+                continue;
+            }
+            if !ids.insert(&source.id) {
+                result.clients.remove(&source.id);
+                tracing::warn!(connection_id = %source.id, "duplicate Artifact control connection; source disabled");
+                continue;
+            }
+            if source.id != "public"
+                && depot.public_read_binding.as_ref().is_some_and(|binding| {
+                    source.bearer_token_env.as_deref() == Some(&binding.bearer_token_env)
+                })
+            {
+                tracing::warn!(connection_id = %source.id, "public credential cannot authorize another control source; source disabled");
+                continue;
+            }
+            match Self::from_configs(
+                &ArtifactPreferences {
+                    sources: vec![source.clone()],
+                },
+                depot,
+            ) {
+                Ok(mut remote) => result.clients.append(&mut remote.clients),
+                Err(error) => {
+                    tracing::warn!(connection_id = %source.id, error = %error, "Artifact control connection unavailable; source disabled")
+                }
+            }
+        }
+        Ok(result)
+    }
+
     pub(crate) fn from_configs(
         config: &ArtifactPreferences,
         depot: &crate::config::depot::DepotPreferences,
@@ -308,13 +348,20 @@ impl ArtifactControlPlane {
                     param: "control_plane_url".to_owned(),
                 });
             }
-            for address in &source.pinned_addresses {
-                labby_primitives::ssrf::check_ip_not_private(*address, "Artifact authority")
-                    .map_err(|_| ToolError::InvalidParam {
-                        message: "Artifact authority pin must be a public address".to_owned(),
-                        param: "pinned_addresses".to_owned(),
-                    })?;
-            }
+            let policy =
+                super::depot::manager::host_policy(depot).map_err(|_| ToolError::InvalidParam {
+                    message: "Artifact authority host policy is invalid".to_owned(),
+                    param: "depot.private_hosts".to_owned(),
+                })?;
+            super::depot::network::validate_addresses(
+                parsed.host_str().unwrap_or_default(),
+                &source.pinned_addresses,
+                &policy,
+            )
+            .map_err(|_| ToolError::InvalidParam {
+                message: "Artifact authority pins are not authorized by host policy".to_owned(),
+                param: "pinned_addresses".to_owned(),
+            })?;
             clients.insert(
                 source.id.clone(),
                 AuthorityConnection {
@@ -1140,6 +1187,40 @@ mod tests {
         }
         assert_eq!(projected["pageToken"], "safe-page");
         assert_eq!(projected["next_page_token"], "safe-next");
+    }
+
+    #[test]
+    fn host_control_sources_isolate_invalid_peers_and_honor_exact_grants() {
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let config: crate::config::LabConfig = toml::from_str(
+            r#"
+[depot.private_hosts]
+"depot.example.com" = ["10.1.0.8"]
+[[artifacts.sources]]
+id = "private"
+kind = "depot"
+endpoint = "https://depot.example.com/api/artifacts/exact"
+control_plane_url = "https://depot.example.com"
+pinned_addresses = ["10.1.0.8"]
+[[artifacts.sources]]
+id = "broken"
+kind = "depot"
+endpoint = "https://other.example.com/api/artifacts/exact"
+control_plane_url = "https://other.example.com"
+pinned_addresses = ["10.1.0.8"]
+"#,
+        )
+        .unwrap();
+        assert!(ArtifactControlPlane::from_config(&config.artifacts).is_err());
+        let controls =
+            ArtifactControlPlane::from_host_configs(&config.artifacts, &config.depot).unwrap();
+        assert!(controls.clients.contains_key("private"));
+        assert!(!controls.clients.contains_key("broken"));
+        let mut config = config;
+        config.artifacts.sources[0].pinned_addresses = vec!["169.254.169.254".parse().unwrap()];
+        let controls =
+            ArtifactControlPlane::from_host_configs(&config.artifacts, &config.depot).unwrap();
+        assert!(controls.clients.is_empty());
     }
 
     #[test]

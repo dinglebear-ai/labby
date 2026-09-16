@@ -212,7 +212,12 @@ export function ConsoleHero({
                   </div>
                   <div
                     data-console-hero-stat-value="1"
+                    title={typeof stat.value === 'string' || typeof stat.value === 'number' ? String(stat.value) : undefined}
                     style={{
+                      minWidth: 0,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
                       fontFamily: 'var(--font-display)',
                       fontSize: 21,
                       lineHeight: 1,

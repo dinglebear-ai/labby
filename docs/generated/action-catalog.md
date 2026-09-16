@@ -25,20 +25,15 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `access` | `access.team_project.assign` | false | false | false |  | `resource_capability` | `scope.manage` | `platform` | `team_id*: string`<br>`project_id*: string`<br>`role*: string` | `object` | mcp, api |
 | `access` | `help` | true | false | false |  | `transport` | `-` | `-` |  | `HelpPayload` | mcp, api |
 | `access` | `schema` | true | false | false |  | `transport` | `-` | `-` | `action*: string` | `ActionSpec` | mcp, api |
-| `agents` | `agents.create` | false | false | false |  | `resource_capability` | `scope.create` | `agent` | `agent_id*: string`<br>`owner_kind*: string`<br>`owner_id*: string`<br>`content_digest*: string`<br>`repository_digest*: string`<br>`image_digest*: string`<br>`harness_digest*: string`<br>`loadout_digest*: string`<br>`catalog_generation*: string` | `object` | mcp, api |
-| `agents` | `agents.delete` | false | false | false |  | `resource_capability` | `scope.delete` | `agent` | `agent_id*: string` | `object` | mcp, api |
+| `agents` | `agents.create` | false | false | false |  | `resource_capability` | `scope.create` | `agent` | `agent_id*: string`<br>`owner_kind*: string`<br>`owner_id*: string`<br>`instructions*: string`<br>`model: string`<br>`content_digest: string`<br>`repository_digest: string`<br>`image_digest: string`<br>`harness_digest: string`<br>`loadout_digest: string`<br>`catalog_generation: string` | `object` | mcp, api |
+| `agents` | `agents.delete` | false | true | false |  | `resource_capability` | `scope.delete` | `agent` | `agent_id*: string` | `object` | mcp, api |
 | `agents` | `agents.get` | false | false | false |  | `resource_capability` | `scope.read` | `agent` | `agent_id*: string` | `object` | mcp, api |
-| `agents` | `agents.harnesses` | false | false | false |  | `resource_capability` | `scope.read` | `agent` |  | `object` | mcp, api |
 | `agents` | `agents.list` | false | false | false |  | `resource_capability` | `scope.read` | `agent` | `cursor: string`<br>`limit: string` | `object` | mcp, api |
-| `agents` | `agents.run` | false | false | false |  | `resource_capability` | `scope.operate` | `agent` | `agent_id*: string`<br>`input*: string`<br>`idempotency_key*: string` | `object` | mcp, api |
-| `agents` | `agents.session.get` | false | false | false |  | `resource_capability` | `scope.read` | `agent` | `agent_id*: string`<br>`session_id*: string` | `object` | mcp, api |
-| `agents` | `agents.session.resume` | false | false | false |  | `resource_capability` | `scope.operate` | `agent` | `agent_id*: string`<br>`session_id*: string`<br>`idempotency_key*: string` | `object` | mcp, api |
+| `agents` | `agents.run` | false | false | false |  | `resource_capability` | `scope.operate` | `agent` | `agent_id*: string`<br>`input: string` | `object` | mcp, api |
+| `agents` | `agents.session.cancel` | false | false | false |  | `resource_capability` | `scope.operate` | `agent` | `agent_id*: string`<br>`session_id*: string` | `object` | mcp, api |
 | `agents` | `agents.session.status` | false | false | false |  | `resource_capability` | `scope.read` | `agent` | `agent_id*: string`<br>`session_id*: string` | `object` | mcp, api |
-| `agents` | `agents.session.stop` | false | false | false |  | `resource_capability` | `scope.operate` | `agent` | `agent_id*: string`<br>`session_id*: string` | `object` | mcp, api |
-| `agents` | `agents.session.transcript` | false | false | false |  | `resource_capability` | `scope.read` | `agent` | `agent_id*: string`<br>`session_id*: string` | `object` | mcp, api |
-| `agents` | `agents.sessions.list` | false | false | false |  | `resource_capability` | `scope.read` | `agent` | `agent_id*: string`<br>`cursor: string`<br>`limit: string` | `object` | mcp, api |
 | `agents` | `agents.suspend` | false | false | false |  | `resource_capability` | `scope.manage` | `agent` | `agent_id*: string` | `object` | mcp, api |
-| `agents` | `agents.update` | false | false | false |  | `resource_capability` | `scope.manage` | `agent` | `agent_id*: string` | `object` | mcp, api |
+| `agents` | `agents.update` | false | false | false |  | `resource_capability` | `scope.manage` | `agent` | `agent_id*: string`<br>`content_digest: string`<br>`repository_digest: string`<br>`image_digest: string`<br>`harness_digest: string`<br>`loadout_digest: string`<br>`catalog_generation: string`<br>`instructions: string`<br>`model: string` | `object` | mcp, api |
 | `agents` | `help` | true | false | false |  | `transport` | `-` | `-` |  | `HelpPayload` | mcp, api |
 | `agents` | `schema` | true | false | false |  | `transport` | `-` | `-` | `action*: string` | `ActionSpec` | mcp, api |
 | `artifacts` | `artifacts.activate` | false | false | false |  | `transport` | `-` | `-` | `artifact_id*: string`<br>`expected_revision_id*: string`<br>`expected_library_version*: integer`<br>`idempotency_key*: string` | `SkillMutationReceipt` | mcp, api, web |
@@ -163,7 +158,7 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `gateway` | `gateway.mcp.disable` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string`<br>`cleanup: boolean`<br>`aggressive: boolean` | `GatewayView + optional cleanup result` | cli, mcp, api, web |
 | `gateway` | `gateway.mcp.enable` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string` | `GatewayView` | cli, mcp, api, web |
 | `gateway` | `gateway.mcp.list` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name: string` | `GatewayMcpRuntimeView[]` | cli, mcp, api, web |
-| `gateway` | `gateway.mcp.restart` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string`<br>`aggressive: boolean` | `GatewayView + cleanup result` | cli, mcp, api |
+| `gateway` | `gateway.mcp.restart` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string`<br>`aggressive: boolean` | `GatewayView + cleanup result` | cli, mcp, api, web |
 | `gateway` | `gateway.oauth.authorize` | false | false | false |  | `resource_capability` | `scope.manage` | `gateway` | `upstream*: string` | `BeginAuthorization` | mcp, api |
 | `gateway` | `gateway.oauth.clear` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `upstream*: string` | `ok` | cli, mcp, api |
 | `gateway` | `gateway.oauth.google_revoke` | false | true | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `upstream*: string`<br>`confirm*: boolean` | `GoogleProviderInvalidation` | cli, mcp, api |
@@ -185,7 +180,7 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `gateway` | `gateway.protected_route.test` | false | false | false |  | `resource_capability` | `scope.manage` | `gateway` | `route*: json` | `ProtectedMcpRouteTestResult` | cli, mcp, api, web |
 | `gateway` | `gateway.protected_route.update` | false | false | false |  | `resource_capability` | `scope.manage` | `gateway` | `name*: string`<br>`route*: json` | `ProtectedMcpRouteConfig` | cli, mcp, api, web |
 | `gateway` | `gateway.public_urls.get` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` |  | `{app: string?, mcp_gateway: string?, effective_mcp_gateway: string?}` | cli, mcp, api |
-| `gateway` | `gateway.reload` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` |  | `GatewayCatalogDiff` | cli, mcp, api, web |
+| `gateway` | `gateway.reload` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` |  | `GatewayCatalogDiff` | cli, mcp, api |
 | `gateway` | `gateway.remove` | false | true | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string` | `GatewayView` | cli, mcp, api, web |
 | `gateway` | `gateway.schema` | false | false | false |  | `transport` | `-` | `-` | `name*: string` | `GatewayServerSchema` | mcp, api |
 | `gateway` | `gateway.server.get` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `id*: string` | `ServerView` | mcp, api, web |
@@ -293,15 +288,15 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `tasks` | `help` | true | false | false |  | `transport` | `-` | `-` |  | `HelpPayload` | mcp, api |
 | `tasks` | `schema` | true | false | false |  | `transport` | `-` | `-` | `action*: string` | `ActionSpec` | mcp, api |
 | `tasks` | `tasks.cancel` | false | false | false |  | `resource_capability` | `scope.operate` | `task` | `task_id*: string` | `object` | mcp, api |
-| `tasks` | `tasks.create` | false | false | false |  | `resource_capability` | `scope.create` | `task` | `task_id*: string`<br>`idempotency_key*: string`<br>`owner_kind*: string`<br>`owner_id*: string`<br>`agent_id*: string`<br>`input*: string`<br>`input_digest*: string` | `object` | mcp, api |
+| `tasks` | `tasks.create` | false | false | false |  | `resource_capability` | `scope.create` | `task` | `task_id*: string`<br>`idempotency_key*: string`<br>`owner_kind*: string`<br>`owner_id*: string`<br>`agent_id*: string`<br>`input*: string`<br>`input_digest: string` | `object` | mcp, api |
 | `tasks` | `tasks.get` | false | false | false |  | `resource_capability` | `scope.read` | `task` | `task_id*: string` | `object` | mcp, api |
 | `tasks` | `tasks.list` | false | false | false |  | `resource_capability` | `scope.read` | `task` | `cursor: string`<br>`limit: string` | `object` | mcp, api |
 | `tasks` | `tasks.queue` | false | false | false |  | `resource_capability` | `scope.operate` | `task` | `task_id*: string` | `object` | mcp, api |
 | `tasks` | `tasks.result` | false | false | false |  | `resource_capability` | `scope.read` | `task` | `task_id*: string` | `object` | mcp, api |
 | `tasks` | `tasks.schedule_arm` | false | false | false |  | `resource_capability` | `scope.operate` | `task` | `schedule_id*: string` | `object` | mcp, api |
-| `tasks` | `tasks.schedule_create` | false | false | false |  | `resource_capability` | `scope.create` | `task` | `schedule_id*: string`<br>`name*: string`<br>`owner_kind*: string`<br>`owner_id*: string`<br>`project_id: string`<br>`agent_id*: string`<br>`input*: string`<br>`schedule*: object`<br>`armed: boolean`<br>`retry_policy: object` | `object` | mcp, api |
+| `tasks` | `tasks.schedule_create` | false | false | false |  | `resource_capability` | `scope.create` | `task` | `schedule_id*: string`<br>`name*: string`<br>`owner_kind*: string`<br>`owner_id*: string`<br>`agent_id*: string`<br>`input*: string`<br>`schedule*: string`<br>`project_id: string`<br>`armed: string`<br>`retry_policy: string` | `object` | mcp, api |
 | `tasks` | `tasks.schedule_delete` | false | false | false |  | `resource_capability` | `scope.delete` | `task` | `schedule_id*: string` | `object` | mcp, api |
-| `tasks` | `tasks.schedule_edit` | false | false | false |  | `resource_capability` | `scope.operate` | `task` | `schedule_id*: string`<br>`name: string`<br>`input: string`<br>`agent_id: string`<br>`schedule: object`<br>`retry_policy: object` | `object` | mcp, api |
+| `tasks` | `tasks.schedule_edit` | false | false | false |  | `resource_capability` | `scope.operate` | `task` | `schedule_id*: string`<br>`name: string`<br>`agent_id: string`<br>`input: string`<br>`schedule: string`<br>`retry_policy: string` | `object` | mcp, api |
 | `tasks` | `tasks.schedule_get` | false | false | false |  | `resource_capability` | `scope.read` | `task` | `schedule_id*: string` | `object` | mcp, api |
 | `tasks` | `tasks.schedule_list` | false | false | false |  | `resource_capability` | `scope.read` | `task` | `cursor: string` | `object` | mcp, api |
 | `tasks` | `tasks.schedule_pause` | false | false | false |  | `resource_capability` | `scope.operate` | `task` | `schedule_id*: string` | `object` | mcp, api |

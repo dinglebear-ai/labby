@@ -48,6 +48,16 @@ impl std::fmt::Debug for AccessStore {
 }
 
 impl AccessStore {
+    /// Directory that owns durable files associated with this access store.
+    /// Product subsystems use this rather than process-global HOME so test and
+    /// multi-installation stores remain isolated from one another.
+    pub(crate) fn storage_dir(&self) -> PathBuf {
+        self.path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf()
+    }
+
     pub(crate) async fn installation_id(&self) -> AccessStoreResult<Option<String>> {
         self.with_connection(|connection| {
             connection
@@ -190,7 +200,6 @@ impl AccessStore {
         &self,
         request: super::AuthorityRequest,
         mut intent: labby_primitives::task::TaskIntent,
-        input_text: String,
         now: i64,
     ) -> AccessStoreResult<String> {
         self.with_connection(move |connection| {
@@ -211,25 +220,9 @@ impl AccessStore {
             let active: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_definitions WHERE agent_id=?1 AND owner_kind=?2 AND owner_id=?3 AND version=?4 AND state='active' AND json_extract(definition_json,'$.contentDigest')=?5)", rusqlite::params![intent.agent_id, owner_kind, owner_id, i64::try_from(intent.agent_version).map_err(|_| AccessStoreError::MalformedVocabulary)?, intent.agent_revision_digest], |row| row.get(0)).map_err(map_sqlite_error)?;
             if !active { return Err(AccessStoreError::NotAuthorized); }
             let id = super::task::TaskStore::create_in_transaction(&tx, &intent, now)?;
-            super::task::TaskStore::put_input_in_transaction(
-                &tx,
-                &id,
-                &intent.input_digest,
-                &input_text,
-            )?;
             tx.commit().map_err(map_sqlite_error)?;
             Ok(id)
         }).await
-    }
-
-    pub(crate) async fn get_agent_task_input(
-        &self,
-        task_id: String,
-    ) -> AccessStoreResult<Option<String>> {
-        let path = Arc::clone(&self.path);
-        tokio::task::spawn_blocking(move || super::task::TaskStore::open(&path)?.input(&task_id))
-            .await
-            .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -249,18 +242,49 @@ impl AccessStore {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(map_sqlite_error)?;
             let lease = super::authority::authorize_action_in_transaction(&tx, request)?;
+            // A Task admitted by the durable scheduler may only be queued
+            // under a live claim fence for its occurrence; an ad-hoc queue of
+            // a scheduled Task, or a fence the schedule has since revised or
+            // paused, is refused inside the same transaction as the transition.
             if to == labby_primitives::task::TaskState::Queued {
-                let scheduled:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_task_schedule_attempts WHERE task_id=?1)",[&id],|r|r.get(0)).map_err(map_sqlite_error)?;
+                let scheduled: bool = tx
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM agent_task_schedule_attempts WHERE task_id=?1)",
+                        [&id],
+                        |row| row.get(0),
+                    )
+                    .map_err(map_sqlite_error)?;
                 match schedule_admission {
-                    Some(fence)=>{
-                        let valid:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_task_schedule_attempts a JOIN agent_task_schedule_occurrences o USING(schedule_id,occurrence_key) JOIN agent_task_schedules s ON s.schedule_id=o.schedule_id AND s.revision=o.schedule_revision WHERE a.schedule_id=?1 AND a.occurrence_key=?2 AND a.claim_token=?3 AND o.schedule_revision=?4 AND a.claim_expires_at>?5 AND a.task_id=?6 AND a.state='pending' AND s.creator_principal_id=?7 AND a.attempt_number=?8)",rusqlite::params![fence.schedule_id,fence.occurrence_key,fence.claim_token,fence.revision,now,id,lease.binding().principal_id(),fence.attempt_number],|r|r.get(0)).map_err(map_sqlite_error)?;
-                        if !valid{return Err(AccessStoreError::NotAuthorized);}
-                    },
-                    None if scheduled=>return Err(AccessStoreError::NotAuthorized),
-                    None=>{},
+                    Some(fence) => {
+                        let valid: bool = tx
+                            .query_row(
+                                "SELECT EXISTS(SELECT 1 FROM agent_task_schedule_attempts a \
+                                 JOIN agent_task_schedule_occurrences o USING(schedule_id,occurrence_key) \
+                                 JOIN agent_task_schedules s ON s.schedule_id=o.schedule_id AND s.revision=o.schedule_revision \
+                                 WHERE a.schedule_id=?1 AND a.occurrence_key=?2 AND a.claim_token=?3 \
+                                 AND o.schedule_revision=?4 AND a.claim_expires_at>?5 AND a.task_id=?6 \
+                                 AND a.state='pending' AND s.creator_principal_id=?7 AND a.attempt_number=?8)",
+                                rusqlite::params![
+                                    fence.schedule_id,
+                                    fence.occurrence_key,
+                                    fence.claim_token,
+                                    fence.revision,
+                                    now,
+                                    id,
+                                    lease.binding().principal_id(),
+                                    fence.attempt_number
+                                ],
+                                |row| row.get(0),
+                            )
+                            .map_err(map_sqlite_error)?;
+                        if !valid {
+                            return Err(AccessStoreError::NotAuthorized);
+                        }
+                    }
+                    None if scheduled => return Err(AccessStoreError::NotAuthorized),
+                    None => {}
                 }
             }
-
             let task_owner: Option<(String, String)> = tx
                 .query_row(
                     "SELECT owner_kind,owner_id FROM agent_tasks WHERE task_id=?1",
@@ -490,54 +514,19 @@ impl AccessStore {
         session_id: String,
         definition: labby_primitives::agent::AgentDefinition,
         principal: String,
-        request_key: String,
-        operation: String,
         authority_fingerprint: String,
         lease_expires_at: i64,
-        input_digest: String,
-        input_text: String,
-        resumed_from_session_id: Option<String>,
         now: i64,
-    ) -> AccessStoreResult<super::agent::AgentSessionAdmission> {
+    ) -> AccessStoreResult<()> {
         let path = Arc::clone(&self.path);
         tokio::task::spawn_blocking(move || {
-            let mut store = super::agent::AgentDefinitionStore::open(&path)?;
-            store.create_session(
+            super::agent::AgentDefinitionStore::open(&path)?.create_session(
                 &session_id,
                 &definition,
                 &principal,
-                &request_key,
-                &operation,
                 &authority_fingerprint,
                 lease_expires_at,
-                &input_digest,
-                &input_text,
-                resumed_from_session_id.as_deref(),
                 now,
-            )
-        })
-        .await
-        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
-    }
-
-    pub(crate) async fn find_agent_session_request(
-        &self,
-        definition: labby_primitives::agent::AgentDefinition,
-        principal: String,
-        request_key: String,
-        operation: String,
-        input_digest: String,
-        resumed_from_session_id: Option<String>,
-    ) -> AccessStoreResult<Option<super::agent::AgentSessionAdmission>> {
-        let path = Arc::clone(&self.path);
-        tokio::task::spawn_blocking(move || {
-            super::agent::AgentDefinitionStore::open(&path)?.session_request(
-                &definition,
-                &principal,
-                &request_key,
-                &operation,
-                &input_digest,
-                resumed_from_session_id.as_deref(),
             )
         })
         .await
@@ -569,33 +558,6 @@ impl AccessStore {
         .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
     }
 
-    pub(crate) async fn get_agent_session(
-        &self,
-        agent_id: String,
-        session_id: String,
-    ) -> AccessStoreResult<Option<super::agent::AgentSessionRecord>> {
-        let path = Arc::clone(&self.path);
-        tokio::task::spawn_blocking(move || {
-            super::agent::AgentDefinitionStore::open(&path)?.session(&agent_id, &session_id)
-        })
-        .await
-        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
-    }
-
-    pub(crate) async fn list_agent_sessions(
-        &self,
-        agent_id: String,
-        after: String,
-        limit: usize,
-    ) -> AccessStoreResult<Vec<super::agent::AgentSessionRecord>> {
-        let path = Arc::clone(&self.path);
-        tokio::task::spawn_blocking(move || {
-            super::agent::AgentDefinitionStore::open(&path)?.list_sessions(&agent_id, &after, limit)
-        })
-        .await
-        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
-    }
-
     pub(crate) async fn set_agent_session_status(
         &self,
         agent_id: String,
@@ -610,35 +572,6 @@ impl AccessStore {
                 &session_id,
                 &expected,
                 &next,
-            )
-        })
-        .await
-        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn settle_agent_session(
-        &self,
-        agent_id: String,
-        session_id: String,
-        expected: String,
-        next: String,
-        output_digest: Option<String>,
-        transcript: Option<String>,
-        error_code: Option<String>,
-        now: i64,
-    ) -> AccessStoreResult<()> {
-        let path = Arc::clone(&self.path);
-        tokio::task::spawn_blocking(move || {
-            super::agent::AgentDefinitionStore::open(&path)?.settle_session(
-                &agent_id,
-                &session_id,
-                &expected,
-                &next,
-                output_digest.as_deref(),
-                transcript.as_deref(),
-                error_code.as_deref(),
-                now,
             )
         })
         .await
@@ -1458,6 +1391,37 @@ impl AccessStore {
     ) -> AccessStoreResult<super::TeamMemberProvisionOutcome> {
         self.with_connection(move |connection| {
             super::team_provision::provision_viewer(connection, &identity, &project_id)
+        })
+        .await
+    }
+
+    /// Called only after the session handler has matched the identity's
+    /// provider-verified email against the allowlist or configured admins.
+    pub(crate) async fn provision_allowlisted(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+        role: super::AllowedUserRole,
+        admitted_by: super::AllowlistAdmission,
+    ) -> AccessStoreResult<super::TeamMemberProvisionOutcome> {
+        self.with_connection(move |connection| {
+            super::team_provision::provision_allowlisted(connection, &identity, role, admitted_by)
+        })
+        .await
+    }
+
+    /// Revoke the durable grants allowlist admission created for `identity`.
+    /// Called when the allowlist entry that admitted it is removed.
+    pub(crate) async fn revoke_allowlisted(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+        revoked_by_fingerprint: String,
+    ) -> AccessStoreResult<super::AllowlistRevocationOutcome> {
+        self.with_connection(move |connection| {
+            super::team_provision::revoke_allowlisted(
+                connection,
+                &identity,
+                &revoked_by_fingerprint,
+            )
         })
         .await
     }

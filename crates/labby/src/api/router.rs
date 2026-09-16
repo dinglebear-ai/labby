@@ -449,8 +449,8 @@ fn is_public_relay_reserved_path(path: &str) -> bool {
 /// Mounted `POST` dispatch path for a registry service. The router mounts
 /// three services under paths that differ from `/v1/{service}`; every
 /// consumer that needs the mounted path (OpenAPI, tests) reads it here.
-#[must_use]
 #[allow(dead_code)]
+#[must_use]
 pub(crate) fn service_dispatch_path(service: &str) -> String {
     match service {
         "access" => "/v1/access/admin".to_owned(),
@@ -856,7 +856,19 @@ pub(crate) fn build_router_with_external_auth(
         }
     }
     let static_token = bearer_token.map(Arc::<str>::from);
+    let static_browser_cookie_secure = state
+        .auth_config
+        .as_ref()
+        .and_then(|config| config.public_url.as_ref())
+        .is_some_and(|url| url.scheme() == "https");
     state = state.with_bearer_token(static_token.clone());
+    if static_token.is_some() {
+        state = state.with_static_browser_session_state(
+            labby_auth::static_session::StaticBrowserSessionState::new(
+                static_browser_cookie_secure,
+            ),
+        );
+    }
     let auth_state = auth_state.map(Arc::new);
     let credential_auth_configured = static_token.is_some() || auth_state.is_some();
     let protected_route_auth_configured = credential_auth_configured || external_auth_configured;
@@ -919,7 +931,9 @@ pub(crate) fn build_router_with_external_auth(
                 .into_response()
             })
             .with_allow_session_cookie(allow_session_cookie);
-        layer = layer.with_project_session_state(state.project_session_state.clone());
+        layer = layer
+            .with_project_session_state(state.project_session_state.clone())
+            .with_static_browser_session_state(state.static_browser_session_state.clone());
         if let Some(adapter) = state.access_credential_adapter.clone() {
             layer = layer
                 .with_product_credential_verifier(adapter.clone())
@@ -1045,6 +1059,16 @@ pub(crate) fn build_router_with_external_auth(
                     RouteAuth::BrowserSession,
                 ),
                 get(crate::api::browser_session::auth_session),
+            )
+            .route(
+                RouteDescriptor::new(
+                    "POST",
+                    "/auth/bearer-session",
+                    "auth_bearer_session",
+                    "oauth",
+                    RouteAuth::Public,
+                ),
+                post(crate::api::browser_session::auth_bearer_session),
             )
             .route(
                 RouteDescriptor::new(
@@ -2997,7 +3021,7 @@ mod tests {
         let auth_state = test_lab_auth_state().await;
         let session = seed_browser_session(&auth_state).await;
         let config = labby_auth::config::AuthConfig {
-            admin_email: "browser@example.com".into(),
+            admin_emails: vec!["browser@example.com".into()],
             ..Default::default()
         };
         let app = build_router(
@@ -3036,7 +3060,7 @@ mod tests {
         let auth_state = test_lab_auth_state().await;
         let session = seed_browser_session(&auth_state).await;
         let config = labby_auth::config::AuthConfig {
-            admin_email: "browser@example.com".into(),
+            admin_emails: vec!["browser@example.com".into()],
             ..Default::default()
         };
         let app = build_router(
@@ -3092,7 +3116,7 @@ mod tests {
         let auth_state = test_lab_auth_state().await;
         let session = seed_browser_session(&auth_state).await;
         let config = labby_auth::config::AuthConfig {
-            admin_email: "browser@example.com".into(),
+            admin_emails: vec!["browser@example.com".into()],
             ..Default::default()
         };
         let access_runtime = Arc::new(
@@ -3150,7 +3174,7 @@ mod tests {
         let auth_state = test_lab_auth_state().await;
         let token = issue_test_token(&auth_state, "https://lab.example.com/mcp", "lab:admin");
         let config = labby_auth::config::AuthConfig {
-            admin_email: "browser@example.com".into(),
+            admin_emails: vec!["browser@example.com".into()],
             ..Default::default()
         };
         let authenticated = build_router(
@@ -3293,7 +3317,7 @@ mod tests {
                 let auth_state = test_lab_auth_state().await;
                 auth_state
                     .store
-                    .add_allowed_user(COLLEAGUE, ADMIN, 1)
+                    .add_allowed_user(COLLEAGUE, ADMIN, "member", 1)
                     .await
                     .unwrap();
                 let session = labby_auth::types::BrowserSessionRow {
@@ -3311,7 +3335,7 @@ mod tests {
                     .await
                     .unwrap();
                 let config = labby_auth::config::AuthConfig {
-                    admin_email: ADMIN.into(),
+                    admin_emails: vec![ADMIN.into()],
                     ..Default::default()
                 };
                 let app = build_router(
@@ -5464,6 +5488,10 @@ mod tests {
     }
 
     async fn test_lab_auth_state() -> labby_auth::state::AuthState {
+        test_lab_auth_state_with_admins(&["browser@example.com"]).await
+    }
+
+    async fn test_lab_auth_state_with_admins(admins: &[&str]) -> labby_auth::state::AuthState {
         let dir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
         let config = labby_auth::config::AuthConfig {
             mode: labby_auth::config::AuthMode::OAuth,
@@ -5471,7 +5499,7 @@ mod tests {
             sqlite_path: dir.path().join("auth.db"),
             key_path: dir.path().join("auth-jwt.pem"),
             bootstrap_secret: Some("bootstrap-secret".to_string()),
-            admin_email: "browser@example.com".to_string(),
+            admin_emails: admins.iter().map(|admin| (*admin).to_owned()).collect(),
             google: labby_auth::config::GoogleConfig {
                 client_id: "client-id".to_string(),
                 client_secret: "client-secret".to_string(),
@@ -5715,7 +5743,7 @@ mod tests {
         let auth_state = test_lab_auth_state().await;
         auth_state
             .store
-            .add_allowed_user(COLLEAGUE_EMAIL, CONFIGURED_ADMIN_EMAIL, 1)
+            .add_allowed_user(COLLEAGUE_EMAIL, CONFIGURED_ADMIN_EMAIL, "member", 1)
             .await
             .unwrap();
         let admin =
@@ -5847,7 +5875,7 @@ mod tests {
         let app = build_router(
             AppState::new()
                 .with_auth_config(labby_auth::config::AuthConfig {
-                    admin_email: CONFIGURED_ADMIN_EMAIL.into(),
+                    admin_emails: vec![CONFIGURED_ADMIN_EMAIL.into()],
                     ..Default::default()
                 })
                 // Plugin-lifecycle actions answer not_found on a non-loopback
@@ -5931,6 +5959,75 @@ mod tests {
         }
     }
 
+    /// Every email listed in `LABBY_AUTH_ADMIN_EMAIL` is a configured admin on
+    /// the real `/v1` router, not only the first; an allowlisted colleague is
+    /// still refused.
+    #[tokio::test]
+    async fn every_listed_admin_passes_the_admin_gate_and_colleague_does_not() {
+        const SECOND_ADMIN_EMAIL: &str = "second-admin@example.com";
+        let (_home, _lab_dir, _guard) = isolated_lab_home();
+        let admins = [CONFIGURED_ADMIN_EMAIL, SECOND_ADMIN_EMAIL];
+        let auth_state = test_lab_auth_state_with_admins(&admins).await;
+        auth_state
+            .store
+            .add_allowed_user(COLLEAGUE_EMAIL, CONFIGURED_ADMIN_EMAIL, "member", 1)
+            .await
+            .unwrap();
+        let second = seed_session_for(
+            &auth_state,
+            "second",
+            "sub-second-admin",
+            SECOND_ADMIN_EMAIL,
+        )
+        .await;
+        let colleague =
+            seed_session_for(&auth_state, "colleague", COLLEAGUE_SUBJECT, COLLEAGUE_EMAIL).await;
+        let app = build_router(
+            AppState::new()
+                .with_auth_config(labby_auth::config::AuthConfig {
+                    admin_emails: admins.iter().map(|admin| (*admin).to_owned()).collect(),
+                    ..Default::default()
+                })
+                .with_http_bind_host("0.0.0.0"),
+            None,
+            Some(auth_state),
+            None,
+            &[],
+        );
+        let path = service_dispatch_path("doctor");
+        let registry = crate::registry::build_default_registry();
+        let spec = registry
+            .services()
+            .iter()
+            .find(|service| service.name == "doctor")
+            .and_then(|service| {
+                service
+                    .actions
+                    .iter()
+                    .find(|spec| spec.requires_admin && !spec.destructive)
+            })
+            .expect("doctor exposes a non-destructive admin action");
+
+        let (status, body) = status_and_body(
+            &app,
+            session_action_request(&second, &path, spec.name, serde_json::json!({})),
+        )
+        .await;
+        assert!(
+            !is_admin_scope_refusal(status, &body),
+            "second listed admin must pass the admin gate, got {status} {body}"
+        );
+        let (status, body) = status_and_body(
+            &app,
+            session_action_request(&colleague, &path, spec.name, serde_json::json!({})),
+        )
+        .await;
+        assert!(
+            is_admin_scope_refusal(status, &body),
+            "allowlisted colleague must still be refused, got {status} {body}"
+        );
+    }
+
     /// TST-H1b / SEC-H1 residual: neither an allowlisted colleague nor the same
     /// colleague elevated by durable `platform.manage` can rewrite the
     /// gateway's authentication keys; only the configured admin can.
@@ -5956,7 +6053,7 @@ mod tests {
         let app = build_router(
             AppState::new()
                 .with_auth_config(labby_auth::config::AuthConfig {
-                    admin_email: CONFIGURED_ADMIN_EMAIL.into(),
+                    admin_emails: vec![CONFIGURED_ADMIN_EMAIL.into()],
                     ..Default::default()
                 })
                 .with_access_runtime(Arc::clone(&runtime)),
@@ -6034,6 +6131,89 @@ mod tests {
         );
     }
 
+    /// Finding 9: `settings.env.update` through the real `/v1/setup` route.
+    /// The administrator list is an authentication key: a colleague elevated
+    /// by durable `platform.manage` is refused with the typed auth-key
+    /// denial and `.env` is untouched, while the configured admin's save
+    /// lands.
+    #[tokio::test]
+    async fn settings_env_update_route_refuses_elevated_colleague_and_admits_configured_admin() {
+        let (_home, lab_dir, _guard) = isolated_lab_home();
+        let env = lab_dir.join(".env");
+        fs::write(
+            &env,
+            format!("LABBY_AUTH_ADMIN_EMAIL={CONFIGURED_ADMIN_EMAIL}\n"),
+        )
+        .unwrap();
+        let env_before = fs::read(&env).unwrap();
+        let (_access_dir, runtime) = ready_access_runtime_with_colleague_principal().await;
+        runtime
+            .store()
+            .await
+            .unwrap()
+            .grant_platform_administrator(colleague_platform_admin())
+            .await
+            .unwrap();
+        let (auth_state, admin, colleague) = colleague_and_admin_auth_state().await;
+        let app = build_router(
+            AppState::new()
+                .with_auth_config(labby_auth::config::AuthConfig {
+                    admin_emails: vec![CONFIGURED_ADMIN_EMAIL.into()],
+                    ..Default::default()
+                })
+                .with_access_runtime(Arc::clone(&runtime)),
+            None,
+            Some(auth_state),
+            None,
+            &[],
+        );
+        let params = |value: &str| {
+            serde_json::json!({
+                "section": "authentication",
+                "entries": [{
+                    "key": "LABBY_AUTH_ADMIN_EMAIL",
+                    "value": [value],
+                    "previous": [CONFIGURED_ADMIN_EMAIL],
+                }],
+                "confirm": true,
+            })
+        };
+
+        let (status, body) = status_and_body(
+            &app,
+            session_action_request(
+                &colleague,
+                "/v1/setup",
+                "settings.env.update",
+                params("attacker@example.com"),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert!(
+            body.contains("\"forbidden\"") && body.contains("configures Labby authentication"),
+            "expected the typed auth-key refusal, got {body}"
+        );
+        assert_eq!(fs::read(&env).unwrap(), env_before, ".env changed");
+
+        let (status, body) = status_and_body(
+            &app,
+            session_action_request(
+                &admin,
+                "/v1/setup",
+                "settings.env.update",
+                params(CONFIGURED_ADMIN_EMAIL),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let saved = fs::read_to_string(&env).unwrap();
+        assert!(
+            saved.contains(&format!("LABBY_AUTH_ADMIN_EMAIL={CONFIGURED_ADMIN_EMAIL}")),
+            "{saved}"
+        );
+    }
+
     /// TST-H2: a non-owner principal granted `platform.manage` is elevated on
     /// the real `/v1` router and loses it on the very next request after
     /// revocation. Because the probe goes through `build_router`, this also
@@ -6047,7 +6227,7 @@ mod tests {
         let app = build_router(
             AppState::new()
                 .with_auth_config(labby_auth::config::AuthConfig {
-                    admin_email: CONFIGURED_ADMIN_EMAIL.into(),
+                    admin_emails: vec![CONFIGURED_ADMIN_EMAIL.into()],
                     ..Default::default()
                 })
                 .with_access_runtime(Arc::clone(&runtime)),

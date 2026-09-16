@@ -153,7 +153,7 @@ pub fn bootstrap_action() -> Result<Value, ToolError> {
 /// Path-parameterized core of [`bootstrap`]. Kept separate so unit tests can
 /// drive it against a temp path without mutating `LABBY_HOME` — the crate forbids
 /// `unsafe_code`, so env mutation inside tests is unavailable (see `state.rs`).
-fn bootstrap_at(env: &Path) -> Result<BootstrapOutcome, ToolError> {
+pub(crate) fn bootstrap_at(env: &Path) -> Result<BootstrapOutcome, ToolError> {
     if env.exists() {
         return Ok(BootstrapOutcome::AlreadyPresent {
             env_path: env.to_path_buf(),

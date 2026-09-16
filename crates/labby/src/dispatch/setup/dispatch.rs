@@ -111,7 +111,11 @@ async fn dispatch_inner(
             blocking_params("settings.update", params, settings_update_action).await
         }
         "settings.env.update" => {
-            blocking_params("settings.env.update", params, settings_env_update_action).await
+            let params = params.clone();
+            run_blocking_setup("settings.env.update", move || {
+                settings_env_update_action(caller, &params)
+            })
+            .await
         }
         "settings.config.update" => {
             blocking_params(
@@ -368,8 +372,11 @@ fn parse_update_entries(
     })
 }
 
-fn settings_env_update_action(params: &Value) -> Result<Value, ToolError> {
+fn settings_env_update_action(caller: SetupCaller, params: &Value) -> Result<Value, ToolError> {
     let entries = parse_update_entries(params)?;
+    // Authentication keys (for example the administrator list) are reserved
+    // for the operator on this path exactly as on draft.set/draft.commit.
+    caller.ensure_may_write(entries.iter().map(|entry| entry.key.as_str()))?;
     let env_entries = super::settings::env_entries_from_updates(&entries)?;
     let env = env_path();
     let expected_mtime = snapshot_mtime(&env);
@@ -698,10 +705,12 @@ fn draft_set_action(caller: SetupCaller, params: &Value) -> Result<Value, ToolEr
     let entries = parse_entries(params)?;
     let force = parse_force(params);
 
-    // Server-side defense-in-depth validation against the UiSchema. The
-    // frontend has already validated, but never trust it.
-    validate_against_registry(&entries)?;
+    // Authority first: a delegated caller learns nothing about value
+    // validation for keys it may not stage.
     caller.ensure_may_write(entries.iter().map(|entry| entry.key.as_str()))?;
+    // Server-side defense-in-depth validation against the UiSchema and the
+    // shared value rules. The frontend has already validated, but never trust it.
+    validate_against_registry(&entries)?;
 
     let path = draft_path();
     let outcome = draft::merge_entries(&path, entries, force).map_err(map_merge_err)?;
@@ -761,6 +770,7 @@ fn validate_against_registry(entries: &[DraftEntry]) -> Result<(), ToolError> {
                 }
             })?;
         }
+        super::settings::validate_env_entry_value(&entry.key, &entry.value)?;
     }
     Ok(())
 }
@@ -800,6 +810,12 @@ async fn draft_commit_action(caller: SetupCaller, params: &Value) -> Result<Valu
             .iter()
             .map(|entry| entry.key.as_str()),
     )?;
+    // A hand-edited draft bypasses `draft.set`; apply the same value checks
+    // (notably the administrator-list lockout guard) before the audit and
+    // before the draft is claimed.
+    for entry in &draft_snapshot.entries {
+        super::settings::validate_env_entry_value(&entry.key, &entry.value)?;
+    }
 
     // Snapshot mtime before the audit so an interleaved writer is detected.
     let snapshot_path = env.clone();
@@ -1084,6 +1100,74 @@ mod tests {
         )
         .await
         .expect("delegated admins may stage non-auth keys");
+    }
+
+    /// Finding 4: the lockout guard on the administrator list must hold on
+    /// every write path, not only `settings.env.update`. A draft carrying an
+    /// empty or malformed list would make the next start fail closed.
+    #[tokio::test]
+    async fn draft_set_refuses_an_empty_or_malformed_admin_list() {
+        let temp = tempfile::tempdir().expect("short TMPDIR lab home");
+        let lab_dir = temp.path().join("lab-home");
+        std::fs::create_dir_all(&lab_dir).expect("lab dir");
+        let _lab_home_guard = crate::dispatch::helpers::TestLabHomeGuard::set(lab_dir.clone());
+        let draft = lab_dir.join(".env.draft");
+
+        for value in [
+            "",
+            "   ",
+            "not-an-email",
+            "owner@example.com,not-an-email",
+            "a@b@c",
+        ] {
+            let error = dispatch_for_caller(
+                SetupCaller::Operator,
+                "draft.set",
+                json!({"entries": [{"key": "LABBY_AUTH_ADMIN_EMAIL", "value": value}]}),
+            )
+            .await
+            .expect_err(value);
+            assert_eq!(error.kind(), "invalid_param", "{value:?}: {error}");
+            assert!(
+                !draft.exists(),
+                "{value:?}: a refused admin list must not be staged"
+            );
+        }
+
+        dispatch_for_caller(
+            SetupCaller::Operator,
+            "draft.set",
+            json!({"entries": [{"key": "LABBY_AUTH_ADMIN_EMAIL", "value": "owner@example.com, second@example.com"}]}),
+        )
+        .await
+        .expect("a well-formed list is staged");
+        assert!(draft.exists());
+    }
+
+    /// The same guard runs at commit, so a hand-edited draft cannot bypass it.
+    #[tokio::test]
+    async fn draft_commit_refuses_a_malformed_admin_list_before_touching_env() {
+        let temp = tempfile::tempdir().expect("short TMPDIR lab home");
+        let lab_dir = temp.path().join("lab-home");
+        std::fs::create_dir_all(&lab_dir).expect("lab dir");
+        let _lab_home_guard = crate::dispatch::helpers::TestLabHomeGuard::set(lab_dir.clone());
+        let env = lab_dir.join(".env");
+        let draft = lab_dir.join(".env.draft");
+        std::fs::write(&env, "LABBY_AUTH_ADMIN_EMAIL=owner@example.com\n").expect("env");
+        std::fs::write(&draft, "LABBY_AUTH_ADMIN_EMAIL=\n").expect("draft");
+        let env_before = std::fs::read(&env).unwrap();
+        let draft_before = std::fs::read(&draft).unwrap();
+
+        let error = dispatch_for_caller(SetupCaller::Operator, "draft.commit", json!({}))
+            .await
+            .expect_err("empty admin list");
+        assert_eq!(error.kind(), "invalid_param", "{error}");
+        assert_eq!(std::fs::read(&env).unwrap(), env_before, ".env untouched");
+        assert_eq!(
+            std::fs::read(&draft).unwrap(),
+            draft_before,
+            "draft left for correction"
+        );
     }
 
     #[test]
@@ -1550,6 +1634,102 @@ mod tests {
             std::fs::read_to_string(&env_file)
                 .unwrap()
                 .contains("LABBY_LOG=labby=warn")
+        );
+    }
+
+    fn admin_list_update(value: Value, previous: Value) -> Value {
+        json!({
+            "section": "authentication",
+            "confirm": true,
+            "entries": [{
+                "key": "LABBY_AUTH_ADMIN_EMAIL",
+                "value": value,
+                "previous": previous
+            }]
+        })
+    }
+
+    #[tokio::test]
+    async fn settings_env_update_reserves_the_admin_list_for_the_operator() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let lab_dir = temp.path().join("lab-home");
+        std::fs::create_dir_all(&lab_dir).expect("lab dir");
+        let env_file = lab_dir.join(".env");
+        std::fs::write(&env_file, "LABBY_AUTH_ADMIN_EMAIL=owner@example.com\n").expect("write env");
+        let _lab_home_guard = crate::dispatch::helpers::TestLabHomeGuard::set(lab_dir.clone());
+
+        let err = dispatch_for_caller(
+            SetupCaller::Delegated,
+            "settings.env.update",
+            admin_list_update(
+                json!(["owner@example.com", "delegated@example.com"]),
+                json!(["owner@example.com"]),
+            ),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.kind(), "forbidden");
+        assert_eq!(
+            std::fs::read_to_string(&env_file).unwrap(),
+            "LABBY_AUTH_ADMIN_EMAIL=owner@example.com\n",
+            "a delegated caller must not change the admin list"
+        );
+
+        let updated = dispatch_for_caller(
+            SetupCaller::Operator,
+            "settings.env.update",
+            admin_list_update(
+                json!([
+                    " Owner@Example.com ",
+                    "second-admin@example.com",
+                    "owner@example.com"
+                ]),
+                json!(["owner@example.com"]),
+            ),
+        )
+        .await
+        .expect("operator updates the admin list");
+        assert_eq!(
+            updated["values"]["LABBY_AUTH_ADMIN_EMAIL"],
+            json!(["owner@example.com", "second-admin@example.com"])
+        );
+        assert!(
+            std::fs::read_to_string(&env_file)
+                .unwrap()
+                .contains("LABBY_AUTH_ADMIN_EMAIL=owner@example.com,second-admin@example.com")
+        );
+    }
+
+    #[tokio::test]
+    async fn settings_env_update_refuses_an_empty_or_malformed_admin_list() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let lab_dir = temp.path().join("lab-home");
+        std::fs::create_dir_all(&lab_dir).expect("lab dir");
+        let env_file = lab_dir.join(".env");
+        std::fs::write(&env_file, "LABBY_AUTH_ADMIN_EMAIL=owner@example.com\n").expect("write env");
+        let _lab_home_guard = crate::dispatch::helpers::TestLabHomeGuard::set(lab_dir.clone());
+
+        for value in [
+            json!([]),
+            json!(["  "]),
+            json!(["not-an-email"]),
+            json!(["owner@example.com,other@example.com"]),
+            json!("owner@example.com"),
+        ] {
+            let err = dispatch_for_caller(
+                SetupCaller::Operator,
+                "settings.env.update",
+                admin_list_update(value.clone(), json!(["owner@example.com"])),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(err.kind(), "invalid_param", "{value}");
+        }
+        assert_eq!(
+            std::fs::read_to_string(&env_file).unwrap(),
+            "LABBY_AUTH_ADMIN_EMAIL=owner@example.com\n"
         );
     }
 

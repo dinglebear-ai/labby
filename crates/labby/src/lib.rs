@@ -34,6 +34,7 @@ pub mod catalog;
 pub mod cli;
 pub(crate) mod composition;
 pub mod config;
+pub(crate) mod desktop_install;
 #[allow(unreachable_pub)]
 pub mod dispatch;
 #[allow(unreachable_pub)]

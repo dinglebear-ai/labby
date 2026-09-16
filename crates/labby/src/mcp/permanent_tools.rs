@@ -701,7 +701,8 @@ mod tests {
     /// rather than a silent conservative default.
     const EXPECTED_SERVICE_ANNOTATIONS: &[(&str, bool, bool, bool, bool)] = &[
         ("access", false, false, false, false),
-        ("agents", false, false, false, false),
+        // `agents.delete` is destructive, so the tool-level union carries it.
+        ("agents", false, true, false, false),
         ("tasks", false, false, false, false),
         ("dev_containers", false, true, false, false),
         ("projects", false, false, false, false),
@@ -982,9 +983,12 @@ mod tests {
 
         // Reachable by a caller with `can_execute() == false` at hop 2.
         // Arbitrary browser callbacks require execute permission at downstream hops.
+        // `agents` is absent: `agents.delete` is destructive, so the tool's
+        // `destructiveHint` union is true and a downstream hop requires
+        // execute permission for the whole tool. Narrowing this set follows
+        // the shared metadata; only widening it needs a fresh review.
         let expected_callable = [
             "access",
-            "agents",
             "depot_publish",
             "doctor",
             "fs",

@@ -663,7 +663,7 @@ where
 fn gateway_fixture_config(ledger: &Path, pid_file: &Path) -> Result<String, String> {
     let fixture = env!("CARGO_BIN_EXE_stdio-mcp-fixture");
     Ok(format!(
-        "[gateway]\nextra_stdio_commands = [{}]\n\n[[upstream]]\nname = \"forge\"\ntransport = \"stdio\"\ncommand = {}\nargs = [\"--forge\", \"--forge-ledger\", {}, \"--pid-file\", {}]\nproxy_resources = true\n",
+        "[code_mode]\nenabled = false\n\n[gateway]\nextra_stdio_commands = [{}]\n\n[[upstream]]\nname = \"forge\"\ntransport = \"stdio\"\ncommand = {}\nargs = [\"--forge\", \"--forge-ledger\", {}, \"--pid-file\", {}]\nproxy_resources = true\n",
         serde_json::to_string(fixture).map_err(|error| error.to_string())?,
         serde_json::to_string(fixture).map_err(|error| error.to_string())?,
         serde_json::to_string(ledger).map_err(|error| error.to_string())?,

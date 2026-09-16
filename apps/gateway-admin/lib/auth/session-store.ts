@@ -9,6 +9,8 @@ export type BrowserSessionState =
   | { status: 'loading' }
   | {
       status: 'authenticated'
+      loginAvailable?: boolean
+      bearerLoginAvailable?: boolean
       user: {
         sub: string
         email?: string | null
@@ -30,9 +32,21 @@ export type BrowserSessionState =
       ownerBootstrapAvailable?: boolean
       /** Compatibility presentation flag derived only from server-projected capabilities. */
       isAdmin?: boolean
+      /**
+       * The server accepts this browser session for the operator-only
+       * administrator list and allowlist routes: its email is listed in
+       * `LABBY_AUTH_ADMIN_EMAIL`. Independent of `isAdmin`, which every
+       * allowlist-admitted admin holds. Absent on older servers, which never
+       * grants those controls.
+       */
+      isConfiguredAdmin?: boolean
       projectId?: string
     }
-  | { status: 'unauthenticated' }
+  | {
+      status: 'unauthenticated'
+      loginAvailable?: boolean
+      bearerLoginAvailable?: boolean
+    }
   | {
       status: 'auth_error'
       kind?: string
@@ -43,6 +57,8 @@ export type BrowserSessionState =
 type SessionPayload =
   | {
       authenticated: true
+      login_available?: boolean
+      bearer_login_available?: boolean
       user: {
         sub: string
         email?: string | null
@@ -52,6 +68,7 @@ type SessionPayload =
       authority_state?: string | null
       remediation?: string | null
       owner_bootstrap_available?: boolean | null
+      is_configured_admin?: boolean | null
       project_id?: string | null
       principal_id?: string | null
       active_owner?: { kind?: string; id?: string } | null
@@ -67,6 +84,8 @@ type SessionPayload =
     }
   | {
       authenticated: false
+      login_available?: boolean
+      bearer_login_available?: boolean
     }
 
 type SessionErrorPayload = {
@@ -144,7 +163,11 @@ export function ownerBootstrapOffered(state: {
 
 function normalizePayload(payload: SessionPayload): BrowserSessionState {
   if (!payload.authenticated) {
-    return { status: 'unauthenticated' }
+    return {
+      status: 'unauthenticated',
+      ...(typeof payload.login_available === 'boolean' ? { loginAvailable: payload.login_available } : {}),
+      ...(typeof payload.bearer_login_available === 'boolean' ? { bearerLoginAvailable: payload.bearer_login_available } : {}),
+    }
   }
   const authority = normalizeAuthority(payload)
   // normalizeAuthority already rejected unknown states, so any string left is one of ours.
@@ -154,6 +177,8 @@ function normalizePayload(payload: SessionPayload): BrowserSessionState {
     : undefined
   return {
     status: 'authenticated',
+    ...(typeof payload.login_available === 'boolean' ? { loginAvailable: payload.login_available } : {}),
+    ...(typeof payload.bearer_login_available === 'boolean' ? { bearerLoginAvailable: payload.bearer_login_available } : {}),
     user: payload.user,
     expiresAt: payload.expires_at,
     csrfToken: payload.csrf_token,
@@ -167,6 +192,7 @@ function normalizePayload(payload: SessionPayload): BrowserSessionState {
       ownerBootstrapAvailable: payload.owner_bootstrap_available === true,
     }),
     isAdmin: authority?.capabilities.includes('platform.manage') ?? false,
+    isConfiguredAdmin: payload.is_configured_admin === true,
     // Project-bound sessions can carry an explicit server-selected project
     // without the durable authority projection. Preserve that binding without
     // manufacturing authority or choosing from the caller's membership list.
@@ -284,6 +310,25 @@ export async function loadBrowserSession() {
   return next
 }
 
+export async function exchangeBearerBrowserSession(token: string) {
+  const credential = token.trim()
+  if (!credential) throw new Error('Enter the bearer token generated during Labby setup.')
+  const response = await fetch('/auth/bearer-session', {
+    method: 'POST',
+    cache: 'no-store',
+    credentials: 'include',
+    headers: {
+      authorization: `Bearer ${credential}`,
+      accept: 'application/json',
+    },
+  })
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as SessionErrorPayload | null
+    throw new Error(payload?.message || 'Labby rejected that bearer token.')
+  }
+  return loadBrowserSession()
+}
+
 export class LogoutRevocationError extends Error {
   constructor(public readonly status?: number) {
     super(status === undefined
@@ -301,6 +346,12 @@ export class LogoutRevocationError extends Error {
  */
 export async function logoutBrowserSession() {
   const csrfToken = getSessionCsrfToken()
+  const loginMethods = currentState.status === 'authenticated' || currentState.status === 'unauthenticated'
+    ? {
+        ...(typeof currentState.loginAvailable === 'boolean' ? { loginAvailable: currentState.loginAvailable } : {}),
+        ...(typeof currentState.bearerLoginAvailable === 'boolean' ? { bearerLoginAvailable: currentState.bearerLoginAvailable } : {}),
+      }
+    : {}
   let failure: LogoutRevocationError | undefined
   try {
     const response = await fetch('/auth/logout', {
@@ -319,7 +370,7 @@ export async function logoutBrowserSession() {
   } finally {
     sessionGeneration += 1
     resetAuthorityOpaqueValues()
-    setState({ status: 'unauthenticated' })
+    setState({ status: 'unauthenticated', ...loginMethods })
   }
   if (failure) throw failure
 }

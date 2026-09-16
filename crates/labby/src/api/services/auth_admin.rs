@@ -7,7 +7,8 @@
 //! Routes:
 //! - `GET  /v1/auth/allowed-emails`          → list entries (200)
 //! - `POST /v1/auth/allowed-emails`           → add entry (201)
-//! - `DELETE /v1/auth/allowed-emails/:email`  → remove entry (204, idempotent)
+//! - `DELETE /v1/auth/allowed-emails/:email`  → remove entry (204, idempotent);
+//!   also revokes the durable grants allowlist admission created
 //!
 //! CSRF for mutations is enforced by the /v1 auth middleware before these
 //! handlers are reached — no manual CSRF check is needed here.
@@ -27,7 +28,7 @@ use crate::api::error::ApiError;
 use crate::api::oauth::AuthContext;
 use crate::api::state::AppState;
 use crate::dispatch::error::ToolError;
-use labby_auth::util::{fingerprint, now_unix};
+use labby_auth::util::{fingerprint, normalize_email, now_unix};
 
 // ── email validation ─────────────────────────────────────────────────────────
 
@@ -35,7 +36,8 @@ const MAX_EMAIL_LENGTH: usize = 320;
 
 /// Validate and normalize an email for storage.
 ///
-/// Order: trim → empty check → length check → whitespace check → `@` check → lowercase.
+/// Order: trim → empty check → length check → whitespace check → `@` check →
+/// the shared `labby_auth` email fold.
 fn validate_email(raw: &str) -> Result<String, ToolError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -65,18 +67,18 @@ fn validate_email(raw: &str) -> Result<String, ToolError> {
             message: "email must contain '@'".to_string(),
         });
     }
-    Ok(trimmed.to_ascii_lowercase())
+    Ok(normalize_email(trimmed))
 }
 
 // ── admin guard ───────────────────────────────────────────────────────────────
 
-/// Verify the caller is a browser-session user whose email matches `admin_email`.
+/// Verify the caller is a browser-session user whose email is a configured admin.
 ///
 /// Returns `Err(forbidden)` for:
 /// - JWT bearer callers (`via_session == false`)
 /// - Browser-session callers with no email claim
-/// - Email that does not match `admin_email` (case-insensitive)
-fn require_admin(ctx: &AuthContext, admin_email: &str) -> Result<(), ToolError> {
+/// - Email that is not in `admin_emails` (case-insensitive)
+fn require_admin(ctx: &AuthContext, admin_emails: &[String]) -> Result<(), ToolError> {
     if !ctx.via_session {
         return Err(ToolError::Sdk {
             sdk_kind: "forbidden".to_string(),
@@ -89,7 +91,7 @@ fn require_admin(ctx: &AuthContext, admin_email: &str) -> Result<(), ToolError> 
             message: "session has no email — cannot verify admin access".to_string(),
         });
     };
-    if !email.eq_ignore_ascii_case(admin_email) {
+    if !labby_auth::config::is_listed_admin(admin_emails, email) {
         return Err(ToolError::Sdk {
             sdk_kind: "forbidden".to_string(),
             message: "caller is not the configured admin".to_string(),
@@ -111,14 +113,14 @@ fn require_oauth_state(state: &AppState) -> Result<&labby_auth::state::AuthState
     })
 }
 
-/// Extract `admin_email` from `auth_config`.
+/// Extract the configured admin emails from `auth_config`.
 ///
 /// Returns an `internal_error` ToolError if auth config is not mounted.
-fn require_admin_email(state: &AppState) -> Result<&str, ToolError> {
+fn require_admin_email(state: &AppState) -> Result<&[String], ToolError> {
     state
         .auth_config
         .as_ref()
-        .map(|cfg| cfg.admin_email.as_str())
+        .map(|cfg| cfg.admin_emails.as_slice())
         .ok_or_else(|| ToolError::internal_message("auth config not mounted"))
 }
 
@@ -254,12 +256,19 @@ async fn list_allowed_emails(
 #[derive(Deserialize)]
 struct AddEmailBody {
     email: String,
+    /// Wire form of `labby_auth::AllowedUserRole`; the store validates it.
+    #[serde(default = "default_allowlist_role")]
+    role: String,
+}
+
+fn default_allowlist_role() -> String {
+    labby_auth::AllowedUserRole::Member.as_str().to_string()
 }
 
 /// `POST /v1/auth/allowed-emails`
 ///
-/// Body: `{ "email": "alice@example.com" }`
-/// Returns `{ "entry": {email, added_by, created_at} }` (201).
+/// Body: `{ "email": ..., "role": "member" | "admin" }`
+/// Returns `{ "entry": {email, added_by, created_at, role} }` (201).
 async fn add_allowed_email(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -340,12 +349,14 @@ async fn add_allowed_email(
         "auth.allowed_user.add intent"
     );
 
-    match auth_state
+    // The store owns the role vocabulary; an unknown role is its
+    // `validation_failed`.
+    let role = match auth_state
         .store
-        .add_allowed_user(&email, &added_by, created_at)
+        .add_allowed_user(&email, &added_by, &body.role, created_at)
         .await
     {
-        Ok(()) => {}
+        Ok(role) => role,
         Err(err) => {
             let kind = err.kind();
             tracing::warn!(
@@ -360,12 +371,13 @@ async fn add_allowed_email(
             log_auth_dispatch(action, req_id.as_deref(), start, Some(kind), actor_key);
             return no_store(ApiError::new(auth_err(err)).into_response());
         }
-    }
+    };
 
     let entry = labby_auth::types::AllowedUserRow {
         email: email.clone(),
         added_by,
         created_at,
+        role,
     };
 
     tracing::info!(
@@ -380,9 +392,51 @@ async fn add_allowed_email(
     no_store((StatusCode::CREATED, Json(json!({ "entry": entry }))).into_response())
 }
 
+/// Revoke the durable grants allowlist admission created for every
+/// provider-verified identity of `email`; see
+/// [`crate::access::AccessRuntime::revoke_allowlisted`]. Identities derive
+/// exactly as the session handler derives them, so the same human maps to
+/// the same Principal.
+async fn revoke_durable_allowlist_authority(
+    state: &AppState,
+    auth_state: &labby_auth::state::AuthState,
+    email: &str,
+    removed_by_subject: &str,
+) -> Result<crate::access::AllowlistRevocation, ToolError> {
+    let subjects = auth_state
+        .store
+        .verified_inbound_subjects_for_email(email)
+        .await
+        .map_err(auth_err)?;
+    let issuer = auth_state.inbound_provider_binding().identity_issuer;
+    let identities = subjects
+        .into_iter()
+        .map(|subject| {
+            labby_auth::VerifiedIdentity::external(
+                labby_auth::Authenticator::BrowserSession,
+                &issuer,
+                subject,
+            )
+            .map_err(|_| {
+                ToolError::internal_message(
+                    "verified identity is invalid; allowlist entry was not removed",
+                )
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    state
+        .access_runtime
+        .revoke_allowlisted(identities, fingerprint(removed_by_subject))
+        .await
+        .map_err(|error| crate::dispatch::access_errors::map_runtime_error("auth", error))
+}
+
 /// `DELETE /v1/auth/allowed-emails/:email`
 ///
 /// Returns 204 (idempotent — returns 204 even if the email was not present).
+/// Besides signing the identity out, removal revokes the durable Initial Team
+/// membership, default-Project membership, and platform administration that
+/// allowlist admission created; the Principal row is kept.
 async fn delete_allowed_email(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -435,8 +489,8 @@ async fn delete_allowed_email(
         }
     };
 
-    // Normalize email from URL path.
-    let email = raw_email.trim().to_ascii_lowercase();
+    // Normalize email from URL path with the shared fold.
+    let email = normalize_email(&raw_email);
     let email_fp = fingerprint(&email);
 
     // Log intent before the mutating operation.
@@ -452,7 +506,7 @@ async fn delete_allowed_email(
     // publication before committing the durable revocation. Holding this
     // write guard through the drain closes the DB-to-runtime reuse window.
     #[cfg(feature = "gateway")]
-    let gateway_manager = if email.eq_ignore_ascii_case(admin_email) {
+    let gateway_manager = if labby_auth::config::is_listed_admin(admin_email, &email) {
         None
     } else {
         match &state.gateway_manager {
@@ -478,7 +532,39 @@ async fn delete_allowed_email(
         None => None,
     };
 
-    let removal = if email.eq_ignore_ascii_case(admin_email) {
+    // Revoke durable authority first and keep the returned admission fence
+    // alive until the allowlist row is gone: a first-sign-in admission racing
+    // this removal re-validates the allowlist under the same fence, so it can
+    // neither keep nor recreate what was just revoked. A configured admin's
+    // authority lives in configuration and is never revoked here.
+    let durable = if labby_auth::config::is_listed_admin(admin_email, &email) {
+        None
+    } else {
+        match revoke_durable_allowlist_authority(&state, auth_state, &email, &auth.sub).await {
+            Ok(revocation) => Some(revocation),
+            Err(err) => {
+                tracing::warn!(
+                    surface = "api",
+                    service = "auth",
+                    action,
+                    email_fp,
+                    kind = err.kind(),
+                    elapsed_ms = start.elapsed().as_millis(),
+                    "durable authority revocation failed; allowlist entry was not removed"
+                );
+                log_auth_dispatch(
+                    action,
+                    req_id.as_deref(),
+                    start,
+                    Some(err.kind()),
+                    actor_key,
+                );
+                return no_store(ApiError::new(err).into_response());
+            }
+        }
+    };
+
+    let removal = if labby_auth::config::is_listed_admin(admin_email, &email) {
         auth_state
             .store
             .remove_bootstrap_admin_allowlist_entry(&email)
@@ -519,11 +605,23 @@ async fn delete_allowed_email(
         }
     }
 
+    let durable_outcomes = durable
+        .as_ref()
+        .map_or(&[][..], |durable| durable.outcomes.as_slice());
+    let revoked_count = |selector: fn(&crate::access::AllowlistRevocationOutcome) -> bool| {
+        durable_outcomes
+            .iter()
+            .filter(|outcome| selector(outcome))
+            .count()
+    };
     tracing::info!(
         surface = "api",
         service = "auth",
         action,
         email_fp,
+        revoked_team_memberships = revoked_count(|outcome| outcome.team_membership),
+        revoked_project_memberships = revoked_count(|outcome| outcome.project_membership),
+        revoked_platform_administrators = revoked_count(|outcome| outcome.platform_administrator),
         revoked_sessions = revocation.revoked_sessions,
         revoked_provider_credentials = revocation.revoked_provider_credentials,
         revoked_refresh_tokens = revocation.revoked_refresh_tokens,
@@ -534,5 +632,392 @@ async fn delete_allowed_email(
         "auth.allowed_user.remove complete"
     );
     log_auth_dispatch(action, req_id.as_deref(), start, None, actor_key);
+    // The allowlist row is gone; a racing admission may now run and will be
+    // refused by its own re-validation.
+    drop(durable);
     no_store(StatusCode::NO_CONTENT.into_response())
+}
+
+// The fixture drives the removal path through the gateway runtime, which
+// only exists with the `gateway` feature; the standalone slices compile the
+// service without it.
+#[cfg(all(test, feature = "gateway"))]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode, header};
+    use tower::ServiceExt;
+
+    use crate::access::{AccessRuntime, AllowedUserRole, AllowlistAdmission, BootstrapOwnerInput};
+    use crate::api::router::build_router;
+    use crate::api::state::AppState;
+
+    const ADMIN_EMAIL: &str = "admin@example.com";
+    const ISSUER: &str = "https://accounts.google.com";
+
+    fn auth_config(directory: &std::path::Path) -> labby_auth::config::AuthConfig {
+        labby_auth::config::AuthConfig {
+            mode: labby_auth::config::AuthMode::OAuth,
+            public_url: Some(url::Url::parse("https://lab.example.com").unwrap()),
+            sqlite_path: directory.join("auth.db"),
+            key_path: directory.join("auth-jwt.pem"),
+            admin_emails: vec![ADMIN_EMAIL.into()],
+            google: labby_auth::config::GoogleConfig {
+                client_id: "id".into(),
+                client_secret: "secret".into(),
+                callback_url: None,
+                callback_path: "/auth/google/callback".into(),
+                scopes: vec!["openid".into(), "email".into()],
+            },
+            token_encryption_key: Some(
+                labby_auth::at_rest::TokenEncryptionKey::from_encoded(
+                    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+                )
+                .unwrap(),
+            ),
+            ..Default::default()
+        }
+    }
+
+    fn browser_identity(subject: &str) -> labby_auth::VerifiedIdentity {
+        labby_auth::VerifiedIdentity::external(
+            labby_auth::Authenticator::BrowserSession,
+            ISSUER,
+            subject,
+        )
+        .unwrap()
+    }
+
+    struct Fixture {
+        _directory: tempfile::TempDir,
+        access_path: std::path::PathBuf,
+        auth_state: labby_auth::state::AuthState,
+        runtime: Arc<AccessRuntime>,
+        app: axum::Router,
+        admin: labby_auth::types::BrowserSessionRow,
+    }
+
+    impl Fixture {
+        /// OAuth mode with a configured admin session, a Ready access store
+        /// owned by the admin, and the gateway runtime the removal path
+        /// requires.
+        async fn new() -> Self {
+            let directory = crate::access::test_support::secure_tempdir();
+            let config = auth_config(directory.path());
+            let auth_state = labby_auth::state::AuthState::new(config.clone())
+                .await
+                .unwrap();
+            let access_path = directory.path().join("access.db");
+            let runtime = Arc::new(AccessRuntime::initialize(access_path.clone()).await);
+            runtime
+                .bootstrap_owner(
+                    BootstrapOwnerInput::new(browser_identity("admin-sub"), "Local", "Default")
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let manager = Arc::new(
+                crate::dispatch::gateway::config_store::test_gateway_manager(
+                    directory.path().join("gateway.toml"),
+                    labby_gateway::gateway::manager::GatewayRuntimeHandle::default(),
+                ),
+            );
+            let state = AppState::new()
+                .with_oauth_state(auth_state.clone())
+                .with_auth_config(config)
+                .with_access_runtime(Arc::clone(&runtime))
+                .with_gateway_manager(manager);
+            let app = build_router(state, None, Some(auth_state.clone()), None, &[]);
+            let binding = auth_state.inbound_provider_binding();
+            let admin = labby_auth::types::BrowserSessionRow {
+                session_id: "sess-admin".into(),
+                subject: "admin-sub".into(),
+                email: Some(ADMIN_EMAIL.into()),
+                csrf_token: "csrf-admin".into(),
+                created_at: 1,
+                expires_at: i64::MAX,
+                project_binding: None,
+            };
+            auth_state
+                .store
+                .upsert_bound_browser_session(admin.clone(), binding.clone())
+                .await
+                .unwrap();
+            auth_state
+                .store
+                .upsert_bound_verified_inbound_identity("admin-sub", ADMIN_EMAIL, 1, binding)
+                .await
+                .unwrap();
+            Self {
+                _directory: directory,
+                access_path,
+                auth_state,
+                runtime,
+                app,
+                admin,
+            }
+        }
+
+        /// Allow `email` with `role` and record the provider-verified identity
+        /// `subject` for it, exactly as a completed sign-in would.
+        async fn allow_verified(&self, email: &str, subject: &str, role: &str) {
+            self.auth_state
+                .store
+                .add_allowed_user(email, "admin-sub", role, 1)
+                .await
+                .unwrap();
+            self.auth_state
+                .store
+                .upsert_bound_verified_inbound_identity(
+                    subject,
+                    email,
+                    2,
+                    self.auth_state.inbound_provider_binding(),
+                )
+                .await
+                .unwrap();
+        }
+
+        async fn delete(&self, email: &str) -> StatusCode {
+            let (status, _) = self
+                .request(
+                    &self.admin,
+                    "DELETE",
+                    &format!("/v1/auth/allowed-emails/{email}"),
+                    None,
+                )
+                .await;
+            status
+        }
+
+        /// Seed a bound browser session for `subject` with the given display
+        /// email, as a completed sign-in would.
+        async fn session(
+            &self,
+            subject: &str,
+            email: &str,
+        ) -> labby_auth::types::BrowserSessionRow {
+            let session = labby_auth::types::BrowserSessionRow {
+                session_id: format!("sess-{subject}"),
+                subject: subject.into(),
+                email: Some(email.into()),
+                csrf_token: format!("csrf-{subject}"),
+                created_at: 1,
+                expires_at: i64::MAX,
+                project_binding: None,
+            };
+            self.auth_state
+                .store
+                .upsert_bound_browser_session(
+                    session.clone(),
+                    self.auth_state.inbound_provider_binding(),
+                )
+                .await
+                .unwrap();
+            session
+        }
+
+        async fn request(
+            &self,
+            session: &labby_auth::types::BrowserSessionRow,
+            method: &str,
+            uri: &str,
+            body: Option<serde_json::Value>,
+        ) -> (StatusCode, serde_json::Value) {
+            let mut request = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(header::HOST, "localhost")
+                .header(
+                    header::COOKIE,
+                    format!(
+                        "{}={}",
+                        labby_auth::session::BROWSER_SESSION_COOKIE_NAME,
+                        session.session_id
+                    ),
+                )
+                .header(
+                    labby_auth::session::BROWSER_CSRF_HEADER_NAME,
+                    &session.csrf_token,
+                );
+            if body.is_some() {
+                request = request.header(header::CONTENT_TYPE, "application/json");
+            }
+            let request = request
+                .body(body.map_or_else(Body::empty, |body| Body::from(body.to_string())))
+                .unwrap();
+            let response = self.app.clone().oneshot(request).await.unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+                .await
+                .unwrap();
+            (
+                status,
+                serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+            )
+        }
+
+        fn query_one<T: rusqlite::types::FromSql>(&self, sql: &str) -> T {
+            let connection = rusqlite::Connection::open_with_flags(
+                &self.access_path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .unwrap();
+            connection.query_row(sql, [], |row| row.get(0)).unwrap()
+        }
+    }
+
+    /// Finding 9: a session that holds `platform.manage` through allowlist
+    /// admission (or any grant) but is not a configured admin is refused on
+    /// every allowlist route, including adding another `admin`.
+    #[tokio::test]
+    async fn platform_admin_who_is_not_a_configured_admin_is_refused_on_every_allowlist_route() {
+        let fixture = Fixture::new().await;
+        let colleague = browser_identity("colleague-sub");
+        fixture
+            .allow_verified("colleague@example.com", "colleague-sub", "admin")
+            .await;
+        fixture
+            .runtime
+            .provision_allowlisted(colleague.clone(), || async {
+                Some((
+                    AllowedUserRole::Admin,
+                    AllowlistAdmission::AllowlistEntry {
+                        added_by_fingerprint: "fp".into(),
+                    },
+                ))
+            })
+            .await
+            .unwrap();
+        let store = fixture.runtime.store().await.unwrap();
+        assert!(
+            store
+                .session_authority(colleague)
+                .await
+                .unwrap()
+                .platform_administrator,
+            "precondition: the colleague holds platform.manage"
+        );
+        let session = fixture
+            .session("colleague-sub", "colleague@example.com")
+            .await;
+        let before = fixture.auth_state.store.list_allowed_users().await.unwrap();
+
+        for (method, uri, body) in [
+            ("GET", "/v1/auth/allowed-emails", None),
+            (
+                "POST",
+                "/v1/auth/allowed-emails",
+                Some(serde_json::json!({"email": "mallory@example.com", "role": "admin"})),
+            ),
+            (
+                "DELETE",
+                "/v1/auth/allowed-emails/colleague@example.com",
+                None,
+            ),
+        ] {
+            let (status, response) = fixture.request(&session, method, uri, body).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {response}");
+            assert_eq!(response["kind"], "forbidden", "{method} {uri}: {response}");
+        }
+        assert_eq!(
+            fixture.auth_state.store.list_allowed_users().await.unwrap(),
+            before,
+            "no allowlist route mutated anything"
+        );
+    }
+
+    /// Finding 1: removing an allowlist entry must revoke the durable grants
+    /// its admission created (Initial Team membership, default-Project
+    /// membership, platform administration) and leave an audit trail, while
+    /// keeping the Principal row.
+    #[tokio::test]
+    async fn delete_allowed_email_revokes_durable_authority_it_provisioned() {
+        let fixture = Fixture::new().await;
+        let colleague = browser_identity("x-sub");
+        fixture
+            .allow_verified("x@example.com", "x-sub", "admin")
+            .await;
+        fixture
+            .runtime
+            .provision_allowlisted(colleague.clone(), || async {
+                Some((
+                    AllowedUserRole::Admin,
+                    AllowlistAdmission::AllowlistEntry {
+                        added_by_fingerprint: "fp".into(),
+                    },
+                ))
+            })
+            .await
+            .unwrap();
+        let store = fixture.runtime.store().await.unwrap();
+        assert!(
+            store
+                .session_authority(colleague.clone())
+                .await
+                .unwrap()
+                .platform_administrator
+        );
+
+        assert_eq!(
+            fixture.delete("x@example.com").await,
+            StatusCode::NO_CONTENT
+        );
+
+        assert!(
+            fixture
+                .auth_state
+                .store
+                .find_allowed_user("x@example.com")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let snapshot = store.session_authority(colleague).await.unwrap();
+        assert!(
+            !snapshot.platform_administrator,
+            "platform administration granted by allowlist admission must be revoked"
+        );
+        assert!(
+            snapshot.teams.is_empty(),
+            "no active Team membership remains"
+        );
+        assert!(
+            snapshot.projects.is_empty(),
+            "no active Project membership remains"
+        );
+        assert_eq!(
+            fixture.query_one::<String>(
+                "SELECT status FROM team_memberships WHERE team_id='bootstrap-initial-team' AND principal_id LIKE 'team-member-%'"
+            ),
+            "revoked"
+        );
+        assert_eq!(
+            fixture.query_one::<String>(
+                "SELECT status FROM project_memberships WHERE project_id='bootstrap-default' AND principal_id LIKE 'team-member-%'"
+            ),
+            "disabled"
+        );
+        assert_eq!(
+            fixture.query_one::<String>(
+                "SELECT status FROM platform_administrators WHERE principal_id LIKE 'team-member-%'"
+            ),
+            "revoked"
+        );
+        assert_eq!(
+            fixture.query_one::<i64>(
+                "SELECT count(*) FROM principals WHERE principal_id LIKE 'team-member-%' AND status='active'"
+            ),
+            1,
+            "the Principal row is kept"
+        );
+        assert_eq!(
+            fixture.query_one::<i64>(
+                "SELECT count(*) FROM access_audit WHERE action='access.allowlist.revoke'"
+            ),
+            1,
+            "revocation is audited"
+        );
+    }
 }

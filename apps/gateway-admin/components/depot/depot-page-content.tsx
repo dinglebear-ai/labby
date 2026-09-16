@@ -29,7 +29,7 @@ import { canCompareBundles, DiscoverBundleCompare } from './discover-bundle-comp
 
 const USE_MOCK_DATA = process.env.NEXT_PUBLIC_MOCK_DATA === 'true'
 
-type LoadState = { failures?: string[]; loading: boolean; error?: string; window: DiscoveryWindow; cursor?: string; total?: number; exact: boolean; coverage?: string; scopeEpoch?: string }
+type LoadState = { deferredAttempts?: number; failures?: string[]; loading: boolean; error?: string; window: DiscoveryWindow; cursor?: string; total?: number; exact: boolean; coverage?: string; scopeEpoch?: string }
 export function discoveryCountLabel(count: number, exact: boolean, unavailable: boolean) {
   return unavailable ? '—' : `${exact ? '' : '≥ '}${count.toLocaleString()}`
 }
@@ -171,11 +171,11 @@ function SessionDepotPage() {
     const epoch = getBrowserSessionEpoch()
     const isCurrent = () => epoch === getBrowserSessionEpoch() && lanes.current.isCurrent('list', generation) && !signal?.aborted
     inFlight.current=key
-    setState(c=>({...c,loading:true,error:undefined,window:cursor?c.window:createDiscoveryWindow(),cursor:cursor?c.cursor:undefined,total:cursor?c.total:undefined}))
+    setState(c=>({...c,loading:true,error:undefined,deferredAttempts:cursor?c.deferredAttempts:0,window:cursor?c.window:createDiscoveryWindow(),cursor:cursor?c.cursor:undefined,total:cursor?c.total:undefined}))
     try {
       const listing = await listArtifacts({provider:selectedProvider,query:searchQuery,kind,limit:50,cursor},signal)
       if(!isCurrent())return
-      setState(c=>({loading:false,window:appendDiscoveryPage(cursor?c.window:createDiscoveryWindow(),listing.items),cursor:listing.nextCursor??undefined,total:listing.knownTotal??undefined,exact:listing.totalIsExact,coverage:listing.state,scopeEpoch:listing.scopeEpoch,failures:listing.failures.map(failure=>failure.kind)}))
+      setState(c=>({deferredAttempts:listing.state==='deferred'?(cursor?(c.deferredAttempts??0)+1:0):0,loading:false,window:appendDiscoveryPage(cursor?c.window:createDiscoveryWindow(),listing.items),cursor:listing.nextCursor??undefined,total:listing.knownTotal??undefined,exact:listing.totalIsExact,coverage:listing.state,scopeEpoch:listing.scopeEpoch,failures:listing.failures.map(failure=>failure.kind)}))
     } catch(error) { if(isCurrent())setState(c=>({...c,loading:false,error:error instanceof Error?error.message:String(error)})) }
     finally { if(lanes.current.isCurrent('list',generation))inFlight.current=undefined }
   },[selectedProvider,kind])
@@ -185,7 +185,34 @@ function SessionDepotPage() {
 
   useEffect(()=>{ const controller=new AbortController(); const timer=window.setTimeout(()=>{ const next=query.trim(); setActiveQuery(next); const params=new URLSearchParams(window.location.search); if((params.get('q')?.trim()??'')!==next){if(next)params.set('q',next);else params.delete('q');params.delete('artifact');params.delete('artifactProvider');router.replace(`${pathname}${params.size?`?${params}`:''}`,{scroll:false})} if(next.length===0||next.length>=3)void load(next,undefined,controller.signal);else setState(current=>({...current,loading:false,error:undefined,window:createDiscoveryWindow(),cursor:undefined,total:undefined,exact:false}))},query?300:0); return()=>{window.clearTimeout(timer);controller.abort()} },[load,pathname,query,router])
   useEffect(()=>{lanes.current.invalidate('import');const generation=lanes.current.begin('detail');const epoch=getBrowserSessionEpoch();if(!selectedId||!selectedArtifactProvider||query.trim()!==initialQuery||contextRef.current!==contextKey){setDetail(null);setDetailLoading(false);return}const controller=new AbortController();detailControllerRef.current=controller;setDetail(null);setDetailLoading(true);void getArtifact(selectedArtifactProvider,selectedId,controller.signal).then(r=>{if(lanes.current.isCurrent('detail',generation)&&!controller.signal.aborted&&epoch===getBrowserSessionEpoch())setDetail({...r.artifact,providerId:r.providerId,artifactId:r.artifactId})}).catch(e=>{if(lanes.current.isCurrent('detail',generation)&&!controller.signal.aborted&&epoch===getBrowserSessionEpoch())toast.error(e instanceof Error?e.message:String(e))}).finally(()=>{if(lanes.current.isCurrent('detail',generation)&&!controller.signal.aborted&&epoch===getBrowserSessionEpoch())setDetailLoading(false)});return()=>controller.abort()},[contextKey,initialQuery,query,selectedArtifactProvider,selectedId])
-  useEffect(()=>{const target=loadMoreRef.current;if(!target||!state.cursor||state.loading||state.error)return;const observer=new IntersectionObserver(entries=>{if(entries.some(entry=>entry.isIntersecting)){observer.disconnect();const controller=new AbortController();paginationControllerRef.current=controller;void load(activeQuery,state.cursor,controller.signal)}},{rootMargin:'600px 0px'});observer.observe(target);return()=>observer.disconnect()},[activeQuery,load,state.cursor,state.error,state.loading])
+  useEffect(() => {
+    if (!state.cursor || state.loading || state.error) return
+    const cursor = state.cursor
+    const controller = new AbortController()
+    const continueListing = () => {
+      paginationControllerRef.current = controller
+      void load(activeQuery, cursor, controller.signal)
+    }
+    // Busy providers return continuations without rows. A visible sentinel must not
+    // turn that response into an unbounded request loop. Keep completed rows while
+    // retrying, then leave an explicit user-controlled continuation after five tries.
+    if (state.coverage === 'deferred') {
+      const attempt = state.deferredAttempts ?? 0
+      if (attempt >= 5) return
+      const timer = window.setTimeout(continueListing, 500 * 2 ** attempt)
+      return () => window.clearTimeout(timer)
+    }
+    const target = loadMoreRef.current
+    if (!target) return
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) {
+        observer.disconnect()
+        continueListing()
+      }
+    }, { rootMargin: '600px 0px' })
+    observer.observe(target)
+    return () => observer.disconnect()
+  }, [activeQuery, load, state.cursor, state.error, state.loading, state.coverage, state.deferredAttempts])
 
   const artifactHref=useCallback((providerId?:string,id?:string)=>{const params=new URLSearchParams();if(activeQuery)params.set('q',activeQuery);if(kind!=='all')params.set('kind',kind);if(selectedProvider!=='all')params.set('provider',selectedProvider);if(providerId&&id){params.set('artifactProvider',providerId);params.set('artifact',id)}return `${pathname}${params.size?`?${params}`:''}`},[activeQuery,kind,pathname,selectedProvider])
   const resetDiscovery=useCallback(()=>{window.history.replaceState(window.history.state,'',pathname);invalidateContext(JSON.stringify(['all','all','']));setQuery('');setActiveQuery('');setVisibility('all');setShelf('trending');setSort('relevance');setFiltersOpen(false);setBulkSelectedKeys([]);setSelectionMode(false);setCompareOpen(false);setCursorIndex(-1);router.replace(pathname,{scroll:false})},[invalidateContext,pathname,router])

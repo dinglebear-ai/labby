@@ -96,36 +96,11 @@ over `config.toml` with mode `0600`, and restarting before running doctor again.
 - `[public_urls]`: canonical external URLs.
 - `[[artifacts.sources]]`: server-owned exact Artifact acquisition
   connections used by durable Skill Library imports.
-- `[agents]`: operator-approved local Agent harness launch descriptors.
 - `[phoenix]`: container-local Codex App Server launch boundary for the Phoenix
   assistant.
 
 Top-level gateway timeouts, import mode, tombstones, pending imports, and
 quarantined virtual servers are serialized alongside those sections.
-
-## Agent Harnesses
-
-`[[agents.harnesses]]` enables bounded Agent execution through an explicitly
-configured local executable. `command` and optional `cwd` must be absolute;
-`args` are literal values, and `inherit_env` lists environment variable names
-whose values may be copied from the Labby service process. Each descriptor also
-declares the exact `content_digest`, `repository_digest`, `image_digest`,
-`loadout_digest`, and `catalog_generation` the operator provisioned at that
-fixed execution location. Agent definitions must match the complete pin bundle
-and pin the digest of the complete non-secret descriptor. Changing a definition
-pin, command, argument, working directory, or inherited name therefore requires
-a matching new harness descriptor and Agent revision. With no exact match,
-Agent and queued Task execution fail before admission.
-
-The Codex CLI reads `OPENAI_API_KEY`; custom provider endpoints use its
-`openai_base_url` configuration key. Labby's `OPENAI_URL` and `OPENAI_ORG_ID`
-names are not Codex CLI aliases, so do not list them as inherited harness
-variables. Prefer an ephemeral, read-only Codex invocation and inherit only the
-credential names the configured executable actually consumes.
-
-Run `agents.harnesses` through an authenticated surface to read configured IDs,
-pinning digests, and current executable/directory availability. Secret values
-remain in the service environment and are never returned by that action.
 
 ## Phoenix Assistant
 

@@ -30,8 +30,8 @@ The generated [service catalog](./generated/service-catalog.md) is authoritative
 | --- | --- | --- |
 | `access` | [services/ACCESS.md](./services/ACCESS.md) and [access-control/](./access-control/) | Principals, Teams, invitations, platform administration, onboarding, and owner recovery; design packet and data model |
 | `projects` | [services/ACCESS.md#projects](./services/ACCESS.md#projects) | Team-scoped Project lifecycle: list, create, get, update, archive |
-| `agents` | [services/AGENTS.md](./services/AGENTS.md) | Operator-approved harnesses, immutable Agent definitions, bounded sessions, and revocation |
-| `tasks` | [services/TASKS.md](./services/TASKS.md) | Durable Agent Tasks, schedules, timezones, retries, and recovery |
+| `agents` | [services/AGENT_TASKS.md](./services/AGENT_TASKS.md) | Immutable Agent definitions executed through the shared Assistant LLM provider, bounded sessions, and revocation |
+| `tasks` | [services/AGENT_TASKS.md](./services/AGENT_TASKS.md) and [services/TASKS.md](./services/TASKS.md) | Durable Agent Tasks, schedules, timezones, retries, and recovery |
 | `browser` | [services/BROWSER.md](./services/BROWSER.md) | Rust-native WebMCP browser bridge, pairing, discovery, consent, and bounded invocation |
 | `dev_containers` | [services/DEV_CONTAINERS.md](./services/DEV_CONTAINERS.md) | Owner-scoped development-container definitions, leases, recovery, and lifecycle |
 | `doctor` | [services/DOCTOR.md](./services/DOCTOR.md) | Always-on system, auth, OAuth relay, and proxy diagnostics |

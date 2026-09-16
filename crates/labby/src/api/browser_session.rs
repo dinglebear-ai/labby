@@ -36,10 +36,14 @@ fn no_store_json(body: serde_json::Value) -> Response {
         .into_response()
 }
 
-fn unauthenticated_session_response(login_available: bool) -> Response {
+fn unauthenticated_session_response(
+    login_available: bool,
+    bearer_login_available: bool,
+) -> Response {
     no_store_json(serde_json::json!({
         "authenticated": false,
         "login_available": login_available,
+        "bearer_login_available": bearer_login_available,
     }))
 }
 
@@ -59,6 +63,31 @@ fn actor_key_for_session(
         .as_deref()
         .and_then(|deriver| deriver.derive_subject(&session.subject))
         .map(crate::observability::activity::ActorKey::into_arc)
+}
+
+fn static_bearer_login_available(state: &AppState) -> bool {
+    let config = state
+        .oauth_state
+        .as_ref()
+        .map(|auth| auth.config.as_ref())
+        .or(state.auth_config.as_deref());
+    state.bearer_token.is_some()
+        && !config.is_some_and(|config| {
+            config.disable_static_token_with_oauth
+                && matches!(config.mode, labby_auth::config::AuthMode::OAuth)
+        })
+}
+
+fn static_browser_session(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Option<labby_auth::types::BrowserSessionRow> {
+    if !static_bearer_login_available(state) {
+        return None;
+    }
+    let session_state = state.static_browser_session_state.as_ref()?;
+    let session_id = labby_auth::session::read_cookie(headers, session_state.cookie_name())?;
+    session_state.find(&session_id)
 }
 
 async fn load_browser_session(
@@ -434,6 +463,16 @@ struct SessionCaller {
 }
 
 impl SessionCaller {
+    /// The predicate the administrator-list and allowlist routes enforce
+    /// (`auth_admin::require_admin`): a browser session whose email is in
+    /// `LABBY_AUTH_ADMIN_EMAIL`.
+    fn is_configured_admin(&self, state: &AppState) -> bool {
+        self.via_session
+            && state.auth_config.as_ref().is_some_and(|config| {
+                labby_auth::is_configured_admin_email(&config.admin_emails, self.email.as_deref())
+            })
+    }
+
     fn bootstrap_caller(&self) -> OwnerBootstrapCaller<'_> {
         OwnerBootstrapCaller {
             via_session: self.via_session,
@@ -454,11 +493,17 @@ impl SessionCaller {
 struct SessionBody<'a> {
     authenticated: bool,
     login_available: bool,
+    bearer_login_available: bool,
     authority_state: &'static str,
     authority: Option<AuthorityRef<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     remediation: Option<&'static str>,
     is_admin: bool,
+    /// The caller is a browser session whose email is listed in
+    /// `LABBY_AUTH_ADMIN_EMAIL`: the only caller the administrator-list and
+    /// allowlist routes accept. Independent of `is_admin`, which any
+    /// `platform.manage` principal holds.
+    is_configured_admin: bool,
     user: &'a SessionUser,
     project_id: Option<&'a str>,
     owner: Option<OwnerRef<'a>>,
@@ -506,15 +551,19 @@ fn authenticated_session_body(
     view: &SessionView,
     authority: &SessionAuthority,
     owner_bootstrap_available: bool,
+    is_configured_admin: bool,
+    bearer_login_available: bool,
 ) -> Result<serde_json::Value, ToolError> {
     let project_id = view.project_id.as_deref();
     let mut body = SessionBody {
         authenticated: true,
         login_available: view.login_available,
+        bearer_login_available,
         authority_state: "transport",
         authority: None,
         remediation: None,
         is_admin: false,
+        is_configured_admin,
         user: &view.user,
         project_id,
         owner: None,
@@ -597,14 +646,160 @@ async fn project_session(
         state
             .auth_config
             .as_ref()
-            .map(|config| config.admin_email.as_str()),
+            .map(|config| config.admin_emails.as_slice()),
     )
     .is_ok();
-    let authority =
-        resolve_session_authority(state, caller.identity, caller.transport_admin).await?;
+    let is_configured_admin = caller.is_configured_admin(state);
+    let mut authority =
+        resolve_session_authority(state, caller.identity.clone(), caller.transport_admin).await?;
+    if matches!(authority, SessionAuthority::Unprovisioned)
+        && admit_allowlisted_identity(state, &caller).await
+    {
+        authority =
+            resolve_session_authority(state, caller.identity, caller.transport_admin).await?;
+    }
     let owner_bootstrap_available = admitted
         && state.access_runtime.owner_bootstrap_offer().await == OwnerBootstrapOffer::Available;
-    authenticated_session_body(&view, &authority, owner_bootstrap_available)
+    authenticated_session_body(
+        &view,
+        &authority,
+        owner_bootstrap_available,
+        is_configured_admin,
+        static_bearer_login_available(state),
+    )
+}
+
+/// Durable admission for a browser session whose provider-verified email is
+/// on the allowlist or in `LABBY_AUTH_ADMIN_EMAIL`. Returns `true` when a
+/// Principal was created or already existed, so the caller re-resolves
+/// authority. The session's display email is never consulted: evidence comes
+/// from the provider-verified identity row bound to this issuer and subject.
+async fn admit_allowlisted_identity(state: &AppState, caller: &SessionCaller) -> bool {
+    let (Some(auth_state), Some(config)) = (oauth_state(state), state.auth_config.as_ref()) else {
+        return false;
+    };
+    if !caller.via_session {
+        return false;
+    }
+    let labby_auth::PrincipalLink::External { issuer, subject } = caller.identity.principal_link()
+    else {
+        return false;
+    };
+    let email = match auth_state
+        .store
+        .current_verified_inbound_email(issuer, subject)
+        .await
+    {
+        Ok(Some(email)) => email,
+        Ok(None) => return false,
+        Err(error) => {
+            // Fail closed to `unprovisioned`, but leave a trace; no email,
+            // subject, or issuer is logged.
+            tracing::warn!(
+                surface = "api",
+                service = "auth",
+                action = "session.get",
+                error = %error,
+                "verified identity lookup failed; session stays unprovisioned"
+            );
+            return false;
+        }
+    };
+    // Cheap pre-check so sessions the allowlist does not admit never contend
+    // for the access writer. The runtime re-runs the same resolution under
+    // the writer and provisions what that re-check returns.
+    if allowlist_admission(auth_state, config, &email)
+        .await
+        .is_none()
+    {
+        return false;
+    }
+    match state
+        .access_runtime
+        .provision_allowlisted(caller.identity.clone(), || {
+            allowlist_admission(auth_state, config, &email)
+        })
+        .await
+    {
+        Ok(_) => true,
+        Err(crate::access::AllowlistProvisionError::Withdrawn) => {
+            tracing::info!(
+                surface = "api",
+                service = "auth",
+                action = "session.get",
+                "allowlist entry was withdrawn before provisioning; session stays unprovisioned"
+            );
+            false
+        }
+        // Expected while the durable state that refuses it stands (a disabled
+        // or suspended membership); the session polls this on every read, so
+        // it is not an operator warning.
+        Err(error @ crate::access::AllowlistProvisionError::Refused) => {
+            tracing::debug!(
+                surface = "api",
+                service = "auth",
+                action = "session.get",
+                reason = %error,
+                "allowlist admission refused by durable state; session stays unprovisioned"
+            );
+            false
+        }
+        Err(error) => {
+            // Deadline exhausted or store unavailable: fail closed to
+            // `unprovisioned`, but leave a trace; identity and email are
+            // never logged.
+            tracing::warn!(
+                surface = "api",
+                service = "auth",
+                action = "session.get",
+                error = %error,
+                "allowlist admission failed; session stays unprovisioned"
+            );
+            false
+        }
+    }
+}
+
+/// What the allowlist, or `LABBY_AUTH_ADMIN_EMAIL`, grants `email` right now.
+/// `None` means not admitted; a lookup failure also yields `None` after a
+/// trace, failing closed to `unprovisioned`. No email is logged.
+async fn allowlist_admission(
+    auth_state: &labby_auth::state::AuthState,
+    config: &labby_auth::config::AuthConfig,
+    email: &str,
+) -> Option<(
+    crate::access::AllowedUserRole,
+    crate::access::AllowlistAdmission,
+)> {
+    if config.is_admin_email(email) {
+        return Some((
+            crate::access::AllowedUserRole::Admin,
+            crate::access::AllowlistAdmission::ConfiguredAdminEmail,
+        ));
+    }
+    let allowed = match auth_state.store.find_allowed_user(email).await {
+        Ok(allowed) => allowed,
+        Err(error) => {
+            tracing::warn!(
+                surface = "api",
+                service = "auth",
+                action = "session.get",
+                error = %error,
+                "allowlist lookup failed; session stays unprovisioned"
+            );
+            return None;
+        }
+    };
+    // `added_by` is the adding administrator's provider subject: only its
+    // fingerprint is carried into the audit record.
+    allowed.map(|row| {
+        (
+            row.role,
+            crate::access::AllowlistAdmission::AllowlistEntry {
+                added_by_fingerprint: labby_auth::util::fingerprint(&row.added_by),
+            },
+        )
+    })
 }
 
 /// Transport facts for the anonymous OAuth cookie branch.
@@ -622,7 +817,7 @@ fn oauth_cookie_caller(
     identity: labby_auth::VerifiedIdentity,
 ) -> SessionCaller {
     let is_configured_admin = labby_auth::is_configured_admin_email(
-        &auth_state.config.admin_email,
+        &auth_state.config.admin_emails,
         session.email.as_deref(),
     );
     SessionCaller {
@@ -635,7 +830,6 @@ fn oauth_cookie_caller(
             is_configured_admin,
             is_configured_admin,
         ),
-        // An OAuth cookie alone never carries transport admin.
         transport_admin: false,
     }
 }
@@ -674,6 +868,164 @@ fn finish_session_get(
     }
 }
 
+fn bearer_exchange_allowed(state: &AppState, headers: &HeaderMap) -> bool {
+    if state
+        .auth_config
+        .as_ref()
+        .and_then(|config| config.public_url.as_ref())
+        .is_some_and(|url| url.scheme() == "https")
+    {
+        return true;
+    }
+    let Some(authority) = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return false;
+    };
+    let Ok(url) = url::Url::parse(&format!("http://{authority}")) else {
+        return false;
+    };
+    match url.host() {
+        Some(url::Host::Ipv4(value)) => value.is_loopback(),
+        Some(url::Host::Ipv6(value)) => value.is_loopback(),
+        Some(url::Host::Domain(value)) => value.eq_ignore_ascii_case("localhost"),
+        None => false,
+    }
+}
+
+fn bearer_exchange_error(status: StatusCode, message: &str) -> Response {
+    (
+        status,
+        [(header::CACHE_CONTROL, "private, no-store")],
+        Json(serde_json::json!({ "ok": false, "message": message })),
+    )
+        .into_response()
+}
+
+pub async fn auth_bearer_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let start = Instant::now();
+    let request_id = request_id(&headers).map(ToOwned::to_owned);
+    log_auth_dispatch_start("session.bearer_exchange", request_id.as_deref());
+
+    if !bearer_exchange_allowed(&state, &headers) {
+        log_auth_dispatch(
+            "session.bearer_exchange",
+            request_id.as_deref(),
+            start,
+            Some("secure_transport_required"),
+            None,
+        );
+        return bearer_exchange_error(
+            StatusCode::BAD_REQUEST,
+            "bearer browser sign-in requires HTTPS or a loopback origin",
+        );
+    }
+    if !static_bearer_login_available(&state) {
+        return bearer_exchange_error(StatusCode::UNAUTHORIZED, "invalid bearer credential");
+    }
+    let Some(expected) = state.bearer_token.as_ref() else {
+        log_auth_dispatch(
+            "session.bearer_exchange",
+            request_id.as_deref(),
+            start,
+            Some("not_configured"),
+            None,
+        );
+        return bearer_exchange_error(StatusCode::UNAUTHORIZED, "invalid bearer credential");
+    };
+    let Some(token) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(labby_auth::parse_bearer_token)
+    else {
+        log_auth_dispatch(
+            "session.bearer_exchange",
+            request_id.as_deref(),
+            start,
+            Some("missing_credential"),
+            None,
+        );
+        return bearer_exchange_error(StatusCode::UNAUTHORIZED, "invalid bearer credential");
+    };
+    if !labby_auth::tokens_equal(&token, expected.as_ref()) {
+        log_auth_dispatch(
+            "session.bearer_exchange",
+            request_id.as_deref(),
+            start,
+            Some("invalid_credential"),
+            None,
+        );
+        return bearer_exchange_error(StatusCode::UNAUTHORIZED, "invalid bearer credential");
+    }
+    match labby_auth::static_session::has_other_browser_session(
+        &headers,
+        state.project_session_state.as_deref(),
+        state.oauth_state.as_deref(),
+    )
+    .await
+    {
+        Ok(true) => {
+            return bearer_exchange_error(
+                StatusCode::CONFLICT,
+                "Sign out of the current browser session before using a setup token.",
+            );
+        }
+        Err(_) => return internal_error_response("failed to load browser session"),
+        Ok(false) => {}
+    }
+    let Some(session_state) = state.static_browser_session_state.as_ref() else {
+        return bearer_exchange_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "bearer browser sessions are unavailable",
+        );
+    };
+    let session = match session_state.create() {
+        Ok(session) => session,
+        Err(error) => {
+            tracing::error!(error = %error, "failed to create static bearer browser session");
+            return bearer_exchange_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to create browser session",
+            );
+        }
+    };
+    let mut response = no_store_json(serde_json::json!({ "ok": true }));
+    labby_auth::session::append_set_cookie(
+        &mut response,
+        &session_state.set_cookie(&session.session_id),
+    );
+    log_auth_dispatch(
+        "session.bearer_exchange",
+        request_id.as_deref(),
+        start,
+        None,
+        None,
+    );
+    response
+}
+
+async fn reject_mixed_static_sessions(state: &AppState, headers: &HeaderMap) -> Option<Response> {
+    static_browser_session(state, headers)?;
+    match labby_auth::static_session::has_other_browser_session(
+        headers,
+        state.project_session_state.as_deref(),
+        state.oauth_state.as_deref(),
+    )
+    .await
+    {
+        Ok(false) => None,
+        Ok(true) => Some(bearer_exchange_error(
+            StatusCode::CONFLICT,
+            "Multiple browser sessions are present. Clear this site's cookies and sign in again.",
+        )),
+        Err(_) => Some(internal_error_response("failed to load browser session")),
+    }
+}
+
 pub async fn auth_session(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -689,6 +1041,10 @@ pub async fn auth_session(
         let actor_key = context.actor_key.clone();
         let outcome = authenticated_context_session(&state, &headers, context, identity).await;
         return finish_session_get(request_id.as_deref(), start, actor_key.as_deref(), outcome);
+    }
+
+    if let Some(response) = reject_mixed_static_sessions(&state, &headers).await {
+        return response;
     }
 
     // This route intentionally remains outside the auth middleware so an
@@ -736,6 +1092,37 @@ pub async fn auth_session(
         }
     }
 
+    if let Some(session) = static_browser_session(&state, &headers) {
+        let outcome = async {
+            let identity = labby_auth::VerifiedIdentity::local_credential(
+                labby_auth::Authenticator::StaticBearer,
+                "static-bearer:primary",
+            )
+            .map_err(|_| ToolError::internal_message("authenticated identity is invalid"))?;
+            let caller = SessionCaller {
+                identity,
+                via_session: false,
+                subject: "static-bearer".to_owned(),
+                email: None,
+                scopes: Vec::new(),
+                transport_admin: true,
+            };
+            let view = SessionView {
+                login_available,
+                user: SessionUser {
+                    sub: "static-bearer".to_owned(),
+                    email: None,
+                },
+                project_id: None,
+                expires_at: session.expires_at,
+                csrf_token: session.csrf_token.clone(),
+            };
+            project_session(&state, caller, view).await
+        }
+        .await;
+        return finish_session_get(request_id.as_deref(), start, None, outcome);
+    }
+
     if state.web_ui_auth_disabled {
         // Dev mode bypasses auth entirely — treat the synthetic dev user as admin
         // so admin UI is reachable in local development without real credentials.
@@ -743,6 +1130,7 @@ pub async fn auth_session(
             "authenticated": true,
             "login_available": false,
             "is_admin": true,
+            "is_configured_admin": true,
             "dev_authority_bypass": true,
             "user": {
                 "sub": "labby-dev",
@@ -797,7 +1185,8 @@ pub async fn auth_session(
     }
 
     let Some(auth_state) = oauth_state(&state) else {
-        let response = unauthenticated_session_response(false);
+        let response =
+            unauthenticated_session_response(false, static_bearer_login_available(&state));
         log_auth_dispatch("session.get", request_id.as_deref(), start, None, None);
         return response;
     };
@@ -827,7 +1216,10 @@ pub async fn auth_session(
             finish_session_get(request_id.as_deref(), start, actor_key.as_deref(), outcome)
         }
         Ok(None) => {
-            let response = unauthenticated_session_response(login_available);
+            let response = unauthenticated_session_response(
+                login_available,
+                static_bearer_login_available(&state),
+            );
             log_auth_dispatch("session.get", request_id.as_deref(), start, None, None);
             response
         }
@@ -913,9 +1305,56 @@ async fn authenticated_context_session(
 }
 
 pub async fn auth_logout(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    let stale_cookie = state
+        .static_browser_session_state
+        .as_ref()
+        .and_then(|sessions| {
+            let id = labby_auth::session::read_cookie(&headers, sessions.cookie_name())?;
+            sessions
+                .find(&id)
+                .is_none()
+                .then(|| sessions.clear_cookie())
+        });
+    let mut response = auth_logout_inner(State(state), headers).await;
+    if let Some(cookie) = stale_cookie {
+        labby_auth::session::append_set_cookie(&mut response, &cookie);
+    }
+    response
+}
+
+async fn auth_logout_inner(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let start = Instant::now();
     let request_id = request_id(&headers).map(ToOwned::to_owned);
     log_auth_dispatch_start("session.logout", request_id.as_deref());
+
+    if let Some(response) = reject_mixed_static_sessions(&state, &headers).await {
+        return response;
+    }
+
+    if let Some(session_state) = state.static_browser_session_state.as_ref()
+        && let Some(session_id) =
+            labby_auth::session::read_cookie(&headers, session_state.cookie_name())
+        && let Some(session) = session_state.find(&session_id)
+    {
+        let csrf = headers
+            .get(BROWSER_CSRF_HEADER_NAME)
+            .and_then(|value| value.to_str().ok());
+        if csrf != Some(session.csrf_token.as_str()) {
+            log_auth_dispatch(
+                "session.logout",
+                request_id.as_deref(),
+                start,
+                Some("validation_failed"),
+                None,
+            );
+            return invalid_csrf_response();
+        }
+        session_state.revoke(&session_id);
+        let mut response = StatusCode::NO_CONTENT.into_response();
+        labby_auth::session::append_set_cookie(&mut response, &session_state.clear_cookie());
+        log_auth_dispatch("session.logout", request_id.as_deref(), start, None, None);
+        return response;
+    }
 
     if state.web_ui_auth_disabled {
         let mut response = StatusCode::NO_CONTENT.into_response();
@@ -1004,6 +1443,238 @@ mod tests {
     use labby_auth::types::{BrowserSessionRow, ProjectSessionBinding};
 
     #[tokio::test]
+    async fn logout_revokes_oauth_when_static_cookie_is_stale() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = labby_auth::config::AuthConfig {
+            mode: labby_auth::config::AuthMode::OAuth,
+            public_url: Some("https://lab.example.com".parse().unwrap()),
+            sqlite_path: directory.path().join("auth.db"),
+            key_path: directory.path().join("auth-key.pem"),
+            admin_emails: vec!["owner@different.example".into()],
+            viewer_email_domains: vec!["example.org".into()],
+            session_cookie_name: "__Host-labby-session".into(),
+            google: labby_auth::config::GoogleConfig {
+                client_id: "client".into(),
+                client_secret: "secret".into(),
+                callback_url: None,
+                callback_path: "/auth/google/callback".into(),
+                scopes: vec!["openid".into(), "email".into()],
+            },
+            token_encryption_key: Some(
+                labby_auth::at_rest::TokenEncryptionKey::from_encoded(&"11".repeat(32)).unwrap(),
+            ),
+            ..Default::default()
+        };
+        let auth = labby_auth::state::AuthState::new(config.clone())
+            .await
+            .unwrap();
+        let row = BrowserSessionRow {
+            session_id: "oauth-session".into(),
+            subject: "oauth-owner".into(),
+            email: None,
+            csrf_token: "oauth-csrf".into(),
+            created_at: labby_auth::util::now_unix(),
+            expires_at: labby_auth::util::now_unix() + 3600,
+            project_binding: None,
+        };
+        auth.store
+            .upsert_browser_session(row.clone())
+            .await
+            .unwrap();
+        let state = AppState::new()
+            .with_auth_config(config)
+            .with_oauth_state(auth.clone())
+            .with_static_browser_session_state(
+                labby_auth::static_session::StaticBrowserSessionState::new(false),
+            );
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_static(
+                "__Host-labby-session=oauth-session; labby_bearer_session=stale-session",
+            ),
+        );
+        headers.insert(
+            BROWSER_CSRF_HEADER_NAME,
+            HeaderValue::from_static("oauth-csrf"),
+        );
+        let response = auth_logout(State(state), headers).await.into_response();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(
+            auth.store
+                .find_browser_session(&row.session_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let cookies: Vec<_> = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|value| value.to_str().unwrap())
+            .collect();
+        assert!(cookies.iter().any(
+            |value| value.starts_with("labby_bearer_session=;") && value.contains("Max-Age=0")
+        ));
+        assert!(cookies.iter().any(
+            |value| value.starts_with("__Host-labby-session=;") && value.contains("Max-Age=0")
+        ));
+    }
+
+    #[tokio::test]
+    async fn disabled_static_bearer_cannot_mint_or_introspect_a_browser_session() {
+        let config = labby_auth::config::AuthConfig {
+            mode: labby_auth::config::AuthMode::OAuth,
+            disable_static_token_with_oauth: true,
+            ..Default::default()
+        };
+        let state = AppState::new()
+            .with_auth_config(config)
+            .with_bearer_token(Some(std::sync::Arc::from("operator-token")))
+            .with_static_browser_session_state(
+                labby_auth::static_session::StaticBrowserSessionState::new(false),
+            );
+        let sessions = state.static_browser_session_state.as_ref().unwrap();
+        let row = sessions.create().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("localhost:8765"));
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer operator-token"),
+        );
+        headers.insert(
+            header::COOKIE,
+            format!("{}={}", sessions.cookie_name(), row.session_id)
+                .parse()
+                .unwrap(),
+        );
+        assert!(!static_bearer_login_available(&state));
+        assert!(static_browser_session(&state, &headers).is_none());
+        let response = auth_bearer_session(State(state), headers)
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(!response.headers().contains_key(header::SET_COOKIE));
+    }
+
+    #[tokio::test]
+    async fn static_browser_exchange_and_session_reject_other_browser_authority() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = labby_auth::project_session::ProjectSessionState::open(
+            directory.path().join("project.db"),
+            "__Host-project-session",
+        )
+        .await
+        .unwrap();
+        project
+            .store
+            .upsert_browser_session(BrowserSessionRow {
+                session_id: "project-session".into(),
+                subject: "project-user".into(),
+                email: None,
+                csrf_token: "project-csrf".into(),
+                created_at: labby_auth::util::now_unix(),
+                expires_at: labby_auth::util::now_unix() + 3600,
+                project_binding: None,
+            })
+            .await
+            .unwrap();
+        let mut state = AppState::new()
+            .with_bearer_token(Some(std::sync::Arc::from("operator-token")))
+            .with_static_browser_session_state(
+                labby_auth::static_session::StaticBrowserSessionState::new(false),
+            );
+        state.project_session_state = Some(std::sync::Arc::new(project));
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("localhost:8765"));
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer operator-token"),
+        );
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_static("__Host-project-session=project-session"),
+        );
+        let response = auth_bearer_session(State(state.clone()), headers.clone())
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(!response.headers().contains_key(header::SET_COOKIE));
+        let sessions = state.static_browser_session_state.as_ref().unwrap();
+        let row = sessions.create().unwrap();
+        headers.remove(header::AUTHORIZATION);
+        headers.insert(
+            header::COOKIE,
+            format!(
+                "__Host-project-session=project-session; {}={}",
+                sessions.cookie_name(),
+                row.session_id
+            )
+            .parse()
+            .unwrap(),
+        );
+        let response = auth_session(State(state.clone()), headers.clone(), None, None)
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        headers.insert(BROWSER_CSRF_HEADER_NAME, row.csrf_token.parse().unwrap());
+        let response = auth_logout(State(state.clone()), headers)
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn static_browser_exchange_introspection_and_logout() {
+        let state = AppState::new()
+            .with_bearer_token(Some(std::sync::Arc::from("operator-token")))
+            .with_static_browser_session_state(
+                labby_auth::static_session::StaticBrowserSessionState::new(false),
+            );
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("localhost:8765"));
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer operator-token"),
+        );
+        let response = auth_bearer_session(State(state.clone()), headers.clone())
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let cookie = response.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string();
+        headers.remove(header::AUTHORIZATION);
+        headers.insert(header::COOKIE, cookie.parse().unwrap());
+        let response = auth_session(State(state.clone()), headers.clone(), None, None)
+            .await
+            .into_response();
+        let body = axum::body::to_bytes(response.into_body(), 16384)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["authenticated"], true);
+        assert_eq!(payload["bearer_login_available"], true);
+        let response = auth_logout(State(state.clone()), headers.clone())
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        headers.insert(
+            BROWSER_CSRF_HEADER_NAME,
+            payload["csrf_token"].as_str().unwrap().parse().unwrap(),
+        );
+        let response = auth_logout(State(state.clone()), headers.clone())
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(static_browser_session(&state, &headers).is_none());
+    }
+
+    #[tokio::test]
     async fn viewer_domain_google_session_introspection_stays_authenticated_without_admin() {
         use tower::ServiceExt as _;
         let directory = tempfile::tempdir().unwrap();
@@ -1012,7 +1683,7 @@ mod tests {
             public_url: Some("https://lab.example.com".parse().unwrap()),
             sqlite_path: directory.path().join("auth.db"),
             key_path: directory.path().join("auth-key.pem"),
-            admin_email: "owner@different.example".into(),
+            admin_emails: vec!["owner@different.example".into()],
             viewer_email_domains: vec!["example.org".into()],
             session_cookie_name: "__Host-labby-session".into(),
             google: labby_auth::config::GoogleConfig {
@@ -1193,7 +1864,9 @@ mod tests {
             .upsert_browser_session(session)
             .await
             .unwrap();
-        let state = AppState::new().with_project_session_state(session_state);
+        let state = AppState::new()
+            .with_project_session_state(session_state)
+            .with_bearer_token(Some(std::sync::Arc::from("operator-token")));
         let mut headers = HeaderMap::new();
         headers.insert(
             header::COOKIE,
@@ -1226,6 +1899,8 @@ mod tests {
         assert_eq!(json["is_admin"], false, "lab:read binding is not admin");
         assert_eq!(json["project_id"], "project-42");
         assert_eq!(json["expires_at"], expires_at);
+        assert_eq!(json["login_available"], false);
+        assert_eq!(json["bearer_login_available"], true);
         assert_eq!(json["csrf_token"], "csrf-token");
 
         let response = auth_session(State(state), headers, Some(Extension(auth)), None)
@@ -1239,6 +1914,8 @@ mod tests {
         assert_eq!(json["authority_state"], "transport");
         assert_eq!(json["project_id"], "project-42");
         assert_eq!(json["expires_at"], expires_at);
+        assert_eq!(json["login_available"], false);
+        assert_eq!(json["bearer_login_available"], true);
     }
 
     /// B-I7: an authenticated identity with no principal link is a 200
@@ -1273,7 +1950,7 @@ mod tests {
         let state = AppState::new()
             .with_access_runtime(runtime)
             .with_auth_config(labby_auth::config::AuthConfig {
-                admin_email: "owner@example.com".into(),
+                admin_emails: vec!["owner@example.com".into()],
                 ..Default::default()
             });
         let view = |sub: &str| SessionView {
@@ -1291,7 +1968,7 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(ready, SessionAuthority::Ready(_)));
-        let body = authenticated_session_body(&view("owner"), &ready, false).unwrap();
+        let body = authenticated_session_body(&view("owner"), &ready, false, false, false).unwrap();
         assert_eq!(body["authority_state"], "ready");
         assert_eq!(body["is_admin"], true);
         assert_eq!(body["owner_bootstrap_available"], false);
@@ -1324,7 +2001,7 @@ mod tests {
         assert!(
             crate::access::owner_bootstrap_admission(
                 &admitted.bootstrap_caller(),
-                Some("owner@example.com")
+                Some(&["owner@example.com".to_owned()])
             )
             .is_ok()
         );
@@ -1348,5 +2025,330 @@ mod tests {
             .kind(),
             "service_unavailable"
         );
+    }
+
+    /// OAuth-mode fixture: a Ready access store owned by a static-bearer
+    /// operator, `eli@example.com` allowlisted as `admin` with a verified
+    /// identity, and a verified stranger who is not allowlisted.
+    struct AllowlistFixture {
+        _directory: tempfile::TempDir,
+        state: AppState,
+        auth_state: labby_auth::state::AuthState,
+        auth_config: labby_auth::config::AuthConfig,
+    }
+
+    impl AllowlistFixture {
+        async fn new() -> Self {
+            let directory = tempfile::Builder::new()
+                .prefix("labby-allowlist-admission-")
+                .tempdir_in(std::env::current_dir().unwrap())
+                .unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                    .unwrap();
+            }
+            let owner = labby_auth::VerifiedIdentity::local_credential(
+                labby_auth::Authenticator::StaticBearer,
+                "static-bearer:primary",
+            )
+            .unwrap();
+            let runtime = std::sync::Arc::new(
+                crate::access::AccessRuntime::initialize(directory.path().join("access.db")).await,
+            );
+            runtime
+                .bootstrap_owner(
+                    crate::access::BootstrapOwnerInput::new(owner, "Local", "Default").unwrap(),
+                )
+                .await
+                .unwrap();
+            let auth_config = labby_auth::config::AuthConfig {
+                mode: labby_auth::config::AuthMode::OAuth,
+                public_url: Some(url::Url::parse("https://lab.example.com").unwrap()),
+                sqlite_path: directory.path().join("auth.db"),
+                key_path: directory.path().join("auth-jwt.pem"),
+                admin_emails: vec!["owner@example.com".into()],
+                google: labby_auth::config::GoogleConfig {
+                    client_id: "id".into(),
+                    client_secret: "secret".into(),
+                    callback_url: None,
+                    callback_path: "/auth/google/callback".into(),
+                    scopes: vec!["openid".into(), "email".into()],
+                },
+                token_encryption_key: Some(
+                    labby_auth::at_rest::TokenEncryptionKey::from_encoded(
+                        "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+                    )
+                    .unwrap(),
+                ),
+                ..Default::default()
+            };
+            let auth_state = labby_auth::state::AuthState::new(auth_config.clone())
+                .await
+                .unwrap();
+            let binding = auth_state.inbound_provider_binding();
+            auth_state
+                .store
+                .add_allowed_user("eli@example.com", "owner-sub", "admin", 1)
+                .await
+                .unwrap();
+            for (subject, email) in [
+                ("eli-sub", "eli@example.com"),
+                ("stranger-sub", "stranger@example.com"),
+            ] {
+                auth_state
+                    .store
+                    .upsert_bound_verified_inbound_identity(subject, email, 2, binding.clone())
+                    .await
+                    .unwrap();
+            }
+            let state = AppState::new()
+                .with_access_runtime(runtime)
+                .with_auth_config(auth_config.clone())
+                .with_oauth_state(auth_state.clone());
+            Self {
+                _directory: directory,
+                state,
+                auth_state,
+                auth_config,
+            }
+        }
+
+        fn identity(subject: &str) -> labby_auth::VerifiedIdentity {
+            labby_auth::VerifiedIdentity::external(
+                labby_auth::Authenticator::BrowserSession,
+                "https://accounts.google.com",
+                subject,
+            )
+            .unwrap()
+        }
+
+        fn caller(subject: &str, email: &str) -> SessionCaller {
+            SessionCaller {
+                identity: Self::identity(subject),
+                via_session: true,
+                subject: subject.into(),
+                email: Some(email.into()),
+                scopes: vec!["lab:read".into(), "lab".into()],
+                transport_admin: false,
+            }
+        }
+
+        fn view(sub: &str) -> SessionView {
+            SessionView {
+                login_available: true,
+                user: SessionUser {
+                    sub: sub.to_owned(),
+                    email: None,
+                },
+                project_id: None,
+                expires_at: 1,
+                csrf_token: String::new(),
+            }
+        }
+
+        async fn session(&self, subject: &str, email: &str) -> serde_json::Value {
+            project_session(
+                &self.state,
+                Self::caller(subject, email),
+                Self::view(subject),
+            )
+            .await
+            .unwrap()
+        }
+
+        fn provision_audit_rows(&self) -> i64 {
+            let connection = rusqlite::Connection::open_with_flags(
+                self._directory.path().join("access.db"),
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .unwrap();
+            connection
+                .query_row(
+                    "SELECT count(*) FROM access_audit WHERE action='access.allowlist.provision'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        }
+    }
+
+    /// An allowlisted identity is admitted on its first `/auth/session`:
+    /// the durable authority is created and the same call projects `ready`.
+    #[tokio::test]
+    async fn allowlisted_session_is_provisioned_on_first_session_read() {
+        let fixture = AllowlistFixture::new().await;
+        let body = fixture.session("eli-sub", "eli@example.com").await;
+        assert_eq!(body["authority_state"], "ready");
+        assert_eq!(
+            body["is_admin"], true,
+            "allowlist role admin grants platform.manage"
+        );
+
+        // Display email is not evidence: a session claiming an allowlisted
+        // email whose verified identity is someone else stays unprovisioned.
+        let body = fixture.session("stranger-sub", "eli@example.com").await;
+        assert_eq!(body["authority_state"], "unprovisioned");
+
+        // A caller whose display email is on the allowlist but who has no
+        // verified-identity row at all (never completed the provider flow)
+        // stays unprovisioned: there is no evidence to admit against.
+        let body = fixture.session("unverified-sub", "eli@example.com").await;
+        assert_eq!(body["authority_state"], "unprovisioned");
+    }
+
+    /// Finding 3: the administrator list and the allowlist accept only a
+    /// browser session whose email is in `LABBY_AUTH_ADMIN_EMAIL`. The body
+    /// says so explicitly, because `is_admin` (`platform.manage`) is also true
+    /// for every allowlist-admitted admin, who must not be offered those
+    /// controls.
+    #[tokio::test]
+    async fn session_body_reports_whether_the_caller_is_a_configured_admin() {
+        let fixture = AllowlistFixture::new().await;
+        fixture
+            .auth_state
+            .store
+            .upsert_bound_verified_inbound_identity(
+                "owner-sub",
+                "owner@example.com",
+                2,
+                fixture.auth_state.inbound_provider_binding(),
+            )
+            .await
+            .unwrap();
+
+        let body = fixture.session("eli-sub", "eli@example.com").await;
+        assert_eq!(body["authority_state"], "ready");
+        assert_eq!(
+            body["is_admin"], true,
+            "allowlist admin is a platform admin"
+        );
+        assert_eq!(
+            body["is_configured_admin"], false,
+            "an allowlist admin is not a configured admin"
+        );
+
+        let body = fixture.session("owner-sub", "owner@example.com").await;
+        assert_eq!(body["authority_state"], "ready");
+        assert_eq!(body["is_admin"], true);
+        assert_eq!(body["is_configured_admin"], true);
+
+        // The transport credential is the local operator but never a
+        // configured-admin browser session.
+        let operator = SessionCaller {
+            identity: labby_auth::VerifiedIdentity::local_credential(
+                labby_auth::Authenticator::StaticBearer,
+                "static-bearer:primary",
+            )
+            .unwrap(),
+            via_session: false,
+            subject: "static-bearer".into(),
+            email: None,
+            scopes: Vec::new(),
+            transport_admin: true,
+        };
+        let body = project_session(
+            &fixture.state,
+            operator,
+            AllowlistFixture::view("static-bearer"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(body["is_admin"], true);
+        assert_eq!(body["is_configured_admin"], false);
+    }
+
+    /// Finding 6: first-sign-in admission must not fail closed after the
+    /// 100 ms bootstrap-writer wait. A writer held for 300 ms (audit or
+    /// policy persistence in flight) is normal contention, not an outage.
+    #[tokio::test]
+    async fn allowlisted_admission_waits_for_a_busy_writer() {
+        let fixture = AllowlistFixture::new().await;
+        let writer = fixture
+            .state
+            .access_runtime
+            .acquire_bootstrap_writer()
+            .await
+            .unwrap();
+        let release = async {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            drop(writer);
+        };
+        let (body, ()) = tokio::join!(fixture.session("eli-sub", "eli@example.com"), release);
+        assert_eq!(body["authority_state"], "ready");
+        assert_eq!(fixture.provision_audit_rows(), 1);
+    }
+
+    /// Finding 2: the allowlist lookup and the durable provisioning live in
+    /// different databases. The entry must be re-validated under the access
+    /// writer; an entry that vanished in between admits nothing and leaves no
+    /// Principal or audit row behind.
+    #[tokio::test]
+    async fn allowlist_admission_is_refused_when_the_entry_vanishes_before_provisioning() {
+        let fixture = AllowlistFixture::new().await;
+        let eli = AllowlistFixture::identity("eli-sub");
+        let outcome = fixture
+            .state
+            .access_runtime
+            .provision_allowlisted(eli.clone(), || async {
+                // The administrator deletes the entry after the handler's
+                // first lookup succeeded but before the writer was acquired.
+                fixture
+                    .auth_state
+                    .store
+                    .remove_allowed_user("eli@example.com")
+                    .await
+                    .unwrap();
+                allowlist_admission(&fixture.auth_state, &fixture.auth_config, "eli@example.com")
+                    .await
+            })
+            .await;
+        assert_eq!(
+            outcome.unwrap_err(),
+            crate::access::AllowlistProvisionError::Withdrawn
+        );
+        let store = fixture.state.access_runtime.store().await.unwrap();
+        assert!(
+            matches!(
+                store.session_authority(eli).await,
+                Err(AccessStoreError::IdentityUnavailable)
+            ),
+            "no Principal may exist for an admission that was withdrawn"
+        );
+        assert_eq!(fixture.provision_audit_rows(), 0);
+        let body = fixture.session("eli-sub", "eli@example.com").await;
+        assert_eq!(body["authority_state"], "unprovisioned");
+    }
+
+    /// The same race through the real session path: while a session read
+    /// waits for a busy access writer, the entry is removed. Once the writer
+    /// frees up the read must re-check the allowlist and stay unprovisioned.
+    #[tokio::test]
+    async fn allowlist_admission_revalidates_after_waiting_for_the_writer() {
+        let fixture = AllowlistFixture::new().await;
+        let writer = fixture
+            .state
+            .access_runtime
+            .acquire_bootstrap_writer()
+            .await
+            .unwrap();
+        let session = fixture.session("eli-sub", "eli@example.com");
+        let removal = async {
+            // Let the session read pass its first lookup and block on the
+            // writer, then withdraw the entry and release the writer well
+            // inside the admission deadline.
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            fixture
+                .auth_state
+                .store
+                .remove_allowed_user("eli@example.com")
+                .await
+                .unwrap();
+            drop(writer);
+        };
+        let (body, ()) = tokio::join!(session, removal);
+        assert_eq!(body["authority_state"], "unprovisioned");
+        assert_eq!(fixture.provision_audit_rows(), 0);
     }
 }

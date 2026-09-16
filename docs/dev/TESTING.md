@@ -1,7 +1,7 @@
 ---
 title: "Testing"
 created: "2026-07-30"
-updated: "2026-09-07"
+updated: "2026-09-16"
 ---
 
 # Testing
@@ -411,6 +411,9 @@ because that catalog describes product configuration.
 - `LABBY_E2E_DETERMINISTIC_EXECUTORS` selects the deterministic Agent and Task
   executor and the deterministic Dev Container runtime, so live matrices can
   drive those lifecycles without a real execution backend or container engine.
+  The deterministic executor materializes a fixed output through the same
+  content-addressed store as a real run, so the `output_digest` it settles
+  resolves through `tasks.result` and `agents.run` like any other.
 
 ## Ownership Summary
 

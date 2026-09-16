@@ -403,16 +403,7 @@ async fn prepare_authority_action(
         if intent.action != "agents.create" {
             let fixture = &action_scenarios::fixtures()["agents"];
             let mut create = serde_json::Map::new();
-            for name in [
-                "owner_kind",
-                "owner_id",
-                "content_digest",
-                "repository_digest",
-                "image_digest",
-                "harness_digest",
-                "loadout_digest",
-                "catalog_generation",
-            ] {
+            for name in ["owner_kind", "owner_id", "instructions"] {
                 create.insert(name.to_owned(), fixture.parameters[name].clone());
             }
             create.insert("agent_id".into(), agent_id.into());
@@ -428,7 +419,10 @@ async fn prepare_authority_action(
                 .await,
             );
         }
-        if intent.action == "agents.session.status" {
+        if matches!(
+            intent.action.as_str(),
+            "agents.session.status" | "agents.session.cancel"
+        ) {
             let (_, body) = post_action(
                 client,
                 base,
@@ -488,16 +482,7 @@ async fn prepare_authority_action(
         params["agent_id"] = serde_json::Value::String(agent_id.clone());
         let agents = &action_scenarios::fixtures()["agents"];
         let mut create_agent = serde_json::Map::new();
-        for name in [
-            "owner_kind",
-            "owner_id",
-            "content_digest",
-            "repository_digest",
-            "image_digest",
-            "harness_digest",
-            "loadout_digest",
-            "catalog_generation",
-        ] {
+        for name in ["owner_kind", "owner_id", "instructions"] {
             create_agent.insert(name.to_owned(), agents.parameters[name].clone());
         }
         create_agent.insert("agent_id".into(), agent_id.into());
@@ -513,7 +498,7 @@ async fn prepare_authority_action(
             .await,
         );
         if intent.action != "tasks.create" {
-            drop(post_action(client, base, "/v1/tasks", "tasks.create", serde_json::json!({"task_id":task_id,"idempotency_key":format!("idem-{action_id}"),"owner_kind":"personal","owner_id":"bootstrap-owner","agent_id":params["agent_id"],"input":"Inspect the scheduled task fixture","input_digest":"sha256:4bd5a8177c5cea28e1c0b9a92694ffbc67fd2c28aaf37e9b735068168acbbb93"}), true).await);
+            drop(post_action(client, base, "/v1/tasks", "tasks.create", serde_json::json!({"task_id":task_id,"idempotency_key":format!("idem-{action_id}"),"owner_kind":"personal","owner_id":"bootstrap-owner","agent_id":params["agent_id"],"input":"matrix task input"}), true).await);
         }
         if intent.action == "tasks.result" {
             drop(
@@ -583,7 +568,9 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
             .env("LABBY_E2E_BOOTSTRAP_STATIC_OWNER", "1")
             .env("LABBY_E2E_DETERMINISTIC_EXECUTORS", "1")
             .existing_root(owned_root.path())
-            .config(format!("[workspace]\nroot = {:?}\n", workspace))
+            // The action matrix seeds deliberately unreachable upstreams. Pure
+            // snippet execution must retain the raw-mode catalog contract.
+            .config(format!("[workspace]\nroot = {:?}\n[code_mode]\nenabled = false\n", workspace))
             .start()
             .await
             .expect("live API daemon");
@@ -882,6 +869,7 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
             "every API service needs an invalid/error path"
         );
         let required_destructive_denials = BTreeSet::from([
+            "agents".into(),
             "browser".into(),
             "dev_containers".into(),
             "gateway".into(),

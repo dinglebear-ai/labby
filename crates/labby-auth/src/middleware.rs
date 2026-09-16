@@ -160,6 +160,7 @@ struct AuthLayerInner {
     product_credential_verifier: Option<Arc<dyn ProductCredentialVerifier>>,
     product_access_grant_resolver: Option<Arc<dyn ProductAccessGrantResolver>>,
     project_session_state: Option<Arc<ProjectSessionState>>,
+    static_browser_session_state: Option<Arc<crate::static_session::StaticBrowserSessionState>>,
 }
 
 impl AuthLayer {
@@ -186,6 +187,7 @@ impl AuthLayer {
                 product_credential_verifier: None,
                 product_access_grant_resolver: None,
                 project_session_state: None,
+                static_browser_session_state: None,
             }),
         }
     }
@@ -217,6 +219,7 @@ impl AuthLayer {
                 product_credential_verifier: None,
                 product_access_grant_resolver: None,
                 project_session_state: None,
+                static_browser_session_state: None,
             }),
         }
     }
@@ -329,6 +332,14 @@ impl AuthLayer {
     pub fn with_project_session_state(self, state: Option<Arc<ProjectSessionState>>) -> Self {
         self.with(|inner| inner.project_session_state = state)
     }
+
+    #[must_use]
+    pub fn with_static_browser_session_state(
+        self,
+        state: Option<Arc<crate::static_session::StaticBrowserSessionState>>,
+    ) -> Self {
+        self.with(|inner| inner.static_browser_session_state = state)
+    }
 }
 
 impl Default for AuthLayer {
@@ -408,6 +419,23 @@ async fn authenticate(
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(parse_bearer_token);
+
+    // Session cookies and bearer headers are independent authorities. Do not
+    // silently combine them, even when both ultimately derive from the same
+    // static operator credential. The exchange endpoint itself is outside this
+    // middleware and therefore remains able to mint the cookie.
+    if auth_header.is_some()
+        && layer.allow_session_cookie
+        && let Some(session_state) = layer.static_browser_session_state.as_ref()
+        && let Some(session_id) =
+            session::read_cookie(request.headers(), session_state.cookie_name())
+        && session_state.find(&session_id).is_some()
+    {
+        return Err(auth_error_response(
+            "static browser session cookie cannot be combined with bearer authorization",
+            layer,
+        ));
+    }
 
     // A project cookie and bearer token are two independent authorities. Do
     // not let header precedence silently combine them. Legacy Google sessions
@@ -641,7 +669,69 @@ async fn authenticate(
         return Err(auth_error_response("invalid bearer token", layer));
     }
 
-    // 3. Browser session cookie path.
+    // 3. Static-bearer-derived browser session. The long-lived bearer is used
+    // only for the exchange; this path carries a short-lived HttpOnly cookie
+    // and requires the per-session CSRF token for mutations.
+    if layer.allow_session_cookie
+        && let Some(session_state) = layer.static_browser_session_state.as_ref()
+        && let Some(session_id) =
+            session::read_cookie(request.headers(), session_state.cookie_name())
+        && let Some(session) = session_state.find(&session_id)
+    {
+        match crate::static_session::has_other_browser_session(
+            request.headers(),
+            layer.project_session_state.as_deref(),
+            layer.auth_state.as_deref(),
+        )
+        .await
+        {
+            Ok(true) => {
+                return Err(auth_error_response(
+                    "static browser session cannot be combined with another browser session",
+                    layer,
+                ));
+            }
+            Err(_) => return Err(project_session_unavailable_response(layer)),
+            Ok(false) => {}
+        }
+        let static_token_blocked = layer.auth_state.as_ref().is_some_and(|state| {
+            state.config.disable_static_token_with_oauth
+                && matches!(state.config.mode, crate::config::AuthMode::OAuth)
+        });
+        if static_token_blocked || layer.static_token.is_none() {
+            session_state.revoke(&session_id);
+            return Err(auth_error_response(
+                "static browser session is disabled",
+                layer,
+            ));
+        }
+        if !session_csrf_valid(&request, &session) {
+            return Err(csrf_error_response("missing or invalid csrf token"));
+        }
+        let sub = "static-bearer".to_string();
+        let identity = VerifiedIdentity::local_credential(
+            Authenticator::StaticBearer,
+            "static-bearer:primary",
+        )
+        .expect("the configured static bearer slot has a stable non-empty identity");
+        let auth = AuthContext {
+            actor_key: derive_actor_key(layer.actor_key_deriver.as_deref(), &sub),
+            sub,
+            scopes: layer.static_token_scopes.clone(),
+            issuer: "local".to_string(),
+            via_session: true,
+            csrf_token: Some(session.csrf_token.clone()),
+            email: None,
+        };
+        if let Some(response) = insufficient_scope_response(layer, &auth.scopes) {
+            return Err(response);
+        }
+        request.extensions_mut().insert(identity);
+        request.extensions_mut().insert(auth);
+        return Ok(request);
+    }
+
+    // 4. Provider/project browser session cookie path.
     if layer.allow_session_cookie
         && let Some(session_state) = layer.project_session_state.as_ref()
         && let Some(session_id) =
@@ -665,7 +755,7 @@ async fn authenticate(
             .store
             .find_authorized_bound_browser_session(
                 &session_id,
-                &auth_state.config.admin_email,
+                &auth_state.config.admin_emails,
                 if matches!(
                     auth_state.inbound_provider.kind(),
                     crate::config::InboundProviderKind::Authelia
@@ -720,7 +810,7 @@ async fn authenticate(
                 // admitted, but an allowlist entry is not an administrative
                 // grant: products elevate them only from durable authority.
                 let is_configured_admin = is_configured_admin_email(
-                    &auth_state.config.admin_email,
+                    &auth_state.config.admin_emails,
                     session.email.as_deref(),
                 );
                 let browser_scopes = browser_session_scopes(
@@ -1055,11 +1145,11 @@ fn insufficient_scope_response(layer: &AuthLayerInner, granted: &[String]) -> Op
     Some(response)
 }
 
-/// Whether a browser session email is the configured admin (ASCII
-/// case-insensitive). The configured admin is always an authorized browser
+/// Whether a browser session email is one of the configured admins (ASCII
+/// case-insensitive). A configured admin is always an authorized browser
 /// identity.
-pub fn is_configured_admin_email(admin_email: &str, email: Option<&str>) -> bool {
-    email.is_some_and(|email| email.eq_ignore_ascii_case(admin_email))
+pub fn is_configured_admin_email(admin_emails: &[String], email: Option<&str>) -> bool {
+    email.is_some_and(|email| crate::config::is_listed_admin(admin_emails, email))
 }
 
 /// Scopes granted to an OAuth browser-session identity.
@@ -1312,6 +1402,72 @@ mod tests {
             self.calls.fetch_add(1, Ordering::SeqCst);
             let grant = self.grant.clone();
             Box::pin(async move { Ok(grant) })
+        }
+    }
+
+    #[tokio::test]
+    async fn static_browser_sessions_enforce_csrf_and_reject_mixed_authority() {
+        let oauth = Arc::new(test_auth_state().await);
+        let project = crate::types::BrowserSessionRow {
+            session_id: "other-session".into(),
+            subject: project_binding().subject,
+            email: None,
+            csrf_token: "other-csrf".into(),
+            created_at: crate::util::now_unix(),
+            expires_at: crate::util::now_unix() + 3600,
+            project_binding: Some(project_binding()),
+        };
+        oauth.store.upsert_browser_session(project).await.unwrap();
+        let sessions = Arc::new(crate::static_session::StaticBrowserSessionState::new(false));
+        let row = sessions.create().unwrap();
+        let layer = AuthLayer::new()
+            .with_static_token(Some(Arc::from("secret")))
+            .with_static_token_scopes(vec!["lab:admin".into()])
+            .with_allow_session_cookie(true)
+            .with_static_browser_session_state(Some(sessions.clone()))
+            .with_project_session_state(Some(Arc::new(
+                ProjectSessionState::from_store(oauth.store.clone(), "__Host-project-session")
+                    .unwrap(),
+            )));
+        let app = Router::new()
+            .route("/probe", get(|| async { "ok" }).post(|| async { "ok" }))
+            .route_layer(layer);
+        let cookie = format!("{}={}", sessions.cookie_name(), row.session_id);
+        for (method, csrf, mixed, expected) in [
+            (Method::GET, None, false, StatusCode::OK),
+            (Method::POST, None, false, StatusCode::UNPROCESSABLE_ENTITY),
+            (
+                Method::POST,
+                Some(row.csrf_token.as_str()),
+                false,
+                StatusCode::OK,
+            ),
+            (Method::GET, None, true, StatusCode::UNAUTHORIZED),
+            (
+                Method::POST,
+                Some(row.csrf_token.as_str()),
+                true,
+                StatusCode::UNAUTHORIZED,
+            ),
+        ] {
+            let cookies = if mixed {
+                format!("{cookie}; __Host-project-session=other-session")
+            } else {
+                cookie.clone()
+            };
+            let mut request = HttpRequest::builder()
+                .uri("/probe")
+                .method(method)
+                .header(header::COOKIE, cookies);
+            if let Some(csrf) = csrf {
+                request = request.header(session::BROWSER_CSRF_HEADER_NAME, csrf);
+            }
+            let response = app
+                .clone()
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
         }
     }
 

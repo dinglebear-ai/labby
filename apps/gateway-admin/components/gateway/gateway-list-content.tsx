@@ -155,11 +155,14 @@ export interface GatewayListViewProps {
 }
 
 export function GatewayListContent() {
-  const { data: gateways, isLoading, error, catalogWarmError, retryCatalogWarm } = useGateways()
+  const [primaryView, setPrimaryView] = useState<GatewayPrimaryLens | 'tools'>(DEFAULT_GATEWAY_LENS)
+  const { data: gateways, isLoading, error, catalogWarmError, retryCatalogWarm } = useGateways(
+    true,
+    primaryView === 'tools',
+  )
   const { testGateway, reloadGateway, cleanupGateway, removeGateway, removeVirtualServer, createGateway, discoverExternalConfigs, importExternalConfigs, restoreImportTombstone, updateGateway, enableGateway, disableGateway } =
     useGatewayMutations()
 
-  const [primaryView, setPrimaryView] = useState<GatewayPrimaryLens | 'tools'>(DEFAULT_GATEWAY_LENS)
   const batchActions = gatewayBatchActions({ enable: enableGateway, disable: disableGateway, reload: reloadGateway })
   const [lastGatewayFilters, setLastGatewayFilters] = useState<GatewayFilterState>(() =>
     buildDefaultGatewayFilters(DEFAULT_GATEWAY_LENS),
@@ -442,6 +445,8 @@ export function GatewayListContent() {
       const result = await reloadGateway(gateway.id)
       if (result.success) {
         toast.success(`Server reloaded: ${result.new_tool_count} tools discovered`)
+      } else if (result.pending) {
+        toast.info(result.message)
       } else {
         toast.error(result.message)
       }
@@ -455,18 +460,22 @@ export function GatewayListContent() {
     setIsReloadingVisible(true)
     let reloaded = 0
     let failed = 0
+    let pending = 0
     try {
       for (let index = 0; index < gatewaysToReload.length; index += BULK_RELOAD_CONCURRENCY) {
         const chunk = gatewaysToReload.slice(index, index + BULK_RELOAD_CONCURRENCY)
         const results = await Promise.allSettled(chunk.map(async (gateway) => {
           const result = await reloadGateway(gateway.id)
-          if (!result.success) throw new Error(result.message)
+          if (!result.success && !result.pending) throw new Error(result.message)
           return result
         }))
-        reloaded += results.filter((result) => result.status === 'fulfilled').length
+        reloaded += results.filter((result) => result.status === 'fulfilled' && result.value.success).length
+        pending += results.filter((result) => result.status === 'fulfilled' && result.value.pending).length
         failed += results.filter((result) => result.status === 'rejected').length
       }
-      if (failed === 0) {
+      if (pending > 0) {
+        toast.info(`Restarted ${reloaded} servers; ${pending} still restarting; ${failed} failed.`)
+      } else if (failed === 0) {
         toast.success(`Reloaded ${reloaded} visible server${reloaded === 1 ? '' : 's'}.`)
       } else {
         toast.warning(`Reloaded ${reloaded} visible servers; ${failed} failed.`)

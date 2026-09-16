@@ -15,6 +15,7 @@ function installDom() {
   Object.defineProperty(globalThis, 'HTMLElement', { configurable: true, value: window.HTMLElement })
   Object.defineProperty(globalThis, 'HTMLButtonElement', { configurable: true, value: window.HTMLButtonElement })
   Object.defineProperty(globalThis, 'Node', { configurable: true, value: window.Node })
+  Object.defineProperty(globalThis, 'DocumentFragment', { configurable: true, value: window.DocumentFragment })
   Object.defineProperty(globalThis, 'Event', { configurable: true, value: window.Event })
   Object.defineProperty(globalThis, 'MouseEvent', { configurable: true, value: window.MouseEvent })
   Object.defineProperty(globalThis, 'PointerEvent', { configurable: true, value: window.PointerEvent })
@@ -83,6 +84,7 @@ test('AllowedUsersPanel asks for confirmation before removing a user', async () 
     email: 'operator@example.com',
     added_by: 'admin@example.com',
     created_at: '2026-06-01T12:00:00Z',
+    role: 'member',
   }
   const originalList = authAdminApi.listAllowedEmails
   const originalAdd = authAdminApi.addAllowedEmail
@@ -112,6 +114,12 @@ test('AllowedUsersPanel asks for confirmation before removing a user', async () 
 
     const dialog = document.body.querySelector('[data-slot="alert-dialog-content"]')
     assert.ok(dialog)
+    // Removal revokes the Team, Project, and platform-admin access the entry
+    // granted at first sign-in, not only the ability to sign in.
+    assert.match(
+      dialog.textContent ?? '',
+      /operator@example\.com will be signed out, can no longer sign in, and loses the Team, Project, and administrator access this entry granted\./,
+    )
     const confirmButton = [...dialog.querySelectorAll('button')]
       .find((button) => button.textContent?.trim() === 'Remove user')
     assert.ok(confirmButton)

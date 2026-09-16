@@ -227,9 +227,6 @@ impl GatewayManager {
             (false, Some(barrier)) => Some(barrier.write_owned().await),
             (false, None) => None,
         };
-        if !writer_held && let Some(cache) = &self.oauth_client_cache {
-            cache.advance_lifecycle_epoch();
-        }
         let invalidated = match self.current_pool_sync() {
             Some(pool) => {
                 pool.invalidate_oauth_subject_sessions_guarded(upstream, subject, reason)
@@ -237,6 +234,7 @@ impl GatewayManager {
             }
             None => {
                 if let Some(cache) = &self.oauth_client_cache {
+                    cache.advance_subject_epoch(upstream, subject);
                     cache.evict_subject(upstream, subject);
                 }
                 OAuthSessionInvalidation::default()
@@ -275,9 +273,6 @@ impl GatewayManager {
             (false, Some(barrier)) => Some(barrier.write_owned().await),
             (false, None) => None,
         };
-        if !writer_held && let Some(cache) = &self.oauth_client_cache {
-            cache.advance_lifecycle_epoch();
-        }
         let invalidated = match self.current_pool_sync() {
             Some(pool) => {
                 pool.invalidate_oauth_upstream_sessions_guarded(&shared_upstreams, reason)
@@ -286,6 +281,7 @@ impl GatewayManager {
             None => {
                 if let Some(cache) = &self.oauth_client_cache {
                     for name in &shared_upstreams {
+                        cache.advance_upstream_epoch(name);
                         cache.evict_upstream(name);
                     }
                 }
@@ -318,10 +314,13 @@ impl GatewayManager {
     pub async fn google_provider_lifecycle_write_guard(
         &self,
     ) -> Option<tokio::sync::OwnedRwLockWriteGuard<()>> {
+        let shared_upstreams = Self::google_provider_upstream_names(&*self.config.read().await);
         match &self.oauth_client_cache {
             Some(cache) => {
                 let guard = cache.invalidation_barrier().write_owned().await;
-                cache.advance_lifecycle_epoch();
+                for upstream in shared_upstreams {
+                    cache.advance_upstream_epoch(&upstream);
+                }
                 Some(guard)
             }
             None => None,
@@ -351,6 +350,7 @@ impl GatewayManager {
             }
         } else if let Some(cache) = &self.oauth_client_cache {
             for upstream in &shared_upstreams {
+                cache.advance_subject_epoch(upstream, subject);
                 cache.evict_subject(upstream, subject);
             }
         }
@@ -767,10 +767,13 @@ impl GatewayManager {
     ) -> Result<labby_auth::types::GoogleProviderInvalidation, ToolError> {
         let started = std::time::Instant::now();
         let manager = self.require_oauth_manager(upstream, "google_revoke")?;
+        let shared_upstreams = Self::google_provider_upstream_names(&*self.config.read().await);
         let lifecycle_guard = match &self.oauth_client_cache {
             Some(cache) => {
                 let guard = cache.invalidation_barrier().write_owned().await;
-                cache.advance_lifecycle_epoch();
+                for name in &shared_upstreams {
+                    cache.advance_upstream_epoch(name);
+                }
                 Some(guard)
             }
             None => None,
@@ -822,7 +825,7 @@ impl GatewayManager {
         let lifecycle_guard = match &self.oauth_client_cache {
             Some(cache) => {
                 let guard = cache.invalidation_barrier().write_owned().await;
-                cache.advance_lifecycle_epoch();
+                cache.advance_subject_epoch(upstream, subject);
                 Some(guard)
             }
             None => None,

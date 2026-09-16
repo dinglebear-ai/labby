@@ -1,7 +1,7 @@
 ---
 title: "Access Service"
 created: "2026-08-23"
-updated: "2026-09-13"
+updated: "2026-09-16"
 ---
 
 # Access Service
@@ -21,9 +21,9 @@ the operator guide for it:
 Admission and authority are separate. `LABBY_AUTH_ADMIN_EMAIL`, the allowlist,
 and the domain settings decide who may sign in. Durable Team, Project, and
 platform-administration records decide what a signed-in identity may do. Only
-the browser session of `LABBY_AUTH_ADMIN_EMAIL` receives `lab:admin` from
-configuration; everyone else gets administrative reach only through
-`access.platform_admin.grant`. See
+browser sessions whose email is listed in `LABBY_AUTH_ADMIN_EMAIL` (one address
+or a comma-separated list) receive `lab:admin` from configuration; everyone
+else gets administrative reach only through `access.platform_admin.grant`. See
 [Browser session scopes](../runtime/OAUTH.md#browser-session-scopes-and-domain-admission).
 
 ## Access actions
@@ -82,53 +82,64 @@ Access actions use the canonical agent error envelope
 
 ## Onboard a teammate ("No access yet")
 
-A teammate who signs in without durable authority sees "No access yet".
-`GET /auth/session` then reports `authority_state: "unprovisioned"` and the
-remediation "Ask an administrator to add this identity to a team." Signing out
-and in again does not change this. The steps below are what the administrator
-does.
+1. **Add the email.** In **Settings → Authentication → Allowed users**, enter
+   the teammate's email and choose a role: **Member** (Initial Team member,
+   default Project member) or **Admin** (Initial Team admin, default Project
+   admin, and platform administrator). API: `POST /v1/auth/allowed-emails`
+   with `{"email": "...", "role": "member" | "admin"}`; `role` defaults to
+   `member`. The role vocabulary is `labby_auth::AllowedUserRole`, enforced
+   by the auth store and by a schema `CHECK` on `allowed_users.role`; other
+   values are refused with `validation_failed`. Emails are trimmed and
+   Unicode-lowercased with one shared fold (`labby_auth::util::normalize_email`)
+   on every store and lookup path. Only a configured admin's browser session
+   (one whose email is in `LABBY_AUTH_ADMIN_EMAIL`; `/auth/session` reports
+   this as `is_configured_admin`) may read or change the allowlist. Platform
+   administration alone (`is_admin`) is refused with `forbidden`, and the web
+   UI offers the Authentication panel only to configured admins.
+2. **The teammate signs in.** On their first `GET /auth/session` the server
+   matches the provider-verified email (never the session's display email)
+   against the allowlist and creates the Principal, Team membership, Project
+   membership, and any platform-admin grant in one transaction
+   (`crates/labby/src/access/team_provision.rs`, `provision_allowlisted`),
+   audited as `access.allowlist.provision`. The allowlist is re-checked
+   under the access writer immediately before provisioning, so an entry
+   removed after the session's first lookup admits nothing. A writer held by
+   another commit is waited for up to two seconds; only exhausting that
+   deadline is logged as a warning. The session projects `ready`
+   immediately. Emails listed in `LABBY_AUTH_ADMIN_EMAIL` are admitted as
+   `admin` the same way. An identity that already has a Principal — for
+   example one admitted earlier by the Viewer domain policy or by MCP
+   auto-provision — is never upgraded by the allowlist; change its access
+   with `access.team.member.role.set`, `access.team.member.add`, or
+   `access.platform_admin.grant`. A `revoked` Initial Team membership also
+   blocks allowlist re-admission.
+3. **Later changes** use the `access` service: `access.team.member.role.set`,
+   `access.platform_admin.grant` / `.revoke`, `access.team.member.remove`.
+4. **Removing the entry** (`DELETE /v1/auth/allowed-emails/:email`) revokes
+   sign-in and the durable access the entry granted, in that order of
+   evidence: for every provider-verified identity of the email it sets the
+   Initial Team membership to `revoked`, the default-Project membership to
+   `disabled`, and any platform administrator grant to `revoked`, in one
+   access-store transaction audited as `access.allowlist.revoke`; then it
+   removes the allowlist row and revokes the identity's browser sessions and
+   renewable credentials. The access writer is held until the row is gone so
+   a first sign-in racing the removal cannot re-provision. The Principal row
+   is kept for audit history, and Team `owner` authority is never touched.
+   Re-adding the email later does **not** re-provision the identity, because
+   its revoked Initial Team membership blocks allowlist admission; restore
+   access explicitly with `access.team.member.add` (or `.role.set`) and
+   `access.platform_admin.grant`. If the access store is unavailable the
+   removal fails with `service_unavailable` and the entry stays, so a retry
+   revokes everything together.
 
-1. **Admit the identity.** As the configured admin, add the email to the
-   allowlist: the settings UI, or `POST /v1/auth/allowed-emails` with
-   `{"email": "teammate@example.com"}`. The allowlist routes accept only the
-   browser session of `LABBY_AUTH_ADMIN_EMAIL`. Do not rely on
-   `LABBY_AUTH_ALLOWED_EMAIL_DOMAINS` for Google browser access; see the
-   [open issue](../runtime/OAUTH.md#domain-allowlist-behavior-by-provider-and-surface).
-2. **The teammate signs in.** Browser sign-in alone admits the identity but
-   does not create a Principal, so the session is `unprovisioned`.
-3. **Get the teammate a Principal.** Today a Principal is created only by:
-   - owner bootstrap (the first owner only);
-   - MCP team auto-provision: the teammate's first OAuth-delegated request to a
-     project-bound protected MCP route whose upstreams include `team-depot`.
-     It creates the Principal and a Project membership with role `member`;
-   - the [automatic Viewer policy](#automatic-viewer-membership) (Google only):
-     the first `/v1` request after a qualifying sign-in creates the Principal
-     with a Viewer membership on the host-selected Project. The web UI's
-     "No access yet" screen makes that request itself (a read-only
-     `GET /v1/catalog`) and reloads the session, so a qualifying teammate
-     only needs to sign in.
-
-   There is no action that creates a Principal for a browser-only teammate.
-   This is a known product gap.
-4. **Learn the `principal_id`.** No action lists Principals. Once the teammate
-   has a Principal, their own `GET /auth/session` shows `authority_state:
-   "ready"` and `authority.principal_id`. They send you that value.
-5. **Add them to a Team** (needs `membership.manage` on that Team, for example
-   as its `owner` or `admin`, or platform administration). Either:
-   - add directly: `access.team.member.add` with `team_id`, `principal_id`, and
-     `role`; or
-   - invite: `access.team_invitation.create` with `team_id`, `principal_id`,
-     `role` (not `owner`), `token` (an opaque secret you generate), and
-     `ttl_seconds`. Give the token to the teammate over a private channel. The
-     teammate calls `access.team_invitation.accept` with `{"token": ...}` from
-     their own session. Accept succeeds only for the invited Principal, before
-     expiry, and only if the Team's membership epoch has not changed since the
-     invitation was created (otherwise create a new invitation).
-6. **Give the Team a Project**, if it does not have one:
-   `access.team_project.assign` with `team_id`, `project_id`, and `role`.
-7. **Optional: platform administration.** `access.platform_admin.grant` with
-   `principal_id` (requires `lab:admin` and `platform.manage`). The teammate's
-   browser session is then elevated to `lab:admin` on `/v1` routes.
+"No access yet" appears for an identity that signed in but is on neither the
+allowlist nor the admin list, for example one admitted by
+`LABBY_AUTH_ALLOWED_EMAIL_DOMAINS` alone; add the email with a role to admit
+it. For such a domain-only identity the web UI's no-access screen makes one
+read-only `GET /v1/catalog` so the [automatic Viewer policy](#automatic-viewer-membership)
+can run, then reloads the session. It also appears whenever admission could
+not complete — before owner bootstrap, or while the access store is
+unavailable — in which case the next session read retries.
 
 ### Using a second account (for example work and personal)
 

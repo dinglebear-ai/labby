@@ -23,7 +23,6 @@ mod integrity;
 mod loadout;
 mod migrations;
 pub(crate) mod offline_migration;
-pub(crate) use agent::{AgentSessionAdmission, AgentSessionRecord};
 #[cfg(test)]
 pub(crate) use dev_container_image::DevContainerLaunchManifest;
 pub(crate) use migrations::MigrationEvidenceSource;
@@ -187,6 +186,7 @@ pub(crate) use gateway_loadout::{
     project_runtime_mcp_catalog_context,
 };
 pub(crate) use health::{AccessHealth, AccessHealthStatus, inspect_health};
+pub(crate) use labby_auth::AllowedUserRole;
 #[allow(unused_imports)]
 pub(crate) use loadout::{AssignProjectLoadoutInput, AssignProjectLoadoutOutcome};
 #[allow(unused_imports)]
@@ -196,7 +196,10 @@ pub(crate) use runtime::{
     AccessBlockedReason, AccessRuntime, AccessRuntimeError, AccessRuntimeStatus, AccessSetupReason,
     OwnerBootstrapOffer,
 };
-pub(crate) use runtime::{CredentialLifecycleError, TeamMemberProvisionError};
+pub(crate) use runtime::{
+    AllowlistProvisionError, AllowlistRevocation, CredentialLifecycleError,
+    TeamMemberProvisionError,
+};
 #[allow(unused_imports)]
 pub(crate) use runtime::{FileStashOwnerAuthorization, FileStashPrincipalResolutionError};
 #[allow(unused_imports)]
@@ -208,7 +211,9 @@ pub(crate) use team::{
     TeamInvitationSnapshot, TeamMembershipInput, TeamMembershipSnapshot,
     TeamProjectAssignmentSnapshot, TeamSnapshot,
 };
-pub(crate) use team_provision::TeamMemberProvisionOutcome;
+pub(crate) use team_provision::{
+    AllowlistAdmission, AllowlistRevocationOutcome, TeamMemberProvisionOutcome,
+};
 #[allow(unused_imports)]
 pub(crate) use workflow::{
     OwnerBootstrapCaller, OwnerBootstrapError, bootstrap_owner, owner_bootstrap_admission,

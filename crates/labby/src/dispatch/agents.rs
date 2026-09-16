@@ -1,14 +1,16 @@
 //! Authenticated, owner-scoped Agent surface shared by HTTP and MCP.
 
-pub(crate) mod executor;
-
 use crate::{
     access::{
-        AccessStoreError, ActionAuthoritySpec, AgentSessionAdmission, AuthorityCeiling,
-        AuthorityRequest, authorize_action, refresh_agent_authority_epochs,
-        refresh_authority_epochs,
+        AccessStoreError, ActionAuthoritySpec, AuthorityCeiling, AuthorityRequest,
+        authorize_action, refresh_agent_authority_epochs, refresh_authority_epochs,
     },
-    dispatch::{access_errors::map_store_error, error::ToolError},
+    dispatch::{
+        access_errors::map_store_error,
+        agent_llm::{LlmAgentExecutor, current_harness_digest},
+        agent_payloads::{AgentPayloadStore, DEFAULT_MODEL, inline_output},
+        error::ToolError,
+    },
 };
 use labby_auth::VerifiedIdentity;
 use labby_primitives::{
@@ -20,29 +22,35 @@ use labby_primitives::{
     agent::{
         AgentDefinition, AgentRevision, AgentSessionBinding, AgentState, RunningRevocationPolicy,
     },
+    digest::Sha256Digest,
 };
 use labby_runtime::{
     agent_runtime::{
-        AgentAuthority, AgentExecutionRequest, AgentResourceBounds, AgentRuntimeError,
-        AgentTranscript, Cancellation, bound_resources_to_authority_lease, execute_agent,
-        system_now_millis,
+        AGENT_MAX_RUNTIME_MILLIS, AgentAuthority, AgentExecutionOutput, AgentExecutionRequest,
+        AgentExecutor, AgentResourceBounds, AgentRuntimeError, Cancellation, ExecutionGuard,
+        execute_agent,
     },
-    authority::{AuthorityEpochVector, AuthoritySafeBoundary, MAX_AUTHORITY_LEASE_MILLIS},
+    authority::{AuthorityEpochVector, AuthoritySafeBoundary},
+    task_runtime::TaskScheduler,
 };
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
+    future::{Future, ready},
     sync::{LazyLock, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
-#[derive(Clone)]
-struct ActiveAgentSession {
-    cancellation: Cancellation,
-    transcript: AgentTranscript,
-}
-
-static ACTIVE_AGENT_SESSIONS: LazyLock<Mutex<HashMap<String, ActiveAgentSession>>> =
+/// Concurrent direct runs admitted per owner scope, mirroring the Task quota.
+/// A saturated owner is rejected with `queue_saturated` instead of opening an
+/// unbounded number of provider sessions.
+const AGENT_RUN_PER_OWNER_LIMIT: usize = 4;
+static AGENT_RUN_SCHEDULER: LazyLock<TaskScheduler> = LazyLock::new(|| {
+    TaskScheduler::new(AGENT_RUN_PER_OWNER_LIMIT).expect("valid fixed Agent run quota")
+});
+/// Live in-process runs by session id, so `agents.session.cancel` can signal
+/// the executor at its next safe boundary.
+static AGENT_SESSION_CANCELLATIONS: LazyLock<Mutex<HashMap<String, Cancellation>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 const fn param(name: &'static str) -> ParamSpec {
@@ -75,6 +83,22 @@ const fn action(
         returns: "object",
     }
 }
+/// An action that causes permanent, unrecoverable loss under the shared
+/// destructive policy; surfaces derive confirmation from this flag alone.
+const fn destructive_action(
+    name: &'static str,
+    description: &'static str,
+    params: &'static [ParamSpec],
+) -> ActionSpec {
+    ActionSpec {
+        name,
+        description,
+        destructive: true,
+        requires_admin: false,
+        params,
+        returns: "object",
+    }
+}
 pub const ACTIONS: &[ActionSpec] = &[
     action(
         "agents.create",
@@ -83,12 +107,14 @@ pub const ACTIONS: &[ActionSpec] = &[
             param("agent_id"),
             param("owner_kind"),
             param("owner_id"),
-            param("content_digest"),
-            param("repository_digest"),
-            param("image_digest"),
-            param("harness_digest"),
-            param("loadout_digest"),
-            param("catalog_generation"),
+            param("instructions"),
+            optional_param("model"),
+            optional_param("content_digest"),
+            optional_param("repository_digest"),
+            optional_param("image_digest"),
+            optional_param("harness_digest"),
+            optional_param("loadout_digest"),
+            optional_param("catalog_generation"),
         ],
     ),
     action(
@@ -104,28 +130,30 @@ pub const ACTIONS: &[ActionSpec] = &[
     action(
         "agents.update",
         "Create the next immutable Agent revision",
-        &[param("agent_id")],
+        &[
+            param("agent_id"),
+            optional_param("content_digest"),
+            optional_param("repository_digest"),
+            optional_param("image_digest"),
+            optional_param("harness_digest"),
+            optional_param("loadout_digest"),
+            optional_param("catalog_generation"),
+            optional_param("instructions"),
+            optional_param("model"),
+        ],
     ),
     action("agents.suspend", "Suspend an Agent", &[param("agent_id")]),
-    action("agents.delete", "Delete an Agent", &[param("agent_id")]),
+    // Deleted definitions are filtered out of every read and have no restore
+    // action, so deletion is permanent loss, not a reversible state change.
+    destructive_action(
+        "agents.delete",
+        "Permanently delete an Agent definition",
+        &[param("agent_id")],
+    ),
     action(
         "agents.run",
         "Start a pinned Agent session",
-        &[param("agent_id"), param("input"), param("idempotency_key")],
-    ),
-    action(
-        "agents.harnesses",
-        "List explicitly configured Agent harnesses and their pinning digests",
-        &[],
-    ),
-    action(
-        "agents.sessions.list",
-        "List retained sessions for a caller-visible Agent",
-        &[
-            param("agent_id"),
-            optional_param("cursor"),
-            optional_param("limit"),
-        ],
+        &[param("agent_id"), optional_param("input")],
     ),
     action(
         "agents.session.status",
@@ -133,28 +161,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         &[param("agent_id"), param("session_id")],
     ),
     action(
-        "agents.session.get",
-        "Read retained Agent session metadata",
+        "agents.session.cancel",
+        "Request cancellation of a running Agent session",
         &[param("agent_id"), param("session_id")],
-    ),
-    action(
-        "agents.session.transcript",
-        "Read the bounded retained transcript for an Agent session",
-        &[param("agent_id"), param("session_id")],
-    ),
-    action(
-        "agents.session.stop",
-        "Cancel a running Agent session and retain partial evidence",
-        &[param("agent_id"), param("session_id")],
-    ),
-    action(
-        "agents.session.resume",
-        "Start a reauthorized session from retained input",
-        &[
-            param("agent_id"),
-            param("session_id"),
-            param("idempotency_key"),
-        ],
     ),
 ];
 
@@ -164,14 +173,8 @@ pub const ACTIONS: &[ActionSpec] = &[
 pub(crate) fn required_capability(action: &str) -> Option<Capability> {
     Some(match action {
         "agents.create" => Capability::ScopeCreate,
-        "agents.list"
-        | "agents.get"
-        | "agents.harnesses"
-        | "agents.sessions.list"
-        | "agents.session.status"
-        | "agents.session.get"
-        | "agents.session.transcript" => Capability::ScopeRead,
-        "agents.run" | "agents.session.stop" | "agents.session.resume" => Capability::ScopeOperate,
+        "agents.list" | "agents.get" | "agents.session.status" => Capability::ScopeRead,
+        "agents.run" | "agents.session.cancel" => Capability::ScopeOperate,
         "agents.update" | "agents.suspend" => Capability::ScopeManage,
         "agents.delete" => Capability::ScopeDelete,
         _ => return None,
@@ -203,6 +206,35 @@ pub(crate) async fn dispatch(
     match name {
         "agents.create" => {
             reject_server_assigned(&params)?;
+            let requested_owner = owner(&params)?;
+            let requested_id = required(&params, "agent_id")?;
+            // Authorize before any content-addressed payload write. The final
+            // transactional put re-authorizes at commit, but this preflight
+            // prevents denied callers and duplicate identifiers from leaving
+            // orphaned immutable payloads behind.
+            authorize(
+                &context,
+                name,
+                &requested_owner,
+                &requested_id,
+                Capability::ScopeCreate,
+                now,
+            )
+            .await?;
+            // An identifier that is already taken must look exactly like an
+            // authorization failure so `agents.create` cannot be used as an
+            // existence oracle across owners.
+            if context
+                .store
+                .get_agent_definition(requested_id.clone())
+                .await
+                .map_err(map)?
+                .is_some()
+            {
+                return Err(denied());
+            }
+            required(&params, "instructions")?;
+            let params = materialize_llm_payload(&context.store, params, None)?;
             let definition = definition(&params, None)?;
             let request = authority_request(
                 &context,
@@ -212,18 +244,6 @@ pub(crate) async fn dispatch(
                 Capability::ScopeCreate,
                 now,
             )?;
-            // An identifier that is already taken must look exactly like an
-            // authorization failure so `agents.create` cannot be used as an
-            // existence oracle across owners.
-            if context
-                .store
-                .get_agent_definition(definition.id.clone())
-                .await
-                .map_err(map)?
-                .is_some()
-            {
-                return Err(denied());
-            }
             context
                 .store
                 .authorize_and_put_agent_definition(
@@ -278,6 +298,18 @@ pub(crate) async fn dispatch(
         "agents.update" => {
             reject_server_assigned(&params)?;
             let prior = load(&context, &params).await?;
+            // As with create, keep CAS writes behind a current authority
+            // decision. The store still re-authorizes atomically at commit.
+            authorize(
+                &context,
+                name,
+                &prior.owner,
+                &prior.id,
+                Capability::ScopeManage,
+                now,
+            )
+            .await?;
+            let params = materialize_llm_payload(&context.store, params, Some(&prior))?;
             let definition = definition(&params, Some(&prior))?;
             let request = authority_request(
                 &context,
@@ -334,152 +366,276 @@ pub(crate) async fn dispatch(
         }
         "agents.run" => {
             let definition = load(&context, &params).await?;
-            start_session(
-                context,
-                definition,
-                required(&params, "input")?,
-                None,
-                idempotency_key(&params)?,
+            // Authorize before any recovery write, provider construction, or
+            // caller-input validation so unauthorized callers cannot trigger
+            // durable side effects or distinguish active definitions by error.
+            let lease = authorize(
+                &context,
                 name,
+                &definition.owner,
+                &definition.id,
+                Capability::ScopeOperate,
                 now,
             )
-            .await
-        }
-        "agents.harnesses" => Ok(json!({"harnesses":executor::configured_harnesses()})),
-        "agents.sessions.list" => {
-            recover_sessions(&context, now).await?;
-            let definition =
-                authorized_definition(&context, &params, name, Capability::ScopeRead, now).await?;
-            let cursor = params
-                .get("cursor")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let sessions = context
+            .await?;
+            context
                 .store
-                .list_agent_sessions(definition.id, cursor.to_owned(), page_limit(&params)?)
+                .recover_expired_agent_sessions(i64::try_from(now).map_err(|_| internal())?)
                 .await
                 .map_err(map)?;
-            let next_cursor = sessions.last().map(|session| session.session_id.clone());
-            Ok(json!({
-                "sessions": sessions.iter().map(render_session).collect::<Vec<_>>(),
-                "next_cursor": next_cursor,
-            }))
-        }
-        "agents.session.status" | "agents.session.get" | "agents.session.transcript" => {
-            recover_sessions(&context, now).await?;
-            let definition =
-                authorized_definition(&context, &params, name, Capability::ScopeRead, now).await?;
-            let session_id = required(&params, "session_id")?;
-            let session = context
-                .store
-                .get_agent_session(definition.id, session_id.clone())
-                .await
-                .map_err(map)?
-                .ok_or_else(denied)?;
-            if name == "agents.session.transcript" {
-                let live = active_session(&session_id).map(|active| active.transcript.snapshot());
-                let transcript = live
-                    .as_ref()
-                    .map(|snapshot| snapshot.text.clone())
-                    .or(session.transcript.clone());
-                let truncated = live.as_ref().map_or_else(
-                    || {
-                        transcript
-                            .as_ref()
-                            .is_some_and(|value| value.len() >= 1024 * 1024)
-                    },
-                    |snapshot| snapshot.truncated,
-                );
-                Ok(json!({
-                    "agent_id": session.agent_id,
-                    "session_id": session.session_id,
-                    "status": session.status,
-                    "input": session.input_text,
-                    "transcript": transcript,
-                    "truncated": truncated,
-                }))
-            } else {
-                Ok(render_session(&session))
+            if definition.state != AgentState::Active {
+                return Err(denied());
             }
-        }
-        "agents.session.stop" => {
-            let definition =
-                authorized_definition(&context, &params, name, Capability::ScopeOperate, now)
-                    .await?;
-            let session_id = required(&params, "session_id")?;
-            let session = context
-                .store
-                .get_agent_session(definition.id, session_id.clone())
-                .await
-                .map_err(map)?
-                .ok_or_else(denied)?;
-            if !matches!(session.status.as_str(), "admitted" | "running") {
-                return Ok(render_session(&session));
-            }
-            if let Some(active) = active_session(&session_id) {
-                active.cancellation.cancel();
-                Ok(json!({
-                    "agent_id": session.agent_id,
-                    "session_id": session.session_id,
-                    "status": "cancelling",
-                }))
-            } else {
-                context
-                    .store
-                    .settle_agent_session(
-                        session.agent_id.clone(),
-                        session.session_id.clone(),
-                        session.status,
-                        "interrupted".into(),
-                        None,
-                        session.transcript,
-                        Some("runtime_restarted".into()),
-                        i64::try_from(now).map_err(|_| internal())?,
-                    )
-                    .await
-                    .map_err(map)?;
-                Ok(json!({
-                    "agent_id": session.agent_id,
-                    "session_id": session.session_id,
-                    "status": "interrupted",
-                }))
-            }
-        }
-        "agents.session.resume" => {
-            recover_sessions(&context, now).await?;
-            let definition =
-                authorized_definition(&context, &params, name, Capability::ScopeOperate, now)
-                    .await?;
-            let session_id = required(&params, "session_id")?;
-            let prior = context
-                .store
-                .get_agent_session(definition.id.clone(), session_id.clone())
-                .await
-                .map_err(map)?
-                .ok_or_else(denied)?;
-            if !matches!(
-                prior.status.as_str(),
-                "completed" | "failed" | "cancelled" | "revoked" | "interrupted"
-            ) || prior.agent_version != definition.revision.version
-            {
-                return Err(ToolError::Conflict {
-                    message: "Agent session is not resumable with the current pinned revision"
-                        .into(),
-                    existing_id: session_id,
-                });
-            }
-            start_session(
-                context,
-                definition,
-                prior.input_text,
-                Some(prior.session_id),
-                idempotency_key(&params)?,
-                name,
-                now,
+            let executor = configured_executor(&context.store, optional_text(&params, "input")?)?;
+            let epochs = refresh_authority_epochs(
+                &context.store,
+                context.identity.clone(),
+                definition.owner.clone(),
+                Capability::ScopeOperate,
             )
             .await
+            .map_err(map)?;
+            lease
+                .validate_at(AuthoritySafeBoundary::BeforeCommit, now, &epochs)
+                .map_err(|_| denied())?;
+            // Admit against the owner's run quota only after every
+            // caller-fixable validation, so a malformed request never depends
+            // on load; the permit lives as long as the spawned run.
+            let permit = AGENT_RUN_SCHEDULER
+                .try_admit(&definition.owner)
+                .map_err(|_| queue_saturated())?;
+            let session_id = format!("{}-{}", definition.id, uuid::Uuid::new_v4());
+            let lease_expires_at = lease.expires_at_millis();
+            let authority_fingerprint = epochs.fingerprint().as_str().to_owned();
+            let run_context = context.clone();
+            let run_definition = definition.clone();
+            let run_session_id = session_id.clone();
+            let run_executor = executor;
+            let owned = tokio::spawn(async move {
+                let _permit = permit;
+                let cancellation = Cancellation::new();
+                register_agent_session_cancellation(run_session_id.clone(), cancellation.clone());
+                let result = run_agent_session(
+                    &run_context,
+                    &run_definition,
+                    &run_session_id,
+                    &run_executor,
+                    lease,
+                    authority_fingerprint,
+                    lease_expires_at,
+                    cancellation,
+                    now,
+                )
+                .await;
+                unregister_agent_session_cancellation(&run_session_id);
+                result
+            });
+            owned.await.map_err(|_| internal())?
+        }
+        "agents.session.status" => {
+            context
+                .store
+                .recover_expired_agent_sessions(i64::try_from(now).map_err(|_| internal())?)
+                .await
+                .map_err(map)?;
+            let definition = load(&context, &params).await?;
+            authorize(
+                &context,
+                name,
+                &definition.owner,
+                &definition.id,
+                Capability::ScopeRead,
+                now,
+            )
+            .await?;
+            let session_id = required(&params, "session_id")?;
+            let status = context
+                .store
+                .get_agent_session_status(definition.id.clone(), session_id.clone())
+                .await
+                .map_err(map)?
+                .ok_or_else(denied)?;
+            Ok(json!({"agent_id":definition.id,"session_id":session_id,"status":status}))
+        }
+        "agents.session.cancel" => {
+            context
+                .store
+                .recover_expired_agent_sessions(i64::try_from(now).map_err(|_| internal())?)
+                .await
+                .map_err(map)?;
+            let definition = load(&context, &params).await?;
+            authorize(
+                &context,
+                name,
+                &definition.owner,
+                &definition.id,
+                Capability::ScopeOperate,
+                now,
+            )
+            .await?;
+            let session_id = required(&params, "session_id")?;
+            let status = context
+                .store
+                .get_agent_session_status(definition.id.clone(), session_id.clone())
+                .await
+                .map_err(map)?
+                .ok_or_else(denied)?;
+            // The executor observes the signal at its next safe boundary and
+            // settles the durable status itself; a session without a live
+            // in-process owner keeps its durable status and gets no signal.
+            let cancel_requested = signal_agent_session_cancellation(&session_id);
+            let status = if cancel_requested {
+                "cancelling".to_owned()
+            } else {
+                status
+            };
+            Ok(json!({
+                "agent_id": definition.id,
+                "session_id": session_id,
+                "status": status,
+                "cancel_requested": cancel_requested,
+            }))
         }
         _ => Err(unknown(name)),
+    }
+}
+
+/// Own one admitted direct run end to end: durable session row, fenced
+/// execution, and terminal status.
+#[allow(clippy::too_many_arguments)]
+async fn run_agent_session(
+    run_context: &AgentDispatchContext,
+    run_definition: &AgentDefinition,
+    run_session_id: &str,
+    run_executor: &ConfiguredExecutor,
+    lease: labby_runtime::authority::AuthorityLease,
+    authority_fingerprint: String,
+    lease_expires_at: u64,
+    cancellation: Cancellation,
+    now: u64,
+) -> Result<Value, ToolError> {
+    let run_session_id = run_session_id.to_owned();
+    run_context
+        .store
+        .create_agent_session(
+            run_session_id.clone(),
+            run_definition.clone(),
+            run_context.identity.safe_fingerprint(),
+            authority_fingerprint,
+            i64::try_from(lease_expires_at).map_err(|_| internal())?,
+            i64::try_from(now).map_err(|_| internal())?,
+        )
+        .await
+        .map_err(map)?;
+    run_context
+        .store
+        .set_agent_session_status(
+            run_definition.id.clone(),
+            run_session_id.clone(),
+            "admitted".into(),
+            "running".into(),
+        )
+        .await
+        .map_err(map)?;
+    let request = AgentExecutionRequest {
+        definition: run_definition.clone(),
+        session: AgentSessionBinding {
+            session_id: run_session_id.clone(),
+            agent_id: run_definition.id.clone(),
+            agent_version: run_definition.revision.version,
+            principal: PrincipalId::new(lease.binding().principal_id())
+                .map_err(|_| invalid("principal"))?,
+            owner: run_definition.owner.clone(),
+            catalog_generation: run_definition.revision.catalog_generation.clone(),
+            authority_fingerprint: lease.epoch_fingerprint().as_str().into(),
+            lease_expires_at: i64::try_from(lease_expires_at).map_err(|_| internal())?,
+        },
+        lease,
+        bounds: AgentResourceBounds {
+            max_runtime_millis: AGENT_MAX_RUNTIME_MILLIS,
+            max_output_bytes: 16 * 1024 * 1024,
+            max_external_effects: 1_000,
+        },
+    };
+    let result = execute_agent(
+        &LiveExecutionAuthority {
+            store: run_context.store.clone(),
+            identity: run_context.identity.clone(),
+            owner: run_definition.owner.clone(),
+            definition: run_definition.clone(),
+        },
+        run_executor,
+        request,
+        cancellation,
+        now,
+    )
+    .await;
+    let next = match result {
+        Ok(_) => "completed",
+        Err(AgentRuntimeError::Revoked | AgentRuntimeError::Lease(_)) => "revoked",
+        Err(AgentRuntimeError::Cancelled) => "cancelled",
+        Err(_) => "failed",
+    };
+    run_context
+        .store
+        .set_agent_session_status(
+            run_definition.id.clone(),
+            run_session_id.clone(),
+            "running".into(),
+            next.into(),
+        )
+        .await
+        .map_err(map)?;
+    match result {
+        Ok(output) => {
+            let (text, truncated) = inline_output(run_executor.output(&output.digest)?);
+            Ok(json!({
+                "agent_id":run_definition.id,
+                "agent_version":run_definition.revision.version,
+                "session_id":run_session_id,
+                "status":next,
+                "output_digest":output.digest,
+                "output":text,
+                "output_truncated":truncated,
+                "authority_expires_at":lease_expires_at
+            }))
+        }
+        Err(error) => Err(map_agent_runtime_error(&error)),
+    }
+}
+
+fn register_agent_session_cancellation(session_id: String, cancellation: Cancellation) {
+    AGENT_SESSION_CANCELLATIONS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(session_id, cancellation);
+}
+
+/// Signal the live run for `session_id`, if this process owns one.
+fn signal_agent_session_cancellation(session_id: &str) -> bool {
+    AGENT_SESSION_CANCELLATIONS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(session_id)
+        .is_some_and(|cancellation| {
+            cancellation.cancel();
+            true
+        })
+}
+
+fn unregister_agent_session_cancellation(session_id: &str) {
+    AGENT_SESSION_CANCELLATIONS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(session_id);
+}
+
+fn queue_saturated() -> ToolError {
+    ToolError::Sdk {
+        sdk_kind: "queue_saturated".into(),
+        message: format!(
+            "this owner already has {AGENT_RUN_PER_OWNER_LIMIT} live Agent runs; retry after one completes"
+        ),
     }
 }
 
@@ -520,339 +676,170 @@ impl AgentAuthority for LiveExecutionAuthority {
         })
     }
 }
-async fn start_session(
-    context: AgentDispatchContext,
-    definition: AgentDefinition,
+/// Deterministic executor retained only for the live end-to-end test harness.
+/// Product execution selects the shared OpenAI-compatible LLM executor instead.
+///
+/// The deterministic branch is a **test-only hook**: it is compiled in only
+/// under the `proxy-testkit` cargo feature (test support, never a product
+/// slice) and additionally requires `LABBY_E2E_DETERMINISTIC_EXECUTORS` at run
+/// time so live end-to-end matrices can drive the lifecycle. Product builds
+/// compile the branch out entirely; setting the variable there has no effect.
+///
+/// It stands in for a provider, so it honors the executor contract the same
+/// way: the digest it returns keys bytes materialized in the output CAS that
+/// `tasks.result` and `agents.run` re-read by digest. A synthetic digest with
+/// no stored bytes settled Tasks `succeeded` with an `output_digest` that
+/// `tasks.result` could only report as `unavailable`.
+pub(crate) struct DisabledExecutor {
+    payloads: AgentPayloadStore,
+}
+
+/// Fixed text every deterministic run materializes.
+const DETERMINISTIC_OUTPUT: &str = "deterministic executor output";
+
+impl DisabledExecutor {
+    fn for_access_store(store: &crate::access::AccessStore) -> Self {
+        Self {
+            payloads: AgentPayloadStore::for_access_store(store),
+        }
+    }
+}
+
+impl AgentExecutor for DisabledExecutor {
+    fn execute(
+        &self,
+        request: AgentExecutionRequest,
+        _: ExecutionGuard<'_>,
+    ) -> impl Future<Output = Result<AgentExecutionOutput, AgentRuntimeError>> + Send {
+        ready(if deterministic_executor_enabled() {
+            self.payloads
+                .store_output(DETERMINISTIC_OUTPUT)
+                .map(|digest| AgentExecutionOutput {
+                    digest,
+                    bytes: DETERMINISTIC_OUTPUT.len(),
+                    external_effects: 0,
+                })
+                .map_err(|error| {
+                    tracing::warn!(
+                        agent_id = %request.definition.id,
+                        session_id = %request.session.session_id,
+                        kind = error.kind(),
+                        "deterministic executor could not materialize its output"
+                    );
+                    AgentRuntimeError::ExecutorFailed
+                })
+        } else {
+            Err(AgentRuntimeError::ExecutorFailed)
+        })
+    }
+}
+
+pub(crate) enum ConfiguredExecutor {
+    Llm(LlmAgentExecutor),
+    Deterministic(DisabledExecutor),
+    Unavailable,
+}
+
+impl ConfiguredExecutor {
+    /// Materialized output text for a completed run. Every executor that can
+    /// complete stores its text before returning the digest, so a digest that
+    /// fails to load is an error, never a silently absent field.
+    pub(crate) fn output(&self, digest: &str) -> Result<String, ToolError> {
+        match self {
+            Self::Llm(executor) => executor.output(digest),
+            Self::Deterministic(executor) => executor.payloads.load_output(digest),
+            // Never completes a run, so it never has a digest to resolve.
+            Self::Unavailable => Err(ToolError::Sdk {
+                sdk_kind: "internal_error".into(),
+                message: "no executor produced the requested Agent output".into(),
+            }),
+        }
+    }
+}
+
+impl AgentExecutor for ConfiguredExecutor {
+    async fn execute(
+        &self,
+        request: AgentExecutionRequest,
+        guard: ExecutionGuard<'_>,
+    ) -> Result<AgentExecutionOutput, AgentRuntimeError> {
+        match self {
+            Self::Llm(executor) => executor.execute(request, guard).await,
+            Self::Deterministic(executor) => executor.execute(request, guard).await,
+            Self::Unavailable => Err(AgentRuntimeError::ExecutorFailed),
+        }
+    }
+
+    async fn cancel(&self, request: &AgentExecutionRequest) {
+        if let Self::Llm(executor) = self {
+            executor.cancel(request).await;
+        }
+    }
+}
+
+pub(crate) fn configured_executor(
+    store: &crate::access::AccessStore,
     input: String,
-    resumed_from_session_id: Option<String>,
-    request_key: String,
-    action: &str,
-    now: u64,
-) -> Result<Value, ToolError> {
-    use sha2::{Digest as _, Sha256};
-
-    if definition.state != AgentState::Active {
-        return Err(denied());
+) -> Result<ConfiguredExecutor, ToolError> {
+    if deterministic_executor_enabled() {
+        return Ok(ConfiguredExecutor::Deterministic(
+            DisabledExecutor::for_access_store(store),
+        ));
     }
-    if input.is_empty() || input.len() > 1024 * 1024 {
-        return Err(invalid("input"));
-    }
-    let operation = if resumed_from_session_id.is_some() {
-        "resume"
-    } else {
-        "run"
-    };
-    let input_digest = format!("sha256:{}", hex::encode(Sha256::digest(input.as_bytes())));
-    let lease = authorize(
-        &context,
-        action,
-        &definition.owner,
-        &definition.id,
-        Capability::ScopeOperate,
-        now,
-    )
-    .await?;
-    let epochs = refresh_authority_epochs(
-        &context.store,
-        context.identity.clone(),
-        definition.owner.clone(),
-        Capability::ScopeOperate,
-    )
-    .await
-    .map_err(map)?;
-    let admission_boundary = if resumed_from_session_id.is_some() {
-        AuthoritySafeBoundary::BeforeRetainedResume
-    } else {
-        AuthoritySafeBoundary::BeforeCommit
-    };
-    lease
-        .validate_at(admission_boundary, now, &epochs)
-        .map_err(|_| denied())?;
-
-    let principal = lease.binding().principal_id().to_owned();
-    match context
-        .store
-        .find_agent_session_request(
-            definition.clone(),
-            principal.clone(),
-            request_key.clone(),
-            operation.to_owned(),
-            input_digest.clone(),
-            resumed_from_session_id.clone(),
-        )
-        .await
-        .map_err(map)?
-    {
-        Some(AgentSessionAdmission::Replay(session)) => return Ok(render_session(&session)),
-        Some(AgentSessionAdmission::Conflict {
-            existing_session_id,
-        }) => return Err(idempotency_conflict(existing_session_id)),
-        Some(AgentSessionAdmission::Created) => return Err(internal()),
-        None => {}
-    }
-
-    let executor =
-        executor::resolve_executor(&definition).map_err(|error| map_agent_runtime_error(&error))?;
-    let execution_started_at = system_now_millis();
-    let bounds = bound_resources_to_authority_lease(
-        AgentResourceBounds {
-            max_runtime_millis: 300_000,
-            max_output_bytes: 16 * 1024 * 1024,
-            max_external_effects: 1_000,
-        },
-        &lease,
-        execution_started_at,
-    )
-    .map_err(|error| map_agent_runtime_error(&error))?;
-
-    let session_id = format!("session-{}", uuid::Uuid::new_v4());
-    let transcript = AgentTranscript::new(1024 * 1024).map_err(|_| internal())?;
-    let cancellation = Cancellation::new();
-    let lease_expires_at = lease.expires_at_millis();
-    match context
-        .store
-        .create_agent_session(
-            session_id.clone(),
-            definition.clone(),
-            principal,
-            request_key,
-            operation.to_owned(),
-            epochs.fingerprint().as_str().to_owned(),
-            i64::try_from(lease_expires_at).map_err(|_| internal())?,
-            input_digest.clone(),
-            input.clone(),
-            resumed_from_session_id.clone(),
-            i64::try_from(now).map_err(|_| internal())?,
-        )
-        .await
-    {
-        Ok(AgentSessionAdmission::Created) => {}
-        Ok(AgentSessionAdmission::Replay(session)) => return Ok(render_session(&session)),
-        Ok(AgentSessionAdmission::Conflict {
-            existing_session_id,
-        }) => return Err(idempotency_conflict(existing_session_id)),
-        Err(error) => return Err(map(error)),
-    }
-    register_session(
-        &session_id,
-        ActiveAgentSession {
-            cancellation: cancellation.clone(),
-            transcript: transcript.clone(),
-        },
-    )?;
-
-    let run_context = context.clone();
-    let run_definition = definition.clone();
-    let run_session_id = session_id.clone();
-    let run_input_digest = input_digest.clone();
-    tokio::spawn(async move {
-        let result = run_session(
-            run_context,
-            run_definition.clone(),
-            run_session_id.clone(),
-            input,
-            run_input_digest,
-            transcript,
-            cancellation,
-            lease,
-            executor,
-            bounds,
-            execution_started_at,
-        )
-        .await;
-        unregister_session(&run_session_id);
-        if let Err(error) = result {
-            tracing::error!(
-                agent_id = %run_definition.id,
-                session_id = %run_session_id,
-                error_kind = error.kind(),
-                "failed to retain Agent session settlement"
+    match LlmAgentExecutor::new(store, input) {
+        Ok(executor) => Ok(ConfiguredExecutor::Llm(executor)),
+        Err(error) if error.kind() == "invalid_param" => Err(error),
+        Err(error) => {
+            tracing::warn!(
+                kind = error.kind(),
+                "Agent LLM backend unavailable at execution admission"
             );
+            Ok(ConfiguredExecutor::Unavailable)
         }
-    });
-
-    Ok(json!({
-        "agent_id": definition.id,
-        "agent_version": definition.revision.version,
-        "session_id": session_id,
-        "status": "admitted",
-        "input_digest": input_digest,
-        "authority_expires_at": lease_expires_at,
-        "resumed_from_session_id": resumed_from_session_id,
-    }))
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn run_session(
-    context: AgentDispatchContext,
-    definition: AgentDefinition,
-    session_id: String,
-    input: String,
-    input_digest: String,
-    transcript: AgentTranscript,
-    cancellation: Cancellation,
-    lease: labby_runtime::authority::AuthorityLease,
-    executor: executor::AgentExecutorBackend,
-    bounds: AgentResourceBounds,
-    now: u64,
-) -> Result<(), ToolError> {
-    context
-        .store
-        .set_agent_session_status(
-            definition.id.clone(),
-            session_id.clone(),
-            "admitted".into(),
-            "running".into(),
-        )
-        .await
-        .map_err(map)?;
-    let execution = execute_agent(
-        &LiveExecutionAuthority {
-            store: context.store.clone(),
-            identity: context.identity.clone(),
-            owner: definition.owner.clone(),
-            definition: definition.clone(),
-        },
-        &executor,
-        AgentExecutionRequest {
-            definition: definition.clone(),
-            session: AgentSessionBinding {
-                session_id: session_id.clone(),
-                agent_id: definition.id.clone(),
-                agent_version: definition.revision.version,
-                principal: PrincipalId::new(lease.binding().principal_id())
-                    .map_err(|_| internal())?,
-                owner: definition.owner.clone(),
-                catalog_generation: definition.revision.catalog_generation.clone(),
-                authority_fingerprint: lease.epoch_fingerprint().as_str().into(),
-                lease_expires_at: i64::try_from(lease.expires_at_millis())
-                    .map_err(|_| internal())?,
-            },
-            input,
-            input_digest,
-            transcript: transcript.clone(),
-            lease,
-            bounds,
-        },
-        cancellation,
-        now,
-    )
-    .await;
-    let (status, output_digest, error_code) = match execution {
-        Ok(output) => ("completed", Some(output.digest), None),
-        Err(AgentRuntimeError::Revoked | AgentRuntimeError::Lease(_)) => {
-            ("revoked", None, Some("authority_changed".to_owned()))
-        }
-        Err(AgentRuntimeError::Cancelled) => ("cancelled", None, Some("cancelled".to_owned())),
-        Err(AgentRuntimeError::ResourceLimit) => {
-            ("failed", None, Some("resource_limit".to_owned()))
-        }
-        Err(AgentRuntimeError::ExecutorUnavailable) => {
-            ("failed", None, Some("executor_unavailable".to_owned()))
-        }
-        Err(_) => ("failed", None, Some("execution_failed".to_owned())),
-    };
-    let retained_transcript = bounded_transcript(transcript.snapshot().text);
-    context
-        .store
-        .settle_agent_session(
-            definition.id,
-            session_id,
-            "running".into(),
-            status.into(),
-            output_digest,
-            Some(retained_transcript),
-            error_code,
-            i64::try_from(system_now_millis()).map_err(|_| internal())?,
-        )
-        .await
-        .map_err(map)
-}
-
-fn bounded_transcript(mut transcript: String) -> String {
-    while transcript.len() > 1024 * 1024 {
-        transcript.pop();
     }
-    transcript
 }
 
-fn register_session(id: &str, session: ActiveAgentSession) -> Result<(), ToolError> {
-    let mut sessions = ACTIVE_AGENT_SESSIONS.lock().map_err(|_| internal())?;
-    if sessions.insert(id.to_owned(), session).is_some() {
-        return Err(internal());
+pub(crate) fn configured_task_executor(
+    store: &crate::access::AccessStore,
+    input_digest: &str,
+) -> ConfiguredExecutor {
+    if deterministic_executor_enabled() {
+        return ConfiguredExecutor::Deterministic(DisabledExecutor::for_access_store(store));
     }
-    Ok(())
-}
-
-fn unregister_session(id: &str) {
-    ACTIVE_AGENT_SESSIONS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .remove(id);
-}
-
-fn active_session(id: &str) -> Option<ActiveAgentSession> {
-    ACTIVE_AGENT_SESSIONS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(id)
-        .cloned()
-}
-
-async fn recover_sessions(context: &AgentDispatchContext, now: u64) -> Result<(), ToolError> {
-    // Same-process sessions own their own authority-expiry settlement. Recovery
-    // targets orphaned rows after a runtime restart and must not race a live
-    // executor into `interrupted` before it can retain its transcript.
-    if !ACTIVE_AGENT_SESSIONS
-        .lock()
-        .map_err(|_| internal())?
-        .is_empty()
-    {
-        return Ok(());
+    match LlmAgentExecutor::from_task(store, input_digest) {
+        Ok(executor) => ConfiguredExecutor::Llm(executor),
+        Err(error) => {
+            tracing::warn!(
+                kind = error.kind(),
+                "Agent Task LLM backend unavailable for queued attempt"
+            );
+            ConfiguredExecutor::Unavailable
+        }
     }
-    context
-        .store
-        .recover_expired_agent_sessions(i64::try_from(now).map_err(|_| internal())?)
-        .await
-        .map_err(map)?;
-    Ok(())
 }
 
-async fn authorized_definition(
-    context: &AgentDispatchContext,
-    params: &Value,
-    action: &str,
-    capability: Capability,
-    now: u64,
-) -> Result<AgentDefinition, ToolError> {
-    let definition = load(context, params).await?;
-    authorize(
-        context,
-        action,
-        &definition.owner,
-        &definition.id,
-        capability,
-        now,
-    )
-    .await?;
-    Ok(definition)
+/// Process-wide switch for unit tests that drive the deterministic executor.
+/// The crate forbids unsafe code and `std::env::set_var` is unsafe in edition
+/// 2024, so tests pin the hook here instead of mutating the environment (the
+/// same seam shape as `phoenix_openai::install_test_base_url`). It exists only
+/// under `proxy-testkit`, so the release-profile tests that prove the branch
+/// is compiled out cannot reach it.
+#[cfg(all(test, feature = "proxy-testkit"))]
+static TEST_DETERMINISTIC_EXECUTORS: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+/// Select the deterministic executor for every later admission in this process.
+#[cfg(all(test, feature = "proxy-testkit"))]
+pub(crate) fn install_test_deterministic_executors() {
+    TEST_DETERMINISTIC_EXECUTORS.get_or_init(|| ());
 }
 
-fn render_session(session: &crate::access::AgentSessionRecord) -> Value {
-    json!({
-        "agent_id": session.agent_id,
-        "agent_version": session.agent_version,
-        "session_id": session.session_id,
-        "status": session.status,
-        "input_digest": session.input_digest,
-        "output_digest": session.output_digest,
-        "error_code": session.error_code,
-        "resumed_from_session_id": session.resumed_from_session_id,
-        "authority_expires_at": session.lease_expires_at,
-        "created_at": session.created_at,
-        "updated_at": session.updated_at,
-        "completed_at": session.completed_at,
-    })
+fn deterministic_executor_enabled() -> bool {
+    #[cfg(all(test, feature = "proxy-testkit"))]
+    if TEST_DETERMINISTIC_EXECUTORS.get().is_some() {
+        return true;
+    }
+    cfg!(feature = "proxy-testkit")
+        && std::env::var_os("LABBY_E2E_DETERMINISTIC_EXECUTORS").is_some()
 }
 
 async fn load(
@@ -890,7 +877,19 @@ fn authority_request(
     now: u64,
 ) -> Result<AuthorityRequest, ToolError> {
     let action = ActionRef::new("agents", name).map_err(|_| invalid("action"))?;
-    let request = AuthorityRequest::new(
+    // A run is fenced against its lease at every safe boundary, so the lease
+    // issued for it must outlive the runtime bound; every other action keeps
+    // the short request lease.
+    let spec = ActionAuthoritySpec::new(action.clone(), ResourceFamily::Agent, capability);
+    let (spec, safe_boundaries) = if name == "agents.run" {
+        (
+            spec.with_lease_lifetime_millis(AGENT_MAX_RUNTIME_MILLIS),
+            execution_safe_boundaries(),
+        )
+    } else {
+        (spec, request_safe_boundaries())
+    };
+    Ok(AuthorityRequest::new(
         context.identity.clone(),
         ActionAuthoritySpec::SCHEMA_VERSION,
         action.clone(),
@@ -902,25 +901,115 @@ fn authority_request(
         context.ceiling.clone(),
         None,
         now,
-        vec![
-            AuthoritySafeBoundary::BeforeDispatch,
-            AuthoritySafeBoundary::BeforeExternalEffect,
-            AuthoritySafeBoundary::BeforeChunk,
-            AuthoritySafeBoundary::BeforeCommit,
-            AuthoritySafeBoundary::BeforeRetainedResume,
-        ],
-        vec![ActionAuthoritySpec::new(
-            action,
-            ResourceFamily::Agent,
-            capability,
-        )],
-    );
-    Ok(if matches!(name, "agents.run" | "agents.session.resume") {
-        request.with_execution_lease_lifetime(MAX_AUTHORITY_LEASE_MILLIS)
-    } else {
-        request
-    })
+        safe_boundaries,
+        vec![spec],
+    ))
 }
+/// Boundaries a request-scoped action revalidates at.
+pub(crate) fn request_safe_boundaries() -> Vec<AuthoritySafeBoundary> {
+    vec![
+        AuthoritySafeBoundary::BeforeDispatch,
+        AuthoritySafeBoundary::BeforeCommit,
+    ]
+}
+/// Boundaries the Agent runtime and the LLM executor revalidate at: admission,
+/// every provider effect, and the final commit. A lease that omits one of
+/// them reads as revocation at that boundary.
+pub(crate) fn execution_safe_boundaries() -> Vec<AuthoritySafeBoundary> {
+    vec![
+        AuthoritySafeBoundary::BeforeDispatch,
+        AuthoritySafeBoundary::BeforeExternalEffect,
+        AuthoritySafeBoundary::BeforeCommit,
+    ]
+}
+fn materialize_llm_payload(
+    store: &crate::access::AccessStore,
+    params: Value,
+    prior: Option<&AgentDefinition>,
+) -> Result<Value, ToolError> {
+    materialize_llm_payload_with(store, params, prior, current_harness_digest)
+}
+
+/// Materialize the LLM payload with an explicit harness-digest source so the
+/// ordering against the content-addressed write can be tested without the
+/// provider environment.
+fn materialize_llm_payload_with(
+    store: &crate::access::AccessStore,
+    mut params: Value,
+    prior: Option<&AgentDefinition>,
+    harness: impl FnOnce() -> Result<String, ToolError>,
+) -> Result<Value, ToolError> {
+    let explicit_instructions = params
+        .get("instructions")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let explicit_model = params
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    if explicit_instructions.is_none() && explicit_model.is_none() {
+        return Ok(params);
+    }
+
+    let payloads = AgentPayloadStore::for_access_store(store);
+    let inherited = match prior {
+        Some(definition) if explicit_instructions.is_none() || explicit_model.is_none() => {
+            // A partial revision update must inherit from the exact pinned
+            // payload. Missing/corrupt content is a hard failure; silently
+            // defaulting would mutate an immutable revision's effective model.
+            Some(payloads.load_agent(&definition.revision.content_digest)?)
+        }
+        _ => None,
+    };
+    let instructions = explicit_instructions
+        .or_else(|| {
+            inherited
+                .as_ref()
+                .map(|payload| payload.instructions.clone())
+        })
+        .ok_or_else(|| invalid("instructions"))?;
+    let model = explicit_model
+        .or_else(|| inherited.as_ref().map(|payload| payload.model.clone()))
+        .unwrap_or_else(|| DEFAULT_MODEL.to_owned());
+    // Resolve the provider before the content-addressed write: a create that
+    // fails for lack of a provider must not leave an immutable payload behind
+    // that no revision references.
+    let harness_digest = harness()?;
+    let expected_content_digest = params.get("content_digest").and_then(Value::as_str);
+    let content_digest =
+        payloads.store_agent(Some(&model), &instructions, expected_content_digest)?;
+    if params
+        .get("harness_digest")
+        .and_then(Value::as_str)
+        .is_some_and(|supplied| supplied != harness_digest)
+    {
+        return Err(invalid("harness_digest"));
+    }
+
+    let object = params.as_object_mut().ok_or_else(|| invalid("params"))?;
+    object.insert("content_digest".into(), Value::String(content_digest));
+    object.insert("harness_digest".into(), Value::String(harness_digest));
+    if prior.is_none() {
+        for (key, label) in [
+            ("repository_digest", "repository:none"),
+            ("image_digest", "image:none"),
+            ("loadout_digest", "loadout:none"),
+        ] {
+            object
+                .entry(key.to_owned())
+                .or_insert_with(|| Value::String(llm_default_digest(label)));
+        }
+        object
+            .entry("catalog_generation".to_owned())
+            .or_insert_with(|| Value::String("openai-compatible-v1".into()));
+    }
+    Ok(params)
+}
+
+fn llm_default_digest(label: &str) -> String {
+    Sha256Digest::of(format!("labby:llm-agent:{label}:v1").as_bytes()).to_string()
+}
+
 fn definition(
     params: &Value,
     prior: Option<&AgentDefinition>,
@@ -1005,22 +1094,7 @@ fn render(v: &AgentDefinition) -> Value {
         OwnerScope::Project(x) => ("project", x.as_str()),
         OwnerScope::Personal(x) => ("personal", x.as_str()),
     };
-    json!({
-        "agent_id": v.id,
-        "owner_kind": kind,
-        "owner_id": id,
-        "version": v.revision.version,
-        "state": state_name(v.state),
-        "content_digest": v.revision.content_digest,
-        "repository_digest": v.revision.repository_digest,
-        "image_digest": v.revision.image_digest,
-        "harness_digest": v.revision.harness_digest,
-        "harness_id": executor::configured_harness_id(v),
-        "loadout_digest": v.revision.loadout_digest,
-        "catalog_generation": v.revision.catalog_generation,
-        "authority_epoch": v.authority_epoch,
-        "publication_epoch": v.publication_epoch,
-    })
+    json!({"agent_id":v.id,"owner_kind":kind,"owner_id":id,"version":v.revision.version,"state":state_name(v.state),"catalog_generation":v.revision.catalog_generation,"authority_epoch":v.authority_epoch,"publication_epoch":v.publication_epoch})
 }
 fn state_name(v: AgentState) -> &'static str {
     match v {
@@ -1036,17 +1110,13 @@ fn required(v: &Value, k: &str) -> Result<String, ToolError> {
         .map(ToOwned::to_owned)
         .ok_or_else(|| invalid(k))
 }
-fn idempotency_key(params: &Value) -> Result<String, ToolError> {
-    let key = required(params, "idempotency_key")?;
-    if key.len() > 256 || key.trim() != key || key.chars().any(char::is_control) {
-        return Err(invalid("idempotency_key"));
-    }
-    Ok(key)
-}
-fn idempotency_conflict(existing_session_id: String) -> ToolError {
-    ToolError::Conflict {
-        message: "idempotency key was already used for a different Agent session intent".into(),
-        existing_id: existing_session_id,
+/// Optional string parameter: absent and `null` mean "not supplied"; any
+/// other non-string value is the caller's error, never silently ignored.
+fn optional_text(v: &Value, k: &str) -> Result<String, ToolError> {
+    match v.get(k) {
+        None | Some(Value::Null) => Ok(String::new()),
+        Some(Value::String(value)) => Ok(value.clone()),
+        Some(_) => Err(invalid(k)),
     }
 }
 fn now() -> Result<u64, ToolError> {
@@ -1118,13 +1188,9 @@ pub(crate) fn map_agent_runtime_error(error: &AgentRuntimeError) -> ToolError {
             sdk_kind: "cancelled".into(),
             message: "Agent execution was cancelled".into(),
         },
-        AgentRuntimeError::ExecutorUnavailable => ToolError::Sdk {
-            sdk_kind: "service_unavailable".into(),
-            message: "No matching Agent harness is configured; configure `agents.harnesses` and pin its digest in the Agent definition".into(),
-        },
         AgentRuntimeError::ExecutorFailed => ToolError::Sdk {
             sdk_kind: "service_unavailable".into(),
-            message: "Agent harness execution failed".into(),
+            message: "Agent execution backend failed".into(),
         },
         // The session no longer matches the pinned definition, the lease is
         // not bound to this execution, or the granted capability cannot
@@ -1132,10 +1198,7 @@ pub(crate) fn map_agent_runtime_error(error: &AgentRuntimeError) -> ToolError {
         AgentRuntimeError::PinnedDefinitionMismatch
         | AgentRuntimeError::BindingMismatch
         | AgentRuntimeError::NotDispatchable => denied(),
-        AgentRuntimeError::InvalidDefinition
-        | AgentRuntimeError::InvalidBounds
-        | AgentRuntimeError::InvalidInput
-        | AgentRuntimeError::InputDigestMismatch => {
+        AgentRuntimeError::InvalidDefinition | AgentRuntimeError::InvalidBounds => {
             ToolError::internal_message("Agent execution request is invalid")
         }
     }
@@ -1198,6 +1261,9 @@ pub(crate) mod test_support {
     /// Open a fresh access store with one bootstrapped owner (a platform admin
     /// whose personal owner scope is `personal/bootstrap-owner`).
     pub(crate) async fn fixture() -> (tempfile::TempDir, AccessStore, VerifiedIdentity) {
+        // The harness digest is derived from the provider URL at create time;
+        // no test connects to this address unless it drives execution.
+        crate::dispatch::phoenix_openai::install_test_base_url("http://127.0.0.1:9/v1");
         let directory = secure_tempdir();
         let store = AccessStore::open(directory.path().join("access.db"))
             .await
@@ -1229,8 +1295,21 @@ pub(crate) mod test_support {
     }
 
     /// Valid `agents.create` parameters for a personal Agent owned by the
-    /// bootstrap principal.
+    /// bootstrap principal: exactly the caller-facing form.
     pub(crate) fn agent_params(agent_id: &str) -> Value {
+        json!({
+            "agent_id": agent_id,
+            "owner_kind": "personal",
+            "owner_id": BOOTSTRAP_PRINCIPAL,
+            "instructions": "Summarize the input.",
+            "model": "chatgpt-browser",
+        })
+    }
+
+    /// Fully materialized revision parameters, as the dispatcher sees them
+    /// after payload materialization, for tests that build definitions
+    /// directly.
+    pub(crate) fn agent_revision_params(agent_id: &str) -> Value {
         json!({
             "agent_id": agent_id,
             "owner_kind": "personal",
@@ -1248,7 +1327,8 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::test_support::{
-        BOOTSTRAP_PRINCIPAL, agent_context, agent_params, browser, digest, fixture,
+        BOOTSTRAP_PRINCIPAL, agent_context, agent_params, agent_revision_params, browser, digest,
+        fixture,
     };
     use super::*;
     use labby_runtime::authority::AuthorityLeaseError;
@@ -1274,19 +1354,12 @@ mod tests {
 
     #[test]
     fn catalog_is_complete_and_unbound_denies() {
-        assert_eq!(ACTIONS.len(), 14);
+        assert_eq!(ACTIONS.len(), 9);
         let create = ACTIONS
             .iter()
             .find(|action| action.name == "agents.create")
             .unwrap();
-        for required in [
-            "content_digest",
-            "repository_digest",
-            "image_digest",
-            "harness_digest",
-            "loadout_digest",
-            "catalog_generation",
-        ] {
+        for required in ["agent_id", "owner_kind", "owner_id", "instructions"] {
             assert!(
                 create
                     .params
@@ -1294,17 +1367,54 @@ mod tests {
                     .any(|param| param.name == required && param.required)
             );
         }
-        for name in ["agents.run", "agents.session.resume"] {
-            let action = ACTIONS.iter().find(|action| action.name == name).unwrap();
+        for optional in [
+            "content_digest",
+            "repository_digest",
+            "image_digest",
+            "harness_digest",
+            "loadout_digest",
+            "catalog_generation",
+            "model",
+        ] {
             assert!(
-                action
+                create
                     .params
                     .iter()
-                    .any(|param| param.name == "idempotency_key" && param.required)
+                    .any(|param| param.name == optional && !param.required)
             );
         }
+        let run = ACTIONS
+            .iter()
+            .find(|action| action.name == "agents.run")
+            .unwrap();
+        assert!(
+            run.params
+                .iter()
+                .any(|param| param.name == "input" && !param.required)
+        );
         assert!(ACTIONS.iter().all(|a| a.name.starts_with("agents.")));
     }
+    /// Deletion filters the definition out of every read with no restore
+    /// action, so it is permanent loss under the shared destructive policy.
+    #[test]
+    fn delete_is_marked_destructive() {
+        let delete = ACTIONS
+            .iter()
+            .find(|action| action.name == "agents.delete")
+            .unwrap();
+        assert!(delete.destructive);
+        assert!(
+            !delete.requires_admin,
+            "destructive and admin are separate axes"
+        );
+        // Suspension is reversible and cancellation stops work in flight;
+        // neither loses data.
+        for name in ["agents.suspend", "agents.session.cancel", "agents.run"] {
+            let action = ACTIONS.iter().find(|action| action.name == name).unwrap();
+            assert!(!action.destructive, "{name}");
+        }
+    }
+
     #[tokio::test]
     async fn context_free_is_fail_closed() {
         assert_eq!(
@@ -1334,18 +1444,12 @@ mod tests {
             ),
             (AgentRuntimeError::ResourceLimit, "quota_exceeded"),
             (AgentRuntimeError::Cancelled, "cancelled"),
-            (
-                AgentRuntimeError::ExecutorUnavailable,
-                "service_unavailable",
-            ),
             (AgentRuntimeError::ExecutorFailed, "service_unavailable"),
             (AgentRuntimeError::PinnedDefinitionMismatch, "forbidden"),
             (AgentRuntimeError::BindingMismatch, "forbidden"),
             (AgentRuntimeError::NotDispatchable, "forbidden"),
             (AgentRuntimeError::InvalidDefinition, "internal_error"),
             (AgentRuntimeError::InvalidBounds, "internal_error"),
-            (AgentRuntimeError::InvalidInput, "internal_error"),
-            (AgentRuntimeError::InputDigestMismatch, "internal_error"),
         ];
         for (error, kind) in table {
             let mapped = map_agent_runtime_error(&error);
@@ -1356,10 +1460,8 @@ mod tests {
             "authority changed during execution"
         );
         assert_eq!(
-            envelope(&map_agent_runtime_error(
-                &AgentRuntimeError::ExecutorUnavailable
-            ))["message"],
-            "No matching Agent harness is configured; configure `agents.harnesses` and pin its digest in the Agent definition"
+            envelope(&map_agent_runtime_error(&AgentRuntimeError::ExecutorFailed))["message"],
+            "Agent execution backend failed"
         );
     }
 
@@ -1380,7 +1482,7 @@ mod tests {
             assert_eq!(error.kind(), "invalid_param");
             assert_eq!(envelope(&error)["param"], key);
         }
-        let created = definition(&agent_params("a1"), None).unwrap();
+        let created = definition(&agent_revision_params("a1"), None).unwrap();
         assert_eq!((created.authority_epoch, created.publication_epoch), (1, 1));
         let mut prior = created.clone();
         prior.state = AgentState::Suspended;
@@ -1446,6 +1548,264 @@ mod tests {
         assert!(listed["agents"].as_array().unwrap().is_empty());
     }
 
+    /// Bind exactly the parameters the shared catalog marks required, so the
+    /// advertised schema is proven sufficient rather than merely necessary.
+    fn required_only_params(action: &str, values: &[(&str, &str)]) -> Value {
+        let spec = ACTIONS.iter().find(|a| a.name == action).unwrap();
+        let mut params = serde_json::Map::new();
+        for param in spec.params.iter().filter(|param| param.required) {
+            let value = values
+                .iter()
+                .find(|(name, _)| *name == param.name)
+                .unwrap_or_else(|| panic!("no test value for required param {}", param.name))
+                .1;
+            params.insert(param.name.to_owned(), json!(value));
+        }
+        Value::Object(params)
+    }
+
+    #[tokio::test]
+    async fn create_with_exactly_the_required_params_succeeds() {
+        let (_dir, store, owner) = fixture().await;
+        let params = required_only_params(
+            "agents.create",
+            &[
+                ("agent_id", "required-only-agent"),
+                ("owner_kind", "personal"),
+                ("owner_id", BOOTSTRAP_PRINCIPAL),
+                ("instructions", "Summarize the input."),
+            ],
+        );
+        let created = dispatch(agent_context(&store, &owner), "agents.create", params)
+            .await
+            .unwrap();
+        assert_eq!(created["agent_id"], "required-only-agent");
+        assert_eq!(created["version"], 1);
+        let stored = store
+            .get_agent_definition("required-only-agent".into())
+            .await
+            .unwrap()
+            .unwrap();
+        // The revision digests are server-derived from the materialized payload.
+        assert!(stored.revision.content_digest.starts_with("sha256:"));
+        assert!(stored.revision.harness_digest.starts_with("sha256:"));
+    }
+
+    #[tokio::test]
+    async fn run_lease_covers_the_runtime_bound() {
+        let (_dir, store, owner) = fixture().await;
+        let context = agent_context(&store, &owner);
+        let now = now().unwrap();
+        let request = authority_request(
+            &context,
+            "agents.run",
+            &OwnerScope::Personal(PrincipalId::new(BOOTSTRAP_PRINCIPAL).unwrap()),
+            "any-agent",
+            Capability::ScopeOperate,
+            now,
+        )
+        .unwrap();
+        let lease = authorize_action(&store, request).await.unwrap();
+        assert!(
+            lease.expires_at_millis() - now >= AGENT_MAX_RUNTIME_MILLIS,
+            "an agents.run lease must cover the runtime bound, got {} ms",
+            lease.expires_at_millis() - now
+        );
+        // Every other Agent action keeps the short request lease.
+        let read = authority_request(
+            &context,
+            "agents.get",
+            &OwnerScope::Personal(PrincipalId::new(BOOTSTRAP_PRINCIPAL).unwrap()),
+            "any-agent",
+            Capability::ScopeRead,
+            now,
+        )
+        .unwrap();
+        let read_lease = authorize_action(&store, read).await.unwrap();
+        assert!(read_lease.expires_at_millis() - now < AGENT_MAX_RUNTIME_MILLIS);
+    }
+
+    #[tokio::test]
+    async fn run_lease_declares_every_runtime_boundary() {
+        let (_dir, store, owner) = fixture().await;
+        let context = agent_context(&store, &owner);
+        let now = now().unwrap();
+        let personal = OwnerScope::Personal(PrincipalId::new(BOOTSTRAP_PRINCIPAL).unwrap());
+        let request = authority_request(
+            &context,
+            "agents.run",
+            &personal,
+            "any-agent",
+            Capability::ScopeOperate,
+            now,
+        )
+        .unwrap();
+        let lease = authorize_action(&store, request).await.unwrap();
+        let epochs = refresh_authority_epochs(&store, owner, personal, Capability::ScopeOperate)
+            .await
+            .unwrap();
+        // The runtime revalidates at admission, before every provider effect,
+        // and before commit; an undeclared boundary reads as revocation.
+        for boundary in [
+            AuthoritySafeBoundary::BeforeDispatch,
+            AuthoritySafeBoundary::BeforeExternalEffect,
+            AuthoritySafeBoundary::BeforeCommit,
+        ] {
+            assert_eq!(
+                lease.validate_at(boundary, now, &epochs),
+                Ok(()),
+                "{boundary:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn session_cancel_signals_the_live_run() {
+        let (_dir, store, owner) = fixture().await;
+        let context = agent_context(&store, &owner);
+        dispatch(
+            context.clone(),
+            "agents.create",
+            agent_params("cancel-agent"),
+        )
+        .await
+        .unwrap();
+        let definition = store
+            .get_agent_definition("cancel-agent".into())
+            .await
+            .unwrap()
+            .unwrap();
+        let now = now().unwrap();
+        store
+            .create_agent_session(
+                "cancel-agent-session-1".into(),
+                definition,
+                owner.safe_fingerprint(),
+                "fingerprint".into(),
+                i64::try_from(now + AGENT_MAX_RUNTIME_MILLIS).unwrap(),
+                i64::try_from(now).unwrap(),
+            )
+            .await
+            .unwrap();
+        store
+            .set_agent_session_status(
+                "cancel-agent".into(),
+                "cancel-agent-session-1".into(),
+                "admitted".into(),
+                "running".into(),
+            )
+            .await
+            .unwrap();
+        let cancel = json!({"agent_id":"cancel-agent","session_id":"cancel-agent-session-1"});
+        // A live in-process run is signalled at its next safe boundary.
+        let cancellation = Cancellation::new();
+        register_agent_session_cancellation("cancel-agent-session-1".into(), cancellation.clone());
+        let response = dispatch(context.clone(), "agents.session.cancel", cancel.clone())
+            .await
+            .unwrap();
+        assert_eq!(response["status"], "cancelling");
+        assert_eq!(response["cancel_requested"], true);
+        assert!(cancellation.is_cancelled());
+        unregister_agent_session_cancellation("cancel-agent-session-1");
+        // A session with no live in-process owner reports its durable status
+        // and signals nothing.
+        let response = dispatch(context.clone(), "agents.session.cancel", cancel.clone())
+            .await
+            .unwrap();
+        assert_eq!(response["status"], "running");
+        assert_eq!(response["cancel_requested"], false);
+        // Cancellation is an operate-scope action, never a read.
+        let stranger = agent_context(&store, &browser("stranger-subject"));
+        let error = dispatch(stranger, "agents.session.cancel", cancel)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), "forbidden");
+        // An unknown session is a non-enumerating denial.
+        let error = dispatch(
+            context,
+            "agents.session.cancel",
+            json!({"agent_id":"cancel-agent","session_id":"unknown"}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), "forbidden");
+    }
+
+    /// A non-string `input` is a caller error, never silently treated as an
+    /// empty run; `null` and absence still mean "no input".
+    #[tokio::test]
+    async fn run_rejects_non_string_input() {
+        let (_dir, store, owner) = fixture().await;
+        let context = agent_context(&store, &owner);
+        dispatch(
+            context.clone(),
+            "agents.create",
+            agent_params("typed-agent"),
+        )
+        .await
+        .unwrap();
+        for input in [json!(42), json!(["a"]), json!({"text":"a"}), json!(true)] {
+            let error = dispatch(
+                context.clone(),
+                "agents.run",
+                json!({"agent_id":"typed-agent","input":input}),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.kind(), "invalid_param", "{input}");
+            assert_eq!(envelope(&error)["param"], "input", "{input}");
+        }
+        // Absent and null input are admitted (the run then fails against the
+        // pinned dummy provider, never at parameter validation).
+        for params in [
+            json!({"agent_id":"typed-agent"}),
+            json!({"agent_id":"typed-agent","input":null}),
+        ] {
+            let error = dispatch(context.clone(), "agents.run", params)
+                .await
+                .unwrap_err();
+            assert_ne!(error.kind(), "invalid_param");
+        }
+    }
+
+    #[tokio::test]
+    async fn fifth_concurrent_run_for_owner_is_rejected() {
+        let (_dir, store, owner) = fixture().await;
+        let context = agent_context(&store, &owner);
+        let mut params = agent_params("team-run-agent");
+        params["owner_kind"] = json!("team");
+        params["owner_id"] = json!("bootstrap-initial-team");
+        dispatch(context.clone(), "agents.create", params)
+            .await
+            .unwrap();
+        let team = OwnerScope::Team(TeamId::new("bootstrap-initial-team").unwrap());
+        // Four live runs hold the owner's whole quota.
+        let live = (0..AGENT_RUN_PER_OWNER_LIMIT)
+            .map(|_| AGENT_RUN_SCHEDULER.try_admit(&team).unwrap())
+            .collect::<Vec<_>>();
+        let error = dispatch(
+            context.clone(),
+            "agents.run",
+            json!({"agent_id":"team-run-agent"}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), "queue_saturated");
+        assert!(
+            envelope(&error)["message"]
+                .as_str()
+                .unwrap()
+                .contains("retry after one completes")
+        );
+        drop(live);
+        // With capacity back the run is admitted and reaches the executor,
+        // which fails against the pinned dummy provider instead of at admission.
+        let error = dispatch(context, "agents.run", json!({"agent_id":"team-run-agent"}))
+            .await
+            .unwrap_err();
+        assert_ne!(error.kind(), "queue_saturated");
+    }
+
     #[tokio::test]
     async fn live_execution_rejects_a_suspended_pinned_definition() {
         let (_dir, store, owner) = fixture().await;
@@ -1507,6 +1867,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn partial_llm_revision_update_fails_when_inherited_payload_is_missing() {
+        let (_directory, store, _owner) = fixture().await;
+        let prior = definition(&agent_revision_params("legacy-agent"), None).unwrap();
+        let error = materialize_llm_payload(
+            &store,
+            json!({"agent_id":"legacy-agent","instructions":"new instructions"}),
+            Some(&prior),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), "unavailable");
+    }
+
+    /// Resolving the provider must come before the content-addressed write:
+    /// a create that fails because the provider is unconfigured must not
+    /// leave an immutable payload behind that no revision references.
+    #[tokio::test]
+    async fn create_without_provider_url_leaves_no_orphaned_payload() {
+        let (_directory, store, _owner) = fixture().await;
+        let error = materialize_llm_payload_with(&store, agent_params("orphan"), None, || {
+            Err(ToolError::Sdk {
+                sdk_kind: "unavailable".into(),
+                message: "provider unconfigured".into(),
+            })
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), "unavailable");
+        assert!(
+            !store.storage_dir().join("agent-payloads").exists(),
+            "a failed create must not materialize an orphaned Agent payload"
+        );
+    }
+
+    #[tokio::test]
+    async fn unauthorized_run_is_denied_before_input_validation() {
+        let (_dir, store, owner) = fixture().await;
+        dispatch(
+            agent_context(&store, &owner),
+            "agents.create",
+            agent_params("private-agent"),
+        )
+        .await
+        .unwrap();
+        let stranger = agent_context(&store, &browser("stranger-subject"));
+        let error = dispatch(
+            stranger,
+            "agents.run",
+            json!({
+                "agent_id":"private-agent",
+                "input": "x".repeat(crate::dispatch::agent_payloads::MAX_TASK_INPUT_BYTES + 1),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), "forbidden");
+        assert_eq!(envelope(&error)["message"], "access denied");
+    }
+
+    #[tokio::test]
     async fn update_preserves_suspended_state() {
         let (_dir, store, owner) = fixture().await;
         let context = agent_context(&store, &owner);
@@ -1541,178 +1959,10 @@ mod tests {
         assert_eq!(stored.state, AgentState::Suspended);
         assert_eq!(stored.revision.content_digest, digest('f'));
         // A suspended Agent still cannot run after the revision bump.
-        let error = dispatch(
-            context,
-            "agents.run",
-            json!({"agent_id":"suspended-agent","input":"test input","idempotency_key":"suspended-run"}),
-        )
-        .await
-        .unwrap_err();
+        let error = dispatch(context, "agents.run", json!({"agent_id":"suspended-agent"}))
+            .await
+            .unwrap_err();
         assert_eq!(error.kind(), "forbidden");
-    }
-
-    #[tokio::test]
-    async fn retained_session_reads_are_scoped_through_the_agent_owner() {
-        use sha2::{Digest as _, Sha256};
-
-        let (_dir, store, owner) = fixture().await;
-        let context = agent_context(&store, &owner);
-        dispatch(
-            context.clone(),
-            "agents.create",
-            agent_params("session-agent"),
-        )
-        .await
-        .unwrap();
-        let definition = store
-            .get_agent_definition("session-agent".into())
-            .await
-            .unwrap()
-            .unwrap();
-        let input = "inspect this repository";
-        store
-            .create_agent_session(
-                "session-retained".into(),
-                definition,
-                BOOTSTRAP_PRINCIPAL.into(),
-                "retained-request".into(),
-                "run".into(),
-                "authority-fingerprint".into(),
-                i64::MAX,
-                format!("sha256:{}", hex::encode(Sha256::digest(input.as_bytes()))),
-                input.into(),
-                None,
-                1,
-            )
-            .await
-            .unwrap();
-
-        let listed = dispatch(
-            context.clone(),
-            "agents.sessions.list",
-            json!({"agent_id":"session-agent"}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(listed["sessions"].as_array().unwrap().len(), 1);
-        assert_eq!(listed["sessions"][0]["session_id"], "session-retained");
-        assert!(!listed.to_string().contains(input));
-        let stranger = agent_context(&store, &browser("stranger-subject"));
-        let error = dispatch(
-            stranger,
-            "agents.session.get",
-            json!({"agent_id":"session-agent","session_id":"session-retained"}),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(error.kind(), "forbidden");
-    }
-
-    #[tokio::test]
-    async fn run_replays_durable_request_before_executor_resolution_and_conflicts_on_drift() {
-        use sha2::{Digest as _, Sha256};
-
-        let (_dir, store, owner) = fixture().await;
-        let context = agent_context(&store, &owner);
-        dispatch(
-            context.clone(),
-            "agents.create",
-            agent_params("replay-agent"),
-        )
-        .await
-        .unwrap();
-        let definition = store
-            .get_agent_definition("replay-agent".into())
-            .await
-            .unwrap()
-            .unwrap();
-        let input = "inspect this repository";
-        assert_eq!(
-            store
-                .create_agent_session(
-                    "session-original".into(),
-                    definition,
-                    BOOTSTRAP_PRINCIPAL.into(),
-                    "logical-request".into(),
-                    "run".into(),
-                    "authority-fingerprint".into(),
-                    i64::MAX,
-                    format!("sha256:{}", hex::encode(Sha256::digest(input.as_bytes()))),
-                    input.into(),
-                    None,
-                    1,
-                )
-                .await
-                .unwrap(),
-            AgentSessionAdmission::Created
-        );
-
-        let replay = dispatch(
-            context.clone(),
-            "agents.run",
-            json!({
-                "agent_id": "replay-agent",
-                "input": input,
-                "idempotency_key": "logical-request",
-            }),
-        )
-        .await
-        .unwrap();
-        assert_eq!(replay["session_id"], "session-original");
-        assert_eq!(replay["status"], "admitted");
-
-        let conflict = dispatch(
-            context.clone(),
-            "agents.run",
-            json!({
-                "agent_id": "replay-agent",
-                "input": "different input",
-                "idempotency_key": "logical-request",
-            }),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(conflict.kind(), "conflict");
-        assert_eq!(envelope(&conflict)["existing_id"], "session-original");
-
-        let listed = dispatch(
-            context,
-            "agents.sessions.list",
-            json!({"agent_id":"replay-agent"}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(listed["sessions"].as_array().unwrap().len(), 1);
-    }
-
-    #[cfg(not(feature = "proxy-testkit"))]
-    #[tokio::test]
-    async fn missing_harness_config_fails_without_creating_a_session() {
-        let (_dir, store, owner) = fixture().await;
-        let context = agent_context(&store, &owner);
-        dispatch(
-            context.clone(),
-            "agents.create",
-            agent_params("unconfigured-agent"),
-        )
-        .await
-        .unwrap();
-        let error = dispatch(
-            context.clone(),
-            "agents.run",
-            json!({"agent_id":"unconfigured-agent","input":"test input","idempotency_key":"unconfigured-run"}),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(error.kind(), "service_unavailable");
-        let listed = dispatch(
-            context,
-            "agents.sessions.list",
-            json!({"agent_id":"unconfigured-agent"}),
-        )
-        .await
-        .unwrap();
-        assert!(listed["sessions"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]

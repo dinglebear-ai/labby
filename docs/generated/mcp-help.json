@@ -404,39 +404,51 @@
               "description": ""
             },
             {
-              "name": "content_digest",
+              "name": "instructions",
               "ty": "string",
               "required": true,
+              "description": ""
+            },
+            {
+              "name": "model",
+              "ty": "string",
+              "required": false,
+              "description": ""
+            },
+            {
+              "name": "content_digest",
+              "ty": "string",
+              "required": false,
               "description": ""
             },
             {
               "name": "repository_digest",
               "ty": "string",
-              "required": true,
+              "required": false,
               "description": ""
             },
             {
               "name": "image_digest",
               "ty": "string",
-              "required": true,
+              "required": false,
               "description": ""
             },
             {
               "name": "harness_digest",
               "ty": "string",
-              "required": true,
+              "required": false,
               "description": ""
             },
             {
               "name": "loadout_digest",
               "ty": "string",
-              "required": true,
+              "required": false,
               "description": ""
             },
             {
               "name": "catalog_generation",
               "ty": "string",
-              "required": true,
+              "required": false,
               "description": ""
             }
           ],
@@ -492,6 +504,54 @@
               "ty": "string",
               "required": true,
               "description": ""
+            },
+            {
+              "name": "content_digest",
+              "ty": "string",
+              "required": false,
+              "description": ""
+            },
+            {
+              "name": "repository_digest",
+              "ty": "string",
+              "required": false,
+              "description": ""
+            },
+            {
+              "name": "image_digest",
+              "ty": "string",
+              "required": false,
+              "description": ""
+            },
+            {
+              "name": "harness_digest",
+              "ty": "string",
+              "required": false,
+              "description": ""
+            },
+            {
+              "name": "loadout_digest",
+              "ty": "string",
+              "required": false,
+              "description": ""
+            },
+            {
+              "name": "catalog_generation",
+              "ty": "string",
+              "required": false,
+              "description": ""
+            },
+            {
+              "name": "instructions",
+              "ty": "string",
+              "required": false,
+              "description": ""
+            },
+            {
+              "name": "model",
+              "ty": "string",
+              "required": false,
+              "description": ""
             }
           ],
           "returns": "object"
@@ -514,8 +574,8 @@
         },
         {
           "name": "agents.delete",
-          "description": "Delete an Agent",
-          "destructive": false,
+          "description": "Permanently delete an Agent definition",
+          "destructive": true,
           "requires_admin": false,
           "required_scopes": [],
           "params": [
@@ -543,49 +603,6 @@
             },
             {
               "name": "input",
-              "ty": "string",
-              "required": true,
-              "description": ""
-            },
-            {
-              "name": "idempotency_key",
-              "ty": "string",
-              "required": true,
-              "description": ""
-            }
-          ],
-          "returns": "object"
-        },
-        {
-          "name": "agents.harnesses",
-          "description": "List explicitly configured Agent harnesses and their pinning digests",
-          "destructive": false,
-          "requires_admin": false,
-          "required_scopes": [],
-          "params": [],
-          "returns": "object"
-        },
-        {
-          "name": "agents.sessions.list",
-          "description": "List retained sessions for a caller-visible Agent",
-          "destructive": false,
-          "requires_admin": false,
-          "required_scopes": [],
-          "params": [
-            {
-              "name": "agent_id",
-              "ty": "string",
-              "required": true,
-              "description": ""
-            },
-            {
-              "name": "cursor",
-              "ty": "string",
-              "required": false,
-              "description": ""
-            },
-            {
-              "name": "limit",
               "ty": "string",
               "required": false,
               "description": ""
@@ -616,8 +633,8 @@
           "returns": "object"
         },
         {
-          "name": "agents.session.get",
-          "description": "Read retained Agent session metadata",
+          "name": "agents.session.cancel",
+          "description": "Request cancellation of a running Agent session",
           "destructive": false,
           "requires_admin": false,
           "required_scopes": [],
@@ -630,78 +647,6 @@
             },
             {
               "name": "session_id",
-              "ty": "string",
-              "required": true,
-              "description": ""
-            }
-          ],
-          "returns": "object"
-        },
-        {
-          "name": "agents.session.transcript",
-          "description": "Read the bounded retained transcript for an Agent session",
-          "destructive": false,
-          "requires_admin": false,
-          "required_scopes": [],
-          "params": [
-            {
-              "name": "agent_id",
-              "ty": "string",
-              "required": true,
-              "description": ""
-            },
-            {
-              "name": "session_id",
-              "ty": "string",
-              "required": true,
-              "description": ""
-            }
-          ],
-          "returns": "object"
-        },
-        {
-          "name": "agents.session.stop",
-          "description": "Cancel a running Agent session and retain partial evidence",
-          "destructive": false,
-          "requires_admin": false,
-          "required_scopes": [],
-          "params": [
-            {
-              "name": "agent_id",
-              "ty": "string",
-              "required": true,
-              "description": ""
-            },
-            {
-              "name": "session_id",
-              "ty": "string",
-              "required": true,
-              "description": ""
-            }
-          ],
-          "returns": "object"
-        },
-        {
-          "name": "agents.session.resume",
-          "description": "Start a reauthorized session from retained input",
-          "destructive": false,
-          "requires_admin": false,
-          "required_scopes": [],
-          "params": [
-            {
-              "name": "agent_id",
-              "ty": "string",
-              "required": true,
-              "description": ""
-            },
-            {
-              "name": "session_id",
-              "ty": "string",
-              "required": true,
-              "description": ""
-            },
-            {
-              "name": "idempotency_key",
               "ty": "string",
               "required": true,
               "description": ""
@@ -719,224 +664,6 @@
       "caller_bound": true,
       "requires_http_subject": false,
       "actions": [
-        {
-          "name": "tasks.schedule_create",
-          "description": "Create an explicitly delegated durable Agent Task schedule",
-          "destructive": false,
-          "requires_admin": false,
-          "required_scopes": [],
-          "params": [
-            {
-              "name": "schedule_id",
-              "ty": "string",
-              "required": true,
-              "description": ""
-            },
-            {
-              "name": "name",
-              "ty": "string",
-              "required": true,
-              "description": ""
-            },
-            {
-              "name": "owner_kind",
-              "ty": "string",
-              "required": true,
-              "description": ""
-            },
-            {
-              "name": "owner_id",
-              "ty": "string",
-              "required": true,
-              "description": ""
-            },
-            {
-              "name": "project_id",
-              "ty": "string",
-              "required": false,
-              "description": ""
-            },
-            {
-              "name": "agent_id",
-              "ty": "string",
-              "required": true,
-              "description": ""
-            },
-            {
-              "name": "input",
-              "ty": "string",
-              "required": true,
-              "description": ""
-            },
-            {
-              "name": "schedule",
-              "ty": "object",
-              "required": true,
-              "description": "Once, interval, timezone-aware weekly, or five-field cron cadence"
-            },
-            {
-              "name": "armed",
-              "ty": "boolean",
-              "required": false,
-              "description": "Arm the cadence after creation"
-            },
-            {
-              "name": "retry_policy",
-              "ty": "object",
-              "required": false,
-              "description": "max_retries 0..10; fixed backoff_ms 60000..86400000"
-            }
-          ],
-          "returns": "object"
-        },
-        {
-          "name": "tasks.schedule_list",
-          "description": "List visible task schedules",
-          "destructive": false,
-          "requires_admin": false,
-          "required_scopes": [],
-          "params": [
-            {
-              "name": "cursor",
-              "ty": "string",
-              "required": false,
-              "description": ""
-            }
-          ],
-          "returns": "object"
-        },
-        {
-          "name": "tasks.schedule_get",
-          "description": "Read a task schedule and its input",
-          "destructive": false,
-          "requires_admin": false,
-          "required_scopes": [],
-          "params": [
-            {
-              "name": "schedule_id",
-              "ty": "string",
-              "required": true,
-              "description": ""
-            }
-          ],
-          "returns": "object"
-        },
-        {
-          "name": "tasks.schedule_edit",
-          "description": "Edit a task schedule",
-          "destructive": false,
-          "requires_admin": false,
-          "required_scopes": [],
-          "params": [
-            {
-              "name": "schedule_id",
-              "ty": "string",
-              "required": true,
-              "description": ""
-            },
-            {
-              "name": "name",
-              "ty": "string",
-              "required": false,
-              "description": ""
-            },
-            {
-              "name": "input",
-              "ty": "string",
-              "required": false,
-              "description": ""
-            },
-            {
-              "name": "agent_id",
-              "ty": "string",
-              "required": false,
-              "description": ""
-            },
-            {
-              "name": "schedule",
-              "ty": "object",
-              "required": false,
-              "description": "Replacement cadence"
-            },
-            {
-              "name": "retry_policy",
-              "ty": "object",
-              "required": false,
-              "description": "max_retries 0..10; fixed backoff_ms 60000..86400000"
-            }
-          ],
-          "returns": "object"
-        },
-        {
-          "name": "tasks.schedule_arm",
-          "description": "Arm a task schedule from its next future occurrence",
-          "destructive": false,
-          "requires_admin": false,
-          "required_scopes": [],
-          "params": [
-            {
-              "name": "schedule_id",
-              "ty": "string",
-              "required": true,
-              "description": ""
-            }
-          ],
-          "returns": "object"
-        },
-        {
-          "name": "tasks.schedule_pause",
-          "description": "Pause future task occurrences",
-          "destructive": false,
-          "requires_admin": false,
-          "required_scopes": [],
-          "params": [
-            {
-              "name": "schedule_id",
-              "ty": "string",
-              "required": true,
-              "description": ""
-            }
-          ],
-          "returns": "object"
-        },
-        {
-          "name": "tasks.schedule_run_now",
-          "description": "Create one idempotent immediate task occurrence",
-          "destructive": false,
-          "requires_admin": false,
-          "required_scopes": [],
-          "params": [
-            {
-              "name": "schedule_id",
-              "ty": "string",
-              "required": true,
-              "description": ""
-            },
-            {
-              "name": "idempotency_key",
-              "ty": "string",
-              "required": true,
-              "description": ""
-            }
-          ],
-          "returns": "object"
-        },
-        {
-          "name": "tasks.schedule_delete",
-          "description": "Delete a task schedule and its schedule history",
-          "destructive": false,
-          "requires_admin": false,
-          "required_scopes": [],
-          "params": [
-            {
-              "name": "schedule_id",
-              "ty": "string",
-              "required": true,
-              "description": ""
-            }
-          ],
-          "returns": "object"
-        },
         {
           "name": "tasks.create",
           "description": "Create an immutable Agent Task intent",
@@ -983,7 +710,7 @@
             {
               "name": "input_digest",
               "ty": "string",
-              "required": true,
+              "required": false,
               "description": ""
             }
           ],
@@ -1068,6 +795,224 @@
           "params": [
             {
               "name": "task_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "tasks.schedule_create",
+          "description": "Create a durable recurring Task schedule",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "schedule_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "name",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "owner_kind",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "owner_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "agent_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "input",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "schedule",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "project_id",
+              "ty": "string",
+              "required": false,
+              "description": ""
+            },
+            {
+              "name": "armed",
+              "ty": "string",
+              "required": false,
+              "description": ""
+            },
+            {
+              "name": "retry_policy",
+              "ty": "string",
+              "required": false,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "tasks.schedule_list",
+          "description": "List caller-visible Task schedules",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "cursor",
+              "ty": "string",
+              "required": false,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "tasks.schedule_get",
+          "description": "Get a Task schedule and its retained template",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "schedule_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "tasks.schedule_edit",
+          "description": "Edit a Task schedule's name, input, agent, cadence, or retry policy",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "schedule_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "name",
+              "ty": "string",
+              "required": false,
+              "description": ""
+            },
+            {
+              "name": "agent_id",
+              "ty": "string",
+              "required": false,
+              "description": ""
+            },
+            {
+              "name": "input",
+              "ty": "string",
+              "required": false,
+              "description": ""
+            },
+            {
+              "name": "schedule",
+              "ty": "string",
+              "required": false,
+              "description": ""
+            },
+            {
+              "name": "retry_policy",
+              "ty": "string",
+              "required": false,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "tasks.schedule_arm",
+          "description": "Arm a Task schedule",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "schedule_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "tasks.schedule_pause",
+          "description": "Pause a Task schedule",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "schedule_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "tasks.schedule_run_now",
+          "description": "Enqueue one immediate occurrence of a Task schedule",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "schedule_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "idempotency_key",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "tasks.schedule_delete",
+          "description": "Delete a Task schedule and its schedule history",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "schedule_id",
               "ty": "string",
               "required": true,
               "description": ""

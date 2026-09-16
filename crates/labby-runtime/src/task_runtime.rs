@@ -1,9 +1,8 @@
 //! Durable-ledger-backed Agent Task scheduling and fenced settlement.
 
 use crate::agent_runtime::{
-    AGENT_SETTLEMENT_ALLOWANCE_MILLIS, AgentAuthority, AgentExecutionOutput, AgentExecutionRequest,
-    AgentExecutor, AgentRuntimeError, Cancellation, LeaseResourceBinding,
-    bound_resources_to_authority_lease, execute_agent_bound,
+    AgentAuthority, AgentExecutionOutput, AgentExecutionRequest, AgentExecutor, AgentRuntimeError,
+    Cancellation, LeaseResourceBinding, execute_agent_bound,
 };
 use crate::authority::AuthoritySafeBoundary;
 use labby_primitives::{access::OwnerScope, task::TaskState};
@@ -13,7 +12,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use thiserror::Error;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 
 #[derive(Clone, Debug)]
 pub struct ScheduledTask {
@@ -21,6 +20,7 @@ pub struct ScheduledTask {
     pub owner: OwnerScope,
     pub attempt: u32,
     pub fencing_token: String,
+    pub lease_expires_at: u64,
     pub agent_request: AgentExecutionRequest,
 }
 
@@ -28,7 +28,6 @@ pub trait TaskLedger: Send + Sync {
     fn acquire(
         &self,
         task: &ScheduledTask,
-        lease_expires_at: u64,
     ) -> impl Future<Output = Result<(), TaskRuntimeError>> + Send;
     fn settle(
         &self,
@@ -57,30 +56,43 @@ impl TaskScheduler {
             owners: Mutex::new(BTreeMap::new()),
         })
     }
-    async fn admit(&self, owner: &OwnerScope) -> Result<OwnedSemaphorePermit, TaskRuntimeError> {
+    fn owner_semaphore(&self, owner: &OwnerScope) -> Result<Arc<Semaphore>, TaskRuntimeError> {
         let key = owner_key(owner);
-        let semaphore = {
-            let mut owners = self
-                .owners
-                .lock()
-                .map_err(|_| TaskRuntimeError::Unavailable)?;
-            // A completed owner's semaphore is referenced only by this map. Drop
-            // those idle entries opportunistically on every admission so churn
-            // cannot make scheduler memory grow with historical owners.
-            owners.retain(|existing, semaphore| {
-                existing == &key
-                    || Arc::strong_count(semaphore) > 1
-                    || semaphore.available_permits() != self.per_owner_limit
-            });
-            owners
-                .entry(key)
-                .or_insert_with(|| Arc::new(Semaphore::new(self.per_owner_limit)))
-                .clone()
-        };
-        semaphore
+        let mut owners = self
+            .owners
+            .lock()
+            .map_err(|_| TaskRuntimeError::Unavailable)?;
+        // A completed owner's semaphore is referenced only by this map. Drop
+        // those idle entries opportunistically on every admission so churn
+        // cannot make scheduler memory grow with historical owners.
+        owners.retain(|existing, semaphore| {
+            existing == &key
+                || Arc::strong_count(semaphore) > 1
+                || semaphore.available_permits() != self.per_owner_limit
+        });
+        Ok(owners
+            .entry(key)
+            .or_insert_with(|| Arc::new(Semaphore::new(self.per_owner_limit)))
+            .clone())
+    }
+
+    async fn admit(&self, owner: &OwnerScope) -> Result<OwnedSemaphorePermit, TaskRuntimeError> {
+        self.owner_semaphore(owner)?
             .acquire_owned()
             .await
             .map_err(|_| TaskRuntimeError::Unavailable)
+    }
+
+    /// Admit without waiting. A saturated owner is rejected so a synchronous
+    /// caller such as a direct Agent run can report back-pressure instead of
+    /// holding its request open behind the owner's live attempts.
+    pub fn try_admit(&self, owner: &OwnerScope) -> Result<OwnedSemaphorePermit, TaskRuntimeError> {
+        self.owner_semaphore(owner)?
+            .try_acquire_owned()
+            .map_err(|error| match error {
+                TryAcquireError::NoPermits => TaskRuntimeError::Saturated,
+                TryAcquireError::Closed => TaskRuntimeError::Unavailable,
+            })
     }
 
     #[cfg(test)]
@@ -106,32 +118,19 @@ where
     A: AgentAuthority,
     E: AgentExecutor,
 {
-    task.agent_request
-        .bounds
-        .validate()
-        .map_err(TaskRuntimeError::Agent)?;
-    let queue_now = now.max(authority.now_millis());
-    let queue_wait_millis = task
-        .agent_request
-        .lease
-        .expires_at_millis()
-        .saturating_sub(queue_now);
-    if task.fencing_token.len() < 32 || queue_wait_millis == 0 {
+    let _permit = scheduler.admit(&task.owner).await?;
+    let now = now.max(authority.now_millis());
+    // A Task lease that outlives the runtime bound would let an attempt keep
+    // its fence after the runtime has already abandoned the executor; reject
+    // it at admission instead of discovering the gap after settlement.
+    let lease_remaining = task.lease_expires_at.saturating_sub(now);
+    if task.fencing_token.len() < 32
+        || task.lease_expires_at <= now
+        || lease_remaining > task.agent_request.bounds.max_runtime_millis
+    {
         return Err(TaskRuntimeError::InvalidLease);
     }
-    let _permit = tokio::time::timeout(
-        std::time::Duration::from_millis(queue_wait_millis),
-        scheduler.admit(&task.owner),
-    )
-    .await
-    .map_err(|_| TaskRuntimeError::InvalidLease)??;
-    let now = now.max(authority.now_millis());
-    let (agent_request, lease_duration_millis) =
-        bounded_execution_request(&task.agent_request, now)?;
-    let lease_expires_at = now
-        .checked_add(lease_duration_millis)
-        .ok_or(TaskRuntimeError::InvalidLease)?;
-    ledger.acquire(&task, lease_expires_at).await?;
+    ledger.acquire(&task).await?;
     let binding = LeaseResourceBinding::Task {
         task_id: task.task_id.clone(),
     };
@@ -139,7 +138,7 @@ where
     match execute_agent_bound(
         authority,
         executor,
-        agent_request,
+        task.agent_request.clone(),
         cancellation,
         now,
         &binding,
@@ -175,15 +174,27 @@ where
             }
             match authority_outcome {
                 Ok(()) => {
-                    ledger
-                        .settle(&task, TaskState::Succeeded, Some(&output), None)
-                        .await?;
+                    settle_or_cancel(
+                        ledger,
+                        &task,
+                        &settlement_cancellation,
+                        TaskState::Succeeded,
+                        Some(&output),
+                        None,
+                    )
+                    .await?;
                     Ok(output)
                 }
                 Err(error) => {
-                    ledger
-                        .settle(&task, TaskState::Failed, None, Some(reason(&error)))
-                        .await?;
+                    settle_or_cancel(
+                        ledger,
+                        &task,
+                        &settlement_cancellation,
+                        TaskState::Failed,
+                        None,
+                        Some(reason(&error)),
+                    )
+                    .await?;
                     Err(TaskRuntimeError::Agent(error))
                 }
             }
@@ -195,27 +206,42 @@ where
             Err(TaskRuntimeError::Agent(AgentRuntimeError::Cancelled))
         }
         Err(error) => {
-            ledger
-                .settle(&task, TaskState::Failed, None, Some(reason(&error)))
-                .await?;
+            settle_or_cancel(
+                ledger,
+                &task,
+                &settlement_cancellation,
+                TaskState::Failed,
+                None,
+                Some(reason(&error)),
+            )
+            .await?;
             Err(TaskRuntimeError::Agent(error))
         }
     }
 }
 
-fn bounded_execution_request(
-    request: &AgentExecutionRequest,
-    now_millis: u64,
-) -> Result<(AgentExecutionRequest, u64), TaskRuntimeError> {
-    let mut bounded = request.clone();
-    bounded.bounds = bound_resources_to_authority_lease(request.bounds, &request.lease, now_millis)
-        .map_err(TaskRuntimeError::Agent)?;
-    let lease_duration = bounded
-        .bounds
-        .max_runtime_millis
-        .checked_add(AGENT_SETTLEMENT_ALLOWANCE_MILLIS)
-        .ok_or(TaskRuntimeError::InvalidLease)?;
-    Ok((bounded, lease_duration))
+/// Settle a terminal outcome from `Running`. A cancel request that commits
+/// `Running -> Cancelling` after the runtime's last cancellation check fences
+/// this settlement; in that case the attempt is the live owner of the
+/// `Cancelling` row and must settle it `Cancelled` itself, otherwise the row
+/// sits in `cancelling` until lease expiry records `expired`.
+async fn settle_or_cancel<L: TaskLedger>(
+    ledger: &L,
+    task: &ScheduledTask,
+    cancellation: &Cancellation,
+    state: TaskState,
+    output: Option<&AgentExecutionOutput>,
+    reason: Option<&str>,
+) -> Result<(), TaskRuntimeError> {
+    match ledger.settle(task, state, output, reason).await {
+        Err(TaskRuntimeError::FencedConflict) if cancellation.is_cancelled() => {
+            ledger
+                .settle(task, TaskState::Cancelled, None, Some("cancelled"))
+                .await?;
+            Err(TaskRuntimeError::Agent(AgentRuntimeError::Cancelled))
+        }
+        other => other,
+    }
 }
 
 pub async fn recover_tasks<L: TaskLedger>(ledger: &L, now: u64) -> Result<usize, TaskRuntimeError> {
@@ -232,13 +258,10 @@ pub fn reason(error: &AgentRuntimeError) -> &'static str {
         }
         AgentRuntimeError::ResourceLimit => "resource_limit",
         AgentRuntimeError::Cancelled => "cancelled",
-        AgentRuntimeError::ExecutorUnavailable => "executor_unavailable",
-        AgentRuntimeError::InvalidDefinition => "invalid_definition",
-        AgentRuntimeError::PinnedDefinitionMismatch => "pinned_definition_mismatch",
-        AgentRuntimeError::InvalidBounds => "invalid_bounds",
-        AgentRuntimeError::InvalidInput => "invalid_input",
-        AgentRuntimeError::InputDigestMismatch => "input_digest_mismatch",
-        AgentRuntimeError::ExecutorFailed => "execution_failed",
+        AgentRuntimeError::InvalidDefinition
+        | AgentRuntimeError::PinnedDefinitionMismatch
+        | AgentRuntimeError::InvalidBounds
+        | AgentRuntimeError::ExecutorFailed => "execution_failed",
     }
 }
 fn owner_key(owner: &OwnerScope) -> (u8, String) {
@@ -258,6 +281,8 @@ pub enum TaskRuntimeError {
     InvalidLease,
     #[error("task runtime unavailable")]
     Unavailable,
+    #[error("owner concurrency quota is saturated")]
+    Saturated,
     #[error("fenced task conflict")]
     FencedConflict,
     #[error("agent runtime: {0}")]
@@ -270,28 +295,21 @@ mod tests {
     use crate::{agent_runtime::*, authority::*};
     use labby_primitives::access::PrincipalId;
     use labby_primitives::agent::*;
-    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     struct Ledger {
         settles: AtomicUsize,
         last: Mutex<Option<(TaskState, Option<String>)>>,
-        acquired_expiry: Mutex<Option<u64>>,
     }
     impl Ledger {
         fn new() -> Self {
             Self {
                 settles: AtomicUsize::new(0),
                 last: Mutex::new(None),
-                acquired_expiry: Mutex::new(None),
             }
         }
     }
     impl TaskLedger for Ledger {
-        async fn acquire(
-            &self,
-            _: &ScheduledTask,
-            lease_expires_at: u64,
-        ) -> Result<(), TaskRuntimeError> {
-            *self.acquired_expiry.lock().unwrap() = Some(lease_expires_at);
+        async fn acquire(&self, _: &ScheduledTask) -> Result<(), TaskRuntimeError> {
             Ok(())
         }
         async fn settle(
@@ -318,19 +336,25 @@ mod tests {
             1
         }
     }
-    struct MovingAuth {
-        epochs: AuthorityEpochVector,
-        now: AtomicU64,
-    }
-    impl AgentAuthority for MovingAuth {
-        async fn current_epochs(&self) -> Result<AuthorityEpochVector, AgentRuntimeError> {
-            Ok(self.epochs.clone())
-        }
-        fn now_millis(&self) -> u64 {
-            self.now.load(Ordering::SeqCst)
-        }
-    }
     struct Exec;
+
+    #[test]
+    fn try_admit_rejects_a_saturated_owner_without_blocking() {
+        let scheduler = TaskScheduler::new(2).unwrap();
+        let owner = OwnerScope::Personal(PrincipalId::new("p-1").unwrap());
+        let first = scheduler.try_admit(&owner).unwrap();
+        let second = scheduler.try_admit(&owner).unwrap();
+        assert_eq!(
+            scheduler.try_admit(&owner).unwrap_err(),
+            TaskRuntimeError::Saturated
+        );
+        // Other owners keep their own quota.
+        let other = OwnerScope::Personal(PrincipalId::new("p-2").unwrap());
+        drop(scheduler.try_admit(&other).unwrap());
+        drop(first);
+        drop(scheduler.try_admit(&owner).unwrap());
+        drop(second);
+    }
 
     #[tokio::test]
     async fn idle_owner_semaphores_are_evicted_during_owner_churn() {
@@ -419,30 +443,76 @@ mod tests {
             1
         }
     }
-    fn d() -> String {
-        format!("sha256:{}", "d".repeat(64))
+    /// `tasks.cancel` commits Running -> Cancelling between the runtime's last
+    /// cancellation check and its Succeeded settlement, so the Running fence
+    /// on that settlement fails while the cancellation flag is already set.
+    struct CancelRacesSettlement {
+        cancellation: Cancellation,
+        settles: Mutex<Vec<(TaskState, Option<String>)>>,
+    }
+    impl TaskLedger for CancelRacesSettlement {
+        async fn acquire(&self, _: &ScheduledTask) -> Result<(), TaskRuntimeError> {
+            Ok(())
+        }
+        async fn settle(
+            &self,
+            _: &ScheduledTask,
+            state: TaskState,
+            _: Option<&AgentExecutionOutput>,
+            reason: Option<&str>,
+        ) -> Result<(), TaskRuntimeError> {
+            self.settles
+                .lock()
+                .unwrap()
+                .push((state, reason.map(str::to_owned)));
+            if state == TaskState::Succeeded {
+                self.cancellation.cancel();
+                return Err(TaskRuntimeError::FencedConflict);
+            }
+            Ok(())
+        }
+        async fn recover_expired(&self, _: u64) -> Result<usize, TaskRuntimeError> {
+            Ok(0)
+        }
     }
 
-    #[test]
-    fn settlement_reasons_separate_permanent_input_failures_from_executor_failures() {
-        assert_eq!(
-            reason(&AgentRuntimeError::InvalidDefinition),
-            "invalid_definition"
+    #[tokio::test]
+    async fn succeeded_settlement_fenced_by_concurrent_cancel_settles_cancelled() {
+        let cancellation = Cancellation::new();
+        let ledger = CancelRacesSettlement {
+            cancellation: cancellation.clone(),
+            settles: Mutex::new(Vec::new()),
+        };
+        let result = execute_task(
+            &TaskScheduler::new(1).unwrap(),
+            &ledger,
+            &Auth(epochs()),
+            &ExecWithoutCheck,
+            task(),
+            cancellation,
+            1,
+        )
+        .await;
+        assert!(
+            matches!(
+                result,
+                Err(TaskRuntimeError::Agent(AgentRuntimeError::Cancelled))
+            ),
+            "{result:?}"
         );
+        // The fenced success is followed by the Cancelled settlement instead of
+        // leaving the row in cancelling until lease expiry.
         assert_eq!(
-            reason(&AgentRuntimeError::PinnedDefinitionMismatch),
-            "pinned_definition_mismatch"
+            *ledger.settles.lock().unwrap(),
+            vec![
+                (TaskState::Succeeded, None),
+                (TaskState::Cancelled, Some("cancelled".into())),
+            ]
         );
-        assert_eq!(reason(&AgentRuntimeError::InvalidBounds), "invalid_bounds");
-        assert_eq!(reason(&AgentRuntimeError::InvalidInput), "invalid_input");
-        assert_eq!(
-            reason(&AgentRuntimeError::InputDigestMismatch),
-            "input_digest_mismatch"
-        );
-        assert_eq!(
-            reason(&AgentRuntimeError::ExecutorFailed),
-            "execution_failed"
-        );
+    }
+
+    fn d() -> String {
+        format!("sha256:{}", "d".repeat(64))
     }
     fn epochs() -> AuthorityEpochVector {
         AuthorityEpochVector::new(AuthorityEpochVectorInput {
@@ -480,6 +550,7 @@ mod tests {
             owner: owner.clone(),
             attempt: 1,
             fencing_token: "f".repeat(32),
+            lease_expires_at: 100,
             agent_request: AgentExecutionRequest {
                 definition: AgentDefinition {
                     id: "agent-1".into(),
@@ -508,16 +579,13 @@ mod tests {
                     owner,
                     catalog_generation: "cat-1".into(),
                     authority_fingerprint: e.fingerprint().as_str().into(),
-                    lease_expires_at: 10_000,
+                    lease_expires_at: 100,
                 },
-                input: "test input".into(),
-                input_digest: sha256_digest(b"test input"),
-                transcript: AgentTranscript::new(10).unwrap(),
                 lease: AuthorityLease::new(
                     binding,
                     &e,
                     1,
-                    10_000,
+                    100,
                     [
                         AuthoritySafeBoundary::BeforeDispatch,
                         AuthoritySafeBoundary::BeforeCommit,
@@ -547,75 +615,29 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(out.bytes, 1);
-        assert_eq!(*ledger.acquired_expiry.lock().unwrap(), Some(5_101));
         assert_eq!(ledger.settles.load(Ordering::SeqCst), 1);
         assert_eq!(recover_tasks(&ledger, 101).await.unwrap(), 2);
     }
 
     #[tokio::test]
-    async fn scheduler_queue_delay_does_not_consume_the_durable_lease() {
-        let scheduler = Arc::new(TaskScheduler::new(1).unwrap());
-        let queued = task();
-        let held = scheduler.admit(&queued.owner).await.unwrap();
-        let ledger = Arc::new(Ledger::new());
-        let authority = Arc::new(MovingAuth {
-            epochs: epochs(),
-            now: AtomicU64::new(1),
-        });
-        let running_scheduler = Arc::clone(&scheduler);
-        let running_ledger = Arc::clone(&ledger);
-        let running_authority = Arc::clone(&authority);
-        let execution = tokio::spawn(async move {
+    async fn lease_longer_than_the_runtime_bound_is_rejected_at_admission() {
+        let ledger = Ledger::new();
+        let mut overlong = task();
+        overlong.lease_expires_at = 1 + overlong.agent_request.bounds.max_runtime_millis + 1;
+        assert!(matches!(
             execute_task(
-                running_scheduler.as_ref(),
-                running_ledger.as_ref(),
-                running_authority.as_ref(),
+                &TaskScheduler::new(1).unwrap(),
+                &ledger,
+                &Auth(epochs()),
                 &Exec,
-                queued,
+                overlong,
                 Cancellation::new(),
                 1,
             )
-            .await
-        });
-        tokio::task::yield_now().await;
-        authority.now.store(40, Ordering::SeqCst);
-        drop(held);
-
-        execution.await.unwrap().unwrap();
-        assert_eq!(*ledger.acquired_expiry.lock().unwrap(), Some(5_140));
-    }
-
-    #[test]
-    fn runtime_budget_is_trimmed_to_leave_settlement_inside_the_authority_lease() {
-        let mut request = task().agent_request;
-        request.bounds.max_runtime_millis = 300_000;
-
-        request.session.lease_expires_at = 300_000;
-        request.lease = AuthorityLease::new(
-            request.lease.binding().clone(),
-            &epochs(),
-            0,
-            300_000,
-            [
-                AuthoritySafeBoundary::BeforeDispatch,
-                AuthoritySafeBoundary::BeforeCommit,
-            ],
-        )
-        .unwrap();
-        let (bounded, durable_lease) = bounded_execution_request(&request, 0).unwrap();
-        assert_eq!(bounded.bounds.max_runtime_millis, 295_000);
-        assert_eq!(durable_lease, 300_000);
-
-        let (bounded, durable_lease) = bounded_execution_request(&request, 10_000).unwrap();
-        assert_eq!(bounded.bounds.max_runtime_millis, 285_000);
-        assert_eq!(durable_lease, 290_000);
-
-        assert!(matches!(
-            bounded_execution_request(&request, 295_000),
-            Err(TaskRuntimeError::Agent(AgentRuntimeError::Lease(
-                AuthorityLeaseError::Expired
-            )))
+            .await,
+            Err(TaskRuntimeError::InvalidLease)
         ));
+        assert_eq!(ledger.settles.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

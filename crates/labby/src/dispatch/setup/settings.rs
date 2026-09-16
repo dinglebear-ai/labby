@@ -358,6 +358,12 @@ pub fn schema_response() -> SettingsSchemaResponse {
                 advanced: false,
             },
             SettingsSectionSpec {
+                id: "authentication",
+                label: "Authentication",
+                description: "Browser sign-in administrators. Only the operator may change them.",
+                advanced: false,
+            },
+            SettingsSectionSpec {
                 id: "surfaces",
                 label: "Surfaces",
                 description: "Safe scalar HTTP, MCP, URL, and CORS settings.",
@@ -386,8 +392,31 @@ pub fn schema_response() -> SettingsSchemaResponse {
     }
 }
 
+/// The administrator list. Each listed email's browser session receives the
+/// configured admin scopes; writing it is reserved for the operator.
+fn admin_emails_field() -> SettingsFieldSpec {
+    let mut field = editable(
+        "authentication",
+        ADMIN_EMAILS_KEY,
+        "Administrators",
+        "Emails whose browser sign-in receives full admin access. One per line. \
+         Takes effect after restart; at least one is required.",
+        SettingsBackend::Env,
+        SettingsControl::StringList,
+        SettingsApplyMode::Restart,
+        None,
+        Some("owner@example.com"),
+    );
+    field.risk = SettingsRisk::SecuritySensitive;
+    field.required = true;
+    field
+}
+
+const ADMIN_EMAILS_KEY: &str = "LABBY_AUTH_ADMIN_EMAIL";
+
 pub fn settings_fields() -> Vec<SettingsFieldSpec> {
     let mut fields = vec![
+        admin_emails_field(),
         editable(
             "core",
             "LABBY_MCP_HTTP_HOST",
@@ -734,7 +763,10 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "Maximum wall-clock time for one Code Mode execution.",
             SettingsApplyMode::Partial,
             1,
-            60_000,
+            // Derived from the shared validation ceiling so the editor can
+            // never reject a value config.toml accepts.
+            i64::try_from(labby_runtime::gateway_config::MAX_CODE_MODE_TIMEOUT_MS)
+                .unwrap_or(i64::MAX),
             Some("30000"),
         ),
         number_editable(
@@ -994,6 +1026,18 @@ fn value_for_field(
     env_path: &std::path::Path,
 ) -> Result<(Value, SettingsValueSource), ToolError> {
     if field.backend == SettingsBackend::Env {
+        // A variable the service manager (or shell) set before `.env` loaded
+        // wins for the whole process: report that effective value and flag
+        // it, because an edit to `.env` could never take effect.
+        if let Some(process_value) = env_process_override(field) {
+            return Ok((
+                process_value,
+                SettingsValueSource {
+                    source: SettingsSourceKind::Env,
+                    overridden_by_env: Some(field.key.to_string()),
+                },
+            ));
+        }
         let value = env_current_value(env_path, field)?.unwrap_or(Value::Null);
         return Ok((
             value.clone(),
@@ -1098,9 +1142,20 @@ fn env_process_value(field: &SettingsFieldSpec) -> Value {
         Some(value) if field.control == SettingsControl::Number => value
             .parse::<i64>()
             .map_or_else(|_| json!(value), |parsed| json!(parsed)),
+        Some(value) if field.control == SettingsControl::StringList => env_list_value(&value),
         Some(value) => json!(value),
         None => Value::Null,
     }
+}
+
+/// The effective value of an env-backed field when the process environment,
+/// not `.env`, supplies it. `None` when `.env` is authoritative for the key.
+fn env_process_override(field: &SettingsFieldSpec) -> Option<Value> {
+    if !crate::dispatch::helpers::env_set_outside_dotenv(field.key) {
+        return None;
+    }
+    let value = env_process_value(field);
+    (!value.is_null()).then_some(value)
 }
 
 fn env_current_value(
@@ -1417,6 +1472,16 @@ pub fn env_entries_from_updates(
                 param: entry.key.clone(),
             });
         }
+        if env_process_override(field).is_some() {
+            return Err(ToolError::InvalidParam {
+                message: format!(
+                    "setting `{}` is set in the server's process environment, which takes \
+                     precedence over .env; change it where the process is started",
+                    entry.key
+                ),
+                param: entry.key.clone(),
+            });
+        }
         require_previous(entry)?;
         let value = match field.control {
             SettingsControl::Number => entry
@@ -1434,6 +1499,7 @@ pub fn env_entries_from_updates(
                 validate_string_field(field, &raw)?;
                 raw
             }
+            SettingsControl::StringList => env_string_list_value(field, &entry.value)?,
             _ => return Err(invalid_field(field, "has unsupported env control")),
         };
         out.push(crate::dispatch::setup::DraftEntry {
@@ -1442,6 +1508,74 @@ pub fn env_entries_from_updates(
         });
     }
     Ok(out)
+}
+
+/// Serialize a list setting to its comma-separated `.env` form. The
+/// administrator list is validated with the same parser the server uses at
+/// startup, so a value saved here cannot make the next start fail closed.
+fn env_string_list_value(field: &SettingsFieldSpec, value: &Value) -> Result<String, ToolError> {
+    let items = value
+        .as_array()
+        .ok_or_else(|| invalid_field(field, "must be a list of strings"))?
+        .iter()
+        .map(|item| {
+            item.as_str()
+                .map(str::trim)
+                .ok_or_else(|| invalid_field(field, "must be a list of strings"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if items.iter().any(|item| item.contains(',')) {
+        return Err(invalid_field(field, "entries must not contain commas"));
+    }
+    let joined = items
+        .into_iter()
+        .filter(|item| !item.is_empty())
+        .collect::<Vec<_>>()
+        .join(",");
+    if field.key == ADMIN_EMAILS_KEY {
+        return validate_admin_email_list(&joined).map_err(|message| invalid_field(field, message));
+    }
+    Ok(joined)
+}
+
+/// Validate a raw `LABBY_AUTH_ADMIN_EMAIL` value with the parser the server
+/// uses at startup and return its canonical comma-separated form. Every setup
+/// write path (`settings.env.update`, `draft.set`, `draft.commit`) goes
+/// through this one check, so no path can stage a value that makes the next
+/// start fail closed.
+pub(super) fn validate_admin_email_list(raw: &str) -> Result<String, &'static str> {
+    let emails = labby_auth::config::parse_admin_emails(raw);
+    if emails.is_empty() {
+        return Err("must list at least one administrator; an empty list locks every account out");
+    }
+    if !emails
+        .iter()
+        .all(|email| labby_auth::config::is_plausible_email(email))
+    {
+        return Err("entries must each be a single email address");
+    }
+    Ok(emails.join(","))
+}
+
+/// Value-level validation for an environment entry headed for `.env`,
+/// independent of which setup action carries it.
+pub(super) fn validate_env_entry_value(key: &str, value: &str) -> Result<(), ToolError> {
+    if key == ADMIN_EMAILS_KEY {
+        validate_admin_email_list(value).map_err(|message| ToolError::InvalidParam {
+            message: format!("{key} {message}"),
+            param: key.to_string(),
+        })?;
+    }
+    Ok(())
+}
+
+fn env_list_value(raw: &str) -> Value {
+    json!(
+        raw.split(',')
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .collect::<Vec<_>>()
+    )
 }
 
 pub fn validate_env_previous(
@@ -1496,6 +1630,9 @@ fn env_file_value(
         return Ok(raw
             .parse::<i64>()
             .map_or_else(|_| Some(json!(raw)), |parsed| Some(json!(parsed))));
+    }
+    if field.control == SettingsControl::StringList {
+        return Ok(Some(env_list_value(&raw)));
     }
     Ok(Some(json!(raw)))
 }
@@ -1701,12 +1838,96 @@ mod tests {
         assert!(build_env_schema_from_json(&incomplete.to_string()).is_err());
     }
 
+    /// Finding 5: the process environment takes precedence over `.env`, so a
+    /// variable set by the service manager makes a Settings save silently
+    /// ineffective. The state must report the effective value and flag the
+    /// override, and the shared env update must refuse the write.
+    #[test]
+    fn env_backed_field_reports_process_override_when_file_and_process_disagree() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = dir.path().join(".env");
+        std::fs::write(&env, "LABBY_AUTH_ADMIN_EMAIL=a@example.com\n").unwrap();
+        let fields = settings_fields_by_key();
+        let field = &fields[ADMIN_EMAILS_KEY];
+        let cfg = crate::config::LabConfig::default();
+        let explicit = BTreeSet::new();
+        let process_env = HashMap::from([(
+            ADMIN_EMAILS_KEY.to_string(),
+            "a@example.com,b@example.com".to_string(),
+        )]);
+        let update = || {
+            vec![SettingsUpdateEntry {
+                key: ADMIN_EMAILS_KEY.into(),
+                value: json!(["a@example.com"]),
+                previous: json!(["a@example.com", "b@example.com"]),
+                unset: false,
+                previous_present: true,
+            }]
+        };
+
+        // Set outside `.env` (present before dotenv loaded): the running
+        // server uses `a,b`, editing the file cannot change that.
+        crate::dispatch::helpers::with_env_override(process_env.clone(), || {
+            crate::dispatch::helpers::with_env_keys_set_outside_dotenv(
+                BTreeSet::from([ADMIN_EMAILS_KEY.to_string()]),
+                || {
+                    let (value, source) = value_for_field(&cfg, field, &explicit, &env).unwrap();
+                    assert_eq!(value, json!(["a@example.com", "b@example.com"]));
+                    assert_eq!(source.source, SettingsSourceKind::Env);
+                    assert_eq!(source.overridden_by_env.as_deref(), Some(ADMIN_EMAILS_KEY));
+                    let error = env_entries_from_updates(&update()).unwrap_err();
+                    assert_eq!(error.kind(), "invalid_param");
+                    assert!(error.to_string().contains("process environment"), "{error}");
+                },
+            )
+        });
+
+        // The same disagreement after a Settings save that is waiting for a
+        // restart is not an override: the file value stays editable.
+        crate::dispatch::helpers::with_env_override(process_env, || {
+            let (value, source) = value_for_field(&cfg, field, &explicit, &env).unwrap();
+            assert_eq!(value, json!(["a@example.com"]));
+            assert_eq!(source.overridden_by_env, None);
+            assert!(env_entries_from_updates(&update()).is_ok());
+        });
+    }
+
     #[test]
     fn settings_schema_keys_are_unique() {
         let mut seen = BTreeSet::new();
         for field in settings_fields() {
             assert!(seen.insert(field.key), "duplicate field {}", field.key);
         }
+    }
+
+    /// The settings editor must accept exactly the range config.toml accepts;
+    /// a second hand-written ceiling silently rejects values the file allows.
+    #[test]
+    fn code_mode_timeout_setting_bounds_match_config_validation() {
+        use labby_runtime::gateway_config::CodeModeConfig;
+        let field = settings_fields()
+            .into_iter()
+            .find(|field| field.key == "code_mode.timeout_ms")
+            .expect("code mode timeout setting");
+        let max = field.max.expect("bounded setting");
+        let accepted = CodeModeConfig {
+            timeout_ms: u64::try_from(max).unwrap(),
+            ..CodeModeConfig::default()
+        };
+        assert!(accepted.validate().is_ok(), "settings max must validate");
+        let rejected = CodeModeConfig {
+            timeout_ms: u64::try_from(max).unwrap() + 1,
+            ..CodeModeConfig::default()
+        };
+        assert!(
+            rejected.validate().is_err(),
+            "settings max must be the config ceiling, not below it"
+        );
+        assert_eq!(field.min, Some(1));
+        assert_eq!(
+            max,
+            i64::try_from(labby_runtime::gateway_config::MAX_CODE_MODE_TIMEOUT_MS).unwrap()
+        );
     }
 
     #[test]

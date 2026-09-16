@@ -24,6 +24,7 @@ const sampleEntry: AllowedEmailEntry = {
   email: 'alice@example.com',
   added_by: 'admin@example.com',
   created_at: '2026-04-26T10:00:00Z',
+  role: 'member',
 }
 
 // ---------------------------------------------------------------------------
@@ -105,15 +106,28 @@ test('authAdminApi.addAllowedEmail sends POST with email body and csrf', async (
     )
   }
 
-  const result = await authAdminApi.addAllowedEmail('alice@example.com')
+  const result = await authAdminApi.addAllowedEmail('alice@example.com', 'member')
 
   assert.equal(requestUrl, '/v1/auth/allowed-emails')
   assert.equal(requestInit?.method, 'POST')
   assert.equal(requestInit?.credentials, 'include')
-  assert.deepEqual(JSON.parse(String(requestInit?.body)), { email: 'alice@example.com' })
+  assert.deepEqual(JSON.parse(String(requestInit?.body)), { email: 'alice@example.com', role: 'member' })
   const headers = new Headers(requestInit?.headers)
   assert.equal(headers.get('x-csrf-token'), CSRF)
   assert.deepEqual(result, sampleEntry)
+})
+
+test('addAllowedEmail posts the role', async () => {
+  setAuthenticatedSession()
+
+  let sentBody = ''
+  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    sentBody = String(init?.body)
+    return new Response(JSON.stringify({ entry: { email: 'eli@example.com', added_by: 'owner', created_at: '1', role: 'admin' } }), { status: 201 })
+  }) as typeof globalThis.fetch
+  const entry = await authAdminApi.addAllowedEmail('eli@example.com', 'admin')
+  assert.deepEqual(JSON.parse(sentBody), { email: 'eli@example.com', role: 'admin' })
+  assert.equal(entry.role, 'admin')
 })
 
 test('authAdminApi.addAllowedEmail surfaces 422 duplicate as AuthAdminApiError', async () => {
@@ -126,7 +140,7 @@ test('authAdminApi.addAllowedEmail surfaces 422 duplicate as AuthAdminApiError',
     )
 
   await assert.rejects(
-    authAdminApi.addAllowedEmail('alice@example.com'),
+    authAdminApi.addAllowedEmail('alice@example.com', 'member'),
     (error: unknown) =>
       error instanceof AuthAdminApiError &&
       error.status === 422 &&

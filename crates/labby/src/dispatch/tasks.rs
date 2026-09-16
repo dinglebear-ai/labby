@@ -9,7 +9,11 @@ use crate::{
     },
     dispatch::{
         access_errors::map_store_error,
-        agents::{LiveExecutionAuthority, map_agent_runtime_error, reject_server_assigned},
+        agent_payloads::{AgentPayloadStore, inline_output},
+        agents::{
+            LiveExecutionAuthority, configured_task_executor, execution_safe_boundaries,
+            map_agent_runtime_error, reject_server_assigned, request_safe_boundaries,
+        },
         error::ToolError,
     },
 };
@@ -25,10 +29,10 @@ use labby_primitives::{
 };
 use labby_runtime::{
     agent_runtime::{
-        AgentExecutionOutput, AgentExecutionRequest, AgentResourceBounds, AgentRuntimeError,
-        AgentTranscript, Cancellation,
+        AGENT_MAX_RUNTIME_MILLIS, AgentExecutionOutput, AgentExecutionRequest, AgentResourceBounds,
+        AgentRuntimeError, Cancellation, system_now_millis,
     },
-    authority::{AuthoritySafeBoundary, MAX_AUTHORITY_LEASE_MILLIS},
+    authority::AuthoritySafeBoundary,
     task_runtime::{ScheduledTask, TaskLedger, TaskRuntimeError, TaskScheduler, execute_task},
 };
 use serde_json::{Value, json};
@@ -42,6 +46,8 @@ static TASK_SCHEDULER: LazyLock<TaskScheduler> =
     LazyLock::new(|| TaskScheduler::new(4).expect("valid fixed task quota"));
 static TASK_CANCELLATIONS: LazyLock<Mutex<HashMap<String, (u32, Cancellation)>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+const TASK_MAX_RUNTIME_MILLIS: u64 = AGENT_MAX_RUNTIME_MILLIS;
+const TASK_ATTEMPT_LEASE_MILLIS: u64 = TASK_MAX_RUNTIME_MILLIS;
 
 const fn param(name: &'static str) -> ParamSpec {
     ParamSpec {
@@ -75,89 +81,6 @@ const fn action(
 }
 pub const ACTIONS: &[ActionSpec] = &[
     action(
-        "tasks.schedule_create",
-        "Create an explicitly delegated durable Agent Task schedule",
-        &[
-            param("schedule_id"),
-            param("name"),
-            param("owner_kind"),
-            param("owner_id"),
-            optional_param("project_id"),
-            param("agent_id"),
-            param("input"),
-            ParamSpec {
-                name: "schedule",
-                ty: "object",
-                required: true,
-                description: "Once, interval, timezone-aware weekly, or five-field cron cadence",
-            },
-            ParamSpec {
-                name: "armed",
-                ty: "boolean",
-                required: false,
-                description: "Arm the cadence after creation",
-            },
-            ParamSpec {
-                name: "retry_policy",
-                ty: "object",
-                required: false,
-                description: "max_retries 0..10; fixed backoff_ms 60000..86400000",
-            },
-        ],
-    ),
-    action(
-        "tasks.schedule_list",
-        "List visible task schedules",
-        &[optional_param("cursor")],
-    ),
-    action(
-        "tasks.schedule_get",
-        "Read a task schedule and its input",
-        &[param("schedule_id")],
-    ),
-    action(
-        "tasks.schedule_edit",
-        "Edit a task schedule",
-        &[
-            param("schedule_id"),
-            optional_param("name"),
-            optional_param("input"),
-            optional_param("agent_id"),
-            ParamSpec {
-                name: "schedule",
-                ty: "object",
-                required: false,
-                description: "Replacement cadence",
-            },
-            ParamSpec {
-                name: "retry_policy",
-                ty: "object",
-                required: false,
-                description: "max_retries 0..10; fixed backoff_ms 60000..86400000",
-            },
-        ],
-    ),
-    action(
-        "tasks.schedule_arm",
-        "Arm a task schedule from its next future occurrence",
-        &[param("schedule_id")],
-    ),
-    action(
-        "tasks.schedule_pause",
-        "Pause future task occurrences",
-        &[param("schedule_id")],
-    ),
-    action(
-        "tasks.schedule_run_now",
-        "Create one idempotent immediate task occurrence",
-        &[param("schedule_id"), param("idempotency_key")],
-    ),
-    action(
-        "tasks.schedule_delete",
-        "Delete a task schedule and its schedule history",
-        &[param("schedule_id")],
-    ),
-    action(
         "tasks.create",
         "Create an immutable Agent Task intent",
         &[
@@ -167,7 +90,7 @@ pub const ACTIONS: &[ActionSpec] = &[
             param("owner_id"),
             param("agent_id"),
             param("input"),
-            param("input_digest"),
+            optional_param("input_digest"),
         ],
     ),
     action(
@@ -187,6 +110,64 @@ pub const ACTIONS: &[ActionSpec] = &[
         "Read an Agent Task result",
         &[param("task_id")],
     ),
+    action(
+        "tasks.schedule_create",
+        "Create a durable recurring Task schedule",
+        &[
+            param("schedule_id"),
+            param("name"),
+            param("owner_kind"),
+            param("owner_id"),
+            param("agent_id"),
+            param("input"),
+            param("schedule"),
+            optional_param("project_id"),
+            optional_param("armed"),
+            optional_param("retry_policy"),
+        ],
+    ),
+    action(
+        "tasks.schedule_list",
+        "List caller-visible Task schedules",
+        &[optional_param("cursor")],
+    ),
+    action(
+        "tasks.schedule_get",
+        "Get a Task schedule and its retained template",
+        &[param("schedule_id")],
+    ),
+    action(
+        "tasks.schedule_edit",
+        "Edit a Task schedule's name, input, agent, cadence, or retry policy",
+        &[
+            param("schedule_id"),
+            optional_param("name"),
+            optional_param("agent_id"),
+            optional_param("input"),
+            optional_param("schedule"),
+            optional_param("retry_policy"),
+        ],
+    ),
+    action(
+        "tasks.schedule_arm",
+        "Arm a Task schedule",
+        &[param("schedule_id")],
+    ),
+    action(
+        "tasks.schedule_pause",
+        "Pause a Task schedule",
+        &[param("schedule_id")],
+    ),
+    action(
+        "tasks.schedule_run_now",
+        "Enqueue one immediate occurrence of a Task schedule",
+        &[param("schedule_id"), param("idempotency_key")],
+    ),
+    action(
+        "tasks.schedule_delete",
+        "Delete a Task schedule and its schedule history",
+        &[param("schedule_id")],
+    ),
 ];
 
 /// Exact capability the shared evaluator demands for `action`. The generated
@@ -195,14 +176,18 @@ pub const ACTIONS: &[ActionSpec] = &[
 pub(crate) fn required_capability(action: &str) -> Option<Capability> {
     Some(match action {
         "tasks.create" | "tasks.schedule_create" => Capability::ScopeCreate,
-        "tasks.schedule_list" | "tasks.schedule_get" => Capability::ScopeRead,
-        "tasks.schedule_edit"
+        "tasks.list"
+        | "tasks.get"
+        | "tasks.result"
+        | "tasks.schedule_list"
+        | "tasks.schedule_get" => Capability::ScopeRead,
+        "tasks.queue"
+        | "tasks.cancel"
+        | "tasks.schedule_edit"
         | "tasks.schedule_arm"
         | "tasks.schedule_pause"
         | "tasks.schedule_run_now" => Capability::ScopeOperate,
         "tasks.schedule_delete" => Capability::ScopeDelete,
-        "tasks.list" | "tasks.get" | "tasks.result" => Capability::ScopeRead,
-        "tasks.queue" | "tasks.cancel" => Capability::ScopeOperate,
         _ => return None,
     })
 }
@@ -235,11 +220,20 @@ pub(crate) async fn dispatch(
     match name {
         "tasks.create" => {
             reject_server_assigned(&params)?;
-            let input = required(&params, "input")?;
-            let input_digest = required(&params, "input_digest")?;
-            validate_input_digest(&input, &input_digest)?;
             let owner = owner(&params)?;
             let task_id = required(&params, "task_id")?;
+            // Authorize before Agent lookup or raw-input materialization. The
+            // transactional create below re-authorizes at commit, but this
+            // preflight prevents denied callers from causing CAS writes.
+            authorize(
+                &context,
+                name,
+                &owner,
+                task_id.clone(),
+                Capability::ScopeCreate,
+                now,
+            )
+            .await?;
             let request = authority_request(
                 &context,
                 name,
@@ -257,6 +251,7 @@ pub(crate) async fn dispatch(
             if agent.owner != owner || agent.state != AgentState::Active {
                 return Err(denied());
             }
+            let input_digest = materialize_task_input(&context.store, &params)?;
             let intent = TaskIntent {
                 id: task_id.clone(),
                 idempotency_key: required(&params, "idempotency_key")?,
@@ -290,7 +285,6 @@ pub(crate) async fn dispatch(
                 .authorize_and_create_agent_task(
                     request,
                     intent,
-                    input,
                     i64::try_from(now).map_err(|_| internal())?,
                 )
                 .await
@@ -355,7 +349,18 @@ pub(crate) async fn dispatch(
             {
                 return Err(denied());
             }
-            Ok(render_result(&record))
+            let mut result = render_result(&record);
+            if let Some(digest) = record.output_digest.as_deref() {
+                // A recorded digest whose bytes are missing, oversized, or no
+                // longer verify is an error with its own stable kind; the
+                // caller must never receive a digest with silently absent text.
+                let output =
+                    AgentPayloadStore::for_access_store(&context.store).load_output(digest)?;
+                let (inline, truncated) = inline_output(output);
+                result["output"] = Value::String(inline);
+                result["output_truncated"] = Value::Bool(truncated);
+            }
+            Ok(result)
         }
         "tasks.queue" => {
             let record = load(&context, &params).await?;
@@ -373,61 +378,70 @@ pub(crate) async fn dispatch(
             )?;
             let task_id = record.intent.id.clone();
             let transition_now = i64::try_from(now).map_err(|_| internal())?;
-            // The transition and same-process live-token signal must have the
-            // same owned lifetime.
-            let owned_context = context.clone();
-            let owned_record = record.clone();
-            let response_state = tokio::spawn(async move {
-                owned_context
-                    .store
-                    .authorize_and_transition_agent_task(
-                        request,
-                        task_id.clone(),
-                        owned_record.state,
-                        TaskState::Cancelling,
-                        owned_context.identity.safe_fingerprint(),
-                        owned_record.attempt,
-                        transition_now,
-                        None,
-                    )
-                    .await
-                    .map_err(map)?;
-                let live_owner = signal_task_cancellation(&task_id);
-                if owned_record.state == TaskState::Running && live_owner {
-                    Ok::<_, ToolError>("cancelling")
-                } else {
+            let response_state = {
+                // The transition and same-process live-token signal must have
+                // the same owned lifetime. Otherwise the durable Cancelling row
+                // can commit after a dropped request without the executor ever
+                // observing the cancellation request.
+                let owned_context = context.clone();
+                let owned_record = record.clone();
+                tokio::spawn(async move {
                     owned_context
                         .store
-                        .transition_agent_task(
-                            task_id,
+                        .authorize_and_transition_agent_task(
+                            request,
+                            task_id.clone(),
+                            owned_record.state,
                             TaskState::Cancelling,
-                            TaskState::Cancelled,
                             owned_context.identity.safe_fingerprint(),
                             owned_record.attempt,
                             transition_now,
+                            None,
                         )
                         .await
                         .map_err(map)?;
-                    Ok("cancelled")
-                }
-            })
-            .await
-            .map_err(|_| internal())??;
+                    let live_owner = signal_task_cancellation(&task_id);
+                    if owned_record.state == TaskState::Running && live_owner {
+                        Ok::<_, ToolError>("cancelling")
+                    } else {
+                        owned_context
+                            .store
+                            .transition_agent_task(
+                                task_id,
+                                TaskState::Cancelling,
+                                TaskState::Cancelled,
+                                owned_context.identity.safe_fingerprint(),
+                                owned_record.attempt,
+                                transition_now,
+                            )
+                            .await
+                            .map_err(map)?;
+                        Ok("cancelled")
+                    }
+                })
+                .await
+                .map_err(|_| internal())??
+            };
             Ok(json!({"task_id":record.intent.id,"state":response_state}))
         }
         _ => Err(unknown(name)),
     }
 }
 
+/// Move a Task from `created` (or resume an ownerless `queued` row) into the
+/// fenced execution path. `schedule_admission` carries the scheduler's claim
+/// fence for occurrences it admits; the store refuses to queue a scheduled
+/// Task without it and refuses a fence that no longer matches the schedule.
 pub(crate) async fn queue_authorized_task(
     context: TaskDispatchContext,
     record: crate::access::TaskRecord,
     schedule_admission: Option<crate::access::task_schedule::ScheduleAdmission>,
     now: u64,
 ) -> Result<Value, ToolError> {
-    let definition = pinned_definition(&context, &record).await?;
-    crate::dispatch::agents::executor::resolve_executor(&definition)
-        .map_err(|error| map_agent_runtime_error(&error))?;
+    // Refuse to move a Task out of `created` when its pinned Agent revision
+    // has already drifted; the authoritative re-check happens again inside
+    // `execute_queued` before the lease.
+    pinned_definition(&context, &record).await?;
     let request = authority_request(
         &context,
         "tasks.queue",
@@ -438,24 +452,45 @@ pub(crate) async fn queue_authorized_task(
     )?;
     let task_id = record.intent.id.clone();
     let transition_now = i64::try_from(now).map_err(|_| internal())?;
+    // Own the durable queue transition before awaiting it from the request.
+    // AccessStore work may commit on its blocking worker even when this
+    // request future is dropped; keeping the transition, cancellation
+    // registration, and execution handoff in one spawned owner closes that
+    // post-commit abandonment gap.
     let attempt = record.attempt.saturating_add(1);
     let owned_context = context.clone();
     let owned_record = record.clone();
     tokio::spawn(async move {
-        let authority_lease = owned_context
-            .store
-            .authorize_and_transition_agent_task(
-                request,
-                task_id.clone(),
-                owned_record.state,
-                TaskState::Queued,
-                owned_context.identity.safe_fingerprint(),
-                owned_record.attempt,
-                transition_now,
-                schedule_admission,
-            )
-            .await
-            .map_err(map)?;
+        let authority_lease = match owned_record.state {
+            TaskState::Created => owned_context
+                .store
+                .authorize_and_transition_agent_task(
+                    request,
+                    task_id.clone(),
+                    TaskState::Created,
+                    TaskState::Queued,
+                    owned_context.identity.safe_fingerprint(),
+                    owned_record.attempt,
+                    transition_now,
+                    schedule_admission,
+                )
+                .await
+                .map_err(map)?,
+            TaskState::Queued => {
+                let lease = authorize_action(&owned_context.store, request)
+                    .await
+                    .map_err(map)?;
+                // A queued row with an in-process owner is already
+                // being handed to the scheduler. A queued row with
+                // no owner is a crash/restart handoff gap and may be
+                // safely resumed by this freshly authorized caller.
+                if task_has_live_owner(&task_id) {
+                    return Ok::<(), ToolError>(());
+                }
+                lease
+            }
+            _ => return Err(denied()),
+        };
         let cancellation = Cancellation::new();
         register_task_cancellation(task_id.clone(), attempt, cancellation.clone());
         let execution_context = owned_context.clone();
@@ -476,6 +511,10 @@ pub(crate) async fn queue_authorized_task(
                     kind = error.kind(),
                     "detached Agent Task attempt did not complete normally"
                 );
+                // A failure before lease acquisition otherwise leaves
+                // a durable queued row with no owner. Expire only when
+                // this attempt still owns the queued state; concurrent
+                // cancellation or execution wins through the state fence.
                 if let Ok(Some(current)) = execution_context
                     .store
                     .get_agent_task(task_id.clone())
@@ -491,7 +530,7 @@ pub(crate) async fn queue_authorized_task(
                                 TaskState::Expired,
                                 execution_context.identity.safe_fingerprint(),
                                 current.attempt,
-                                transition_now,
+                                i64::try_from(system_now_millis()).unwrap_or(i64::MAX),
                             )
                             .await,
                     );
@@ -503,6 +542,18 @@ pub(crate) async fn queue_authorized_task(
     .await
     .map_err(|_| internal())??;
     Ok(json!({"task_id":record.intent.id,"state":"queued"}))
+}
+
+/// Materialize the caller's raw `input` in the Task-input CAS namespace. An
+/// optional `input_digest` is verification only: it must match the digest of
+/// the supplied bytes and never substitutes for them.
+fn materialize_task_input(
+    store: &crate::access::AccessStore,
+    params: &Value,
+) -> Result<String, ToolError> {
+    let input = required(params, "input")?;
+    AgentPayloadStore::for_access_store(store)
+        .store_task_input(&input, params.get("input_digest").and_then(Value::as_str))
 }
 
 async fn load(
@@ -540,7 +591,18 @@ fn authority_request(
     now: u64,
 ) -> Result<AuthorityRequest, ToolError> {
     let action = ActionRef::new("tasks", name).map_err(|_| invalid("action"))?;
-    let request = AuthorityRequest::new(
+    // The queue lease is carried into the fenced attempt and rechecked at its
+    // safe boundaries, so it must cover the whole runtime bound.
+    let spec = ActionAuthoritySpec::new(action.clone(), ResourceFamily::Task, capability);
+    let (spec, safe_boundaries) = if name == "tasks.queue" {
+        (
+            spec.with_lease_lifetime_millis(TASK_MAX_RUNTIME_MILLIS),
+            execution_safe_boundaries(),
+        )
+    } else {
+        (spec, request_safe_boundaries())
+    };
+    Ok(AuthorityRequest::new(
         context.identity.clone(),
         ActionAuthoritySpec::SCHEMA_VERSION,
         action.clone(),
@@ -552,23 +614,9 @@ fn authority_request(
         context.ceiling.clone(),
         None,
         now,
-        vec![
-            AuthoritySafeBoundary::BeforeDispatch,
-            AuthoritySafeBoundary::BeforeExternalEffect,
-            AuthoritySafeBoundary::BeforeChunk,
-            AuthoritySafeBoundary::BeforeCommit,
-        ],
-        vec![ActionAuthoritySpec::new(
-            action,
-            ResourceFamily::Task,
-            capability,
-        )],
-    );
-    Ok(if name == "tasks.queue" {
-        request.with_execution_lease_lifetime(MAX_AUTHORITY_LEASE_MILLIS)
-    } else {
-        request
-    })
+        safe_boundaries,
+        vec![spec],
+    ))
 }
 
 /// Load the Agent definition a Task intent was pinned to and refuse to hand it
@@ -596,15 +644,21 @@ fn pinned_revision_matches(definition: &AgentDefinition, intent: &TaskIntent) ->
         && definition.revision.version == intent.agent_version
         && definition.revision.content_digest == intent.agent_revision_digest
 }
-/// An exact replay of an existing intent (same owner, idempotency key, Agent
-/// pin, and input) is the store's idempotent-create contract. Anything else
-/// that reuses the identifier is treated as taken.
+/// An exact replay of caller-controlled immutable intent fields may pass the
+/// early identifier check. The store performs the final full-intent comparison
+/// after authorization has replaced the placeholder creator with the resolved
+/// principal. Anything else that reuses the identifier is treated as taken.
 fn is_idempotent_replay(existing: &crate::access::TaskRecord, intent: &TaskIntent) -> bool {
-    existing.intent.owner == intent.owner
+    existing.intent.id == intent.id
         && existing.intent.idempotency_key == intent.idempotency_key
+        && existing.intent.owner == intent.owner
+        && existing.intent.project == intent.project
         && existing.intent.agent_id == intent.agent_id
+        && existing.intent.agent_version == intent.agent_version
         && existing.intent.agent_revision_digest == intent.agent_revision_digest
         && existing.intent.input_digest == intent.input_digest
+        && existing.intent.catalog_generation == intent.catalog_generation
+        && existing.intent.authority_fingerprint == intent.authority_fingerprint
 }
 
 fn register_task_cancellation(task_id: String, attempt: u32, cancellation: Cancellation) {
@@ -612,6 +666,13 @@ fn register_task_cancellation(task_id: String, attempt: u32, cancellation: Cance
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .insert(task_id, (attempt, cancellation));
+}
+
+fn task_has_live_owner(task_id: &str) -> bool {
+    TASK_CANCELLATIONS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains_key(task_id)
 }
 
 fn signal_task_cancellation(task_id: &str) -> bool {
@@ -670,6 +731,10 @@ async fn execute_queued(
         "{}:{attempt}:{now}",
         record.intent.id
     )));
+    // Task runtime requires the durable fence to be bounded by the Agent
+    // runtime itself; a longer lease would leave a live fence after the
+    // executor has already been abandoned.
+    let expires = now.saturating_add(TASK_ATTEMPT_LEASE_MILLIS);
     let request = AgentExecutionRequest {
         definition: definition.clone(),
         session: AgentSessionBinding {
@@ -685,17 +750,9 @@ async fn execute_queued(
             authority_fingerprint: lease.epoch_fingerprint().as_str().into(),
             lease_expires_at: i64::try_from(lease.expires_at_millis()).map_err(|_| internal())?,
         },
-        input: context
-            .store
-            .get_agent_task_input(record.intent.id.clone())
-            .await
-            .map_err(map)?
-            .ok_or_else(|| ToolError::internal_message("Agent Task input is unavailable"))?,
-        input_digest: record.intent.input_digest.clone(),
-        transcript: AgentTranscript::new(1024 * 1024).map_err(|_| internal())?,
         lease,
         bounds: AgentResourceBounds {
-            max_runtime_millis: 300_000,
+            max_runtime_millis: TASK_MAX_RUNTIME_MILLIS,
             max_output_bytes: 16 * 1024 * 1024,
             max_external_effects: 1_000,
         },
@@ -705,43 +762,28 @@ async fn execute_queued(
         owner: record.intent.owner.clone(),
         attempt,
         fencing_token: fence,
+        lease_expires_at: expires,
         agent_request: request,
     };
     let ledger = StoreLedger {
         store: context.store.clone(),
         actor: context.identity.safe_fingerprint(),
-        now,
     };
     let _ = ledger.recover_expired(now).await.map_err(|_| internal())?;
-    let executor = crate::dispatch::agents::executor::resolve_executor(&definition)
-        .map_err(|error| map_agent_runtime_error(&error))?;
-    let attribution = labby_runtime::usage_actor::UsageAttribution {
-        inbound_actor: Some(crate::mcp::context::redact_subject_for_logging(
-            record.intent.creator.as_str(),
-        )),
-        actor_kind: Some("agent".into()),
-        surface: Some("task".into()),
-        agent_id: Some(definition.id.to_string()),
-        task_id: Some(record.intent.id.to_string()),
-        harness_id: Some(definition.revision.harness_digest.clone()),
-        ..Default::default()
-    };
-    labby_runtime::usage_actor::scope_attributed(
-        attribution,
-        execute_task(
-            &TASK_SCHEDULER,
-            &ledger,
-            &LiveExecutionAuthority {
-                store: context.store.clone(),
-                identity: context.identity.clone(),
-                owner: record.intent.owner.clone(),
-                definition,
-            },
-            &executor,
-            task,
-            cancellation,
-            now,
-        ),
+    let executor = configured_task_executor(&context.store, &record.intent.input_digest);
+    execute_task(
+        &TASK_SCHEDULER,
+        &ledger,
+        &LiveExecutionAuthority {
+            store: context.store.clone(),
+            identity: context.identity.clone(),
+            owner: record.intent.owner.clone(),
+            definition,
+        },
+        &executor,
+        task,
+        cancellation,
+        now,
     )
     .await
     .map(drop)
@@ -751,21 +793,20 @@ async fn execute_queued(
 struct StoreLedger {
     store: crate::access::AccessStore,
     actor: String,
-    now: u64,
 }
 impl TaskLedger for StoreLedger {
-    async fn acquire(
-        &self,
-        task: &ScheduledTask,
-        lease_expires_at: u64,
-    ) -> Result<(), TaskRuntimeError> {
-        let now = i64::try_from(self.now).map_err(|_| TaskRuntimeError::Unavailable)?;
+    async fn acquire(&self, task: &ScheduledTask) -> Result<(), TaskRuntimeError> {
+        let current = system_now_millis();
+        if task.lease_expires_at <= current {
+            return Err(TaskRuntimeError::InvalidLease);
+        }
+        let now = i64::try_from(current).map_err(|_| TaskRuntimeError::Unavailable)?;
         self.store
             .acquire_agent_task_lease(
                 task.task_id.clone(),
                 task.attempt,
                 task.fencing_token.clone(),
-                i64::try_from(lease_expires_at).map_err(|_| TaskRuntimeError::Unavailable)?,
+                i64::try_from(task.lease_expires_at).map_err(|_| TaskRuntimeError::Unavailable)?,
                 now,
             )
             .await
@@ -796,7 +837,17 @@ impl TaskLedger for StoreLedger {
         output: Option<&AgentExecutionOutput>,
         reason: Option<&str>,
     ) -> Result<(), TaskRuntimeError> {
-        let now = i64::try_from(self.now).map_err(|_| TaskRuntimeError::Unavailable)?;
+        let current = system_now_millis();
+        let now = i64::try_from(current).map_err(|_| TaskRuntimeError::Unavailable)?;
+        if task.lease_expires_at <= current {
+            // Expire the durable owner before refusing settlement. This makes
+            // lease expiry an actual fence rather than a recovery hint.
+            self.store
+                .recover_expired_agent_tasks(now)
+                .await
+                .map_err(|_| TaskRuntimeError::Unavailable)?;
+            return Err(TaskRuntimeError::FencedConflict);
+        }
         let from = if state == TaskState::Cancelled {
             TaskState::Cancelling
         } else {
@@ -878,15 +929,6 @@ fn required(v: &Value, k: &str) -> Result<String, ToolError> {
         .map(ToOwned::to_owned)
         .ok_or_else(|| invalid(k))
 }
-fn validate_input_digest(input: &str, expected: &str) -> Result<(), ToolError> {
-    use sha2::{Digest as _, Sha256};
-    if input.len() > 1024 * 1024
-        || format!("sha256:{}", hex::encode(Sha256::digest(input.as_bytes()))) != expected
-    {
-        return Err(invalid("input_digest"));
-    }
-    Ok(())
-}
 fn page_limit(params: &Value) -> Result<usize, ToolError> {
     match params.get("limit") {
         None | Some(Value::Null) => Ok(100),
@@ -935,20 +977,14 @@ fn map(error: AccessStoreError) -> ToolError {
 ///   typed `task_id` integrity violation (`access::task::map_task_insert_error`).
 /// A taken Task identifier must be indistinguishable from a denial, so an
 /// existing row never becomes an existence oracle for a caller who cannot see
-/// it. The store reports a raced insert either as a typed integrity violation
-/// or, when the collision surfaces from SQLite before the typed mapping, as an
-/// `Unavailable` carrying the constraint text; both collapse to one denial.
+/// it. The store maps raced SQLite uniqueness failures to typed integrity
+/// violations before they reach dispatch, so this layer never matches database
+/// error text.
 fn map_create(error: AccessStoreError) -> ToolError {
     match error {
         AccessStoreError::IntegrityViolation {
             check: "task_idempotency" | "task_id",
         } => denied(),
-        AccessStoreError::Unavailable(ref reason)
-            if reason.contains("agent_tasks.task_id")
-                || reason.contains("agent_tasks.idempotency_key") =>
-        {
-            denied()
-        }
         other => map(other),
     }
 }
@@ -966,6 +1002,10 @@ fn map_task_runtime_error(task_id: &str, error: &TaskRuntimeError) -> ToolError 
         TaskRuntimeError::Unavailable => ToolError::Sdk {
             sdk_kind: "service_unavailable".into(),
             message: "Agent Task runtime is unavailable".into(),
+        },
+        TaskRuntimeError::Saturated => ToolError::Sdk {
+            sdk_kind: "queue_saturated".into(),
+            message: "this owner already has its quota of live Agent Task attempts".into(),
         },
         TaskRuntimeError::InvalidLease | TaskRuntimeError::InvalidQuota => {
             ToolError::internal_message("Agent Task execution request is invalid")
@@ -1019,22 +1059,38 @@ mod tests {
             ceiling: AuthorityCeiling::trusted_local(),
         }
     }
+    const TASK_INPUT: &str = "hello";
     fn task_params(task_id: &str, agent_id: &str) -> Value {
-        let input = "test input";
         json!({
             "task_id": task_id,
             "idempotency_key": format!("{task_id}-key"),
             "owner_kind": "personal",
             "owner_id": BOOTSTRAP_PRINCIPAL,
             "agent_id": agent_id,
-            "input": input,
-            "input_digest": input_digest(input),
+            "input": TASK_INPUT,
         })
     }
-    fn input_digest(input: &str) -> String {
-        use sha2::{Digest as _, Sha256};
-        format!("sha256:{}", hex::encode(Sha256::digest(input.as_bytes())))
+    fn task_input_digest() -> String {
+        labby_primitives::digest::Sha256Digest::of(TASK_INPUT.as_bytes()).to_string()
     }
+    async fn wait_for_task_terminal(
+        store: &AccessStore,
+        task_id: &str,
+    ) -> crate::access::TaskRecord {
+        for _ in 0..200 {
+            let record = store
+                .get_agent_task(task_id.to_owned())
+                .await
+                .unwrap()
+                .expect("task exists");
+            if record.state.terminal() {
+                return record;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("task `{task_id}` did not settle");
+    }
+
     async fn create_agent(store: &AccessStore, owner: &VerifiedIdentity, agent_id: &str) {
         agents::dispatch(
             agent_context(store, owner),
@@ -1102,6 +1158,7 @@ mod tests {
 
     #[test]
     fn catalog_is_complete() {
+        // Six durable Task actions plus the eight `tasks.schedule_*` actions.
         assert_eq!(ACTIONS.len(), 14);
         assert!(ACTIONS.iter().all(|a| a.name.starts_with("tasks.")));
         let create = ACTIONS
@@ -1112,8 +1169,66 @@ mod tests {
             create
                 .params
                 .iter()
-                .any(|param| param.name == "input_digest" && param.required)
+                .any(|param| param.name == "input_digest" && !param.required)
         );
+        assert!(
+            create
+                .params
+                .iter()
+                .any(|param| param.name == "input" && param.required)
+        );
+    }
+
+    /// A non-string `input` is reported against `input`, never as a
+    /// misleading complaint about an unrelated parameter.
+    #[tokio::test]
+    async fn create_rejects_non_string_input() {
+        let (_dir, store, owner) = fixture().await;
+        create_agent(&store, &owner, "agent-1").await;
+        let context = task_context(&store, &owner);
+        for input in [json!(42), json!(["a"]), json!({"text":"a"}), json!(null)] {
+            let mut params = task_params("typed-task", "agent-1");
+            params["input"] = input.clone();
+            let error = dispatch(context.clone(), "tasks.create", params)
+                .await
+                .unwrap_err();
+            assert_eq!(error.kind(), "invalid_param", "{input}");
+            assert_eq!(envelope(&error)["param"], "input", "{input}");
+        }
+        assert!(
+            store
+                .get_agent_task("typed-task".into())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn input_digest_is_verification_only() {
+        let (_dir, store, owner) = fixture().await;
+        create_agent(&store, &owner, "agent-1").await;
+        let context = task_context(&store, &owner);
+        // A digest without the bytes it names cannot create a Task.
+        let mut digest_only = task_params("digest-only", "agent-1");
+        digest_only.as_object_mut().unwrap().remove("input");
+        digest_only["input_digest"] = json!(task_input_digest());
+        let error = dispatch(context.clone(), "tasks.create", digest_only)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), "invalid_param");
+        assert_eq!(envelope(&error)["param"], "input");
+        // A mismatching digest is rejected; a matching one is accepted.
+        let mut mismatched = task_params("mismatched", "agent-1");
+        mismatched["input_digest"] = json!(digest('2'));
+        let error = dispatch(context.clone(), "tasks.create", mismatched)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), "invalid_param");
+        assert_eq!(envelope(&error)["param"], "input_digest");
+        let mut verified = task_params("verified", "agent-1");
+        verified["input_digest"] = json!(task_input_digest());
+        dispatch(context, "tasks.create", verified).await.unwrap();
     }
     #[tokio::test]
     async fn unbound_is_non_enumerating() {
@@ -1223,68 +1338,19 @@ mod tests {
         .unwrap_err();
         assert_eq!(early.kind(), "forbidden");
 
-        // This test exercises result visibility, so settle an authenticated
-        // ledger attempt directly. Queue admission itself requires a real,
-        // process-configured harness and is covered by the execution tests.
-        let actor = owner.safe_fingerprint();
-        let fence = "f".repeat(32);
-        store
-            .transition_agent_task(
-                "team-task".into(),
-                TaskState::Created,
-                TaskState::Queued,
-                actor.clone(),
-                0,
-                10,
-            )
-            .await
-            .unwrap();
-        store
-            .acquire_agent_task_lease("team-task".into(), 1, fence.clone(), 1_000, 11)
-            .await
-            .unwrap();
-        store
-            .settle_agent_task(
-                "team-task".into(),
-                TaskState::Queued,
-                TaskState::Running,
-                actor.clone(),
-                1,
-                fence.clone(),
-                TaskSettlement {
-                    state: TaskState::Running,
-                    output_digest: None,
-                    error_code: None,
-                    settled_at: 12,
-                },
-                12,
-            )
-            .await
-            .unwrap();
-        store
-            .settle_agent_task(
-                "team-task".into(),
-                TaskState::Running,
-                TaskState::Failed,
-                actor,
-                1,
-                fence,
-                TaskSettlement {
-                    state: TaskState::Failed,
-                    output_digest: None,
-                    error_code: Some("execution_failed".into()),
-                    settled_at: 13,
-                },
-                13,
-            )
-            .await
-            .unwrap();
-        let settled = store
-            .get_agent_task("team-task".into())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(settled.state, TaskState::Failed);
+        // Queueing is durable and service-owned: the call returns as soon as
+        // the Task is queued, while the detached attempt owns execution and
+        // terminal settlement even if the request future is dropped.
+        let queued = dispatch(
+            owner_context.clone(),
+            "tasks.queue",
+            json!({"task_id":"team-task"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(queued["state"], "queued");
+        let settled = wait_for_task_terminal(&store, "team-task").await;
+        assert!(settled.state.terminal(), "{:?}", settled.state);
 
         let result = dispatch(
             owner_context.clone(),
@@ -1296,7 +1362,9 @@ mod tests {
         let object = result.as_object().unwrap();
         assert!(object.contains_key("output_digest"), "{result}");
         assert!(object.contains_key("error_code"), "{result}");
-        assert_eq!(result["error_code"], "execution_failed");
+        if settled.state == TaskState::Failed {
+            assert_eq!(result["error_code"], "execution_failed");
+        }
         // Terminal state does not widen the audience.
         let still_denied = dispatch(
             admin_context.clone(),
@@ -1314,6 +1382,102 @@ mod tests {
             .await
             .unwrap();
         assert_summary_shape(&got);
+    }
+
+    /// Seed a terminal succeeded Task whose durable record names `digest`.
+    async fn seed_succeeded_task(
+        store: &AccessStore,
+        owner: &VerifiedIdentity,
+        task_id: &str,
+        digest: &str,
+    ) {
+        dispatch(
+            task_context(store, owner),
+            "tasks.create",
+            task_params(task_id, "agent-1"),
+        )
+        .await
+        .unwrap();
+        // The test statement helper takes a static SQL string; a leaked
+        // per-test statement is the smallest way to seed a terminal row.
+        let statement: &'static str = Box::leak(
+            format!(
+                "UPDATE agent_tasks SET state='succeeded',output_digest='{digest}' WHERE task_id='{task_id}'"
+            )
+            .into_boxed_str(),
+        );
+        store.execute_test_statement(statement).await.unwrap();
+    }
+    fn output_path(store: &AccessStore, digest: &str) -> std::path::PathBuf {
+        store
+            .storage_dir()
+            .join("agent-payloads")
+            .join("outputs")
+            .join("sha256")
+            .join(digest.trim_start_matches("sha256:"))
+    }
+
+    #[tokio::test]
+    async fn result_reports_corrupt_output_instead_of_omitting_it() {
+        let (_dir, store, owner) = fixture().await;
+        create_agent(&store, &owner, "agent-1").await;
+        let payloads = AgentPayloadStore::for_access_store(&store);
+        let digest = payloads.store_output("hello").unwrap();
+        seed_succeeded_task(&store, &owner, "corrupt-output", &digest).await;
+        // Bytes that no longer match the recorded digest are corruption.
+        std::fs::write(output_path(&store, &digest), b"tampered").unwrap();
+        let error = dispatch(
+            task_context(&store, &owner),
+            "tasks.result",
+            json!({"task_id":"corrupt-output"}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), "internal_error");
+        // A recorded digest whose bytes are gone is an outage, not silence.
+        std::fs::remove_file(output_path(&store, &digest)).unwrap();
+        let error = dispatch(
+            task_context(&store, &owner),
+            "tasks.result",
+            json!({"task_id":"corrupt-output"}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), "unavailable");
+    }
+
+    #[tokio::test]
+    async fn result_output_is_bounded_or_paged() {
+        let (_dir, store, owner) = fixture().await;
+        create_agent(&store, &owner, "agent-1").await;
+        let payloads = AgentPayloadStore::for_access_store(&store);
+        let inline_cap = crate::dispatch::agent_payloads::MAX_INLINE_OUTPUT_BYTES;
+        let big = "x".repeat(inline_cap + 4 * 1024);
+        let big_digest = payloads.store_output(&big).unwrap();
+        seed_succeeded_task(&store, &owner, "big-output", &big_digest).await;
+        let result = dispatch(
+            task_context(&store, &owner),
+            "tasks.result",
+            json!({"task_id":"big-output"}),
+        )
+        .await
+        .unwrap();
+        let inline = result["output"].as_str().unwrap();
+        assert!(inline.len() <= inline_cap, "inline output must be bounded");
+        assert_eq!(result["output_truncated"], true);
+        assert_eq!(result["output_digest"], big_digest, "full retrieval key");
+
+        let small_digest = payloads.store_output("small").unwrap();
+        seed_succeeded_task(&store, &owner, "small-output", &small_digest).await;
+        let result = dispatch(
+            task_context(&store, &owner),
+            "tasks.result",
+            json!({"task_id":"small-output"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["output"], "small");
+        assert_eq!(result["output_truncated"], false);
     }
 
     // B-I11: runtime failures keep their typed reason.
@@ -1341,10 +1505,6 @@ mod tests {
                 "cancelled",
             ),
             (
-                TaskRuntimeError::Agent(AgentRuntimeError::ExecutorUnavailable),
-                "service_unavailable",
-            ),
-            (
                 TaskRuntimeError::Agent(AgentRuntimeError::ExecutorFailed),
                 "service_unavailable",
             ),
@@ -1354,6 +1514,7 @@ mod tests {
             ),
             (TaskRuntimeError::FencedConflict, "conflict"),
             (TaskRuntimeError::Unavailable, "service_unavailable"),
+            (TaskRuntimeError::Saturated, "queue_saturated"),
             (TaskRuntimeError::InvalidLease, "internal_error"),
             (TaskRuntimeError::InvalidQuota, "internal_error"),
         ];
@@ -1371,7 +1532,7 @@ mod tests {
                 "t-1",
                 &TaskRuntimeError::Agent(AgentRuntimeError::ExecutorFailed)
             ))["message"],
-            "Agent harness execution failed"
+            "Agent execution backend failed"
         );
     }
 
@@ -1425,6 +1586,37 @@ mod tests {
     }
 
     // B-I12(b): caller-supplied epochs are refused before anything is stored.
+    #[tokio::test]
+    async fn denied_raw_input_create_does_not_materialize_payload() {
+        let (_dir, store, owner) = fixture().await;
+        create_agent(&store, &owner, "agent-1").await;
+        let mut params = task_params("denied-raw", "agent-1");
+        params.as_object_mut().unwrap().remove("input_digest");
+        params["input"] = json!("caller-controlled raw input");
+        let stranger = task_context(&store, &browser("stranger-subject"));
+
+        let error = dispatch(stranger, "tasks.create", params)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.kind(), "forbidden");
+        assert!(
+            !store
+                .storage_dir()
+                .join("agent-payloads")
+                .join("task-inputs")
+                .exists(),
+            "authorization must happen before Task-input payload writes"
+        );
+        assert!(
+            store
+                .get_agent_task("denied-raw".into())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
     #[tokio::test]
     async fn create_refuses_caller_epochs_and_nothing_is_stored() {
         let (_dir, store, owner) = fixture().await;
@@ -1487,7 +1679,6 @@ mod tests {
         // Same identifier and key, different input: still a denial.
         let mut drifted = task_params("taken", "agent-1");
         drifted["input"] = json!("different input");
-        drifted["input_digest"] = json!(input_digest("different input"));
         let drifted = dispatch(context.clone(), "tasks.create", drifted)
             .await
             .unwrap_err();
@@ -1502,9 +1693,7 @@ mod tests {
             AccessStoreError::IntegrityViolation {
                 check: "task_idempotency",
             },
-            AccessStoreError::Unavailable(
-                "UNIQUE constraint failed: agent_tasks.task_id".to_owned(),
-            ),
+            AccessStoreError::IntegrityViolation { check: "task_id" },
         ] {
             assert_eq!(envelope(&map_create(raced)), envelope(&duplicate));
         }
@@ -1519,7 +1708,7 @@ mod tests {
         // The original record is untouched.
         let stored = store.get_agent_task("taken".into()).await.unwrap().unwrap();
         assert_eq!(stored.intent.idempotency_key, "taken-key");
-        assert_eq!(stored.intent.input_digest, input_digest("test input"));
+        assert_eq!(stored.intent.input_digest, task_input_digest());
         assert_eq!(stored.state, TaskState::Created);
     }
 
@@ -1573,6 +1762,107 @@ mod tests {
         moved.owner = OwnerScope::Team(TeamId::new("other-team").unwrap());
         assert!(!pinned_revision_matches(&moved, &intent));
     }
+    /// Bind exactly the parameters the shared catalog marks required, so the
+    /// advertised schema is proven sufficient rather than merely necessary.
+    fn required_only_params(action: &str, values: &[(&str, &str)]) -> Value {
+        let spec = ACTIONS.iter().find(|a| a.name == action).unwrap();
+        let mut params = serde_json::Map::new();
+        for param in spec.params.iter().filter(|param| param.required) {
+            let value = values
+                .iter()
+                .find(|(name, _)| *name == param.name)
+                .unwrap_or_else(|| panic!("no test value for required param {}", param.name))
+                .1;
+            params.insert(param.name.to_owned(), json!(value));
+        }
+        Value::Object(params)
+    }
+
+    #[tokio::test]
+    async fn create_with_exactly_the_required_params_succeeds() {
+        let (_dir, store, owner) = fixture().await;
+        create_agent(&store, &owner, "agent-1").await;
+        let params = required_only_params(
+            "tasks.create",
+            &[
+                ("task_id", "required-only-task"),
+                ("idempotency_key", "required-only-key"),
+                ("owner_kind", "personal"),
+                ("owner_id", BOOTSTRAP_PRINCIPAL),
+                ("agent_id", "agent-1"),
+                ("input", "hello"),
+            ],
+        );
+        let created = dispatch(task_context(&store, &owner), "tasks.create", params)
+            .await
+            .unwrap();
+        assert_eq!(created["task_id"], "required-only-task");
+        let stored = store
+            .get_agent_task("required-only-task".into())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            stored.intent.input_digest,
+            labby_primitives::digest::Sha256Digest::of(b"hello").to_string(),
+            "the input digest is derived from the materialized input"
+        );
+    }
+
+    #[tokio::test]
+    async fn queue_lease_covers_the_runtime_bound() {
+        let (_dir, store, owner) = fixture().await;
+        let context = task_context(&store, &owner);
+        let now = now().unwrap();
+        let request = authority_request(
+            &context,
+            "tasks.queue",
+            &OwnerScope::Personal(PrincipalId::new(BOOTSTRAP_PRINCIPAL).unwrap()),
+            "any-task".to_owned(),
+            Capability::ScopeOperate,
+            now,
+        )
+        .unwrap();
+        let lease = authorize_action(&store, request).await.unwrap();
+        assert!(
+            lease.expires_at_millis() - now >= TASK_MAX_RUNTIME_MILLIS,
+            "a tasks.queue lease must cover the runtime bound, got {} ms",
+            lease.expires_at_millis() - now
+        );
+    }
+
+    #[tokio::test]
+    async fn queue_lease_declares_every_runtime_boundary() {
+        let (_dir, store, owner) = fixture().await;
+        let context = task_context(&store, &owner);
+        let now = now().unwrap();
+        let personal = OwnerScope::Personal(PrincipalId::new(BOOTSTRAP_PRINCIPAL).unwrap());
+        let request = authority_request(
+            &context,
+            "tasks.queue",
+            &personal,
+            "any-task".to_owned(),
+            Capability::ScopeOperate,
+            now,
+        )
+        .unwrap();
+        let lease = authorize_action(&store, request).await.unwrap();
+        let epochs = refresh_authority_epochs(&store, owner, personal, Capability::ScopeOperate)
+            .await
+            .unwrap();
+        for boundary in [
+            AuthoritySafeBoundary::BeforeDispatch,
+            AuthoritySafeBoundary::BeforeExternalEffect,
+            AuthoritySafeBoundary::BeforeCommit,
+        ] {
+            assert_eq!(
+                lease.validate_at(boundary, now, &epochs),
+                Ok(()),
+                "{boundary:?}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn queue_denies_when_pinned_agent_revision_drifted() {
         let (_dir, store, owner) = fixture().await;
@@ -1659,15 +1949,104 @@ mod tests {
         assert_eq!(stored.state, TaskState::Created);
     }
 
-    // Release-profile guard: without `proxy-testkit` the deterministic branch
-    // of the configured harness resolver is compiled out, so
-    // `LABBY_E2E_DETERMINISTIC_EXECUTORS` cannot turn a product build into a
-    // fake-success backend. The crate forbids `unsafe`, so the variable cannot
-    // be set from inside the test; run the suite with it exported to exercise
-    // the guard in both states.
     #[cfg(not(feature = "proxy-testkit"))]
     #[tokio::test]
-    async fn missing_executor_config_fails_before_queue_admission() {
+    async fn queued_task_without_live_owner_can_be_resumed() {
+        let (_dir, store, owner) = fixture().await;
+        create_agent(&store, &owner, "agent-1").await;
+        let context = task_context(&store, &owner);
+        dispatch(
+            context.clone(),
+            "tasks.create",
+            task_params("orphaned-queue", "agent-1"),
+        )
+        .await
+        .unwrap();
+        let transition_now = i64::try_from(now().unwrap()).unwrap();
+        store
+            .transition_agent_task(
+                "orphaned-queue".into(),
+                TaskState::Created,
+                TaskState::Queued,
+                owner.safe_fingerprint(),
+                0,
+                transition_now,
+            )
+            .await
+            .unwrap();
+
+        let resumed = dispatch(context, "tasks.queue", json!({"task_id":"orphaned-queue"}))
+            .await
+            .unwrap();
+        assert_eq!(resumed["state"], "queued");
+        let stored = wait_for_task_terminal(&store, "orphaned-queue").await;
+        assert_eq!(stored.state, TaskState::Failed);
+        assert_eq!(stored.attempt, 1);
+        assert_eq!(stored.error_code.as_deref(), Some("execution_failed"));
+    }
+
+    // Positive counterpart of the release-profile guard below: with the harness
+    // hook enabled, the deterministic executor stands in for a real provider,
+    // so a Task it settles `succeeded` must record a digest whose bytes are in
+    // the output CAS. `tasks.result` re-reads by that digest and must never
+    // fail `unavailable` for output the executor itself claimed to produce.
+    #[cfg(feature = "proxy-testkit")]
+    #[tokio::test]
+    async fn deterministic_task_output_is_materialized_for_result() {
+        agents::install_test_deterministic_executors();
+        let (_dir, store, owner) = fixture().await;
+        create_agent(&store, &owner, "agent-1").await;
+        let context = task_context(&store, &owner);
+        dispatch(
+            context.clone(),
+            "tasks.create",
+            task_params("deterministic", "agent-1"),
+        )
+        .await
+        .unwrap();
+        let queued = dispatch(
+            context.clone(),
+            "tasks.queue",
+            json!({"task_id":"deterministic"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(queued["state"], "queued");
+        let stored = wait_for_task_terminal(&store, "deterministic").await;
+        assert_eq!(
+            stored.state,
+            TaskState::Succeeded,
+            "{:?}",
+            stored.error_code
+        );
+        let digest = stored
+            .output_digest
+            .clone()
+            .expect("a succeeded Task records its output digest");
+        let result = dispatch(context, "tasks.result", json!({"task_id":"deterministic"}))
+            .await
+            .unwrap();
+        assert_eq!(result["state"], "succeeded");
+        assert_eq!(result["output_digest"], digest);
+        assert_eq!(result["output_truncated"], false);
+        let output = result["output"]
+            .as_str()
+            .unwrap_or_else(|| panic!("materialized output text: {result}"));
+        assert_eq!(
+            AgentPayloadStore::for_access_store(&store)
+                .load_output(&digest)
+                .unwrap(),
+            output
+        );
+    }
+
+    // Release-profile guard: without `proxy-testkit` the deterministic branch
+    // is inert. Queue admission remains durable, while the owned attempt settles
+    // as failed through the normal fenced runtime when no product executor can
+    // materialize the pinned input/provider.
+    #[cfg(not(feature = "proxy-testkit"))]
+    #[tokio::test]
+    async fn unavailable_executor_settles_failed_without_testkit() {
         let (_dir, store, owner) = fixture().await;
         create_agent(&store, &owner, "agent-1").await;
         let context = task_context(&store, &owner);
@@ -1678,26 +2057,13 @@ mod tests {
         )
         .await
         .unwrap();
-        let error = dispatch(context, "tasks.queue", json!({"task_id":"closed"}))
+        let queued = dispatch(context, "tasks.queue", json!({"task_id":"closed"}))
             .await
-            .unwrap_err();
-        assert_eq!(
-            error.kind(),
-            "service_unavailable",
-            "deterministic hook must be inert (env set: {})",
-            std::env::var_os("LABBY_E2E_DETERMINISTIC_EXECUTORS").is_some()
-        );
-        assert_eq!(
-            envelope(&error)["message"],
-            "No matching Agent harness is configured; configure `agents.harnesses` and pin its digest in the Agent definition"
-        );
-        let stored = store
-            .get_agent_task("closed".into())
-            .await
-            .unwrap()
             .unwrap();
-        assert_eq!(stored.state, TaskState::Created);
-        assert_eq!(stored.error_code, None);
+        assert_eq!(queued["state"], "queued");
+        let stored = wait_for_task_terminal(&store, "closed").await;
+        assert_eq!(stored.state, TaskState::Failed);
+        assert_eq!(stored.error_code.as_deref(), Some("execution_failed"));
         assert_eq!(stored.output_digest, None);
     }
 }

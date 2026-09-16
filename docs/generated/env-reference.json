@@ -1,5 +1,23 @@
 [
   {
+    "service": "agents",
+    "env_var": "LABBY_PHOENIX_OPENAI_API_KEY",
+    "required": false,
+    "secret": true,
+    "description": "Bearer credential sent to the OpenAI-compatible Agent execution provider when it requires one",
+    "example": "<labby_phoenix_openai_api_key>",
+    "default_port": null
+  },
+  {
+    "service": "agents",
+    "env_var": "LABBY_PHOENIX_OPENAI_BASE_URL",
+    "required": false,
+    "secret": false,
+    "description": "OpenAI-compatible provider base URL used by Agent and Agent Task execution; must be reachable from the Labby process and carry no credentials, query, or fragment",
+    "example": "http://127.0.0.1:43871/v1",
+    "default_port": null
+  },
+  {
     "service": "auth",
     "env_var": "LABBY_AUTHELIA_CA_CERT_PATH",
     "required": false,
@@ -58,7 +76,7 @@
     "env_var": "LABBY_AUTH_ADMIN_EMAIL",
     "required": true,
     "secret": false,
-    "description": "Bootstrap administrator email required in oauth mode",
+    "description": "Administrator email, or comma-separated emails, required in oauth mode",
     "example": "admin@example.com",
     "default_port": null
   },

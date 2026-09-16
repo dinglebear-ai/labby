@@ -511,6 +511,24 @@ impl GatewayManager {
             return Ok(tools);
         }
 
+        // Rotate cold admissions across CLI invocations. Budget cancellation
+        // records progress, not a failure or a suppression of slow upstreams.
+        if let Some(cursor) = cache.probe_cursor.as_deref()
+            && let Some(last) = cfg.upstream.iter().position(|entry| entry.name == cursor)
+        {
+            pending.sort_by_key(|(entry, _)| {
+                let index = cfg
+                    .upstream
+                    .iter()
+                    .position(|candidate| candidate.name == entry.name)
+                    .unwrap_or(0);
+                (index + cfg.upstream.len() - (last + 1) % cfg.upstream.len()) % cfg.upstream.len()
+            });
+        }
+        let pending_order = pending
+            .iter()
+            .map(|(entry, _)| entry.name.clone())
+            .collect::<Vec<_>>();
         let pool = self.ensure_lazy_upstream_pool(owner).await;
         let concurrency = crate::upstream::pool::upstream_discovery_concurrency(
             cfg.gateway.upstream_discovery_concurrency,
@@ -640,7 +658,22 @@ impl GatewayManager {
                 }
             }
         }
-        catalog_cache::merge_and_store(cache_path, updates, failed_probes).await;
+        let probe_cursor = {
+            let started = started
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            pending_order
+                .into_iter()
+                .rev()
+                .find(|name| started.contains(name))
+        };
+        catalog_cache::merge_and_store_with_cursor(
+            cache_path,
+            updates,
+            failed_probes,
+            probe_cursor,
+        )
+        .await;
 
         // Partial means partial, not empty: with nothing served from cache and
         // nothing connected, the proxy would offer no upstream helpers at all,

@@ -62,7 +62,22 @@ impl TaskStore {
             return Err(AccessStoreError::MalformedVocabulary);
         }
         let (kind, owner) = owner(&intent.owner);
-        if let Some((id,input,agent))=tx.query_row("SELECT task_id,input_digest,agent_revision_digest FROM agent_tasks WHERE owner_kind=?1 AND owner_id=?2 AND idempotency_key=?3",params![kind,owner,intent.idempotency_key],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional().map_err(super::store::map_sqlite_error)? { if input==intent.input_digest && agent==intent.agent_revision_digest{return Ok(id)} return Err(AccessStoreError::IntegrityViolation{check:"task_idempotency"}) }
+        if let Some(existing) = tx
+            .query_row(
+                "SELECT task_id,idempotency_key,owner_kind,owner_id,project_id,creator_principal_id,agent_id,agent_version,agent_revision_digest,input_digest,catalog_generation,authority_fingerprint,state,attempt,output_digest,error_code FROM agent_tasks WHERE owner_kind=?1 AND owner_id=?2 AND idempotency_key=?3",
+                params![kind, owner, intent.idempotency_key],
+                decode,
+            )
+            .optional()
+            .map_err(super::store::map_sqlite_error)?
+        {
+            if existing.intent == *intent {
+                return Ok(existing.intent.id);
+            }
+            return Err(AccessStoreError::IntegrityViolation {
+                check: "task_idempotency",
+            });
+        }
         tx.execute("INSERT INTO agent_tasks VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'created',0,NULL,NULL,NULL,NULL,?13,?13)",params![intent.id,intent.idempotency_key,kind,owner,intent.project.as_ref().map(|p|p.as_str()),intent.creator.as_str(),intent.agent_id,i64::try_from(intent.agent_version).map_err(|_|AccessStoreError::MalformedVocabulary)?,intent.agent_revision_digest,intent.input_digest,intent.catalog_generation,intent.authority_fingerprint,now]).map_err(map_task_insert_error)?;
         tx.execute(
             "INSERT INTO agent_task_audit VALUES(?1,?2,?3,NULL,'created',0,?4)",
@@ -75,66 +90,6 @@ impl TaskStore {
         )
         .map_err(super::store::map_sqlite_error)?;
         Ok(intent.id.clone())
-    }
-
-    pub(super) fn put_input_in_transaction(
-        tx: &rusqlite::Transaction<'_>,
-        task_id: &str,
-        input_digest: &str,
-        input_text: &str,
-    ) -> AccessStoreResult<()> {
-        use sha2::{Digest as _, Sha256};
-        if input_text.is_empty()
-            || input_text.len() > 1024 * 1024
-            || format!(
-                "sha256:{}",
-                hex::encode(Sha256::digest(input_text.as_bytes()))
-            ) != input_digest
-        {
-            return Err(AccessStoreError::MalformedVocabulary);
-        }
-        tx.execute(
-            "INSERT INTO agent_task_inputs(task_id,input_digest,input_text) VALUES(?1,?2,?3) ON CONFLICT(task_id) DO NOTHING",
-            params![task_id, input_digest, input_text],
-        )
-        .map_err(super::store::map_sqlite_error)?;
-        let stored: (String, String) = tx
-            .query_row(
-                "SELECT input_digest,input_text FROM agent_task_inputs WHERE task_id=?1",
-                [task_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .map_err(super::store::map_sqlite_error)?;
-        if stored.0 != input_digest || stored.1 != input_text {
-            return Err(AccessStoreError::IntegrityViolation {
-                check: "task_input_idempotency",
-            });
-        }
-        Ok(())
-    }
-
-    pub(crate) fn input(&self, task_id: &str) -> AccessStoreResult<Option<String>> {
-        self.connection
-            .query_row(
-                "SELECT i.input_text,i.input_digest,t.input_digest FROM agent_task_inputs i JOIN agent_tasks t ON t.task_id=i.task_id WHERE i.task_id=?1",
-                [task_id],
-                |row| {
-                    use sha2::{Digest as _, Sha256};
-                    let input: String = row.get(0)?;
-                    let evidence_digest: String = row.get(1)?;
-                    let intent_digest: String = row.get(2)?;
-                    let actual = format!(
-                        "sha256:{}",
-                        hex::encode(Sha256::digest(input.as_bytes()))
-                    );
-                    if actual != evidence_digest || actual != intent_digest {
-                        return Err(rusqlite::Error::InvalidQuery);
-                    }
-                    Ok(input)
-                },
-            )
-            .optional()
-            .map_err(super::store::map_sqlite_error)
     }
 
     pub(crate) fn get(&self, id: &str) -> AccessStoreResult<Option<TaskRecord>> {
@@ -337,10 +292,6 @@ mod tests {
     fn d() -> String {
         format!("sha256:{}", "b".repeat(64))
     }
-    fn input_digest(input: &str) -> String {
-        use sha2::{Digest as _, Sha256};
-        format!("sha256:{}", hex::encode(Sha256::digest(input.as_bytes())))
-    }
     fn intent() -> TaskIntent {
         TaskIntent {
             id: "task-1".into(),
@@ -351,7 +302,7 @@ mod tests {
             agent_id: "agent-1".into(),
             agent_version: 1,
             agent_revision_digest: d(),
-            input_digest: input_digest("test input"),
+            input_digest: d(),
             catalog_generation: "catalog-1".into(),
             authority_fingerprint: "authority-1".into(),
         }
@@ -367,6 +318,14 @@ mod tests {
         let mut s = TaskStore::open(&path).unwrap();
         assert_eq!(s.create(&intent(), 1).unwrap(), "task-1");
         assert_eq!(s.create(&intent(), 2).unwrap(), "task-1");
+        let mut changed = intent();
+        changed.catalog_generation = "catalog-2".into();
+        assert!(matches!(
+            s.create(&changed, 2),
+            Err(AccessStoreError::IntegrityViolation {
+                check: "task_idempotency"
+            })
+        ));
         assert_eq!(s.get("task-1").unwrap().unwrap().state, TaskState::Created);
         assert_eq!(s.list_page("", 100).unwrap().len(), 1);
         s.transition(
@@ -426,85 +385,5 @@ mod tests {
             .query_row("SELECT count(*) FROM agent_task_audit", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 4);
-    }
-
-    #[test]
-    fn recovery_preserves_a_running_attempt_until_its_full_lease_expires() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("task-recovery.db");
-        Connection::open(&path)
-            .unwrap()
-            .execute_batch(super::super::migrations::AGENT_TASK_SCHEMA)
-            .unwrap();
-        let mut store = TaskStore::open(&path).unwrap();
-        store.create(&intent(), 1).unwrap();
-        store
-            .transition(
-                "task-1",
-                TaskState::Created,
-                TaskState::Queued,
-                "p-1",
-                0,
-                None,
-                None,
-                2,
-            )
-            .unwrap();
-        let fence = "f".repeat(32);
-        store
-            .acquire_lease("task-1", 1, &fence, 305_002, 2)
-            .unwrap();
-        store
-            .transition(
-                "task-1",
-                TaskState::Queued,
-                TaskState::Running,
-                "p-1",
-                1,
-                Some(&fence),
-                None,
-                2,
-            )
-            .unwrap();
-
-        assert_eq!(store.recover_expired(300_002).unwrap(), 0);
-        assert_eq!(
-            store.get("task-1").unwrap().unwrap().state,
-            TaskState::Running
-        );
-        assert_eq!(store.recover_expired(305_002).unwrap(), 1);
-        assert_eq!(
-            store.get("task-1").unwrap().unwrap().state,
-            TaskState::Expired
-        );
-    }
-
-    #[test]
-    fn durable_task_input_is_content_addressed_and_idempotent() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("task-input.db");
-        let connection = Connection::open(&path).unwrap();
-        connection
-            .execute_batch(super::super::migrations::AGENT_TASK_SCHEMA)
-            .unwrap();
-        connection
-            .execute_batch(super::super::migrations::EXECUTION_EVIDENCE_SCHEMA)
-            .unwrap();
-        let mut store = TaskStore::open(&path).unwrap();
-        store.create(&intent(), 1).unwrap();
-        let digest = input_digest("test input");
-        let tx = store.connection.unchecked_transaction().unwrap();
-        TaskStore::put_input_in_transaction(&tx, "task-1", &digest, "test input").unwrap();
-        TaskStore::put_input_in_transaction(&tx, "task-1", &digest, "test input").unwrap();
-        tx.commit().unwrap();
-        assert_eq!(
-            store.input("task-1").unwrap().as_deref(),
-            Some("test input")
-        );
-        let tx = store.connection.unchecked_transaction().unwrap();
-        assert!(
-            TaskStore::put_input_in_transaction(&tx, "task-1", &input_digest("other"), "other",)
-                .is_err()
-        );
     }
 }

@@ -9,8 +9,9 @@
 # enabled with LABBY_ALLOW_SOURCE_FALLBACK=1, a release failure falls back to
 # `cargo install --git` if a Rust toolchain is available.
 #
-# This script's ONLY job is bootstrap: getting `labby` onto PATH. Everything
-# after that is owned by the binary — run `labby setup` for the first-run flow.
+# The shell layer owns verified binary bootstrap. Once activation succeeds it
+# hands control to the Rust-owned `labby setup` flow so a single command can
+# finish server/client onboarding without duplicating product logic in shell.
 #
 # Environment overrides:
 #   LABBY_INSTALL_DIR     install directory       (default: ~/.local/bin)
@@ -21,6 +22,15 @@
 #   LABBY_INSTALL_ROLLBACK restore the previous verified binary offline (default: 0)
 #   LABBY_INSTALL_LOCAL_BINARY install an exact local candidate (requires SHA-256)
 #   LABBY_INSTALL_LOCAL_SHA256 expected digest for LABBY_INSTALL_LOCAL_BINARY
+#   LABBY_INSTALL_NO_SETUP skip first-run setup after install (default: 0)
+#   LABBY_SETUP_ROLE      noninteractive role: server|client
+#   LABBY_SETUP_DEPLOYMENT server backend: native|incus
+#   LABBY_SETUP_HOST / LABBY_SETUP_PORT server listen address / port
+#   LABBY_SETUP_SERVER_URL client server URL
+#   LABBY_SETUP_PUBLIC_URL public browser/OAuth URL
+#   LABBY_SETUP_OAUTH     none|google|authelia
+#   LABBY_SETUP_DESKTOP   1 install desktop, 0 skip it
+#   LABBY_SETUP_NO_BROWSER 1 avoid opening a browser
 
 set -eu
 
@@ -32,6 +42,16 @@ ROLLBACK="${LABBY_INSTALL_ROLLBACK:-0}"
 RECOVER_ONLY="${LABBY_INSTALL_RECOVER_ONLY:-0}"
 LOCAL_BINARY="${LABBY_INSTALL_LOCAL_BINARY:-}"
 LOCAL_SHA256="${LABBY_INSTALL_LOCAL_SHA256:-}"
+NO_SETUP="${LABBY_INSTALL_NO_SETUP:-${LABBY_SKIP_SETUP:-0}}"
+SETUP_ROLE="${LABBY_SETUP_ROLE:-}"
+SETUP_DEPLOYMENT="${LABBY_SETUP_DEPLOYMENT:-}"
+SETUP_HOST="${LABBY_SETUP_HOST:-}"
+SETUP_PORT="${LABBY_SETUP_PORT:-}"
+SETUP_SERVER_URL="${LABBY_SETUP_SERVER_URL:-}"
+SETUP_PUBLIC_URL="${LABBY_SETUP_PUBLIC_URL:-}"
+SETUP_OAUTH="${LABBY_SETUP_OAUTH:-}"
+SETUP_DESKTOP="${LABBY_SETUP_DESKTOP:-}"
+SETUP_NO_BROWSER="${LABBY_SETUP_NO_BROWSER:-0}"
 INSTALL_METADATA_DIR="$INSTALL_DIR/.labby-install"
 ARTIFACTS_DIR="$INSTALL_METADATA_DIR/artifacts"
 TRANSACTION_LOCK="$INSTALL_METADATA_DIR/transaction-lock"
@@ -56,6 +76,36 @@ make_tmp_dir() {
 
 say() { printf '%s\n' "$*" >&2; }
 fail() { say "install.sh: $*"; exit 1; }
+
+require_command() {
+    command -v "$1" >/dev/null 2>&1 || fail "$2"
+}
+
+require_release_prerequisites() {
+    require_command curl "curl is required for release installation"
+    require_command tar "tar is required to unpack the Labby release archive"
+    require_command gh "GitHub CLI (gh) is required to verify Labby release provenance; install gh before running the installer"
+    gh attestation verify --help >/dev/null 2>&1 ||
+        fail "GitHub CLI (gh) with attestation support is required to verify Labby release provenance; upgrade gh before running the installer"
+    gh auth status --hostname github.com >/dev/null 2>&1 ||
+        fail "GitHub CLI must be authenticated to fetch Labby release attestations; run 'gh auth login' or set GH_TOKEN before running the installer"
+    if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+        fail "sha256sum or shasum is required to verify the Labby release checksum"
+    fi
+}
+
+print_banner() {
+    say ""
+    say "  _          _     _"
+    say " | |    __ _| |__ | |__  _   _"
+    say " | |   / _\` | '_ \\| '_ \\| | | |"
+    say " | |__| (_| | |_) | |_) | |_| |"
+    say " |_____\\__,_|_.__/|_.__/ \\__, |"
+    say "                         |___/"
+    say ""
+    say "  One setup. Every interface."
+    say ""
+}
 
 durability_barrier() { sync || fail "cannot durably flush installer transaction"; }
 
@@ -369,6 +419,7 @@ rollback_offline() {
 }
 
 install_from_release() {
+    require_release_prerequisites
     triple="$(target_triple)" || return 1
     asset="lab-${triple}.tar.gz"
     if [ "$VERSION" = "latest" ]; then
@@ -406,6 +457,44 @@ install_from_release() {
     install_binary_atomic "$bin" release "${resolved_version:-$VERSION}"
 }
 
+run_first_run_setup() {
+    [ "$NO_SETUP" = "1" ] && {
+        say "setup skipped (LABBY_INSTALL_NO_SETUP=1)"
+        return 0
+    }
+
+    setup_binary="$INSTALL_DIR/labby"
+    [ -x "$setup_binary" ] || fail "installed binary is not executable: $setup_binary"
+    say ""
+    say "[2/2] Configure Labby"
+
+    if [ -n "$SETUP_ROLE" ]; then
+        set -- setup --role "$SETUP_ROLE" --yes
+        [ -z "$SETUP_DEPLOYMENT" ] || set -- "$@" --deployment "$SETUP_DEPLOYMENT"
+        [ -z "$SETUP_HOST" ] || set -- "$@" --host "$SETUP_HOST"
+        [ -z "$SETUP_PORT" ] || set -- "$@" --port "$SETUP_PORT"
+        [ -z "$SETUP_SERVER_URL" ] || set -- "$@" --server-url "$SETUP_SERVER_URL"
+        [ -z "$SETUP_PUBLIC_URL" ] || set -- "$@" --public-url "$SETUP_PUBLIC_URL"
+        [ -z "$SETUP_OAUTH" ] || set -- "$@" --oauth "$SETUP_OAUTH"
+        case "$SETUP_DESKTOP" in
+            1|true|yes) set -- "$@" --desktop ;;
+            0|false|no|'') set -- "$@" --no-desktop ;;
+            *) fail "LABBY_SETUP_DESKTOP must be 1/0, true/false, or yes/no" ;;
+        esac
+        [ "$SETUP_NO_BROWSER" != "1" ] || set -- "$@" --no-browser
+        "$setup_binary" "$@"
+        return
+    fi
+
+    if [ -t 0 ]; then
+        "$setup_binary" setup
+    elif tty </dev/tty >/dev/null 2>&1; then
+        "$setup_binary" setup </dev/tty
+    else
+        fail "setup needs an interactive terminal or LABBY_SETUP_ROLE. Set LABBY_INSTALL_NO_SETUP=1 only when you intentionally want a binary-only install."
+    fi
+}
+
 install_from_source() {
     command -v cargo >/dev/null 2>&1 || return 1
     say "no release asset available — building from source (this takes a while) ..."
@@ -430,6 +519,8 @@ install_from_source() {
 }
 
 main() {
+    print_banner
+    say "[1/2] Install verified Labby binary"
     acquire_transaction_lock
     if [ -d "$ACTIVATION_JOURNAL" ]; then
         recover_activation || fail "activation recovery FAILED; journal retained at $ACTIVATION_JOURNAL"
@@ -468,7 +559,11 @@ Install a Rust toolchain (https://rustup.rs) and re-run, or build from a clone:
 
     say ""
     say "labby installed: $("$INSTALL_DIR/labby" --version 2>/dev/null || echo "$INSTALL_DIR/labby")"
-    say "next: run 'labby setup' to start the first-run flow"
+
+    # The setup process may elevate and may itself install/restart services. Do
+    # not hold the binary activation lock across that independent transaction.
+    release_transaction_lock
+    run_first_run_setup
 }
 
 main "$@"

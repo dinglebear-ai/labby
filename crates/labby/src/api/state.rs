@@ -68,6 +68,10 @@ pub struct AppState {
     pub oauth_state: Option<Arc<labby_auth::state::AuthState>>,
     /// Provider-independent store for project-bound browser sessions.
     pub project_session_state: Option<Arc<labby_auth::project_session::ProjectSessionState>>,
+    /// Process-local HttpOnly browser sessions derived from the static bearer.
+    /// These are intentionally invalidated by daemon restart.
+    pub static_browser_session_state:
+        Option<Arc<labby_auth::static_session::StaticBrowserSessionState>>,
     /// Cached actor-key deriver used at authenticated bind boundaries.
     pub actor_key_deriver: Option<Arc<crate::observability::activity::ActorKeyDeriver>>,
     /// Core assertion verifier for sealed integrated trusted-host mode.
@@ -185,6 +189,7 @@ impl AppState {
             config: Arc::new(LabConfig::default()),
             oauth_state: None,
             project_session_state: None,
+            static_browser_session_state: None,
             actor_key_deriver: None,
             trusted_host_verifier: None,
             #[cfg(feature = "gateway")]
@@ -384,6 +389,15 @@ impl AppState {
         state: labby_auth::project_session::ProjectSessionState,
     ) -> Self {
         self.project_session_state = Some(Arc::new(state));
+        self
+    }
+
+    #[must_use]
+    pub fn with_static_browser_session_state(
+        mut self,
+        state: labby_auth::static_session::StaticBrowserSessionState,
+    ) -> Self {
+        self.static_browser_session_state = Some(Arc::new(state));
         self
     }
 

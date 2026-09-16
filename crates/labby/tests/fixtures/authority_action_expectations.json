@@ -218,6 +218,15 @@
       "personal_no_membership": "deny",
       "platform_admin": "allow"
     },
+    "agents:agents.session.cancel": {
+      "required_capability": "scope.operate",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
     "agents:agents.session.status": {
       "required_capability": "scope.read",
       "team_member": "allow",
@@ -1299,60 +1308,6 @@
       "platform_admin": "allow"
     },
     "tasks:tasks.result": {
-      "required_capability": "scope.read",
-      "team_member": "allow",
-      "team_admin": "allow",
-      "team_owner": "allow",
-      "other_team_member": "deny",
-      "personal_no_membership": "deny",
-      "platform_admin": "allow"
-    },
-    "agents:agents.harnesses": {
-      "required_capability": "scope.read",
-      "team_member": "allow",
-      "team_admin": "allow",
-      "team_owner": "allow",
-      "other_team_member": "deny",
-      "personal_no_membership": "deny",
-      "platform_admin": "allow"
-    },
-    "agents:agents.session.get": {
-      "required_capability": "scope.read",
-      "team_member": "allow",
-      "team_admin": "allow",
-      "team_owner": "allow",
-      "other_team_member": "deny",
-      "personal_no_membership": "deny",
-      "platform_admin": "allow"
-    },
-    "agents:agents.session.resume": {
-      "required_capability": "scope.operate",
-      "team_member": "allow",
-      "team_admin": "allow",
-      "team_owner": "allow",
-      "other_team_member": "deny",
-      "personal_no_membership": "deny",
-      "platform_admin": "allow"
-    },
-    "agents:agents.session.stop": {
-      "required_capability": "scope.operate",
-      "team_member": "allow",
-      "team_admin": "allow",
-      "team_owner": "allow",
-      "other_team_member": "deny",
-      "personal_no_membership": "deny",
-      "platform_admin": "allow"
-    },
-    "agents:agents.session.transcript": {
-      "required_capability": "scope.read",
-      "team_member": "allow",
-      "team_admin": "allow",
-      "team_owner": "allow",
-      "other_team_member": "deny",
-      "personal_no_membership": "deny",
-      "platform_admin": "allow"
-    },
-    "agents:agents.sessions.list": {
       "required_capability": "scope.read",
       "team_member": "allow",
       "team_admin": "allow",

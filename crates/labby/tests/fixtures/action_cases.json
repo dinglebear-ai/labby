@@ -1639,7 +1639,8 @@
     "applicable_surfaces": [
       "cli",
       "mcp",
-      "api"
+      "api",
+      "web_ui"
     ],
     "applicable_features": [
       "all",
@@ -2281,8 +2282,7 @@
     "applicable_surfaces": [
       "cli",
       "mcp",
-      "api",
-      "web_ui"
+      "api"
     ],
     "applicable_features": [
       "all",

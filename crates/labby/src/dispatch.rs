@@ -1,6 +1,8 @@
 pub(crate) mod access;
 pub(crate) mod access_bootstrap;
 pub(crate) mod access_errors;
+pub(crate) mod agent_llm;
+pub(crate) mod agent_payloads;
 pub(crate) mod agents;
 #[cfg(feature = "skills")]
 pub(crate) mod artifact_control;
