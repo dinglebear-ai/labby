@@ -10,7 +10,7 @@ description: "Use when operating Labby through its CLI, MCP, HTTP API, or web UI
 ## Quick Start
 
 ```bash
-labby help                 # CLI command help
+labby help                 # service/action catalog
 labby doctor               # Full health/config audit
 labby health               # Quick availability check
 labby --json doctor        # Machine-readable output
@@ -19,9 +19,11 @@ labby completions bash     # Generate shell completions
 
 Use `labby`, not the old `lab` command name.
 
-`labby help` is Clap command help in the current CLI. For service/action catalogs,
-read `docs/generated/service-catalog.md`, `docs/generated/action-catalog.md`, or
-use service `help`/`schema` actions through MCP/API dispatch.
+`labby help` is the human-readable service/action catalog. For shell command
+grammar, use `docs/generated/cli-help.md` or `labby <command> --help`. For exact
+service actions, read `docs/generated/service-catalog.md` and
+`docs/generated/action-catalog.md`, call `labby help <service>`, or use service
+`help`/`schema` actions through MCP/API dispatch.
 
 ## Common Top-Level Surfaces
 
@@ -44,9 +46,11 @@ use service `help`/`schema` actions through MCP/API dispatch.
 | `labby proxy ...` | Proxy a stdio MCP server to Streamable HTTP |
 | `labby docs ...` | Generate and verify code-owned catalogs |
 
-This is a common-workflow list, not a command inventory. Use only current
-top-level commands from `labby --help`. Prefer `setup` and `gateway` for
-operator workflows.
+This is a common-workflow list, not a command inventory. Use
+`docs/generated/cli-help.md` for the current top-level command inventory and
+`labby <command> --help` for command-local grammar. Root `labby --help` and
+`labby help` intentionally render the service/action catalog instead. Prefer
+`setup` and `gateway` for operator workflows.
 
 For command details and workflows, read:
 

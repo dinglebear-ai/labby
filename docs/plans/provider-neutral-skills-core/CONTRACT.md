@@ -1,6 +1,6 @@
 # Provider-neutral Skills core contract
 
-Status: draft implementation contract
+Status: historical implementation contract; provider-neutral core merged in PR #486 (`625ccf300`)
 
 ## Required invariants
 

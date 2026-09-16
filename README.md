@@ -448,7 +448,7 @@ curl -s -X POST http://127.0.0.1:8765/v1/gateway \
 Dedicated product routes also exist for catalog discovery (`/v1/{service}/actions`),
 setup, doctor, snippets, filesystem, server logs, gateway OAuth
 (`/v1/gateway/oauth/*`), OAuth relay, auth allowlists (`/v1/auth/allowed-emails`),
-`/v1/openapi`, and the browser session routes under `/auth/*`. See
+`/v1/openapi.json`, interactive API docs at `/v1/docs`, and the browser session routes under `/auth/*`. See
 [generated API routes](./docs/generated/api-routes.md) and
 [OpenAPI](./docs/generated/openapi.json).
 
@@ -698,7 +698,6 @@ sync (`--no-repair` for read-only), exercised by `just validate-plugin`.
 - [synapse-rmcp](https://github.com/dinglebear-ai/synapse) - Local Synapse workflow server for scout and flux actions.
 - [cortex](https://github.com/dinglebear-ai/cortex) - Syslog and homelab log aggregation MCP server.
 - [axon](https://github.com/dinglebear-ai/axon) - RAG, crawl, scrape, extract, and semantic search project.
-- [lumen](https://github.com/dinglebear-ai/lumen) - Local semantic code search MCP server.
 
 ## Documentation
 

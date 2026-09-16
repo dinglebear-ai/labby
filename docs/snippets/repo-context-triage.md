@@ -2,15 +2,14 @@
 name: repo-context-triage
 title: "Repository Context Triage"
 created: "2026-07-30"
-updated: "2026-07-30"
-description: Quick repository context pass using filesystem, Lumen, Octocode, GitHub, and time
+updated: "2026-09-16"
+description: Quick repository context pass using filesystem, Octocode, GitHub, and time
 tags: [repo, triage, research]
 inputs:
   repo_path:
     type: string
-    default: /home/jmagar/workspace/labby
     required: false
-    description: Local repository path
+    description: Optional absolute repository path visible to both the filesystem and Octocode upstreams; local evidence is skipped when omitted
   owner:
     type: string
     default: dinglebear-ai
@@ -35,55 +34,53 @@ inputs:
 
 # Repo Context Triage
 
-Use this snippet when you need a quick orientation pass for a repo topic. It combines local file reads, Lumen semantic search, Octocode local code search, and GitHub issue/file lookups.
+Use this snippet for a quick evidence pass over one repository topic. GitHub issue
+search, a canonical remote file read, and a timestamp always run. When `repo_path`
+is supplied and visible to both local upstreams, the snippet also adds one local
+documentation read and an Octocode lexical search. The retired Lumen semantic-search
+upstream is intentionally not part of the workflow.
 
 ## Tutorial: How This Snippet Is Built
 
-This snippet is a repository-orientation checklist. It collects local context, semantic context, code-search hits, GitHub issues, and one remote file in one run.
+Each tool answers a different evidence question:
 
 | Step | Tool | Why it is included | Parameters the user fills |
 |---|---|---|---|
 | Timestamp | `time::get_current_time` | Records when the triage pass ran | `timezone` |
-| Local doc | `filesystem::read_file` | Reads the local snippet docs as context | `path` |
-| Semantic search | `lumen::semantic_search` | Finds related indexed workspace knowledge | `query`, `limit` |
-| Local code search | `octocode::localSearchCode` | Finds exact code/text matches in the repo | `queries[].path`, `queries[].pattern`, `maxResults` |
-| GitHub issues | `github::search_issues` | Finds remote issue context | `query`, `perPage` |
+| Local doc (optional) | `filesystem::read_text_file` | Reads the local snippet docs when `repo_path` is supplied | `path` |
+| Local code search (optional) | `octocode::localSearch` | Finds lexical code/text matches when the same checkout is visible to Octocode | `queries[].path`, `queries[].searchText`, `pageSize` |
+| GitHub issues | `github::search_issues` | Finds remote issue context | `owner`, `repo`, `query`, `perPage` |
 | GitHub file | `github::get_file_contents` | Compares or retrieves a canonical remote file | `owner`, `repo`, `path` |
 
-The calls are independent, so they run in parallel. The only transformation logic is output cleanup: long tool responses are previewed, GitHub issues are reduced to title/state/URL, and the result keeps enough handles for follow-up work.
+The calls are independent, so they run through `codemode.batch`. Each job catches
+and returns its own failure so one degraded upstream does not discard the rest of
+the evidence.
 
 ## Why The Inputs Exist
 
-- `repo_path` tells Octocode where to search locally.
-- `owner` and `repo` are used by GitHub calls.
-- `topic` becomes the semantic/code/issues search target.
-- `max_results` bounds Lumen, Octocode, and GitHub output.
+- `repo_path` optionally tells the filesystem and Octocode upstreams which shared local checkout to inspect. There is deliberately no machine-specific default.
+- `owner` and `repo` scope GitHub calls without embedding a search qualifier into the natural-language issue query.
+- `topic` becomes the local-code and issue-search target.
+- `max_results` bounds Octocode and GitHub output.
 
-The snippet also has two fixed internal paths:
-
-- `localDoc` defaults to the local snippets README.
-- `remoteDoc` defaults to the same path in GitHub.
-
-Those are normal builder defaults: the generated snippet can include fixed params where a workflow always wants the same file.
+The remote snippets README remains the fixed GitHub workflow default. Local stages
+run only when `repo_path` is supplied; omitting it yields a portable GitHub/time
+triage instead of a degraded run against a path that may not exist on the gateway host.
 
 ## What Validation Should Catch
 
 The builder should validate both simple and nested schemas:
 
-- `filesystem::read_file.path` must be a string.
-- `lumen::semantic_search.limit` must be an integer.
-- `octocode::localSearchCode.queries` must be an array of objects with `path` and `pattern`.
+- `filesystem::read_text_file.path` must be a string.
+- `octocode::localSearch.queries` must be an array whose text-search entries include `operation: "text"`, absolute `path`, and `searchText`.
 - `github::search_issues.perPage` must be an integer.
 - `github::get_file_contents.owner`, `repo`, and `path` must be strings.
 
-This example is useful for teaching nested fields: users should be able to add an Octocode query row in the UI instead of hand-writing `queries: [{ path, pattern }]`.
-
-Live smoke-tested tools before authoring:
+Live tool contracts reverified before this update:
 
 - `time::get_current_time`
-- `filesystem::read_file`
-- `lumen::semantic_search`
-- `octocode::localSearchCode`
+- `filesystem::read_text_file`
+- `octocode::localSearch`
 - `github::search_issues`
 - `github::get_file_contents`
 
@@ -96,15 +93,15 @@ labby gateway code exec --json --code "$(awk '/^```js$/{flag=1;next}/^```$/{if(f
 ```js
 async (overrides = {}) => {
   const input = {
-    repoPath: overrides.repo_path ?? "/home/jmagar/workspace/lab",
-    owner: overrides.owner ?? "jmagar",
-    repo: overrides.repo ?? "lab",
+    repoPath: overrides.repo_path ?? null,
+    owner: overrides.owner ?? "dinglebear-ai",
+    repo: overrides.repo ?? "labby",
     topic: overrides.topic ?? "Code Mode",
-    localDoc: "/home/jmagar/workspace/lab/docs/snippets/README.md",
     remoteDoc: "docs/snippets/README.md",
     maxResults: overrides.max_results ?? 5,
     ...overrides
   };
+  const localDoc = input.repoPath ? input.repoPath + "/docs/snippets/README.md" : null;
 
   const preview = (value, limit = 1400) => {
     const text = typeof value === "string" ? value : JSON.stringify(value);
@@ -133,30 +130,41 @@ async (overrides = {}) => {
     }
   };
 
-  const calls = await Promise.all([
-    timed("timestamp", "time::get_current_time", { timezone: "America/New_York" }),
-    timed(
-      "local_doc",
-      "filesystem::read_file",
-      { path: input.localDoc },
-      (result) => preview(result.content || result, 1000)
-    ),
-    timed(
-      "semantic_search",
-      "lumen::semantic_search",
-      { query: `${input.repo} ${input.topic}`, limit: input.maxResults },
-      (result) => preview(result)
-    ),
-    timed(
-      "local_code_search",
-      "octocode::localSearchCode",
-      { queries: [{ path: input.repoPath, pattern: input.topic }], maxResults: input.maxResults },
-      (result) => preview(result)
-    ),
-    timed(
+  const jobs = [
+    () => timed("timestamp", "time::get_current_time", { timezone: "America/New_York" }),
+    ...(input.repoPath ? [
+      () => timed(
+        "local_doc",
+        "filesystem::read_text_file",
+        { path: localDoc, head: 120 },
+        (result) => preview(result.content || result, 1000)
+      ),
+      () => timed(
+        "local_code_search",
+        "octocode::localSearch",
+        {
+          queries: [{
+            operation: "text",
+            path: input.repoPath,
+            searchText: input.topic,
+            resultView: "detailed",
+            pageSize: input.maxResults,
+            maxFiles: 100
+          }]
+        },
+        (result) => preview(result)
+      )
+    ] : []),
+    () => timed(
       "github_issues",
       "github::search_issues",
-      { query: `repo:${input.owner}/${input.repo} ${input.topic}`, perPage: input.maxResults },
+      {
+        owner: input.owner,
+        repo: input.repo,
+        query: input.topic,
+        perPage: input.maxResults,
+        fields: ["number", "title", "state", "html_url"]
+      },
       (result) => ({
         total_count: result.total_count,
         issues: (result.items || []).slice(0, input.maxResults).map((issue) => ({
@@ -167,15 +175,32 @@ async (overrides = {}) => {
         }))
       })
     ),
-    timed(
+    () => timed(
       "github_file",
       "github::get_file_contents",
       { owner: input.owner, repo: input.repo, path: input.remoteDoc },
       (result) => preview(result, 1000)
     )
-  ]);
+  ];
 
-  const requiredLabels = new Set(["timestamp", "semantic_search", "github_issues", "github_file"]);
+  const batch = await codemode.batch(jobs);
+  const calls = batch.ok
+    .sort((a, b) => a.i - b.i)
+    .map((entry) => entry.value);
+  const batchFailures = batch.failed.map((entry) => ({
+    label: `batch_job_${entry.i}`,
+    id: "codemode.batch",
+    ok: false,
+    error: String(entry.error)
+  }));
+  calls.push(...batchFailures);
+
+  const requiredLabels = new Set([
+    "timestamp",
+    "github_issues",
+    "github_file"
+  ]);
+  if (input.repoPath) requiredLabels.add("local_code_search");
   const requiredOk = calls
     .filter((call) => requiredLabels.has(call.label))
     .every((call) => call.ok);
@@ -189,10 +214,13 @@ async (overrides = {}) => {
     ok: requiredOk,
     status: degraded.length ? "degraded" : "ok",
     degraded,
+    skipped: input.repoPath ? [] : ["local_doc", "local_code_search"],
     calls,
     next_steps: [
-      "Use the returned file paths, issue URLs, and semantic matches as follow-up targets.",
-      "For exact symbol navigation, add Octocode LSP tools after smoke-testing the target language server path."
+      "Use returned issue URLs and remote-file evidence as follow-up targets.",
+      input.repoPath
+        ? "Use Octocode localGetFileContent or LSP semantics when an exact symbol needs proof."
+        : "Provide repo_path only when the same absolute checkout is visible to both filesystem and Octocode."
     ]
   };
 }

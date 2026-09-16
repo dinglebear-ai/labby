@@ -448,7 +448,7 @@ curl -s -X POST http://127.0.0.1:8765/v1/gateway \
 Dedicated product routes also exist for catalog discovery (`/v1/{service}/actions`),
 setup, doctor, snippets, filesystem, server logs, gateway OAuth
 (`/v1/gateway/oauth/*`), OAuth relay, auth allowlists (`/v1/auth/allowed-emails`),
-`/v1/openapi`, and the browser session routes under `/auth/*`. See
+`/v1/openapi.json`, interactive API docs at `/v1/docs`, and the browser session routes under `/auth/*`. See
 [generated API routes](./docs/generated/api-routes.md) and
 [OpenAPI](./docs/generated/openapi.json).
 
