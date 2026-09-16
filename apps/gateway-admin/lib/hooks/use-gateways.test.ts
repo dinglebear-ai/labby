@@ -194,3 +194,50 @@ test('a mounted gateway table observes runtime-only changes after sixty seconds'
     window.setTimeout = original.timeout; window.clearTimeout = original.clearTimeout
   }
 })
+
+test('overlapping reloads of one server issue a single restart request', async () => {
+  const { SWRConfig } = await import('swr')
+  const { useGatewayMutations } = await import('./use-gateways')
+  const { RELOAD_IN_FLIGHT_MESSAGE } = await import('../api/gateway-client')
+  installTestDom()
+  const original = { list: gatewayApi.list, reload: gatewayApi.reload, hydrate: gatewayApi.hydrateRuntime, refresh: gatewayApi.refreshStatus }
+  let reloadCalls = 0
+  let finishReload: (() => void) | undefined
+  gatewayApi.list = async () => []
+  gatewayApi.hydrateRuntime = async rows => rows
+  gatewayApi.refreshStatus = async () => { throw new Error('warming unavailable') }
+  gatewayApi.reload = async () => {
+    reloadCalls += 1
+    await new Promise<void>((resolve) => { finishReload = resolve })
+    return { success: true, message: 'Server restarted successfully', previous_tool_count: 1, new_tool_count: 1 }
+  }
+  let reload: ReturnType<typeof useGatewayMutations>['reloadGateway'] | undefined
+  function Harness() {
+    reload = useGatewayMutations().reloadGateway
+    return React.createElement('span', null, 'ready')
+  }
+  const view = await renderClient(React.createElement(SWRConfig, { value: { provider: () => new Map(), shouldRetryOnError: false } }, React.createElement(Harness)))
+  try {
+    await act(async () => {})
+    assert.ok(reload)
+    const first = reload('alpha')
+    const second = await reload('alpha')
+    assert.equal(reloadCalls, 1, 'the overlapping reload must not send a second restart')
+    assert.equal(second.pending, true)
+    assert.equal(second.message, RELOAD_IN_FLIGHT_MESSAGE)
+    await act(async () => { finishReload?.() })
+    const result = await first
+    assert.equal(result.success, true)
+    // A later reload, after the first completed, is a real request again.
+    const later = reload('alpha')
+    await act(async () => { finishReload?.() })
+    await later
+    assert.equal(reloadCalls, 2)
+  } finally {
+    await view.unmount()
+    gatewayApi.list = original.list
+    gatewayApi.reload = original.reload
+    gatewayApi.hydrateRuntime = original.hydrate
+    gatewayApi.refreshStatus = original.refresh
+  }
+})

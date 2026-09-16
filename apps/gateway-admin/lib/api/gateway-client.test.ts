@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import { __setBrowserSessionStateForTests, getBrowserSessionState } from '../auth/session-store.ts'
-import { GatewayApiError, gatewayApi } from './gateway-client.ts'
+import { GatewayApiError, RELOAD_IN_FLIGHT_MESSAGE, gatewayApi } from './gateway-client.ts'
 import { EXPOSE_NONE_PATTERN } from './tool-exposure-draft.ts'
 
 type RecordedRequest = {
@@ -1169,5 +1169,17 @@ test('gatewayApi.reload reports a running restart as pending', async () => {
     const result = await gatewayApi.reload('gateway-1')
     assert.equal(result.success, false)
     assert.equal(result.pending, true)
+  })
+})
+
+test('gatewayApi.reload reports a restart the backend already has in flight', async () => {
+  await withGatewayFetch({
+    'gateway.get': () => standardGatewayView,
+    'gateway.mcp.restart': () => ({ completed: false, in_flight: true }),
+  }, async () => {
+    const result = await gatewayApi.reload('gateway-1')
+    assert.equal(result.success, false)
+    assert.equal(result.pending, true)
+    assert.equal(result.message, RELOAD_IN_FLIGHT_MESSAGE)
   })
 })

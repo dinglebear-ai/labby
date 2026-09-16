@@ -4045,6 +4045,143 @@ async fn gateway_mcp_restart_response_matches_action_spec() {
     assert_eq!(value["cleanup"]["dry_run"], false);
 }
 
+/// A restart already running for an upstream is reported, not queued: the
+/// second request returns `completed: false` at once without a second
+/// discovery, and the restart never holds the global config-mutation lock
+/// across its network phase, so unrelated gateway mutations stay unblocked.
+#[tokio::test]
+async fn gateway_mcp_restart_is_deduplicated_per_upstream() {
+    use std::time::Duration;
+    let server = MockServer::start().await;
+    let responder = DashboardCatalogResponder::default();
+    Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/mcp"))
+        .respond_with(responder.clone())
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone());
+    let mut config = upstream_fixture("restart-dedup", Some(format!("{}/mcp", server.uri())), None);
+    config.enabled = true;
+    manager.replace_config_for_tests(vec![config]).await;
+    runtime
+        .swap(Some(std::sync::Arc::new(
+            crate::upstream::pool::UpstreamPool::new(),
+        )))
+        .await;
+    let scope = GatewayEnrichmentScope::default();
+    let first = manager
+        .restart_mcp_upstream(
+            "restart-dedup",
+            false,
+            scope.clone(),
+            None,
+            Duration::from_secs(20),
+        )
+        .await
+        .expect("first restart");
+    assert_eq!(first["completed"], true);
+    assert_eq!(responder.discover_requests.load(Ordering::SeqCst), 1);
+
+    responder.delay_ms.store(600, Ordering::SeqCst);
+    let slow = manager
+        .restart_mcp_upstream(
+            "restart-dedup",
+            false,
+            scope.clone(),
+            None,
+            Duration::from_millis(1),
+        )
+        .await
+        .expect("slow restart admitted");
+    assert_eq!(slow["completed"], false);
+
+    let started = std::time::Instant::now();
+    let duplicate = manager
+        .restart_mcp_upstream(
+            "restart-dedup",
+            false,
+            scope.clone(),
+            None,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("duplicate restart reported");
+    assert_eq!(duplicate["completed"], false);
+    assert_eq!(duplicate["in_flight"], true);
+    assert!(
+        started.elapsed() < Duration::from_millis(200),
+        "an in-flight restart must be reported without waiting: {:?}",
+        started.elapsed()
+    );
+    let guard = tokio::time::timeout(
+        Duration::from_millis(100),
+        manager.acquire_config_mutation(),
+    )
+    .await
+    .expect("config mutation lock must not be held across a restart's network phase")
+    .expect("lock");
+    drop(guard);
+
+    for _ in 0..100 {
+        if responder.discover_requests.load(Ordering::SeqCst) >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        responder.discover_requests.load(Ordering::SeqCst),
+        2,
+        "the deduplicated request must not trigger a second discovery"
+    );
+}
+
+/// A restart that fails to reconnect leaves the reason on the upstream's
+/// runtime `last_error`, so the web UI and `gateway.get` show why the server
+/// is down instead of a silent log line.
+#[tokio::test]
+async fn gateway_mcp_restart_records_a_failed_restart_as_last_error() {
+    use std::time::Duration;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone());
+    let mut config = upstream_fixture(
+        "restart-unreachable",
+        Some("http://127.0.0.1:1/mcp".to_string()),
+        None,
+    );
+    config.enabled = true;
+    manager.replace_config_for_tests(vec![config]).await;
+    runtime
+        .swap(Some(std::sync::Arc::new(
+            crate::upstream::pool::UpstreamPool::new(),
+        )))
+        .await;
+    let scope = GatewayEnrichmentScope::default();
+    let error = manager
+        .restart_mcp_upstream(
+            "restart-unreachable",
+            false,
+            scope.clone(),
+            None,
+            Duration::from_secs(20),
+        )
+        .await
+        .expect_err("unreachable upstream cannot restart");
+    assert_eq!(error.kind(), "upstream_connect_error");
+    let view = manager
+        .get_scoped("restart-unreachable", &scope)
+        .await
+        .expect("view");
+    assert!(
+        view.runtime.last_error.is_some(),
+        "the failed restart must be visible as last_error: {view:?}"
+    );
+    assert!(!view.runtime.connected);
+}
+
 #[tokio::test]
 async fn gateway_mcp_restart_replaces_catalog_and_completes_after_caller_stops_waiting() {
     use std::time::Duration;

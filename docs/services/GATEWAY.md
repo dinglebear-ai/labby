@@ -54,6 +54,18 @@ restart is still running after the 20-second wait, the action returns
 `{completed: false}` and the restart finishes in the background; a later
 `gateway.get` or `gateway.mcp.list` shows the reconnected runtime.
 
+Restarts are deduplicated per upstream: a request while one is already in
+flight returns `{completed: false, in_flight: true}` at once and queues
+nothing. A restart writes no configuration and never holds the configuration
+mutation lease, so restarting many upstreams cannot block `gateway.add`,
+`gateway.update`, `gateway.remove`, or `gateway.reload`. A reconnect that fails,
+whether the caller was still waiting or not, is recorded as the upstream's
+runtime `last_error`.
+
+Configuration mutations wait at most two minutes for the shared mutation lease
+and then fail with `service_unavailable`; retry once the running change
+finishes.
+
 ### Stdio Gateways
 
 Stdio upstreams run a configured command on the local host running `lab` when

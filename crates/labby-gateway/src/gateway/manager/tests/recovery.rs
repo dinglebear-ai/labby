@@ -12,6 +12,37 @@ fn recovery_config(name: &str) -> GatewayConfig {
     cfg
 }
 
+/// A held configuration-mutation lease is waited on for a bounded time only;
+/// the waiter fails as `service_unavailable` and the lease stays usable once
+/// the holder releases it.
+#[tokio::test]
+async fn config_mutation_wait_is_bounded() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    let held = manager
+        .acquire_config_mutation()
+        .await
+        .ok()
+        .expect("first lease");
+    let error = manager
+        .acquire_config_mutation_within(Duration::from_millis(50))
+        .await
+        .err()
+        .expect("a held lease must not be waited on indefinitely");
+    assert_eq!(error.kind(), "service_unavailable");
+    drop(held);
+    assert!(
+        manager
+            .acquire_config_mutation_within(Duration::from_secs(5))
+            .await
+            .is_ok(),
+        "lease is available again after the holder releases it"
+    );
+}
+
 #[tokio::test]
 async fn failed_full_reload_never_arms_private_recovery() {
     let name = "private-recovery-failure";

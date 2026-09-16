@@ -64,6 +64,12 @@ export class GatewayApiError extends Error implements ServiceActionError {
   }
 }
 
+/** Shown when a restart for the same server is already running, whether the
+ * backend reported it (`in_flight: true`) or this client never sent a second
+ * request. The backend deduplicates per upstream; the UI must not re-queue. */
+export const RELOAD_IN_FLIGHT_MESSAGE =
+  'Server restart is already in progress; runtime status will update when it reconnects.'
+
 export async function gatewayAction<T>(
   action: string,
   params: object,
@@ -602,13 +608,17 @@ export const gatewayApi = {
 
   async reload(id: string, signal?: AbortSignal): Promise<ReloadGatewayResult> {
     const before = await gatewayAction<BackendGatewayView>('gateway.get', { name: id }, signal)
-    const result = await gatewayAction<{ completed: boolean; gateway?: BackendGatewayView }>(
+    const result = await gatewayAction<{ completed: boolean; in_flight?: boolean; gateway?: BackendGatewayView }>(
       'gateway.mcp.restart', confirmGatewayParams({ name: id }), signal,
     )
     return {
       success: result.completed,
       pending: !result.completed,
-      message: result.completed ? 'Server restarted successfully' : 'Server restart is still running; runtime status will update when it reconnects.',
+      message: result.completed
+        ? 'Server restarted successfully'
+        : result.in_flight
+          ? RELOAD_IN_FLIGHT_MESSAGE
+          : 'Server restart is still running; runtime status will update when it reconnects.',
       previous_tool_count: before.runtime.tool_count,
       new_tool_count: result.gateway?.runtime.tool_count ?? before.runtime.tool_count,
     }
