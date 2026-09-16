@@ -1,7 +1,7 @@
 ---
 title: "Multi-user ownership migration and recovery"
 created: "2026-09-05"
-updated: "2026-09-07"
+updated: "2026-09-16"
 status: "design"
 ---
 
@@ -9,13 +9,14 @@ status: "design"
 
 ## Execution schema v8
 
-The current binary targets schema v8 (`labby-access-v8-20260913`). A v7
+The current binary targets schema v8 (`labby-access-v8-20260916`). A v7
 installation uses the same offline approval, independent checkpoint and
 verified-reopen workflow below. Its upgrade preserves existing ownership,
 bootstrap generation, authority revisions, definitions and sessions. It adds
-bounded session evidence and task inputs, recurring schedule occurrences and
-retry attempts, and container image draft/build/publication records. It does
-not reclassify existing owners or grant runtime access.
+recurring schedule occurrences and retry attempts, and container image
+draft/build/publication records; Agent and Task payloads stay in the
+content-addressed payload store, not in the access schema. It does not
+reclassify existing owners or grant runtime access.
 
 For v7 to v8, retain before/after logical inventories of every existing table
 except the expected schema metadata change, verify the new tables are empty,
