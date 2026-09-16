@@ -578,13 +578,12 @@ impl GatewayManager {
                         .unwrap_or(entry.observed_at_epoch_secs)
                 })
             };
-            let last_error = if scoped.is_some() {
-                None
-            } else {
-                operator_visible_upstream_error(match pool.as_deref() {
+            let last_error = match &scoped {
+                Some(scoped) => scoped.last_error.clone(),
+                None => operator_visible_upstream_error(match pool.as_deref() {
                     Some(pool) => pool.upstream_last_error(&upstream.name).await,
                     None => None,
-                })
+                }),
             };
             let exposing_capabilities = summary.exposed_tool_count > 0
                 || summary.exposed_resource_count > 0

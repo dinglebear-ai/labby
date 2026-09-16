@@ -4182,6 +4182,56 @@ async fn gateway_mcp_restart_records_a_failed_restart_as_last_error() {
     assert!(!view.runtime.connected);
 }
 
+/// An OAuth upstream's runtime view is scoped to the caller's subject. When
+/// that subject's connection fails, the scoped view must carry the failure as
+/// `last_error` instead of erasing it, or the operator sees a disconnected
+/// server with no reason.
+#[tokio::test]
+async fn scoped_runtime_view_surfaces_subject_connect_failure() {
+    use std::time::Duration;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone());
+    manager
+        .replace_config_for_tests(vec![oauth_upstream_fixture("scoped-unreachable", true)])
+        .await;
+    runtime
+        .swap(Some(std::sync::Arc::new(
+            crate::upstream::pool::UpstreamPool::new(),
+        )))
+        .await;
+    let scope = GatewayEnrichmentScope {
+        route_visible_upstreams: None,
+        oauth_subject: Some("gateway".to_string()),
+    };
+    let error = manager
+        .restart_mcp_upstream(
+            "scoped-unreachable",
+            false,
+            scope.clone(),
+            None,
+            Duration::from_secs(20),
+        )
+        .await
+        .expect_err("the subject cannot connect to an unreachable upstream");
+    assert_eq!(error.kind(), "upstream_connect_error");
+    let view = manager
+        .get_scoped("scoped-unreachable", &scope)
+        .await
+        .expect("scoped view");
+    assert!(!view.runtime.connected);
+    assert!(
+        view.runtime.last_error.is_some(),
+        "the subject's connect failure must be visible: {view:?}"
+    );
+    // The failure belongs to that subject; the unscoped view stays silent.
+    let unscoped = manager
+        .get_scoped("scoped-unreachable", &GatewayEnrichmentScope::default())
+        .await
+        .expect("unscoped view");
+    assert!(unscoped.runtime.last_error.is_none(), "{unscoped:?}");
+}
+
 #[tokio::test]
 async fn gateway_mcp_restart_replaces_catalog_and_completes_after_caller_stops_waiting() {
     use std::time::Duration;

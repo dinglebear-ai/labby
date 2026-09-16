@@ -62,6 +62,12 @@ mutation lease, so restarting many upstreams cannot block `gateway.add`,
 whether the caller was still waiting or not, is recorded as the upstream's
 runtime `last_error`.
 
+OAuth upstreams are projected per calling subject: `gateway.get`,
+`gateway.list`, and `gateway.mcp.list` report that subject's connection,
+counts, and `last_error`, never another caller's. A subject connection that
+fails stays visible as that view's `last_error` (sanitized, never token
+material) until a connect for the same subject succeeds.
+
 Configuration mutations wait at most two minutes for the shared mutation lease
 and then fail with `service_unavailable`; retry once the running change
 finishes.
