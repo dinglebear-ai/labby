@@ -83,6 +83,12 @@ cp "$LABBY_TEST_FEATURE_ROOT/${url##*/}" "$out"
             &root.path().join("tools/gh"),
             r#"#!/bin/sh
 set -eu
+# The installer probes gh for attestation support and authentication before
+# any download. Those probes are prerequisite checks, not attestation
+# requests, so answer them without recording them.
+case "$*" in
+  "attestation verify --help"|"auth status --hostname github.com") exit 0;;
+esac
 printf '%s\n' "$*" >> "$LABBY_TEST_FEATURE_ROOT/attestations"
 case "$*" in
   "attestation verify "*"--repo dinglebear-ai/labby --signer-workflow dinglebear-ai/labby/.github/workflows/release.yml --source-ref refs/tags/v1.17.0 --deny-self-hosted-runners") ;;
