@@ -1359,7 +1359,7 @@ fn open_connection(path: &Path) -> Result<Connection, AuthError> {
             email       TEXT PRIMARY KEY NOT NULL,
             added_by    TEXT NOT NULL,
             created_at  INTEGER NOT NULL,
-            role        TEXT NOT NULL DEFAULT 'member'
+            role        TEXT NOT NULL DEFAULT 'member' CHECK(role IN ('member', 'admin'))
         );",
     )
     .map_err(sqlite_error)?;

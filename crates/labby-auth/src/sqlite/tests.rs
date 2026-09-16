@@ -3057,6 +3057,148 @@ async fn legacy_allowlist_rows_without_role_read_back_as_member() {
     assert_eq!(rows[0].role, "member");
 }
 
+/// Finding 8: the role vocabulary is enforced by the schema, not only by the
+/// store's Rust-side check, so no hand edit or older writer can leave a row
+/// whose role admission would silently ignore.
+#[tokio::test]
+async fn allowed_users_role_is_constrained_in_the_schema() {
+    let path = temp_db_path();
+    let store = SqliteStore::open(path.clone()).await.unwrap();
+    let error = store
+        .with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO allowed_users (email, added_by, created_at, role)
+                 VALUES ('owner@example.com', 'admin', 1, 'owner')",
+                [],
+            )
+            .map_err(sqlite_error)
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("CHECK") || error.to_string().contains("constraint"),
+        "a raw insert with an unknown role must violate the schema: {error}"
+    );
+    for role in ["member", "admin"] {
+        store
+            .add_allowed_user(&format!("{role}@example.com"), "admin", role, now_unix())
+            .await
+            .unwrap();
+    }
+    assert_eq!(store.list_allowed_users().await.unwrap().len(), 2);
+    // Re-opening applies the schema again without error.
+    drop(store);
+    SqliteStore::open(path).await.unwrap();
+}
+
+/// A v17 store whose `allowed_users` predates the CHECK constraint is
+/// rebuilt in place with its rows intact; a second open is a no-op.
+#[tokio::test]
+async fn schema_migration_v18_adds_role_check_to_legacy_allowed_users() {
+    let path = temp_db_path();
+    drop(SqliteStore::open(path.clone()).await.unwrap());
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS idx_allowed_users_email_nocase;
+             DROP TABLE allowed_users;
+             CREATE TABLE allowed_users (
+                 email       TEXT PRIMARY KEY NOT NULL,
+                 added_by    TEXT NOT NULL,
+                 created_at  INTEGER NOT NULL,
+                 role        TEXT NOT NULL DEFAULT 'member'
+             );
+             CREATE INDEX idx_allowed_users_email_nocase ON allowed_users(email COLLATE NOCASE);
+             INSERT INTO allowed_users VALUES ('member@example.com', 'admin-sub', 10, 'member');
+             INSERT INTO allowed_users VALUES ('admin@example.com', 'admin-sub', 11, 'admin');
+             PRAGMA user_version = 17;",
+        )
+        .unwrap();
+    }
+    crate::util::set_restrictive_permissions(&path).unwrap();
+
+    let migrated = SqliteStore::open(path.clone()).await.unwrap();
+    let rows = migrated.list_allowed_users().await.unwrap();
+    assert_eq!(
+        rows.iter()
+            .map(|row| (row.email.as_str(), row.role.as_str(), row.created_at))
+            .collect::<Vec<_>>(),
+        vec![
+            ("member@example.com", "member", 10),
+            ("admin@example.com", "admin", 11),
+        ]
+    );
+    assert!(
+        migrated
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO allowed_users (email, added_by, created_at, role)
+                     VALUES ('x@example.com', 'admin', 1, 'owner')",
+                    [],
+                )
+                .map_err(sqlite_error)
+            })
+            .await
+            .is_err(),
+        "the rebuilt table must carry the role CHECK"
+    );
+    assert!(
+        migrated
+            .find_allowed_user("ADMIN@example.com")
+            .await
+            .unwrap()
+            .is_some(),
+        "the case-insensitive index is recreated"
+    );
+    drop(migrated);
+    let reopened = SqliteStore::open(path.clone()).await.unwrap();
+    assert_eq!(reopened.list_allowed_users().await.unwrap().len(), 2);
+    drop(reopened);
+    let conn = Connection::open(path).unwrap();
+    assert_eq!(
+        conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        migrations::SCHEMA_VERSION
+    );
+}
+
+/// A legacy row whose role is outside the vocabulary was never admitted;
+/// the migration refuses rather than widening or silently dropping it.
+#[tokio::test]
+async fn schema_migration_v18_refuses_a_legacy_row_with_an_unknown_role() {
+    let path = temp_db_path();
+    drop(SqliteStore::open(path.clone()).await.unwrap());
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS idx_allowed_users_email_nocase;
+             DROP TABLE allowed_users;
+             CREATE TABLE allowed_users (
+                 email       TEXT PRIMARY KEY NOT NULL,
+                 added_by    TEXT NOT NULL,
+                 created_at  INTEGER NOT NULL,
+                 role        TEXT NOT NULL DEFAULT 'member'
+             );
+             INSERT INTO allowed_users VALUES ('odd@example.com', 'admin-sub', 10, 'owner');
+             PRAGMA user_version = 17;",
+        )
+        .unwrap();
+    }
+    crate::util::set_restrictive_permissions(&path).unwrap();
+    let error = SqliteStore::open(path.clone()).await.unwrap_err();
+    assert!(
+        error.to_string().contains("allowed_users"),
+        "the refusal must name the table to fix: {error}"
+    );
+    let conn = Connection::open(path).unwrap();
+    assert_eq!(
+        conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        17,
+        "a refused migration leaves the store at the previous version"
+    );
+}
+
 #[tokio::test]
 async fn allowed_users_schema_bootstrap_is_idempotent() {
     // Open the same file twice; second open must not error.
