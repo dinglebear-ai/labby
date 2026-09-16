@@ -277,7 +277,6 @@ async fn actual_http_adapter_rejects_hostile_callback_transports_with_safe_corre
         #[cfg(feature = "gateway")]
         client_registry: Default::default(),
         transport_label: "http",
-        lifecycle_profile: crate::mcp::server::McpLifecycleProfile::CurrentDiscoveryOnly,
         logging_level: Arc::new(std::sync::atomic::AtomicU8::new(logging_level_rank(
             LoggingLevel::Emergency,
         ))),
@@ -507,7 +506,6 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
         #[cfg(feature = "gateway")]
         client_registry: Default::default(),
         transport_label: "http",
-        lifecycle_profile: crate::mcp::server::McpLifecycleProfile::CurrentDiscoveryOnly,
         logging_level: Arc::new(std::sync::atomic::AtomicU8::new(logging_level_rank(
             LoggingLevel::Emergency,
         ))),
@@ -914,7 +912,6 @@ async fn explicit_mcp_action_allowlist_permits_list_and_denies_create() {
         route_runtime: Default::default(),
         client_registry: Default::default(),
         transport_label: "http",
-        lifecycle_profile: crate::mcp::server::McpLifecycleProfile::CurrentDiscoveryOnly,
         logging_level: Arc::new(std::sync::atomic::AtomicU8::new(logging_level_rank(
             LoggingLevel::Emergency,
         ))),

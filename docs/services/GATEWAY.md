@@ -918,8 +918,9 @@ curl -i -X POST "$BASE$ROUTE" \
 
 Expected:
 
-- success response advertises only `2026-07-28`; historical initialization
-  remains available on direct stdio, not this stateless HTTP endpoint
+- success response advertises `2026-07-28` as the primary stateless protocol
+  and declares the SDK-known historical versions that the legacy
+  `initialize` compatibility path genuinely adapts
 - no `Mcp-Session-Id` response header
 - no public response reveals `backend_url`
 

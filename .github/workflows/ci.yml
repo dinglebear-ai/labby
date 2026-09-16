@@ -1155,7 +1155,7 @@ jobs:
         uses: ./.github/actions/setup-rust-kache
       - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
         with:
-          install_args: cargo:cargo-nextest just
+          install_args: cargo:cargo-nextest
       - name: Verify Labby auth core and extension contracts
         run: cargo test -p labby-auth --all-features --locked
       - name: Verify authoritative auth requirement matrix
@@ -1179,7 +1179,7 @@ jobs:
         run: cargo fetch --locked
       - name: Validate full specification inventory and fail-closed reporter
         run: |
-          python3 -m unittest scripts.ci.test_extract_mcp_spec_requirements scripts.ci.test_extract_mcp_schema_requirements scripts.ci.test_mcp_spec_compliance scripts.ci.test_mcp_oracle_runner scripts.ci.test_mcp_spec_recipes
+          python3 -m unittest scripts.ci.test_extract_mcp_spec_requirements scripts.ci.test_extract_mcp_schema_requirements scripts.ci.test_mcp_spec_compliance scripts.ci.test_mcp_oracle_runner
           python3 scripts/ci/mcp_spec_compliance.py check --spec-checkout target/mcp-spec-source
       - name: Run registered specification oracles (not a full-compliance claim)
         run: python3 scripts/ci/mcp_spec_compliance.py run --gate oracles --spec-checkout target/mcp-spec-source

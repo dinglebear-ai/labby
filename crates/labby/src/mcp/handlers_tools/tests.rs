@@ -253,7 +253,6 @@ fn test_server(
         route_runtime: Default::default(),
         client_registry: Default::default(),
         transport_label: "test",
-        lifecycle_profile: crate::mcp::server::McpLifecycleProfile::CurrentDiscoveryOnly,
         logging_level: Arc::new(AtomicU8::new(logging_level_rank(logging_level))),
         route_scope,
         relay_session_id: 0,
@@ -5633,7 +5632,6 @@ async fn server_reads_current_pool_from_gateway_manager() {
         route_runtime: Default::default(),
         client_registry: notifier.client_registry.clone(),
         transport_label: "test",
-        lifecycle_profile: crate::mcp::server::McpLifecycleProfile::CurrentDiscoveryOnly,
         logging_level: Arc::new(AtomicU8::new(logging_level_rank(
             crate::mcp::logging::LoggingLevel::Info,
         ))),

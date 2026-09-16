@@ -1,7 +1,7 @@
 ---
 title: "MCP 2026-07-28 Conformance"
 created: "2026-07-30"
-updated: "2026-09-14"
+updated: "2026-08-30"
 ---
 
 # MCP 2026-07-28 Conformance
@@ -32,7 +32,7 @@ An assertion about one role is not accepted as evidence for another role.
 | Component | Pin |
 |---|---|
 | MCP protocol | `2026-07-28` |
-| Labby rmcp dependency | fork `3.3.0`, Git revision `a30965679d27ba4f7d17e9d8efa7c95742eb6b42` ([strict stateless follow-up](https://github.com/dinglebear-ai/rust-sdk/pull/4)) |
+| Labby rmcp dependency | fork `3.3.0`, Git revision `0e1184b47645d5eb64d1df3bb84067b1d4a53340` |
 | rmcp conformance fixture | stock upstream `3.3.0` |
 | rmcp fixture tag commit | `3e636cab26c013eca5131103c03d20237f12c4df` |
 | MCP conformance package | `0.2.0-alpha.10` |
@@ -41,50 +41,6 @@ The stock upstream fixture and Labby's fork are intentionally distinct pins.
 The 3.3.0 fixture does not read `STATELESS`; its default legacy-session support
 is not evidence for Labby's stateless HTTP boundary. The real-product HTTP
 oracles separately exercise Labby's request-scoped cancellation and validation.
-
-The conformance script accepts `LABBY_RMCP_REPOSITORY`,
-`LABBY_RMCP_REVISION`, `RMCP_FIXTURE_VERSION`, `RMCP_TAG`, `RMCP_COMMIT`,
-`MCP_CONFORMANCE_VERSION`, and `MCP_SPEC_VERSION` as explicit one-run
-development overrides. They are useful when qualifying a proposed dependency
-or fixture update, but a non-default run is diagnostic and does not qualify the
-canonical pins in the table above. Every full run writes the effective values
-and a `canonical` flag to `target/mcp-conformance/pins.json` (or the configured
-output directory), so retained reports identify the pin set they exercised.
-
-The normative denominator contains 2,223 rows: 927 prose requirements and
-1,296 structural schema constraints. The reviewed HTTP catalog currently has
-nine dispositions and nine executable oracles, leaving 2,214 rows unreviewed.
-That is an inventory count, not a conformance percentage. All nine reviewed
-rows are applicable. The 2,214 count excludes those reviewed dispositions and
-remains unresolved pending denominator-wide applicability and oracle work.
-
-The nine product-wire oracles cover request-scoped cancellation, invalid
-Origin rejection, protocol metadata/header mismatch, unknown methods,
-unsupported versions, a missing current-version header, legacy GET/DELETE,
-`Mcp-Session-Id`, and `Last-Event-ID`. The unsupported-version oracle sends an
-unknown version and every SDK-known historical version to the current HTTP
-boundary. Each must return HTTP 400 with typed JSON-RPC error `-32022`, name the
-requested version, advertise exactly `["2026-07-28"]`, and admit no effect.
-This does not remove the separate legacy `initialize` adapter.
-
-The unsupported-version oracle exercises `tools/call`. HTTP `initialize`
-requests have a separate, explicit boundary matrix. With neither
-`MCP-Protocol-Version` nor `Mcp-Method`, Labby returns HTTP 400 and JSON-RPC
-`-32020` (`HeaderMismatch`). With an explicitly historical protocol header it
-returns HTTP 400 and `-32022` (`UnsupportedProtocolVersionError`), including the
-requested version and exactly `2026-07-28` as supported. With the current
-protocol header it returns HTTP 404 and `-32601` (`MethodNotFound`). Every case
-retains the JSON-RPC request ID. Labby enables the SDK's strict stateless
-metadata option, which enforces these headers and maps terminal protocol errors
-to their modern HTTP statuses. Relaxed SDK users retain legacy initialization
-behavior; Labby does not duplicate that logic in an HTTP wrapper.
-
-The `Last-Event-ID` oracle checks identical bounded, meaningful JSON-RPC results
-with and without the obsolete header. It also proves a fresh
-`subscriptions/listen` POST emits an SSE stream without event IDs and that the
-legacy GET resume path returns 405 with `Allow: POST`. Together these cases
-cover both configured response modes and show the stateless endpoint cannot
-resume an earlier stream from `Last-Event-ID`.
 
 Run the complete gate locally with:
 
@@ -153,7 +109,7 @@ unroutable.
 | Area | Labby posture | Regression evidence |
 |---|---|---|
 | Protocol lifecycle | Modern clients use stateless `server/discover`; legacy `initialize` is adapted only at the transport edge | discovery tests, bridge tests, and the multi-hop driver |
-| Stateless HTTP | No `Mcp-Session-Id`; `NeverSessionManager`; JSON responses; legacy session and event-resume headers are ignored | literal HTTP lifecycle tests and rmcp dated suite |
+| Stateless HTTP | No `Mcp-Session-Id`; `NeverSessionManager`; JSON responses | HTTP lifecycle tests and rmcp dated suite |
 | SEP-2243 headers | rmcp validates method/name headers before dispatch | HTTP method/name header tests |
 | Request envelopes | Metadata, input responses, request state, cancellation, and progress association survive proxy routes | request-envelope tests and relay module |
 | Cache hints | Dynamic Labby lists/reads emit `ttlMs: 0` with private scope | tool, prompt, resource, and server serialization tests |
@@ -168,12 +124,10 @@ unroutable.
 
 ### Lifecycle compatibility
 
-Labby's internal contract is stateless `2026-07-28` discovery. On direct stdio,
-a legacy `initialize` request is accepted as an edge adapter for existing hosts:
-Labby records the peer information and returns the negotiated legacy version
-without changing internal request handling or creating a resumable HTTP session.
-The hosted HTTP boundary rejects historical `initialize` versions as described
-above.
+Labby's internal contract is stateless `2026-07-28` discovery. A legacy
+`initialize` request is accepted as an edge adapter for existing hosts: Labby
+records the peer information and returns the negotiated legacy version without
+changing internal request handling or creating a resumable session.
 
 ### MRTR and tasks
 

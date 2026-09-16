@@ -1034,7 +1034,6 @@ mod tests {
             #[cfg(feature = "gateway")]
             client_registry: Default::default(),
             transport_label: "test",
-            lifecycle_profile: crate::mcp::server::McpLifecycleProfile::CurrentDiscoveryOnly,
             logging_level: Arc::new(AtomicU8::new(logging_level_rank(LoggingLevel::Emergency))),
             route_scope,
             relay_session_id: 0,
