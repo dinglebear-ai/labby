@@ -105,7 +105,9 @@ function Test-LabbyReleaseProvenance {
         $trustError.Data['LabbyTrustFailure'] = $true
         throw $trustError
     }
-    & gh attestation verify $ArtifactPath --repo $Repo `
+    # Pin the trust root: GH_HOST or a gh config default must not redirect
+    # attestation verification to another host.
+    & gh attestation verify $ArtifactPath --hostname github.com --repo $Repo `
         --signer-workflow "$Repo/.github/workflows/release.yml" `
         --source-ref "refs/tags/$ResolvedVersion" --deny-self-hosted-runners | Out-Null
     if ($LASTEXITCODE -ne 0) {

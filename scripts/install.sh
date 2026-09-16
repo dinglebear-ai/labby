@@ -174,7 +174,10 @@ verify_release_provenance() {
     resolved=$2
     command -v gh >/dev/null 2>&1 \
         || fail "GitHub CLI (gh) is required to verify release provenance"
+    # Pin the trust root: GH_HOST or a gh config default must not redirect
+    # attestation verification to another host.
     gh attestation verify "$artifact" \
+        --hostname github.com \
         --repo "$REPO" \
         --signer-workflow "$REPO/.github/workflows/release.yml" \
         --source-ref "refs/tags/$resolved" \

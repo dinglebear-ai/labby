@@ -398,6 +398,23 @@ fn every_host_update_entry_point_pins_and_sanitizes_installer_control() {
     }
 }
 
+#[test]
+fn installer_environment_drops_gh_host_overrides() {
+    // GH_HOST and GH_CONFIG_DIR redirect gh at another host or credential
+    // store, and GH_ENTERPRISE_TOKEN authenticates there; any of them in the
+    // service environment would let the installer verify provenance against
+    // a trust root other than github.com.
+    let command = installer_command(Path::new("/installer"), "v1.17.0", Path::new("/bin"));
+    let env: std::collections::HashMap<_, _> = command.get_envs().collect();
+    for key in ["GH_HOST", "GH_ENTERPRISE_TOKEN", "GH_CONFIG_DIR"] {
+        assert_eq!(
+            env.get(std::ffi::OsStr::new(key)),
+            Some(&None),
+            "ambient {key} must not select the installer's trust root"
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn updates_explicitly_skip_first_run_configuration() {
