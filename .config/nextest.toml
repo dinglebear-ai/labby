@@ -21,13 +21,20 @@ filter = 'package(labby-codemode) & test(git::provider::tests::)'
 threads-required = 'num-test-threads'
 
 # Shared lifecycle harness tests are compiled into several integration binaries.
-# Windows CI observed four concurrent instances exhausting their unchanged 45s
-# readiness deadline during database initialization; later instances finished in
-# 2-7s. Reserve slots for these cases to avoid competing daemon startups. Their
+# They launch real daemons, process groups, listeners, and cleanup guardians. Running
+# copies concurrently exhausted unchanged readiness/cleanup budgets on Windows and,
+# after the hosted Linux shard fan-out, produced the same cross-test interference on
+# Linux/macOS. Reserve all runner test slots for these cases on every platform. Their
 # own multi-process scenarios still run concurrently inside the test.
 [[profile.ci.overrides]]
-platform = 'cfg(windows)'
-filter = 'package(labby) & test(live_labby::tests::)'
+filter = 'package(labby) & test(live_labby::)'
+threads-required = 'num-test-threads'
+
+# Proxy qualification cases intentionally build multi-hop live Labby topologies.
+# Keep each case isolated from unrelated live-daemon tests while preserving normal
+# parallelism for pure integration tests in the same shard.
+[[profile.ci.overrides]]
+filter = 'package(labby) & binary(=proxy_qualification)'
 threads-required = 'num-test-threads'
 
 # These three process-inventory controls hit their unchanged 3s deadlines when
