@@ -1,7 +1,7 @@
 ---
 title: "Agents and Agent Tasks"
 created: "2026-09-07"
-updated: "2026-09-07"
+updated: "2026-09-15"
 ---
 
 # Agents and Agent Tasks
@@ -16,16 +16,35 @@ resources the caller cannot read, while direct reads and mutations return the
 same non-enumerating denial for absent and unauthorized identifiers.
 
 Agent revisions pin content, repository, image, harness, loadout, credentials,
-and catalog generations. Updating an Agent creates the next immutable revision.
-Suspension or deletion blocks future runs. Runtime leases are checked at safe
-boundaries so membership or policy revocation fences retained execution.
+and catalog generations. LLM-backed definitions materialize the model and Agent
+instructions into Labby's content-addressed payload store and pin that payload
+with the existing `content_digest`. The harness digest identifies the configured
+OpenAI-compatible provider endpoint, so a revision cannot silently move to a
+different execution provider. Updating an Agent creates the next immutable
+revision. Suspension or deletion blocks future runs. Runtime leases are checked
+at safe boundaries so membership or policy revocation fences retained execution.
+
+Product Agent execution uses the same OpenAI-compatible provider abstraction as
+the Assistant. Configure `LABBY_PHOENIX_OPENAI_BASE_URL` and, when required,
+`LABBY_PHOENIX_OPENAI_API_KEY` in Labby's private environment file. ExGPT-style
+providers must expose the session create, cancel, and close extensions in
+addition to `/v1/chat/completions`. Direct `agents.run` input is bound only to
+that run; the immutable Agent instructions remain pinned to the selected
+revision. Successful text output is stored content-addressed and returned with
+its digest.
 
 Agent Tasks capture an exact Agent revision, normalized input digest, catalog
-generation, owner, creator, and authority fingerprint. Task idempotency keys are
-scoped to the owner and bind the full immutable intent. Queue, cancellation,
-execution, and settlement use fenced state transitions; terminal settlement is
-exactly once. Current authority is required for every list, get, cancellation,
-and result operation.
+generation, owner, creator, and authority fingerprint. Callers may supply raw
+UTF-8 `input`; Labby materializes it content-addressed and stores the resulting
+`input_digest`, while the legacy digest-only form remains supported. Task
+idempotency keys are scoped to the owner and bind the full immutable intent.
+Queue, cancellation, execution, and settlement use fenced state transitions;
+terminal settlement is exactly once. Provider or payload failures happen inside
+the owned queued attempt and settle through the normal runtime as `failed`
+instead of bypassing durable queue admission. Terminal `tasks.result` responses
+include materialized output text when available as well as the immutable output
+digest. Current authority is required for every list, get, cancellation, and
+result operation.
 
 Authenticated HTTP exposes `POST /v1/agents` and `POST /v1/tasks` with the same
 `action` plus `params` envelope used by MCP. MCP exposes the `agents` and

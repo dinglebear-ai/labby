@@ -3,8 +3,8 @@
 import { useEffect, useState } from 'react'
 import {
   Archive, Bot, Box, CheckCircle2, CirclePlus, Clock3,
-  FileCode2, FileText, Grid2X2, Layers3, List,
-  Pause, Play, Search, Table2, ChevronDown, ArrowUpDown,
+  FileCode2, FileText, Layers3,
+  Pause, Play, Search, ChevronDown,
 } from 'lucide-react'
 
 import { AppHeader } from '@/components/app-header'
@@ -17,9 +17,11 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/compone
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { ArtifactComposer } from './artifact-composer'
 import { DevContainersPageContent } from './dev-containers-page-content'
-import { NewAgentSessionWizard } from './new-agent-session-wizard'
-import { AlpineMark, CodexMark, DebianMark, UbuntuMark } from './brand-marks'
-import { listAgents, listTasks } from '@/lib/agent-tasks/client'
+import {
+  cancelTask, createAgent, createTask, deleteAgent, getTaskResult, listAgents, listTasks,
+  queueTask, runAgent, suspendAgent, updateAgent,
+  type AgentRunResult, type AgentView, type OwnerKind, type TaskResult, type TaskView,
+} from '@/lib/agent-tasks/client'
 
 const demoArtifacts = [
   ['Skill', 'repo-triage', 'Cluster open PRs and issues, then draft a triage note.', '#review · #github'],
@@ -83,78 +85,301 @@ export function CreatePage() {
 }
 
 export function AgentsPage() {
-  const [agents, setAgents] = useState<string[][]>([])
+  const [agents, setAgents] = useState<AgentView[]>([])
   const [loadError, setLoadError] = useState<string | null>(null)
-  const [selected, setSelected] = useState<string[] | null>(null)
+  const [selected, setSelected] = useState<AgentView | null>(null)
   const [creating, setCreating] = useState(false)
-  useEffect(() => { const controller = new AbortController(); void listAgents(controller.signal).then(items => { setAgents(items.map(item => [item.state, item.agent_id, `${item.owner_kind}:${item.owner_id}`, `v${item.version}`, 'Labby', item.catalog_generation])); setLoadError(null) }).catch(error => { if (!controller.signal.aborted) setLoadError(error instanceof Error ? error.message : 'Agent service unavailable') }); return () => controller.abort() }, [])
-  const active = agents.filter(row => row[0] === 'active').length
-  return <><AppHeader breadcrumbs={[{ label: 'Workspace' }, { label: 'Agents' }]} /><PageFrame><ConsoleHero eyebrow="Workspace · Agents" title="Agents" pulse={{ color: 'var(--aurora-success)' }} actions={<Button onClick={() => setCreating(true)}><CirclePlus/>New session</Button>} stats={[{label:'Active',value:active,icon:<Play size={12}/>,tone:'var(--aurora-success)'},{label:'Suspended',value:agents.filter(row=>row[0]==='suspended').length,icon:<Pause size={12}/>},{label:'Definitions',value:agents.length,icon:<Bot size={12}/>},{label:'Authority',value:'Live',icon:<CheckCircle2 size={12}/>} ]}/>{loadError?<div role="alert" className="rounded-aurora-1 border border-aurora-error/30 bg-aurora-error/5 p-3 text-sm text-aurora-error">{loadError}</div>:null}<AgentsCollection rows={agents} onSelect={setSelected}/></PageFrame>
-    <AgentSessionSheet session={selected} onOpenChange={(open) => !open && setSelected(null)} />
-    <NewAgentSessionWizard open={creating} onOpenChange={setCreating} />
+  const [agentId, setAgentId] = useState('')
+  const [ownerKind, setOwnerKind] = useState<OwnerKind>('personal')
+  const [ownerId, setOwnerId] = useState('')
+  const [instructions, setInstructions] = useState('')
+  const [model, setModel] = useState('chatgpt-browser')
+  const [mutating, setMutating] = useState(false)
+
+  const applyAgents = (items: AgentView[]) => {
+    setAgents(items)
+    setLoadError(null)
+    setSelected(current => current ? items.find(item => item.agent_id === current.agent_id) ?? null : null)
+    if (!ownerId && items[0]) {
+      const kind = toOwnerKind(items[0].owner_kind)
+      if (kind) setOwnerKind(kind)
+      setOwnerId(items[0].owner_id)
+    }
+  }
+  const refresh = async () => {
+    try { applyAgents(await listAgents()) }
+    catch (error) { setLoadError(errorMessage(error, 'Agent service unavailable')) }
+  }
+  useEffect(() => {
+    const controller = new AbortController()
+    void listAgents(controller.signal).then(items => {
+      setAgents(items)
+      setLoadError(null)
+      setSelected(current => current ? items.find(item => item.agent_id === current.agent_id) ?? null : null)
+    }).catch(error => {
+      if (!controller.signal.aborted) setLoadError(errorMessage(error, 'Agent service unavailable'))
+    })
+    return () => controller.abort()
+  }, [])
+
+  const create = async () => {
+    setMutating(true)
+    setLoadError(null)
+    try {
+      const created = await createAgent({ agentId: agentId.trim(), ownerKind, ownerId: ownerId.trim(), instructions, model })
+      setCreating(false)
+      setSelected(created)
+      setAgentId('')
+      setInstructions('')
+      await refresh()
+    } catch (error) {
+      setLoadError(errorMessage(error, 'Unable to create Agent'))
+    } finally {
+      setMutating(false)
+    }
+  }
+
+  const active = agents.filter(agent => agent.state === 'active').length
+  return <>
+    <AppHeader breadcrumbs={[{ label: 'Workspace' }, { label: 'Agents' }]} />
+    <PageFrame>
+      <ConsoleHero eyebrow="Workspace · Agents" title="Agents" description="Immutable Agent definitions executed through Labby’s shared Assistant LLM provider." pulse={{ color: 'var(--aurora-success)' }} actions={<Button onClick={() => setCreating(true)}><CirclePlus/>New Agent</Button>} stats={[
+        {label:'Active',value:active,icon:<Play size={12}/>,tone:'var(--aurora-success)'},
+        {label:'Suspended',value:agents.filter(agent=>agent.state==='suspended').length,icon:<Pause size={12}/>},
+        {label:'Definitions',value:agents.length,icon:<Bot size={12}/>},
+        {label:'Runtime',value:'Assistant LLM',icon:<CheckCircle2 size={12}/>},
+      ]}/>
+      {loadError?<InlineError message={loadError}/>:null}
+      <AgentsCollection agents={agents} onSelect={setSelected}/>
+    </PageFrame>
+    <AgentSessionSheet agent={selected} onOpenChange={open => !open && setSelected(null)} onChanged={refresh} />
+    <Dialog open={creating} onOpenChange={setCreating}>
+      <DialogContent className="border-aurora-border-strong bg-aurora-panel-medium">
+        <DialogTitle>New Agent</DialogTitle>
+        <DialogDescription>Create a pinned LLM Agent definition. Provider identity is captured in the immutable harness digest.</DialogDescription>
+        <label className="text-xs font-semibold text-aurora-text-muted">Agent ID<input autoFocus value={agentId} onChange={event=>setAgentId(event.target.value)} className="mt-2 h-10 w-full rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface px-3 text-sm text-aurora-text-primary" placeholder="release-reviewer"/></label>
+        <div className="grid grid-cols-2 gap-3">
+          <SelectField label="Owner" value={ownerKind} onChange={value=>setOwnerKind(value as OwnerKind)}><option value="personal">Personal</option><option value="team">Team</option><option value="project">Project</option></SelectField>
+          <label className="text-xs text-aurora-text-muted">Owner ID<input value={ownerId} onChange={event=>setOwnerId(event.target.value)} className="mt-2 h-10 w-full rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface px-3 text-sm text-aurora-text-primary" placeholder="principal / team / project ID"/></label>
+        </div>
+        <label className="text-xs font-semibold text-aurora-text-muted">Model<input value={model} onChange={event=>setModel(event.target.value)} className="mt-2 h-10 w-full rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface px-3 text-sm text-aurora-text-primary" placeholder="chatgpt-browser"/></label>
+        <label className="text-xs font-semibold text-aurora-text-muted">Instructions<textarea value={instructions} onChange={event=>setInstructions(event.target.value)} rows={7} className="mt-2 w-full resize-y rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface p-3 text-sm text-aurora-text-primary" placeholder="Describe the Agent’s role, constraints, and expected output."/></label>
+        <Button onClick={()=>void create()} disabled={mutating||!agentId.trim()||!ownerId.trim()||!instructions.trim()}><CirclePlus/>{mutating?'Creating…':'Create Agent'}</Button>
+      </DialogContent>
+    </Dialog>
   </>
 }
 
-function AgentSessionSheet({ session, onOpenChange }: { session: string[] | null; onOpenChange: (open: boolean) => void }) {
-  return <Sheet open={Boolean(session)} onOpenChange={onOpenChange}>
-    <SheetContent className="!w-[min(92vw,680px)] border-aurora-border-strong bg-aurora-panel-medium p-0 sm:!max-w-[680px]">
+function AgentSessionSheet({ agent, onOpenChange, onChanged }: { agent: AgentView | null; onOpenChange: (open: boolean) => void; onChanged: () => Promise<void> }) {
+  const [input, setInput] = useState('')
+  const [revisionInstructions, setRevisionInstructions] = useState('')
+  const [revisionModel, setRevisionModel] = useState('')
+  const [result, setResult] = useState<AgentRunResult | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    setInput('')
+    setRevisionInstructions('')
+    setRevisionModel('')
+    setResult(null)
+    setError(null)
+  }, [agent?.agent_id, agent?.version])
+
+  const run = async () => {
+    if (!agent) return
+    setBusy(true); setError(null); setResult(null)
+    try { setResult(await runAgent(agent.agent_id, input)) }
+    catch (failure) { setError(errorMessage(failure, 'Agent run failed')) }
+    finally { setBusy(false) }
+  }
+  const publishRevision = async () => {
+    if (!agent) return
+    setBusy(true); setError(null)
+    try {
+      await updateAgent({ agentId: agent.agent_id, instructions: revisionInstructions || undefined, model: revisionModel || undefined })
+      setRevisionInstructions(''); setRevisionModel('')
+      await onChanged()
+    } catch (failure) { setError(errorMessage(failure, 'Agent revision update failed')) }
+    finally { setBusy(false) }
+  }
+  const suspend = async () => {
+    if (!agent) return
+    setBusy(true); setError(null)
+    try { await suspendAgent(agent.agent_id); await onChanged(); onOpenChange(false) }
+    catch (failure) { setError(errorMessage(failure, 'Unable to suspend Agent')) }
+    finally { setBusy(false) }
+  }
+  const remove = async () => {
+    if (!agent) return
+    setBusy(true); setError(null)
+    try { await deleteAgent(agent.agent_id); onOpenChange(false); await onChanged() }
+    catch (failure) { setError(errorMessage(failure, 'Unable to delete Agent')) }
+    finally { setBusy(false) }
+  }
+
+  return <Sheet open={Boolean(agent)} onOpenChange={onOpenChange}>
+    <SheetContent className="!w-[min(96vw,760px)] border-aurora-border-strong bg-aurora-panel-medium p-0 sm:!max-w-[760px]">
       <SheetHeader className="border-b border-aurora-border-subtle bg-aurora-panel-strong px-6 py-5">
-        <SheetTitle className="text-xl text-aurora-text-primary">{session?.[1] ?? 'Agent definition'}</SheetTitle>
-        <SheetDescription className="text-aurora-text-muted">Authoritative immutable Agent definition</SheetDescription>
+        <SheetTitle className="text-xl text-aurora-text-primary">{agent?.agent_id ?? 'Agent definition'}</SheetTitle>
+        <SheetDescription className="text-aurora-text-muted">Run the pinned definition or publish a new immutable revision.</SheetDescription>
       </SheetHeader>
       <div className="grid grid-cols-2 border-b border-aurora-border-subtle bg-aurora-panel-low sm:grid-cols-4">
-        {[['Owner',session?.[2]],['Revision',session?.[3]],['Runtime',session?.[4]],['State',session?.[0]]].map(([label,value])=><div key={label} className="border-r border-aurora-border-subtle px-5 py-4 last:border-r-0"><span className="block text-[9px] font-bold uppercase tracking-[.14em] text-aurora-text-muted">{label}</span><strong className="mt-1 block text-xs text-aurora-text-primary">{value}</strong></div>)}
+        {[
+          ['Owner',agent ? agent.owner_kind + ':' + agent.owner_id : '—'],
+          ['Revision',agent ? 'v' + agent.version : '—'],
+          ['Runtime','Assistant LLM'],
+          ['State',agent?.state ?? '—'],
+        ].map(([label,value])=><div key={label} className="border-r border-aurora-border-subtle px-5 py-4 last:border-r-0"><span className="block text-[9px] font-bold uppercase tracking-[.14em] text-aurora-text-muted">{label}</span><strong className="mt-1 block truncate text-xs text-aurora-text-primary">{value}</strong></div>)}
       </div>
-      <div className="flex-1 px-6 py-5 text-sm text-aurora-text-muted">Catalog generation: <code className="text-aurora-text-primary">{session?.[5]}</code>. Session transcripts appear only after a configured execution backend produces them.</div>
+      <div className="space-y-5 overflow-y-auto px-6 py-5">
+        {error?<InlineError message={error}/>:null}
+        <section className="space-y-3">
+          <div><h3 className="text-sm font-semibold text-aurora-text-primary">Run Agent</h3><p className="text-xs text-aurora-text-muted">Input is bound to this run; the immutable Agent instructions remain pinned to revision {agent?.version ?? '—'}.</p></div>
+          <textarea value={input} onChange={event=>setInput(event.target.value)} rows={5} className="w-full resize-y rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface p-3 text-sm text-aurora-text-primary" placeholder="Optional run input…"/>
+          <Button onClick={()=>void run()} disabled={busy||!agent||agent.state!=='active'}><Play/>{busy?'Running…':'Run Agent'}</Button>
+          {result?<div className="rounded-aurora-1 border border-aurora-border-subtle bg-aurora-panel-low p-4"><div className="mb-2 text-xs text-aurora-text-muted">Session {result.session_id} · {result.status} · {result.output_digest}</div><pre className="whitespace-pre-wrap break-words text-sm text-aurora-text-primary">{result.output ?? 'The provider returned no materialized text output.'}</pre></div>:null}
+        </section>
+        <section className="space-y-3 border-t border-aurora-border-subtle pt-5">
+          <div><h3 className="text-sm font-semibold text-aurora-text-primary">Publish revision</h3><p className="text-xs text-aurora-text-muted">Provide new instructions, a new model, or both. Omitted values inherit from the prior revision.</p></div>
+          <input value={revisionModel} onChange={event=>setRevisionModel(event.target.value)} className="h-10 w-full rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface px-3 text-sm text-aurora-text-primary" placeholder="New model (optional)"/>
+          <textarea value={revisionInstructions} onChange={event=>setRevisionInstructions(event.target.value)} rows={5} className="w-full resize-y rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface p-3 text-sm text-aurora-text-primary" placeholder="New instructions (optional)"/>
+          <Button variant="outline" onClick={()=>void publishRevision()} disabled={busy||(!revisionInstructions.trim()&&!revisionModel.trim())}>Publish new revision</Button>
+        </section>
+        <section className="flex flex-wrap gap-2 border-t border-aurora-border-subtle pt-5">
+          {agent?.state==='active'?<Button variant="outline" onClick={()=>void suspend()} disabled={busy}><Pause/>Suspend</Button>:null}
+          <Button variant="outline" onClick={()=>void remove()} disabled={busy||!agent}>Delete Agent</Button>
+        </section>
+      </div>
     </SheetContent>
   </Sheet>
 }
 
 export function TasksPage() {
-  const [rows, setRows] = useState<string[][]>([])
+  const [tasks, setTasks] = useState<TaskView[]>([])
+  const [agents, setAgents] = useState<AgentView[]>([])
   const [loadError, setLoadError] = useState<string | null>(null)
-  const [selected, setSelected] = useState<string[] | null>(null)
+  const [selected, setSelected] = useState<TaskView | null>(null)
   const [creating, setCreating] = useState(false)
-  const [name,setName]=useState(''),[definition,setDefinition]=useState(''),[schedule,setSchedule]=useState('Daily · 09:00'),[loadout,setLoadout]=useState('operator-console')
-  useEffect(() => { const controller = new AbortController(); void listTasks(controller.signal).then(items => { setRows(items.map(item => [item.state, item.task_id, `attempt ${item.attempt}`, `${item.owner_kind}:${item.owner_id}`, item.agent_id, `Agent revision ${item.agent_version}`, item.error_code ? 'failed' : item.output_digest ? 'passed' : 'pending'])); setLoadError(null) }).catch(error => { if (!controller.signal.aborted) setLoadError(error instanceof Error ? error.message : 'Task service unavailable') }); return () => controller.abort() }, [])
-  const create=()=>{setLoadError('Task creation requires an immutable Agent revision and is not available from this form yet.');setCreating(false)}
-  return <><AppHeader breadcrumbs={[{label:'Workspace'},{label:'Tasks'}]}/><PageFrame><ConsoleHero eyebrow="Team · Agent Tasks" title="Tasks" description="Durable, owner-scoped agent tasks from Labby’s authoritative task ledger." actions={<Button onClick={()=>setCreating(true)}><CirclePlus/>New Task</Button>} stats={[{label:'Tasks',value:rows.length,icon:<Clock3 size={12}/>},{label:'Queued',value:rows.filter(row=>row[0]==='queued').length,icon:<CheckCircle2 size={12}/>,tone:'var(--aurora-success)'},{label:'Running',value:rows.filter(row=>row[0]==='running').length,icon:<Play size={12}/>},{label:'Failed',value:rows.filter(row=>row[0]==='failed').length,icon:<Clock3 size={12}/>,tone:'var(--aurora-error)'}]}/>{loadError?<div role="alert" className="rounded-aurora-1 border border-aurora-error/30 bg-aurora-error/5 p-3 text-sm text-aurora-error">{loadError}</div>:null}<TasksCollection rows={rows} onSelect={setSelected}/></PageFrame>
-    <TaskDialog row={selected} onOpenChange={open=>!open&&setSelected(null)}/>
-    <Dialog open={creating} onOpenChange={setCreating}><DialogContent className="border-aurora-border-strong bg-aurora-panel-medium"><DialogTitle>New task</DialogTitle><DialogDescription>Schedule a reusable agent run.</DialogDescription><TaskFields name={name} setName={setName} definition={definition} setDefinition={setDefinition} schedule={schedule} setSchedule={setSchedule} loadout={loadout} setLoadout={setLoadout}/><Button onClick={create} disabled={!name.trim()||!definition.trim()}><CirclePlus/>Create task</Button></DialogContent></Dialog>
+  const [taskId, setTaskId] = useState('')
+  const [agentId, setAgentId] = useState('')
+  const [input, setInput] = useState('')
+  const [mutating, setMutating] = useState(false)
+
+  const applyTasks = (items: TaskView[]) => {
+    setTasks(items)
+    setSelected(current => current ? items.find(item => item.task_id === current.task_id) ?? current : null)
+  }
+  const refresh = async () => {
+    try { applyTasks(await listTasks()); setLoadError(null) }
+    catch (error) { setLoadError(errorMessage(error, 'Task service unavailable')) }
+  }
+  useEffect(() => {
+    const controller = new AbortController()
+    void Promise.all([listTasks(controller.signal), listAgents(controller.signal)]).then(([taskItems, agentItems]) => {
+      applyTasks(taskItems)
+      setAgents(agentItems)
+      setAgentId(current => current || agentItems.find(agent=>agent.state==='active')?.agent_id || '')
+      setLoadError(null)
+    }).catch(error => {
+      if (!controller.signal.aborted) setLoadError(errorMessage(error, 'Agent Task services unavailable'))
+    })
+    return () => controller.abort()
+  }, [])
+
+  const createAndQueue = async () => {
+    const agent = agents.find(candidate => candidate.agent_id === agentId)
+    const ownerKind = agent ? toOwnerKind(agent.owner_kind) : null
+    if (!agent || !ownerKind) { setLoadError('Select an active Agent with a supported owner scope.'); return }
+    setMutating(true); setLoadError(null)
+    try {
+      await createTask({
+        taskId: taskId.trim(),
+        idempotencyKey: taskId.trim() + ':' + globalThis.crypto.randomUUID(),
+        ownerKind,
+        ownerId: agent.owner_id,
+        agentId: agent.agent_id,
+        input,
+      })
+      await queueTask(taskId.trim())
+      setCreating(false); setTaskId(''); setInput('')
+      await refresh()
+    } catch (error) {
+      setLoadError(errorMessage(error, 'Unable to create and queue Task'))
+    } finally {
+      setMutating(false)
+    }
+  }
+
+  return <>
+    <AppHeader breadcrumbs={[{label:'Workspace'},{label:'Tasks'}]}/>
+    <PageFrame>
+      <ConsoleHero eyebrow="Workspace · Agent Tasks" title="Tasks" description="Durable, owner-scoped LLM work queued through Labby’s fenced Task runtime." actions={<Button onClick={()=>{if(!taskId)setTaskId('task-'+Date.now().toString(36));setCreating(true)}} disabled={!agents.some(agent=>agent.state==='active')}><CirclePlus/>New Task</Button>} stats={[
+        {label:'Tasks',value:tasks.length,icon:<Clock3 size={12}/>},
+        {label:'Queued',value:tasks.filter(task=>task.state==='queued').length,icon:<CheckCircle2 size={12}/>,tone:'var(--aurora-success)'},
+        {label:'Running',value:tasks.filter(task=>task.state==='running').length,icon:<Play size={12}/>},
+        {label:'Failed',value:tasks.filter(task=>task.state==='failed').length,icon:<Clock3 size={12}/>,tone:'var(--aurora-error)'},
+      ]}/>
+      {loadError?<InlineError message={loadError}/>:null}
+      <TasksCollection tasks={tasks} onSelect={setSelected}/>
+    </PageFrame>
+    <TaskDialog task={selected} onOpenChange={open=>!open&&setSelected(null)} onChanged={refresh}/>
+    <Dialog open={creating} onOpenChange={setCreating}>
+      <DialogContent className="border-aurora-border-strong bg-aurora-panel-medium">
+        <DialogTitle>New Task</DialogTitle>
+        <DialogDescription>Create an immutable input bound to an Agent revision, then queue it immediately.</DialogDescription>
+        <label className="text-xs font-semibold text-aurora-text-muted">Task ID<input autoFocus value={taskId} onChange={event=>setTaskId(event.target.value)} className="mt-2 h-10 w-full rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface px-3 text-sm text-aurora-text-primary" placeholder="task-release-review"/></label>
+        <SelectField label="Agent" value={agentId} onChange={setAgentId}>{agents.filter(agent=>agent.state==='active').map(agent=><option key={agent.agent_id} value={agent.agent_id}>{agent.agent_id} · {agent.owner_kind}:{agent.owner_id} · v{agent.version}</option>)}</SelectField>
+        <label className="text-xs font-semibold text-aurora-text-muted">Task input<textarea value={input} onChange={event=>setInput(event.target.value)} rows={7} className="mt-2 w-full resize-y rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface p-3 text-sm text-aurora-text-primary" placeholder="Describe the work for this Task attempt."/></label>
+        <Button onClick={()=>void createAndQueue()} disabled={mutating||!taskId.trim()||!agentId||!input.trim()}><Play/>{mutating?'Queueing…':'Create & Queue'}</Button>
+      </DialogContent>
+    </Dialog>
   </>
 }
 
-function SortHead({children,onClick}:{children:React.ReactNode;onClick:()=>void}){return <th className="px-3 py-2 text-left"><button type="button" onClick={onClick} className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-[.14em] text-aurora-text-muted hover:text-aurora-text-primary">{children}<ArrowUpDown className="size-3 opacity-45"/></button></th>}
-
-function AgentsCollection({rows,onSelect}:{rows:string[][];onSelect:(row:string[])=>void}){
-  const [filter,setFilter]=useState('All'),[sort,setSort]=useState(1),[view,setView]=useState<ViewMode>('table')
-  const shown=[...rows].filter(row=>filter==='All'||row[0]===filter).sort((a,b)=>a[sort].localeCompare(b[sort]))
-  return <DashboardPanel title="Definitions" action={<div className="flex items-center gap-3"><div className="flex gap-1">{['All','active','suspended'].map(item=><button key={item} type="button" onClick={()=>setFilter(item)} aria-pressed={filter===item} className="rounded-full border border-aurora-border-subtle px-3 py-1 text-[10px] font-semibold text-aurora-text-muted aria-pressed:border-aurora-accent-primary aria-pressed:bg-aurora-accent-primary aria-pressed:text-aurora-page-bg">{item}</button>)}</div><ViewModes value={view} onChange={setView}/></div>}>
-    {view==='table'?<div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-aurora-border-subtle">{['Status','Session','Loadout','Container','Harness','Elapsed'].map((head,index)=><SortHead key={head} onClick={()=>setSort(index)}>{head}</SortHead>)}</tr></thead><tbody>{shown.map(row=><tr key={row[1]} tabIndex={0} onClick={()=>onSelect(row)} onKeyDown={event=>event.key==='Enter'&&onSelect(row)} className="cursor-pointer border-b border-aurora-border-subtle/70 last:border-0 hover:bg-aurora-hover-bg"><td className="px-3 py-3"><StatusDot status={row[0]}/></td><td className="px-3 py-3 font-semibold text-aurora-text-primary">{row[1]}</td><td className="px-3 py-3"><Badge variant="outline" className="text-aurora-accent-primary">{row[2]}</Badge></td><td className="px-3 py-3 text-aurora-text-muted"><span className="flex items-center gap-2"><ProductMark kind={row[3]}/>{row[3]}</span></td><td className="px-3 py-3 text-aurora-text-muted"><span className="flex items-center gap-2"><ProductMark kind={row[4]}/>{row[4]}</span></td><td className="px-3 py-3 text-aurora-text-muted">{row[5]}</td></tr>)}</tbody></table></div>:<div className={view==='cards'?'grid gap-3 md:grid-cols-2 xl:grid-cols-3':'divide-y divide-aurora-border-subtle'}>{shown.map(row=><button key={row[1]} onClick={()=>onSelect(row)} className="w-full rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-low p-4 text-left"><StatusDot status={row[0]}/><strong className="mt-2 block text-aurora-text-primary">{row[1]}</strong><span className="mt-1 block text-xs text-aurora-text-muted">{row.slice(2).join(' · ')}</span></button>)}</div>}
+function AgentsCollection({agents,onSelect}:{agents:AgentView[];onSelect:(agent:AgentView)=>void}) {
+  const [filter,setFilter]=useState('All')
+  const shown=agents.filter(agent=>filter==='All'||agent.state===filter)
+  return <DashboardPanel title="Definitions" action={<div className="flex gap-1">{['All','active','suspended'].map(item=><button key={item} type="button" onClick={()=>setFilter(item)} aria-pressed={filter===item} className="rounded-full border border-aurora-border-subtle px-3 py-1 text-[10px] font-semibold text-aurora-text-muted aria-pressed:border-aurora-accent-primary aria-pressed:bg-aurora-accent-primary aria-pressed:text-aurora-page-bg">{item}</button>)}</div>}>
+    <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-aurora-border-subtle">{['Status','Agent','Owner','Revision','Runtime','Catalog'].map(head=><th key={head} className="px-3 py-2 text-left text-[9px] font-bold uppercase tracking-[.14em] text-aurora-text-muted">{head}</th>)}</tr></thead><tbody>{shown.map(agent=><tr key={agent.agent_id} tabIndex={0} onClick={()=>onSelect(agent)} onKeyDown={event=>event.key==='Enter'&&onSelect(agent)} className="cursor-pointer border-b border-aurora-border-subtle/70 last:border-0 hover:bg-aurora-hover-bg"><td className="px-3 py-3"><StatusDot status={agent.state}/></td><td className="px-3 py-3 font-semibold text-aurora-text-primary">{agent.agent_id}</td><td className="px-3 py-3"><Badge variant="outline" className="text-aurora-accent-primary">{agent.owner_kind}:{agent.owner_id}</Badge></td><td className="px-3 py-3 text-aurora-text-muted">v{agent.version}</td><td className="px-3 py-3 text-aurora-text-muted">Assistant LLM</td><td className="px-3 py-3 text-aurora-text-muted">{agent.catalog_generation}</td></tr>)}</tbody></table></div>
   </DashboardPanel>
 }
 
-function StatusDot({status}:{status:string}){const color=status==='Running'||status==='Armed'?'bg-aurora-success':status==='Failed'?'bg-aurora-error':status==='Paused'?'bg-aurora-warn':'bg-aurora-text-muted';return <span role="img" aria-label={status} title={status} className={`block size-2 rounded-full ${color}`}/>}
-
-function ProductMark({kind}:{kind:string}){
-  if(kind==='platform-base')return <span className="grid size-5 place-items-center rounded bg-white/5 text-aurora-text-primary"><UbuntuMark className="size-3.5 fill-current"/></span>
-  if(kind==='rust-heavy')return <span className="grid size-5 place-items-center rounded bg-white/5 text-aurora-text-primary"><DebianMark className="size-3.5 fill-current"/></span>
-  if(kind==='edge-minimal')return <span className="grid size-5 place-items-center rounded bg-white/5 text-aurora-text-primary"><AlpineMark className="size-3.5 fill-current"/></span>
-  if(kind==='Claude Code')return <span aria-label="Claude" className="grid size-5 place-items-center rounded bg-white/5 text-[10px] font-black text-aurora-text-primary">AI</span>
-  if(kind==='Codex')return <span className="grid size-5 place-items-center rounded bg-white/5 text-aurora-text-primary"><CodexMark className="size-3.5 fill-current"/></span>
-  return <span aria-label="Gemini" className="grid size-5 place-items-center rounded bg-white/5 text-sm text-aurora-text-primary">✦</span>
-}
-
-function TasksCollection({rows,onSelect}:{rows:string[][];onSelect:(row:string[])=>void}){
+function TasksCollection({tasks,onSelect}:{tasks:TaskView[];onSelect:(task:TaskView)=>void}) {
   const [filter,setFilter]=useState('All')
-  const shown=rows.filter(row=>filter==='All'||row[0]===filter)
-  return <DashboardPanel title="Task ledger" action={<div className="flex gap-1">{['All','created','queued','running','succeeded','failed','cancelled','expired'].map(item=><button key={item} type="button" onClick={()=>setFilter(item)} aria-pressed={filter===item} className="rounded-full border border-aurora-border-subtle px-3 py-1 text-[10px] font-semibold text-aurora-text-muted aria-pressed:border-aurora-accent-primary aria-pressed:bg-aurora-accent-primary aria-pressed:text-aurora-page-bg">{item}</button>)}</div>}><div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-aurora-border-subtle">{['State','Task','Attempt','Owner','Agent','Result'].map(head=><th key={head} className="px-3 py-2 text-left text-[9px] font-bold uppercase tracking-[.14em] text-aurora-text-muted">{head}</th>)}</tr></thead><tbody>{shown.map(row=><tr key={row[1]} className="cursor-pointer border-b border-aurora-border-subtle/70 last:border-0 hover:bg-aurora-hover-bg" onClick={()=>onSelect(row)}><td className="px-3 py-2"><StatusDot status={row[0]}/></td><td className="px-3 py-2 font-semibold text-aurora-text-primary">{row[1]}</td><td className="px-3 py-2 text-aurora-text-muted">{row[2]}</td><td className="px-3 py-2"><Badge variant="outline">{row[3]}</Badge></td><td className="px-3 py-2 text-aurora-text-muted">{row[4]}</td><td className="px-3 py-2 text-aurora-text-muted">{row[6]}</td></tr>)}</tbody></table></div></DashboardPanel>
+  const shown=tasks.filter(task=>filter==='All'||task.state===filter)
+  return <DashboardPanel title="Task ledger" action={<div className="flex max-w-full gap-1 overflow-x-auto">{['All','created','queued','running','succeeded','failed','cancelled','expired'].map(item=><button key={item} type="button" onClick={()=>setFilter(item)} aria-pressed={filter===item} className="shrink-0 rounded-full border border-aurora-border-subtle px-3 py-1 text-[10px] font-semibold text-aurora-text-muted aria-pressed:border-aurora-accent-primary aria-pressed:bg-aurora-accent-primary aria-pressed:text-aurora-page-bg">{item}</button>)}</div>}>
+    <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-aurora-border-subtle">{['State','Task','Attempt','Owner','Agent','Result'].map(head=><th key={head} className="px-3 py-2 text-left text-[9px] font-bold uppercase tracking-[.14em] text-aurora-text-muted">{head}</th>)}</tr></thead><tbody>{shown.map(task=><tr key={task.task_id} tabIndex={0} className="cursor-pointer border-b border-aurora-border-subtle/70 last:border-0 hover:bg-aurora-hover-bg" onClick={()=>onSelect(task)} onKeyDown={event=>event.key==='Enter'&&onSelect(task)}><td className="px-3 py-2"><StatusDot status={task.state}/></td><td className="px-3 py-2 font-semibold text-aurora-text-primary">{task.task_id}</td><td className="px-3 py-2 text-aurora-text-muted">{task.attempt}</td><td className="px-3 py-2"><Badge variant="outline">{task.owner_kind}:{task.owner_id}</Badge></td><td className="px-3 py-2 text-aurora-text-muted">{task.agent_id} · v{task.agent_version}</td><td className="px-3 py-2 text-aurora-text-muted">{task.error_code ?? (task.output_digest?'output ready':'pending')}</td></tr>)}</tbody></table></div>
+  </DashboardPanel>
 }
 
-function SelectField({label,value,onChange,children}:{label:string;value:string;onChange:(value:string)=>void;children:React.ReactNode}){return <label className="text-xs text-aurora-text-muted">{label}<span className="relative mt-2 block"><select value={value} onChange={event=>onChange(event.target.value)} className="h-10 w-full appearance-none rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface pl-3 pr-10 text-sm text-aurora-text-primary">{children}</select><ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-aurora-text-muted"/></span></label>}
-function TaskFields({name,setName,definition,setDefinition,schedule,setSchedule,loadout,setLoadout}:{name:string;setName:(v:string)=>void;definition:string;setDefinition:(v:string)=>void;schedule:string;setSchedule:(v:string)=>void;loadout:string;setLoadout:(v:string)=>void}){return <><label className="text-xs font-semibold text-aurora-text-muted">Task name<input autoFocus value={name} onChange={event=>setName(event.target.value)} className="mt-2 h-10 w-full rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface px-3 text-sm text-aurora-text-primary" placeholder="Weekly gateway review"/></label><label className="text-xs font-semibold text-aurora-text-muted">Define the task<textarea value={definition} onChange={event=>setDefinition(event.target.value)} rows={4} className="mt-2 w-full resize-none rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface p-3 text-sm text-aurora-text-primary" placeholder="Describe exactly what the agent should do and what a successful run produces."/></label><div className="grid grid-cols-2 gap-3"><SelectField label="Schedule" value={schedule} onChange={setSchedule}><option>Daily · 09:00</option><option>Daily · 02:00</option><option>Weekly · Monday</option><option>Weekly · Sun 03:00</option></SelectField><SelectField label="Loadout" value={loadout} onChange={setLoadout}><option>operator-console</option><option>research-workbench</option><option>project-a</option><option>project-b</option><option>platform</option><option>shared</option></SelectField></div></>}
+function TaskDialog({task,onOpenChange,onChanged}:{task:TaskView|null;onOpenChange:(open:boolean)=>void;onChanged:()=>Promise<void>}) {
+  const [result,setResult]=useState<TaskResult|null>(null)
+  const [error,setError]=useState<string|null>(null)
+  const [busy,setBusy]=useState(false)
+  const taskId=task?.task_id
+  const taskState=task?.state
+  const terminal=Boolean(taskState&&['succeeded','failed','cancelled','expired'].includes(taskState))
+  useEffect(()=>{
+    setResult(null); setError(null)
+    if(!taskId||!taskState||!['succeeded','failed','cancelled','expired'].includes(taskState)) return
+    const controller=new AbortController()
+    void getTaskResult(taskId,controller.signal).then(setResult).catch(failure=>{if(!controller.signal.aborted)setError(errorMessage(failure,'Unable to read Task result'))})
+    return()=>controller.abort()
+  },[taskId,taskState])
+  const queue=async()=>{if(!task)return;setBusy(true);setError(null);try{await queueTask(task.task_id);await onChanged()}catch(failure){setError(errorMessage(failure,'Unable to queue Task'))}finally{setBusy(false)}}
+  const cancel=async()=>{if(!task)return;setBusy(true);setError(null);try{await cancelTask(task.task_id);await onChanged()}catch(failure){setError(errorMessage(failure,'Unable to cancel Task'))}finally{setBusy(false)}}
+  return <Dialog open={Boolean(task)} onOpenChange={onOpenChange}><DialogContent className="border-aurora-border-strong bg-aurora-panel-medium"><DialogTitle>{task?.task_id??'Task'}</DialogTitle><DialogDescription>Authoritative durable Agent Task record and terminal result.</DialogDescription>{error?<InlineError message={error}/>:null}<dl className="divide-y divide-aurora-border-subtle rounded-aurora-1 border border-aurora-border-subtle bg-aurora-panel-low px-4">{[
+    ['State',task?.state],['Attempt',task?String(task.attempt):undefined],['Owner',task?task.owner_kind+':'+task.owner_id:undefined],['Agent',task?task.agent_id+' · v'+task.agent_version:undefined],['Output digest',result?.output_digest??task?.output_digest??'—'],['Error',result?.error_code??task?.error_code??'—']
+  ].map(([label,value])=><div key={label} className="flex justify-between gap-4 py-3 text-sm"><dt className="text-aurora-text-muted">{label}</dt><dd className="break-all text-right font-medium text-aurora-text-primary">{value}</dd></div>)}</dl>{result?.output?<pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-aurora-1 border border-aurora-border-subtle bg-aurora-panel-low p-4 text-sm text-aurora-text-primary">{result.output}</pre>:null}<div className="flex gap-2">{task?.state==='created'?<Button onClick={()=>void queue()} disabled={busy}><Play/>Queue</Button>:null}{task&&['queued','running'].includes(task.state)?<Button variant="outline" onClick={()=>void cancel()} disabled={busy}><Pause/>Cancel</Button>:null}{terminal&&!result?<span className="text-xs text-aurora-text-muted">Loading terminal result…</span>:null}</div></DialogContent></Dialog>
+}
 
-function TaskDialog({row,onOpenChange}:{row:string[]|null;onOpenChange:(open:boolean)=>void}){return <Dialog open={Boolean(row)} onOpenChange={onOpenChange}><DialogContent className="border-aurora-border-strong bg-aurora-panel-medium"><DialogTitle>{row?.[1]??'Task'}</DialogTitle><DialogDescription>Authoritative durable Agent Task record.</DialogDescription><dl className="divide-y divide-aurora-border-subtle rounded-aurora-1 border border-aurora-border-subtle bg-aurora-panel-low px-4">{[['State',row?.[0]],['Attempt',row?.[2]],['Owner',row?.[3]],['Agent',row?.[4]],['Revision',row?.[5]],['Result',row?.[6]]].map(([label,value])=><div key={label} className="flex justify-between gap-4 py-3 text-sm"><dt className="text-aurora-text-muted">{label}</dt><dd className="font-medium text-aurora-text-primary">{value}</dd></div>)}</dl></DialogContent></Dialog>}
+function SelectField({label,value,onChange,children}:{label:string;value:string;onChange:(value:string)=>void;children:React.ReactNode}) { return <label className="text-xs text-aurora-text-muted">{label}<span className="relative mt-2 block"><select value={value} onChange={event=>onChange(event.target.value)} className="h-10 w-full appearance-none rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface pl-3 pr-10 text-sm text-aurora-text-primary">{children}</select><ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-aurora-text-muted"/></span></label> }
+
+function StatusDot({status}:{status:string}) { const normalized=status.toLowerCase(); const color=['active','running','succeeded'].includes(normalized)?'bg-aurora-success':['failed','expired'].includes(normalized)?'bg-aurora-error':['suspended','cancelling'].includes(normalized)?'bg-aurora-warn':'bg-aurora-text-muted'; return <span role="img" aria-label={status} title={status} className={'block size-2 rounded-full '+color}/> }
+function InlineError({message}:{message:string}) { return <div role="alert" className="rounded-aurora-1 border border-aurora-error/30 bg-aurora-error/5 p-3 text-sm text-aurora-error">{message}</div> }
+function errorMessage(error:unknown,fallback:string) { return error instanceof Error && error.message ? error.message : fallback }
+function toOwnerKind(value:string):OwnerKind|null { return value==='personal'||value==='team'||value==='project'?value:null }
 
 export function DevContainersPage() { return <><AppHeader breadcrumbs={[{label:'Workspace'},{label:'Dev Containers'}]}/><PageFrame><DevContainersPageContent /></PageFrame></> }
 
@@ -170,6 +395,3 @@ export function LogsPage() { return <><AppHeader breadcrumbs={[{label:'Logs'}]}/
 function DataTable({ headings, rows }: { headings: string[]; rows: string[][] }) {
   return <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr className="border-b border-aurora-border-subtle">{headings.map(h=><th key={h} className="px-3 py-2 text-[11px] uppercase tracking-[.14em] text-aurora-text-muted">{h}</th>)}</tr></thead><tbody>{rows.map((row,index)=><tr key={index} className="border-b border-aurora-border-subtle/70 last:border-0">{row.map((cell,i)=><td key={i} className={`px-3 py-3 ${i === 1 ? 'font-semibold text-aurora-text-primary' : 'text-aurora-text-muted'}`}>{i === 0 ? <Badge variant="outline">{cell}</Badge> : cell}</td>)}</tr>)}</tbody></table></div>
 }
-
-type ViewMode = 'table'|'list'|'cards'
-function ViewModes({value,onChange}:{value:ViewMode;onChange:(value:ViewMode)=>void}) { return <div className="flex rounded-aurora-1 border border-aurora-border-subtle bg-aurora-control-surface p-0.5">{([[Table2,'Table','table'],[List,'List','list'],[Grid2X2,'Cards','cards']] as const).map(([Icon,label,mode])=><button key={mode} type="button" onClick={()=>onChange(mode)} aria-pressed={value===mode} aria-label={`${label} view`} title={`${label} view`} className={`rounded p-1.5 ${value===mode?'bg-aurora-selected-bg text-aurora-accent-primary':'text-aurora-text-muted hover:text-aurora-text-primary'}`}><Icon className="size-3.5"/></button>)}</div> }
