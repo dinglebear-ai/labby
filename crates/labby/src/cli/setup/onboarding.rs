@@ -103,10 +103,88 @@ pub(super) async fn apply_plan_file(path: &Path, format: OutputFormat) -> Result
     // The plan may contain provider/client secrets. Remove it as soon as the
     // privileged process has a private in-memory copy.
     drop(std::fs::remove_file(path));
+    // The plan file is user-writable; the identity this process will chown
+    // for comes from sudo's own record, and a plan that disagrees is refused.
+    #[cfg(unix)]
+    let plan = rederive_invoking_identity(
+        plan,
+        std::env::var("SUDO_UID").ok().as_deref(),
+        std::env::var("SUDO_USER").ok().as_deref(),
+        dirs::home_dir(),
+    )?;
     if requires_root(&plan) && !is_unix_root() {
         bail!("native Linux server setup requires root privileges");
     }
     apply(plan, format).await
+}
+
+/// Replace the plan's invoking identity with the one sudo reports and refuse
+/// a plan that disagrees with it.
+///
+/// The privileged child restores ownership of `<invoking_home>/.labby` to
+/// `invoking_user`, so those values must not come from the user-writable plan
+/// file. `SUDO_UID` names the invoking account authoritatively and `SUDO_USER`
+/// must agree with it; without sudo's record nothing was delegated.
+#[cfg(unix)]
+fn rederive_invoking_identity(
+    plan: SetupPlan,
+    sudo_uid: Option<&str>,
+    sudo_user: Option<&str>,
+    ambient_home: Option<PathBuf>,
+) -> Result<SetupPlan> {
+    let (invoking_user, invoking_home) = sudo_invoking_identity(sudo_uid, sudo_user, ambient_home)?;
+    if plan.invoking_user != invoking_user || plan.invoking_home != invoking_home {
+        bail!(
+            "setup plan records invoking user {:?} with home {}, but sudo reports {:?} with home {}; refusing a plan that disagrees with the invoking identity",
+            plan.invoking_user,
+            plan.invoking_home.display(),
+            invoking_user,
+            invoking_home.display()
+        );
+    }
+    Ok(SetupPlan {
+        invoking_user,
+        invoking_home,
+        ..plan
+    })
+}
+
+/// The invoking account as sudo recorded it: `None` plus the process's own
+/// home when nothing was delegated (no sudo, or root invoking sudo).
+#[cfg(unix)]
+fn sudo_invoking_identity(
+    sudo_uid: Option<&str>,
+    sudo_user: Option<&str>,
+    ambient_home: Option<PathBuf>,
+) -> Result<(Option<String>, PathBuf)> {
+    let own_home = |ambient_home: Option<PathBuf>| {
+        ambient_home.context("could not determine the invoking user's home directory")
+    };
+    let Some(uid) = sudo_uid else {
+        if sudo_user.is_some() {
+            bail!("SUDO_USER is set without SUDO_UID; cannot corroborate the invoking identity");
+        }
+        return Ok((None, own_home(ambient_home)?));
+    };
+    let uid: u32 = uid
+        .trim()
+        .parse()
+        .context("SUDO_UID is not a numeric user id")?;
+    let account = nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(uid))
+        .context("resolve the sudo invoking account")?
+        .context("the sudo invoking account does not exist")?;
+    if let Some(name) = sudo_user
+        && name != account.name
+    {
+        bail!(
+            "SUDO_USER {name:?} does not name the account for SUDO_UID {uid} ({})",
+            account.name
+        );
+    }
+    if account.uid.is_root() {
+        return Ok((None, own_home(ambient_home)?));
+    }
+    Ok((Some(account.name), account.dir))
 }
 
 fn collect_plan(args: &SetupArgs, interactive: bool) -> Result<SetupPlan> {
@@ -1569,6 +1647,56 @@ mod tests {
             .unwrap();
         assert_eq!(installed["desktop_installed"], true);
         assert!(installed["desktop_error"].is_null());
+    }
+
+    /// The privileged `--apply-plan` child runs `chown -R` over the invoking
+    /// user's `.labby`. Those values come from a plan file the unprivileged
+    /// parent wrote, so the child must take the identity from sudo's own
+    /// record instead and refuse a plan that disagrees with it.
+    #[cfg(unix)]
+    #[test]
+    fn apply_plan_rederives_invoking_identity_from_sudo_user() {
+        let account = nix::unistd::User::from_uid(nix::unistd::Uid::current())
+            .unwrap()
+            .unwrap();
+        if account.uid.is_root() {
+            // A root test process cannot model a delegated invoking account.
+            return;
+        }
+        let uid = account.uid.as_raw().to_string();
+        let mut plan = server_plan(account.dir.clone());
+        plan.invoking_user = Some(account.name.clone());
+
+        // The plan agrees with sudo: the applied identity is sudo's.
+        let verified = rederive_invoking_identity(
+            plan.clone(),
+            Some(&uid),
+            Some(&account.name),
+            Some(PathBuf::from("/root")),
+        )
+        .unwrap();
+        assert_eq!(verified.invoking_user.as_deref(), Some(account.name.as_str()));
+        assert_eq!(verified.invoking_home, account.dir);
+
+        // A plan that points the privileged chown elsewhere is refused.
+        let mut elsewhere = plan.clone();
+        elsewhere.invoking_home = PathBuf::from("/srv/elsewhere");
+        let error = rederive_invoking_identity(elsewhere, Some(&uid), Some(&account.name), None)
+            .unwrap_err();
+        assert!(error.to_string().contains("disagrees"), "{error:#}");
+        let mut other_user = plan.clone();
+        other_user.invoking_user = Some("someone-else".into());
+        assert!(
+            rederive_invoking_identity(other_user, Some(&uid), Some(&account.name), None).is_err()
+        );
+
+        // SUDO_USER must name the SUDO_UID account.
+        assert!(rederive_invoking_identity(plan.clone(), Some(&uid), Some("someone-else"), None).is_err());
+
+        // Without sudo's record there is no delegated identity to apply.
+        assert!(
+            rederive_invoking_identity(plan, None, None, Some(PathBuf::from("/root"))).is_err()
+        );
     }
 
     #[cfg(unix)]
