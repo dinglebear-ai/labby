@@ -39,16 +39,17 @@ pub(crate) fn truncate_execution_response(
     // This keeps a useful compact result from being replaced by a truncation
     // marker merely because tracing was enabled.
     if response.calls.iter().any(|call| call.params.is_some()) {
-        for call in &mut response.calls {
+        let mut without_params = response.clone();
+        for call in &mut without_params.calls {
             call.params = None;
         }
         if response_within_budget(
-            &response,
+            &without_params,
             max_response_bytes,
             max_response_tokens,
             token_estimate_divisor,
         ) {
-            return response;
+            return without_params;
         }
     }
 
