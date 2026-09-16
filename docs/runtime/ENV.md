@@ -255,6 +255,27 @@ LABBY_CODE_MODE_MICROSANDBOX_MAX_RUNNERS=4
 The host must separately provide working KVM access plus compatible `msb` and
 `libkrunfw` installations. See [CODE_MODE.md](../dev/CODE_MODE.md#microsandbox-runner-isolation-opt-in).
 
+### Agent execution provider
+
+Product Agents and Agent Tasks execute through one OpenAI-compatible provider
+configured in Labby's private environment file:
+
+```env
+LABBY_PHOENIX_OPENAI_BASE_URL=http://127.0.0.1:43871/v1
+# LABBY_PHOENIX_OPENAI_API_KEY=<labby_phoenix_openai_api_key>
+```
+
+- `LABBY_PHOENIX_OPENAI_BASE_URL` must be an absolute `http(s)` URL reachable
+  from the Labby process, with no embedded credentials, query, or fragment. The
+  immutable Agent harness digest is derived from it, so changing the provider
+  changes which revisions may run.
+- `LABBY_PHOENIX_OPENAI_API_KEY` is optional and secret; it is sent as bearer
+  authentication and never logged.
+
+Both variables are listed under the `agents` service in the generated
+reference and in the settings environment schema. See
+[AGENT_TASKS.md](../services/AGENT_TASKS.md).
+
 Supported environment variables are generated from current product metadata.
 Gateway upstream secrets are referenced indirectly by environment-variable name;
 for example, a persisted upstream may point at
