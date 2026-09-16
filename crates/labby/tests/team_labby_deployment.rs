@@ -7,6 +7,47 @@ const GIT_CREDENTIALS: &str =
     include_str!("../../../deploy/team-labby/team-depot-git-credentials.json.example");
 const SOURCE_BOOTSTRAP: &str = include_str!("../../../deploy/team-labby/bootstrap-team-sources.sh");
 const DEPLOYMENT_README: &str = include_str!("../../../deploy/team-labby/README.md");
+const WORKSPACE_CARGO: &str = include_str!("../../../Cargo.toml");
+const RELEASE_DOCKERFILE: &str = include_str!("../../../config/Dockerfile");
+
+#[test]
+fn release_dockerfile_tracks_every_workspace_crate_in_dependency_cache() {
+    let workspace: toml::Value =
+        toml::from_str(WORKSPACE_CARGO).expect("workspace Cargo.toml parses");
+    let members = workspace["workspace"]["members"]
+        .as_array()
+        .expect("workspace members are an array");
+
+    for member in members {
+        let member = member.as_str().expect("workspace member is a string");
+        let package = member
+            .rsplit('/')
+            .next()
+            .expect("workspace member has a name");
+
+        assert!(
+            RELEASE_DOCKERFILE.contains(&format!("COPY {member}/Cargo.toml")),
+            "release Dockerfile must copy {member}/Cargo.toml into the dependency-cache layer"
+        );
+        assert!(
+            RELEASE_DOCKERFILE.contains(&format!("      {member}/src \\")),
+            "release Dockerfile must create a stub source directory for {member}"
+        );
+        let stub_target = if package == "xtask" {
+            format!("{member}/src/main.rs")
+        } else {
+            format!("{member}/src/lib.rs")
+        };
+        assert!(
+            RELEASE_DOCKERFILE.contains(&stub_target),
+            "release Dockerfile must create a stub Cargo target for {member}: {stub_target}"
+        );
+        assert!(
+            RELEASE_DOCKERFILE.contains(&format!("cargo clean -p {package}")),
+            "release Dockerfile must clean cached workspace crate {package} before copying real sources"
+        );
+    }
+}
 
 #[test]
 fn team_depot_mounts_a_named_private_git_credential_map() {
