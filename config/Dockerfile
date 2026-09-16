@@ -51,6 +51,9 @@ COPY crates/labby-winjob/Cargo.toml crates/labby-winjob/Cargo.toml
 COPY crates/labby-primitives/Cargo.toml crates/labby-primitives/Cargo.toml
 COPY crates/labby-openapi/Cargo.toml crates/labby-openapi/Cargo.toml
 COPY crates/xtask/Cargo.toml crates/xtask/Cargo.toml
+COPY verification/Cargo.toml verification/Cargo.toml
+COPY verification/crates/verify-core/Cargo.toml verification/crates/verify-core/Cargo.toml
+COPY verification/crates/verify-scenario/Cargo.toml verification/crates/verify-scenario/Cargo.toml
 
 # Create stub source files so cargo can parse ALL manifests without error.
 #
@@ -73,12 +76,16 @@ RUN mkdir -p \
       crates/labby-openapi/src \
       crates/labby/tests/fixtures \
       crates/xtask/src \
+      verification/crates/verify-core/src \
+      verification/crates/verify-scenario/src \
       apps/gateway-admin/out \
  && echo 'fn main(){}' > crates/labby/src/main.rs \
  && echo 'fn main(){}' > crates/labby/tests/fixtures/stdio_mcp_fixture.rs \
  && echo 'fn main(){}' > crates/labby/tests/fixtures/live_harness_fixture.rs \
  && echo 'fn main(){}' > crates/xtask/src/main.rs \
  && echo 'fn main(){}' > crates/labby-web/build.rs \
+ && echo '//! Dependency-cache stub.' > verification/crates/verify-core/src/lib.rs \
+ && echo '//! Dependency-cache stub.' > verification/crates/verify-scenario/src/lib.rs \
  && touch \
       crates/labby/src/lib.rs \
       crates/labby-apis/src/lib.rs \
@@ -106,6 +113,8 @@ RUN mkdir -p \
  && cargo clean -p labby-primitives \
  && cargo clean -p labby-openapi \
  && cargo clean -p xtask \
+ && cargo clean -p verify-core \
+ && cargo clean -p verify-scenario \
  && rm -rf \
       crates/*/src \
       apps/gateway-admin/out \
@@ -127,15 +136,17 @@ COPY config/incus/labby-backup.yaml config/incus/labby-backup.yaml
 COPY config/incus/labby-gateway-profile.yaml config/incus/labby-gateway-profile.yaml
 COPY config/incus/labby-image.yaml config/incus/labby-image.yaml
 COPY crates/ crates/
+COPY verification/ verification/
+COPY formal/ formal/
 # BuildKit normalizes COPYed file mtimes to a fixed past epoch. That timestamp is
 # older than the stub rlibs built in the dep-cache layer above, so cargo's
 # fingerprint considers the real workspace sources "unchanged" and skips
-# rebuilding them — linking the empty stub crates (esp. the patched
-# workspace dependency stubs that Cargo did not clean) and producing hundreds of
-# "cannot find X in labby_apis/labby_auth" errors. Touch the
-# real sources so their mtimes are newer, forcing a from-source rebuild of every
-# workspace crate while keeping the cached third-party dependency artifacts.
-RUN find crates -type f -exec touch {} + \
+# rebuilding them — linking empty stub crates and producing missing-symbol
+# errors. Local path dependencies under verification/ participate in the same
+# fingerprint graph, so touch both source trees before the final build. This
+# forces a from-source rebuild of every local package while keeping cached
+# third-party dependency artifacts.
+RUN find crates verification -type f -exec touch {} + \
  && cargo build --workspace --all-features --release
 
 # ─── Stage 2: Runtime ─────────────────────────────────────────────────────────
