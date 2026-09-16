@@ -114,6 +114,14 @@ Supported code may emit additional stable kinds, including:
   provider/protocol failure), `provider_unavailable`, `provider_timeout`,
   `runtime_unavailable` (the gateway/provider runtime required for the request is
   not available), `invalid_provider_output`;
+- Agent execution: `unavailable` (the OpenAI-compatible execution provider is
+  unconfigured or unreachable, or pinned Agent content is not materialized on
+  this Labby; retry after the dependency recovers), `protocol_error` (the
+  provider or the payload store returned bytes Labby cannot interpret as the
+  expected contract; inspect before retrying), `authority_changed` (membership,
+  policy, or the execution lease moved under a running Agent session or Task
+  attempt; provider effects may already have happened, so confirm current
+  authority and check partial work before starting a fresh run);
 - concurrency/state: `rate_limited`, `queue_saturated`, `budget_exceeded`,
   `quota_exceeded`, `restart_required`, `stale_suggestion`,
   `merge_write_conflict`, `workspace_not_configured`;
@@ -178,12 +186,13 @@ so the `oauth_needs_reauth` refinement below is preserved.
 - forbidden scope/action, including `oauth_scope_upgrade_required`: 403;
 - unknown resource: 404;
 - conflict/restart/stale state, including `oauth_account_ambiguous`,
-  `oauth_client_mismatch`, and `oauth_shared_credential_protected`: 409;
+  `oauth_client_mismatch`, `oauth_shared_credential_protected`, and
+  `authority_changed`: 409;
 - invalid input, confirmation, SSRF, or path validation: 422;
 - payload limits: 413;
 - rate/queue limits: 429;
-- upstream gateway failure: 502;
-- service unavailable: 503;
+- upstream gateway failure, including `protocol_error`: 502;
+- service unavailable, including `unavailable`: 503;
 - timeouts: 504;
 - unknown/internal kind: 500.
 

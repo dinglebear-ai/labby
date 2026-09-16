@@ -89,6 +89,7 @@ impl IntoResponse for ApiError {
             | "service_unavailable"
             | "provider_unavailable"
             | "source_unavailable"
+            | "unavailable"
             | "browser_offline"
             | "browser_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
             "missing_param" | "invalid_param" | "validation_failed" | "invalid_hint"
@@ -123,6 +124,7 @@ impl IntoResponse for ApiError {
             | "bad_gateway"
             | "server_error"
             | "upstream_error"
+            | "protocol_error"
             | "cancelled"
             | "oauth_resource_mismatch"
             | "oauth_issuer_mismatch"
@@ -139,7 +141,8 @@ impl IntoResponse for ApiError {
             | "restart_required"
             | "stale_suggestion"
             | "merge_write_conflict"
-            | "workspace_not_configured" => StatusCode::CONFLICT,
+            | "workspace_not_configured"
+            | "authority_changed" => StatusCode::CONFLICT,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         // Serialize the inner ToolError with the dispatch context (when one
@@ -351,6 +354,16 @@ mod tests {
             status_for("response_too_large"),
             StatusCode::PAYLOAD_TOO_LARGE
         );
+    }
+
+    #[test]
+    fn agent_execution_kinds_map_to_actionable_statuses() {
+        // Provider/backend unreachable or unconfigured: retry later.
+        assert_eq!(status_for("unavailable"), StatusCode::SERVICE_UNAVAILABLE);
+        // The provider answered with something Labby cannot interpret.
+        assert_eq!(status_for("protocol_error"), StatusCode::BAD_GATEWAY);
+        // Authority moved under a running execution: current state conflict.
+        assert_eq!(status_for("authority_changed"), StatusCode::CONFLICT);
     }
 
     #[test]

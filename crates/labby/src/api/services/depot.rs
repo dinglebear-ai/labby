@@ -1219,7 +1219,9 @@ async fn call(
         .operation_policy(&request.operation, &actor)
         .await
         .map_err(map_error)?;
-    if policy.requires_write || policy.requires_operator {
+    // Derived from the shared policy so a destructive read-scoped catalog
+    // entry is gated exactly like a write.
+    if policy.requires_delegation() {
         require_admin_mutation(&authority, &auth, &headers, &request.operation).await?;
     }
     let idempotency_key = if policy.destructive {
@@ -1232,7 +1234,7 @@ async fn call(
     } else {
         None
     };
-    let result = if policy.requires_write || policy.requires_operator {
+    let result = if policy.requires_delegation() {
         let authorization = admin_depot_authorization(
             &state,
             &authority,
