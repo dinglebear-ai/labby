@@ -699,9 +699,18 @@ impl LabConfig {
     /// `upstream_request_timeout_ms` past 30s got no effect, because the
     /// transport killed the response first and discarded a tool call that had
     /// already succeeded.
+    ///
+    /// Two more inner deadlines ride on a single hosted request and are covered
+    /// the same way: a Code Mode run (`code_mode.timeout_ms`, carried by the
+    /// `/mcp` request that started it) and a synchronous `agents.run`, which
+    /// holds its request for the fixed Agent runtime bound.
     pub fn http_request_timeout(&self) -> Duration {
         self.upstream_request_timeout()
             .max(self.upstream_relay_timeout())
+            .max(Duration::from_millis(self.code_mode.timeout_ms))
+            .max(Duration::from_millis(
+                labby_runtime::agent_runtime::AGENT_MAX_RUNTIME_MILLIS,
+            ))
             .saturating_add(HTTP_REQUEST_TIMEOUT_MARGIN)
     }
 
@@ -4442,6 +4451,41 @@ upstream_request_timeout_ms = 60000
                 cfg.upstream_relay_timeout(),
             );
         }
+    }
+
+    /// A Code Mode run is carried by the HTTP request that started it, so the
+    /// transport backstop must also cover `code_mode.timeout_ms`; otherwise a
+    /// long run outlives its own response.
+    #[test]
+    fn http_request_timeout_never_undercuts_code_mode_timeout() {
+        let cfg = toml::from_str::<LabConfig>(
+            "upstream_request_timeout_ms = 60000\nupstream_relay_timeout_ms = 60000\n[code_mode]\ntimeout_ms = 180000\n",
+        )
+        .expect("config parses");
+        cfg.validate().expect("config validates");
+        let http = cfg.http_request_timeout();
+        assert!(
+            http > Duration::from_millis(cfg.code_mode.timeout_ms),
+            "http timeout {http:?} must exceed the Code Mode deadline {} ms",
+            cfg.code_mode.timeout_ms
+        );
+    }
+
+    /// A synchronous `agents.run` holds its HTTP request for the whole Agent
+    /// runtime bound, which is fixed product policy rather than configuration.
+    #[test]
+    fn http_request_timeout_covers_the_agent_runtime_bound() {
+        let cfg = toml::from_str::<LabConfig>(
+            "upstream_request_timeout_ms = 60000\nupstream_relay_timeout_ms = 60000\n",
+        )
+        .expect("config parses");
+        cfg.validate().expect("config validates");
+        let bound = Duration::from_millis(labby_runtime::agent_runtime::AGENT_MAX_RUNTIME_MILLIS);
+        assert!(
+            cfg.http_request_timeout() > bound,
+            "http timeout {:?} must exceed the Agent runtime bound {bound:?}",
+            cfg.http_request_timeout()
+        );
     }
 
     /// The 5 minute relay default is the binding constraint out of the box, so
