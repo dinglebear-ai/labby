@@ -680,6 +680,18 @@
         "description": ""
       },
       {
+        "name": "instructions",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "model",
+        "ty": "string",
+        "required": false,
+        "description": ""
+      },
+      {
         "name": "content_digest",
         "ty": "string",
         "required": false,
@@ -711,18 +723,6 @@
       },
       {
         "name": "catalog_generation",
-        "ty": "string",
-        "required": false,
-        "description": ""
-      },
-      {
-        "name": "instructions",
-        "ty": "string",
-        "required": false,
-        "description": ""
-      },
-      {
-        "name": "model",
         "ty": "string",
         "required": false,
         "description": ""
@@ -9781,13 +9781,13 @@
         "description": ""
       },
       {
-        "name": "input_digest",
+        "name": "input",
         "ty": "string",
-        "required": false,
+        "required": true,
         "description": ""
       },
       {
-        "name": "input",
+        "name": "input_digest",
         "ty": "string",
         "required": false,
         "description": ""

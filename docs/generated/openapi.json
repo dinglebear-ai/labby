@@ -5300,7 +5300,8 @@
         "required": [
           "agent_id",
           "owner_kind",
-          "owner_id"
+          "owner_id",
+          "instructions"
         ],
         "properties": {
           "agent_id": {
@@ -9666,7 +9667,8 @@
           "idempotency_key",
           "owner_kind",
           "owner_id",
-          "agent_id"
+          "agent_id",
+          "input"
         ],
         "properties": {
           "agent_id": {

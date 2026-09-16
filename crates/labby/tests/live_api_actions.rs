@@ -360,16 +360,7 @@ async fn prepare_authority_action(
         if intent.action != "agents.create" {
             let fixture = &action_scenarios::fixtures()["agents"];
             let mut create = serde_json::Map::new();
-            for name in [
-                "owner_kind",
-                "owner_id",
-                "content_digest",
-                "repository_digest",
-                "image_digest",
-                "harness_digest",
-                "loadout_digest",
-                "catalog_generation",
-            ] {
+            for name in ["owner_kind", "owner_id", "instructions"] {
                 create.insert(name.to_owned(), fixture.parameters[name].clone());
             }
             create.insert("agent_id".into(), agent_id.into());
@@ -441,16 +432,7 @@ async fn prepare_authority_action(
         params["agent_id"] = serde_json::Value::String(agent_id.clone());
         let agents = &action_scenarios::fixtures()["agents"];
         let mut create_agent = serde_json::Map::new();
-        for name in [
-            "owner_kind",
-            "owner_id",
-            "content_digest",
-            "repository_digest",
-            "image_digest",
-            "harness_digest",
-            "loadout_digest",
-            "catalog_generation",
-        ] {
+        for name in ["owner_kind", "owner_id", "instructions"] {
             create_agent.insert(name.to_owned(), agents.parameters[name].clone());
         }
         create_agent.insert("agent_id".into(), agent_id.into());
@@ -466,7 +448,7 @@ async fn prepare_authority_action(
             .await,
         );
         if intent.action != "tasks.create" {
-            drop(post_action(client, base, "/v1/tasks", "tasks.create", serde_json::json!({"task_id":task_id,"idempotency_key":format!("idem-{action_id}"),"owner_kind":"personal","owner_id":"bootstrap-owner","agent_id":params["agent_id"],"input_digest":"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}), true).await);
+            drop(post_action(client, base, "/v1/tasks", "tasks.create", serde_json::json!({"task_id":task_id,"idempotency_key":format!("idem-{action_id}"),"owner_kind":"personal","owner_id":"bootstrap-owner","agent_id":params["agent_id"],"input":"matrix task input"}), true).await);
         }
         if intent.action == "tasks.result" {
             drop(

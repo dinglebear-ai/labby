@@ -16,9 +16,13 @@ resources the caller cannot read, while direct reads and mutations return the
 same non-enumerating denial for absent and unauthorized identifiers.
 
 Agent revisions pin content, repository, image, harness, loadout, credentials,
-and catalog generations. LLM-backed definitions materialize the model and Agent
-instructions into Labby's content-addressed payload store and pin that payload
-with the existing `content_digest`. Agent payloads, Task inputs, and outputs use
+and catalog generations. `agents.create` requires the Agent `instructions` (and
+accepts an optional `model`); Labby materializes them into its
+content-addressed payload store, pins that payload with `content_digest`, and
+derives every other revision digest from the payload and the configured
+provider, so the required parameters alone are sufficient. Supplied digests are
+verification only. `agents.update` accepts new `instructions` or a new `model`
+and inherits the rest from the prior revision. Agent payloads, Task inputs, and outputs use
 separate CAS namespaces under `agent-payloads/`, while digest values remain the
 SHA-256 of the exact stored bytes. Reads re-verify the digest, and a digest from
 one namespace never resolves through another namespace. The harness digest
@@ -46,11 +50,11 @@ revision. Successful text output is stored content-addressed and returned with
 its digest.
 
 Agent Tasks capture an exact Agent revision, normalized input digest, catalog
-generation, owner, creator, and authority fingerprint. Callers may supply raw
-UTF-8 `input`; Labby materializes it in the Task-input CAS namespace and stores
-the resulting `input_digest`. The legacy digest-only form remains accepted for
-compatibility; execution requires that digest to already be materialized in the
-same Task-input namespace. Task idempotency keys are scoped to the owner and
+generation, owner, creator, and authority fingerprint. `tasks.create` requires
+raw UTF-8 `input`; Labby materializes it in the Task-input CAS namespace and
+stores the resulting `input_digest`. A supplied `input_digest` is verification
+only and must match the supplied bytes; a digest without its bytes cannot
+create a Task. Task idempotency keys are scoped to the owner and
 bind the full immutable intent.
 Queue, cancellation, execution, and settlement use fenced state transitions;
 terminal settlement is exactly once. A freshly authorized `tasks.queue` may

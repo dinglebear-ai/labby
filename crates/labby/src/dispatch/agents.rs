@@ -76,14 +76,14 @@ pub const ACTIONS: &[ActionSpec] = &[
             param("agent_id"),
             param("owner_kind"),
             param("owner_id"),
+            param("instructions"),
+            optional_param("model"),
             optional_param("content_digest"),
             optional_param("repository_digest"),
             optional_param("image_digest"),
             optional_param("harness_digest"),
             optional_param("loadout_digest"),
             optional_param("catalog_generation"),
-            optional_param("instructions"),
-            optional_param("model"),
         ],
     ),
     action(
@@ -191,6 +191,7 @@ pub(crate) async fn dispatch(
             {
                 return Err(denied());
             }
+            required(&params, "instructions")?;
             let params = materialize_llm_payload(&context.store, params, None)?;
             let definition = definition(&params, None)?;
             let request = authority_request(
@@ -1024,6 +1025,9 @@ pub(crate) mod test_support {
     /// Open a fresh access store with one bootstrapped owner (a platform admin
     /// whose personal owner scope is `personal/bootstrap-owner`).
     pub(crate) async fn fixture() -> (tempfile::TempDir, AccessStore, VerifiedIdentity) {
+        // The harness digest is derived from the provider URL at create time;
+        // no test connects to this address unless it drives execution.
+        crate::dispatch::phoenix_openai::install_test_base_url("http://127.0.0.1:9/v1");
         let directory = secure_tempdir();
         let store = AccessStore::open(directory.path().join("access.db"))
             .await
@@ -1055,8 +1059,21 @@ pub(crate) mod test_support {
     }
 
     /// Valid `agents.create` parameters for a personal Agent owned by the
-    /// bootstrap principal.
+    /// bootstrap principal: exactly the caller-facing form.
     pub(crate) fn agent_params(agent_id: &str) -> Value {
+        json!({
+            "agent_id": agent_id,
+            "owner_kind": "personal",
+            "owner_id": BOOTSTRAP_PRINCIPAL,
+            "instructions": "Summarize the input.",
+            "model": "chatgpt-browser",
+        })
+    }
+
+    /// Fully materialized revision parameters, as the dispatcher sees them
+    /// after payload materialization, for tests that build definitions
+    /// directly.
+    pub(crate) fn agent_revision_params(agent_id: &str) -> Value {
         json!({
             "agent_id": agent_id,
             "owner_kind": "personal",
@@ -1074,7 +1091,8 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::test_support::{
-        BOOTSTRAP_PRINCIPAL, agent_context, agent_params, browser, digest, fixture,
+        BOOTSTRAP_PRINCIPAL, agent_context, agent_params, agent_revision_params, browser, digest,
+        fixture,
     };
     use super::*;
     use labby_runtime::authority::AuthorityLeaseError;
@@ -1105,7 +1123,7 @@ mod tests {
             .iter()
             .find(|action| action.name == "agents.create")
             .unwrap();
-        for required in ["agent_id", "owner_kind", "owner_id"] {
+        for required in ["agent_id", "owner_kind", "owner_id", "instructions"] {
             assert!(
                 create
                     .params
@@ -1120,7 +1138,6 @@ mod tests {
             "harness_digest",
             "loadout_digest",
             "catalog_generation",
-            "instructions",
             "model",
         ] {
             assert!(
@@ -1208,7 +1225,7 @@ mod tests {
             assert_eq!(error.kind(), "invalid_param");
             assert_eq!(envelope(&error)["param"], key);
         }
-        let created = definition(&agent_params("a1"), None).unwrap();
+        let created = definition(&agent_revision_params("a1"), None).unwrap();
         assert_eq!((created.authority_epoch, created.publication_epoch), (1, 1));
         let mut prior = created.clone();
         prior.state = AgentState::Suspended;
@@ -1272,6 +1289,49 @@ mod tests {
             .unwrap();
         let listed = dispatch(reader, "agents.list", json!({})).await.unwrap();
         assert!(listed["agents"].as_array().unwrap().is_empty());
+    }
+
+    /// Bind exactly the parameters the shared catalog marks required, so the
+    /// advertised schema is proven sufficient rather than merely necessary.
+    fn required_only_params(action: &str, values: &[(&str, &str)]) -> Value {
+        let spec = ACTIONS.iter().find(|a| a.name == action).unwrap();
+        let mut params = serde_json::Map::new();
+        for param in spec.params.iter().filter(|param| param.required) {
+            let value = values
+                .iter()
+                .find(|(name, _)| *name == param.name)
+                .unwrap_or_else(|| panic!("no test value for required param {}", param.name))
+                .1;
+            params.insert(param.name.to_owned(), json!(value));
+        }
+        Value::Object(params)
+    }
+
+    #[tokio::test]
+    async fn create_with_exactly_the_required_params_succeeds() {
+        let (_dir, store, owner) = fixture().await;
+        let params = required_only_params(
+            "agents.create",
+            &[
+                ("agent_id", "required-only-agent"),
+                ("owner_kind", "personal"),
+                ("owner_id", BOOTSTRAP_PRINCIPAL),
+                ("instructions", "Summarize the input."),
+            ],
+        );
+        let created = dispatch(agent_context(&store, &owner), "agents.create", params)
+            .await
+            .unwrap();
+        assert_eq!(created["agent_id"], "required-only-agent");
+        assert_eq!(created["version"], 1);
+        let stored = store
+            .get_agent_definition("required-only-agent".into())
+            .await
+            .unwrap()
+            .unwrap();
+        // The revision digests are server-derived from the materialized payload.
+        assert!(stored.revision.content_digest.starts_with("sha256:"));
+        assert!(stored.revision.harness_digest.starts_with("sha256:"));
     }
 
     #[tokio::test]
@@ -1405,7 +1465,7 @@ mod tests {
     #[tokio::test]
     async fn partial_llm_revision_update_fails_when_inherited_payload_is_missing() {
         let (_directory, store, _owner) = fixture().await;
-        let prior = definition(&agent_params("legacy-agent"), None).unwrap();
+        let prior = definition(&agent_revision_params("legacy-agent"), None).unwrap();
         let error = materialize_llm_payload(
             &store,
             json!({"agent_id":"legacy-agent","instructions":"new instructions"}),

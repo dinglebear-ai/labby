@@ -87,8 +87,8 @@ pub const ACTIONS: &[ActionSpec] = &[
             param("owner_kind"),
             param("owner_id"),
             param("agent_id"),
+            param("input"),
             optional_param("input_digest"),
-            optional_param("input"),
         ],
     ),
     action(
@@ -442,15 +442,16 @@ pub(crate) async fn dispatch(
     }
 }
 
+/// Materialize the caller's raw `input` in the Task-input CAS namespace. An
+/// optional `input_digest` is verification only: it must match the digest of
+/// the supplied bytes and never substitutes for them.
 fn materialize_task_input(
     store: &crate::access::AccessStore,
     params: &Value,
 ) -> Result<String, ToolError> {
-    if let Some(input) = params.get("input").and_then(Value::as_str) {
-        return AgentPayloadStore::for_access_store(store)
-            .store_task_input(input, params.get("input_digest").and_then(Value::as_str));
-    }
-    required(params, "input_digest")
+    let input = required(params, "input")?;
+    AgentPayloadStore::for_access_store(store)
+        .store_task_input(&input, params.get("input_digest").and_then(Value::as_str))
 }
 
 async fn load(
@@ -952,6 +953,7 @@ mod tests {
             ceiling: AuthorityCeiling::trusted_local(),
         }
     }
+    const TASK_INPUT: &str = "hello";
     fn task_params(task_id: &str, agent_id: &str) -> Value {
         json!({
             "task_id": task_id,
@@ -959,8 +961,11 @@ mod tests {
             "owner_kind": "personal",
             "owner_id": BOOTSTRAP_PRINCIPAL,
             "agent_id": agent_id,
-            "input_digest": digest('1'),
+            "input": TASK_INPUT,
         })
+    }
+    fn task_input_digest() -> String {
+        labby_primitives::digest::Sha256Digest::of(TASK_INPUT.as_bytes()).to_string()
     }
     async fn wait_for_task_terminal(
         store: &AccessStore,
@@ -1063,8 +1068,35 @@ mod tests {
             create
                 .params
                 .iter()
-                .any(|param| param.name == "input" && !param.required)
+                .any(|param| param.name == "input" && param.required)
         );
+    }
+
+    #[tokio::test]
+    async fn input_digest_is_verification_only() {
+        let (_dir, store, owner) = fixture().await;
+        create_agent(&store, &owner, "agent-1").await;
+        let context = task_context(&store, &owner);
+        // A digest without the bytes it names cannot create a Task.
+        let mut digest_only = task_params("digest-only", "agent-1");
+        digest_only.as_object_mut().unwrap().remove("input");
+        digest_only["input_digest"] = json!(task_input_digest());
+        let error = dispatch(context.clone(), "tasks.create", digest_only)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), "invalid_param");
+        assert_eq!(envelope(&error)["param"], "input");
+        // A mismatching digest is rejected; a matching one is accepted.
+        let mut mismatched = task_params("mismatched", "agent-1");
+        mismatched["input_digest"] = json!(digest('2'));
+        let error = dispatch(context.clone(), "tasks.create", mismatched)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), "invalid_param");
+        assert_eq!(envelope(&error)["param"], "input_digest");
+        let mut verified = task_params("verified", "agent-1");
+        verified["input_digest"] = json!(task_input_digest());
+        dispatch(context, "tasks.create", verified).await.unwrap();
     }
     #[tokio::test]
     async fn unbound_is_non_enumerating() {
@@ -1340,8 +1372,12 @@ mod tests {
 
         assert_eq!(error.kind(), "forbidden");
         assert!(
-            !store.storage_dir().join("agent-payloads").exists(),
-            "authorization must happen before content-addressed payload writes"
+            !store
+                .storage_dir()
+                .join("agent-payloads")
+                .join("task-inputs")
+                .exists(),
+            "authorization must happen before Task-input payload writes"
         );
         assert!(
             store
@@ -1413,7 +1449,7 @@ mod tests {
         assert_eq!(envelope(&duplicate)["message"], "access denied");
         // Same identifier and key, different input: still a denial.
         let mut drifted = task_params("taken", "agent-1");
-        drifted["input_digest"] = json!(digest('2'));
+        drifted["input"] = json!("different input");
         let drifted = dispatch(context.clone(), "tasks.create", drifted)
             .await
             .unwrap_err();
@@ -1443,7 +1479,7 @@ mod tests {
         // The original record is untouched.
         let stored = store.get_agent_task("taken".into()).await.unwrap().unwrap();
         assert_eq!(stored.intent.idempotency_key, "taken-key");
-        assert_eq!(stored.intent.input_digest, digest('1'));
+        assert_eq!(stored.intent.input_digest, task_input_digest());
         assert_eq!(stored.state, TaskState::Created);
     }
 
@@ -1497,6 +1533,53 @@ mod tests {
         moved.owner = OwnerScope::Team(TeamId::new("other-team").unwrap());
         assert!(!pinned_revision_matches(&moved, &intent));
     }
+    /// Bind exactly the parameters the shared catalog marks required, so the
+    /// advertised schema is proven sufficient rather than merely necessary.
+    fn required_only_params(action: &str, values: &[(&str, &str)]) -> Value {
+        let spec = ACTIONS.iter().find(|a| a.name == action).unwrap();
+        let mut params = serde_json::Map::new();
+        for param in spec.params.iter().filter(|param| param.required) {
+            let value = values
+                .iter()
+                .find(|(name, _)| *name == param.name)
+                .unwrap_or_else(|| panic!("no test value for required param {}", param.name))
+                .1;
+            params.insert(param.name.to_owned(), json!(value));
+        }
+        Value::Object(params)
+    }
+
+    #[tokio::test]
+    async fn create_with_exactly_the_required_params_succeeds() {
+        let (_dir, store, owner) = fixture().await;
+        create_agent(&store, &owner, "agent-1").await;
+        let params = required_only_params(
+            "tasks.create",
+            &[
+                ("task_id", "required-only-task"),
+                ("idempotency_key", "required-only-key"),
+                ("owner_kind", "personal"),
+                ("owner_id", BOOTSTRAP_PRINCIPAL),
+                ("agent_id", "agent-1"),
+                ("input", "hello"),
+            ],
+        );
+        let created = dispatch(task_context(&store, &owner), "tasks.create", params)
+            .await
+            .unwrap();
+        assert_eq!(created["task_id"], "required-only-task");
+        let stored = store
+            .get_agent_task("required-only-task".into())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            stored.intent.input_digest,
+            labby_primitives::digest::Sha256Digest::of(b"hello").to_string(),
+            "the input digest is derived from the materialized input"
+        );
+    }
+
     #[tokio::test]
     async fn queue_lease_covers_the_runtime_bound() {
         let (_dir, store, owner) = fixture().await;

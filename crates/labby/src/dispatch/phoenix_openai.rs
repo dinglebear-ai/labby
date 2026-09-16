@@ -22,8 +22,28 @@ pub(crate) struct OpenAiBackend {
     api_key: Option<String>,
 }
 
+/// Process-wide provider base URL for unit tests. The crate forbids unsafe
+/// code and `std::env::set_var` is unsafe in edition 2024, so tests that need
+/// a resolvable harness digest pin the URL here instead of mutating the
+/// environment. Nothing connects to it unless a test drives execution.
+#[cfg(test)]
+static TEST_BASE_URL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Pin the provider base URL for every later `from_env` in this process.
+/// Building the HTTP client needs a process-level TLS provider, which the
+/// test binary does not install on its own.
+#[cfg(test)]
+pub(crate) fn install_test_base_url(url: &str) {
+    drop(rustls::crypto::ring::default_provider().install_default());
+    drop(TEST_BASE_URL.set(url.to_owned()));
+}
+
 impl OpenAiBackend {
     pub(crate) fn from_env() -> Option<Self> {
+        #[cfg(test)]
+        if let Some(base_url) = TEST_BASE_URL.get() {
+            return Self::from_url(base_url, None).ok();
+        }
         let base_url = env::var(BASE_URL_ENV).ok()?;
         match Self::from_url(&base_url, env::var(API_KEY_ENV).ok()) {
             Ok(backend) => Some(backend),

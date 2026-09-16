@@ -702,12 +702,7 @@
         "agent_id": "$fixture.agent_id",
         "owner_kind": "$fixture.owner_kind",
         "owner_id": "$fixture.owner_id",
-        "content_digest": "$fixture.content_digest",
-        "repository_digest": "$fixture.repository_digest",
-        "image_digest": "$fixture.image_digest",
-        "harness_digest": "$fixture.harness_digest",
-        "loadout_digest": "$fixture.loadout_digest",
-        "catalog_generation": "$fixture.catalog_generation"
+        "instructions": "$fixture.instructions"
       }
     },
     "required": true,
@@ -1435,7 +1430,7 @@
         "owner_kind": "$fixture.owner_kind",
         "owner_id": "$fixture.owner_id",
         "agent_id": "$fixture.agent_id",
-        "input_digest": "$fixture.input_digest"
+        "input": "$fixture.input"
       }
     },
     "required": true,
