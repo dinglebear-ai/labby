@@ -11,6 +11,20 @@ use super::UpstreamPool;
 use super::helpers::cached_upstream_tool;
 use super::incarnation::ObservedConnectionCatalogEntry;
 
+/// Outcome of one [`UpstreamPool::restart_upstream`] transaction. By the time
+/// it is returned the owned connection has been shut down and the
+/// between-stop-and-start hook has run; `reconnect` says whether the
+/// replacement connected.
+#[derive(Debug)]
+pub struct UpstreamRestart<T> {
+    /// Output of the between-stop-and-start hook.
+    pub between: T,
+    /// `Err` when the replacement failed to connect. The old connection is
+    /// already gone, so the upstream stays down until a later connect
+    /// succeeds; the caller decides how to record and report the failure.
+    pub reconnect: anyhow::Result<()>,
+}
+
 impl UpstreamPool {
     /// Restart the selected runtime without changing its desired enabled state.
     /// The manager owns the task so a disconnected operator request cannot
@@ -23,13 +37,20 @@ impl UpstreamPool {
     /// would match the replacement child, and running it before the shutdown
     /// would race the graceful process-group teardown. Its output is returned
     /// unchanged so the caller can report it alongside the restart.
+    ///
+    /// The stop and hook phases are the transaction. The replacement's connect
+    /// result is returned in [`UpstreamRestart::reconnect`] rather than as this
+    /// function's error: by then the old connection is already gone and the
+    /// hook's output still has to reach the caller. This function fails only
+    /// when the transaction cannot run, because the upstream is disabled or
+    /// its configuration changed before the connect gate was acquired.
     pub async fn restart_upstream<C, F>(
         &self,
         config: &UpstreamConfig,
         oauth_subject: Option<&str>,
         owner: Option<&UpstreamRuntimeOwner>,
         between_stop_and_start: C,
-    ) -> anyhow::Result<F::Output>
+    ) -> anyhow::Result<UpstreamRestart<F::Output>>
     where
         C: FnOnce() -> F,
         F: Future,
@@ -51,22 +72,26 @@ impl UpstreamPool {
             self.invalidate_oauth_subject_sessions(&config.name, subject, "upstream.restart")
                 .await;
             let between = between_stop_and_start().await;
-            self.acquire_or_connect_subject(config, subject).await?;
-            return Ok(between);
+            let reconnect = self
+                .acquire_or_connect_subject(config, subject)
+                .await
+                .map(drop);
+            return Ok(UpstreamRestart { between, reconnect });
         }
         self.begin_subscription_generation(&config.name).await;
         if let Some(connection) = self.remove_connection_binding(&config.name).await {
             connection.shutdown(&config.name, "upstream.restart").await;
         }
         let between = between_stop_and_start().await;
-        self.reconnect_upstream(config, oauth_subject, owner)
-            .await?;
-        // The replacement is installed; callers waiting on the gate can use
-        // it now. The prompt/resource cache refresh is served by that new
+        let reconnect = self.reconnect_upstream(config, oauth_subject, owner).await;
+        // The connect attempt is over; callers waiting on the gate can proceed
+        // now. The prompt/resource cache refresh is served by the replacement
         // connection and needs no gate, so it runs after the release.
         drop(guard);
-        self.refresh_capability_caches_after_connect(config).await;
-        Ok(between)
+        if reconnect.is_ok() {
+            self.refresh_capability_caches_after_connect(config).await;
+        }
+        Ok(UpstreamRestart { between, reconnect })
     }
 
     pub(super) async fn lazy_connect_gate_is_current(
@@ -340,7 +365,8 @@ mod gate_release_tests {
             "the waiter must not sit behind the capability refresh: {:?}",
             started.elapsed()
         );
-        restart.await.expect("restart task").expect("restart");
+        let restarted = restart.await.expect("restart task").expect("restart");
+        restarted.reconnect.expect("the replacement connects");
     }
 }
 

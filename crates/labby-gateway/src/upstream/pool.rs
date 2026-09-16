@@ -74,6 +74,7 @@ mod prompts_exposure_tests;
 mod prompts_get;
 mod prompts_list;
 mod recovery;
+pub use recovery::UpstreamRestart;
 mod registration;
 mod relay;
 mod relay_cache;

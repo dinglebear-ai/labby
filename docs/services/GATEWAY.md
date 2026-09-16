@@ -58,9 +58,16 @@ Restarts are deduplicated per upstream: a request while one is already in
 flight returns `{completed: false, in_flight: true}` at once and queues
 nothing. A restart writes no configuration and never holds the configuration
 mutation lease, so restarting many upstreams cannot block `gateway.add`,
-`gateway.update`, `gateway.remove`, or `gateway.reload`. A reconnect that fails,
+`gateway.update`, `gateway.remove`, or `gateway.reload`.
+
+The stop and cleanup phases are the transaction; whether the replacement
+connects is runtime state, not the action's result. A reconnect that fails,
 whether the caller was still waiting or not, is recorded as the upstream's
-runtime `last_error`.
+runtime `last_error`, and the action still completes with the view reporting
+`connected: false` and that `last_error`, exactly as `gateway.test` reports a
+failed probe. The action fails only when the transaction cannot run: the
+upstream is unknown or disabled, the gateway runtime is not initialized, the
+configuration changed under the connect gate, or the process cleanup failed.
 
 OAuth upstreams are projected per calling subject: `gateway.get`,
 `gateway.list`, and `gateway.mcp.list` report that subject's connection,

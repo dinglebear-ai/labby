@@ -26,7 +26,7 @@ use crate::process::unix::terminate_process_group_sigkill;
 use crate::process::unix::{pid_is_alive, terminate_sigkill};
 #[cfg(target_os = "linux")]
 use crate::process::unix::{process_group_id, process_has_ancestor, read_cmdline};
-use crate::upstream::pool::UpstreamPool;
+use crate::upstream::pool::{UpstreamPool, UpstreamRestart};
 use crate::upstream::types::{UpstreamCapability, UpstreamRuntimeOwner};
 use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::{GatewayConfig, UpstreamConfig};
@@ -360,9 +360,18 @@ impl GatewayManager {
     /// no configuration, so it takes no configuration-mutation lease and its
     /// network phase cannot block `gateway.add`, `update`, `remove`, or
     /// `reload`; the pool's connect gate already fences it against a
-    /// concurrent configuration change. A reconnect failure, whether the
-    /// caller is still waiting or not, is recorded as the upstream's
-    /// `last_error` so operators see the reason rather than a log line.
+    /// concurrent configuration change.
+    ///
+    /// The stop and cleanup phases are the transaction; whether the
+    /// replacement connects is runtime state, not the action's result. A
+    /// reconnect failure, whether the caller is still waiting or not, is
+    /// recorded as the upstream's `last_error` so operators see the reason
+    /// rather than a log line, and the action still completes with the view
+    /// reporting `connected: false`, exactly as `gateway.test` reports a
+    /// failed probe. The action fails only when the transaction cannot run:
+    /// the upstream is unknown or disabled, the runtime is not initialized,
+    /// its configuration changed under the connect gate, or the cleanup
+    /// itself failed.
     pub async fn restart_mcp_upstream(
         &self,
         name: &str,
@@ -403,39 +412,44 @@ impl GatewayManager {
                 sdk_kind: "service_unavailable".to_owned(),
                 message: "gateway runtime is not initialized".to_owned(),
             })?;
-            let restarted = pool
+            let UpstreamRestart {
+                between: cleanup,
+                reconnect,
+            } = pool
                 .restart_upstream(
                     &upstream,
                     scope.oauth_subject.as_deref(),
                     owner.as_ref(),
                     || manager.kill_upstream_processes(&name, aggressive, false),
                 )
-                .await;
-            let cleanup = match restarted {
-                Ok(cleanup) => cleanup?,
-                Err(error) => {
-                    let message = error.to_string();
-                    // The subject-scoped OAuth path records its own failure on
-                    // the subject's cached summary; a shared connection's
-                    // failure belongs to the upstream's runtime state.
-                    if upstream.oauth.is_none() || scope.oauth_subject.is_none() {
-                        pool.record_failure_for(
-                            &name,
-                            UpstreamCapability::Tools,
-                            format!(
-                                "upstream restart failed: {}",
-                                labby_runtime::redact::sanitize_error_text(&message, 512)
-                            ),
-                        )
-                        .await;
-                    }
-                    return Err(ToolError::Sdk {
-                        sdk_kind: "upstream_connect_error".to_owned(),
-                        message,
-                    });
+                .await
+                .map_err(|error| ToolError::Sdk {
+                    sdk_kind: "upstream_connect_error".to_owned(),
+                    message: error.to_string(),
+                })?;
+            let cleanup = cleanup?;
+            if let Err(error) = &reconnect {
+                let message = labby_runtime::redact::sanitize_error_text(&error.to_string(), 512);
+                tracing::warn!(
+                    action = "gateway.mcp.restart",
+                    upstream = %name,
+                    error = %message,
+                    "restart replaced the connection but the replacement did not connect"
+                );
+                // The subject-scoped OAuth path records its own failure on
+                // the subject's cached summary; a shared connection's
+                // failure belongs to the upstream's runtime state.
+                if upstream.oauth.is_none() || scope.oauth_subject.is_none() {
+                    pool.record_failure_for(
+                        &name,
+                        UpstreamCapability::Tools,
+                        format!("upstream restart failed: {message}"),
+                    )
+                    .await;
                 }
-            };
-            if upstream.oauth.is_some()
+            }
+            if reconnect.is_ok()
+                && upstream.oauth.is_some()
                 && let Some(subject) = scope.oauth_subject.as_deref()
             {
                 let configs = std::slice::from_ref(&upstream);

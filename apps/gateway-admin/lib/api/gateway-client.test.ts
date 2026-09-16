@@ -1183,3 +1183,54 @@ test('gatewayApi.reload reports a restart the backend already has in flight', as
     assert.equal(result.message, RELOAD_IN_FLIGHT_MESSAGE)
   })
 })
+
+test('gatewayApi.reload reports a completed restart whose replacement did not reconnect', async () => {
+  await withGatewayFetch({
+    'gateway.get': () => standardGatewayView,
+    'gateway.mcp.restart': () => ({
+      completed: true,
+      gateway: {
+        ...standardGatewayView,
+        runtime: {
+          ...standardGatewayView.runtime,
+          connected: false,
+          tool_count: 0,
+          resource_count: 0,
+          prompt_count: 0,
+          last_error: 'upstream restart failed: connection closed: discover response',
+        },
+      },
+      cleanup: { upstream: 'gateway-1', aggressive: false, dry_run: false },
+    }),
+  }, async () => {
+    const result = await gatewayApi.reload('gateway-1')
+    assert.equal(result.success, false)
+    assert.equal(result.pending, false)
+    assert.match(result.message, /did not reconnect/)
+    assert.match(result.message, /discover response/)
+    assert.equal(result.new_tool_count, 0)
+  })
+})
+
+test('gatewayApi.reload trusts the backend connected verdict over capability counts', async () => {
+  await withGatewayFetch({
+    'gateway.get': () => standardGatewayView,
+    'gateway.mcp.restart': () => ({
+      completed: true,
+      gateway: {
+        ...standardGatewayView,
+        runtime: {
+          ...standardGatewayView.runtime,
+          connected: true,
+          tool_count: 0,
+          resource_count: 0,
+          prompt_count: 0,
+        },
+      },
+    }),
+  }, async () => {
+    const result = await gatewayApi.reload('gateway-1')
+    assert.equal(result.success, true)
+    assert.equal(result.message, 'Server restarted successfully')
+  })
+})

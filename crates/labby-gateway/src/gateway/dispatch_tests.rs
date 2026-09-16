@@ -4140,7 +4140,8 @@ async fn gateway_mcp_restart_is_deduplicated_per_upstream() {
 
 /// A restart that fails to reconnect leaves the reason on the upstream's
 /// runtime `last_error`, so the web UI and `gateway.get` show why the server
-/// is down instead of a silent log line.
+/// is down instead of a silent log line, and still completes with the view
+/// and cleanup result instead of discarding them behind a connect error.
 #[tokio::test]
 async fn gateway_mcp_restart_records_a_failed_restart_as_last_error() {
     use std::time::Duration;
@@ -4160,7 +4161,7 @@ async fn gateway_mcp_restart_records_a_failed_restart_as_last_error() {
         )))
         .await;
     let scope = GatewayEnrichmentScope::default();
-    let error = manager
+    let value = manager
         .restart_mcp_upstream(
             "restart-unreachable",
             false,
@@ -4169,8 +4170,13 @@ async fn gateway_mcp_restart_records_a_failed_restart_as_last_error() {
             Duration::from_secs(20),
         )
         .await
-        .expect_err("unreachable upstream cannot restart");
-    assert_eq!(error.kind(), "upstream_connect_error");
+        .expect("the restart completes although the replacement cannot connect");
+    assert_eq!(value["completed"], true, "{value}");
+    assert_eq!(value["gateway"]["runtime"]["connected"], false, "{value}");
+    assert_eq!(
+        value["cleanup"]["upstream"], "restart-unreachable",
+        "{value}"
+    );
     let view = manager
         .get_scoped("restart-unreachable", &scope)
         .await
@@ -4180,6 +4186,63 @@ async fn gateway_mcp_restart_records_a_failed_restart_as_last_error() {
         "the failed restart must be visible as last_error: {view:?}"
     );
     assert!(!view.runtime.connected);
+}
+
+/// A stdio stand-in whose child exits before answering `server/discover`,
+/// which is how the live harness's owned upstream (`raise SystemExit`) fails:
+/// the connect ends as `connection closed: discover response`.
+#[cfg(unix)]
+fn write_exiting_stdio_stand_in(dir: &std::path::Path) -> std::path::PathBuf {
+    let script = dir.join("exiting-stdio-stand-in.py");
+    std::fs::write(&script, "raise SystemExit\n").expect("write exiting stand-in");
+    script
+}
+
+/// A restart whose replacement cannot connect still completes the transaction:
+/// the owned connection was shut down and stale processes reaped, so the
+/// action returns the promised `GatewayView + cleanup result`, with the connect
+/// failure visible as the runtime's `connected: false` and `last_error`, not as
+/// an `upstream_connect_error` that hides the cleanup outcome. This is the
+/// pre-#652 behavior the live CLI/API harnesses rely on.
+#[cfg(unix)]
+#[tokio::test]
+async fn gateway_mcp_restart_completes_when_the_replacement_cannot_connect() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = write_exiting_stdio_stand_in(dir.path());
+    let runtime = GatewayRuntimeHandle::default();
+    let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone());
+    let upstream_name = "restart-exits";
+    let mut config = upstream_fixture(upstream_name, None, Some("python3".to_string()));
+    config.enabled = true;
+    config.args = vec![script.to_string_lossy().into_owned()];
+    manager.replace_config_for_tests(vec![config]).await;
+    runtime
+        .swap(Some(std::sync::Arc::new(
+            crate::upstream::pool::UpstreamPool::new(),
+        )))
+        .await;
+
+    let value = dispatch_with_manager(
+        &manager,
+        "gateway.mcp.restart",
+        json!({"name": upstream_name}),
+    )
+    .await
+    .expect("a restart whose replacement cannot connect still completes");
+
+    assert_eq!(value["completed"], true, "{value}");
+    assert_eq!(value["gateway"]["config"]["name"], upstream_name);
+    assert_eq!(value["gateway"]["config"]["enabled"], true);
+    assert_eq!(value["gateway"]["runtime"]["connected"], false, "{value}");
+    let last_error = value["gateway"]["runtime"]["last_error"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the connect failure must be the runtime last_error: {value}"));
+    assert!(
+        last_error.contains("upstream restart failed"),
+        "last_error must name the failed restart: {last_error}"
+    );
+    assert_eq!(value["cleanup"]["upstream"], upstream_name, "{value}");
+    assert_eq!(value["cleanup"]["dry_run"], false);
 }
 
 /// An OAuth upstream's runtime view is scoped to the caller's subject. When
@@ -4204,7 +4267,7 @@ async fn scoped_runtime_view_surfaces_subject_connect_failure() {
         route_visible_upstreams: None,
         oauth_subject: Some("gateway".to_string()),
     };
-    let error = manager
+    let value = manager
         .restart_mcp_upstream(
             "scoped-unreachable",
             false,
@@ -4213,8 +4276,13 @@ async fn scoped_runtime_view_surfaces_subject_connect_failure() {
             Duration::from_secs(20),
         )
         .await
-        .expect_err("the subject cannot connect to an unreachable upstream");
-    assert_eq!(error.kind(), "upstream_connect_error");
+        .expect("the restart completes although the subject cannot connect");
+    assert_eq!(value["completed"], true, "{value}");
+    assert_eq!(value["gateway"]["runtime"]["connected"], false, "{value}");
+    assert!(
+        value["gateway"]["runtime"]["last_error"].is_string(),
+        "the returned scoped view must carry the subject's failure: {value}"
+    );
     let view = manager
         .get_scoped("scoped-unreachable", &scope)
         .await
