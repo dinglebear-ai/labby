@@ -151,9 +151,10 @@ async (o = {}) => {
 		.filter((x) => /^[0-9a-f]{12,64}$/i.test(x));
 	const fmt =
 			'{"id":{{json .Id}},"name":{{json .Name}},"image_ref":{{json .Config.Image}},"image_id":{{json .Image}},"created":{{json .Created}},"restart_count":{{json .RestartCount}},"state":{"status":{{json .State.Status}},"running":{{json .State.Running}},"paused":{{json .State.Paused}},"restarting":{{json .State.Restarting}},"oom_killed":{{json .State.OOMKilled}},"dead":{{json .State.Dead}},"pid":{{json .State.Pid}},"exit_code":{{json .State.ExitCode}},"error":{{json .State.Error}},"started_at":{{json .State.StartedAt}},"finished_at":{{json .State.FinishedAt}},"health":{{with index .State "Health"}}{{json .Status}}{{else}}null{{end}}},"ports":{{json .NetworkSettings.Ports}},"networks":{{json .NetworkSettings.Networks}},"mounts":{{json .Mounts}}}',
-		sec = "__LABBY_DOCKER_LOG_SECTION_9D81__",
-		beg = "__LABBY_DOCKER_LOG_BEGIN_9D81__:",
-		end = "__LABBY_DOCKER_LOG_END_9D81__:";
+		markerNonce = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`,
+		sec = `__LABBY_DOCKER_LOG_SECTION_${markerNonce}__`,
+		beg = `__LABBY_DOCKER_LOG_BEGIN_${markerNonce}__:`,
+		end = `__LABBY_DOCKER_LOG_END_${markerNonce}__:`;
 	const detail = await codemode.batch(
 		chunk(ids, i.containers_per_call).map((g) => async () => {
 			const list = g.join(" "),
@@ -323,5 +324,5 @@ async (o = {}) => {
 			docker_available: true,
 		},
 	};
-};
+}
 ```

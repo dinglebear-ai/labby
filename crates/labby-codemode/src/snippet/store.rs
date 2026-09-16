@@ -1172,6 +1172,31 @@ mod tests {
     }
 
     #[test]
+    fn docker_host_inventory_uses_per_run_log_markers() {
+        let lab_home = tempfile::tempdir().expect("temp lab home");
+        let snippet = resolve_snippet(
+            lab_home.path(),
+            &builtin_snippet_dir(),
+            "docker-host-inventory",
+        )
+        .expect("resolve docker host inventory");
+        let code = code_for_snippet(&snippet).expect("valid docker inventory source");
+
+        assert!(
+            code.contains("Math.random()"),
+            "log framing must carry a per-run nonce"
+        );
+        assert!(
+            code.contains("__LABBY_DOCKER_LOG_SECTION_${markerNonce}__"),
+            "section marker must incorporate the per-run nonce"
+        );
+        assert!(
+            !code.contains("__LABBY_DOCKER_LOG_SECTION_9D81__"),
+            "static framing lets container output spoof parser boundaries"
+        );
+    }
+
+    #[test]
     fn repo_status_gh_pulse_builtin_is_discoverable_and_executable() {
         let lab_home = tempfile::tempdir().expect("temp lab home");
         let builtin_dir = builtin_snippet_dir();
