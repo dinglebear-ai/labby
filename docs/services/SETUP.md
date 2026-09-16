@@ -189,8 +189,13 @@ service by default; Linux x86_64 hosts with a reachable Incus daemon can select
 `--deployment incus`. A server binds to `127.0.0.1:8765` unless explicitly changed.
 Google and Authelia configuration require provider credentials and a public URL.
 Client setup saves the selected gateway URL and uses browser OAuth or a bearer
-token. The optional desktop app is downloaded from the matching release and its
-provenance is verified before installation.
+token. The optional desktop app is off by default in the interactive prompt;
+`--desktop` or `LABBY_SETUP_DESKTOP=1` selects it. It is downloaded from the
+matching release and its provenance is verified before installation. When no
+published desktop package exists for the platform or version, or its download
+or verification fails, setup still succeeds because the server or client
+configuration is already complete: the summary reports `desktop_installed:
+false` with `desktop_error` naming the reason, and a warning goes to stderr.
 
 For a fresh bearer-only server, explicit setup creates the durable first owner
 for its static credential. It preserves an existing owner and refuses a blocked

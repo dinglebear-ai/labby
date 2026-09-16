@@ -140,7 +140,9 @@ user PATH. On Linux and macOS the shell installer then runs `labby setup`, which
 asks whether this machine should run a server or connect to an existing one.
 Server setup configures authentication and a managed native service, or an Incus
 container on supported Linux hosts. Client setup saves the explicit gateway URL
-and configures browser sign-in or a bearer token. Desktop installation is optional.
+and configures browser sign-in or a bearer token. Desktop installation is optional
+and off by default; if the published desktop package is unavailable, setup reports
+that and still completes.
 For Labby's supported ChatGPT web connection, configure the server in OAuth mode
 and expose it through a publicly reachable HTTPS `LABBY_PUBLIC_URL`; bearer-only
 mode is for local/CLI clients and is not the supported ChatGPT web path.
