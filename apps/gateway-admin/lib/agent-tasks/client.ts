@@ -28,6 +28,11 @@ export type AgentSessionStatus = {
   status: unknown
 }
 
+export type AgentSessionCancel = AgentSessionStatus & {
+  /** True when a live in-process run was signalled; false reports the durable status unchanged. */
+  cancel_requested: boolean
+}
+
 export type TaskView = {
   task_id: string
   owner_kind: string
@@ -175,6 +180,10 @@ export async function runAgent(agentId: string, input = '', signal?: AbortSignal
 
 export async function getAgentSessionStatus(agentId: string, sessionId: string, signal?: AbortSignal): Promise<AgentSessionStatus> {
   return action('agents', 'agents.session.status', { agent_id: agentId, session_id: sessionId }, signal)
+}
+
+export async function cancelAgentSession(agentId: string, sessionId: string, signal?: AbortSignal): Promise<AgentSessionCancel> {
+  return action('agents', 'agents.session.cancel', { agent_id: agentId, session_id: sessionId }, signal)
 }
 
 export async function listTasks(signal?: AbortSignal): Promise<TaskView[]> {

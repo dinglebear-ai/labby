@@ -901,6 +901,10 @@ fn map_task_runtime_error(task_id: &str, error: &TaskRuntimeError) -> ToolError 
             sdk_kind: "service_unavailable".into(),
             message: "Agent Task runtime is unavailable".into(),
         },
+        TaskRuntimeError::Saturated => ToolError::Sdk {
+            sdk_kind: "queue_saturated".into(),
+            message: "this owner already has its quota of live Agent Task attempts".into(),
+        },
         TaskRuntimeError::InvalidLease | TaskRuntimeError::InvalidQuota => {
             ToolError::internal_message("Agent Task execution request is invalid")
         }
@@ -1286,6 +1290,7 @@ mod tests {
             ),
             (TaskRuntimeError::FencedConflict, "conflict"),
             (TaskRuntimeError::Unavailable, "service_unavailable"),
+            (TaskRuntimeError::Saturated, "queue_saturated"),
             (TaskRuntimeError::InvalidLease, "internal_error"),
             (TaskRuntimeError::InvalidQuota, "internal_error"),
         ];

@@ -850,6 +850,42 @@
   },
   {
     "service": "agents",
+    "action": "agents.session.cancel",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::agents::agents_session_cancel",
+    "minimum_evidence": "live_success",
+    "api_minimum": "live_success",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_agents_workflow",
+      "parameters": {
+        "agent_id": "$fixture.agent_id",
+        "session_id": "$fixture.session_id"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "agents",
     "action": "agents.session.status",
     "canonical_action": null,
     "applicable_surfaces": [

@@ -47,7 +47,12 @@ and a hard Agent runtime timeout invokes executor cleanup so an abandoned chat
 does not leave its provider session behind. Direct `agents.run` input is bound
 only to that run; the immutable Agent instructions remain pinned to the selected
 revision. Successful text output is stored content-addressed and returned with
-its digest.
+its digest. Each owner scope may have at most four live direct runs; a fifth
+concurrent `agents.run` is rejected with `queue_saturated` instead of opening
+another provider session. `agents.session.cancel` signals a live run so the
+executor stops at its next safe boundary, cancels and closes the provider
+session, and settles the session as `cancelled`; a session with no live
+in-process owner keeps its durable status and reports `cancel_requested: false`.
 
 Agent Tasks capture an exact Agent revision, normalized input digest, catalog
 generation, owner, creator, and authority fingerprint. `tasks.create` requires

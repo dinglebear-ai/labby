@@ -5287,7 +5287,8 @@
               "agents.suspend",
               "agents.delete",
               "agents.run",
-              "agents.session.status"
+              "agents.session.status",
+              "agents.session.cancel"
             ]
           },
           "params": {
@@ -5382,6 +5383,21 @@
             "type": "string"
           },
           "input": {
+            "type": "string"
+          }
+        }
+      },
+      "AgentsAgentsSessionCancelParams": {
+        "type": "object",
+        "required": [
+          "agent_id",
+          "session_id"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "session_id": {
             "type": "string"
           }
         }

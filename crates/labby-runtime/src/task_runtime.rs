@@ -12,7 +12,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use thiserror::Error;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 
 #[derive(Clone, Debug)]
 pub struct ScheduledTask {
@@ -56,30 +56,43 @@ impl TaskScheduler {
             owners: Mutex::new(BTreeMap::new()),
         })
     }
-    async fn admit(&self, owner: &OwnerScope) -> Result<OwnedSemaphorePermit, TaskRuntimeError> {
+    fn owner_semaphore(&self, owner: &OwnerScope) -> Result<Arc<Semaphore>, TaskRuntimeError> {
         let key = owner_key(owner);
-        let semaphore = {
-            let mut owners = self
-                .owners
-                .lock()
-                .map_err(|_| TaskRuntimeError::Unavailable)?;
-            // A completed owner's semaphore is referenced only by this map. Drop
-            // those idle entries opportunistically on every admission so churn
-            // cannot make scheduler memory grow with historical owners.
-            owners.retain(|existing, semaphore| {
-                existing == &key
-                    || Arc::strong_count(semaphore) > 1
-                    || semaphore.available_permits() != self.per_owner_limit
-            });
-            owners
-                .entry(key)
-                .or_insert_with(|| Arc::new(Semaphore::new(self.per_owner_limit)))
-                .clone()
-        };
-        semaphore
+        let mut owners = self
+            .owners
+            .lock()
+            .map_err(|_| TaskRuntimeError::Unavailable)?;
+        // A completed owner's semaphore is referenced only by this map. Drop
+        // those idle entries opportunistically on every admission so churn
+        // cannot make scheduler memory grow with historical owners.
+        owners.retain(|existing, semaphore| {
+            existing == &key
+                || Arc::strong_count(semaphore) > 1
+                || semaphore.available_permits() != self.per_owner_limit
+        });
+        Ok(owners
+            .entry(key)
+            .or_insert_with(|| Arc::new(Semaphore::new(self.per_owner_limit)))
+            .clone())
+    }
+
+    async fn admit(&self, owner: &OwnerScope) -> Result<OwnedSemaphorePermit, TaskRuntimeError> {
+        self.owner_semaphore(owner)?
             .acquire_owned()
             .await
             .map_err(|_| TaskRuntimeError::Unavailable)
+    }
+
+    /// Admit without waiting. A saturated owner is rejected so a synchronous
+    /// caller such as a direct Agent run can report back-pressure instead of
+    /// holding its request open behind the owner's live attempts.
+    pub fn try_admit(&self, owner: &OwnerScope) -> Result<OwnedSemaphorePermit, TaskRuntimeError> {
+        self.owner_semaphore(owner)?
+            .try_acquire_owned()
+            .map_err(|error| match error {
+                TryAcquireError::NoPermits => TaskRuntimeError::Saturated,
+                TryAcquireError::Closed => TaskRuntimeError::Unavailable,
+            })
     }
 
     #[cfg(test)]
@@ -226,6 +239,8 @@ pub enum TaskRuntimeError {
     InvalidLease,
     #[error("task runtime unavailable")]
     Unavailable,
+    #[error("owner concurrency quota is saturated")]
+    Saturated,
     #[error("fenced task conflict")]
     FencedConflict,
     #[error("agent runtime: {0}")]
@@ -280,6 +295,24 @@ mod tests {
         }
     }
     struct Exec;
+
+    #[test]
+    fn try_admit_rejects_a_saturated_owner_without_blocking() {
+        let scheduler = TaskScheduler::new(2).unwrap();
+        let owner = OwnerScope::Personal(PrincipalId::new("p-1").unwrap());
+        let first = scheduler.try_admit(&owner).unwrap();
+        let second = scheduler.try_admit(&owner).unwrap();
+        assert_eq!(
+            scheduler.try_admit(&owner).unwrap_err(),
+            TaskRuntimeError::Saturated
+        );
+        // Other owners keep their own quota.
+        let other = OwnerScope::Personal(PrincipalId::new("p-2").unwrap());
+        drop(scheduler.try_admit(&other).unwrap());
+        drop(first);
+        drop(scheduler.try_admit(&owner).unwrap());
+        drop(second);
+    }
 
     #[tokio::test]
     async fn idle_owner_semaphores_are_evicted_during_owner_churn() {

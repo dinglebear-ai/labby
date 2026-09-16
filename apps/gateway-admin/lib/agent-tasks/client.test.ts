@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { listAgents, listTasks } from './client.ts'
+import { cancelAgentSession, listAgents, listTasks } from './client.ts'
 import { __setBrowserSessionStateForTests } from '../auth/session-store.ts'
 
 const authority = { schemaVersion: 1, compatibilityGeneration: 1, principalId: 'principal-1', organizationId: 'org-1', activeOwner: { kind: 'team' as const, id: 'team-1' }, activeTeamId: 'team-1', teams: [{ id: 'team-1', role: 'member', membershipEpoch: 1, policyEpoch: 1 }], projects: [], capabilities: ['scope.read'], generation: 1 } as const
@@ -44,6 +44,24 @@ test('agent and task lists follow authoritative pagination cursors', async () =>
   assert.deepEqual((await listAgents()).map(agent => agent.agent_id), ['a-1', 'a-2'])
   assert.deepEqual((await listTasks()).map(task => task.task_id), ['t-1', 't-2'])
   assert.deepEqual(requests.map(request => request.params), [{}, { cursor: 'a-1' }, {}, { cursor: 't-1' }])
+})
+
+test('agent session cancel posts the shared cancel action with the session binding', async () => {
+  authenticate()
+  const requests: Request[] = []
+  globalThis.fetch = async (input, init) => {
+    const request = new Request(new URL(String(input), 'http://labby.test'), init)
+    requests.push(request)
+    return Response.json({ agent_id: 'a-1', session_id: 's-1', status: 'cancelling', cancel_requested: true })
+  }
+  const result = await cancelAgentSession('a-1', 's-1')
+  assert.equal(result.status, 'cancelling')
+  assert.equal(result.cancel_requested, true)
+  assert.equal(requests.length, 1)
+  assert.equal(new URL(requests[0]!.url).pathname, '/v1/agents/')
+  assert.equal(requests[0]!.method, 'POST')
+  assert.equal(requests[0]!.headers.get('x-csrf-token'), 'csrf')
+  assert.deepEqual(JSON.parse(await requests[0]!.text()), { action: 'agents.session.cancel', params: { agent_id: 'a-1', session_id: 's-1' } })
 })
 
 test('repeated pagination cursors fail closed', async () => {

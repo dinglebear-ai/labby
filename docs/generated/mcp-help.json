@@ -631,6 +631,28 @@
             }
           ],
           "returns": "object"
+        },
+        {
+          "name": "agents.session.cancel",
+          "description": "Request cancellation of a running Agent session",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "agent_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "session_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
         }
       ]
     },

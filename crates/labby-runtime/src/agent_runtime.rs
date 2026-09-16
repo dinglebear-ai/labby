@@ -143,7 +143,9 @@ impl Cancellation {
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release)
     }
-    pub(crate) fn is_cancelled(&self) -> bool {
+    /// Whether cancellation has been requested.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
     }
 }

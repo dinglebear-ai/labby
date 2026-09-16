@@ -376,7 +376,10 @@ async fn prepare_authority_action(
                 .await,
             );
         }
-        if intent.action == "agents.session.status" {
+        if matches!(
+            intent.action.as_str(),
+            "agents.session.status" | "agents.session.cancel"
+        ) {
             let (_, body) = post_action(
                 client,
                 base,
