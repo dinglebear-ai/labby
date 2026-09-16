@@ -62,7 +62,10 @@ only and must match the supplied bytes; a digest without its bytes cannot
 create a Task. Task idempotency keys are scoped to the owner and
 bind the full immutable intent.
 Queue, cancellation, execution, and settlement use fenced state transitions;
-terminal settlement is exactly once. A freshly authorized `tasks.queue` may
+terminal settlement is exactly once. A `tasks.cancel` that commits after the
+attempt's last cancellation check fences the terminal settlement; the live
+attempt then settles the Task `cancelled` itself instead of leaving it in
+`cancelling` until lease expiry. A freshly authorized `tasks.queue` may
 resume a durable `queued` Task that has no live in-process owner, closing the
 crash window between queue commit and scheduler handoff without double-starting
 a live attempt. The durable attempt fence is bounded by the configured maximum runtime and is

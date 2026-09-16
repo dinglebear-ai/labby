@@ -174,15 +174,27 @@ where
             }
             match authority_outcome {
                 Ok(()) => {
-                    ledger
-                        .settle(&task, TaskState::Succeeded, Some(&output), None)
-                        .await?;
+                    settle_or_cancel(
+                        ledger,
+                        &task,
+                        &settlement_cancellation,
+                        TaskState::Succeeded,
+                        Some(&output),
+                        None,
+                    )
+                    .await?;
                     Ok(output)
                 }
                 Err(error) => {
-                    ledger
-                        .settle(&task, TaskState::Failed, None, Some(reason(&error)))
-                        .await?;
+                    settle_or_cancel(
+                        ledger,
+                        &task,
+                        &settlement_cancellation,
+                        TaskState::Failed,
+                        None,
+                        Some(reason(&error)),
+                    )
+                    .await?;
                     Err(TaskRuntimeError::Agent(error))
                 }
             }
@@ -194,11 +206,41 @@ where
             Err(TaskRuntimeError::Agent(AgentRuntimeError::Cancelled))
         }
         Err(error) => {
-            ledger
-                .settle(&task, TaskState::Failed, None, Some(reason(&error)))
-                .await?;
+            settle_or_cancel(
+                ledger,
+                &task,
+                &settlement_cancellation,
+                TaskState::Failed,
+                None,
+                Some(reason(&error)),
+            )
+            .await?;
             Err(TaskRuntimeError::Agent(error))
         }
+    }
+}
+
+/// Settle a terminal outcome from `Running`. A cancel request that commits
+/// `Running -> Cancelling` after the runtime's last cancellation check fences
+/// this settlement; in that case the attempt is the live owner of the
+/// `Cancelling` row and must settle it `Cancelled` itself, otherwise the row
+/// sits in `cancelling` until lease expiry records `expired`.
+async fn settle_or_cancel<L: TaskLedger>(
+    ledger: &L,
+    task: &ScheduledTask,
+    cancellation: &Cancellation,
+    state: TaskState,
+    output: Option<&AgentExecutionOutput>,
+    reason: Option<&str>,
+) -> Result<(), TaskRuntimeError> {
+    match ledger.settle(task, state, output, reason).await {
+        Err(TaskRuntimeError::FencedConflict) if cancellation.is_cancelled() => {
+            ledger
+                .settle(task, TaskState::Cancelled, None, Some("cancelled"))
+                .await?;
+            Err(TaskRuntimeError::Agent(AgentRuntimeError::Cancelled))
+        }
+        other => other,
     }
 }
 
@@ -401,6 +443,74 @@ mod tests {
             1
         }
     }
+    /// `tasks.cancel` commits Running -> Cancelling between the runtime's last
+    /// cancellation check and its Succeeded settlement, so the Running fence
+    /// on that settlement fails while the cancellation flag is already set.
+    struct CancelRacesSettlement {
+        cancellation: Cancellation,
+        settles: Mutex<Vec<(TaskState, Option<String>)>>,
+    }
+    impl TaskLedger for CancelRacesSettlement {
+        async fn acquire(&self, _: &ScheduledTask) -> Result<(), TaskRuntimeError> {
+            Ok(())
+        }
+        async fn settle(
+            &self,
+            _: &ScheduledTask,
+            state: TaskState,
+            _: Option<&AgentExecutionOutput>,
+            reason: Option<&str>,
+        ) -> Result<(), TaskRuntimeError> {
+            self.settles
+                .lock()
+                .unwrap()
+                .push((state, reason.map(str::to_owned)));
+            if state == TaskState::Succeeded {
+                self.cancellation.cancel();
+                return Err(TaskRuntimeError::FencedConflict);
+            }
+            Ok(())
+        }
+        async fn recover_expired(&self, _: u64) -> Result<usize, TaskRuntimeError> {
+            Ok(0)
+        }
+    }
+
+    #[tokio::test]
+    async fn succeeded_settlement_fenced_by_concurrent_cancel_settles_cancelled() {
+        let cancellation = Cancellation::new();
+        let ledger = CancelRacesSettlement {
+            cancellation: cancellation.clone(),
+            settles: Mutex::new(Vec::new()),
+        };
+        let result = execute_task(
+            &TaskScheduler::new(1).unwrap(),
+            &ledger,
+            &Auth(epochs()),
+            &ExecWithoutCheck,
+            task(),
+            cancellation,
+            1,
+        )
+        .await;
+        assert!(
+            matches!(
+                result,
+                Err(TaskRuntimeError::Agent(AgentRuntimeError::Cancelled))
+            ),
+            "{result:?}"
+        );
+        // The fenced success is followed by the Cancelled settlement instead of
+        // leaving the row in cancelling until lease expiry.
+        assert_eq!(
+            *ledger.settles.lock().unwrap(),
+            vec![
+                (TaskState::Succeeded, None),
+                (TaskState::Cancelled, Some("cancelled".into())),
+            ]
+        );
+    }
+
     fn d() -> String {
         format!("sha256:{}", "d".repeat(64))
     }
