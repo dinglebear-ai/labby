@@ -9,7 +9,7 @@
 set -euo pipefail
 
 shard="${1:-}"
-labby_integration_shards=3
+labby_integration_shards=4
 
 usage() {
   echo "usage: $0 <unit-1|unit-2|labby-int-1..${labby_integration_shards}|crates>" >&2

@@ -1234,6 +1234,7 @@ fn merge_gate_shards_heavy_suites_to_stay_under_ten_minutes() {
             "labby-int-1",
             "labby-int-2",
             "labby-int-3",
+            "labby-int-4",
             "crates"
         ],
         "the workspace suite must stay split into target-selecting shards"
@@ -1319,8 +1320,13 @@ fn merge_gate_shards_heavy_suites_to_stay_under_ten_minutes() {
         .expect("mcp-regressions declares shards");
     assert_eq!(
         regression_shards.len(),
-        3,
+        6,
         "MCP regressions must stay fanned out"
+    );
+    assert_eq!(
+        workflow["jobs"]["test"]["runs-on"].as_str(),
+        Some("ubuntu-24.04"),
+        "test shards run on GitHub-hosted runners; the two-runner farm serialises them"
     );
 
     let macos_job = text

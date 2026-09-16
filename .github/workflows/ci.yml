@@ -1115,11 +1115,12 @@ jobs:
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.rust_test == 'true' }}
     # One serial job took 13 minutes; each shard warms the same kache-backed
-    # targets and then runs a third of the suites in parallel.
+    # targets (about four minutes) and then runs one suite, so no shard
+    # exceeds the merge-gate budget.
     strategy:
       fail-fast: false
       matrix:
-        shard: [route-scope, relay-controls, lifecycle-skills]
+        shard: [route-resources, route-tools, upstream-ui, relay-controls, lifecycle, skills]
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -1135,13 +1136,16 @@ jobs:
         uses: ./.github/actions/setup-rust-kache
       - name: Warm MCP regression targets
         run: cargo build -p labby --all-features --lib --bins --locked
-      - name: MCP route-scope resources/tools and list pagination
-        if: matrix.shard == 'route-scope'
+      - name: MCP route-scope resources and list pagination
+        if: matrix.shard == 'route-resources'
         run: |
           cargo test -p labby --all-features --locked mcp::handlers_resources::
+      - name: MCP route-scope tools and list pagination
+        if: matrix.shard == 'route-tools'
+        run: |
           cargo test -p labby --all-features --locked mcp::handlers_tools::tests
       - name: Upstream ui resource route scope
-        if: matrix.shard == 'relay-controls'
+        if: matrix.shard == 'upstream-ui'
         run: |
           cargo test -p labby-gateway --features testkit --locked read_upstream_ui_resource
           cargo test -p labby-gateway --lib --features testkit --locked healthy_tool_names_allowed_matches_route_and_exposure_filters
@@ -1152,12 +1156,12 @@ jobs:
           cargo test -p labby-gateway --lib --locked upstream_input_required_is_preserved_for_downstream
           cargo test -p labby-gateway --lib --locked stateless_adapter_ignores_legacy_session_ids_in_both_directions
       - name: Lifecycle, SEP-2243 headers, caching, and subscriptions
-        if: matrix.shard == 'lifecycle-skills'
+        if: matrix.shard == 'lifecycle'
         run: |
           cargo test -p labby --all-features --locked cli::serve::tests::http_mcp_
           cargo test -p labby --all-features --locked stateless_subscription_receives_catalog_notifications
       - name: Accepted SEP-2640 server, client, and intermediary behavior
-        if: matrix.shard == 'lifecycle-skills'
+        if: matrix.shard == 'skills'
         run: |
           cargo test -p labby-runtime --all-features --locked --test skills_contract_conformance
           cargo test -p labby-runtime --all-features --locked --test sep_2640_uri_conformance
@@ -1260,18 +1264,16 @@ jobs:
 
   test:
     name: Test (${{ matrix.shard }})
-    # Runs on the org's self-hosted rust pool (tootie). Those runners bake the
-    # fleet Rust toolchain and kache, and carry the fleet kache remote in
-    # /home/runner/.config/kache/config.toml, so this job needs no repository
-    # cache credentials. It is non-blocking: ci-gate does not wait for it, and
-    # continue-on-error keeps a red workspace suite from failing the CI run
-    # that release-please consumes.
-    runs-on: [self-hosted, ci-pool-rust]
+    # Runs on GitHub-hosted runners with the fleet kache like every other Rust
+    # job. The self-hosted rust pool has two runners shared with other repos,
+    # so a shard matrix there serialised behind whatever else was queued and
+    # took longer than the single job it replaced. It is non-blocking: ci-gate
+    # does not wait for it, and continue-on-error keeps a red workspace suite
+    # from failing the CI run that release-please consumes.
+    runs-on: ubuntu-24.04
     continue-on-error: true
     timeout-minutes: 60
     env:
-      # The pool image installs kache; use it directly as the rustc wrapper.
-      RUSTC_WRAPPER: kache
       # lld keeps the link step cheap. Do NOT reintroduce CARGO_BUILD_JOBS
       # here: Cargo also passes it to every build script as NUM_JOBS, and
       # aws-lc-sys compiles 414 C and 902 assembly sources through the cc
@@ -1293,11 +1295,11 @@ jobs:
     # One runner needed 40 minutes for the whole workspace: it linked all 60
     # `crates/labby/tests` binaries at bounded concurrency and then ran 7,800
     # tests serially. Each shard below compiles only its own targets, so the
-    # pool runs them side by side instead of one runner doing everything.
+    # shards run side by side instead of one runner doing everything.
     strategy:
       fail-fast: false
       matrix:
-        shard: [unit-1, unit-2, labby-int-1, labby-int-2, labby-int-3, crates]
+        shard: [unit-1, unit-2, labby-int-1, labby-int-2, labby-int-3, labby-int-4, crates]
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -1309,16 +1311,8 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "22"
-      - name: Confirm pool toolchain and kache
-        # The pool image bakes Rust 1.97.1 for the runner user and kache on
-        # PATH. Cargo's bin directory is not on a job step's PATH, so publish
-        # it here, then prove both tools before use rather than silently
-        # compiling without the wrapper.
-        run: |
-          set -euo pipefail
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          "$HOME/.cargo/bin/rustup" show active-toolchain
-          kache --version
+      - name: Install Rust and kache
+        uses: ./.github/actions/setup-rust-kache
       - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
         with:
           install_args: cargo:cargo-nextest
