@@ -7,10 +7,61 @@ permissions:
   contents: read
 
 jobs:
+  preflight:
+    # Desktop assets are additive to a stable release. The macOS bundle needs
+    # Developer ID signing and notarization credentials that this repository
+    # may not have provisioned; secrets cannot be read in a job-level `if`, so
+    # this job projects their presence into outputs the matrix consumes.
+    name: Desktop release preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      has_apple_secrets: ${{ steps.apple.outputs.has_apple_secrets }}
+      include: ${{ steps.targets.outputs.include }}
+    steps:
+      - name: Detect Apple signing provisioning
+        id: apple
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$APPLE_CERTIFICATE" && -n "$APPLE_CERTIFICATE_PASSWORD" && -n "$APPLE_KEYCHAIN_PASSWORD" \
+                && -n "$APPLE_ID" && -n "$APPLE_PASSWORD" && -n "$APPLE_TEAM_ID" ]]; then
+            echo "has_apple_secrets=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Apple signing secrets are not provisioned; skipping the macOS desktop bundle for this release"
+            echo "has_apple_secrets=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Select desktop targets
+        id: targets
+        env:
+          HAS_APPLE_SECRETS: ${{ steps.apple.outputs.has_apple_secrets }}
+        run: |
+          set -euo pipefail
+          linux='{"kind":"linux-x86_64","runner":"ubuntu-22.04","asset":"labby-desktop-linux-x86_64.AppImage","target":"x86_64-unknown-linux-gnu"}'
+          macos='{"kind":"macos-arm64","runner":"macos-15","asset":"labby-desktop-macos-arm64.tar.gz","target":"aarch64-apple-darwin"}'
+          if [[ "$HAS_APPLE_SECRETS" == true ]]; then
+            include="[$macos,$linux]"
+          else
+            include="[$linux]"
+          fi
+          echo "include=$include" >> "$GITHUB_OUTPUT"
+
   build:
     name: Desktop (${{ matrix.kind }})
+    needs: preflight
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
+    # The desktop leg is advisory: stable promotion of the binaries, npm
+    # launcher, Incus image, and MCP manifest must never wait on a desktop
+    # bundle. A `uses:` caller job cannot set continue-on-error, so the
+    # boundary lives here.
+    continue-on-error: true
     permissions:
       contents: read
       id-token: write
@@ -18,15 +69,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - kind: macos-arm64
-            runner: macos-15
-            asset: labby-desktop-macos-arm64.tar.gz
-            target: aarch64-apple-darwin
-          - kind: linux-x86_64
-            runner: ubuntu-22.04
-            asset: labby-desktop-linux-x86_64.AppImage
-            target: x86_64-unknown-linux-gnu
+        include: ${{ fromJSON(needs.preflight.outputs.include) }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -65,17 +108,15 @@ jobs:
       - name: Install desktop frontend dependencies
         run: pnpm --dir apps/labby-desktop install --frozen-lockfile
       - name: Import Developer ID certificate
-        if: runner.os == 'macOS'
+        # The macOS matrix entry exists only when preflight saw every Apple
+        # secret; the step-level gate keeps that invariant visible here.
+        if: runner.os == 'macOS' && needs.preflight.outputs.has_apple_secrets == 'true'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
         run: |
           set -euo pipefail
-          [[ -n "$APPLE_CERTIFICATE" && -n "$APPLE_CERTIFICATE_PASSWORD" && -n "$KEYCHAIN_PASSWORD" ]] || {
-            echo "::error::macOS desktop releases require APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, and APPLE_KEYCHAIN_PASSWORD"
-            exit 1
-          }
           printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
           security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
           security default-keychain -s build.keychain
@@ -87,17 +128,13 @@ jobs:
           [[ -n "$identity" ]] || { echo "::error::Developer ID Application identity was not imported"; exit 1; }
           echo "APPLE_SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
       - name: Build notarized macOS desktop app
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && needs.preflight.outputs.has_apple_secrets == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
-          [[ -n "$APPLE_ID" && -n "$APPLE_PASSWORD" && -n "$APPLE_TEAM_ID" ]] || {
-            echo "::error::macOS desktop releases require APPLE_ID, APPLE_PASSWORD, and APPLE_TEAM_ID for notarization"
-            exit 1
-          }
           pnpm --dir apps/labby-desktop exec tauri build --bundles app --target aarch64-apple-darwin -- --locked
           app="apps/labby-desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Labby.app"
           [[ -d "$app" ]] || { echo "::error::missing Labby.app bundle"; exit 1; }
