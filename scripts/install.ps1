@@ -69,7 +69,7 @@ function Test-LabbyGitHubCliCommand {
     return $LASTEXITCODE -eq 0
 }
 
-function Test-LabbyReleasePrerequisites {
+function Test-LabbyReleasePrerequisite {
     # Fail fast, before release resolution and before any release download,
     # when this machine cannot verify the release trust path. Mirrors
     # require_release_prerequisites in scripts/install.sh. `gh auth status`
@@ -352,7 +352,7 @@ function Restore-LabbyPreviousInstall {
 
 function Install-LabbyFromRelease {
     param([string]$InstallDir, [string]$Version, [string]$Repo)
-    Test-LabbyReleasePrerequisites
+    Test-LabbyReleasePrerequisite
     $asset = 'lab-x86_64-pc-windows-msvc.zip'
     $resolved = Resolve-LabbyReleaseVersion -Repo $Repo -RequestedVersion $Version -AssetName $asset
     Write-Info "resolved binary release to $resolved"

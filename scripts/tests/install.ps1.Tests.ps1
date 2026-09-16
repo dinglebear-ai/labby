@@ -49,7 +49,7 @@ Describe 'Labby Windows installer contracts' {
     }
 
     It 'fails when the required checksum sidecar is unavailable' {
-        Mock Test-LabbyReleasePrerequisites {}
+        Mock Test-LabbyReleasePrerequisite {}
         Mock Invoke-WebRequest {
             param($Uri, $OutFile)
             if ($Uri -like '*.sha256') { throw 'fixture sidecar unavailable' }
@@ -179,7 +179,7 @@ printf source-pinned >"$root/bin/labby.exe"
         Set-Content -NoNewline -Path $prior -Value 'known-good'
         Install-LabbyVerifiedBinary -SourcePath $prior -InstallDir $installDir -Source release `
             -RequestedVersion v1 -ResolvedVersion v1
-        Mock Test-LabbyReleasePrerequisites {}
+        Mock Test-LabbyReleasePrerequisite {}
         Mock Invoke-WebRequest {
             param($Uri, $OutFile)
             $contents = if ($Uri -like '*.sha256') { ('0' * 64) + '  labby.zip' } else { 'untrusted archive' }
