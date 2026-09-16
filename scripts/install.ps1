@@ -60,6 +60,44 @@ function Test-LabbyChecksum {
     }
 }
 
+function Test-LabbyGitHubCliCommand {
+    param([string[]]$Arguments)
+    # Only the exit code matters. gh's stderr (for example the missing-login
+    # hint) stays on the console: redirecting it would turn it into error
+    # records under the script-wide Stop preference on Windows PowerShell.
+    & gh @Arguments | Out-Null
+    return $LASTEXITCODE -eq 0
+}
+
+function Test-LabbyReleasePrerequisite {
+    # Fail fast, before release resolution and before any release download,
+    # when this machine cannot verify the release trust path. Mirrors
+    # require_release_prerequisites in scripts/install.sh. `gh auth status`
+    # itself contacts GitHub, so the guarantee is "before any release
+    # download", not "before any network I/O".
+    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
+        $trustError = [System.Security.SecurityException]::new(
+            'GitHub CLI (gh) is required to verify Labby release provenance; install gh before running the installer'
+        )
+        $trustError.Data['LabbyTrustFailure'] = $true
+        throw $trustError
+    }
+    if (-not (Test-LabbyGitHubCliCommand @('attestation', 'verify', '--help'))) {
+        $trustError = [System.Security.SecurityException]::new(
+            'GitHub CLI (gh) with attestation support is required to verify Labby release provenance; upgrade gh before running the installer'
+        )
+        $trustError.Data['LabbyTrustFailure'] = $true
+        throw $trustError
+    }
+    if (-not (Test-LabbyGitHubCliCommand @('auth', 'status', '--hostname', 'github.com'))) {
+        $trustError = [System.Security.SecurityException]::new(
+            "GitHub CLI must be authenticated to fetch Labby release attestations; run 'gh auth login' or set GH_TOKEN before running the installer"
+        )
+        $trustError.Data['LabbyTrustFailure'] = $true
+        throw $trustError
+    }
+}
+
 function Test-LabbyReleaseProvenance {
     param([string]$ArtifactPath, [string]$Repo, [string]$ResolvedVersion)
     if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
@@ -67,7 +105,9 @@ function Test-LabbyReleaseProvenance {
         $trustError.Data['LabbyTrustFailure'] = $true
         throw $trustError
     }
-    & gh attestation verify $ArtifactPath --repo $Repo `
+    # Pin the trust root: GH_HOST or a gh config default must not redirect
+    # attestation verification to another host.
+    & gh attestation verify $ArtifactPath --hostname github.com --repo $Repo `
         --signer-workflow "$Repo/.github/workflows/release.yml" `
         --source-ref "refs/tags/$ResolvedVersion" --deny-self-hosted-runners | Out-Null
     if ($LASTEXITCODE -ne 0) {
@@ -312,6 +352,7 @@ function Restore-LabbyPreviousInstall {
 
 function Install-LabbyFromRelease {
     param([string]$InstallDir, [string]$Version, [string]$Repo)
+    Test-LabbyReleasePrerequisite
     $asset = 'lab-x86_64-pc-windows-msvc.zip'
     $resolved = Resolve-LabbyReleaseVersion -Repo $Repo -RequestedVersion $Version -AssetName $asset
     Write-Info "resolved binary release to $resolved"

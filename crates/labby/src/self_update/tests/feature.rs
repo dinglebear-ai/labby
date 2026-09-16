@@ -91,7 +91,7 @@ case "$*" in
 esac
 printf '%s\n' "$*" >> "$LABBY_TEST_FEATURE_ROOT/attestations"
 case "$*" in
-  "attestation verify "*"--repo dinglebear-ai/labby --signer-workflow dinglebear-ai/labby/.github/workflows/release.yml --source-ref refs/tags/v1.17.0 --deny-self-hosted-runners") ;;
+  "attestation verify "*" --hostname github.com --repo dinglebear-ai/labby --signer-workflow dinglebear-ai/labby/.github/workflows/release.yml --source-ref refs/tags/v1.17.0 --deny-self-hosted-runners") ;;
   *) echo 'unexpected attestation request' >&2; exit 92;;
 esac
 [ "$LABBY_TEST_FEATURE_CASE" != attestation_failure ]

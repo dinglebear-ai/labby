@@ -337,7 +337,11 @@ The Code Mode Inspector keeps its compatibility switch at
 `code_mode.mcp_ui_enabled`. The other visibility switches are
 `mcp_apps.manager`, `mcp_apps.gateway_status`, `mcp_apps.server_logs`,
 `mcp_apps.add_server`, and `mcp_apps.settings`. Every Labby-owned app surface
-defaults to `false` and must be explicitly enabled. The `mcp_app` control tool
+defaults to `true`, as does `code_mode.enabled`, so a fresh install exposes the
+complete Labby app surface. Existing installs whose `config.toml` has no
+`[code_mode]` or `[mcp_apps]` section inherit those defaults on upgrade; Labby
+logs one startup line naming the defaults in force so the change is visible.
+Set the individual switches to `false` to opt out. The `mcp_app` control tool
 remains available without UI metadata so an administrator can inspect or restore
 any app, including its own manager UI. App-only mutations persist without
 rebuilding the upstream pool and publish both tool and resource list-changed

@@ -115,6 +115,10 @@ async fn installer_owner_child() {
     };
     let path = Path::new(&path);
     let lock = acquire_update_lock(path).unwrap();
+    // Cold re-exec of the test binary plus runtime start can take several
+    // seconds under load; publish readiness so the parent measures only the
+    // installer start against its tight deadline.
+    fs::write(path.join("updater.ready"), "ready").unwrap();
     if std::env::var_os("LABBY_TEST_LEGACY_UPDATE_OWNER").is_some() {
         // Reproduce the reviewed implementation: the parent alone owns
         // the lock while an ordinary subprocess performs installation.
@@ -166,6 +170,15 @@ sleep 120
         let mut updater = command.spawn().unwrap();
         let updater_pid = Pid::from_raw(i32::try_from(updater.id()).unwrap());
         let _updater_cleanup = GroupCleanup(updater_pid);
+        // The updater child owns the lock once it publishes `updater.ready`;
+        // only the installer's own start is held to the short deadline.
+        tokio::time::timeout(Duration::from_mins(1), async {
+            while !dir.path().join("updater.ready").exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("updater child must start and take the update lock within 60 s");
         let pid = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 if let Some(pid) = fs::read_to_string(dir.path().join("installer.pid"))
@@ -381,6 +394,23 @@ fn every_host_update_entry_point_pins_and_sanitizes_installer_control() {
             env[std::ffi::OsStr::new(key)],
             None,
             "ambient {key} must not alter an operator-requested update"
+        );
+    }
+}
+
+#[test]
+fn installer_environment_drops_gh_host_overrides() {
+    // GH_HOST and GH_CONFIG_DIR redirect gh at another host or credential
+    // store, and GH_ENTERPRISE_TOKEN authenticates there; any of them in the
+    // service environment would let the installer verify provenance against
+    // a trust root other than github.com.
+    let command = installer_command(Path::new("/installer"), "v1.17.0", Path::new("/bin"));
+    let env: std::collections::HashMap<_, _> = command.get_envs().collect();
+    for key in ["GH_HOST", "GH_ENTERPRISE_TOKEN", "GH_CONFIG_DIR"] {
+        assert_eq!(
+            env.get(std::ffi::OsStr::new(key)),
+            Some(&None),
+            "ambient {key} must not select the installer's trust root"
         );
     }
 }
