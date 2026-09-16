@@ -1,6 +1,7 @@
 #[cfg(target_os = "linux")]
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::collections::HashSet;
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::{
@@ -26,8 +27,8 @@ use crate::process::unix::terminate_process_group_sigkill;
 use crate::process::unix::{pid_is_alive, terminate_sigkill};
 #[cfg(target_os = "linux")]
 use crate::process::unix::{process_group_id, process_has_ancestor, read_cmdline};
-use crate::upstream::pool::UpstreamPool;
-use crate::upstream::types::UpstreamRuntimeOwner;
+use crate::upstream::pool::{UpstreamPool, UpstreamRestart};
+use crate::upstream::types::{UpstreamCapability, UpstreamRuntimeOwner};
 use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::{GatewayConfig, UpstreamConfig};
 
@@ -346,18 +347,53 @@ impl GatewayManager {
 
     /// Complete admitted runtime restarts independently of the request lifetime.
     /// Desired configuration is never toggled to express a transient restart.
+    ///
+    /// The restart is one transaction on the upstream's connect gate: the owned
+    /// connection is shut down, stale runtime processes from earlier gateway
+    /// generations are reaped (`aggressive` widens the process match exactly as
+    /// `gateway.mcp.cleanup` does), and the replacement connects. The response
+    /// is the `GatewayView` plus that cleanup result, as the action metadata
+    /// promises on every surface.
+    ///
+    /// Restarts are deduplicated per upstream: while one is in flight, another
+    /// request for the same upstream returns `{completed: false, in_flight:
+    /// true}` at once instead of queueing a second reconnect. A restart writes
+    /// no configuration, so it takes no configuration-mutation lease and its
+    /// network phase cannot block `gateway.add`, `update`, `remove`, or
+    /// `reload`; the pool's connect gate already fences it against a
+    /// concurrent configuration change.
+    ///
+    /// The stop and cleanup phases are the transaction; whether the
+    /// replacement connects is runtime state, not the action's result. A
+    /// reconnect failure, whether the caller is still waiting or not, is
+    /// recorded as the upstream's `last_error` so operators see the reason
+    /// rather than a log line, and the action still completes with the view
+    /// reporting `connected: false`, exactly as `gateway.test` reports a
+    /// failed probe. The action fails only when the transaction cannot run:
+    /// the upstream is unknown or disabled, the runtime is not initialized,
+    /// its configuration changed under the connect gate, or the cleanup
+    /// itself failed.
     pub async fn restart_mcp_upstream(
         &self,
         name: &str,
+        aggressive: bool,
         scope: crate::gateway::params::GatewayEnrichmentScope,
         owner: Option<UpstreamRuntimeOwner>,
         wait: Duration,
     ) -> Result<serde_json::Value, ToolError> {
         scope.ensure_visible(name)?;
+        let Some(in_flight) = RestartInFlight::claim(&self.restarts_in_flight, name) else {
+            tracing::info!(
+                action = "gateway.mcp.restart",
+                upstream = %name,
+                "restart already in flight; reporting instead of queueing another"
+            );
+            return Ok(serde_json::json!({ "completed": false, "in_flight": true }));
+        };
         let manager = self.clone();
         let name = name.to_owned();
         let mut task = tokio::spawn(async move {
-            let _mutation_guard = manager.acquire_config_mutation().await?;
+            let _in_flight = in_flight;
             let upstream = manager
                 .upstream_config(&name)
                 .await
@@ -377,13 +413,44 @@ impl GatewayManager {
                 sdk_kind: "service_unavailable".to_owned(),
                 message: "gateway runtime is not initialized".to_owned(),
             })?;
-            pool.restart_upstream(&upstream, scope.oauth_subject.as_deref(), owner.as_ref())
+            let UpstreamRestart {
+                between: cleanup,
+                reconnect,
+            } = pool
+                .restart_upstream(
+                    &upstream,
+                    scope.oauth_subject.as_deref(),
+                    owner.as_ref(),
+                    || manager.kill_upstream_processes(&name, aggressive, false),
+                )
                 .await
                 .map_err(|error| ToolError::Sdk {
                     sdk_kind: "upstream_connect_error".to_owned(),
                     message: error.to_string(),
                 })?;
-            if upstream.oauth.is_some()
+            let cleanup = cleanup?;
+            if let Err(error) = &reconnect {
+                let message = labby_runtime::redact::sanitize_error_text(&error.to_string(), 512);
+                tracing::warn!(
+                    action = "gateway.mcp.restart",
+                    upstream = %name,
+                    error = %message,
+                    "restart replaced the connection but the replacement did not connect"
+                );
+                // The subject-scoped OAuth path records its own failure on
+                // the subject's cached summary; a shared connection's
+                // failure belongs to the upstream's runtime state.
+                if upstream.oauth.is_none() || scope.oauth_subject.is_none() {
+                    pool.record_failure_for(
+                        &name,
+                        UpstreamCapability::Tools,
+                        format!("upstream restart failed: {message}"),
+                    )
+                    .await;
+                }
+            }
+            if reconnect.is_ok()
+                && upstream.oauth.is_some()
                 && let Some(subject) = scope.oauth_subject.as_deref()
             {
                 let configs = std::slice::from_ref(&upstream);
@@ -401,14 +468,19 @@ impl GatewayManager {
             }
             let cfg = manager.config.read().await.clone();
             manager.reconcile_runtime_state(&cfg, Some(&pool)).await?;
-            manager.get_scoped(&name, &scope).await
+            let gateway = manager.get_scoped(&name, &scope).await?;
+            Ok::<_, ToolError>((gateway, cleanup))
         });
         match tokio::time::timeout(wait, &mut task).await {
             Ok(result) => {
-                let gateway = result.map_err(|error| {
+                let (gateway, cleanup) = result.map_err(|error| {
                     ToolError::internal_message(format!("gateway restart task failed: {error}"))
                 })??;
-                Ok(serde_json::json!({ "completed": true, "gateway": gateway }))
+                Ok(serde_json::json!({
+                    "completed": true,
+                    "gateway": gateway,
+                    "cleanup": cleanup,
+                }))
             }
             Err(_) => {
                 tokio::spawn(async move {
@@ -538,13 +610,12 @@ impl GatewayManager {
                         .unwrap_or(entry.observed_at_epoch_secs)
                 })
             };
-            let last_error = if scoped.is_some() {
-                None
-            } else {
-                operator_visible_upstream_error(match pool.as_deref() {
+            let last_error = match &scoped {
+                Some(scoped) => scoped.last_error.clone(),
+                None => operator_visible_upstream_error(match pool.as_deref() {
                     Some(pool) => pool.upstream_last_error(&upstream.name).await,
                     None => None,
-                })
+                }),
             };
             let exposing_capabilities = summary.exposed_tool_count > 0
                 || summary.exposed_resource_count > 0
@@ -715,6 +786,23 @@ impl GatewayManager {
         aggressive: bool,
         dry_run: bool,
     ) -> Result<super::types::GatewayCleanupView, ToolError> {
+        let view = self
+            .kill_upstream_processes(name, aggressive, dry_run)
+            .await?;
+        self.reconcile_after_upstream_cleanup(name, dry_run).await?;
+        Ok(view)
+    }
+
+    /// The process-scan-and-kill half of `gateway.mcp.cleanup`, without the
+    /// pool reconciliation that follows it. `restart_mcp_upstream` runs this
+    /// between its own shutdown and reconnect phases, where the restart's
+    /// reconnect and runtime-state reconcile supersede a separate reconcile.
+    pub(crate) async fn kill_upstream_processes(
+        &self,
+        name: &str,
+        aggressive: bool,
+        dry_run: bool,
+    ) -> Result<super::types::GatewayCleanupView, ToolError> {
         let upstream = self
             .config
             .read()
@@ -794,9 +882,39 @@ impl GatewayManager {
             aggressive_matches: aggressive_matches.iter().map(cleanup_match_view).collect(),
         };
 
-        self.reconcile_after_upstream_cleanup(name, dry_run).await?;
-
         Ok(view)
+    }
+}
+
+/// Marks one upstream's restart as in flight until the restart task ends,
+/// however it ends. `Drop` releases the slot so a failed or panicked restart
+/// cannot leave the upstream reported as restarting forever.
+struct RestartInFlight {
+    registry: Arc<std::sync::Mutex<HashSet<String>>>,
+    upstream: String,
+}
+
+impl RestartInFlight {
+    fn claim(registry: &Arc<std::sync::Mutex<HashSet<String>>>, upstream: &str) -> Option<Self> {
+        let mut in_flight = registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !in_flight.insert(upstream.to_owned()) {
+            return None;
+        }
+        Some(Self {
+            registry: Arc::clone(registry),
+            upstream: upstream.to_owned(),
+        })
+    }
+}
+
+impl Drop for RestartInFlight {
+    fn drop(&mut self) {
+        self.registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.upstream);
     }
 }
 
@@ -1019,8 +1137,8 @@ fn cleanup_match_view(matched: &GatewayCleanupMatch) -> super::types::GatewayCle
 }
 
 #[cfg(target_os = "linux")]
-fn current_and_parent_pids() -> std::collections::HashSet<u32> {
-    let mut pids = std::collections::HashSet::from([std::process::id()]);
+fn current_and_parent_pids() -> HashSet<u32> {
+    let mut pids = HashSet::from([std::process::id()]);
     let parent = nix::unistd::getppid();
     if parent.as_raw() > 0 {
         pids.insert(parent.as_raw() as u32);

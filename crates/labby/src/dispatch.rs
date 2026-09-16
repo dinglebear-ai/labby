@@ -7,6 +7,8 @@ pub(crate) mod agents;
 #[cfg(feature = "skills")]
 pub(crate) mod artifact_control;
 #[cfg(feature = "skills")]
+pub(crate) mod artifact_sources;
+#[cfg(feature = "skills")]
 pub mod artifacts;
 pub mod browser;
 pub mod clients;

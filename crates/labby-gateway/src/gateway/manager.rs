@@ -134,6 +134,10 @@ pub struct GatewayManager {
     /// live config publication, including rollback and ABA.
     pub(super) runtime_config_generation: Arc<AtomicU64>,
     pub(super) config_mutation: Arc<Mutex<()>>,
+    /// Upstreams with a `gateway.mcp.restart` in flight. A second request for
+    /// the same upstream is reported, not queued. `std::sync` so the in-flight
+    /// slot can be released from `Drop` when the restart task ends any way.
+    pub(super) restarts_in_flight: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     /// Scope-keyed single-flight and terminal-failure state for full-fleet MCP discovery.
     pub(super) mcp_catalog_refresh_inflight: Arc<Mutex<std::collections::HashSet<String>>>,
     pub(super) mcp_catalog_refresh_failures: Arc<Mutex<std::collections::HashSet<String>>>,

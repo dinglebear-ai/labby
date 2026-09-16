@@ -240,6 +240,7 @@ impl GatewayManager {
                 super::publication::next_runtime_config_generation(),
             )),
             config_mutation: Arc::new(Mutex::new(())),
+            restarts_in_flight: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
             mcp_catalog_refresh_inflight: Arc::new(Mutex::new(std::collections::HashSet::new())),
             mcp_catalog_refresh_failures: Arc::new(Mutex::new(std::collections::HashSet::new())),
             execution_loadouts: Arc::new(RwLock::new(execution_loadouts)),

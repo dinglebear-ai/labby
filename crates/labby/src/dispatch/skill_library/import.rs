@@ -184,64 +184,48 @@ impl ImportCoordinator {
         }
     }
 
-    pub(crate) fn from_host_config(
-        config: &crate::config::LabConfig,
-        staging_root: &Path,
-    ) -> Result<Self, ArtifactError> {
-        Self::from_host_config_with_env(config, staging_root, &|name| std::env::var_os(name))
-    }
-
-    fn from_host_config_with_env(
+    /// Test convenience: the composition root admits once and hands
+    /// `from_admitted_sources` the same verdict it gives the control plane.
+    #[cfg(test)]
+    pub(crate) fn from_host_config_with_env(
         config: &crate::config::LabConfig,
         staging_root: &Path,
         env: &impl Fn(&str) -> Option<std::ffi::OsString>,
     ) -> Result<Self, ArtifactError> {
-        let mut imports = Self {
-            depot: BTreeMap::new(),
-            repository: BTreeMap::new(),
-            catalog_project: None,
-            import_gates: std::array::from_fn(|_| tokio::sync::Mutex::new(())),
+        let sources = crate::dispatch::artifact_sources::admit_host_sources(
+            &config.artifacts,
+            &config.depot,
+            env,
+        );
+        sources.warn_rejections();
+        Self::from_admitted_sources(&sources, config, staging_root, env)
+    }
+
+    /// Build exact-acquisition connections for every admitted source. A source
+    /// whose credential is not provisioned yet is left unavailable on this path
+    /// only; the control plane resolves credentials per request.
+    pub(crate) fn from_admitted_sources(
+        sources: &crate::dispatch::artifact_sources::HostArtifactSources<'_>,
+        config: &crate::config::LabConfig,
+        staging_root: &Path,
+        env: &impl Fn(&str) -> Option<std::ffi::OsString>,
+    ) -> Result<Self, ArtifactError> {
+        let mut imports = Self::empty();
+        // An invalid host policy was already reported by admission; nothing was
+        // admitted, so the local library stays available without remote sources.
+        let Some(policy) = sources.policy.clone() else {
+            return Ok(imports);
         };
-        let policy = match crate::dispatch::depot::manager::host_policy(&config.depot) {
-            Ok(policy) => policy,
-            Err(reason) => {
-                tracing::warn!(
-                    reason,
-                    "import host policy invalid; remote sources disabled"
-                );
-                return Ok(imports);
-            }
-        };
-        let mut ids = BTreeSet::new();
-        for source in &config.artifacts.sources {
-            if source.id != "public"
-                && config
-                    .depot
-                    .public_read_binding
-                    .as_ref()
-                    .is_some_and(|binding| {
-                        source.bearer_token_env.as_deref() == Some(&binding.bearer_token_env)
-                    })
-            {
-                tracing::warn!(connection_id = %source.id, "public credential cannot authorize another source; source disabled");
-                continue;
-            }
-            if !ids.insert(source.id.clone()) {
-                imports.depot.remove(&source.id);
-                imports.repository.remove(&source.id);
-                tracing::warn!(connection_id = %source.id, "duplicate import connection; source disabled");
-                continue;
-            }
-            let single = crate::config::ArtifactPreferences {
-                sources: vec![source.clone()],
-            };
-            match Self::from_config_with_policy(&single, staging_root, env, &policy) {
-                Ok(mut source_imports) => {
-                    imports.depot.append(&mut source_imports.depot);
-                    imports.repository.append(&mut source_imports.repository);
-                }
+        for admitted in &sources.admitted {
+            match Self::connect_admitted(admitted, staging_root, env) {
+                Ok(Some(connection)) => imports.insert_connection(
+                    admitted.source.id.clone(),
+                    admitted.source.kind,
+                    connection,
+                ),
+                Ok(None) => {}
                 Err(error) => {
-                    tracing::warn!(connection_id = %source.id, error = %error, "import source initialization failed; source disabled")
+                    tracing::warn!(connection_id = %admitted.source.id, error = %error, "import source initialization failed; source disabled")
                 }
             }
         }
@@ -297,6 +281,101 @@ impl ImportCoordinator {
         Ok(imports)
     }
 
+    fn empty() -> Self {
+        Self {
+            depot: BTreeMap::new(),
+            repository: BTreeMap::new(),
+            catalog_project: None,
+            import_gates: std::array::from_fn(|_| tokio::sync::Mutex::new(())),
+        }
+    }
+
+    fn insert_connection(
+        &mut self,
+        id: String,
+        kind: crate::config::ArtifactSourceKind,
+        connection: DepotConnection,
+    ) {
+        match kind {
+            crate::config::ArtifactSourceKind::Depot => {
+                self.depot.insert(id, connection);
+            }
+            crate::config::ArtifactSourceKind::Repository => {
+                self.repository.insert(id, Arc::new(connection));
+            }
+        }
+    }
+
+    /// Build the acquisition connection for one admitted source. `Ok(None)`
+    /// means the source's credential is not provisioned yet: the local library
+    /// stays available and only this connection is unavailable, with the
+    /// operator-visible reason logged here.
+    fn connect_admitted(
+        admitted: &crate::dispatch::artifact_sources::AdmittedArtifactSource<'_>,
+        staging_root: &Path,
+        env: &impl Fn(&str) -> Option<std::ffi::OsString>,
+    ) -> Result<Option<DepotConnection>, ArtifactError> {
+        let source = admitted.source;
+        let credential = match source.bearer_token_env.as_ref() {
+            Some(name) => match env(name) {
+                Some(secret) => {
+                    let secret = secret
+                        .into_string()
+                        .map_err(|_| ArtifactError::InvalidField {
+                            field: "source.bearer_token_env",
+                            reason: "credential_not_utf8",
+                        })?;
+                    Some(
+                        labby_runtime::artifacts::provider::ArtifactSourceCredential::bearer(
+                            &secret,
+                        )?,
+                    )
+                }
+                None => {
+                    tracing::warn!(
+                        connection_id = %source.id,
+                        env = %name,
+                        "import source credential is not set; source disabled"
+                    );
+                    return Ok(None);
+                }
+            },
+            None => None,
+        };
+        // The connection creates its staging directory only after its
+        // transport validates, so a rejected source leaves no directory.
+        let source_root = staging_root.join(&source.id);
+        let kind = match source.kind {
+            crate::config::ArtifactSourceKind::Depot => {
+                labby_runtime::artifacts::provider::ExactArtifactSource::Depot
+            }
+            crate::config::ArtifactSourceKind::Repository => {
+                labby_runtime::artifacts::provider::ExactArtifactSource::Repository
+            }
+        };
+        DepotConnection::configured(
+            kind,
+            source.id.clone(),
+            admitted.endpoint.clone(),
+            credential,
+            source
+                .pinned_addresses
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>(),
+            admitted.endpoint_private_grants.clone(),
+            source_root,
+            Default::default(),
+        )
+        .map(Some)
+    }
+
+    /// Connection ids of every enabled Depot import source, in id order.
+    #[cfg(test)]
+    pub(crate) fn depot_connection_ids(&self) -> Vec<String> {
+        self.depot.keys().cloned().collect()
+    }
+
     #[cfg(test)]
     pub(crate) fn from_config(
         config: &crate::config::ArtifactPreferences,
@@ -310,6 +389,8 @@ impl ImportCoordinator {
         )
     }
 
+    /// Strict test constructor: the first source the shared admission rejects
+    /// fails construction, so unit tests can assert the exact rejection.
     #[cfg(test)]
     fn from_config_with_env(
         config: &crate::config::ArtifactPreferences,
@@ -321,107 +402,26 @@ impl ImportCoordinator {
             private_hosts: private_hosts.clone(),
             ..Default::default()
         };
-        Self::from_config_with_policy(config, staging_root, env, &policy)
-    }
-
-    fn from_config_with_policy(
-        config: &crate::config::ArtifactPreferences,
-        staging_root: &Path,
-        env: &impl Fn(&str) -> Option<std::ffi::OsString>,
-        policy: &crate::dispatch::depot::network::NetworkPolicy,
-    ) -> Result<Self, ArtifactError> {
-        let mut depot = BTreeMap::new();
-        let mut repository: BTreeMap<String, Arc<dyn RepositoryConnection>> = BTreeMap::new();
-        let mut connection_ids = BTreeSet::new();
-        for source in &config.sources {
-            labby_runtime::artifacts::validation::validate_id(&source.id, "connection_id")?;
-            if !connection_ids.insert(source.id.clone()) {
-                return Err(ArtifactError::Conflict("duplicate_import_connection_id"));
-            }
-            let endpoint =
-                url::Url::parse(&source.endpoint).map_err(|_| ArtifactError::InvalidField {
-                    field: "source.endpoint",
-                    reason: "invalid_url",
-                })?;
-            let credential = match source.bearer_token_env.as_ref() {
-                Some(name) => match env(name) {
-                    Some(secret) => {
-                        let secret =
-                            secret
-                                .into_string()
-                                .map_err(|_| ArtifactError::InvalidField {
-                                    field: "source.bearer_token_env",
-                                    reason: "credential_not_utf8",
-                                })?;
-                        Some(
-                            labby_runtime::artifacts::provider::ArtifactSourceCredential::bearer(
-                                &secret,
-                            )?,
-                        )
-                    }
-                    // A remote source may be configured before its secret is provisioned. Keep
-                    // the local library available and leave only this connection unavailable,
-                    // but make the operator-visible reason explicit.
-                    None => {
-                        tracing::warn!(
-                            connection_id = %source.id,
-                            env = %name,
-                            "import source credential is not set; source disabled"
-                        );
-                        continue;
-                    }
-                },
-                None => None,
-            };
-            let source_root = staging_root.join(&source.id);
-            std::fs::create_dir_all(&source_root)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt as _;
-                std::fs::set_permissions(&source_root, std::fs::Permissions::from_mode(0o700))?;
-            }
-            let kind = match source.kind {
-                crate::config::ArtifactSourceKind::Depot => {
-                    labby_runtime::artifacts::provider::ExactArtifactSource::Depot
-                }
-                crate::config::ArtifactSourceKind::Repository => {
-                    labby_runtime::artifacts::provider::ExactArtifactSource::Repository
-                }
-            };
-            let trusted_private_addresses = endpoint
-                .host_str()
-                .and_then(|host| policy.private_hosts.get(host))
-                .cloned()
-                .unwrap_or_default();
-            let connection = DepotConnection::configured(
-                kind,
-                source.id.clone(),
-                endpoint,
-                credential,
-                source
-                    .pinned_addresses
-                    .iter()
-                    .copied()
-                    .collect::<BTreeSet<_>>(),
-                trusted_private_addresses,
-                source_root,
-                Default::default(),
-            )?;
-            match source.kind {
-                crate::config::ArtifactSourceKind::Depot => {
-                    depot.insert(source.id.clone(), connection);
-                }
-                crate::config::ArtifactSourceKind::Repository => {
-                    repository.insert(source.id.clone(), Arc::new(connection));
-                }
+        let sources = crate::dispatch::artifact_sources::admit_sources(
+            config,
+            &crate::config::depot::DepotPreferences::default(),
+            policy,
+            env,
+        );
+        if let Some(rejected) = sources.rejected.first() {
+            return Err(rejected.to_artifact_error());
+        }
+        let mut imports = Self::empty();
+        for admitted in &sources.admitted {
+            if let Some(connection) = Self::connect_admitted(admitted, staging_root, env)? {
+                imports.insert_connection(
+                    admitted.source.id.clone(),
+                    admitted.source.kind,
+                    connection,
+                );
             }
         }
-        Ok(Self {
-            depot,
-            repository,
-            catalog_project: None,
-            import_gates: std::array::from_fn(|_| tokio::sync::Mutex::new(())),
-        })
+        Ok(imports)
     }
 
     #[cfg(test)]
@@ -2195,6 +2195,91 @@ pinned_addresses = ["8.8.8.8"]
             ImportCoordinator::from_config_with_env(&config, root.path(), &no_env, &granted)
                 .unwrap();
         assert!(coordinator.depot.contains_key("public"));
+    }
+
+    /// A source that fails validation leaves nothing under the acquisition
+    /// root: a staging directory exists only for a connection that was built.
+    #[test]
+    fn rejected_source_leaves_no_staging_directory() {
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let root = tempfile::tempdir().unwrap();
+        let config: crate::config::LabConfig = toml::from_str(
+            r#"
+[[artifacts.sources]]
+id = "ungranted-pin"
+kind = "depot"
+endpoint = "https://depot.example.com/api/artifacts/exact"
+pinned_addresses = ["10.1.0.8"]
+[[artifacts.sources]]
+id = "plain-http"
+kind = "depot"
+endpoint = "http://depot.example.com/api/artifacts/exact"
+pinned_addresses = ["8.8.8.8"]
+"#,
+        )
+        .unwrap();
+        let imports =
+            ImportCoordinator::from_host_config_with_env(&config, root.path(), &|_| None).unwrap();
+        assert!(imports.depot_connection_ids().is_empty());
+        for id in ["ungranted-pin", "plain-http"] {
+            assert!(
+                !root.path().join(id).exists(),
+                "{id} was rejected and must not get a staging directory"
+            );
+        }
+    }
+
+    /// Two environment variables holding the same secret are one credential.
+    /// A source that reuses the Public Depot token under another variable name
+    /// is disabled exactly like one that reuses the variable name; the values
+    /// are compared by digest and never logged.
+    #[test]
+    fn public_token_value_reuse_is_rejected() {
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let root = tempfile::tempdir().unwrap();
+        let config: crate::config::LabConfig = toml::from_str(
+            r#"
+[depot]
+read_project_id = "catalog-project"
+[depot.public_read_binding]
+endpoint = "http://127.0.0.1:4101/"
+bearer_token_env = "LABBY_DEPOT_PUBLIC_TOKEN"
+deployment_id = "catalog-depot"
+[[artifacts.sources]]
+id = "public"
+kind = "depot"
+endpoint = "https://depot.example.com/api/artifacts/exact"
+pinned_addresses = ["8.8.8.8"]
+bearer_token_env = "LABBY_DEPOT_PUBLIC_TOKEN"
+[[artifacts.sources]]
+id = "other"
+kind = "depot"
+endpoint = "https://other.example.com/api/artifacts/exact"
+pinned_addresses = ["8.8.4.4"]
+bearer_token_env = "LABBY_DEPOT_OTHER_TOKEN"
+"#,
+        )
+        .unwrap();
+        let same_value = |name: &str| {
+            matches!(name, "LABBY_DEPOT_PUBLIC_TOKEN" | "LABBY_DEPOT_OTHER_TOKEN")
+                .then(|| std::ffi::OsString::from("one-shared-secret-value"))
+        };
+        let imports =
+            ImportCoordinator::from_host_config_with_env(&config, root.path(), &same_value)
+                .unwrap();
+        assert!(
+            !imports.depot_connection_ids().contains(&"other".to_owned()),
+            "a source holding the Public Depot token under another name must be disabled"
+        );
+        let distinct_values = |name: &str| match name {
+            "LABBY_DEPOT_PUBLIC_TOKEN" => Some(std::ffi::OsString::from("public-secret-value")),
+            "LABBY_DEPOT_OTHER_TOKEN" => Some(std::ffi::OsString::from("other-secret-value")),
+            _ => None,
+        };
+        let imports =
+            ImportCoordinator::from_host_config_with_env(&config, root.path(), &distinct_values)
+                .unwrap();
+        assert!(imports.depot_connection_ids().contains(&"other".to_owned()));
     }
 
     #[test]

@@ -1126,6 +1126,7 @@ async fn handle_mcp_actions(
             manager
                 .restart_mcp_upstream(
                     &params.name,
+                    params.aggressive,
                     enrichment_scope,
                     params.owner.map(Into::into),
                     std::time::Duration::from_secs(20),

@@ -406,7 +406,10 @@ impl UpstreamPool {
         };
         let _guard = connect_lock.lock().await;
 
-        let result = async {
+        let result: anyhow::Result<(
+            rmcp::service::Peer<rmcp::RoleClient>,
+            Vec<rmcp::model::Tool>,
+        )> = async {
             // Re-check after acquiring the lock — another waiter may have
             // already opened and cached the connection.
             {
@@ -465,6 +468,25 @@ impl UpstreamPool {
         }
         .await;
 
+        // Keep the subject's last connect failure visible to identity-scoped
+        // views until a connect for the same pair succeeds. Only sanitized,
+        // bounded text is retained: OAuth failures can quote upstream error
+        // bodies and must never carry token material into a view.
+        match &result {
+            Ok(_) => {
+                self.subject_connect_errors.write().await.remove(&key);
+            }
+            Err(error) => {
+                self.subject_connect_errors.write().await.insert(
+                    key.clone(),
+                    format!(
+                        "subject connection failed: {}",
+                        labby_runtime::redact::sanitize_error_text(&error.to_string(), 512)
+                    ),
+                );
+            }
+        }
+
         // Bound `subject_connect_locks` growth: evict the lock entry once the
         // connect attempt has COMPLETED (success or error) and this is the sole
         // remaining reference (Arc strong_count == 2: map + our clone).
@@ -495,6 +517,10 @@ impl UpstreamPool {
             .write()
             .await
             .retain(|(name, _), _| name != upstream_name);
+        self.subject_connect_errors
+            .write()
+            .await
+            .retain(|(name, _), _| name != upstream_name);
     }
 
     /// Evict the cached connection for a single `(upstream, subject)` pair.
@@ -507,6 +533,7 @@ impl UpstreamPool {
     pub(super) async fn evict_subject_connection(&self, upstream_name: &str, subject: &str) {
         let key = (upstream_name.to_string(), subject.to_string());
         self.subject_connections.write().await.remove(&key);
+        self.subject_connect_errors.write().await.remove(&key);
     }
 
     /// Evict all subject-scoped connections.
@@ -515,6 +542,7 @@ impl UpstreamPool {
     /// before the pool is swapped out.
     pub(super) async fn evict_all_subject_connections(&self) {
         self.subject_connections.write().await.clear();
+        self.subject_connect_errors.write().await.clear();
     }
 
     /// Sweep the subject-connection cache once (P-H2).

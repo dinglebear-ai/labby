@@ -1086,7 +1086,14 @@ fn public_address(address: IpAddr) -> bool {
 /// A pinned peer is admissible when it is public, or when it is a private
 /// (RFC 1918 / unique-local) address the host explicitly granted. Loopback,
 /// link-local, IPv4-mapped and cloud-metadata addresses are never grantable.
+///
+/// IPv4-mapped IPv6 (`::ffff:a.b.c.d`) is refused even when the mapped IPv4
+/// address is public: the host's Depot network policy refuses every mapped
+/// form, and a pin the host policy rejects must not be admitted here either.
 fn admissible_address(address: IpAddr, trusted_private: &BTreeSet<IpAddr>) -> bool {
+    if matches!(address, IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some()) {
+        return false;
+    }
     public_address(address) || (grantable_private(address) && trusted_private.contains(&address))
 }
 
@@ -1441,6 +1448,12 @@ mod tests {
         assert!(admissible_address(lan, &BTreeSet::from([lan])));
         assert!(admissible_address(
             IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)),
+            &BTreeSet::new()
+        ));
+        // A public address in IPv4-mapped IPv6 form is refused, matching the
+        // host's Depot network policy, which refuses every mapped form.
+        assert!(!admissible_address(
+            "::ffff:8.8.8.8".parse().unwrap(),
             &BTreeSet::new()
         ));
         // A grant for a different private address is not a grant for this one.

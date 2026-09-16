@@ -89,6 +89,8 @@ export interface BackendGatewayConfigView {
 
 export interface BackendGatewayRuntimeView {
   name: string
+  /** The backend's connection verdict; capability counts are not one. */
+  connected?: boolean
   tool_count: number
   resource_count: number
   prompt_count: number

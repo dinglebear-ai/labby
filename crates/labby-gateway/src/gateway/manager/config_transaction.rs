@@ -1,7 +1,7 @@
 //! Serialized, rollback-capable gateway configuration transactions.
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use fd_lock::RwLock;
 use labby_runtime::error::ToolError;
@@ -14,6 +14,15 @@ use crate::gateway::config::load_gateway_config;
 use crate::upstream::types::UpstreamRuntimeOwner;
 
 use super::{ConfigMutationGuard, GatewayManager};
+
+/// Longest a caller waits for the gateway configuration-mutation lease before
+/// failing as `service_unavailable`. The longest legitimate holder observed is
+/// `gateway.add` of a stdio upstream whose child never answers the handshake:
+/// its spawn, discovery timeout and lifecycle-compatibility retry keep the
+/// lease for about a minute. Twice that lets every such holder finish while a
+/// caller behind a truly wedged holder still gets an answer instead of parking
+/// forever.
+pub(crate) const CONFIG_MUTATION_WAIT: Duration = Duration::from_mins(2);
 
 /// Project durable desired config onto what this running process can honestly
 /// claim is live without a restart.
@@ -179,8 +188,47 @@ impl GatewayManager {
 
     /// Serialize a full read-modify-persist-reconcile transaction both within
     /// this manager and against other Labby processes targeting the same file.
+    ///
+    /// The wait is bounded by [`CONFIG_MUTATION_WAIT`]: a caller that cannot
+    /// get the lease in time fails with `service_unavailable` instead of
+    /// parking indefinitely behind a wedged holder.
     pub(crate) async fn acquire_config_mutation(&self) -> Result<ConfigMutationGuard, ToolError> {
+        self.acquire_config_mutation_within(CONFIG_MUTATION_WAIT)
+            .await
+    }
+
+    /// `acquire_config_mutation` with an explicit wait bound.
+    pub(crate) async fn acquire_config_mutation_within(
+        &self,
+        wait: Duration,
+    ) -> Result<ConfigMutationGuard, ToolError> {
         let started = Instant::now();
+        match tokio::time::timeout(wait, self.acquire_config_mutation_unbounded(started)).await {
+            Ok(result) => result,
+            Err(_) => {
+                tracing::warn!(
+                    surface = "dispatch",
+                    service = "gateway",
+                    action = "gateway.config.mutation_lock",
+                    event = "lock.timeout",
+                    waited_ms = started.elapsed().as_millis(),
+                    "gateway config mutation lock not acquired within the wait bound"
+                );
+                Err(ToolError::Sdk {
+                    sdk_kind: "service_unavailable".to_owned(),
+                    message: format!(
+                        "gateway configuration is busy with another change; it was not released within {}s, retry once it finishes",
+                        wait.as_secs()
+                    ),
+                })
+            }
+        }
+    }
+
+    async fn acquire_config_mutation_unbounded(
+        &self,
+        started: Instant,
+    ) -> Result<ConfigMutationGuard, ToolError> {
         let local = Arc::clone(&self.config_mutation).lock_owned().await;
         let path = mutation_lock_path(&self.path);
         let (ready_tx, ready_rx) = oneshot::channel();
