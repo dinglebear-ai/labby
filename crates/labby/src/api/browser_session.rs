@@ -1399,7 +1399,7 @@ mod tests {
             public_url: Some("https://lab.example.com".parse().unwrap()),
             sqlite_path: directory.path().join("auth.db"),
             key_path: directory.path().join("auth-key.pem"),
-            admin_email: "owner@different.example".into(),
+            admin_emails: vec!["owner@different.example".into()],
             viewer_email_domains: vec!["example.org".into()],
             session_cookie_name: "__Host-labby-session".into(),
             google: labby_auth::config::GoogleConfig {
