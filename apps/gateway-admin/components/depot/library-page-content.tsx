@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { GitFork, Box, Check, ChevronDown, ChevronRight, Copy, Download, ExternalLink, Filter, Globe, Grid2X2, Link2, List, Loader2, LockKeyhole, RefreshCw, Search, Table2, Users, X } from 'lucide-react'
 import { toast } from 'sonner'
@@ -124,36 +124,17 @@ export function LibrarySortMenu({ sort, onSort }: { sort: 'catalog' | 'name' | '
 }
 
 export function LibraryPageContent() {
-  // Every `artifacts.*` read is project-scoped and the server refuses one that
-  // arrives without a project, so the collection mounts only for a
-  // project-bound session. Keying it on the session scope (caller, authority,
-  // project) remounts it whenever that context changes, which discards
-  // retained data and lets every in-flight read see a stale epoch, while a
-  // transport-only session refresh re-renders nothing.
-  // Mock data mode has no session and no server to refuse a read, so the
-  // preview keeps rendering the collection against the mock endpoints.
+  // Artifact reads are project-scoped. Do not mount the collection until the
+  // session is bound to a project; changing project scope remounts the page so
+  // retained data and in-flight reads cannot bleed across project boundaries.
+  // Mock-data previews intentionally bypass browser-session auth.
   const scope = useProjectBoundSessionScope()
   if (scope || shouldBypassBrowserSessionAuth()) return <SessionLibraryPage key={scope || 'mock-data'} />
-  return (
-    <LibraryShell pulse={{ color: 'var(--aurora-warn)', label: 'project required' }}>
-      <ProjectWorkspaceRequired description="The Library is project-scoped. Select an eligible project workspace to continue." />
-    </LibraryShell>
-  )
-}
-
-/** The Library chrome: header, hero with the section tabs and the Discover action, and the page frame. */
-function LibraryShell({ pulse, stats, counts, actions, children }: {
-  pulse: ComponentProps<typeof ConsoleHero>['pulse']
-  stats?: ComponentProps<typeof ConsoleHero>['stats']
-  counts?: ComponentProps<typeof LibraryTabs>['counts']
-  actions?: ReactNode
-  children: ReactNode
-}) {
   return <>
-    <AppHeader breadcrumbs={[{ label: 'Depot' }, { label: 'Library' }]} />
+    <AppHeader breadcrumbs={[{ label: 'Labby' }, { label: 'Library' }]} />
     <div className={`${AURORA_PAGE_SHELL} min-w-0 flex-1`}><div className={`${AURORA_PAGE_FRAME} gap-3.5`}>
-      <ConsoleHero eyebrow="Depot · Library" title="Library" footer={<LibraryTabs active="artifacts" attached counts={counts} />} pulse={pulse} actions={<div className="flex flex-wrap gap-2"><Button variant="outline" size="sm" asChild><a href="/depot"><Search className="size-4"/>Discover</a></Button>{actions}</div>} stats={stats} />
-      {children}
+      <ConsoleHero eyebrow="Labby · Library" title="Library" footer={<LibraryTabs active="artifacts" attached />} />
+      <ProjectWorkspaceRequired description="The Library is project-scoped. Select an eligible project workspace to continue." />
     </div></div>
   </>
 }
