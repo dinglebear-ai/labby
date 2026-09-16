@@ -702,12 +702,9 @@ impl AuthState {
         else {
             return Ok(None);
         };
-        if !session
-            .value
-            .email
-            .as_deref()
-            .is_some_and(|display| display.eq_ignore_ascii_case(&email))
-        {
+        if !session.value.email.as_deref().is_some_and(|display| {
+            crate::util::normalize_email(display) == crate::util::normalize_email(&email)
+        }) {
             return Ok(None);
         }
         Ok(self

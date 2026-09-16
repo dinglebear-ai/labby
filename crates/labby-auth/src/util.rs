@@ -254,6 +254,15 @@ pub fn fingerprint(value: &str) -> String {
     truncated_fingerprint(&digest)
 }
 
+/// The one email normalization every allowlist, administrator, and verified
+/// identity comparison uses: trimmed and Unicode-lowercased. Storing and
+/// looking up through the same fold is what makes a non-ASCII address match
+/// regardless of how the provider or an operator cased it.
+#[must_use]
+pub fn normalize_email(raw: &str) -> String {
+    raw.trim().to_lowercase()
+}
+
 /// Stable correlation identifier for provider OAuth state in diagnostics.
 ///
 /// Authelia's public OIDC nonce is derived from the same provider state. Keep

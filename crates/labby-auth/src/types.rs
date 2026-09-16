@@ -666,6 +666,49 @@ pub struct UpstreamOauthStateRow {
     pub expires_at: i64,
 }
 
+/// Access an allowlist entry grants at first sign-in. This is the one role
+/// vocabulary: the store validates against it, the schema CHECK mirrors it,
+/// admission maps it to durable roles, and the wire form is its lowercase
+/// name. Callers cannot request `owner`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AllowedUserRole {
+    /// Initial Team member and default-Project member.
+    Member,
+    /// Initial Team admin, default-Project admin, and platform administrator.
+    Admin,
+}
+
+impl AllowedUserRole {
+    /// Every role, in wire form, for messages and schema mirrors.
+    pub const ALL: [Self; 2] = [Self::Member, Self::Admin];
+
+    /// Parse the exact wire form; case and whitespace variants are refused so
+    /// every surface sends the same two tokens.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "member" => Some(Self::Member),
+            "admin" => Some(Self::Admin),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Member => "member",
+            Self::Admin => "admin",
+        }
+    }
+}
+
+impl std::fmt::Display for AllowedUserRole {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 /// A row from the `allowed_users` table.
 ///
 /// Email is always stored and returned in lowercase. `added_by` is the subject
@@ -676,8 +719,8 @@ pub struct AllowedUserRow {
     pub email: String,
     pub added_by: String,
     pub created_at: i64,
-    /// Access granted at first sign-in: `member` or `admin`.
-    pub role: String,
+    /// Access granted at first sign-in.
+    pub role: AllowedUserRole,
 }
 
 impl std::fmt::Debug for UpstreamOauthStateRow {

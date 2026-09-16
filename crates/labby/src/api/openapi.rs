@@ -64,6 +64,46 @@ pub struct BootstrapProofMetadataResponse {
     pub credential_id: Option<String>,
 }
 
+/// Wire form of `labby_auth::AllowedUserRole`: what an allowlist entry grants
+/// at first sign-in.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum AllowedEmailRoleDoc {
+    Member,
+    Admin,
+}
+
+/// One allowlist entry as `GET`/`POST /v1/auth/allowed-emails` return it.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AllowedEmailEntryDoc {
+    /// Normalized (trimmed, lowercased) address.
+    pub email: String,
+    /// Provider subject of the administrator who added the entry.
+    pub added_by: String,
+    /// Unix seconds.
+    pub created_at: i64,
+    #[schema(inline)]
+    pub role: AllowedEmailRoleDoc,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct AllowedEmailAddRequestDoc {
+    pub email: String,
+    /// Defaults to `member` when omitted.
+    #[schema(inline)]
+    pub role: Option<AllowedEmailRoleDoc>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AllowedEmailListResponseDoc {
+    pub entries: Vec<AllowedEmailEntryDoc>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AllowedEmailAddResponseDoc {
+    pub entry: AllowedEmailEntryDoc,
+}
+
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CredentialIssueRequestDoc {
     pub credential_id: String,
@@ -1351,6 +1391,150 @@ pub fn build_access_paths() -> Vec<(String, PathItem)> {
     )]
 }
 
+/// The admin-only allowlist routes (`crates/labby/src/api/services/auth_admin.rs`).
+/// Mounted only in OAuth mode; accepted only from a browser session whose
+/// email is in `LABBY_AUTH_ADMIN_EMAIL`.
+pub fn build_auth_admin_paths() -> Vec<(String, PathItem)> {
+    const GATES: &str = "OAuth-mode only. Accepted only from a browser session (cookie plus x-csrf-token on mutations) whose email is listed in LABBY_AUTH_ADMIN_EMAIL; bearer tokens and platform administration alone are refused with `forbidden`. Responses are private, no-store.";
+    let csrf = || {
+        ParameterBuilder::new()
+            .name("x-csrf-token")
+            .parameter_in(ParameterIn::Header)
+            .required(Required::True)
+            .description(Some(
+                "CSRF token issued with the authenticated browser session.",
+            ))
+            .schema(Some(RefOr::T(param_type_to_schema("string"))))
+            .build()
+    };
+    let browser_session =
+        || SecurityRequirement::new::<&str, [&str; 0], &str>("browser_session", []);
+    let common_errors = |responses: ResponsesBuilder| {
+        responses
+            .response("401", agent_error_response("No valid browser session"))
+            .response(
+                "403",
+                agent_error_response("Caller is not a configured admin browser session"),
+            )
+            .response(
+                "404",
+                agent_error_response("Allowlist management is only available in OAuth mode"),
+            )
+    };
+    let list = OperationBuilder::new()
+        .tag("auth")
+        .summary(Some("List allowlisted sign-in emails"))
+        .description(Some(GATES))
+        .responses(
+            common_errors(ResponsesBuilder::new().response(
+                "200",
+                private_json_response(
+                    "Every allowlist entry, oldest first",
+                    "#/components/schemas/AllowedEmailListResponseDoc",
+                ),
+            ))
+            .build(),
+        )
+        .security(browser_session())
+        .build();
+    let add = OperationBuilder::new()
+        .tag("auth")
+        .summary(Some("Allow an email to sign in with a first-sign-in role"))
+        .description(Some(
+            "Adds an allowlist entry. The email is trimmed and lowercased; `role` is `member` (default) or `admin` and is validated once by the auth store. On the identity's first session read the server provisions the matching Initial Team, default-Project, and platform-administration grants.",
+        ))
+        .description(Some(GATES))
+        .parameter(csrf())
+        .request_body(Some(
+            RequestBodyBuilder::new()
+                .content(
+                    "application/json",
+                    ContentBuilder::new()
+                        .schema(Some(RefOr::Ref(utoipa::openapi::Ref::new(
+                            "#/components/schemas/AllowedEmailAddRequestDoc",
+                        ))))
+                        .build(),
+                )
+                .required(Some(Required::True))
+                .build(),
+        ))
+        .responses(
+            common_errors(ResponsesBuilder::new().response(
+                "201",
+                private_json_response(
+                    "The stored entry",
+                    "#/components/schemas/AllowedEmailAddResponseDoc",
+                ),
+            ))
+            .response(
+                "422",
+                agent_error_response(
+                    "Missing CSRF token, malformed JSON, invalid email, unknown role, or duplicate email (`validation_failed`)",
+                ),
+            )
+            .build(),
+        )
+        .security(browser_session())
+        .build();
+    let remove = OperationBuilder::new()
+        .tag("auth")
+        .summary(Some("Remove an allowlisted email and revoke what it granted"))
+        .description(Some(
+            "Idempotent. Revokes, in the access store, the Initial Team membership, default-Project membership, and platform administrator grant that allowlist admission created for every verified identity of the email (audited as `access.allowlist.revoke`), then removes the entry and revokes the identity's browser sessions and renewable credentials. The Principal row is kept; Team owner authority is never touched.",
+        ))
+        .parameter(
+            ParameterBuilder::new()
+                .name("email")
+                .parameter_in(ParameterIn::Path)
+                .required(Required::True)
+                .description(Some("The allowlisted address; trimmed and lowercased before matching."))
+                .schema(Some(RefOr::T(param_type_to_schema("string"))))
+                .build(),
+        )
+        .parameter(csrf())
+        .responses(
+            common_errors(
+                ResponsesBuilder::new().response(
+                    "204",
+                    ResponseBuilder::new()
+                        .description("Removed, or was not present")
+                        .build(),
+                ),
+            )
+            .response("422", agent_error_response("Missing CSRF token"))
+            .response(
+                "500",
+                agent_error_response(
+                    "Gateway runtime invalidation is unavailable; the entry was not removed",
+                ),
+            )
+            .response(
+                "503",
+                agent_error_response(
+                    "Access store busy or unavailable; durable authority was not revoked and the entry was not removed",
+                ),
+            )
+            .build(),
+        )
+        .security(browser_session())
+        .build();
+    vec![
+        (
+            "/v1/auth/allowed-emails".to_string(),
+            PathItemBuilder::new()
+                .operation(utoipa::openapi::HttpMethod::Get, list)
+                .operation(utoipa::openapi::HttpMethod::Post, add)
+                .build(),
+        ),
+        (
+            "/v1/auth/allowed-emails/{email}".to_string(),
+            PathItemBuilder::new()
+                .operation(utoipa::openapi::HttpMethod::Delete, remove)
+                .build(),
+        ),
+    ]
+}
+
 fn private_json_response(description: &str, schema: &str) -> Response {
     ResponseBuilder::new()
         .description(description)
@@ -1621,6 +1805,11 @@ fn server_logs_query_parameters() -> Vec<utoipa::openapi::path::Parameter> {
         BootstrapProofConsumeRequest,
         BootstrapPrepareIdRequest,
         BootstrapProofMetadataResponse,
+        AllowedEmailRoleDoc,
+        AllowedEmailEntryDoc,
+        AllowedEmailAddRequestDoc,
+        AllowedEmailListResponseDoc,
+        AllowedEmailAddResponseDoc,
         CredentialIssueRequestDoc,
         CredentialMetadataResponseDoc,
         CredentialSelfResponseDoc,
@@ -1693,6 +1882,9 @@ pub fn build_openapi_spec(
         spec.paths.paths.insert(path, item);
     }
     for (path, item) in build_access_paths() {
+        spec.paths.paths.insert(path, item);
+    }
+    for (path, item) in build_auth_admin_paths() {
         spec.paths.paths.insert(path, item);
     }
     for (path, item) in build_project_credential_paths() {
@@ -2181,6 +2373,47 @@ mod tests {
 
         // At least setup (always-on) should have a /v1/setup path
         assert!(paths.contains_key("/v1/setup"), "missing /v1/setup path");
+
+        // Finding 12: the allowlist routes publish their body schemas.
+        let allowed = &paths["/v1/auth/allowed-emails"];
+        assert_eq!(
+            allowed["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/AllowedEmailListResponseDoc"
+        );
+        assert_eq!(
+            allowed["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/AllowedEmailAddRequestDoc"
+        );
+        assert_eq!(
+            allowed["post"]["responses"]["201"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/AllowedEmailAddResponseDoc"
+        );
+        let removal = &paths["/v1/auth/allowed-emails/{email}"]["delete"];
+        assert!(removal["responses"]["204"].is_object(), "{removal}");
+        assert!(
+            removal["parameters"]
+                .as_array()
+                .is_some_and(|parameters| parameters.iter().any(|parameter| {
+                    parameter["name"] == "email" && parameter["in"] == "path"
+                })),
+            "{removal}"
+        );
+        for operation in [&allowed["get"], &allowed["post"], removal] {
+            assert_eq!(
+                operation["security"][0]["browser_session"],
+                serde_json::json!([]),
+                "{operation}"
+            );
+        }
+        // The optional role is emitted as a nullable wrapper around the
+        // inlined enum; the vocabulary must appear verbatim inside it.
+        let role = spec["components"]["schemas"]["AllowedEmailAddRequestDoc"]["properties"]["role"]
+            .to_string();
+        assert!(
+            role.contains(r#""enum":["member","admin"]"#),
+            "role property must inline the vocabulary: {role}"
+        );
+
         let bootstrap = &paths["/v1/access/bootstrap-owner"]["post"];
         assert_eq!(
             bootstrap["security"][0]["browser_session"],
