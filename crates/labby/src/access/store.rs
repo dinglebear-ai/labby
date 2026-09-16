@@ -1365,6 +1365,23 @@ impl AccessStore {
         .await
     }
 
+    /// Revoke the durable grants allowlist admission created for `identity`.
+    /// Called when the allowlist entry that admitted it is removed.
+    pub(crate) async fn revoke_allowlisted(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+        revoked_by_fingerprint: String,
+    ) -> AccessStoreResult<super::AllowlistRevocationOutcome> {
+        self.with_connection(move |connection| {
+            super::team_provision::revoke_allowlisted(
+                connection,
+                &identity,
+                &revoked_by_fingerprint,
+            )
+        })
+        .await
+    }
+
     pub(crate) async fn authorize_skill_library(
         &self,
         identity: labby_auth::VerifiedIdentity,

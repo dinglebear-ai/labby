@@ -205,6 +205,163 @@ pub(super) fn provision_allowlisted(
     Ok(TeamMemberProvisionOutcome::Created)
 }
 
+/// What allowlist removal revoked for one identity.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct AllowlistRevocationOutcome {
+    /// The Initial Team membership is now `revoked`.
+    pub(crate) team_membership: bool,
+    /// The default-Project membership is now `disabled`.
+    pub(crate) project_membership: bool,
+    /// The platform administrator grant is now `revoked`.
+    pub(crate) platform_administrator: bool,
+}
+
+impl AllowlistRevocationOutcome {
+    pub(crate) const fn revoked_anything(self) -> bool {
+        self.team_membership || self.project_membership || self.platform_administrator
+    }
+}
+
+/// Revoke what allowlist admission granted: the Initial Team membership, the
+/// default-Project membership, and platform administrator status — one
+/// transaction, idempotent, audited. The Principal row and its identity link
+/// are kept so history stays attributable, and re-admission through the
+/// allowlist stays blocked by the revoked Initial Team membership. Team
+/// `owner` authority is never touched: allowlist admission cannot grant it, so
+/// it was granted elsewhere and is removed only through `access` actions.
+pub(super) fn revoke_allowlisted(
+    connection: &mut Connection,
+    identity: &VerifiedIdentity,
+    revoked_by_fingerprint: &str,
+) -> AccessStoreResult<AllowlistRevocationOutcome> {
+    let PrincipalLink::External { issuer, subject } = identity.principal_link() else {
+        return Err(AccessStoreError::NotAuthorized);
+    };
+    let project_id = super::bootstrap::PROJECT_ID;
+    let now = unix_now()?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(map_sqlite_error)?;
+    // Any link or Principal status qualifies: a suspended identity still names
+    // the Principal whose allowlist grants must go.
+    let principal: Option<(String, String)> = transaction
+        .query_row(
+            "SELECT p.principal_id,p.organization_id
+             FROM principal_links l JOIN principals p ON p.principal_id=l.principal_id
+             WHERE l.link_kind='external' AND l.issuer=?1 AND l.subject=?2",
+            params![issuer, subject],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(map_sqlite_error)?;
+    let Some((principal_id, organization_id)) = principal else {
+        transaction.commit().map_err(map_sqlite_error)?;
+        return Ok(AllowlistRevocationOutcome::default());
+    };
+    let team_owner: bool = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM team_memberships
+             WHERE organization_id=?1 AND team_id=?2 AND principal_id=?3 AND role='owner')",
+            params![organization_id, INITIAL_TEAM_ID, principal_id],
+            |row| row.get(0),
+        )
+        .map_err(map_sqlite_error)?;
+    if team_owner {
+        transaction.commit().map_err(map_sqlite_error)?;
+        return Ok(AllowlistRevocationOutcome::default());
+    }
+    let team_membership = transaction
+        .execute(
+            "UPDATE team_memberships SET status='revoked',membership_epoch=membership_epoch+1,updated_at=?1,revoked_at=?1
+             WHERE organization_id=?2 AND team_id=?3 AND principal_id=?4 AND status!='revoked'",
+            params![now, organization_id, INITIAL_TEAM_ID, principal_id],
+        )
+        .map_err(map_sqlite_error)?
+        == 1;
+    let project_membership = transaction
+        .execute(
+            "UPDATE project_memberships SET status='disabled',updated_at=?1
+             WHERE organization_id=?2 AND project_id=?3 AND principal_id=?4
+               AND status!='disabled' AND role!='owner'",
+            params![now, organization_id, project_id, principal_id],
+        )
+        .map_err(map_sqlite_error)?
+        == 1;
+    let platform_administrator = transaction
+        .execute(
+            "UPDATE platform_administrators SET status='revoked',authority_epoch=authority_epoch+1,updated_at=?1,revoked_at=?1
+             WHERE principal_id=?2 AND status!='revoked'",
+            params![now, principal_id],
+        )
+        .map_err(map_sqlite_error)?
+        == 1;
+    let outcome = AllowlistRevocationOutcome {
+        team_membership,
+        project_membership,
+        platform_administrator,
+    };
+    if !outcome.revoked_anything() {
+        transaction.commit().map_err(map_sqlite_error)?;
+        return Ok(outcome);
+    }
+    if team_membership {
+        // Mirrors `team::advance_team_membership_epoch`: a missing or deleted
+        // team fails the whole revocation rather than skipping the epoch bump.
+        let epoch_updates = transaction
+            .execute(
+                "UPDATE groups SET membership_epoch=membership_epoch+1,updated_at=?1
+                 WHERE organization_id=?2 AND group_id=?3 AND status!='deleted'",
+                params![now, organization_id, INITIAL_TEAM_ID],
+            )
+            .map_err(map_sqlite_error)?;
+        if epoch_updates != 1 {
+            return Err(AccessStoreError::TeamUnavailable);
+        }
+    }
+    let revision: i64 = transaction
+        .query_row(
+            "UPDATE access_metadata SET global_revision=global_revision+1,updated_at=?1
+             WHERE singleton=1 RETURNING global_revision",
+            [now],
+            |row| row.get(0),
+        )
+        .map_err(map_sqlite_error)?;
+    let organization_epoch: i64 = transaction
+        .query_row(
+            "SELECT policy_epoch FROM organizations WHERE organization_id=?1",
+            [&organization_id],
+            |row| row.get(0),
+        )
+        .map_err(map_sqlite_error)?;
+    let target_fingerprint = hex::encode(Sha256::digest(format!(
+        "team_membership\0{INITIAL_TEAM_ID}\0{principal_id}"
+    )));
+    transaction
+        .execute(
+            "INSERT INTO access_audit(event_id,occurred_at,correlation_id,actor_principal_id,organization_id,project_id,action,target_kind,target_fingerprint,decision,reason_code,policy_epoch,metadata_json)
+             VALUES(?1,?2,NULL,?3,?4,?5,'access.allowlist.revoke','team_membership',?6,'allow','allowlist_removal',?7,?8)",
+            params![
+                format!("allowlist-revoke-{revision}-{}", &target_fingerprint[..16]),
+                now,
+                principal_id,
+                organization_id,
+                project_id,
+                target_fingerprint,
+                organization_epoch,
+                serde_json::json!({
+                    "revoked_by_fp": revoked_by_fingerprint,
+                    "team_membership": team_membership,
+                    "project_membership": project_membership,
+                    "platform_administrator": platform_administrator,
+                })
+                .to_string()
+            ],
+        )
+        .map_err(map_sqlite_error)?;
+    transaction.commit().map_err(map_sqlite_error)?;
+    Ok(outcome)
+}
+
 /// Only product-owned admission paths select an initial role; callers cannot
 /// request administrative roles or replace an existing membership's role.
 #[derive(Clone, Copy)]
@@ -578,6 +735,142 @@ mod tests {
         );
         let snapshot = store.session_authority(eli).await.unwrap();
         assert!(snapshot.platform_administrator);
+    }
+
+    async fn audit_count(store: &AccessStore, action: &'static str) -> i64 {
+        store
+            .with_connection(move |connection| {
+                connection
+                    .query_row(
+                        "SELECT count(*) FROM access_audit WHERE action=?1",
+                        [action],
+                        |row| row.get(0),
+                    )
+                    .map_err(map_sqlite_error)
+            })
+            .await
+            .unwrap()
+    }
+
+    /// Removing the allowlist entry revokes exactly what admission granted, in
+    /// one audited step; repeating it changes nothing, and the revoked Initial
+    /// Team membership keeps a later allowlist entry from re-admitting the
+    /// identity or restoring platform administration.
+    #[tokio::test]
+    async fn allowlist_revocation_revokes_admin_grants_once_and_blocks_readmission() {
+        let (_directory, store) = fixture().await;
+        let eli = identity("eli-revoked");
+        store
+            .provision_allowlisted(eli.clone(), AllowlistRole::Admin, allowlist_entry())
+            .await
+            .unwrap();
+        let outcome = store
+            .revoke_allowlisted(eli.clone(), "fp-of-removing-admin".into())
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            AllowlistRevocationOutcome {
+                team_membership: true,
+                project_membership: true,
+                platform_administrator: true,
+            }
+        );
+        let (teams, projects, admins) = membership_rows(&store).await;
+        assert_eq!(
+            teams,
+            vec![("bootstrap-initial-team".to_owned(), "admin".to_owned())],
+            "the membership row is kept, only its status changes"
+        );
+        assert_eq!(
+            projects,
+            vec![("bootstrap-default".to_owned(), "admin".to_owned())]
+        );
+        assert_eq!(admins, 0);
+        let snapshot = store.session_authority(eli.clone()).await.unwrap();
+        assert!(!snapshot.platform_administrator);
+        assert!(snapshot.teams.is_empty());
+        assert!(snapshot.projects.is_empty());
+        let metadata: String = store
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT metadata_json FROM access_audit WHERE action='access.allowlist.revoke'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(map_sqlite_error)
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&metadata).unwrap(),
+            serde_json::json!({
+                "revoked_by_fp": "fp-of-removing-admin",
+                "team_membership": true,
+                "project_membership": true,
+                "platform_administrator": true,
+            })
+        );
+
+        // Idempotent: nothing left to revoke, no second audit row.
+        assert_eq!(
+            store
+                .revoke_allowlisted(eli.clone(), "fp-of-removing-admin".into())
+                .await
+                .unwrap(),
+            AllowlistRevocationOutcome::default()
+        );
+        assert_eq!(audit_count(&store, "access.allowlist.revoke").await, 1);
+
+        // Re-adding the email later never re-provisions through the allowlist.
+        assert_eq!(
+            store
+                .provision_allowlisted(eli.clone(), AllowlistRole::Admin, allowlist_entry())
+                .await
+                .unwrap(),
+            TeamMemberProvisionOutcome::AlreadyActive
+        );
+        assert_eq!(membership_rows(&store).await.2, 0);
+        assert!(
+            !store
+                .session_authority(eli)
+                .await
+                .unwrap()
+                .platform_administrator
+        );
+        assert_eq!(audit_count(&store, "access.allowlist.provision").await, 1);
+    }
+
+    /// Allowlist removal cannot reach Team owner authority (admission never
+    /// grants it) and is a no-op for an identity with no Principal.
+    #[tokio::test]
+    async fn allowlist_revocation_never_touches_team_owner_or_unknown_identity() {
+        let (_directory, store) = fixture().await;
+        let owner = VerifiedIdentity::external(
+            Authenticator::BrowserSession,
+            "https://accounts.google.com",
+            "owner",
+        )
+        .unwrap();
+        assert_eq!(
+            store
+                .revoke_allowlisted(owner.clone(), "fp".into())
+                .await
+                .unwrap(),
+            AllowlistRevocationOutcome::default()
+        );
+        let snapshot = store.session_authority(owner).await.unwrap();
+        assert!(snapshot.platform_administrator);
+        assert!(!snapshot.teams.is_empty());
+        assert_eq!(
+            store
+                .revoke_allowlisted(identity("never-signed-in"), "fp".into())
+                .await
+                .unwrap(),
+            AllowlistRevocationOutcome::default()
+        );
+        assert_eq!(audit_count(&store, "access.allowlist.revoke").await, 0);
     }
 
     /// An identity that already holds an Initial Team membership was admitted

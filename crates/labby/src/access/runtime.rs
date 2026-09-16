@@ -101,6 +101,14 @@ pub(crate) enum AccessRuntimeError {
     LifecycleUnavailable,
 }
 
+/// Result of [`AccessRuntime::revoke_allowlisted`]. Dropping it releases the
+/// admission fence, so callers hold it until their allowlist deletion commits.
+#[must_use = "drop only after the allowlist entry has been removed"]
+pub(crate) struct AllowlistRevocation {
+    pub(crate) outcomes: Vec<super::AllowlistRevocationOutcome>,
+    _admission_fence: Option<OwnedSemaphorePermit>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum FileStashPrincipalResolutionError {
     #[error("the verified identity has no active durable principal link")]
@@ -266,6 +274,49 @@ impl AccessRuntime {
             .provision_allowlisted(identity, role, admitted_by)
             .await
             .map_err(|_| AccessRuntimeError::LifecycleUnavailable)
+    }
+
+    /// Revoke the durable grants allowlist admission created for every
+    /// identity the removed email maps to.
+    ///
+    /// The returned value holds the bootstrap writer: the caller keeps it
+    /// alive through its own allowlist deletion so a concurrent first-sign-in
+    /// admission, which re-validates the allowlist under the same writer,
+    /// cannot slip between the durable revocation and the entry's removal.
+    /// A process without a durable store has nothing to revoke and no
+    /// admission to fence.
+    pub(crate) async fn revoke_allowlisted(
+        &self,
+        identities: Vec<labby_auth::VerifiedIdentity>,
+        revoked_by_fingerprint: String,
+    ) -> Result<AllowlistRevocation, AccessRuntimeError> {
+        let store = match self.security_store().await {
+            Ok(store) => store,
+            Err(
+                AccessRuntimeError::SetupRequired(_)
+                | AccessRuntimeError::Blocked(AccessBlockedReason::Unavailable),
+            ) => {
+                return Ok(AllowlistRevocation {
+                    outcomes: Vec::new(),
+                    _admission_fence: None,
+                });
+            }
+            Err(error) => return Err(error),
+        };
+        let writer = self.acquire_bootstrap_writer().await?;
+        let mut outcomes = Vec::with_capacity(identities.len());
+        for identity in identities {
+            outcomes.push(
+                store
+                    .revoke_allowlisted(identity, revoked_by_fingerprint.clone())
+                    .await
+                    .map_err(|_| AccessRuntimeError::LifecycleUnavailable)?,
+            );
+        }
+        Ok(AllowlistRevocation {
+            outcomes,
+            _admission_fence: Some(writer),
+        })
     }
 
     async fn security_store(&self) -> Result<AccessStore, AccessRuntimeError> {

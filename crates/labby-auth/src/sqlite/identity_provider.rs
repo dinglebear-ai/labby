@@ -90,6 +90,33 @@ impl SqliteStore {
         .await
     }
 
+    /// Every subject whose provider-verified email under the active provider
+    /// generation is `email` (case-insensitive). This is the evidence
+    /// allowlist admission used, so it names every identity whose durable
+    /// grants an allowlist removal must revoke.
+    pub async fn verified_inbound_subjects_for_email(
+        &self,
+        email: &str,
+    ) -> Result<Vec<String>, AuthError> {
+        let email = email.to_string();
+        self.with_conn(move |conn| {
+            let mut statement = conn
+                .prepare(
+                    "SELECT subject FROM inbound_verified_identities
+                      WHERE email = ?1 COLLATE NOCASE
+                        AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)
+                      ORDER BY subject",
+                )
+                .map_err(sqlite_error)?;
+            statement
+                .query_map(params![email], |row| row.get::<_, String>(0))
+                .map_err(sqlite_error)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(sqlite_error)
+        })
+        .await
+    }
+
     pub async fn current_verified_inbound_identity(
         &self,
         issuer: &str,

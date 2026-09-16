@@ -177,7 +177,7 @@ pub(crate) use runtime::{
     AccessBlockedReason, AccessRuntime, AccessRuntimeError, AccessRuntimeStatus, AccessSetupReason,
     OwnerBootstrapOffer,
 };
-pub(crate) use runtime::{CredentialLifecycleError, TeamMemberProvisionError};
+pub(crate) use runtime::{AllowlistRevocation, CredentialLifecycleError, TeamMemberProvisionError};
 #[allow(unused_imports)]
 pub(crate) use runtime::{FileStashOwnerAuthorization, FileStashPrincipalResolutionError};
 #[allow(unused_imports)]
@@ -189,7 +189,9 @@ pub(crate) use team::{
     TeamInvitationSnapshot, TeamMembershipInput, TeamMembershipSnapshot,
     TeamProjectAssignmentSnapshot, TeamSnapshot,
 };
-pub(crate) use team_provision::{AllowlistAdmission, AllowlistRole, TeamMemberProvisionOutcome};
+pub(crate) use team_provision::{
+    AllowlistAdmission, AllowlistRevocationOutcome, AllowlistRole, TeamMemberProvisionOutcome,
+};
 #[allow(unused_imports)]
 pub(crate) use workflow::{
     OwnerBootstrapCaller, OwnerBootstrapError, bootstrap_owner, owner_bootstrap_admission,
