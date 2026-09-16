@@ -364,9 +364,11 @@ Expected job split:
 - publishing after successful release builds
 
 Live service integration tests are intentionally excluded from normal CI.
-Rust coverage is a required pull-request and push gate for Rust changes. Its
-aggregate floors complement, but do not replace, the MCP conformance job's
-authoritative auth requirement matrix and focused auth contract tests.
+Rust coverage runs on pushes to `main`, schedules, and manual dispatch, not on
+pull requests: it re-runs the whole workspace suite under `llvm-cov` for 30+
+minutes and never blocked a merge. Its aggregate floors complement, but do not
+replace, the MCP conformance job's authoritative auth requirement matrix and
+focused auth contract tests.
 
 ## OAuth Conformance Rollout
 

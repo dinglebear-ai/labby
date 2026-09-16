@@ -42,6 +42,20 @@ test('SettingsScalarField renders scalar metadata and value', () => {
   assert.match(html, /labby=info/)
 })
 
+test('SettingsScalarField disables env values the process environment overrides', () => {
+  const overriddenState: SettingsState = {
+    ...state,
+    values: { LABBY_LOG: 'labby=debug' },
+    sources: { LABBY_LOG: { source: 'env', overridden_by_env: 'LABBY_LOG' } },
+  }
+  const html = renderToStaticMarkup(
+    <SettingsScalarField field={field} value="labby=debug" state={overriddenState} onChange={() => undefined} />,
+  )
+  assert.match(html, /disabled/)
+  assert.match(html, /set in the server&#x27;s process environment/)
+  assert.doesNotMatch(html, /config\.toml value/)
+})
+
 test('SettingsScalarField disables config values shadowed by env overrides', () => {
   const configField: SettingsFieldSpec = {
     ...field,

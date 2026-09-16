@@ -125,6 +125,24 @@ struct CommandCapture {
     stderr: String,
 }
 
+/// Converge only the dedicated Labby service account and its persistent paths.
+/// This is the fast native-install primitive; heavyweight developer runtimes
+/// remain a separate provisioning concern.
+#[cfg(target_os = "linux")]
+pub(crate) async fn ensure_lab_user() -> Result<bool, ToolError> {
+    if lab_user_ready().await? {
+        return Ok(false);
+    }
+    let action = ProvisionAction {
+        privilege: Privilege::Root,
+        label: Cow::Borrowed("dedicated labby user + home"),
+        kind: ActionKind::LabUser,
+    };
+    action.execute().await?;
+    action.verify().await?;
+    Ok(true)
+}
+
 pub(crate) async fn provision(options: ProvisionOptions) -> Result<ProvisionOutcome, ToolError> {
     let plan = build_plan(options.skip_deps);
     let rendered = render_plan(&plan);

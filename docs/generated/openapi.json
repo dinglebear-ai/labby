@@ -983,6 +983,246 @@
         ]
       }
     },
+    "/v1/auth/allowed-emails": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "List allowlisted sign-in emails",
+        "description": "OAuth-mode only. Accepted only from a browser session (cookie plus x-csrf-token on mutations) whose email is listed in LABBY_AUTH_ADMIN_EMAIL; bearer tokens and platform administration alone are refused with `forbidden`. Responses are private, no-store.",
+        "responses": {
+          "200": {
+            "description": "Every allowlist entry, oldest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AllowedEmailListResponseDoc"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid browser session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not a configured admin browser session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Allowlist management is only available in OAuth mode",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browser_session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Allow an email to sign in with a first-sign-in role",
+        "description": "OAuth-mode only. Accepted only from a browser session (cookie plus x-csrf-token on mutations) whose email is listed in LABBY_AUTH_ADMIN_EMAIL; bearer tokens and platform administration alone are refused with `forbidden`. Responses are private, no-store.",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "CSRF token issued with the authenticated browser session.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AllowedEmailAddRequestDoc"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The stored entry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AllowedEmailAddResponseDoc"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid browser session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not a configured admin browser session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Allowlist management is only available in OAuth mode",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Missing CSRF token, malformed JSON, invalid email, unknown role, or duplicate email (`validation_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browser_session": []
+          }
+        ]
+      }
+    },
+    "/v1/auth/allowed-emails/{email}": {
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Remove an allowlisted email and revoke what it granted",
+        "description": "Idempotent. Revokes, in the access store, the Initial Team membership, default-Project membership, and platform administrator grant that allowlist admission created for every verified identity of the email (audited as `access.allowlist.revoke`), then removes the entry and revokes the identity's browser sessions and renewable credentials. The Principal row is kept; Team owner authority is never touched.",
+        "parameters": [
+          {
+            "name": "email",
+            "in": "path",
+            "description": "The allowlisted address; trimmed and lowercased before matching.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "CSRF token issued with the authenticated browser session.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed, or was not present"
+          },
+          "401": {
+            "description": "No valid browser session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not a configured admin browser session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Allowlist management is only available in OAuth mode",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Missing CSRF token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Gateway runtime invalidation is unavailable; the entry was not removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Access store busy or unavailable; durable authority was not revoked and the entry was not removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browser_session": []
+          }
+        ]
+      }
+    },
     "/v1/browser": {
       "post": {
         "tags": [
@@ -5419,8 +5659,125 @@
         "properties": {
           "agent_id": {
             "type": "string"
+          },
+          "catalog_generation": {
+            "type": "string"
+          },
+          "content_digest": {
+            "type": "string"
+          },
+          "harness_digest": {
+            "type": "string"
+          },
+          "image_digest": {
+            "type": "string"
+          },
+          "instructions": {
+            "type": "string"
+          },
+          "loadout_digest": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "repository_digest": {
+            "type": "string"
           }
         }
+      },
+      "AllowedEmailAddRequestDoc": {
+        "type": "object",
+        "required": [
+          "email"
+        ],
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "role": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "description": "Wire form of `labby_auth::AllowedUserRole`: what an allowlist entry grants\nat first sign-in.",
+                "enum": [
+                  "member",
+                  "admin"
+                ]
+              }
+            ],
+            "description": "Defaults to `member` when omitted."
+          }
+        }
+      },
+      "AllowedEmailAddResponseDoc": {
+        "type": "object",
+        "required": [
+          "entry"
+        ],
+        "properties": {
+          "entry": {
+            "$ref": "#/components/schemas/AllowedEmailEntryDoc"
+          }
+        }
+      },
+      "AllowedEmailEntryDoc": {
+        "type": "object",
+        "description": "One allowlist entry as `GET`/`POST /v1/auth/allowed-emails` return it.",
+        "required": [
+          "email",
+          "added_by",
+          "created_at",
+          "role"
+        ],
+        "properties": {
+          "added_by": {
+            "type": "string",
+            "description": "Provider subject of the administrator who added the entry."
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix seconds."
+          },
+          "email": {
+            "type": "string",
+            "description": "Normalized (trimmed, lowercased) address."
+          },
+          "role": {
+            "type": "string",
+            "description": "Wire form of `labby_auth::AllowedUserRole`: what an allowlist entry grants\nat first sign-in.",
+            "enum": [
+              "member",
+              "admin"
+            ]
+          }
+        }
+      },
+      "AllowedEmailListResponseDoc": {
+        "type": "object",
+        "required": [
+          "entries"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AllowedEmailEntryDoc"
+            }
+          }
+        }
+      },
+      "AllowedEmailRoleDoc": {
+        "type": "string",
+        "description": "Wire form of `labby_auth::AllowedUserRole`: what an allowlist entry grants\nat first sign-in.",
+        "enum": [
+          "member",
+          "admin"
+        ]
       },
       "ArtifactsActionRequest": {
         "type": "object",

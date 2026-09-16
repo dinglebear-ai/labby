@@ -307,7 +307,7 @@ impl Default for AuthConfig {
 
 impl AuthConfig {
     /// Whether `email` is one of the configured administrators
-    /// (ASCII case-insensitive).
+    /// (case-insensitive through the shared email normalization).
     #[must_use]
     pub fn is_admin_email(&self, email: &str) -> bool {
         is_listed_admin(&self.admin_emails, email)
@@ -1040,23 +1040,26 @@ fn read_csv(vars: &HashMap<String, String>, key: &str) -> Option<Vec<String>> {
     })
 }
 
-/// Whether `email` appears in `admin_emails` (ASCII case-insensitive). The one
-/// comparison every admin check shares.
+/// Whether `email` appears in `admin_emails`, both sides folded with
+/// [`crate::util::normalize_email`]. The one comparison every admin check
+/// shares.
 #[must_use]
 pub fn is_listed_admin(admin_emails: &[String], email: &str) -> bool {
-    admin_emails
-        .iter()
-        .any(|admin| !admin.is_empty() && admin.eq_ignore_ascii_case(email))
+    let email = crate::util::normalize_email(email);
+    !email.is_empty()
+        && admin_emails
+            .iter()
+            .any(|admin| crate::util::normalize_email(admin) == email)
 }
 
 /// Parse `{PREFIX}_AUTH_ADMIN_EMAIL`: one address or a comma-separated list,
-/// trimmed, lowercased, with blanks and case-insensitive duplicates dropped.
-/// Order is preserved so the first entry stays first.
+/// each entry folded with [`crate::util::normalize_email`], with blanks and
+/// duplicates dropped. Order is preserved so the first entry stays first.
 #[must_use]
 pub fn parse_admin_emails(raw: &str) -> Vec<String> {
     let mut emails: Vec<String> = Vec::new();
     for entry in raw.split(',') {
-        let email = entry.trim().to_ascii_lowercase();
+        let email = crate::util::normalize_email(entry);
         if !email.is_empty() && !emails.contains(&email) {
             emails.push(email);
         }
@@ -1148,6 +1151,23 @@ fn read_bool(vars: &HashMap<String, String>, key: &str) -> Result<Option<bool>, 
 
 #[cfg(test)]
 mod tests {
+
+    /// Finding 7: the admin list parser and every admin comparison fold
+    /// addresses with the one shared normalization, so a non-ASCII address
+    /// matches regardless of how the provider or operator cased it.
+    #[test]
+    fn listed_admin_match_folds_unicode_case_like_the_parser() {
+        let admins = super::parse_admin_emails(" Ünal@Example.com , second@example.com ");
+        assert_eq!(admins, vec!["ünal@example.com", "second@example.com"]);
+        assert!(super::is_listed_admin(&admins, "ÜNAL@example.com"));
+        assert!(super::is_listed_admin(&admins, " Ünal@example.com "));
+        assert!(super::is_listed_admin(&admins, "SECOND@EXAMPLE.COM"));
+        assert!(!super::is_listed_admin(&admins, "unal@example.com"));
+        assert_eq!(
+            crate::util::normalize_email(" Ünal@Example.com "),
+            "ünal@example.com"
+        );
+    }
     use super::{
         AUTHELIA_CALLBACK_PATH, AuthConfig, AuthConfigBuilder, AuthMode, AuthModeConfig,
         InboundProviderKind, MachineClientConfig,

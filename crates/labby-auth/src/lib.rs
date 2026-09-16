@@ -46,6 +46,8 @@ pub mod session;
 pub mod sqlite;
 pub mod state;
 #[cfg(feature = "http-axum")]
+pub mod static_session;
+#[cfg(feature = "http-axum")]
 pub mod token;
 pub mod trusted_host;
 pub mod types;
@@ -70,6 +72,7 @@ pub use middleware::{
     ProjectSessionRevalidator, RequiredScopes, browser_session_scopes, is_configured_admin_email,
     parse_bearer_token, tokens_equal,
 };
+pub use types::AllowedUserRole;
 pub use types::ProjectSessionBinding;
 
 #[cfg(test)]

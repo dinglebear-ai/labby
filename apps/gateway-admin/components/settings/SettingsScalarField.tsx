@@ -39,7 +39,11 @@ export function SettingsScalarField({
   const source = state.sources[field.key]
   const envOverride = source?.overridden_by_env
   const isEnvShadowedConfig = field.backend === 'config_toml' && Boolean(envOverride)
-  const disabled = field.write_policy !== 'editable' || isEnvShadowedConfig
+  // The server reports an env-backed field as overridden when the process
+  // environment (service manager, container) supplies it: `.env` edits would
+  // never take effect, and the server refuses them.
+  const isProcessEnvOverride = field.backend === 'env' && Boolean(envOverride)
+  const disabled = field.write_policy !== 'editable' || isEnvShadowedConfig || isProcessEnvOverride
   const sourceLabel = source?.source ?? 'default'
   const backendLabel = field.backend === 'env' ? '.env' : 'config.toml'
   const describedBy = error ? errorId : undefined
@@ -150,8 +154,9 @@ export function SettingsScalarField({
       {field.description}
       {hasEnvOverrideWarning(field, state) ? (
         <span style={{ display: 'block', marginTop: 4, color: 'var(--aurora-warn)' }}>
-          {envOverride} currently overrides this config.toml value. Edit the env var or remove the
-          override first.
+          {isProcessEnvOverride
+            ? `${envOverride} is set in the server's process environment, which takes precedence over .env. Change it where the server is started; edits here would have no effect.`
+            : `${envOverride} currently overrides this config.toml value. Edit the env var or remove the override first.`}
         </span>
       ) : null}
       {error ? (

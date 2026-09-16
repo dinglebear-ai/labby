@@ -705,10 +705,12 @@ fn draft_set_action(caller: SetupCaller, params: &Value) -> Result<Value, ToolEr
     let entries = parse_entries(params)?;
     let force = parse_force(params);
 
-    // Server-side defense-in-depth validation against the UiSchema. The
-    // frontend has already validated, but never trust it.
-    validate_against_registry(&entries)?;
+    // Authority first: a delegated caller learns nothing about value
+    // validation for keys it may not stage.
     caller.ensure_may_write(entries.iter().map(|entry| entry.key.as_str()))?;
+    // Server-side defense-in-depth validation against the UiSchema and the
+    // shared value rules. The frontend has already validated, but never trust it.
+    validate_against_registry(&entries)?;
 
     let path = draft_path();
     let outcome = draft::merge_entries(&path, entries, force).map_err(map_merge_err)?;
@@ -768,6 +770,7 @@ fn validate_against_registry(entries: &[DraftEntry]) -> Result<(), ToolError> {
                 }
             })?;
         }
+        super::settings::validate_env_entry_value(&entry.key, &entry.value)?;
     }
     Ok(())
 }
@@ -807,6 +810,12 @@ async fn draft_commit_action(caller: SetupCaller, params: &Value) -> Result<Valu
             .iter()
             .map(|entry| entry.key.as_str()),
     )?;
+    // A hand-edited draft bypasses `draft.set`; apply the same value checks
+    // (notably the administrator-list lockout guard) before the audit and
+    // before the draft is claimed.
+    for entry in &draft_snapshot.entries {
+        super::settings::validate_env_entry_value(&entry.key, &entry.value)?;
+    }
 
     // Snapshot mtime before the audit so an interleaved writer is detected.
     let snapshot_path = env.clone();
@@ -1091,6 +1100,74 @@ mod tests {
         )
         .await
         .expect("delegated admins may stage non-auth keys");
+    }
+
+    /// Finding 4: the lockout guard on the administrator list must hold on
+    /// every write path, not only `settings.env.update`. A draft carrying an
+    /// empty or malformed list would make the next start fail closed.
+    #[tokio::test]
+    async fn draft_set_refuses_an_empty_or_malformed_admin_list() {
+        let temp = tempfile::tempdir().expect("short TMPDIR lab home");
+        let lab_dir = temp.path().join("lab-home");
+        std::fs::create_dir_all(&lab_dir).expect("lab dir");
+        let _lab_home_guard = crate::dispatch::helpers::TestLabHomeGuard::set(lab_dir.clone());
+        let draft = lab_dir.join(".env.draft");
+
+        for value in [
+            "",
+            "   ",
+            "not-an-email",
+            "owner@example.com,not-an-email",
+            "a@b@c",
+        ] {
+            let error = dispatch_for_caller(
+                SetupCaller::Operator,
+                "draft.set",
+                json!({"entries": [{"key": "LABBY_AUTH_ADMIN_EMAIL", "value": value}]}),
+            )
+            .await
+            .expect_err(value);
+            assert_eq!(error.kind(), "invalid_param", "{value:?}: {error}");
+            assert!(
+                !draft.exists(),
+                "{value:?}: a refused admin list must not be staged"
+            );
+        }
+
+        dispatch_for_caller(
+            SetupCaller::Operator,
+            "draft.set",
+            json!({"entries": [{"key": "LABBY_AUTH_ADMIN_EMAIL", "value": "owner@example.com, second@example.com"}]}),
+        )
+        .await
+        .expect("a well-formed list is staged");
+        assert!(draft.exists());
+    }
+
+    /// The same guard runs at commit, so a hand-edited draft cannot bypass it.
+    #[tokio::test]
+    async fn draft_commit_refuses_a_malformed_admin_list_before_touching_env() {
+        let temp = tempfile::tempdir().expect("short TMPDIR lab home");
+        let lab_dir = temp.path().join("lab-home");
+        std::fs::create_dir_all(&lab_dir).expect("lab dir");
+        let _lab_home_guard = crate::dispatch::helpers::TestLabHomeGuard::set(lab_dir.clone());
+        let env = lab_dir.join(".env");
+        let draft = lab_dir.join(".env.draft");
+        std::fs::write(&env, "LABBY_AUTH_ADMIN_EMAIL=owner@example.com\n").expect("env");
+        std::fs::write(&draft, "LABBY_AUTH_ADMIN_EMAIL=\n").expect("draft");
+        let env_before = std::fs::read(&env).unwrap();
+        let draft_before = std::fs::read(&draft).unwrap();
+
+        let error = dispatch_for_caller(SetupCaller::Operator, "draft.commit", json!({}))
+            .await
+            .expect_err("empty admin list");
+        assert_eq!(error.kind(), "invalid_param", "{error}");
+        assert_eq!(std::fs::read(&env).unwrap(), env_before, ".env untouched");
+        assert_eq!(
+            std::fs::read(&draft).unwrap(),
+            draft_before,
+            "draft left for correction"
+        );
     }
 
     #[test]

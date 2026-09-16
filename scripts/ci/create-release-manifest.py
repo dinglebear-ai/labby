@@ -39,6 +39,8 @@ for name, path in sorted(paths.items()):
         sbom_name = name[:-7] + ".spdx.json"
     elif name.endswith(".zip"):
         sbom_name = name[:-4] + ".spdx.json"
+    elif name.endswith(".AppImage"):
+        sbom_name = name + ".spdx.json"
     elif name in {"labby-install.sh", "labby-install.ps1"}:
         sbom_name = name + ".spdx.json"
     else:

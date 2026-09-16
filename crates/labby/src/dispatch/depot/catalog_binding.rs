@@ -17,6 +17,7 @@ impl CatalogBinding {
         binding: &PublicReadBinding,
         acquisition_endpoint: &str,
         token: &str,
+        policy: NetworkPolicy,
     ) -> Result<Self, &'static str> {
         let local = Secret::local_bearer(PUBLIC_ID, &binding.endpoint, token)
             .map_err(|_| "invalid_catalog_read_credential")?;
@@ -27,9 +28,8 @@ impl CatalogBinding {
         origin.set_path("/");
         let secret = Secret::bearer(origin.as_str(), token)
             .map_err(|_| "invalid_catalog_acquisition_credential")?;
-        let acquisition =
-            NetworkClient::new(origin.as_str(), Some(secret), NetworkPolicy::default())
-                .map_err(|_| "invalid_catalog_acquisition_endpoint")?;
+        let acquisition = NetworkClient::new(origin.as_str(), Some(secret), policy)
+            .map_err(|_| "invalid_catalog_acquisition_endpoint")?;
         Ok(Self {
             internal,
             acquisition,

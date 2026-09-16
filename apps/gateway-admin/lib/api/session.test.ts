@@ -206,6 +206,40 @@ test('principal projection defaults to personal ownership and capabilities drive
   assert.equal(sessionHasCapability('platform.manage'), true)
 })
 
+test('is_configured_admin is carried separately from platform administration', async () => {
+  const payload = (isConfiguredAdmin: boolean) =>
+    JSON.stringify({
+      authenticated: true,
+      authority_state: 'ready',
+      user: { sub: 'admin-user', email: 'admin@example.com' },
+      expires_at: 123,
+      csrf_token: 'csrf-123',
+      principal_id: 'principal-admin',
+      organization_id: 'org-1',
+      teams: [],
+      projects: [],
+      capabilities: ['platform.manage'],
+      authority_generation: 2,
+      is_admin: true,
+      is_configured_admin: isConfiguredAdmin,
+    })
+
+  globalThis.fetch = (async () => new Response(payload(false), { status: 200 })) as FetchMock
+  let state = await loadBrowserSession()
+  assert.equal(state.status === 'authenticated' ? state.isAdmin : undefined, true)
+  assert.equal(state.status === 'authenticated' ? state.isConfiguredAdmin : undefined, false)
+
+  globalThis.fetch = (async () => new Response(payload(true), { status: 200 })) as FetchMock
+  state = await loadBrowserSession()
+  assert.equal(state.status === 'authenticated' ? state.isConfiguredAdmin : undefined, true)
+
+  // Servers that predate the field never grant the operator-only controls.
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ ...JSON.parse(payload(true)), is_configured_admin: undefined }), { status: 200 })) as FetchMock
+  state = await loadBrowserSession()
+  assert.equal(state.status === 'authenticated' ? state.isConfiguredAdmin : undefined, false)
+})
+
 test('loadBrowserSession falls back to unauthenticated when /auth/session fails', async () => {
   __setBrowserSessionStateForTests({ status: 'loading' })
   globalThis.fetch = (async () =>
@@ -497,4 +531,22 @@ test('an unknown authority_state fails closed as an incompatible authority error
   assert.equal(state.status, 'auth_error')
   assert.equal(state.status === 'auth_error' ? state.kind : undefined, 'incompatible_authority')
   assert.equal(getSessionAuthority(), undefined)
+})
+
+
+test('logout retains the server-advertised sign-in methods', async () => {
+  for (const methods of [
+    { login_available: false, bearer_login_available: true },
+    { login_available: true, bearer_login_available: false },
+  ]) {
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      authenticated: true, user: { sub: 'operator' }, csrf_token: 'csrf', expires_at: 123, ...methods,
+    }), { status: 200 })) as FetchMock
+    await loadBrowserSession()
+    globalThis.fetch = (async () => new Response(null, { status: 204 })) as FetchMock
+    await logoutBrowserSession()
+    assert.deepEqual(getBrowserSessionState(), {
+      status: 'unauthenticated', loginAvailable: methods.login_available, bearerLoginAvailable: methods.bearer_login_available,
+    })
+  }
 })

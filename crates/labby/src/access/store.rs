@@ -1356,11 +1356,28 @@ impl AccessStore {
     pub(crate) async fn provision_allowlisted(
         &self,
         identity: labby_auth::VerifiedIdentity,
-        role: super::AllowlistRole,
+        role: super::AllowedUserRole,
         admitted_by: super::AllowlistAdmission,
     ) -> AccessStoreResult<super::TeamMemberProvisionOutcome> {
         self.with_connection(move |connection| {
             super::team_provision::provision_allowlisted(connection, &identity, role, admitted_by)
+        })
+        .await
+    }
+
+    /// Revoke the durable grants allowlist admission created for `identity`.
+    /// Called when the allowlist entry that admitted it is removed.
+    pub(crate) async fn revoke_allowlisted(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+        revoked_by_fingerprint: String,
+    ) -> AccessStoreResult<super::AllowlistRevocationOutcome> {
+        self.with_connection(move |connection| {
+            super::team_provision::revoke_allowlisted(
+                connection,
+                &identity,
+                &revoked_by_fingerprint,
+            )
         })
         .await
     }
@@ -2148,16 +2165,27 @@ mod tests {
                 "access_tombstones",
                 "agent_definition_audit",
                 "agent_definitions",
+                "agent_session_evidence",
+                "agent_session_requests",
                 "agent_sessions",
                 "agent_task_audit",
+                "agent_task_inputs",
+                "agent_task_schedule_attempts",
+                "agent_task_schedule_occurrences",
+                "agent_task_schedules",
                 "agent_tasks",
                 "authority_outbox_sequences",
                 "authority_projection_outbox",
                 "bootstrap_proofs",
                 "credential_idempotency",
+                "dev_container_image_builds",
                 "dev_container_instances",
+                "dev_container_launch_manifests",
                 "dev_container_ledger",
                 "dev_container_owner_quotas",
+                "dev_container_published_images",
+                "dev_container_template_drafts",
+                "dev_container_template_environment",
                 "dev_container_templates",
                 "gateway_team_credential_bindings",
                 "groups",

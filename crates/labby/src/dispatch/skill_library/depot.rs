@@ -134,12 +134,14 @@ impl DepotConnection {
         binding: &crate::config::depot::PublicReadBinding,
         acquisition_endpoint: &str,
         token: &str,
+        policy: crate::dispatch::depot::network::NetworkPolicy,
     ) -> Result<(), ArtifactError> {
         self.catalog_binding = Some(Arc::new(
             crate::dispatch::depot::catalog_binding::CatalogBinding::new(
                 binding,
                 acquisition_endpoint,
                 token,
+                policy,
             )
             .map_err(ArtifactError::Conflict)?,
         ));

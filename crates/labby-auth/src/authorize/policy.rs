@@ -28,9 +28,10 @@ pub(crate) fn check_email_allowlist(
         ));
     };
     let email = email.trim();
+    let normalized = crate::util::normalize_email(email);
     if allowed_emails
         .iter()
-        .any(|allowed| allowed.eq_ignore_ascii_case(email))
+        .any(|allowed| crate::util::normalize_email(allowed) == normalized)
     {
         return Ok(());
     }

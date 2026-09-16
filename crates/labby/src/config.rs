@@ -2513,12 +2513,36 @@ fn config_lock_path(path: &Path) -> PathBuf {
     lock
 }
 
+/// Names of the variables the process environment already carried when the
+/// first `load_dotenv` ran. dotenvy never overrides an existing variable, so
+/// these came from outside `.env` (a service manager, a container spec, the
+/// shell) and win over the file for the lifetime of the process.
+static PROCESS_ENV_KEYS_BEFORE_DOTENV: OnceLock<std::collections::BTreeSet<String>> =
+    OnceLock::new();
+
+/// Whether `key` was set in the process environment before `.env` was loaded,
+/// so an edit to `.env` cannot change its effective value. False until
+/// `load_dotenv` has run.
+#[must_use]
+pub fn env_key_set_outside_dotenv(key: &str) -> bool {
+    PROCESS_ENV_KEYS_BEFORE_DOTENV
+        .get()
+        .is_some_and(|keys| keys.contains(key))
+}
+
 /// Load `.env` files into the process environment.
 ///
 /// Called after `load_toml()` and tracing init. Env vars loaded here
 /// override config.toml values at the point of use (each consumer checks
 /// env first, then falls back to config).
 pub fn load_dotenv() -> Result<()> {
+    // Names only, never values: the settings surface uses this to tell an
+    // externally managed variable from one `.env` supplied.
+    PROCESS_ENV_KEYS_BEFORE_DOTENV.get_or_init(|| {
+        std::env::vars_os()
+            .filter_map(|(key, _)| key.into_string().ok())
+            .collect()
+    });
     // Candidates are ordered from authoritative installation state to the
     // implicit development fallback. dotenvy preserves values loaded by an
     // earlier candidate. An explicit LABBY_HOME excludes the CWD fallback.

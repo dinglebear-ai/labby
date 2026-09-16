@@ -296,10 +296,14 @@ class AuthSpecificationMatrixTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         self.assertIn("python3 scripts/ci/refresh_mcp_auth_denominator.py --check", workflow)
 
-    def test_pr_coverage_gate_has_meaningful_auth_floor(self) -> None:
+    def test_coverage_gate_keeps_meaningful_auth_floor(self) -> None:
+        # Coverage stopped blocking merges when the workspace suite moved off
+        # the gate (#666) and it now runs on pushes to main rather than on
+        # every pull request; the auth floor it enforces must survive both.
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         coverage = workflow.split("  rust-coverage:", 1)[1].split("\n  ci-gate:", 1)[0]
-        self.assertNotIn("github.event_name != 'pull_request'", coverage)
+        self.assertIn("needs.changes.outputs.rust_test == 'true'", coverage)
+        self.assertIn("github.event_name != 'pull_request'", coverage)
         self.assertIn("--critical-minimum 30", coverage)
         self.assertIn("--critical crates/labby-auth/src/", coverage)
 

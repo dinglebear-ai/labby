@@ -22,6 +22,7 @@
     "scripts/ci/labby-owned-process-gate.sh",
     "scripts/ci/mcp-conformance.sh",
     "scripts/ci/openai-auth-conformance.sh",
+    "scripts/ci/run-test-shard.sh",
     "scripts/ci/unraid-plugin-checksums.sh",
     "scripts/ci/unraid-runtime-tests.sh",
     "scripts/ci/n-minus-one/unix",
