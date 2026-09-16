@@ -291,7 +291,10 @@ impl Default for CodeModeConfig {
 impl CodeModeConfig {
     /// Validate Code Mode limits and semantic-search settings.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        if !(1..=60_000).contains(&self.timeout_ms) {
+        // Matches upstream_request_timeout_ms (1..=300_000). A Code Mode run
+        // drives upstream tool calls, so a ceiling below a single call's own
+        // budget made the enclosing run expire before the call it waited on.
+        if !(1..=300_000).contains(&self.timeout_ms) {
             return Err(ConfigError::InvalidCodeModeTimeout {
                 value: self.timeout_ms,
             });
@@ -1431,7 +1434,7 @@ pub enum ConfigError {
         /// Explanation of the transport validation failure.
         reason: String,
     },
-    #[error("gateway code_mode.timeout_ms={value} is invalid — expected 1..=60000")]
+    #[error("gateway code_mode.timeout_ms={value} is invalid — expected 1..=300000")]
     /// Code Mode timeout falls outside the supported range.
     InvalidCodeModeTimeout {
         /// Rejected timeout in milliseconds.
