@@ -1,16 +1,10 @@
 'use client'
 
-import { Suspense, useMemo, useState } from 'react'
+import { Suspense, useMemo, useState, type CSSProperties } from 'react'
 import { useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
 import {
-  Activity,
-  AlertTriangle,
   ChevronRight,
-  Clock3,
-  Database,
-  GitBranch,
-  Network,
   RefreshCw,
   Search,
 } from 'lucide-react'
@@ -27,6 +21,12 @@ import { AURORA_PAGE_FRAME, AURORA_PAGE_SHELL } from '@/components/aurora/tokens
 import { cn } from '@/lib/utils'
 
 const TRACE_QUERY_LIMIT = 500
+const TRACE_PANEL_CHROME = {
+  headerStyle: { padding: '10px 15px', lineHeight: 'normal' },
+  titleStyle: { fontSize: 9.5, letterSpacing: '0.13em' },
+  bodyStyle: { padding: '12px 15px', gap: 10 },
+}
+const TRACE_RULE = 'color-mix(in srgb, var(--aurora-border-default) 36%, var(--aurora-page-bg))'
 
 function valueLabel(value: unknown): string {
   if (value === null || value === undefined) return '—'
@@ -76,11 +76,11 @@ function TracesExplorer({ initialSearch }: { initialSearch: string }) {
     : summary.traces
 
   const heroStats = [
-    { label: 'Requests', value: summary.total, icon: <GitBranch size={12} />, tone: 'var(--aurora-accent-strong)' },
-    { label: 'Failed', value: summary.failed, icon: <AlertTriangle size={12} />, tone: 'var(--aurora-error)' },
-    { label: 'P50', value: formatDuration(summary.p50_ms), icon: <Clock3 size={12} /> },
-    { label: 'P95', value: formatDuration(summary.p95_ms), icon: <Activity size={12} /> },
-    { label: 'Upstreams', value: summary.upstreams.length, icon: <Network size={12} /> },
+    { label: 'Requests', value: summary.total, tone: 'var(--aurora-accent-strong)' },
+    { label: 'Failed', value: summary.failed, tone: 'var(--aurora-error)' },
+    { label: 'P50', value: formatDuration(summary.p50_ms) },
+    { label: 'P95', value: formatDuration(summary.p95_ms), tone: 'var(--aurora-warn)' },
+    { label: 'Upstreams', value: summary.upstreams.length },
   ]
 
   return (
@@ -93,8 +93,8 @@ function TracesExplorer({ initialSearch }: { initialSearch: string }) {
           description="Correlated request flows reconstructed from the retained server log window. Requires the lab:admin scope."
           pulse={{ color: 'var(--aurora-accent-primary)', label: `correlated_only · ${TRACE_QUERY_LIMIT} line window` }}
           actions={
-            <Button variant="outline" size="sm" onClick={() => void mutate()} disabled={isValidating}>
-              <RefreshCw className={cn('size-3.5', isValidating && 'animate-spin')} />
+            <Button data-visible-label variant="outline" size="sm" className="h-9 gap-[7px] rounded-[10px] px-3.5 text-[12.5px] font-[650] text-aurora-text-muted" onClick={() => void mutate()} disabled={isValidating}>
+              <RefreshCw className={cn('size-[13px]', isValidating && 'animate-spin')} />
               Refresh
             </Button>
           }
@@ -104,10 +104,12 @@ function TracesExplorer({ initialSearch }: { initialSearch: string }) {
         <div className="grid items-start gap-3.5 xl:grid-cols-[minmax(0,1fr)_280px]">
           <DashboardPanel
             title="Request flow"
-            icon={<GitBranch className="size-4" />}
-            meta={data?.truncated ? 'Bounded log sample' : `${traces.length} correlated requests`}
+            {...TRACE_PANEL_CHROME}
+            bodyStyle={{ padding: 0, gap: 0 }}
+            metaStyle={{ fontSize: 11, color: 'var(--aurora-text-muted)' }}
+            meta={`${traces.length} correlated requests${data?.truncated ? ' · bounded sample' : ''}`}
           >
-            <div className="relative">
+            <div className="relative mx-3 mt-3">
               <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-aurora-text-muted" />
               <Input
                 name="search"
@@ -115,11 +117,11 @@ function TracesExplorer({ initialSearch }: { initialSearch: string }) {
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
                 placeholder="Search request, service, action, upstream, or error…"
-                className="h-[34px] pl-9 text-[12.5px]"
+                className="h-[34px] rounded-[9px] bg-[var(--gw0-0_40)] pl-[33px] text-[12.5px]"
               />
             </div>
 
-            <div className="mb-2 hidden grid-cols-[88px_minmax(0,1fr)_70px_64px_20px] gap-3 border-b border-aurora-border-subtle px-3 pb-2 text-[9px] font-bold uppercase tracking-[.14em] text-aurora-text-muted sm:grid">
+            <div style={{ borderColor: TRACE_RULE, lineHeight: 'normal' }} className="hidden grid-cols-[88px_minmax(0,1fr)_70px_64px_20px] gap-3 border-b border-aurora-border-subtle px-[15px] pb-2 pt-3 text-[9px] font-bold uppercase tracking-[.14em] text-aurora-text-muted sm:grid">
               <span>Started</span><span>Request</span><span>Surface</span><span className="text-right">Duration</span><span />
             </div>
 
@@ -132,7 +134,7 @@ function TracesExplorer({ initialSearch }: { initialSearch: string }) {
                 {isLoading ? 'Loading retained traces…' : 'No request traces match this search.'}
               </div>
             ) : (
-              <div className="-mx-3.5 -mb-3 divide-y divide-aurora-border-subtle" data-density="comfortable">
+              <div className="divide-y divide-[var(--trace-rule)]" style={{ '--trace-rule': TRACE_RULE } as CSSProperties} data-density="comfortable">
                 {traces.map((trace) => (
                   <details
                     key={trace.id}
@@ -152,11 +154,11 @@ function TracesExplorer({ initialSearch }: { initialSearch: string }) {
                             {trace.service}.{trace.action}
                           </span>
                         </span>
-                        <span className="mt-1 block truncate font-mono text-[10px] text-aurora-text-muted">
+                        <span className="mt-[3px] block truncate font-mono text-[10px] text-aurora-text-muted">
                           {trace.id} {trace.upstreams.length > 0 ? `· ${trace.upstreams.join(', ')}` : ''}
                         </span>
                       </span>
-                      <Badge variant="outline" className="hidden h-[18px] justify-self-start px-[7px] text-[9px] sm:inline-flex">{trace.surface}</Badge>
+                      <Badge variant="outline" className="hidden h-[18px] justify-self-start rounded-[4px] border-aurora-text-muted/30 bg-aurora-text-muted/11 px-[7px] text-[9px] font-bold uppercase tracking-[.1em] text-aurora-text-muted sm:inline-flex">{trace.surface}</Badge>
                       <span className="text-right text-[11px] tabular-nums text-aurora-text-muted">{formatDuration(trace.elapsed_ms)}</span>
                       <ChevronRight className="size-3.5 text-aurora-text-muted transition-transform group-open:rotate-90" />
                     </summary>
@@ -172,8 +174,8 @@ function TracesExplorer({ initialSearch }: { initialSearch: string }) {
                       </div>
                       <ol className="relative ml-2 border-l border-aurora-border-strong pl-4">
                         {trace.events.map((event, index) => (
-                          <li key={`${event.file}:${event.timestamp}:${index}`} className="relative pb-3 last:pb-0">
-                            <span className="absolute -left-[19px] top-1 size-2 rounded-full border border-aurora-accent-primary/50 bg-aurora-page-bg" />
+                          <li key={`${event.file}:${event.timestamp}:${index}`} className="relative pb-2.5 last:pb-0">
+                            <span className="absolute -left-[21px] top-1 size-2 rounded-full border border-aurora-accent-primary/50 bg-aurora-page-bg" />
                             <div className="flex flex-wrap items-baseline justify-between gap-2">
                               <span className="font-mono text-[11px] text-aurora-text-primary">
                                 {event.message ?? `${event.service ?? 'runtime'}.${event.action ?? 'event'}`}
@@ -182,7 +184,7 @@ function TracesExplorer({ initialSearch }: { initialSearch: string }) {
                                 {event.timestamp ? new Date(event.timestamp).toLocaleTimeString() : 'No timestamp'}
                               </span>
                             </div>
-                            <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[9.5px] text-aurora-text-muted">
+                            <div className="mt-[3px] flex flex-wrap gap-x-3 gap-y-1 text-[9.5px] text-aurora-text-muted">
                               {['event', 'upstream', 'operation', 'kind', 'elapsed_ms', 'response_bytes'].map((key) =>
                                 event.fields[key] === undefined ? null : (
                                   <span key={key}><span className="text-aurora-text-subtle">{key}</span> {valueLabel(event.fields[key])}</span>
@@ -200,13 +202,13 @@ function TracesExplorer({ initialSearch }: { initialSearch: string }) {
           </DashboardPanel>
 
           <div className="space-y-3">
-            <DashboardPanel title="Surfaces" icon={<Activity className="size-4" />}>
+            <DashboardPanel title="Surfaces" {...TRACE_PANEL_CHROME}>
               <RankedList items={summary.surfaces} empty="No surface fields in the retained window." />
             </DashboardPanel>
-            <DashboardPanel title="Upstreams" icon={<Database className="size-4" />}>
+            <DashboardPanel title="Upstreams" {...TRACE_PANEL_CHROME}>
               <RankedList items={summary.upstreams} empty="No upstream calls in the retained window." />
             </DashboardPanel>
-            <DashboardPanel title="Collection" icon={<Network className="size-4" />}>
+            <DashboardPanel title="Collection" {...TRACE_PANEL_CHROME}>
               <dl className="space-y-2 text-[11px]">
                 <CollectionRow label="Log entries" value={data?.matched ?? 0} />
                 <CollectionRow label="Scanned lines" value={data?.scanned_lines ?? 0} />

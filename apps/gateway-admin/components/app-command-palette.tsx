@@ -9,6 +9,7 @@ import {
   BookOpen,
   Cable,
   Check,
+  ChevronDown,
   Copy,
   ExternalLink,
   FileCode2,
@@ -263,6 +264,7 @@ export function AppCommandPalette() {
   const [pages, setPages] = useState<string[]>([])
   const [mode, dispatch] = useReducer(paletteReducer, { kind: 'browse' })
   const [showAdvanced, setShowAdvanced] = useState(false)
+  const [alertsExpanded, setAlertsExpanded] = useState(false)
   const [isDispatching, setIsDispatching] = useState(false)
   const [pendingGatewayId, setPendingGatewayId] = useState<string | null>(null)
   const [filters, setFilters] = useState<PaletteServerFilters>(EMPTY_PALETTE_FILTERS)
@@ -937,8 +939,20 @@ export function AppCommandPalette() {
                       {/* Needs Attention */}
                       {alerts.length > 0 && (
                         <>
-                          <PaletteSectionHeader label="Needs Attention" />
-                          {alerts.map((alert) => (
+                          <button
+                            type="button"
+                            aria-expanded={alertsExpanded}
+                            onClick={() => setAlertsExpanded(value => !value)}
+                            className="flex w-full items-center border-0 bg-transparent p-0 text-left"
+                          >
+                            <PaletteSectionHeader label={`Needs Attention · ${alerts.length}`} />
+                            <ChevronDown
+                              size={14}
+                              className="mr-3 shrink-0 transition-transform"
+                              style={{ transform: alertsExpanded ? 'rotate(180deg)' : undefined }}
+                            />
+                          </button>
+                          {alertsExpanded ? alerts.map((alert) => (
                             <PaletteAlertRow
                               key={alert.id}
                               value={alert.id}
@@ -948,7 +962,7 @@ export function AppCommandPalette() {
                                 dispatch({ type: 'SERVICE_PANE', gatewayId: alert.gatewayId })
                               }
                             />
-                          ))}
+                          )) : null}
                           <PaletteSplit />
                         </>
                       )}

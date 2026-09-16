@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { Archive, CirclePlus, FolderKanban, RefreshCw } from 'lucide-react'
+import { Archive, CirclePlus, Clock3, FolderKanban, RefreshCw } from 'lucide-react'
 
 import { AppHeader } from '@/components/app-header'
 import { AURORA_PAGE_FRAME, AURORA_PAGE_SHELL } from '@/components/aurora/tokens'
@@ -10,7 +10,7 @@ import { DashboardPanel } from '@/components/dashboard/panel'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { isAbortError } from '@/lib/api/service-action-client'
-import { authorityIdentity, useBrowserSession } from '@/lib/auth/session'
+import { authorityIdentity, selectSessionWorkspace, useBrowserSession } from '@/lib/auth/session'
 import { archiveProject, createProject, listProjects, type ProjectView } from '@/lib/projects/client'
 
 function failureMessage(reason: unknown, fallback: string) {
@@ -124,6 +124,7 @@ export function ProjectsPageContent() {
                         <strong className="block truncate text-sm text-aurora-text-primary">{row.name}</strong>
                         <p className="text-xs text-aurora-text-muted">{row.project_id} · {row.team_id} · {row.role} · policy {row.policy_epoch}</p>
                       </div>
+                      <Button asChild data-visible-label variant="outline" size="sm"><a href="/tasks/" aria-label={`Tasks for ${row.name}`} onClick={event => { try { selectSessionWorkspace({ teamId: row.team_id, projectId: row.project_id }) } catch (reason) { event.preventDefault(); setError(failureMessage(reason, 'Project workspace unavailable')) } }}><Clock3 />Tasks</a></Button>
                       <Button variant="outline" size="sm" aria-label={`Archive ${row.name}`} disabled={!row.can_manage || busy === key} onClick={() => void archive(row)}><Archive />Archive</Button>
                     </article>
                   )

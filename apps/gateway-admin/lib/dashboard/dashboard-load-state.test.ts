@@ -28,4 +28,5 @@ test('unsupported metrics errors are never retried', () => {
   assert.equal(shouldRetryMetrics(notFound), false)
   assert.equal(shouldRetryMetrics(unknownAction), false)
   assert.equal(shouldRetryMetrics(new Error('temporary failure')), true)
+  assert.equal(shouldRetryMetrics(new DOMException('Authority changed', 'AbortError')), false)
 })

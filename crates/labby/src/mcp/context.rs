@@ -36,6 +36,24 @@ pub(crate) fn redacted_oauth_subject_label() -> &'static str {
 }
 
 impl LabMcpServer {
+    pub(crate) fn request_usage_attribution(
+        &self,
+        context: &RequestContext<RoleServer>,
+    ) -> labby_runtime::usage_actor::UsageAttribution {
+        let actor = self
+            .request_actor_key(context)
+            .or_else(|| self.request_subject(context))
+            .map(redact_subject_for_logging);
+        let peer = context.peer.peer_info();
+        let client = peer.as_ref().map(|info| {
+            (
+                info.client_info.name.as_str(),
+                info.client_info.version.as_str(),
+            )
+        });
+        labby_runtime::usage_actor::UsageAttribution::inbound(actor, "mcp", client)
+    }
+
     #[cfg(feature = "gateway")]
     pub(crate) fn code_mode_surface(&self) -> CodeModeSurface {
         CodeModeSurface::Mcp

@@ -16,5 +16,5 @@ test('gateway-admin verification scripts exercise unit and browser test contract
   assert.equal(packageJson.scripts.test, 'pnpm run test:unit && pnpm run test:install-script')
   assert.equal(packageJson.scripts['test:unit'], 'node scripts/run-unit-tests.mjs')
   assert.equal(packageJson.scripts['test:install-script'], 'node --test scripts/*.test.mjs')
-  assert.equal(packageJson.scripts['test:browser'], 'node --test --experimental-strip-types lib/browser/**/*.test.ts')
+  assert.equal(packageJson.scripts['test:browser'], 'node --test --test-concurrency=1 --experimental-strip-types lib/browser/**/*.test.ts')
 })

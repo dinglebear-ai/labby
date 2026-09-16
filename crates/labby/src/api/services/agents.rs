@@ -38,7 +38,15 @@ pub(crate) fn descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> 
 fn csrf_exempt(action: &str) -> bool {
     matches!(
         action,
-        "help" | "schema" | "agents.list" | "agents.get" | "agents.session.status"
+        "help"
+            | "schema"
+            | "agents.list"
+            | "agents.get"
+            | "agents.harnesses"
+            | "agents.sessions.list"
+            | "agents.session.status"
+            | "agents.session.get"
+            | "agents.session.transcript"
     )
 }
 

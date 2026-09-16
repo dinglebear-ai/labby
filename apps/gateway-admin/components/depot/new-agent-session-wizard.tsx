@@ -1,98 +1,157 @@
 'use client'
 
-import { useState } from 'react'
-import { Check, ChevronRight, CircleCheck, Layers3, Link2, Play } from 'lucide-react'
-
-import { Badge } from '@/components/ui/badge'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { AlertCircle, CheckCircle2, Cpu, Play } from 'lucide-react'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
-import { cn } from '@/lib/utils'
-import { AlpineMark, CodexMark, DebianMark, UbuntuMark } from './brand-marks'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Textarea } from '@/components/ui/textarea'
+import { createAgentFromHarness, runAgent, type AgentHarnessView, type AgentRunResult, type AgentView } from '@/lib/agent-tasks/client'
 
-type WizardProps = { open: boolean; onOpenChange: (open: boolean) => void }
-type Choice = { id: string; title: string; detail: string; icon: React.ReactNode }
+const EMPTY_LOADOUT_DIGEST = 'sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945'
+const META = 'grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5 rounded-aurora-2 border border-aurora-border-subtle bg-aurora-control-surface p-space-4 text-[11px]'
 
-const steps = [
-  ['Loadout', 'project-a-loadout'],
-  ['Container', 'platform-base'],
-  ['Repository', 'tootie-tv/labby'],
-  ['Harness', 'Claude Code'],
-  ['Review', 'ready to start'],
-] as const
+function shortDigest(value: string) {
+  return value.length > 30 ? `${value.slice(0, 22)}…${value.slice(-8)}` : value
+}
 
-const loadouts: Choice[] = [
-  { id: 'project-a-loadout', title: 'project-a-loadout', detail: '10 artifacts · #project-a', icon: <Layers3 /> },
-  { id: 'project-b-loadout', title: 'project-b-loadout', detail: '8 artifacts · #project-b', icon: <Layers3 /> },
-  { id: 'platform-core', title: 'platform-core', detail: '6 artifacts · #platform', icon: <Layers3 /> },
-  { id: 'oncall-loadout', title: 'oncall-loadout', detail: '5 artifacts · #support', icon: <Layers3 /> },
-]
-const containers: Choice[] = [
-  { id: 'platform-base', title: 'platform-base', detail: 'Ubuntu 24.04 · 1.9 GB', icon: <UbuntuMark /> },
-  { id: 'rust-heavy', title: 'rust-heavy', detail: 'Debian 12 · 2.4 GB', icon: <DebianMark /> },
-  { id: 'edge-minimal', title: 'edge-minimal', detail: 'Alpine 3.21 · building', icon: <AlpineMark /> },
-]
-const harnesses: Choice[] = [
-  { id: 'Claude Code', title: 'Claude Code', detail: 'coding harness', icon: <ClaudeMark /> },
-  { id: 'Codex', title: 'Codex', detail: 'coding harness', icon: <CodexMark /> },
-  { id: 'Gemini CLI', title: 'Gemini CLI', detail: 'coding harness', icon: <span className="text-xl leading-none">✦</span> },
-]
+export function NewAgentSessionWizard({
+  open,
+  onOpenChange,
+  agents,
+  harnesses,
+  initialAgentId,
+  canCreate = true,
+  onStarted,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  agents: AgentView[]
+  harnesses: AgentHarnessView[]
+  initialAgentId?: string
+  canCreate?: boolean
+  onStarted: (session: AgentRunResult) => void
+}) {
+  const availableHarnesses = useMemo(() => harnesses.filter(harness => harness.available), [harnesses])
+  const eligible = useMemo(() => agents.filter(agent => agent.state === 'active' && availableHarnesses.some(harness => harness.id === agent.harness_id && harness.digest === agent.harness_digest)), [agents, availableHarnesses])
+  const [agentId, setAgentId] = useState('')
+  const [newAgentId, setNewAgentId] = useState('')
+  const [harnessId, setHarnessId] = useState('')
+  const [createdAgent, setCreatedAgent] = useState<AgentView>()
+  const [input, setInput] = useState('')
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState<string>()
+  const pendingStart = useRef<{ intent: string; key: string } | undefined>(undefined)
 
-function ClaudeMark(){return <span aria-label="Claude" className="text-[13px] font-black tracking-[-.16em]">AI</span>}
+  useEffect(() => {
+    if (!open) return
+    const requested = eligible.find(agent => agent.agent_id === initialAgentId)?.agent_id
+    setAgentId(requested ?? eligible[0]?.agent_id ?? '')
+    setNewAgentId('')
+    setHarnessId(availableHarnesses[0]?.id ?? '')
+    setCreatedAgent(undefined)
+    setInput('')
+    setError(undefined)
+    pendingStart.current = undefined
+  }, [availableHarnesses, eligible, initialAgentId, open])
 
-export function NewAgentSessionWizard({ open, onOpenChange }: WizardProps) {
-  const [step, setStep] = useState(1)
-  const [loadout, setLoadout] = useState('project-a-loadout')
-  const [container, setContainer] = useState('platform-base')
-  const [repository, setRepository] = useState('tootie-tv/labby')
-  const [harness, setHarness] = useState('Claude Code')
+  const createNew = canCreate && eligible.length === 0 && !createdAgent
+  const creatingFirst = agents.length === 0
+  const agent = createdAgent ?? eligible.find(candidate => candidate.agent_id === agentId)
+  const harness = createNew
+    ? availableHarnesses.find(candidate => candidate.id === harnessId)
+    : harnesses.find(candidate => candidate.id === agent?.harness_id && candidate.digest === agent?.harness_digest)
+  const validNewAgentId = newAgentId.trim().length > 0 && newAgentId.trim().length <= 256 && !/\p{Cc}/u.test(newAgentId)
+  const ready = Boolean((agent || (createNew && validNewAgentId)) && harness?.available && input.trim())
 
-  const values = [loadout, container, repository, harness, 'ready to start']
-  const close = (next: boolean) => { onOpenChange(next); if (!next) window.setTimeout(() => setStep(1), 200) }
-  const next = () => { if (step < 5) setStep((current) => current + 1); else close(false) }
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    if ((!agent && !createNew) || !harness?.available || !input.trim() || (createNew && !validNewAgentId)) return
+    setPending(true)
+    setError(undefined)
+    let definitionCreated = false
+    try {
+      const definition = agent ?? await createAgentFromHarness(newAgentId.trim(), harness)
+      if (!agent) {
+        definitionCreated = true
+        setCreatedAgent(definition)
+      }
+      const trimmedInput = input.trim()
+      const intent = [definition.agent_id, definition.version, trimmedInput].join('\u0000')
+      if (pendingStart.current?.intent !== intent) {
+        pendingStart.current = { intent, key: crypto.randomUUID() }
+      }
+      const session = await runAgent(definition.agent_id, trimmedInput, pendingStart.current.key)
+      pendingStart.current = undefined
+      onStarted(session)
+      onOpenChange(false)
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : 'The Agent session could not be started.'
+      setError(definitionCreated ? `The Agent definition was created, but its session did not start. ${message}` : message)
+    } finally {
+      setPending(false)
+    }
+  }
 
-  return <Dialog open={open} onOpenChange={close}>
-    <DialogContent showCloseButton className="h-[min(660px,calc(100svh-2rem))] w-[min(1020px,calc(100vw-2rem))] max-w-none gap-0 border-aurora-border-strong bg-aurora-panel-medium p-0 shadow-aurora-panel sm:max-w-none">
-      <DialogDescription className="sr-only">Choose a loadout, container, repository, and coding harness for the new agent session.</DialogDescription>
-      <div className="grid min-h-0 flex-1 md:grid-cols-[214px_minmax(0,1fr)]">
-        <aside className="border-r border-aurora-border-subtle bg-aurora-panel-low px-4 py-5">
-          <p className="text-[9px] font-bold uppercase tracking-[.16em] text-aurora-text-muted">Agent session</p>
-          <DialogTitle className="mt-2 text-base text-aurora-text-primary">New Session</DialogTitle>
-          <nav aria-label="Session setup steps" className="mt-6 space-y-1.5">
-            {steps.map(([label], index) => { const number=index+1; const complete=number<step; const active=number===step; return <button key={label} type="button" onClick={()=>setStep(number)} className={cn('flex w-full items-center gap-3 rounded-aurora-2 border px-2.5 py-2 text-left transition-colors',active?'border-aurora-accent-primary bg-aurora-selected-bg shadow-[inset_0_0_0_1px_var(--aurora-warn)]':'border-transparent hover:bg-aurora-hover-bg')}><span className={cn('grid size-6 shrink-0 place-items-center rounded-full border text-xs',complete?'border-aurora-success/50 bg-aurora-success/10 text-aurora-success':active?'border-aurora-accent-primary bg-aurora-accent-primary text-aurora-page-bg':'border-aurora-border-strong text-aurora-text-muted')}>{complete?<Check className="size-3.5"/>:number}</span><span className="min-w-0"><strong className="block text-xs text-aurora-text-primary">{label}</strong><span className="block truncate text-[10px] text-aurora-text-muted">{values[index]}</span></span></button> })}
-          </nav>
-        </aside>
-
-        <section className="flex min-w-0 flex-col">
-          <header className="flex h-14 items-center gap-3 border-b border-aurora-border-subtle px-4">
-            <h2 className="text-base font-semibold text-aurora-text-primary">{steps[step-1][0]}</h2>
-            <p className="text-xs text-aurora-text-muted">{['Which artifacts the session’s Labby comes up with.','The image the agent runs inside.','Cloned into the container before the agent starts.','The coding agent driving the session.','Confirm and provision.'][step-1]}</p>
-          </header>
-          <div className="min-h-0 flex-1 overflow-y-auto p-4">
-            {step===1?<ChoiceGrid choices={loadouts} value={loadout} onChange={setLoadout}/>:null}
-            {step===2?<ChoiceGrid choices={containers} value={container} onChange={setContainer}/>:null}
-            {step===3?<RepositoryStep value={repository} onChange={setRepository}/>:null}
-            {step===4?<ChoiceGrid choices={harnesses} value={harness} onChange={setHarness}/>:null}
-            {step===5?<Review loadout={loadout} container={container} repository={repository} harness={harness}/>:null}
+  return <Dialog open={open} onOpenChange={pending ? undefined : onOpenChange}>
+    <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[640px]">
+      <DialogHeader>
+        <DialogTitle>{eligible.length ? 'New Agent Session' : creatingFirst ? 'Start your first Agent session' : 'Create an Agent and start a session'}</DialogTitle>
+        <DialogDescription>{eligible.length ? 'Run one bounded request with an active immutable Agent definition.' : creatingFirst ? 'Create an immutable definition from an approved runtime bundle, then run one bounded request.' : 'No existing definition matches an available runtime bundle. Create one from an approved bundle, then run one bounded request.'}</DialogDescription>
+      </DialogHeader>
+      <form className="grid gap-space-5" onSubmit={submit}>
+        {eligible.length ? <div className="grid gap-space-2">
+          <Label htmlFor="agent-session-definition">Agent definition</Label>
+          <Select value={agentId} onValueChange={setAgentId}>
+            <SelectTrigger id="agent-session-definition" className="w-full"><SelectValue placeholder="Choose an active Agent" /></SelectTrigger>
+            <SelectContent>{eligible.map(candidate => <SelectItem key={candidate.agent_id} value={candidate.agent_id}>{candidate.agent_id} · revision {candidate.version}</SelectItem>)}</SelectContent>
+          </Select>
+        </div> : createNew ? <section className="grid gap-space-4" aria-label="New Agent definition">
+          <div className="grid gap-space-2">
+            <Label htmlFor="agent-definition-id">Agent ID</Label>
+            <Input id="agent-definition-id" value={newAgentId} onChange={event => setNewAgentId(event.target.value)} maxLength={256} placeholder="review-agent" disabled={pending || Boolean(createdAgent)} />
+            <p className="text-[11px] text-aurora-text-muted">This permanent identifier names {creatingFirst ? 'the first' : 'a new'} immutable definition in the current workspace.</p>
           </div>
-          <footer className="flex h-14 items-center justify-between border-t border-aurora-border-subtle bg-aurora-panel-low px-4">
-            <span className="text-[10px] text-aurora-text-muted">Step {step} of 5 · {loadout} · {container}</span>
-            <div className="flex gap-2"><Button variant="outline" disabled={step===1} onClick={()=>setStep((current)=>Math.max(1,current-1))}>Back</Button><Button onClick={next} className={step===5?'bg-aurora-error text-aurora-page-bg hover:bg-aurora-error/90':''}>{step===5?<><Play/>Start Session</>:<>Next<ChevronRight/></>}</Button></div>
-          </footer>
-        </section>
-      </div>
+          <div className="grid gap-space-2">
+            <Label htmlFor="agent-harness-bundle">Approved runtime bundle</Label>
+            <Select value={harnessId} onValueChange={setHarnessId} disabled={pending || Boolean(createdAgent)}>
+              <SelectTrigger id="agent-harness-bundle" className="w-full"><SelectValue placeholder="Choose an available bundle" /></SelectTrigger>
+              <SelectContent>{availableHarnesses.map(candidate => <SelectItem key={`${candidate.id}:${candidate.digest}`} value={candidate.id}>{candidate.id}</SelectItem>)}</SelectContent>
+            </Select>
+            {!availableHarnesses.length ? <p className="text-xs text-aurora-warn">No available operator-approved harness bundle is configured on this server.</p> : null}
+          </div>
+        </section> : <Alert variant="warn"><AlertCircle /><AlertTitle>No runnable Agent</AlertTitle><AlertDescription>No active definition matches an available approved runtime bundle, and this workspace cannot create one.</AlertDescription></Alert>}
+
+        {harness ? <section aria-label="Execution bundle" className="grid gap-space-3">
+          <div className="flex items-center gap-space-2"><Cpu className="size-4 text-aurora-accent-strong" /><h3 className="font-display text-sm font-bold text-aurora-text-primary">Operator-provisioned host runtime</h3></div>
+          <dl className={META}>
+            {[
+              ['Harness bundle', harness.id],
+              ['Repository reference', shortDigest(agent?.repository_digest ?? harness.repository_digest)],
+              ['Base image reference', shortDigest(agent?.image_digest ?? harness.image_digest)],
+              ['Loadout', (agent?.loadout_digest ?? harness.loadout_digest) === EMPTY_LOADOUT_DIGEST ? 'Empty loadout · [] pin' : shortDigest(agent?.loadout_digest ?? harness.loadout_digest)],
+              ['Catalog generation', agent?.catalog_generation ?? harness.catalog_generation],
+            ].map(([label, value]) => <div className="contents" key={label}><dt className="text-aurora-text-muted">{label}</dt><dd className="min-w-0 break-all font-mono text-aurora-text-primary" title={value}>{value}</dd></div>)}
+          </dl>
+          <p className="text-[11px] leading-relaxed text-aurora-text-muted">{createNew ? 'Labby will copy these exact server-approved references into the new definition before starting its configured host harness.' : 'Labby verifies these references against the selected definition before launching its configured host harness.'} They describe the approved runtime bundle; this session does not select or provision a separate container.</p>
+          {harness?.available ? <Alert variant="success"><CheckCircle2 /><AlertTitle>Harness available</AlertTitle><AlertDescription>The configured executable and working directory are available to the Labby runtime.</AlertDescription></Alert> : <Alert variant="warn"><AlertCircle /><AlertTitle>Harness unavailable</AlertTitle><AlertDescription>{harness ? 'The configured executable or working directory is unavailable.' : 'No configured harness matches every pin in this Agent revision.'}</AlertDescription></Alert>}
+        </section> : null}
+
+        <div className="grid gap-space-2">
+          <Label htmlFor="agent-session-input">Session input</Label>
+          <Textarea id="agent-session-input" value={input} onChange={event => setInput(event.target.value)} maxLength={1024 * 1024} rows={6} placeholder="Describe the bounded work for this Agent session…" disabled={pending} />
+          <p className="text-[11px] text-aurora-text-muted">The exact input and its digest are retained with the session evidence.</p>
+        </div>
+
+        {error ? <Alert variant="error"><AlertCircle /><AlertTitle>Session did not start</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}
+        <div className="flex justify-end gap-space-2">
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={pending}>Cancel</Button>
+          <Button type="submit" disabled={!ready || pending}><Play />{pending ? 'Starting…' : 'Start Session'}</Button>
+        </div>
+      </form>
     </DialogContent>
   </Dialog>
-}
-
-function ChoiceGrid({ choices, value, onChange }: { choices: Choice[]; value: string; onChange: (value: string) => void }) {
-  return <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{choices.map((choice)=><button key={choice.id} type="button" aria-pressed={value===choice.id} onClick={()=>onChange(choice.id)} className="group flex min-h-14 items-center gap-3 rounded-aurora-2 border border-transparent bg-aurora-panel-low px-3 py-2 text-left transition-colors hover:border-aurora-accent-primary/40 aria-pressed:border-aurora-accent-primary aria-pressed:bg-aurora-selected-bg"><span className="grid size-8 shrink-0 place-items-center rounded-aurora-1 bg-aurora-page-bg text-aurora-accent-primary [&_svg]:size-4">{choice.icon}</span><span className="min-w-0 flex-1"><strong className="block truncate text-xs text-aurora-text-primary">{choice.title}</strong><span className="block truncate text-[10px] text-aurora-text-muted">{choice.detail}</span></span>{value===choice.id?<CircleCheck className="size-4 shrink-0 fill-aurora-accent-primary text-aurora-page-bg"/>:null}</button>)}</div>
-}
-
-function RepositoryStep({ value, onChange }: { value: string; onChange: (value: string) => void }) {
-  const recent=['tootie-tv/labby','tootie-tv/axon','tootie-tv/depot','tootie-tv/dotfiles']
-  return <div className="space-y-3"><label className="flex h-11 items-center gap-3 rounded-aurora-2 border border-aurora-success/60 bg-aurora-page-bg/70 px-3"><Link2 className="size-4 text-aurora-text-muted"/><input aria-label="Repository" value={`github.com/${value}`} onChange={(event)=>onChange(event.target.value.replace(/^https?:\/\/github\.com\//,'').replace(/^github\.com\//,''))} className="min-w-0 flex-1 bg-transparent font-mono text-sm text-aurora-text-primary outline-none"/><Badge variant="outline" className="border-0 text-aurora-success"><span className="mr-1 size-1.5 rounded-full bg-aurora-success"/>Resolved</Badge></label><div><p className="mb-2 text-[9px] font-bold uppercase tracking-[.14em] text-aurora-text-muted">Recent</p><div className="flex flex-wrap gap-2">{recent.map((repo)=><button key={repo} type="button" onClick={()=>onChange(repo)} className="rounded-full border border-aurora-border-subtle bg-aurora-control-surface px-3 py-1.5 text-[10px] font-semibold text-aurora-text-muted hover:text-aurora-text-primary">{repo}</button>)}</div></div></div>
-}
-
-function Review({ loadout, container, repository, harness }: { loadout: string; container: string; repository: string; harness: string }) {
-  return <div className="max-w-xl overflow-hidden rounded-aurora-3 border border-aurora-border-subtle bg-aurora-panel-low"><div className="flex items-center justify-between border-b border-aurora-border-subtle px-4 py-3"><span className="text-[9px] font-bold uppercase tracking-[.14em] text-aurora-text-muted">Review</span><span className="text-xs font-semibold text-aurora-success">Ready</span></div><dl>{[['Loadout',loadout],['Container',container],['Repository',repository],['Harness',harness]].map(([label,value])=><div key={label} className="grid grid-cols-[1fr_1fr] items-center border-b border-aurora-border-subtle px-4 py-3"><dt className="flex items-center gap-3 text-[9px] font-bold uppercase tracking-[.12em] text-aurora-text-muted"><span className="grid size-5 place-items-center rounded-full bg-aurora-success/15 text-aurora-success"><Check className="size-3"/></span>{label}</dt><dd className="text-right text-xs font-semibold text-aurora-text-primary">{value}</dd></div>)}</dl><p className="px-4 py-4 text-[10px] leading-5 text-aurora-text-muted">Provisions {container}, seeds Labby with {loadout}, clones the repo, then hands off.</p></div>
 }

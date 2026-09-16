@@ -1,15 +1,24 @@
 import { normalizeGatewayApiBase } from './gateway-config.ts'
-import { gatewayRequestInit } from './gateway-request.ts'
+import {
+  assertGatewayAuthorityCurrent,
+  captureGatewayAuthority,
+  gatewayRequestInit,
+} from './gateway-request.ts'
 import { withRequestTiming } from './request-timing.ts'
 import { queryServerLogs } from './server-logs-client.ts'
+import { getBrowserSessionEpoch, getSessionAuthority } from '../auth/session-store.ts'
 import {
   aggregateGatewayUsage,
+  usageActorEntry,
+  usageActorKind,
+  usageActorLabel,
   type GatewayUsageCalls,
   type GatewayUsageMetrics,
 } from '../dashboard/gateway-usage-adapter.ts'
 import { enrichDashboardWithObservability } from '../observability/dashboard-observability.ts'
 import type {
   ActorFacet,
+  ActorDrillTarget,
   ActorKind,
   ActorUsageEntry,
   AgentDetail,
@@ -23,6 +32,7 @@ import type {
   ToolCallRecord,
   ToolDetail,
   ToolUsageEntry,
+  UsageAttributionFilters,
 } from '../types/metrics.ts'
 
 const USE_MOCK_DATA = process.env.NEXT_PUBLIC_MOCK_DATA === 'true'
@@ -50,15 +60,17 @@ const WINDOW_MS: Record<MetricsWindow, number> = {
   '1h': 60 * 60 * 1000,
   '24h': 24 * 60 * 60 * 1000,
   '7d': 7 * 24 * 60 * 60 * 1000,
+  '30d': 30 * 24 * 60 * 60 * 1000,
 }
 
 const WINDOW_BUCKETS: Record<MetricsWindow, number> = {
   '1h': 12,
   '24h': 24,
   '7d': 14,
+  '30d': 30,
 }
 
-const WINDOW_SCALE: Record<MetricsWindow, number> = { '1h': 1, '24h': 14, '7d': 78 }
+const WINDOW_SCALE: Record<MetricsWindow, number> = { '1h': 1, '24h': 14, '7d': 78, '30d': 300 }
 
 // ── Mock fixtures ──────────────────────────────────────────────────────────
 
@@ -200,13 +212,29 @@ function bucketize(records: ToolCallRecord[], window: MetricsWindow, now: number
     ts: start + Math.round(bucketMs * i),
     calls: 0,
     failed: 0,
+    outcomes: [],
   }))
   for (const record of records) {
     const idx = Math.min(buckets - 1, Math.max(0, Math.floor((record.ts - start) / bucketMs)))
     out[idx].calls += 1
+    const kind = record.outcome === 'ok'
+      ? 'succeeded'
+      : mockOutcomeCategory(record.error_kind)
     if (record.outcome === 'failed') out[idx].failed += 1
+    const outcomes = out[idx].outcomes!
+    const outcome = outcomes.find((entry) => entry.kind === kind)
+    if (outcome) outcome.count += 1
+    else outcomes.push({ kind, count: 1 })
   }
   return out
+}
+
+function mockOutcomeCategory(kind: string | null): string {
+  if (kind === 'timeout' || kind === 'connect_timeout') return 'timeout'
+  if (kind === 'response_too_large' || kind === 'result_too_large') return 'response_too_large'
+  if (kind && ['connect_error', 'connection_error', 'connection_refused', 'dns_error', 'network_error', 'bad_gateway'].includes(kind)) return 'connection_failed'
+  if (kind && ['upstream_error', 'server_error', 'tool_error'].includes(kind)) return 'upstream_error'
+  return 'unknown'
 }
 
 function rankTools(records: ToolCallRecord[]): ToolUsageEntry[] {
@@ -470,13 +498,29 @@ async function postGatewayUsageAction<T>(
   params: object,
   options?: MetricsRequestOptions,
 ): Promise<T> {
-  return withRequestTiming(`metrics.${action}`, async () => {
-    const response = await fetch(
-      metricsActionUrl(options?.baseUrl),
-      gatewayRequestInit(action, params, options?.token, options?.signal, options?.standaloneBearerAuth),
-    )
-    return parseJsonResponse<T>(response)
-  })
+  const generation = getBrowserSessionEpoch()
+  const authority = getSessionAuthority()
+    ? captureGatewayAuthority(options?.signal)
+    : undefined
+  try {
+    return await withRequestTiming(`metrics.${action}`, async () => {
+      const response = await fetch(
+        metricsActionUrl(options?.baseUrl),
+        gatewayRequestInit(
+          action,
+          params,
+          options?.token,
+          authority?.signal ?? options?.signal,
+          options?.standaloneBearerAuth,
+        ),
+      )
+      const payload = await parseJsonResponse<T>(response)
+      assertGatewayAuthorityCurrent(authority?.generation ?? generation)
+      return payload
+    })
+  } finally {
+    authority?.finish()
+  }
 }
 
 function usageTimeBounds(window: MetricsWindow, now: number, query?: ToolCallQuery) {
@@ -495,8 +539,39 @@ function usageFilterParams(window: MetricsWindow, now: number, query?: ToolCallQ
     operation: query?.operation,
     subject_scoped: query?.subject_scoped,
     actor: query?.agent,
+    client_name: query?.client_name,
+    client_version: query?.client_version,
+    agent_id: query?.agent_id,
     outcome: query?.error_kind ?? query?.outcome,
     search: query?.search?.trim() || undefined,
+  }
+}
+
+const ATTRIBUTION_FILTER_KEYS = ['client_name', 'client_version', 'agent_id'] as const
+
+function requestedAttributionFilters(query?: ToolCallQuery): UsageAttributionFilters | undefined {
+  const filters = {
+    client_name: query?.client_name,
+    client_version: query?.client_version,
+    agent_id: query?.agent_id,
+  }
+  return ATTRIBUTION_FILTER_KEYS.some((key) => filters[key] !== undefined) ? filters : undefined
+}
+
+function assertAttributionFiltersApplied(
+  response: { attribution_filters?: UsageAttributionFilters },
+  expected: UsageAttributionFilters | undefined,
+) {
+  if (!expected) return
+  const matches = ATTRIBUTION_FILTER_KEYS.every(
+    (key) => response.attribution_filters?.[key] === expected[key],
+  )
+  if (!matches) {
+    throw new MetricsApiError(
+      'This gateway does not support precise client and agent usage filters. Upgrade it before opening this identity drill-down.',
+      409,
+      'usage_attribution_filters_unsupported',
+    )
   }
 }
 
@@ -542,8 +617,8 @@ function persistedCallRecords(rows: GatewayUsageCalls): ToolCallRecord[] {
     action: call.operation ?? null,
     capability: call.capability,
     agent_id: call.actor,
-    agent_label: call.actor,
-    agent_kind: 'agent',
+    agent_label: usageActorLabel(call.actor, call.attribution),
+    agent_kind: usageActorKind(call.attribution),
     ip: '',
     surface: call.surface ?? 'unknown',
     outcome: call.outcome === 'ok' ? 'ok' : 'failed',
@@ -561,6 +636,9 @@ function summaryTimeseries(summary: GatewayUsageMetrics): MetricsBucket[] {
     ts: bucket.ts_unix * 1000,
     calls: bucket.calls,
     failed: bucket.failed,
+    ...(bucket.outcomes ? {
+      outcomes: bucket.outcomes.map((outcome) => ({ kind: outcome.kind, count: outcome.calls })),
+    } : {}),
   }))
 }
 
@@ -651,29 +729,26 @@ export async function fetchToolDetail(
     avg_elapsed_ms: Math.round(summary.avg_elapsed_ms),
     tokens_collected: false,
     timeseries: summaryTimeseries(summary),
-    top_callers: summary.top_actors.slice(0, 5).map((actor) => ({
-      id: actor.actor,
-      label: actor.actor,
-      kind: 'agent',
-      calls: actor.calls,
-    })),
+    top_callers: summary.top_actors.slice(0, 5).map(usageActorEntry),
     recent: recentCalls(persistedCallRecords(rows)),
   }
 }
 
 export async function fetchAgentDetail(
-  id: string,
+  target: ActorDrillTarget,
   window: MetricsWindow,
   options?: MetricsRequestOptions,
 ): Promise<AgentDetail> {
   if (USE_MOCK_DATA) {
     options?.signal?.throwIfAborted?.()
+    const id = target.filter.actor
     const now = Date.now()
     const records = buildCallStream(window, now).filter((r) => r.agent_id === id)
     const tokens = sumTokens(records)
     const first = records[0]
     return {
       id,
+      filter: target.filter,
       label: first?.agent_label ?? id,
       kind: first?.agent_kind ?? 'agent',
       window,
@@ -686,8 +761,28 @@ export async function fetchAgentDetail(
       recent: recentCalls(records),
     }
   }
+  if (target.kind === 'client' && (!target.filter.client_name || !target.filter.client_version)) {
+    throw new MetricsApiError(
+      'This client record does not include the exact initialized name and version needed for a precise drill-down.',
+      422,
+      'usage_client_identity_incomplete',
+    )
+  }
+  if (target.kind === 'agent' && !target.filter.agent_id) {
+    throw new MetricsApiError(
+      'This Agent record does not include the trusted Agent ID needed for a precise drill-down.',
+      422,
+      'usage_agent_identity_incomplete',
+    )
+  }
   const now = Date.now()
-  const query: ToolCallQuery = { window, agent: id }
+  const query: ToolCallQuery = {
+    window,
+    agent: target.filter.actor,
+    client_name: target.filter.client_name,
+    client_version: target.filter.client_version,
+    agent_id: target.filter.agent_id,
+  }
   const [summary, rows] = await Promise.all([
     postGatewayUsageAction<GatewayUsageMetrics>(
       'gateway.usage.metrics',
@@ -696,10 +791,14 @@ export async function fetchAgentDetail(
     ),
     fetchPersistedCalls(window, options, query, 25, now),
   ])
+  const expectedFilters = requestedAttributionFilters(query)
+  assertAttributionFiltersApplied(summary, expectedFilters)
+  assertAttributionFiltersApplied(rows, expectedFilters)
   return {
-    id,
-    label: id,
-    kind: 'agent',
+    id: target.filter.actor,
+    filter: target.filter,
+    label: target.label,
+    kind: target.kind,
     window,
     calls: summary.total_calls,
     failed: summary.error_calls,
@@ -798,6 +897,9 @@ export async function fetchToolCalls(
     ),
     fetchPersistedCalls(query.window, options, query, query.limit ?? 50, now),
   ])
+  const expectedFilters = requestedAttributionFilters(query)
+  assertAttributionFiltersApplied(summary, expectedFilters)
+  assertAttributionFiltersApplied(rows, expectedFilters)
   const bounds = usageTimeBounds(query.window, now, query)
   const durationMinutes = Math.max(1, (bounds.until_unix - bounds.since_unix) / 60)
   return {
@@ -829,4 +931,18 @@ export async function fetchToolCalls(
     },
     collected: { actors: true, ips: false, surfaces: false, tokens: false },
   }
+}
+
+/** Complete upstream summary, including timestamped buckets and tool rankings. */
+export async function fetchGatewayUsageMetrics(
+  window: MetricsWindow,
+  upstream: string,
+  now = Date.now(),
+  options?: MetricsRequestOptions,
+): Promise<GatewayUsageMetrics> {
+  return postGatewayUsageAction<GatewayUsageMetrics>(
+    'gateway.usage.metrics',
+    usageMetricsParams(window, now, { window, upstream }, { buckets: true }),
+    options,
+  )
 }

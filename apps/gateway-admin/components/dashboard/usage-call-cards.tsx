@@ -82,8 +82,8 @@ export function UsageCallCards({
           </div>
           <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-[11px]">
             <div className="min-w-0">
-              <div className="uppercase tracking-[0.08em] text-aurora-text-muted">Agent</div>
-              <div className="truncate text-aurora-text-primary">{call.agent_label === 'unattributed' ? 'Not attributed' : call.agent_label}</div>
+              <div className="uppercase tracking-[0.08em] text-aurora-text-muted">Scope</div>
+              <div className="truncate text-aurora-text-primary">{call.subject_scoped ? 'OAuth subject' : 'Shared'}</div>
             </div>
             <div>
               <div className="uppercase tracking-[0.08em] text-aurora-text-muted">Outcome</div>

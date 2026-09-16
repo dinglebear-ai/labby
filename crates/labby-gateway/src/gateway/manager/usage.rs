@@ -15,10 +15,10 @@ use crate::gateway::params::{
     GatewayEnrichmentScope, GatewayUsageCallsParams, GatewayUsageMetricsParams,
 };
 use crate::gateway::types::{
-    GatewayUsageActorCount, GatewayUsageCallView, GatewayUsageCallsView, GatewayUsageErrorCount,
-    GatewayUsageFacets, GatewayUsageHourCount, GatewayUsageLatencyStat, GatewayUsageMetricsView,
-    GatewayUsageTimeBucket, GatewayUsageToolCount, GatewayUsageToolFacet,
-    GatewayUsageUpstreamCount,
+    GatewayUsageActorCount, GatewayUsageAttributionFilters, GatewayUsageCallView,
+    GatewayUsageCallsView, GatewayUsageErrorCount, GatewayUsageFacets, GatewayUsageHourCount,
+    GatewayUsageLatencyStat, GatewayUsageMetricsView, GatewayUsageTimeBucket,
+    GatewayUsageToolCount, GatewayUsageToolFacet, GatewayUsageUpstreamCount,
 };
 
 impl GatewayManager {
@@ -42,6 +42,11 @@ impl GatewayManager {
             });
         };
         let allowed_upstreams = scoped_allowed_upstreams(&scope, params.upstream.as_deref())?;
+        let attribution_filters = attribution_filter_echo(
+            &params.client_name,
+            &params.client_version,
+            &params.agent_id,
+        );
         let timezone_offset_minutes =
             validate_timezone_offset(params.timezone_offset_minutes.unwrap_or(0))?;
         let metrics = store
@@ -54,6 +59,9 @@ impl GatewayManager {
                 operation: params.operation,
                 subject_scoped: params.subject_scoped,
                 actor: params.actor,
+                client_name: params.client_name,
+                client_version: params.client_version,
+                agent_id: params.agent_id,
                 outcome: params.outcome,
                 search: params.search,
                 bucket_count: params.bucket_count.unwrap_or(0).min(MAX_METRICS_BUCKETS),
@@ -82,6 +90,8 @@ impl GatewayManager {
             p99_elapsed_ms: metrics.p99_elapsed_ms,
             distinct_tools: metrics.distinct_tools,
             distinct_actors: metrics.distinct_actors,
+            attribution_filters,
+            actor_populations: metrics.actor_populations,
             peak_per_min: metrics.peak_per_min,
             top_tools: metrics.top_tools.into_iter().map(map_tool).collect(),
             least_tools: metrics.least_tools.into_iter().map(map_tool).collect(),
@@ -90,6 +100,7 @@ impl GatewayManager {
                 .into_iter()
                 .map(|a| GatewayUsageActorCount {
                     actor: a.actor,
+                    attribution: a.attribution,
                     calls: a.calls,
                 })
                 .collect(),
@@ -137,6 +148,14 @@ impl GatewayManager {
                     ts_unix: b.ts_unix,
                     calls: b.calls,
                     failed: b.failed,
+                    outcomes: b
+                        .outcomes
+                        .into_iter()
+                        .map(|outcome| GatewayUsageErrorCount {
+                            kind: outcome.kind,
+                            calls: outcome.calls,
+                        })
+                        .collect(),
                 })
                 .collect(),
             facets: GatewayUsageFacets {
@@ -179,6 +198,11 @@ impl GatewayManager {
             });
         };
         let allowed_upstreams = scoped_allowed_upstreams(&scope, params.upstream.as_deref())?;
+        let attribution_filters = attribution_filter_echo(
+            &params.client_name,
+            &params.client_version,
+            &params.agent_id,
+        );
         if params.offset.unwrap_or(0) > 0 {
             return Err(ToolError::InvalidParam {
                 message: "offset pagination is disabled; pass the previous page's cursor"
@@ -205,6 +229,9 @@ impl GatewayManager {
                 operation: params.operation,
                 subject_scoped: params.subject_scoped,
                 actor: params.actor,
+                client_name: params.client_name,
+                client_version: params.client_version,
+                agent_id: params.agent_id,
                 outcome: params.outcome,
                 search: params.search,
                 allowed_upstreams,
@@ -214,6 +241,7 @@ impl GatewayManager {
             })
             .await?;
         Ok(GatewayUsageCallsView {
+            attribution_filters,
             calls: rows
                 .into_iter()
                 .map(|r| GatewayUsageCallView {
@@ -224,6 +252,7 @@ impl GatewayManager {
                     operation: r.operation,
                     subject_scoped: r.subject_scoped,
                     actor: r.actor,
+                    attribution: r.attribution,
                     outcome: r.outcome,
                     elapsed_ms: r.elapsed_ms,
                     response_bytes: r.response_bytes,
@@ -233,6 +262,20 @@ impl GatewayManager {
             next_cursor: next_cursor.map(format_usage_cursor),
         })
     }
+}
+
+fn attribution_filter_echo(
+    client_name: &Option<String>,
+    client_version: &Option<String>,
+    agent_id: &Option<String>,
+) -> Option<GatewayUsageAttributionFilters> {
+    (client_name.is_some() || client_version.is_some() || agent_id.is_some()).then(|| {
+        GatewayUsageAttributionFilters {
+            client_name: client_name.clone(),
+            client_version: client_version.clone(),
+            agent_id: agent_id.clone(),
+        }
+    })
 }
 
 fn validate_timezone_offset(value: i32) -> Result<i32, ToolError> {

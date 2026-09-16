@@ -19,6 +19,7 @@ export class ServerLogsApiError extends Error implements ServiceActionError {
 export interface ServerLogsQuery {
   limit?: number
   level?: string
+  levels?: string[]
   service?: string
   action?: string
   kind?: string
@@ -33,10 +34,30 @@ export interface ServerLogsRequestOptions {
   signal?: AbortSignal
 }
 
-export function queryServerLogs(params: ServerLogsQuery = {}, options?: ServerLogsRequestOptions) {
+function canonicalLevels(levels: readonly string[]) {
+  return [...new Set(levels.map((level) => level.trim().toUpperCase()))].sort()
+}
+
+function assertPluralLevelsApplied(params: ServerLogsQuery, result: ServerLogsResult) {
+  if (params.levels === undefined) return
+  const expected = canonicalLevels(params.levels)
+  const actual = Array.isArray(result.filters?.levels)
+    ? canonicalLevels(result.filters.levels)
+    : null
+  if (!actual || actual.length !== expected.length || actual.some((level, index) => level !== expected[index])) {
+    throw new ServerLogsApiError(
+      'The connected Labby server did not apply the requested log level filters. Upgrade the server before using multi-level filtering.',
+      409,
+      'server_logs_levels_unsupported',
+      'levels',
+    )
+  }
+}
+
+export async function queryServerLogs(params: ServerLogsQuery = {}, options?: ServerLogsRequestOptions) {
   if (process.env.NEXT_PUBLIC_MOCK_DATA === 'true') {
     const now = Date.now()
-    const entries = [
+    const allEntries = [
       mockEntry(now - 1480, 'req-74b2', 'start', 'INFO', { surface: 'mcp', service: 'gateway', action: 'tool.call', actor_key: 'actor-8f21' }),
       mockEntry(now - 1412, 'req-74b2', 'start', 'INFO', { surface: 'dispatch', service: 'upstream.pool', action: 'upstream.request', upstream: 'github', operation: 'tool.call' }),
       mockEntry(now - 1260, 'req-74b2', 'finish', 'INFO', { surface: 'dispatch', service: 'upstream.pool', action: 'upstream.request', upstream: 'github', operation: 'tool.call', elapsed_ms: 152, response_bytes: 18420 }),
@@ -47,18 +68,31 @@ export function queryServerLogs(params: ServerLogsQuery = {}, options?: ServerLo
       mockEntry(now - 8650, 'req-c030', 'error', 'WARN', { surface: 'dispatch', service: 'upstream.pool', action: 'upstream.request', upstream: 'slack', operation: 'tool.call', elapsed_ms: 250, kind: 'timeout' }),
       mockEntry(now - 8640, 'req-c030', 'error', 'WARN', { surface: 'mcp', service: 'gateway', action: 'tool.call', elapsed_ms: 260, kind: 'timeout' }),
     ]
-    return Promise.resolve({
+    const levels = params.levels === undefined ? undefined : canonicalLevels(params.levels)
+    const query = params.query?.toLowerCase()
+    const entries = allEntries.filter((entry) =>
+      (!params.level || entry.level === params.level.toUpperCase())
+      && (!levels?.length || levels.includes(entry.level))
+      && (!params.service || entry.service.toLowerCase().includes(params.service.toLowerCase()))
+      && (!query || JSON.stringify(entry).toLowerCase().includes(query)),
+    )
+    const result: ServerLogsResult = {
       kind: 'server_logs' as const,
+      filters: { level: params.level ?? null, levels: levels ?? [], service: params.service ?? null },
       entries,
+      available_sources: [...new Set(allEntries.map((entry) => entry.service))].sort(),
+      available_sources_complete: true,
       matched: entries.length,
       scanned_lines: entries.length,
       malformed_lines: 0,
       scanned_bytes: 4096,
       max_scan_bytes: params.max_scan_bytes ?? 8 * 1024 * 1024,
       truncated: false,
-    })
+    }
+    assertPluralLevelsApplied(params, result)
+    return result
   }
-  return performServiceAction<ServerLogsResult, ServerLogsApiError>({
+  const result = await performServiceAction<ServerLogsResult, ServerLogsApiError>({
     action: 'server_logs.query',
     params,
     signal: options?.signal,
@@ -66,6 +100,8 @@ export function queryServerLogs(params: ServerLogsQuery = {}, options?: ServerLo
     url: serverLogsActionUrl(options?.baseUrl),
     createError: (message, status, code, param) => new ServerLogsApiError(message, status, code, param),
   })
+  assertPluralLevelsApplied(params, result)
+  return result
 }
 
 function mockEntry(

@@ -92,9 +92,8 @@ export function UsageCallDetailContent({
           <DetailRow label="Target" mono>{call.tool}</DetailRow>
           <DetailRow label="Operation" mono>{call.action ?? '—'}</DetailRow>
           <DetailRow label="Capability" mono>{call.capability ?? '—'}</DetailRow>
-          <DetailRow label="Agent">
-            {call.agent_label === 'unattributed' ? 'Not attributed' : call.agent_label}
-          </DetailRow>
+          {call.agent_kind === 'agent' ? <DetailRow label="Labby Agent">{call.agent_label}</DetailRow> : null}
+          {call.agent_kind === 'client' && !/^(?:rmcp|unattributed)$/i.test(call.agent_label) ? <DetailRow label="Self-reported client">{call.agent_label}</DetailRow> : null}
           <DetailRow label="OAuth scope">
             {call.subject_scoped ? 'Subject-scoped' : 'Shared / not subject-scoped'}
           </DetailRow>

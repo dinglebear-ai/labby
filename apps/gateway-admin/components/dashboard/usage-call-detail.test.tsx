@@ -50,3 +50,12 @@ test('usage call detail omits telemetry dimensions that were not collected', () 
   assert.doesNotMatch(html, /Source IP/)
   assert.doesNotMatch(html, />Tokens</)
 })
+
+test('usage call detail does not present a generic transport as an Agent', () => {
+  const html = renderToStaticMarkup(
+    <UsageCallDetailContent call={{ ...call, agent_kind: 'client', agent_label: 'rmcp' }} tokensCollected={false} ipsCollected={false} surfacesCollected />,
+  )
+  assert.doesNotMatch(html, />Agent</)
+  assert.doesNotMatch(html, /rmcp/)
+  assert.match(html, /OAuth scope/)
+})

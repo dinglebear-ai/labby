@@ -73,3 +73,17 @@ test('name and kind sort use displayed values without mutating catalog order', (
   assert.notEqual(sortLibraryArtifacts(rows, 'catalog'), rows)
   assert.deepEqual(rows, original)
 })
+
+
+test('library views use explicit fork lineage and visibility rather than treating following as a fork', async () => {
+  const { filterLibraryView, libraryRevisionDate } = await import('./library-model')
+  const artifacts = [
+    { id: 'follow', lineage: { following: true, upstreamArtifactId: 'upstream' }, publication: { visibility: 'public' } },
+    { id: 'fork', lineage: { forkedFromArtifactId: 'source' }, publication: { visibility: 'private' } },
+  ]
+  assert.deepEqual(filterLibraryView(artifacts, 'forks').map((artifact) => artifact.id), ['fork'])
+  assert.deepEqual(filterLibraryView(artifacts, 'published').map((artifact) => artifact.id), ['follow'])
+  assert.deepEqual(filterLibraryView(artifacts, 'private').map((artifact) => artifact.id), ['fork'])
+  assert.equal(libraryRevisionDate({ currentRevision: { createdAt: 'invalid' } }), undefined)
+  assert.equal(libraryRevisionDate({ currentRevision: { createdAt: '2026-09-13T00:00:00Z' } }), '2026-09-13T00:00:00Z')
+})

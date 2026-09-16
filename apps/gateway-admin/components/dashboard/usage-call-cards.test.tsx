@@ -56,3 +56,19 @@ test('call cards are plain articles when no selection handler is supplied', asyn
     await window.happyDOM.close()
   }
 })
+
+test('call cards present reliable connection scope instead of inferred agent identity', async () => {
+  const window = installTestDom()
+  Object.defineProperty(globalThis, 'self', { value: window, configurable: true })
+  const { UsageCallCards } = await import('./usage-call-cards')
+  const view = await renderClient(<AppRouterContext.Provider value={router as never}>
+    <UsageCallCards calls={[{ ...call, agent_label: 'rmcp', agent_kind: 'client', subject_scoped: true }]} isLoading={false} error={undefined} onRetry={() => {}} />
+  </AppRouterContext.Provider>)
+  try {
+    assert.match(view.container.textContent ?? '', /ScopeOAuth subject/)
+    assert.doesNotMatch(view.container.textContent ?? '', /rmcp|Agent/)
+  } finally {
+    await view.unmount()
+    await window.happyDOM.close()
+  }
+})

@@ -129,7 +129,7 @@ export function TokensByToolPanel({
 
 // ── Upstreams ────────────────────────────────────────────────────────────
 
-export function UpstreamsPanel({ upstreams, onSelect }: { upstreams: UpstreamUsage[]; onSelect?: (name: string) => void }) {
+export function UpstreamsPanel({ upstreams, onSelect, window }: { upstreams: UpstreamUsage[]; onSelect?: (name: string) => void; window?: MetricsWindow }) {
   const items: MetricBarItem[] = upstreams.map((u) => ({
     key: u.name,
     label: u.name,
@@ -141,7 +141,7 @@ export function UpstreamsPanel({ upstreams, onSelect }: { upstreams: UpstreamUsa
     <DashboardPanel
       title="Most active servers"
       icon={<Server className="size-4" />}
-      meta={`${upstreams.length} server${upstreams.length === 1 ? '' : 's'}`}
+      meta={window ? `by calls · ${WINDOW_LABELS[window]}` : `${upstreams.length} server${upstreams.length === 1 ? '' : 's'}`}
     >
       <MetricBarList items={items} mono />
     </DashboardPanel>
@@ -170,8 +170,8 @@ export function CallOutcomesPanel({
   const labels: Record<string, string> = { upstream_error: 'Upstream error', timeout: 'Timed out', timed_out: 'Timed out', response_too_large: 'Response too large', connection_failed: 'Connection failed' }
   const reportedFailures = errors.by_kind.reduce((sum, entry) => sum + entry.count, 0)
   const items: MetricBarItem[] = [
-    { key: 'succeeded', label: 'Succeeded', value: toolCalls.succeeded, display: formatCompactNumber(toolCalls.succeeded), onSelect: onSelectOutcome ? () => onSelectOutcome('ok') : undefined },
-    ...errors.by_kind.map(entry => ({ key: `error:${entry.kind}`, label: Object.hasOwn(labels, entry.kind) ? labels[entry.kind] : entry.kind, value: entry.count, display: formatCompactNumber(entry.count), tone: entry.kind === 'timeout' || entry.kind === 'timed_out' ? 'warn' as const : 'error' as const, onSelect: onSelectError ? () => onSelectError(entry.kind) : undefined })),
+    { key: 'succeeded', label: 'Succeeded', tone: 'success', value: toolCalls.succeeded, display: formatCompactNumber(toolCalls.succeeded), onSelect: onSelectOutcome ? () => onSelectOutcome('ok') : undefined },
+    ...errors.by_kind.map(entry => ({ key: `error:${entry.kind}`, label: Object.hasOwn(labels, entry.kind) ? labels[entry.kind] : entry.kind, value: entry.count, display: formatCompactNumber(entry.count), tone: entry.kind === 'timeout' || entry.kind === 'timed_out' ? 'warn' as const : entry.kind === 'response_too_large' ? 'pink' as const : 'error' as const, onSelect: onSelectError ? () => onSelectError(entry.kind) : undefined })),
     ...(toolCalls.failed > reportedFailures ? [{ key: 'other-failures', label: errors.by_kind.length ? 'Other failures' : 'Failed', value: toolCalls.failed - reportedFailures, display: formatCompactNumber(toolCalls.failed - reportedFailures), tone: 'error' as const, onSelect: onSelectOutcome ? () => onSelectOutcome('failed') : undefined }] : []),
   ]
 

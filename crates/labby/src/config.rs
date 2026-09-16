@@ -17,6 +17,7 @@
 pub mod depot;
 #[cfg(test)]
 mod depot_tests;
+pub mod dev_containers;
 pub mod env_merge;
 mod env_writer;
 pub mod host_write;
@@ -181,6 +182,26 @@ static RESOLVED_INSTALL_ANDROID_SDK: AtomicBool = AtomicBool::new(false);
 static RESOLVED_SYMBOLS: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 static RESOLVED_PROTECTED_MCP_TIMEOUT_SECS: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
 static RESOLVED_CATALOG_NOTIFICATION_TIMEOUT_MS: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
+static RESOLVED_AGENT_HARNESSES: OnceLock<Mutex<Vec<AgentHarnessConfig>>> = OnceLock::new();
+#[derive(Clone)]
+pub(crate) struct ResolvedDevContainerConfig {
+    pub catalog: labby_runtime::dev_container_image_runtime::ApprovedProvisionCatalog,
+    pub secret_values: BTreeMap<String, String>,
+}
+
+static RESOLVED_DEV_CONTAINER_CONFIG: OnceLock<Mutex<ResolvedDevContainerConfig>> = OnceLock::new();
+#[cfg(test)]
+static DEV_CONTAINER_CONFIG_TEST_LOCK: OnceLock<std::sync::Arc<tokio::sync::Mutex<()>>> =
+    OnceLock::new();
+
+#[cfg(test)]
+pub(crate) async fn dev_container_config_test_guard() -> tokio::sync::OwnedMutexGuard<()> {
+    DEV_CONTAINER_CONFIG_TEST_LOCK
+        .get_or_init(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+        .lock_owned()
+        .await
+}
 
 fn resolved_symbols_cell() -> &'static Mutex<Option<String>> {
     RESOLVED_SYMBOLS.get_or_init(|| Mutex::new(None))
@@ -194,10 +215,48 @@ fn resolved_catalog_notification_timeout_cell() -> &'static Mutex<Option<u64>> {
     RESOLVED_CATALOG_NOTIFICATION_TIMEOUT_MS.get_or_init(|| Mutex::new(None))
 }
 
+fn resolved_agent_harnesses_cell() -> &'static Mutex<Vec<AgentHarnessConfig>> {
+    RESOLVED_AGENT_HARNESSES.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+pub(crate) fn resolved_agent_harnesses() -> Vec<AgentHarnessConfig> {
+    resolved_agent_harnesses_cell()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+fn resolved_dev_container_config_cell() -> &'static Mutex<ResolvedDevContainerConfig> {
+    RESOLVED_DEV_CONTAINER_CONFIG.get_or_init(|| {
+        Mutex::new(ResolvedDevContainerConfig {
+            catalog: labby_runtime::dev_container_image_runtime::ApprovedProvisionCatalog::deny_all(
+            ),
+            secret_values: BTreeMap::new(),
+        })
+    })
+}
+
+pub(crate) fn resolved_dev_container_build_catalog()
+-> labby_runtime::dev_container_image_runtime::ApprovedProvisionCatalog {
+    resolved_dev_container_config_cell()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .catalog
+        .clone()
+}
+
+pub(crate) fn resolved_dev_container_config() -> ResolvedDevContainerConfig {
+    resolved_dev_container_config_cell()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
 /// Resolve config.toml + env-var precedence for the small set of
 /// preferences read from call sites without direct config access, and cache
-/// the result process-wide. Call once, early, right after `config.toml`
-/// loads (before `.env` loads and before dispatch) — see `entrypoint.rs`.
+/// the result process-wide. Call once after `config.toml` and the canonical
+/// `.env` load but before dispatch, so opaque Dev Container secret references
+/// bind to one immutable process snapshot — see `entrypoint.rs`.
 pub(crate) fn install_resolved_preferences(config: &LabConfig) {
     RESOLVED_SHOW_ALL.store(
         env_flag_enabled("LABBY_SHOW_ALL") || config.mcp.show_all.unwrap_or(false),
@@ -218,6 +277,28 @@ pub(crate) fn install_resolved_preferences(config: &LabConfig) {
             || config.setup.install_android_sdk.unwrap_or(false),
         Ordering::Release,
     );
+    *resolved_agent_harnesses_cell()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = config.agents.harnesses.clone();
+    let dev_container_catalog = config
+        .dev_containers
+        .catalog()
+        .expect("LabConfig validation must precede resolved preference installation");
+    let dev_container_secret_values = dev_container_catalog
+        .environment_source_names()
+        .filter_map(|name| {
+            std::env::var(name)
+                .ok()
+                .filter(|value| !value.is_empty())
+                .map(|value| (name.to_owned(), value))
+        })
+        .collect();
+    *resolved_dev_container_config_cell()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = ResolvedDevContainerConfig {
+        catalog: dev_container_catalog,
+        secret_values: dev_container_secret_values,
+    };
     let symbols = std::env::var("LABBY_SYMBOLS")
         .ok()
         .or_else(|| config.output.symbols.clone());
@@ -413,6 +494,15 @@ pub struct LabConfig {
     /// Optional server-held exact-revision Skill acquisition connections.
     #[serde(default)]
     pub artifacts: ArtifactPreferences,
+    /// Explicitly approved local coding-agent harness subprocesses.
+    #[serde(default)]
+    pub agents: AgentPreferences,
+    /// Container-local Codex App Server used by the Phoenix assistant.
+    #[serde(default)]
+    pub phoenix: PhoenixPreferences,
+    /// Operator-approved Dev Container image provisioning and build-network catalog.
+    #[serde(default)]
+    pub dev_containers: dev_containers::DevContainerPreferences,
     /// Maximum time to wait for one proxied upstream MCP tool/resource/prompt response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream_request_timeout_ms: Option<u64>,
@@ -475,6 +565,230 @@ pub struct LabConfig {
 impl Default for LabConfig {
     fn default() -> Self {
         toml::from_str("").expect("the empty built-in LabConfig must deserialize")
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentPreferences {
+    /// Empty by default. An Agent cannot execute until its pinned harness
+    /// digest matches one of these operator-owned descriptors.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub harnesses: Vec<AgentHarnessConfig>,
+}
+
+/// Operator-owned launch boundary for Phoenix.
+///
+/// Every path is resolved inside the Labby runtime environment. The browser
+/// never supplies an executable, Codex home, or workspace path.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PhoenixPreferences {
+    /// Phoenix stays unavailable until an operator explicitly enables it.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Absolute path to the Codex CLI installed in the Labby container.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<PathBuf>,
+    /// Isolated Codex home owned by the Labby container.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_home: Option<PathBuf>,
+    /// Read-only working directory visible to Phoenix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_root: Option<PathBuf>,
+    /// Optional pinned model. Omission uses the container's Codex default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+impl PhoenixPreferences {
+    fn validate(&self) -> Result<(), ConfigError> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let paths = [&self.command, &self.codex_home, &self.workspace_root];
+        if paths
+            .iter()
+            .any(|path| path.as_ref().is_none_or(|path| !path.is_absolute()))
+        {
+            return Err(ConfigError::InvalidProxyConfig {
+                reason: "invalid [phoenix] configuration: enabled Phoenix requires absolute command, codex_home, and workspace_root paths".into(),
+            });
+        }
+        if self.model.as_ref().is_some_and(|model| {
+            model.is_empty() || model.len() > 128 || model.contains(char::is_whitespace)
+        }) {
+            return Err(ConfigError::InvalidProxyConfig {
+                reason: "invalid [phoenix] configuration: model must be a bounded identifier"
+                    .into(),
+            });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentHarnessConfig {
+    pub id: String,
+    /// Exact Agent definition pins this operator-provisioned harness is
+    /// approved to execute. Admission compares every field before spawning.
+    pub content_digest: String,
+    pub repository_digest: String,
+    pub image_digest: String,
+    pub loadout_digest: String,
+    pub catalog_generation: String,
+    /// Absolute executable path. It is never sourced from an Agent definition
+    /// or caller input.
+    pub command: PathBuf,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<PathBuf>,
+    /// Process environment names copied into the child. Values remain in the
+    /// server environment and are never serialized into config or discovery.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inherit_env: Vec<String>,
+}
+
+impl AgentHarnessConfig {
+    /// Content address for the complete non-secret launch descriptor. Agent
+    /// revisions pin this value, so an operator command/argv/cwd change cannot
+    /// silently alter an existing Agent's execution environment.
+    #[must_use]
+    pub fn digest(&self) -> String {
+        use sha2::{Digest as _, Sha256};
+        let canonical = serde_json::json!({
+            "schema_version": 1,
+            "id": self.id,
+            "content_digest": self.content_digest,
+            "repository_digest": self.repository_digest,
+            "image_digest": self.image_digest,
+            "loadout_digest": self.loadout_digest,
+            "catalog_generation": self.catalog_generation,
+            "command": self.command,
+            "args": self.args,
+            "cwd": self.cwd,
+            "inherit_env": self.inherit_env,
+        });
+        let bytes = serde_json::to_vec(&canonical).expect("agent harness descriptor serializes");
+        format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
+    }
+
+    #[must_use]
+    pub(crate) fn matches_definition(
+        &self,
+        definition: &labby_primitives::agent::AgentDefinition,
+    ) -> bool {
+        self.digest() == definition.revision.harness_digest
+            && self.content_digest == definition.revision.content_digest
+            && self.repository_digest == definition.revision.repository_digest
+            && self.image_digest == definition.revision.image_digest
+            && self.loadout_digest == definition.revision.loadout_digest
+            && self.catalog_generation == definition.revision.catalog_generation
+    }
+}
+
+impl AgentPreferences {
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.harnesses.len() > 16 {
+            return Err(invalid_agent_config(
+                "at most 16 harnesses may be configured",
+            ));
+        }
+        let mut ids = std::collections::HashSet::new();
+        let mut digests = std::collections::HashSet::new();
+        for harness in &self.harnesses {
+            let id_valid = !harness.id.is_empty()
+                && harness.id.len() <= 64
+                && harness
+                    .id
+                    .chars()
+                    .all(|value| value.is_ascii_alphanumeric() || matches!(value, '-' | '_'));
+            if !id_valid || !ids.insert(harness.id.clone()) {
+                return Err(invalid_agent_config(
+                    "harness ids must be unique 1-64 character ASCII identifiers",
+                ));
+            }
+            if !harness.command.is_absolute()
+                || harness.command.as_os_str().is_empty()
+                || harness.args.len() > 64
+                || harness.args.iter().any(|arg| {
+                    arg.len() > 4096
+                        || arg.contains('\0')
+                        || arg.contains('\n')
+                        || arg.contains('\r')
+                })
+                || harness.cwd.as_ref().is_some_and(|cwd| !cwd.is_absolute())
+            {
+                return Err(invalid_agent_config(
+                    "harness command/cwd must be absolute and argv must be bounded literal values",
+                ));
+            }
+            if ![
+                &harness.content_digest,
+                &harness.repository_digest,
+                &harness.image_digest,
+                &harness.loadout_digest,
+            ]
+            .into_iter()
+            .all(|digest| valid_sha256_digest(digest))
+                || harness.catalog_generation.is_empty()
+                || harness.catalog_generation.len() > 256
+                || harness.catalog_generation != harness.catalog_generation.trim()
+                || harness.catalog_generation.chars().any(char::is_control)
+            {
+                return Err(invalid_agent_config(
+                    "harness definition pins must be exact sha256 digests and a bounded catalog generation",
+                ));
+            }
+            let mut env_names = std::collections::HashSet::new();
+            for name in &harness.inherit_env {
+                let valid = !name.is_empty()
+                    && name.len() <= 128
+                    && name.starts_with(|c: char| c.is_ascii_uppercase())
+                    && name
+                        .chars()
+                        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+                    && !name.starts_with("LABBY_")
+                    && !matches!(
+                        name.as_str(),
+                        "LD_PRELOAD"
+                            | "LD_LIBRARY_PATH"
+                            | "DYLD_INSERT_LIBRARIES"
+                            | "DYLD_LIBRARY_PATH"
+                            | "RUSTC_WRAPPER"
+                            | "IFS"
+                            | "SHELL"
+                            | "PWD"
+                    );
+                if !valid || !env_names.insert(name) {
+                    return Err(invalid_agent_config(
+                        "harness inherited environment names must be unique safe uppercase names",
+                    ));
+                }
+            }
+            if !digests.insert(harness.digest()) {
+                return Err(invalid_agent_config(
+                    "configured harness descriptors must be unique",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn valid_sha256_digest(value: &str) -> bool {
+    value.len() == 71
+        && value.starts_with("sha256:")
+        && value[7..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn invalid_agent_config(reason: impl Into<String>) -> ConfigError {
+    ConfigError::InvalidProxyConfig {
+        reason: format!("invalid [agents] configuration: {}", reason.into()),
     }
 }
 
@@ -636,6 +950,13 @@ impl LabConfig {
             });
         }
         self.code_mode.validate()?;
+        self.agents.validate()?;
+        self.phoenix.validate()?;
+        self.dev_containers
+            .validate()
+            .map_err(|reason| ConfigError::InvalidProxyConfig {
+                reason: format!("invalid [dev_containers] configuration: {reason}"),
+            })?;
         self.file_stash.validate()?;
         self.proxy
             .validate()
@@ -2004,6 +2325,7 @@ fn validate_top_level_extension_boundary(raw: &str) -> Result<()> {
         "web",
         "workspace",
         "file_stash",
+        "dev_containers",
         "oauth",
         "admin",
         "services",
@@ -2815,6 +3137,27 @@ mod tests {
     }
 
     #[test]
+    fn phoenix_requires_operator_owned_absolute_paths_when_enabled() {
+        let disabled: LabConfig = toml::from_str("[phoenix]\nenabled = false\n").unwrap();
+        disabled.validate().unwrap();
+
+        let missing: LabConfig = toml::from_str("[phoenix]\nenabled = true\n").unwrap();
+        assert!(
+            missing
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("[phoenix]")
+        );
+
+        let configured: LabConfig = toml::from_str(
+            "[phoenix]\nenabled = true\ncommand = \"/home/labby/.local/bin/codex\"\ncodex_home = \"/home/labby/.codex\"\nworkspace_root = \"/home/labby\"\nmodel = \"gpt-5.6-sol\"\n",
+        )
+        .unwrap();
+        configured.validate().unwrap();
+    }
+
+    #[test]
     fn patching_legacy_config_persists_the_migrated_format_version() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
@@ -2987,6 +3330,35 @@ mod tests {
             resolved_catalog_notification_timeout(),
             Duration::from_millis(DEFAULT_CATALOG_NOTIFICATION_TIMEOUT_MS)
         );
+    }
+
+    #[test]
+    fn agent_harnesses_require_absolute_operator_owned_launch_descriptors() {
+        let mut config = LabConfig::default();
+        config.agents.harnesses.push(AgentHarnessConfig {
+            id: "codex".into(),
+            content_digest: format!("sha256:{}", "a".repeat(64)),
+            repository_digest: format!("sha256:{}", "b".repeat(64)),
+            image_digest: format!("sha256:{}", "c".repeat(64)),
+            loadout_digest: format!("sha256:{}", "d".repeat(64)),
+            catalog_generation: "catalog-1".into(),
+            command: PathBuf::from("codex"),
+            args: vec!["exec".into(), "-".into()],
+            cwd: None,
+            inherit_env: vec!["OPENAI_API_KEY".into()],
+        });
+        assert!(config.validate().is_err());
+
+        config.agents.harnesses[0].command = PathBuf::from("/usr/local/bin/codex");
+        assert!(config.validate().is_ok());
+        let first = config.agents.harnesses[0].digest();
+        config.agents.harnesses[0].args.push("--json".into());
+        assert_ne!(config.agents.harnesses[0].digest(), first);
+
+        config.agents.harnesses[0]
+            .inherit_env
+            .push("LD_PRELOAD".into());
+        assert!(config.validate().is_err());
     }
 
     fn parse_normalized_config(toml: &str) -> LabConfig {

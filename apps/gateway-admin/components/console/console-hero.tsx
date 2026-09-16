@@ -28,6 +28,7 @@ export type ConsoleHeroStat = {
 export function ConsoleHero({
   eyebrow,
   icon,
+  iconTone,
   pulse,
   title,
   description,
@@ -46,6 +47,7 @@ export function ConsoleHero({
   eyebrow: string
   /** Optional page identity beside the heading; omitted on existing heroes. */
   icon?: React.ReactNode
+  iconTone?: 'success'
   pulse?: { color: string; label?: string }
   title: string
   description?: React.ReactNode
@@ -81,7 +83,7 @@ export function ConsoleHero({
         }}
       >
         <div data-console-hero-copy="1" style={{ minWidth: 0, ...(icon ? { display: 'flex', flex: '1 1 20rem', gap: variant === 'authoring' ? 16 : compact ? 14 : 'var(--space-5)', alignItems: 'flex-start' } : {}) }}>
-          {icon ? <span data-console-hero-icon="1" aria-hidden="true" className="grid size-12 shrink-0 place-items-center rounded-aurora-1 border border-aurora-border-strong bg-aurora-control-surface text-aurora-accent-strong" style={compact ? { width: 44, height: 44, marginTop: 3, borderRadius: 13, borderColor: variant === 'authoring' ? 'color-mix(in srgb, var(--aurora-accent-pink-deep) 40%, transparent)' : 'color-mix(in srgb, var(--aurora-accent-primary) 34%, transparent)', background: variant === 'authoring' ? 'color-mix(in srgb, var(--aurora-accent-pink) 10%, transparent)' : 'color-mix(in srgb, var(--aurora-accent-primary) 10%, transparent)', boxShadow: 'var(--aurora-highlight-strong)' } : undefined}>{icon}</span> : null}
+          {icon ? <span data-console-hero-icon="1" aria-hidden="true" className="grid size-12 shrink-0 place-items-center rounded-aurora-1 border border-aurora-border-strong bg-aurora-control-surface text-aurora-accent-strong" style={compact ? { width: 44, height: 44, marginTop: 3, borderRadius: 13, borderColor: iconTone === 'success' ? 'color-mix(in srgb, var(--aurora-success) 34%, transparent)' : variant === 'authoring' ? 'color-mix(in srgb, var(--aurora-accent-pink-deep) 40%, transparent)' : 'color-mix(in srgb, var(--aurora-accent-primary) 34%, transparent)', background: iconTone === 'success' ? 'color-mix(in srgb, var(--aurora-success) 10%, transparent)' : variant === 'authoring' ? 'color-mix(in srgb, var(--aurora-accent-pink) 10%, transparent)' : 'color-mix(in srgb, var(--aurora-accent-primary) 10%, transparent)', boxShadow: 'var(--aurora-highlight-strong)' } : undefined}>{icon}</span> : null}
           <div style={{ minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             <span

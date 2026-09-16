@@ -16,18 +16,21 @@ test('status strip shows a visible unavailable marker that carries the reason', 
   assert.match(html, />status unavailable</)
 })
 
-test('status strip metrics reflect health and omit sessions when clients were not listed', () => {
+test('status strip metrics use icon-only labels, reflect health, and omit sessions when clients were not listed', () => {
   const healthy = renderToStaticMarkup(<ConsoleStatusContent state={{ kind: 'ready', snapshot: { connected: 3, total: 3, sessions: 2, tools: 41 } }} />)
-  assert.match(healthy, />3\/3<\/span><span>up</)
+  assert.match(healthy, /aria-label="3\/3 up"/)
   assert.match(healthy, /color:var\(--aurora-success\)[^>]*>3\/3</)
-  assert.match(healthy, />2<\/span><span>sessions</)
-  assert.match(healthy, />41<\/span><span>tools</)
+  assert.match(healthy, /aria-label="2 sessions"/)
+  assert.match(healthy, /href="\/agents"[\s\S]*?>2<\/span>/)
+  assert.match(healthy, /aria-label="41 tools"/)
+  assert.doesNotMatch(healthy, /<span>up<\/span>|<span>sessions<\/span>|<span>tools<\/span>/)
   const degraded = renderToStaticMarkup(<ConsoleStatusContent state={{ kind: 'ready', snapshot: { connected: 1, total: 3, tools: 4 } }} />)
   assert.match(degraded, /color:var\(--aurora-warn\)[^>]*>1\/3</)
   assert.doesNotMatch(degraded, /sessions/)
   const clientsDown = renderToStaticMarkup(<ConsoleStatusContent state={{ kind: 'ready', snapshot: { connected: 3, total: 3, tools: 4, sessionsUnavailable: 'HTTP 500' } }} />)
   assert.match(clientsDown, /aria-label="Session count is unavailable: HTTP 500"/)
-  assert.match(clientsDown, />—<\/span><span>sessions</)
+  assert.match(clientsDown, />—<\/span>/)
+  assert.match(clientsDown, /href="\/agents"/)
 })
 
 test('status strip unavailable marker is announced with its reason', () => {

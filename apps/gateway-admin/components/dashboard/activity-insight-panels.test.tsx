@@ -54,3 +54,28 @@ test('persisted usage labels actors as subjects and fan-out as uncollected', () 
   assert.doesNotMatch(subjects, /Devices/)
   assert.match(fanOut, /Fan-out telemetry is not collected/)
 })
+
+test('known client and unknown identity facets use truthful names and expose provenance', () => {
+  const html = renderToStaticMarkup(
+    <MostActivePanel
+      actors={{
+        agent: { active: 1, top: [] },
+        device: { active: 0, top: [] },
+        ip: { active: 0, top: [] },
+        client: { active: 1, top: [{ id: 'client-row', filter_id: 'sub:123', label: 'Codex CLI', kind: 'client', calls: 3, detail: 'sub:123 · Self-reported MCP client' }] },
+        subject: { active: 1, top: [] },
+        unknown: { active: 1, top: [] },
+      }}
+      window="24h"
+      onSelectActor={() => undefined}
+    />,
+  )
+
+  assert.match(html, /Most active clients/)
+  assert.match(html, /Self-reported MCP client/)
+  for (const facet of ['Subjects', 'Clients', 'Agents', 'Unknown']) {
+    assert.match(html, new RegExp(`>${facet}<`))
+  }
+  assert.doesNotMatch(html, />Devices</)
+  assert.doesNotMatch(html, />IPs</)
+})

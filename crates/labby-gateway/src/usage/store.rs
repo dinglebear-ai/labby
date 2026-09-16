@@ -21,7 +21,7 @@ const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
 // actual writers regardless of connection count, so this does not buy write
 // parallelism, only concurrent readers alongside a writer.
 const SQLITE_POOL_SIZE: usize = 4;
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 /// Max rows deleted per `DELETE` statement in `prune_older_than`'s batching
 /// loop, so a large prune backlog doesn't hold the writer lock in one shot.
 const PRUNE_BATCH_SIZE: i64 = 5_000;
@@ -90,11 +90,12 @@ impl UsageStore {
             "UpstreamCallRecord.actor must not be empty — use \"unattributed\" for missing subjects"
         );
         self.with_conn(move |conn| {
+            let attribution = record.attribution.unwrap_or_default();
             conn.execute(
                 "INSERT INTO upstream_calls (
                     ts_unix, upstream_name, tool_name, capability, operation,
-                    subject_scoped, actor, outcome, elapsed_ms, response_bytes
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    subject_scoped, actor, outcome, elapsed_ms, response_bytes, inbound_actor,actor_kind,surface,client_name,client_version,agent_id,task_id,harness_id,upstream_subject_tag
+                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
                 params![
                     record.ts_unix,
                     record.upstream_name,
@@ -106,6 +107,16 @@ impl UsageStore {
                     record.outcome,
                     record.elapsed_ms,
                     record.response_bytes,
+                    attribution.inbound_actor,
+                    attribution.actor_kind,
+                    attribution.surface,
+                    attribution.client_name,
+                    attribution.client_version,
+                    attribution.agent_id,
+                    attribution.task_id,
+                    attribution.harness_id,
+                    attribution.upstream_subject_tag,
+
                 ],
             )
             .map_err(sqlite_error)?;
@@ -238,6 +249,14 @@ fn open_connection(path: &Path) -> Result<Connection, ToolError> {
         })?;
     }
     let conn = Connection::open(path).map_err(sqlite_error)?;
+    let version: i64 = conn
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(sqlite_error)?;
+    if version > SCHEMA_VERSION {
+        return Err(ToolError::internal_message(
+            "Usage database schema is newer than this binary",
+        ));
+    }
     ensure_restrictive_permissions(path)?;
     conn.busy_timeout(std::time::Duration::from_millis(SQLITE_BUSY_TIMEOUT_MS))
         .map_err(sqlite_error)?;
@@ -270,14 +289,19 @@ fn open_connection(path: &Path) -> Result<Connection, ToolError> {
         CREATE INDEX IF NOT EXISTS idx_upstream_calls_actor ON upstream_calls(actor);",
     )
     .map_err(sqlite_error)?;
-    migrate_v2(&conn)?;
+    conn.execute_batch("BEGIN IMMEDIATE;")
+        .map_err(sqlite_error)?;
+    if let Err(error) = migrate_v2(&conn).and_then(|()| migrate_v3(&conn)) {
+        drop(conn.execute_batch("ROLLBACK;"));
+        return Err(error);
+    }
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_upstream_calls_capability_ts ON upstream_calls(capability, ts_unix);
          CREATE INDEX IF NOT EXISTS idx_upstream_calls_operation_ts ON upstream_calls(operation, ts_unix);
          CREATE INDEX IF NOT EXISTS idx_upstream_calls_subject_scoped_ts ON upstream_calls(subject_scoped, ts_unix);",
     )
     .map_err(sqlite_error)?;
-    conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
+    conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"))
         .map_err(sqlite_error)?;
     for suffix in ["-wal", "-shm"] {
         let sidecar = PathBuf::from(format!("{}{suffix}", path.display()));
@@ -314,6 +338,51 @@ fn migrate_v2(conn: &Connection) -> Result<(), ToolError> {
     Ok(())
 }
 
+fn migrate_v3(conn: &Connection) -> Result<(), ToolError> {
+    let mut statement = conn
+        .prepare("PRAGMA table_info(upstream_calls)")
+        .map_err(sqlite_error)?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(sqlite_error)?
+        .collect::<rusqlite::Result<std::collections::HashSet<_>>>()
+        .map_err(sqlite_error)?;
+    drop(statement);
+    for name in [
+        "inbound_actor",
+        "actor_kind",
+        "surface",
+        "client_name",
+        "client_version",
+        "agent_id",
+        "task_id",
+        "harness_id",
+        "upstream_subject_tag",
+    ] {
+        if !columns.contains(name) {
+            conn.execute_batch(&format!("ALTER TABLE upstream_calls ADD COLUMN {name} TEXT CHECK({name} IS NULL OR length({name})<=512);")).map_err(sqlite_error)?;
+        }
+    }
+    Ok(())
+}
+fn read_attribution(
+    row: &rusqlite::Row<'_>,
+    start: usize,
+) -> rusqlite::Result<Option<labby_runtime::usage_actor::UsageAttribution>> {
+    let value = labby_runtime::usage_actor::UsageAttribution {
+        inbound_actor: row.get(start)?,
+        actor_kind: row.get(start + 1)?,
+        surface: row.get(start + 2)?,
+        client_name: row.get(start + 3)?,
+        client_version: row.get(start + 4)?,
+        agent_id: row.get(start + 5)?,
+        task_id: row.get(start + 6)?,
+        harness_id: row.get(start + 7)?,
+        upstream_subject_tag: row.get(start + 8)?,
+    };
+    Ok((value != Default::default()).then_some(value))
+}
+
 impl UsageStore {
     pub async fn metrics(
         &self,
@@ -326,11 +395,13 @@ impl UsageStore {
             let (where_clause, bind) = usage_where_clause(
                 &query.since_unix, &query.until_unix, &query.upstream, &query.tool,
                 &query.capability, &query.operation, &query.subject_scoped,
-                &query.actor, &query.outcome, &query.search, &query.allowed_upstreams,
+                &query.actor, &query.client_name, &query.client_version, &query.agent_id,
+                &query.outcome, &query.search, &query.allowed_upstreams,
             );
             let (window_where_clause, window_bind) = usage_where_clause(
                 &query.since_unix, &query.until_unix, &None, &None,
-                &None, &None, &None, &None, &None, &None, &query.allowed_upstreams,
+                &None, &None, &None, &None, &None, &None, &None, &None, &None,
+                &query.allowed_upstreams,
             );
             let has_detail_filters = query.upstream.is_some()
                 || query.tool.is_some()
@@ -338,6 +409,9 @@ impl UsageStore {
                 || query.operation.is_some()
                 || query.subject_scoped.is_some()
                 || query.actor.is_some()
+                || query.client_name.is_some()
+                || query.client_version.is_some()
+                || query.agent_id.is_some()
                 || query.outcome.is_some()
                 || query
                     .search
@@ -564,7 +638,7 @@ impl UsageStore {
             // top-actor ranking.
             let mut actor_stmt = conn
                 .prepare(&format!(
-                    "SELECT actor, COUNT(*) AS calls FROM upstream_calls {where_clause} GROUP BY actor ORDER BY calls DESC, actor ASC"
+                    "SELECT actor, COUNT(*) AS calls, inbound_actor,actor_kind,surface,client_name,client_version,agent_id,NULL,harness_id,NULL FROM upstream_calls {where_clause} GROUP BY actor,inbound_actor,actor_kind,surface,client_name,client_version,agent_id,harness_id ORDER BY calls DESC, actor ASC"
                 ))
                 .map_err(sqlite_error)?;
             let actor_counts = actor_stmt
@@ -572,16 +646,34 @@ impl UsageStore {
                     Ok(super::query::UsageActorCount {
                         actor: row.get(0)?,
                         calls: row.get(1)?,
+                        attribution: read_attribution(row, 2)?,
                     })
                 })
                 .map_err(sqlite_error)?
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(sqlite_error)?;
             let distinct_actors = i64::try_from(actor_counts.len()).unwrap_or(i64::MAX);
-            let top_actors = actor_counts
-                .into_iter()
-                .take(super::query::TOP_N)
-                .collect::<Vec<_>>();
+            let mut subjects = std::collections::BTreeMap::<String, i64>::new();
+            for actor in &actor_counts {
+                if let Some(principal) = actor.attribution.as_ref().and_then(|value| value.inbound_actor.as_ref()) {
+                    *subjects.entry(principal.clone()).or_default() += actor.calls;
+                }
+            }
+            let mut actor_populations = std::collections::BTreeMap::<String, i64>::new();
+            let mut top_actors = Vec::new();
+            for actor in actor_counts {
+                let kind = actor.attribution.as_ref().and_then(|value| value.actor_kind.as_deref()).unwrap_or("unknown");
+                if kind == "subject" { continue; }
+                let count = actor_populations.entry(kind.to_owned()).or_default();
+                *count += 1;
+                if *count <= super::query::TOP_N as i64 { top_actors.push(actor); }
+            }
+            actor_populations.insert("subject".into(), i64::try_from(subjects.len()).unwrap_or(i64::MAX));
+            let mut ranked_subjects = subjects.into_iter().collect::<Vec<_>>();
+            ranked_subjects.sort_by(|left,right|right.1.cmp(&left.1).then_with(||left.0.cmp(&right.0)));
+            top_actors.extend(ranked_subjects.into_iter().take(super::query::TOP_N).map(|(actor,calls)|super::query::UsageActorCount {
+                attribution: Some(labby_runtime::usage_actor::UsageAttribution { inbound_actor: Some(actor.clone()), actor_kind: Some("subject".into()), ..Default::default() }), actor, calls
+            }));
 
             let error_where = append_usage_predicate(&where_clause, "outcome != 'ok'");
             let mut errors_stmt = conn.prepare(&format!("SELECT outcome, COUNT(*) AS calls FROM upstream_calls {error_where} GROUP BY outcome ORDER BY calls DESC, outcome ASC")).map_err(sqlite_error)?;
@@ -596,14 +688,24 @@ impl UsageStore {
                     let span = until.saturating_sub(since);
                     if span > 0 {
                         let width = (span + count as i64 - 1) / count as i64;
-                        let mut buckets = (0..count).map(|index| super::query::UsageTimeBucket { ts_unix: since + index as i64 * width, calls: 0, failed: 0 }).collect::<Vec<_>>();
+                        let mut buckets = (0..count).map(|index| super::query::UsageTimeBucket { ts_unix: since + index as i64 * width, calls: 0, failed: 0, outcomes: Vec::new() }).collect::<Vec<_>>();
                         let mut bucket_bind = bind.clone();
                         bucket_bind.push(rusqlite::types::Value::Integer((count - 1) as i64)); let max_index_param = bucket_bind.len();
                         bucket_bind.push(rusqlite::types::Value::Integer(since)); let since_param = bucket_bind.len();
                         bucket_bind.push(rusqlite::types::Value::Integer(width)); let width_param = bucket_bind.len();
-                        let mut bucket_stmt = conn.prepare(&format!("SELECT MIN(?{max_index_param}, ((ts_unix - ?{since_param}) / ?{width_param})) AS bucket_index, COUNT(*) AS calls, SUM(CASE WHEN outcome != 'ok' THEN 1 ELSE 0 END) AS failed FROM upstream_calls {where_clause} GROUP BY bucket_index ORDER BY bucket_index ASC")).map_err(sqlite_error)?;
-                        let rows = bucket_stmt.query_map(rusqlite::params_from_iter(bucket_bind.iter()), |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?))).map_err(sqlite_error)?.collect::<rusqlite::Result<Vec<_>>>().map_err(sqlite_error)?;
-                        for (index, calls, failed) in rows { if let Ok(index) = usize::try_from(index) && let Some(bucket) = buckets.get_mut(index) { bucket.calls = calls; bucket.failed = failed; } }
+                        // Classify inside the existing bucket aggregate so the result is
+                        // bounded to six outcome rows per bucket even if a damaged or
+                        // future database contains arbitrary outcome strings.
+                        let outcome_category = "CASE WHEN outcome = 'ok' THEN 'succeeded' WHEN outcome IN ('timeout', 'connect_timeout') THEN 'timeout' WHEN outcome IN ('response_too_large', 'result_too_large') THEN 'response_too_large' WHEN outcome IN ('connect_error', 'connection_error', 'connection_refused', 'dns_error', 'network_error', 'bad_gateway') THEN 'connection_failed' WHEN outcome IN ('upstream_error', 'server_error', 'tool_error') THEN 'upstream_error' ELSE 'unknown' END";
+                        let mut bucket_stmt = conn.prepare(&format!("SELECT MIN(?{max_index_param}, ((ts_unix - ?{since_param}) / ?{width_param})) AS bucket_index, {outcome_category} AS outcome_category, COUNT(*) AS calls FROM upstream_calls {where_clause} GROUP BY bucket_index, outcome_category ORDER BY bucket_index ASC, outcome_category ASC")).map_err(sqlite_error)?;
+                        let rows = bucket_stmt.query_map(rusqlite::params_from_iter(bucket_bind.iter()), |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))).map_err(sqlite_error)?.collect::<rusqlite::Result<Vec<_>>>().map_err(sqlite_error)?;
+                        for (index, kind, calls) in rows {
+                            if let Ok(index) = usize::try_from(index) && let Some(bucket) = buckets.get_mut(index) {
+                                bucket.calls += calls;
+                                if kind != "succeeded" { bucket.failed += calls; }
+                                bucket.outcomes.push(super::query::UsageOutcomeCount { kind, calls });
+                            }
+                        }
                         buckets
                     } else { Vec::new() }
                 } else { Vec::new() }
@@ -634,7 +736,7 @@ impl UsageStore {
                 super::query::UsageFacets { tools, capabilities, operations, subject_scopes, actors, upstreams, outcomes }
             } else { super::query::UsageFacets::default() };
 
-            Ok(super::query::UsageMetrics { window_total_calls, total_calls, error_calls, avg_elapsed_ms, p50_elapsed_ms, p95_elapsed_ms, p99_elapsed_ms, distinct_tools, distinct_actors, peak_per_min, top_tools, least_tools, top_actors, slowest_tools, errors, upstreams, hourly, timeseries, facets })
+            Ok(super::query::UsageMetrics { window_total_calls, total_calls, error_calls, avg_elapsed_ms, p50_elapsed_ms, p95_elapsed_ms, p99_elapsed_ms, distinct_tools, distinct_actors, actor_populations, peak_per_min, top_tools, least_tools, top_actors, slowest_tools, errors, upstreams, hourly, timeseries, facets })
             })();
             match result {
                 Ok(metrics) => {
@@ -670,6 +772,9 @@ impl UsageStore {
                 &query.operation,
                 &query.subject_scoped,
                 &query.actor,
+                &query.client_name,
+                &query.client_version,
+                &query.agent_id,
                 &query.outcome,
                 &query.search,
                 &query.allowed_upstreams,
@@ -715,7 +820,7 @@ impl UsageStore {
             let mut stmt = conn
                 .prepare(&format!(
                     "SELECT id, ts_unix, upstream_name, tool_name, capability, operation, \
-                     subject_scoped, actor, outcome, elapsed_ms, response_bytes \
+                     subject_scoped, actor, outcome, elapsed_ms, response_bytes, inbound_actor,actor_kind,surface,client_name,client_version,agent_id,task_id,harness_id,upstream_subject_tag \
                      FROM upstream_calls {page_where} \
                      ORDER BY ts_unix DESC, id DESC LIMIT ?{}",
                     bind.len()
@@ -735,6 +840,7 @@ impl UsageStore {
                         outcome: row.get(8)?,
                         elapsed_ms: row.get(9)?,
                         response_bytes: row.get(10)?,
+                        attribution: read_attribution(row, 11)?,
                     })
                 })
                 .map_err(sqlite_error)?
@@ -843,6 +949,9 @@ fn usage_where_clause(
     operation: &Option<String>,
     subject_scoped: &Option<bool>,
     actor: &Option<String>,
+    client_name: &Option<String>,
+    client_version: &Option<String>,
+    agent_id: &Option<String>,
     outcome: &Option<String>,
     search: &Option<String>,
     allowed_upstreams: &Option<Vec<String>>,
@@ -883,6 +992,18 @@ fn usage_where_clause(
     if let Some(actor) = actor {
         clauses.push(format!("actor = ?{}", bind.len() + 1));
         bind.push(rusqlite::types::Value::Text(actor.clone()));
+    }
+    if let Some(client_name) = client_name {
+        clauses.push(format!("client_name = ?{}", bind.len() + 1));
+        bind.push(rusqlite::types::Value::Text(client_name.clone()));
+    }
+    if let Some(client_version) = client_version {
+        clauses.push(format!("client_version = ?{}", bind.len() + 1));
+        bind.push(rusqlite::types::Value::Text(client_version.clone()));
+    }
+    if let Some(agent_id) = agent_id {
+        clauses.push(format!("agent_id = ?{}", bind.len() + 1));
+        bind.push(rusqlite::types::Value::Text(agent_id.clone()));
     }
     if let Some(outcome) = outcome {
         if outcome == "failed" {
@@ -951,6 +1072,7 @@ mod tests {
             operation: "tool.call".to_string(),
             subject_scoped: false,
             actor: "unattributed".to_string(),
+            attribution: None,
             outcome: "ok".to_string(),
             elapsed_ms: 42,
             response_bytes: Some(512),
@@ -973,6 +1095,53 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn usage_v3_migration_preserves_legacy_and_new_attribution_on_reopen() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("v2.db");
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection.execute_batch("PRAGMA user_version=2;
+            CREATE TABLE upstream_calls(id INTEGER PRIMARY KEY AUTOINCREMENT,ts_unix INTEGER NOT NULL,upstream_name TEXT NOT NULL,tool_name TEXT NOT NULL,capability TEXT NOT NULL DEFAULT 'tools',operation TEXT NOT NULL DEFAULT 'tool.call',subject_scoped INTEGER NOT NULL DEFAULT 0,actor TEXT NOT NULL DEFAULT 'unattributed',outcome TEXT NOT NULL,elapsed_ms INTEGER NOT NULL,response_bytes INTEGER);
+            INSERT INTO upstream_calls(ts_unix,upstream_name,tool_name,actor,outcome,elapsed_ms) VALUES(100,'server','tool','legacy-oauth-tag','ok',7);").unwrap();
+        drop(connection);
+        let store = UsageStore::open(path.clone()).await.unwrap();
+        let mut record = sample_record(200);
+        record.actor = "sub:verified".into();
+        record.attribution = Some(labby_runtime::usage_actor::UsageAttribution::inbound(
+            Some("sub:verified".into()),
+            "mcp",
+            Some(("Example client", "1.2")),
+        ));
+        store.record_call(record).await.unwrap();
+        drop(store);
+        for _ in 0..2 {
+            let store = UsageStore::open(path.clone()).await.unwrap();
+            let (rows, _, _) = store
+                .list_calls(super::super::query::UsageCallsQuery {
+                    limit: 10,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(rows.len(), 2);
+            assert_eq!(
+                rows[0].attribution.as_ref().unwrap().client_name.as_deref(),
+                Some("Example client")
+            );
+            assert_eq!(rows[1].actor, "legacy-oauth-tag");
+            assert_eq!(rows[1].attribution, None);
+            let version = store
+                .with_conn(|connection| {
+                    connection
+                        .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                        .map_err(super::sqlite_error)
+                })
+                .await
+                .unwrap();
+            assert_eq!(version, 3);
+        }
     }
 
     #[tokio::test]
@@ -1096,6 +1265,273 @@ mod tests {
         assert_eq!(metrics.top_tools.len(), 1);
         assert_eq!(metrics.top_tools[0].tool, "search_repos");
         assert_eq!(metrics.top_tools[0].calls, 3);
+    }
+
+    #[tokio::test]
+    async fn metrics_actor_populations_are_exact_while_rankings_stay_bounded() {
+        use super::super::query::{TOP_N, UsageMetricsQuery};
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = UsageStore::open(dir.path().join("usage.db")).await.unwrap();
+
+        for index in 0..(TOP_N + 2) {
+            let actor = format!("sub:client-{index:02}");
+            let mut record = sample_record(1_000 + index as i64);
+            record.actor = actor.clone();
+            record.attribution = Some(labby_runtime::usage_actor::UsageAttribution::inbound(
+                Some(actor),
+                "mcp",
+                Some(("Codex CLI", "1.0")),
+            ));
+            store.record_call(record).await.unwrap();
+        }
+
+        let mut agent = sample_record(2_000);
+        agent.actor = "sub:agent-owner".into();
+        agent.attribution = Some(labby_runtime::usage_actor::UsageAttribution {
+            inbound_actor: Some(agent.actor.clone()),
+            actor_kind: Some("agent".into()),
+            surface: Some("task".into()),
+            agent_id: Some("daily-review".into()),
+            ..Default::default()
+        });
+        store.record_call(agent).await.unwrap();
+
+        let mut legacy = sample_record(2_001);
+        legacy.actor = "legacy-oauth-tag".into();
+        store.record_call(legacy).await.unwrap();
+
+        let metrics = store.metrics(UsageMetricsQuery::default()).await.unwrap();
+
+        assert_eq!(metrics.distinct_actors, 14);
+        assert_eq!(
+            metrics.actor_populations,
+            std::collections::BTreeMap::from([
+                ("agent".into(), 1),
+                ("client".into(), 12),
+                ("subject".into(), 13),
+                ("unknown".into(), 1),
+            ])
+        );
+        let ranked = |kind: &str| {
+            metrics
+                .top_actors
+                .iter()
+                .filter(|row| {
+                    row.attribution
+                        .as_ref()
+                        .and_then(|value| value.actor_kind.as_deref())
+                        .unwrap_or("unknown")
+                        == kind
+                })
+                .count()
+        };
+        assert_eq!(ranked("client"), TOP_N);
+        assert_eq!(ranked("subject"), TOP_N);
+        assert_eq!(ranked("agent"), 1);
+        assert_eq!(ranked("unknown"), 1);
+    }
+
+    #[tokio::test]
+    async fn attribution_filters_isolate_same_principal_anonymous_clients_and_agents() {
+        use super::super::query::{UsageCallsQuery, UsageMetricsQuery};
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = UsageStore::open(dir.path().join("usage.db")).await.unwrap();
+        let rows = [
+            (
+                "sub:shared",
+                labby_runtime::usage_actor::UsageAttribution::inbound(
+                    Some("sub:shared".into()),
+                    "mcp",
+                    Some(("Codex CLI", "1.0")),
+                ),
+            ),
+            (
+                "sub:shared",
+                labby_runtime::usage_actor::UsageAttribution::inbound(
+                    Some("sub:shared".into()),
+                    "mcp",
+                    Some(("Codex CLI", "2.0")),
+                ),
+            ),
+            (
+                "sub:shared",
+                labby_runtime::usage_actor::UsageAttribution::inbound(
+                    Some("sub:shared".into()),
+                    "mcp",
+                    Some(("Claude Code", "1.0")),
+                ),
+            ),
+            (
+                "unattributed",
+                labby_runtime::usage_actor::UsageAttribution::inbound(
+                    None,
+                    "mcp",
+                    Some(("Codex CLI", "1.0")),
+                ),
+            ),
+            (
+                "unattributed",
+                labby_runtime::usage_actor::UsageAttribution::inbound(
+                    None,
+                    "mcp",
+                    Some(("Claude Code", "1.0")),
+                ),
+            ),
+            (
+                "sub:shared",
+                labby_runtime::usage_actor::UsageAttribution {
+                    inbound_actor: Some("sub:shared".into()),
+                    actor_kind: Some("agent".into()),
+                    surface: Some("task".into()),
+                    agent_id: Some("review-agent".into()),
+                    ..Default::default()
+                },
+            ),
+            (
+                "sub:shared",
+                labby_runtime::usage_actor::UsageAttribution {
+                    inbound_actor: Some("sub:shared".into()),
+                    actor_kind: Some("agent".into()),
+                    surface: Some("task".into()),
+                    agent_id: Some("build-agent".into()),
+                    ..Default::default()
+                },
+            ),
+        ];
+        for (index, (actor, attribution)) in rows.into_iter().enumerate() {
+            let mut record = sample_record(1_000 + index as i64);
+            record.actor = actor.into();
+            record.attribution = Some(attribution);
+            store.record_call(record).await.unwrap();
+        }
+
+        let client_metrics = store
+            .metrics(UsageMetricsQuery {
+                actor: Some("sub:shared".into()),
+                client_name: Some("Codex CLI".into()),
+                client_version: Some("2.0".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(client_metrics.window_total_calls, 7);
+        assert_eq!(client_metrics.total_calls, 1);
+
+        let (anonymous, anonymous_total, _) = store
+            .list_calls(UsageCallsQuery {
+                actor: Some("unattributed".into()),
+                client_name: Some("Claude Code".into()),
+                client_version: Some("1.0".into()),
+                include_total: true,
+                limit: 10,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(anonymous_total, Some(1));
+        assert_eq!(anonymous.len(), 1);
+        assert_eq!(
+            anonymous[0]
+                .attribution
+                .as_ref()
+                .and_then(|value| value.client_name.as_deref()),
+            Some("Claude Code")
+        );
+
+        let agent_metrics = store
+            .metrics(UsageMetricsQuery {
+                actor: Some("sub:shared".into()),
+                agent_id: Some("review-agent".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(agent_metrics.total_calls, 1);
+        assert_eq!(
+            agent_metrics.top_actors[0]
+                .attribution
+                .as_ref()
+                .and_then(|value| value.agent_id.as_deref()),
+            Some("review-agent")
+        );
+    }
+
+    #[tokio::test]
+    async fn metrics_timeseries_returns_bounded_reconciled_outcome_categories() {
+        use super::super::query::UsageMetricsQuery;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = UsageStore::open(dir.path().join("usage.db")).await.unwrap();
+        for (index, outcome) in [
+            "ok",
+            "upstream_error",
+            "timeout",
+            "connect_timeout",
+            "response_too_large",
+            "connect_error",
+            "future_unrecognized_kind",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut record = sample_record(1_000 + index as i64);
+            record.outcome = outcome.to_string();
+            store.record_call(record).await.unwrap();
+        }
+
+        let metrics = store
+            .metrics(UsageMetricsQuery {
+                since_unix: Some(900),
+                until_unix: Some(1_100),
+                bucket_count: 1,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(metrics.timeseries.len(), 1);
+        let bucket = &metrics.timeseries[0];
+        assert_eq!(bucket.calls, 7);
+        assert_eq!(bucket.failed, 6);
+        assert_eq!(
+            bucket.outcomes,
+            vec![
+                super::super::query::UsageOutcomeCount {
+                    kind: "connection_failed".into(),
+                    calls: 1,
+                },
+                super::super::query::UsageOutcomeCount {
+                    kind: "response_too_large".into(),
+                    calls: 1,
+                },
+                super::super::query::UsageOutcomeCount {
+                    kind: "succeeded".into(),
+                    calls: 1,
+                },
+                super::super::query::UsageOutcomeCount {
+                    kind: "timeout".into(),
+                    calls: 2,
+                },
+                super::super::query::UsageOutcomeCount {
+                    kind: "unknown".into(),
+                    calls: 1,
+                },
+                super::super::query::UsageOutcomeCount {
+                    kind: "upstream_error".into(),
+                    calls: 1,
+                },
+            ]
+        );
+        assert_eq!(
+            bucket
+                .outcomes
+                .iter()
+                .map(|outcome| outcome.calls)
+                .sum::<i64>(),
+            bucket.calls
+        );
     }
 
     #[tokio::test]
@@ -1431,6 +1867,9 @@ mod tests {
             &None,
             &None,
             &Some("labby::github-chat::search_repos".to_string()),
+            &None,
+            &None,
+            &None,
             &None,
             &None,
             &None,

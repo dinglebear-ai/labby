@@ -74,7 +74,9 @@ const SHARED_NON_SERVICES: &[&str] = &[
 /// added service is forced through review (an unlisted service dir triggers a
 /// failure in `services_list_is_current`).
 const KNOWN_SERVICES: &[&str] = &[
+    "agents",
     "browser",
+    "dev_containers",
     "doctor",
     "fs",
     "gateway",
@@ -84,6 +86,7 @@ const KNOWN_SERVICES: &[&str] = &[
     "skill_library",
     "skills",
     "snippets",
+    "tasks",
 ];
 
 /// Allowed cross-service edges: `(consumer, permitted_sibling)`.
@@ -124,6 +127,10 @@ const ALLOWED_EDGES: &[(&str, &str)] = &[
     // canonical Artifact action catalog for surface filtering; it does not
     // own or dispatch Artifact mutations.
     ("skills", "artifacts"),
+    // tasks → agents: a queued Agent Task resolves and executes its pinned
+    //   Agent revision through the canonical Agent runtime. Tasks owns durable
+    //   scheduling and settlement; Agents owns definition and executor semantics.
+    ("tasks", "agents"),
     // skill_library → artifact_control: the local transactional library owns
     // the process-scoped provider-neutral relay used by remote Artifact
     // discovery and acquisition.

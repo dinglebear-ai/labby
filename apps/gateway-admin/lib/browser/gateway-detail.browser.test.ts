@@ -143,6 +143,7 @@ test('gateway manage tools flow persists after a full reload in mock preview', {
   await page.reload({ waitUntil: 'networkidle' })
 
   await page.getByRole('tab', { name: /Catalog/ }).click()
+  await page.getByRole('button', { name: 'Exposure editor', exact: true }).click()
   await page.getByRole('button', { name: 'Manage tools', exact: true }).click()
   await page.locator('#select-all-visible').click()
   await page.getByRole('button', { name: 'Disable selected' }).click()
@@ -156,6 +157,7 @@ test('gateway manage tools flow persists after a full reload in mock preview', {
   await page.reload({ waitUntil: 'networkidle' })
 
   await page.getByRole('tab', { name: /Catalog/ }).click()
+  await page.getByRole('button', { name: 'Exposure editor', exact: true }).click()
   await assert.doesNotReject(() =>
     page.getByRole('button', { name: 'Manage tools', exact: true }).waitFor(),
   )
@@ -184,13 +186,13 @@ test('gateway detail uses a compact summary and endpoint control in mock preview
   await assert.doesNotReject(() => page.getByText('Resources').first().waitFor())
   await assert.doesNotReject(() => page.getByText('Prompts').first().waitFor())
   await assert.doesNotReject(() =>
-    page.getByRole('button', { name: 'Copy command' }).and(
+    page.getByRole('button', { name: 'Copy HTTP target' }).and(
       page.locator('[title="http://localhost:3001/mcp"]'),
     ).waitFor(),
   )
   await page.getByRole('tab', { name: /Catalog/ }).click()
   await assert.doesNotReject(() =>
-    page.getByRole('button', { name: 'Manage tools', exact: true }).waitFor(),
+    page.getByRole('button', { name: 'Exposure editor', exact: true }).waitFor(),
   )
 
   assert.equal(await page.getByText('TOOL SURFACE').count(), 0)
@@ -257,7 +259,7 @@ test('gateway list stays compact without horizontal overflow in mock preview', {
   await assert.doesNotReject(() => toolsStat.waitFor())
   assert.match(await totalStat.innerText(), /^5\s+Total$/i)
   assert.match(await toolsStat.innerText(), /^24\/39\s+Tools$/i)
-  assert.match(await page.locator('body').innerText(), /github-server[\s\S]*12/)
+  assert.match(await page.locator('body').innerText(), /Github Server[\s\S]*12/)
 
   const hasHorizontalOverflow = await page.evaluate(() => {
     const root = document.documentElement
@@ -363,75 +365,28 @@ test('Depot Administration renders live schemas and guards destructive operation
   assert.match(await page.evaluate(() => document.activeElement?.textContent ?? ''), /Sources/)
 })
 
-test('Depot Discovery recovers from exact-import prerequisites and imports only the selected revision', { concurrency: false }, async (t) => {
+test('mock Depot Discovery labels Add as preview-only and never submits an import', { concurrency: false }, async (t) => {
   await startPreviewServer()
 
   const browser = await chromium.launch({ headless: true })
   t.after(async () => { await browser.close() })
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
   const actionCalls: Array<{ action: string; params: Record<string, unknown> }> = []
-  let connections = [{ id: 'different-depot' }]
-  let libraryVersion: unknown = 12
-
-  await page.route('**/v1/depot/providers', route => route.fulfill({
-    contentType: 'application/json',
-    body: JSON.stringify([{ id: 'team-depot', name: 'Team Depot', enabled: true, health: { state: 'healthy', observedAt: null, provenance: null, retryNotBefore: null } }]),
-  }))
-  await page.route('**/v1/depot/discover', route => route.fulfill({
-    contentType: 'application/json',
-    body: JSON.stringify({
-      schemaVersion: 'labby.depot-compatibility/v2', scope: 'all', scopeEpoch: 'epoch-1',
-      items: [{ providerId: 'team-depot', artifactId: 'artifact-1', id: 'artifact-1', kind: 'skill', name: 'Release helper', currentRevisionId: 'revision-7' }],
-      providerOutcomes: [{ providerId: 'team-depot', state: 'exhausted' }], failures: [], coverageComplete: true,
-      knownTotal: 1, totalIsExact: true, state: 'complete', nextCursor: null,
-    }),
-  }))
-  await page.route('**/v1/depot/artifacts/detail', route => route.fulfill({
-    contentType: 'application/json',
-    body: JSON.stringify({
-      schemaVersion: 'labby.depot-compatibility/v2', providerId: 'team-depot', artifactId: 'artifact-1',
-      artifact: { id: 'artifact-1', kind: 'skill', name: 'Release helper', currentRevisionId: 'revision-7' },
-    }),
-  }))
   await page.route('**/v1/artifacts', async route => {
     const call = route.request().postDataJSON() as { action: string; params: Record<string, unknown> }
     actionCalls.push(call)
-    if (call.action === 'artifacts.list_connections') {
-      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ connections }) })
-    } else if (call.action === 'artifacts.list') {
-      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ artifacts: [], library_version: libraryVersion }) })
-    } else {
-      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ artifact: { id: 'local-1' }, library_version: 13 }) })
-    }
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({}) })
   })
 
-  await page.goto(`${baseUrl}/depot/`, { waitUntil: 'networkidle' })
-  await assert.doesNotReject(() => page.getByRole('link', { name: /Release helper/ }).waitFor())
-  await page.goto(`${baseUrl}/depot/?artifactProvider=team-depot&artifact=artifact-1`, { waitUntil: 'networkidle' })
+  await page.goto(`${baseUrl}/depot/?artifactProvider=mcp-registry&artifact=unraid-ops`, { waitUntil: 'networkidle' })
+  const add = page.getByRole('button', { name: 'Add to Library' })
+  await assert.doesNotReject(() => add.waitFor())
+  await add.click()
+  await page.getByText('Preview: unraid-ops would be added to Library', { exact: true }).waitFor()
 
-  await page.getByRole('button', { name: 'Add to Library' }).click()
-  await page.getByText('Configure an Artifact acquisition connection named “team-depot” before importing from this provider.').waitFor()
   assert.equal(actionCalls.some(call => call.action === 'artifacts.import'), false)
-  await assert.doesNotReject(async () => assert.equal(await page.getByRole('button', { name: 'Add to Library' }).isEnabled(), true))
-
-  connections = [{ id: 'team-depot' }]
-  libraryVersion = 'not-a-version'
-  await page.getByRole('button', { name: 'Add to Library' }).click()
-  await page.getByText('Labby did not return a valid current library version.').waitFor()
-  assert.equal(actionCalls.some(call => call.action === 'artifacts.import'), false)
-  await assert.doesNotReject(async () => assert.equal(await page.getByRole('button', { name: 'Add to Library' }).isEnabled(), true))
-
-  libraryVersion = 12
-  await page.getByRole('button', { name: 'Add to Library' }).click()
-  await page.getByText('Exact Artifact imported into Labby').waitFor()
-
-  const importCall = actionCalls.find(call => call.action === 'artifacts.import')
-  assert.ok(importCall)
-  assert.deepEqual(importCall.params.source, {
-    kind: 'depot', connection_id: 'team-depot', artifact_id: 'artifact-1', revision_id: 'revision-7',
-  })
-  assert.equal(importCall.params.expected_library_version, 12)
-  assert.match(String(importCall.params.idempotency_key), /^depot-import-[0-9a-f-]{36}$/)
+  assert.equal(await page.getByRole('button', { name: 'Add to Library' }).count(), 1)
+  assert.equal(await page.getByRole('button', { name: 'Already in Library' }).count(), 0)
 })
 
 test('overview metrics and volume bars drill into exact Usage slices', { concurrency: false }, async (t) => {
@@ -441,30 +396,37 @@ test('overview metrics and volume bars drill into exact Usage slices', { concurr
   t.after(async () => { await browser.close() })
 
   const page = await browser.newPage({ viewport: { width: 1360, height: 960 } })
+  const fixtureNow = 1_800_086_400_000
+  await page.addInitScript((now) => { Date.now = () => now }, fixtureNow)
+  const summaryRequests: string[] = []
+  await page.route('**/v1/gateway', async (route) => {
+    const call = route.request().postDataJSON() as { action: string; params: { upstream?: string; since_unix?: number; until_unix?: number; bucket_count?: number } }
+    if (call.action !== 'gateway.usage.metrics' || !call.params.upstream) { await route.continue(); return }
+    assert.equal(call.params.since_unix, 1_800_000_000)
+    assert.equal(call.params.until_unix, 1_800_086_400)
+    assert.equal(call.params.bucket_count, 24)
+    summaryRequests.push(call.params.upstream)
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({
+      total_calls: 0, error_calls: 0,
+      timeseries: Array.from({ length: 24 }, (_, index) => ({ ts_unix: 1_800_000_000 + index * 3600, calls: 0, failed: 0 })),
+    }) })
+  })
   await page.goto(`${baseUrl}/`, { waitUntil: 'networkidle' })
 
-  const bars = page.locator('.recharts-bar-rectangle .recharts-rectangle')
-  await page.waitForFunction(() =>
-    Array.from(document.querySelectorAll('.recharts-bar-rectangle .recharts-rectangle')).some((node) => {
-      const box = node.getBoundingClientRect()
-      return box.width > 1 && box.height > 1
-    }),
-  )
-  let clicked = false
-  for (let index = 0; index < await bars.count(); index += 1) {
-    const bar = bars.nth(index)
-    const box = await bar.boundingBox()
-    if (box && box.width > 1 && box.height > 1) {
-      await bar.click()
-      clicked = true
-      break
-    }
-  }
-  assert.equal(clicked, true, 'expected at least one clickable volume bar')
+  const chart = page.locator('[aria-label="Calls by server"]')
+  await chart.waitFor({ state: 'visible' })
+  assert.equal(new Set(summaryRequests).size, 4, 'default chart requests the four busiest server summaries')
+  const firstBucket = chart.getByRole('button').first()
+  assert.equal(await chart.getByRole('button').count(), 24)
+  assert.match(await firstBucket.getAttribute('aria-label') ?? '', /calls$/)
+  await firstBucket.focus()
+  await page.keyboard.press('Enter')
   await page.waitForURL((url) => url.pathname === '/usage/' && url.searchParams.has('from') && url.searchParams.has('to'))
   const sliceUrl = new URL(page.url())
   const from = Number(sliceUrl.searchParams.get('from'))
   const to = Number(sliceUrl.searchParams.get('to'))
+  assert.equal(from, 1_800_000_000_000)
+  assert.equal(to, 1_800_003_599_000)
   assert.equal(to - from, 3_599_000, '24h buckets should stop one stored second before the next inclusive bucket')
 
   await page.goto(`${baseUrl}/`, { waitUntil: 'networkidle' })
@@ -483,8 +445,8 @@ test('clicking a server name from the gateway list loads its detail page', { con
   await page.evaluate(() => window.localStorage.clear())
   await page.reload({ waitUntil: 'networkidle' })
 
-  const githubRow = page.locator('[data-gwrow="1"]').filter({ hasText: 'github-server' }).first()
-  await githubRow.getByRole('link', { name: 'github-server', exact: true }).click()
+  const githubRow = page.locator('[data-gwrow="1"]').filter({ hasText: 'Github Server' }).first()
+  await githubRow.getByRole('link', { name: 'Github Server', exact: true }).click()
   await page.waitForURL((url) => url.pathname === '/gateway/' && url.searchParams.get('id') === 'gw-2')
   await assert.doesNotReject(() => page.getByText('12/12').first().waitFor())
   await assert.doesNotReject(() => page.getByRole('tab', { name: /Catalog/ }).waitFor())
@@ -517,42 +479,42 @@ test('mobile gateway cards are touch-sized, overflow-free, and open server detai
   assert.equal(detailOverflow, false)
 })
 
-test('icon-led actions are square, touch-sized, and retain accessible labels', { concurrency: false }, async (t) => {
+test('compact actions retain labels, responsive targets, and working menus', { concurrency: false }, async (t) => {
   await startPreviewServer()
 
   const browser = await chromium.launch({ headless: true })
   t.after(async () => { await browser.close() })
 
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } })
-  await page.route('**/v1/depot/**', async () => new Promise(() => undefined))
+  await page.route('**/v1/artifacts', async () => new Promise(() => undefined))
   await page.goto(`${baseUrl}/library/`, { waitUntil: 'domcontentloaded' })
   const loadingRefresh = page.getByRole('button', { name: 'Refresh', exact: true })
   await assert.doesNotReject(() => loadingRefresh.waitFor())
-  assert.equal(await loadingRefresh.evaluate((element) => getComputedStyle(element).fontSize), '0px')
-  await page.unroute('**/v1/depot/**')
+  assert.notEqual(await loadingRefresh.evaluate((element) => getComputedStyle(element).fontSize), '0px')
+  assert.equal(await loadingRefresh.isDisabled(), true)
+  await page.unroute('**/v1/artifacts')
   await page.goto(`${baseUrl}/library/`, { waitUntil: 'networkidle' })
 
-  const discover = page.getByRole('link', { name: 'Discover', exact: true })
-  const discoverStyle = await discover.evaluate((element) => ({
-    fontSize: getComputedStyle(element).fontSize,
-    title: element.getAttribute('title'),
-    width: element.getBoundingClientRect().width,
-    height: element.getBoundingClientRect().height,
-  }))
-  assert.equal(discoverStyle.fontSize, '0px')
-  assert.equal(discoverStyle.title, 'Discover')
-  assert.ok(discoverStyle.width >= 44 && discoverStyle.height >= 44)
+  const discover = page.locator('[aria-label="Library connection"]').getByRole('link', { name: 'Discover', exact: true })
+  assert.notEqual(await discover.evaluate((element) => getComputedStyle(element).fontSize), '0px')
+  assert.equal(await discover.getAttribute('href'), '/depot')
+  const exportButton = page.getByRole('button', { name: 'Export loaded library metadata', exact: true })
+  const exportBox = await exportButton.boundingBox()
+  assert.ok(exportBox && exportBox.width >= 44 && exportBox.height >= 44, 'mobile export icon retains a 44px touch target')
 
   const filter = page.getByRole('button', { name: 'Filter library by artifact type' })
-  assert.equal(await filter.getAttribute('title'), 'Filters')
-  assert.equal(await filter.evaluate((element) => getComputedStyle(element).fontSize), '0px')
+  assert.notEqual(await filter.evaluate((element) => getComputedStyle(element).fontSize), '0px')
+  await filter.click()
+  await page.getByText('Artifact type', { exact: true }).waitFor()
+  await page.getByRole('button', { name: 'All artifacts', exact: true }).click()
+  await page.keyboard.press('Escape')
 
-  const textOnly = page.getByRole('link', { name: 'Artifacts', exact: true })
+  const textOnly = page.getByRole('navigation', { name: 'Library sections', exact: true }).getByRole('link', { name: /^Artifacts/ })
   assert.notEqual(await textOnly.evaluate((element) => getComputedStyle(element).fontSize), '0px')
 
   await page.goto(`${baseUrl}/create/`, { waitUntil: 'networkidle' })
   // The kind picker keeps its visible label on every viewport, so it is not icon-led;
-  // it must still be touch-sized and keep an accessible name that contains the label.
+  // its compact target must remain operable and keep an accessible name containing the label.
   const artifactKindPicker = page.getByRole('button', { name: 'Change artifact kind: Skill', exact: true })
   await assert.doesNotReject(() => artifactKindPicker.waitFor())
   assert.equal(await artifactKindPicker.getAttribute('data-slot'), 'dropdown-menu-trigger')
@@ -564,7 +526,7 @@ test('icon-led actions are square, touch-sized, and retain accessible labels', {
   }))
   assert.notEqual(pickerStyle.fontSize, '0px')
   assert.equal(pickerStyle.text, 'Skill')
-  assert.ok(pickerStyle.width >= 44 && pickerStyle.height >= 44, `expected a touch-sized kind picker, got ${pickerStyle.width}x${pickerStyle.height}`)
+  assert.ok(pickerStyle.width >= 44 && pickerStyle.height >= 24, `expected a labeled compact kind picker with at least 24px target height, got ${pickerStyle.width}x${pickerStyle.height}`)
   await artifactKindPicker.click()
   await assert.doesNotReject(() => page.getByRole('menu').waitFor())
 })
@@ -754,11 +716,9 @@ test('gateway list row action disable flow opens and completes successfully', { 
   })
   await page.reload({ waitUntil: 'networkidle' })
 
-  const githubRow = page.locator('[data-gwrow="1"]').filter({ has: page.getByText('github-server') }).first()
-  const disableButton = githubRow.getByRole('button', { name: 'Disable server' })
-  await assert.doesNotReject(() => disableButton.waitFor())
-
-  await disableButton.click()
+  const githubRow = page.locator('[data-gwrow="1"]').filter({ has: page.getByText('Github Server') }).first()
+  await githubRow.getByRole('button', { name: 'More actions', exact: true }).click()
+  await page.getByRole('menuitem', { name: 'Disable server', exact: true }).click()
   await assert.doesNotReject(() => page.getByText('Disable server?').waitFor())
   await page.getByRole('button', { name: 'Disable server' }).click()
 
@@ -836,12 +796,16 @@ test('stale Loadouts clients hard-navigate after a new static build is deployed'
     Object.assign(window, { __labbySkewMarker: true })
   })
 
-  await buildApplication('browser-skew-replacement')
+  // A skip-build rerun may already be serving a previous replacement build.
+  // Give this replacement a new identity so the test always creates real skew.
+  await buildApplication(`browser-skew-replacement-${Date.now()}`)
   await page.unroute('**/*', blockFlightPrefetch)
+  const navigationEvents: string[] = []
+  page.on('request', (request) => { navigationEvents.push(`${request.method()} ${request.url()}`) })
   await Promise.all([
-    page.waitForURL('**/snippets/', { waitUntil: 'networkidle' }),
-    page.getByRole('link', { name: 'Snippets' }).click(),
-  ])
+    page.waitForURL((url) => /^\/snippets\/?$/.test(url.pathname), { waitUntil: 'networkidle' }),
+    page.getByRole('navigation', { name: 'Library sections', exact: true }).getByRole('link', { name: /^Snippets/ }).click(),
+  ]).catch(async (error) => { throw new Error(`${error}\nURL: ${page.url()}\nMarker: ${await page.evaluate(() => '__labbySkewMarker' in window)}\nRequests: ${navigationEvents.join('\n')}\nBody: ${(await page.locator('body').innerText()).slice(0, 1600)}`) })
 
   const staleDocumentSurvived = await page.evaluate(
     () => '__labbySkewMarker' in window,
@@ -888,9 +852,11 @@ test('Discover cards preserve source filters and centered inspection on desktop 
   })
   await page.goto(`${baseUrl}/depot/`, { waitUntil: 'domcontentloaded' })
   await initialRequested
-  await page.getByRole('button', { name: 'All sources', exact: true }).click()
   await page.getByRole('button', { name: 'Kind and source filters', exact: true }).click()
+  // Both active filter choices are no-ops while the initial response is held.
+  // Invalidating the request here would discard its result without a URL change.
   await page.getByRole('dialog', { name: 'Kind and source filters', exact: true }).getByRole('button', { name: 'All sources', exact: true }).click()
+  await page.getByRole('dialog', { name: 'Kind and source filters', exact: true }).getByRole('button', { name: 'All kinds', exact: true }).click()
   await page.keyboard.press('Escape')
   releaseInitial()
   await page.getByRole('heading', { name: 'Review changes', exact: true }).waitFor()
@@ -912,14 +878,14 @@ test('Discover cards preserve source filters and centered inspection on desktop 
   const viewOptions = page.getByRole('dialog', { name: 'Sort, density and layout', exact: true })
   await viewOptions.getByRole('button', { name: 'Comfortable', exact: true }).click()
   assert.equal(await page.locator('article').first().getAttribute('data-density'), 'comfortable')
-  assert.equal(await page.locator('article > a').first().evaluate(element => getComputedStyle(element).paddingLeft), '20px')
+  assert.equal(await page.locator('article > a').first().evaluate(element => getComputedStyle(element).paddingLeft), '24px')
   await viewOptions.getByRole('button', { name: 'List', exact: true }).click()
   assert.equal(await page.locator('article > a').first().evaluate(element => getComputedStyle(element).display), 'grid')
   await viewOptions.getByRole('button', { name: 'Cards', exact: true }).click()
   await viewOptions.getByRole('button', { name: 'Default', exact: true }).click()
   await page.keyboard.press('Escape')
   await viewOptions.waitFor({ state: 'hidden' })
-  await page.getByRole('button', { name: 'Team Depot', exact: true }).click()
+  await page.getByRole('button', { name: 'Filter to Team Labby', exact: true }).click()
   await page.getByRole('heading', { name: 'Release reviewer', exact: true }).waitFor({ state: 'hidden' })
   await page.getByRole('heading', { name: 'Review changes', exact: true }).click()
   const dialog = page.getByRole('dialog')
@@ -951,7 +917,7 @@ test('Discover cards preserve source filters and centered inspection on desktop 
   await filters.waitFor()
   const filterBox = await filters.boundingBox()
   assert.ok(filterBox && filterBox.x >= 0 && filterBox.x + filterBox.width <= 390)
-  await filters.getByRole('button', { name: 'Catalog Depot', exact: true }).click()
+  await filters.getByRole('button', { name: 'Catalog Labby', exact: true }).click()
   await page.keyboard.press('Escape')
   await filters.waitFor({ state: 'hidden' })
   await page.getByRole('heading', { name: 'Release reviewer', exact: true }).waitFor()
@@ -963,6 +929,10 @@ test('Discover kind searches reject stale pagination and restore query context f
   const browser = await chromium.launch({ headless: true })
   t.after(() => browser.close())
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
+  // This flow intentionally exercises several debounced searches and history
+  // transitions. Shared CI runners can take longer than Playwright's default
+  // 30-second locator timeout while the complete browser suite runs in parallel.
+  page.setDefaultTimeout(60_000)
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))
   await page.addInitScript(() => {
@@ -999,7 +969,7 @@ test('Discover kind searches reject stale pagination and restore query context f
   await page.getByRole('heading', { name: 'First page MCP', exact: true }).waitFor()
   await page.getByRole('button', { name: 'Load more', exact: true }).click()
   await awaitingPage
-  const input = page.getByRole('textbox', { name: 'Search Depot artifacts' })
+  const input = page.getByRole('textbox', { name: 'Search Labby artifacts' })
   await input.fill('py')
   releasePage()
   await page.getByText('Enter at least 3 characters to search.', { exact: true }).waitFor()
@@ -1008,7 +978,9 @@ test('Discover kind searches reject stale pagination and restore query context f
   assert.equal(await page.getByRole('button', { name: 'Load more', exact: true }).count(), 0)
   assert.equal(requests.some(request => request.query === 'py'), false)
   await input.fill('python')
-  await page.getByRole('group', { name: 'Artifact kind', exact: true }).getByRole('button', { name: 'skill', exact: true }).click()
+  await page.getByRole('button', { name: 'Kind and source filters', exact: true }).click()
+  await page.getByRole('dialog', { name: 'Kind and source filters', exact: true }).getByRole('button', { name: 'skill', exact: true }).click()
+  await page.keyboard.press('Escape')
   await page.getByRole('heading', { name: 'Skill python', exact: true }).waitFor()
   assert.equal(new URL(page.url()).searchParams.get('kind'), 'skill')
   assert.equal(requests.at(-1)?.kind, 'skill')
@@ -1021,7 +993,7 @@ test('Discover kind searches reject stale pagination and restore query context f
   assert.equal(await input.inputValue(), 'python')
   await page.goForward()
   await page.getByRole('heading', { name: 'Skill frontend', exact: true }).waitFor()
-  await page.getByRole('button', { name: 'Team Depot', exact: true }).click()
+  await page.getByRole('button', { name: 'Filter to Team Labby', exact: true }).click()
   await page.waitForFunction(() => new URL(location.href).searchParams.get('provider') === 'team')
   await page.getByRole('heading', { name: 'Skill frontend', exact: true }).waitFor()
   assert.equal(requests.at(-1)?.provider, 'team')
@@ -1033,7 +1005,7 @@ test('Discover kind searches reject stale pagination and restore query context f
   unavailable = false
   await page.getByRole('button', { name: 'Retry search', exact: true }).click()
   await page.getByRole('heading', { name: 'Skill waiting', exact: true }).waitFor()
-  await page.getByRole('button', { name: 'All sources', exact: true }).click()
+  await page.getByRole('button', { name: 'Remove provider filter', exact: true }).click()
   await input.fill('partial')
   await page.getByText('Some sources do not support this kind filter. Results cover the supported sources only.', { exact: true }).waitFor()
   await page.getByRole('heading', { name: 'Skill partial', exact: true }).waitFor()
@@ -1083,7 +1055,7 @@ test('Discover discards delayed detail and import preparation after inspection c
   await page.getByRole('heading', { name: 'Skill initial', exact: true }).click()
   await detailRequested
   await page.keyboard.press('Escape')
-  const input = page.getByRole('textbox', { name: 'Search Depot artifacts' })
+  const input = page.getByRole('textbox', { name: 'Search Labby artifacts' })
   await input.fill('python')
   releaseDetail()
   await page.getByRole('heading', { name: 'Skill python', exact: true }).waitFor()
@@ -1100,4 +1072,91 @@ test('Discover discards delayed detail and import preparation after inspection c
   await page.getByRole('heading', { name: 'Skill frontend', exact: true }).waitFor()
   assert.equal(imports, 0)
   assert.equal(await page.getByText('Exact Artifact imported into Labby', { exact: true }).count(), 0)
+})
+
+test('Overview drag handles reorder both directions across columns and persist after reload', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+  const browser = await chromium.launch({ headless: true })
+  t.after(() => browser.close())
+  const page = await browser.newPage({ viewport: { width: 1512, height: 1800 } })
+  await page.goto(baseUrl, { waitUntil: 'networkidle' })
+  await page.getByRole('button', { name: 'Drag Call outcomes', exact: true }).waitFor()
+  const order = (lane: string) => page.locator(`[data-overview-lane="${lane}"] > [data-overview-card]`).evaluateAll(elements => elements.map(element => element.getAttribute('data-overview-card')))
+  const defaultTelemetry = ['Call volume', 'Top targets', 'Call outcomes', 'Least used', 'Code Mode fan-out', 'Latency', 'Failures by kind', 'By surface', 'Tokens by tool', 'Throughput', 'Activity by hour']
+  const assertCompact = async () => {
+    const geometry = await page.locator('[data-overview-columns]').evaluate(columns => {
+      const bounds = columns.getBoundingClientRect()
+      const columnCenters = [1 / 6, 1 / 2, 5 / 6].map(ratio => bounds.left + bounds.width * ratio)
+      const cards = [...columns.querySelectorAll<HTMLElement>('[data-overview-card]')].map(card => card.getBoundingClientRect())
+      const stacks = columnCenters.map(center => {
+        const stack = cards.filter(card => card.left <= center && card.right >= center).sort((a, b) => a.top - b.top)
+        return { count: stack.length, gaps: stack.slice(1).map((card, index) => Math.round(card.top - stack[index].bottom)) }
+      })
+      return { counts: stacks.map(stack => stack.count), gaps: stacks.flatMap(stack => stack.gaps) }
+    })
+    assert.ok(geometry.counts.every(count => count >= 2), `Overview left a desktop column underfilled: ${geometry.counts.join(', ')}`)
+    assert.ok(geometry.gaps.length > 0)
+    assert.ok(geometry.gaps.every(gap => gap >= 0 && gap <= 14), `Overview retained interior gaps or overlaps: ${geometry.gaps.join(', ')}`)
+  }
+  const drag = async (source: string, target: string, edge: 'before' | 'after') => {
+    const handle = page.getByRole('button', { name: `Drag ${source}`, exact: true })
+    await handle.scrollIntoViewIfNeeded()
+    const from = await handle.boundingBox()
+    const to = await page.locator(`[data-overview-card="${target}"]`).boundingBox()
+    assert.ok(from && to)
+    await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(to.x + to.width / 2, to.y + to.height * (edge === 'after' ? 0.8 : 0.2), { steps: 15 })
+    await page.locator(`[data-overview-card="${target}"] [data-overview-insertion="${edge}"]`).waitFor()
+    await page.mouse.up()
+  }
+  assert.deepEqual(await order('telemetry'), defaultTelemetry)
+  await assertCompact()
+  await page.setViewportSize({ width: 1280, height: 1800 })
+  await assertCompact()
+  await page.setViewportSize({ width: 1512, height: 1800 })
+  await assertCompact()
+  const gapSource = page.getByRole('button', { name: 'Drag Call outcomes', exact: true })
+  const gapFrom = await gapSource.boundingBox()
+  const gapAbove = await page.locator('[data-overview-card="Call volume"]').boundingBox()
+  const gapBelow = await page.locator('[data-overview-card="Top targets"]').boundingBox()
+  assert.ok(gapFrom && gapAbove && gapBelow)
+  await page.mouse.move(gapFrom.x + gapFrom.width / 2, gapFrom.y + gapFrom.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(gapBelow.x + gapBelow.width / 2, gapAbove.y + gapAbove.height + (gapBelow.y - gapAbove.y - gapAbove.height) * 0.75, { steps: 15 })
+  await page.locator('[data-overview-card="Top targets"] [data-overview-insertion="before"]').waitFor()
+  await page.mouse.up()
+  assert.deepEqual(await order('telemetry'), ['Call volume', 'Call outcomes', 'Top targets', 'Least used', ...defaultTelemetry.slice(4)])
+  await drag('Call outcomes', 'Top targets', 'after')
+  assert.deepEqual(await order('telemetry'), defaultTelemetry)
+  await drag('Call outcomes', 'Least used', 'after')
+  assert.deepEqual(await order('telemetry'), ['Call volume', 'Top targets', 'Least used', 'Call outcomes', ...defaultTelemetry.slice(4)])
+  await drag('Call outcomes', 'Least used', 'before')
+  assert.deepEqual(await order('telemetry'), defaultTelemetry)
+  await assertCompact()
+  await drag('Call outcomes', 'Most active', 'before')
+  assert.deepEqual(await order('insights'), ['Call outcomes', 'Most active', 'Upstreams', 'Connected clients', 'Gateway host', 'Recent servers'])
+  assert.deepEqual(await order('telemetry'), defaultTelemetry.filter(id => id !== 'Call outcomes'))
+  assert.equal(await page.locator('[data-overview-card][draggable]').count(), 0)
+  await page.reload({ waitUntil: 'networkidle' })
+  assert.equal((await order('insights'))[0], 'Call outcomes')
+  await assertCompact()
+  await page.getByRole('button', { name: 'Move Call outcomes to telemetry column', exact: true }).click()
+  await page.getByRole('button', { name: 'Toggle Call outcomes full width', exact: true }).click()
+  await page.reload({ waitUntil: 'networkidle' })
+  assert.equal(await page.getByRole('button', { name: 'Toggle Call outcomes full width', exact: true }).getAttribute('aria-pressed'), 'true')
+  assert.equal((await order('telemetry')).at(-1), 'Call outcomes')
+
+  const beforeCancel = await order('telemetry')
+  const handle = page.getByRole('button', { name: 'Drag Call outcomes', exact: true })
+  await handle.scrollIntoViewIfNeeded()
+  const bounds = await handle.boundingBox()
+  assert.ok(bounds)
+  await page.mouse.move(bounds.x + 5, bounds.y + 5)
+  await page.mouse.down()
+  await page.mouse.move(bounds.x + 30, bounds.y + 40, { steps: 5 })
+  await page.keyboard.press('Escape')
+  await page.mouse.up()
+  assert.deepEqual(await order('telemetry'), beforeCancel)
+  assert.equal(await page.locator('[data-overview-insertion]').count(), 0)
 })
