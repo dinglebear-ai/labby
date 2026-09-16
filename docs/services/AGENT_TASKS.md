@@ -49,7 +49,9 @@ separately as bearer authentication. ExGPT-style providers must expose the
 session create, cancel, and close extensions in addition to
 `/v1/chat/completions`. Session lifecycle calls use a short bounded timeout,
 and a hard Agent runtime timeout invokes executor cleanup so an abandoned chat
-does not leave its provider session behind. Direct `agents.run` input is bound
+does not leave its provider session behind. Direct `agents.run` `input` is an
+optional string (absent or `null` means no input; any other JSON type is
+rejected as `invalid_param`) and is bound
 only to that run; the immutable Agent instructions remain pinned to the selected
 revision and travel to the provider as the system turn, while the run input is
 sent as a separate user turn, so input can never rewrite the pinned revision

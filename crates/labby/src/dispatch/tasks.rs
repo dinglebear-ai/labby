@@ -1080,6 +1080,31 @@ mod tests {
         );
     }
 
+    /// A non-string `input` is reported against `input`, never as a
+    /// misleading complaint about an unrelated parameter.
+    #[tokio::test]
+    async fn create_rejects_non_string_input() {
+        let (_dir, store, owner) = fixture().await;
+        create_agent(&store, &owner, "agent-1").await;
+        let context = task_context(&store, &owner);
+        for input in [json!(42), json!(["a"]), json!({"text":"a"}), json!(null)] {
+            let mut params = task_params("typed-task", "agent-1");
+            params["input"] = input.clone();
+            let error = dispatch(context.clone(), "tasks.create", params)
+                .await
+                .unwrap_err();
+            assert_eq!(error.kind(), "invalid_param", "{input}");
+            assert_eq!(envelope(&error)["param"], "input", "{input}");
+        }
+        assert!(
+            store
+                .get_agent_task("typed-task".into())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
     #[tokio::test]
     async fn input_digest_is_verification_only() {
         let (_dir, store, owner) = fixture().await;

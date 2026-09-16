@@ -386,14 +386,7 @@ pub(crate) async fn dispatch(
             if definition.state != AgentState::Active {
                 return Err(denied());
             }
-            let executor = configured_executor(
-                &context.store,
-                params
-                    .get("input")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-            )?;
+            let executor = configured_executor(&context.store, optional_text(&params, "input")?)?;
             let epochs = refresh_authority_epochs(
                 &context.store,
                 context.identity.clone(),
@@ -1051,6 +1044,15 @@ fn required(v: &Value, k: &str) -> Result<String, ToolError> {
         .map(ToOwned::to_owned)
         .ok_or_else(|| invalid(k))
 }
+/// Optional string parameter: absent and `null` mean "not supplied"; any
+/// other non-string value is the caller's error, never silently ignored.
+fn optional_text(v: &Value, k: &str) -> Result<String, ToolError> {
+    match v.get(k) {
+        None | Some(Value::Null) => Ok(String::new()),
+        Some(Value::String(value)) => Ok(value.clone()),
+        Some(_) => Err(invalid(k)),
+    }
+}
 fn now() -> Result<u64, ToolError> {
     u64::try_from(
         SystemTime::now()
@@ -1661,6 +1663,43 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(error.kind(), "forbidden");
+    }
+
+    /// A non-string `input` is a caller error, never silently treated as an
+    /// empty run; `null` and absence still mean "no input".
+    #[tokio::test]
+    async fn run_rejects_non_string_input() {
+        let (_dir, store, owner) = fixture().await;
+        let context = agent_context(&store, &owner);
+        dispatch(
+            context.clone(),
+            "agents.create",
+            agent_params("typed-agent"),
+        )
+        .await
+        .unwrap();
+        for input in [json!(42), json!(["a"]), json!({"text":"a"}), json!(true)] {
+            let error = dispatch(
+                context.clone(),
+                "agents.run",
+                json!({"agent_id":"typed-agent","input":input}),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.kind(), "invalid_param", "{input}");
+            assert_eq!(envelope(&error)["param"], "input", "{input}");
+        }
+        // Absent and null input are admitted (the run then fails against the
+        // pinned dummy provider, never at parameter validation).
+        for params in [
+            json!({"agent_id":"typed-agent"}),
+            json!({"agent_id":"typed-agent","input":null}),
+        ] {
+            let error = dispatch(context.clone(), "agents.run", params)
+                .await
+                .unwrap_err();
+            assert_ne!(error.kind(), "invalid_param");
+        }
     }
 
     #[tokio::test]
