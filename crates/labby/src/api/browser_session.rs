@@ -842,13 +842,14 @@ fn bearer_exchange_allowed(state: &AppState, headers: &HeaderMap) -> bool {
         .is_some_and(crate::api::host_validation::is_loopback_host_value)
 }
 
-fn bearer_exchange_error(status: StatusCode, message: &str) -> Response {
-    (
-        status,
-        [(header::CACHE_CONTROL, "private, no-store")],
-        Json(serde_json::json!({ "ok": false, "message": message })),
-    )
-        .into_response()
+/// A bearer-exchange refusal in the shared agent-error envelope. `kind` is one
+/// of the stable vocabulary entries documented in docs/dev/ERRORS.md; HTTP
+/// status follows from it through `ApiError`, never from this call site.
+fn bearer_exchange_refusal(kind: &str, message: &str) -> Response {
+    tool_error_response(ToolError::Sdk {
+        sdk_kind: kind.to_owned(),
+        message: message.to_owned(),
+    })
 }
 
 pub async fn auth_bearer_session(
@@ -867,13 +868,13 @@ pub async fn auth_bearer_session(
             Some("secure_transport_required"),
             None,
         );
-        return bearer_exchange_error(
-            StatusCode::BAD_REQUEST,
+        return bearer_exchange_refusal(
+            "forbidden",
             "bearer browser sign-in requires HTTPS or a loopback origin",
         );
     }
     if !static_bearer_login_available(&state) {
-        return bearer_exchange_error(StatusCode::UNAUTHORIZED, "invalid bearer credential");
+        return bearer_exchange_refusal("auth_failed", "invalid bearer credential");
     }
     let Some(expected) = state.bearer_token.as_ref() else {
         log_auth_dispatch(
@@ -883,7 +884,7 @@ pub async fn auth_bearer_session(
             Some("not_configured"),
             None,
         );
-        return bearer_exchange_error(StatusCode::UNAUTHORIZED, "invalid bearer credential");
+        return bearer_exchange_refusal("auth_failed", "invalid bearer credential");
     };
     let Some(token) = headers
         .get(header::AUTHORIZATION)
@@ -897,7 +898,7 @@ pub async fn auth_bearer_session(
             Some("missing_credential"),
             None,
         );
-        return bearer_exchange_error(StatusCode::UNAUTHORIZED, "invalid bearer credential");
+        return bearer_exchange_refusal("auth_failed", "invalid bearer credential");
     };
     if !labby_auth::tokens_equal(&token, expected.as_ref()) {
         log_auth_dispatch(
@@ -907,7 +908,7 @@ pub async fn auth_bearer_session(
             Some("invalid_credential"),
             None,
         );
-        return bearer_exchange_error(StatusCode::UNAUTHORIZED, "invalid bearer credential");
+        return bearer_exchange_refusal("auth_failed", "invalid bearer credential");
     }
     match labby_auth::static_session::has_other_browser_session(
         &headers,
@@ -917,8 +918,8 @@ pub async fn auth_bearer_session(
     .await
     {
         Ok(true) => {
-            return bearer_exchange_error(
-                StatusCode::CONFLICT,
+            return bearer_exchange_refusal(
+                "conflict",
                 "Sign out of the current browser session before using a setup token.",
             );
         }
@@ -926,8 +927,8 @@ pub async fn auth_bearer_session(
         Ok(false) => {}
     }
     let Some(session_state) = state.static_browser_session_state.as_ref() else {
-        return bearer_exchange_error(
-            StatusCode::SERVICE_UNAVAILABLE,
+        return bearer_exchange_refusal(
+            "service_unavailable",
             "bearer browser sessions are unavailable",
         );
     };
@@ -935,10 +936,7 @@ pub async fn auth_bearer_session(
         Ok(session) => session,
         Err(error) => {
             tracing::error!(error = %error, "failed to create static bearer browser session");
-            return bearer_exchange_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to create browser session",
-            );
+            return internal_error_response("failed to create browser session");
         }
     };
     let mut response = no_store_json(serde_json::json!({ "ok": true }));
@@ -966,8 +964,8 @@ async fn reject_mixed_static_sessions(state: &AppState, headers: &HeaderMap) -> 
     .await
     {
         Ok(false) => None,
-        Ok(true) => Some(bearer_exchange_error(
-            StatusCode::CONFLICT,
+        Ok(true) => Some(bearer_exchange_refusal(
+            "conflict",
             "Multiple browser sessions are present. Clear this site's cookies and sign in again.",
         )),
         Err(_) => Some(internal_error_response("failed to load browser session")),
@@ -1632,6 +1630,151 @@ mod tests {
         let response = exchange("192.168.1.20:8765", None).await;
         assert!(response.status().is_client_error());
         assert!(!response.headers().contains_key(header::SET_COOKIE));
+    }
+
+    #[tokio::test]
+    async fn bearer_exchange_errors_carry_stable_kinds() {
+        // Every refusal from the bearer exchange and from static-cookie
+        // introspection uses the shared ApiError envelope: a stable `kind` plus
+        // the versioned recovery contract, never a bare `{ok:false,message}`.
+        async fn envelope(response: Response) -> (StatusCode, serde_json::Value) {
+            let status = response.status();
+            assert_eq!(
+                response.headers()[header::CACHE_CONTROL],
+                "private, no-store"
+            );
+            assert!(!response.headers().contains_key(header::SET_COOKIE));
+            let body = axum::body::to_bytes(response.into_body(), 16384)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["contract_version"], 1, "{body}");
+            assert!(body["message"].is_string(), "{body}");
+            assert!(body["recovery"]["action"].is_string(), "{body}");
+            assert!(body.get("ok").is_none(), "{body}");
+            (status, body)
+        }
+        let state = AppState::new()
+            .with_bearer_token(Some(std::sync::Arc::from("operator-token")))
+            .with_static_browser_session_state(
+                labby_auth::static_session::StaticBrowserSessionState::new(false),
+            );
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("192.168.1.20:8765"));
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer operator-token"),
+        );
+        let (status, body) = envelope(
+            auth_bearer_session(State(state.clone()), headers.clone())
+                .await
+                .into_response(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["kind"], "forbidden");
+
+        headers.insert(header::HOST, HeaderValue::from_static("localhost:8765"));
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer not-the-operator-token"),
+        );
+        let (status, body) = envelope(
+            auth_bearer_session(State(state.clone()), headers.clone())
+                .await
+                .into_response(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["kind"], "auth_failed");
+        headers.remove(header::AUTHORIZATION);
+        let (status, body) = envelope(
+            auth_bearer_session(State(state.clone()), headers.clone())
+                .await
+                .into_response(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["kind"], "auth_failed");
+
+        // A competing browser session conflicts on both the exchange and the
+        // static-cookie introspection.
+        let directory = tempfile::tempdir().unwrap();
+        let project = labby_auth::project_session::ProjectSessionState::open(
+            directory.path().join("project.db"),
+            "__Host-project-session",
+        )
+        .await
+        .unwrap();
+        project
+            .store
+            .upsert_browser_session(BrowserSessionRow {
+                session_id: "project-session".into(),
+                subject: "project-user".into(),
+                email: None,
+                csrf_token: "project-csrf".into(),
+                created_at: labby_auth::util::now_unix(),
+                expires_at: labby_auth::util::now_unix() + 3600,
+                project_binding: None,
+            })
+            .await
+            .unwrap();
+        let mut mixed = state.clone();
+        mixed.project_session_state = Some(std::sync::Arc::new(project));
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer operator-token"),
+        );
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_static("__Host-project-session=project-session"),
+        );
+        let (status, body) = envelope(
+            auth_bearer_session(State(mixed.clone()), headers.clone())
+                .await
+                .into_response(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["kind"], "conflict");
+        let sessions = mixed.static_browser_session_state.as_ref().unwrap();
+        let row = sessions.create().unwrap();
+        headers.remove(header::AUTHORIZATION);
+        headers.insert(
+            header::COOKIE,
+            format!(
+                "__Host-project-session=project-session; {}={}",
+                sessions.cookie_name(),
+                row.session_id
+            )
+            .parse()
+            .unwrap(),
+        );
+        let (status, body) = envelope(
+            auth_session(State(mixed), headers.clone(), None, None)
+                .await
+                .into_response(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["kind"], "conflict");
+
+        // No static session store: the exchange is unavailable, not broken.
+        let unavailable =
+            AppState::new().with_bearer_token(Some(std::sync::Arc::from("operator-token")));
+        headers.remove(header::COOKIE);
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer operator-token"),
+        );
+        let (status, body) = envelope(
+            auth_bearer_session(State(unavailable), headers)
+                .await
+                .into_response(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["kind"], "service_unavailable");
     }
 
     #[tokio::test]
