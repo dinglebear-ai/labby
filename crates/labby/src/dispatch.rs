@@ -1,6 +1,8 @@
 pub(crate) mod access;
 pub(crate) mod access_bootstrap;
 pub(crate) mod access_errors;
+pub(crate) mod agent_llm;
+pub(crate) mod agent_payloads;
 pub(crate) mod agents;
 #[cfg(feature = "skills")]
 pub(crate) mod artifact_control;
@@ -25,6 +27,8 @@ pub mod lab_admin;
 #[cfg(feature = "gateway")]
 pub mod oauth_subject;
 pub mod path_safety;
+#[allow(dead_code)]
+pub(crate) mod phoenix_openai;
 pub(crate) mod projects;
 pub mod redact;
 #[cfg(feature = "skills")]

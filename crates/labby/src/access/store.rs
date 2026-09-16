@@ -48,6 +48,16 @@ impl std::fmt::Debug for AccessStore {
 }
 
 impl AccessStore {
+    /// Directory that owns durable files associated with this access store.
+    /// Product subsystems use this rather than process-global HOME so test and
+    /// multi-installation stores remain isolated from one another.
+    pub(crate) fn storage_dir(&self) -> PathBuf {
+        self.path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf()
+    }
+
     pub(crate) async fn installation_id(&self) -> AccessStoreResult<Option<String>> {
         self.with_connection(|connection| {
             connection

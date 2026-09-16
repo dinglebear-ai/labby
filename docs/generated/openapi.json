@@ -5300,13 +5300,7 @@
         "required": [
           "agent_id",
           "owner_kind",
-          "owner_id",
-          "content_digest",
-          "repository_digest",
-          "image_digest",
-          "harness_digest",
-          "loadout_digest",
-          "catalog_generation"
+          "owner_id"
         ],
         "properties": {
           "agent_id": {
@@ -5324,7 +5318,13 @@
           "image_digest": {
             "type": "string"
           },
+          "instructions": {
+            "type": "string"
+          },
           "loadout_digest": {
+            "type": "string"
+          },
+          "model": {
             "type": "string"
           },
           "owner_id": {
@@ -5378,6 +5378,9 @@
         ],
         "properties": {
           "agent_id": {
+            "type": "string"
+          },
+          "input": {
             "type": "string"
           }
         }
@@ -9639,14 +9642,16 @@
           "idempotency_key",
           "owner_kind",
           "owner_id",
-          "agent_id",
-          "input_digest"
+          "agent_id"
         ],
         "properties": {
           "agent_id": {
             "type": "string"
           },
           "idempotency_key": {
+            "type": "string"
+          },
+          "input": {
             "type": "string"
           },
           "input_digest": {
