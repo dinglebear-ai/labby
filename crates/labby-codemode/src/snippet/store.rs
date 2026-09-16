@@ -234,8 +234,14 @@ pub fn code_for_snippet(snippet: &ResolvedSnippet) -> Result<String, ToolError> 
     } else {
         snippet.body.trim().to_string()
     };
+    let code = normalize_snippet_code(&code).to_string();
     validate_snippet_code(&code)?;
     Ok(code)
+}
+
+fn normalize_snippet_code(code: &str) -> &str {
+    let code = code.trim();
+    code.strip_suffix(';').map_or(code, str::trim_end)
 }
 
 /// Validate and atomically create or replace a user Markdown snippet.
@@ -545,7 +551,7 @@ pub fn validate_snippet_body(name: &str, body: &str) -> Result<(), ToolError> {
 
 /// Validate executable snippet JavaScript against the Code Mode source-size contract.
 pub fn validate_snippet_code(code: &str) -> Result<(), ToolError> {
-    let code = code.trim();
+    let code = normalize_snippet_code(code);
     if code.is_empty() {
         return Err(ToolError::InvalidParam {
             message: "snippet code is empty".to_string(),
@@ -1040,6 +1046,13 @@ mod tests {
     #[test]
     fn validate_snippet_body_accepts_valid_frontmatter() {
         assert!(validate_snippet_body("demo", valid_body()).is_ok());
+    }
+
+    #[test]
+    fn validate_snippet_code_accepts_formatter_trailing_semicolon() {
+        let code = "async () => ({ ok: true });";
+        assert!(validate_snippet_code(code).is_ok());
+        assert_eq!(normalize_snippet_code(code), "async () => ({ ok: true })");
     }
 
     #[test]
