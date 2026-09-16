@@ -11,7 +11,7 @@ import { ConsoleHero } from '@/components/console/console-hero'
 import { DashboardPanel } from '@/components/dashboard/panel'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { depotCall, type DepotArtifact } from '@/lib/api/depot-client'
+import { depotCall, depotOperations, type DepotArtifact } from '@/lib/api/depot-client'
 import { mockDepotMetricLabels, mockDepotSpecLabels } from '@/lib/api/depot-mock-data'
 import { localLibraryFederatedArtifact } from './local-library-model'
 import { DiscoverArtifactInspection } from './discover-artifact-inspection'
@@ -23,6 +23,13 @@ import { artifactDescription, artifactExportFilename, artifactId, artifactKind, 
 const USE_MOCK_DATA = process.env.NEXT_PUBLIC_MOCK_DATA === 'true'
 import { ARTIFACT_TYPES, ArtifactTypeMark, artifactTypeDefinition } from './artifact-type'
 import { updateLibraryUrl as updateUrl } from './library-url'
+
+async function depotLibraryCall<T>(operation: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
+  // Labby's operation route intentionally requires a fresh actor-filtered Depot catalog
+  // before dispatch. The Library does not render that catalog, so establish it here.
+  if (!USE_MOCK_DATA) await depotOperations(signal)
+  return depotCall<T>(operation, params, signal)
+}
 
 type LibraryState = {
   artifacts: DepotArtifact[]
@@ -177,7 +184,7 @@ function SessionLibraryPage() {
       : { artifacts: [], loading: true })
     try {
       const normalizedSearch = search.trim()
-      const response = await depotCall<{ result: { artifacts: DepotArtifact[]; nextCursor?: string; total?: number } }>(
+      const response = await depotLibraryCall<{ result: { artifacts: DepotArtifact[]; nextCursor?: string; total?: number } }>(
         'depot.artifacts.list',
         { limit: 200, ...(normalizedSearch.length >= 3 ? { query: normalizedSearch } : {}), ...(cursor ? { cursor } : {}) },
         signal,
@@ -215,7 +222,7 @@ function SessionLibraryPage() {
     const loadingSessionEpoch = getBrowserSessionEpoch()
     const isCurrent = () => !controller.signal.aborted && loadingSessionEpoch === getBrowserSessionEpoch()
     setDetailLoading(true)
-    void depotCall<{ result: { artifact: DepotArtifact } }>('depot.artifacts.get', { artifactId: selectedId }, controller.signal)
+    void depotLibraryCall<{ result: { artifact: DepotArtifact } }>('depot.artifacts.get', { artifactId: selectedId }, controller.signal)
       .then((response) => { if (isCurrent()) setDetail(response.result.artifact ? { selectedId, artifact: response.result.artifact } : null) })
       .catch((error) => { if (isCurrent()) toast.error(error instanceof Error ? error.message : String(error)) })
       .finally(() => { if (isCurrent()) setDetailLoading(false) })
