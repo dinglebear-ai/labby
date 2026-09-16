@@ -4,7 +4,8 @@ import React, { act } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { SearchParamsContext } from 'next/dist/shared/lib/hooks-client-context.shared-runtime'
 import { installTestDom, renderClient } from '../../lib/testing/dom-test-utils.tsx'
-import { __setBrowserSessionStateForTests } from '../../lib/auth/session-store.ts'
+import { __setBrowserSessionStateForTests, selectSessionWorkspace, type BrowserSessionState } from '../../lib/auth/session-store.ts'
+import type { AuthorityProject, AuthoritySnapshot } from '../../lib/auth/authority.ts'
 import { filterArtifacts } from './library-model'
 
 const dom = installTestDom()
@@ -156,17 +157,32 @@ function deferred() {
 }
 const flush = () => act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
 const page = (id: string) => <SearchParamsContext.Provider value={new URLSearchParams({ artifact: id })}><LibraryPageContent /></SearchParamsContext.Provider>
+const authenticated = (overrides: Partial<Extract<BrowserSessionState, { status: 'authenticated' }>> = {}): BrowserSessionState => ({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf', ...overrides })
+const bindProjectSession = (projectId = 'project-1') => __setBrowserSessionStateForTests(authenticated({ projectId }))
+const authority = (projects: AuthorityProject[], activeProjectId?: string): AuthoritySnapshot => ({
+  schemaVersion: 1,
+  compatibilityGeneration: 1,
+  principalId: 'principal-1',
+  organizationId: 'org-1',
+  activeOwner: activeProjectId ? { kind: 'project', id: activeProjectId } : { kind: 'personal', id: 'principal-1' },
+  activeProjectId,
+  teams: [],
+  projects,
+  capabilities: ['scope.read'],
+  generation: 1,
+})
 
 test('initial catalog load preserves an artifact deep link', async () => {
   const originalFetch = globalThis.fetch
   const originalUrl = window.location.href
   dom.happyDOM.setURL('http://localhost/library/?artifact=alpha')
-  const requested: Array<{ url: string; action: string; params: unknown }> = []
+  bindProjectSession()
+  const requested: Array<{ url: string; action: string; params: unknown; projectId: string | null }> = []
   globalThis.fetch = async (url, init) => {
     if (url === '/v1/depot/status') return Response.json({ depot: { configured: true, enabled: true, maxResponseBytes: 10000 } })
     if (url === '/v1/depot/publish') return Response.json({ available: false })
     const body = JSON.parse(String(init?.body))
-    requested.push({ url: String(url), action: body.action, params: body.params })
+    requested.push({ url: String(url), action: body.action, params: body.params, projectId: new Headers(init?.headers).get('x-labby-project-id') })
     return envelope(body.action === 'artifacts.get' ? { item: { artifact_id: 'alpha', name: 'Linked artifact', latest_revision_id: 'revision-one', latest_revision_files: [], access_label: 'private', visibility: 'private' } } : { items: [], can_create: false })
   }
   const view = await renderClient(page('alpha'))
@@ -178,6 +194,7 @@ test('initial catalog load preserves an artifact deep link', async () => {
     assert.ok(deepLink, 'the deep link must resolve through the artifacts control plane')
     assert.equal(deepLink.url, '/v1/artifacts')
     assert.deepEqual(deepLink.params, { artifact_id: 'alpha' })
+    assert.equal(deepLink.projectId, 'project-1', 'project-scoped reads carry the bound project')
   } finally {
     await view.unmount()
     globalThis.fetch = originalFetch
@@ -187,6 +204,7 @@ test('initial catalog load preserves an artifact deep link', async () => {
 
 test('detail responses and retained details cannot cross selection or session boundaries', async () => {
   const originalFetch = globalThis.fetch
+  bindProjectSession()
   const reads: ReturnType<typeof deferred>[] = []
   globalThis.fetch = async (url, init) => {
     if (url === '/v1/depot/status') return Response.json({ depot: { configured: true, enabled: true, maxResponseBytes: 10000 } })
@@ -214,19 +232,26 @@ test('detail responses and retained details cannot cross selection or session bo
     await act(async () => reads[2].resolve(envelope({ item: { artifact_id: 'charlie', name: 'Charlie private details', latest_revision_id: 'revision-one', latest_revision_files: [], access_label: 'private', visibility: 'private' } })))
     await act(async () => reads[0].resolve(envelope({ item: { artifact_id: 'alpha', name: 'Alpha stale details', latest_revision_id: 'revision-one', latest_revision_files: [], access_label: 'private', visibility: 'private' } })))
     assert.doesNotMatch(document.body.textContent ?? '', /Alpha stale details/)
-    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+    bindProjectSession('project-2')
     await view.rerender(page('charlie'))
     assert.doesNotMatch(document.body.textContent ?? '', /Charlie private details/)
     await flush()
-    assert.equal(reads.length, 4)
+    assert.equal(reads.length, 4, 'a new project context issues its own read')
     await act(async () => reads[3].reject(new Error('new session denied')))
     assert.doesNotMatch(document.body.textContent ?? '', /Bravo private details|Charlie private details|Alpha stale details/)
     assert.match(document.body.textContent ?? '', /Artifact details are unavailable/)
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+    await view.rerender(page('charlie'))
+    await flush()
+    assert.equal(reads.length, 4, 'a session without a project issues no project-scoped read')
+    assert.equal(document.querySelector('[role="dialog"]'), null, 'no retained detail survives the session')
+    assert.doesNotMatch(document.body.textContent ?? '', /Bravo private details|Charlie private details|Alpha stale details|Artifact details are unavailable/)
   } finally { await view.unmount(); globalThis.fetch = originalFetch }
 })
 
 test('late page failures and successes cannot overwrite a new query', async () => {
   const originalFetch = globalThis.fetch
+  bindProjectSession()
   const pending: ReturnType<typeof deferred>[] = []
   globalThis.fetch = async (url, init) => {
     if (url === '/v1/depot/status') return Response.json({ depot: { configured: true, enabled: true, maxResponseBytes: 10000 } })
@@ -281,43 +306,115 @@ test.afterEach(() => {
   __setBrowserSessionStateForTests({ status: 'unauthenticated' })
 })
 
-async function renderLibrary(depot: Record<string, unknown>) {
-  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
-  const requested: string[] = []
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
+type LibraryRequest = { path: string; projectId: string | null }
+
+async function renderLibrary(
+  library: { can_create?: boolean; error?: string },
+  session: BrowserSessionState = authenticated({ projectId: 'project-1' }),
+  artifacts: (projectId: string | null) => unknown[] = () => [],
+) {
+  __setBrowserSessionStateForTests(session)
+  const requested: LibraryRequest[] = []
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = new URL(String(input), 'http://labby.test').pathname
-    requested.push(path)
-    if (path === '/v1/depot/status') return Response.json({ depot })
-    if (path === '/v1/depot/publish') return Response.json({ available: depot.enabled === true && depot.authority === 'write' })
-    return depot.error ? Response.json({ message: depot.error }, { status: 403 }) : Response.json({ items: [], can_create: depot.can_create === true })
+    const projectId = new Headers(init?.headers).get('x-labby-project-id')
+    requested.push({ path, projectId })
+    if (library.error) return Response.json({ message: library.error }, { status: 403 })
+    return Response.json({ items: artifacts(projectId), can_create: library.can_create === true })
   }) as typeof globalThis.fetch
   document.body.replaceChildren()
-  const view = await renderClient(
+  const element = () => (
     <AppRouterContext.Provider value={router as never}>
       <PathnameContext.Provider value="/library">
         <SearchParamsContext.Provider value={new URLSearchParams() as never}>
           <LibraryPageContent />
         </SearchParamsContext.Provider>
       </PathnameContext.Provider>
-    </AppRouterContext.Provider>,
+    </AppRouterContext.Provider>
   )
-  return { view, requested }
+  const view = await renderClient(element())
+  return { view, element, requested }
 }
 
 test('Library uses local acquired records and access without a remote Depot dependency', async () => {
   const local = await renderLibrary({ can_create: true })
   await waitFor(() => assert.equal(local.view.container.querySelector('[data-library-access]')?.textContent, 'Read + create'))
   assert.match(local.view.container.textContent ?? '', /Local acquired artifacts/)
-  assert.equal(local.requested.some(path => path.startsWith('/v1/depot')), false)
+  assert.equal(local.requested.some(request => request.path.startsWith('/v1/depot')), false)
+  assert.ok(local.requested.some(request => request.path === '/v1/artifacts' && request.projectId === 'project-1'))
   await local.view.unmount()
   const readOnly = await renderLibrary({ can_create: false })
   await waitFor(() => assert.equal(readOnly.view.container.querySelector('[data-library-access]')?.textContent, 'Read only'))
   await readOnly.view.unmount()
 })
 
-test('missing project context directs the operator to the existing workspace selector', async () => {
-  const missing = await renderLibrary({ error: 'Skill Library project context is required' })
-  await waitFor(() => assert.match(missing.view.container.textContent ?? '', /Choose a project in the workspace selector/))
-  assert.match(missing.view.container.textContent ?? '', /Project access is required/)
-  await missing.view.unmount()
+test('the Personal workspace offers eligible projects before any artifact request', async () => {
+  const { view, requested } = await renderLibrary({ can_create: true }, authenticated({ authority: authority([{ id: 'project-1', role: 'owner', name: 'Project One' }]) }))
+  try {
+    await flush()
+    assert.equal(requested.length, 0, 'no request may run before a project is selected')
+    assert.match(view.container.textContent ?? '', /Project required/)
+    assert.ok(view.container.querySelector('a[href="/loadouts"]'), 'the other Library sections stay reachable')
+    const choose = [...view.container.querySelectorAll('button')].find(button => button.textContent?.includes('Project One'))
+    assert.ok(choose, 'the server-projected project is offered')
+    await act(async () => choose.click())
+    await waitFor(() => assert.ok(requested.some(request => request.path === '/v1/artifacts')))
+    assert.ok(requested.filter(request => request.path === '/v1/artifacts').every(request => request.projectId === 'project-1'))
+    await waitFor(() => assert.doesNotMatch(view.container.textContent ?? '', /Project required/))
+  } finally { await view.unmount() }
+})
+
+test('a session with no eligible project explains the gap without issuing reads', async () => {
+  const { view, requested } = await renderLibrary({ can_create: false }, authenticated({ authority: authority([]) }))
+  try {
+    await flush()
+    assert.equal(requested.length, 0)
+    assert.match(view.container.textContent ?? '', /Project required/)
+    assert.match(view.container.textContent ?? '', /No eligible project is available/)
+  } finally { await view.unmount() }
+})
+
+test('switching projects remounts the local collection under the new project', async () => {
+  const projects: AuthorityProject[] = [{ id: 'project-1', role: 'owner' }, { id: 'project-2', role: 'owner' }]
+  const item = (projectId: string | null) => ({ artifact_id: `${projectId}-artifact`, name: `${projectId} artifact`, latest_revision_id: 'revision-one', latest_revision_files: [], access_label: 'private', visibility: 'private' })
+  const { view, requested } = await renderLibrary(
+    { can_create: false },
+    authenticated({ projectId: 'project-1', authority: authority(projects, 'project-1') }),
+    projectId => [item(projectId)],
+  )
+  try {
+    await waitFor(() => assert.match(view.container.textContent ?? '', /project-1 artifact/))
+    await act(async () => { selectSessionWorkspace({ projectId: 'project-2' }) })
+    await waitFor(() => assert.match(view.container.textContent ?? '', /project-2 artifact/))
+    assert.doesNotMatch(view.container.textContent ?? '', /project-1 artifact/)
+    const reads = requested.filter(request => request.path === '/v1/artifacts').map(request => request.projectId)
+    assert.deepEqual([...new Set(reads)], ['project-1', 'project-2'])
+  } finally { await view.unmount() }
+})
+
+test('mock data mode mounts the preview collection without a session', async () => {
+  const previous = process.env.NEXT_PUBLIC_MOCK_DATA
+  process.env.NEXT_PUBLIC_MOCK_DATA = 'true'
+  const { view, requested } = await renderLibrary({ can_create: false }, { status: 'loading' })
+  try {
+    await waitFor(() => assert.ok(requested.some(request => request.path === '/v1/artifacts')))
+    assert.ok(view.container.querySelector('input[aria-label="Search library"]'))
+    assert.doesNotMatch(view.container.textContent ?? '', /Project required/)
+  } finally {
+    await view.unmount()
+    if (previous === undefined) delete process.env.NEXT_PUBLIC_MOCK_DATA
+    else process.env.NEXT_PUBLIC_MOCK_DATA = previous
+  }
+})
+
+test('an unresolved session issues no request and mounts once it is project-bound', async () => {
+  const { view, element, requested } = await renderLibrary({ can_create: false }, { status: 'loading' })
+  try {
+    await flush()
+    assert.equal(requested.length, 0)
+    assert.ok(view.container.querySelector('a[href="/loadouts"]'))
+    bindProjectSession()
+    await view.rerender(element())
+    await waitFor(() => assert.ok(requested.some(request => request.path === '/v1/artifacts' && request.projectId === 'project-1')))
+  } finally { await view.unmount() }
 })

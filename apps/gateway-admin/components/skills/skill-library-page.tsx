@@ -5,6 +5,7 @@ import { Archive, BookOpen, Check, Download, FilePlus2, Loader2, Pencil, Plus, R
 import { toast } from 'sonner'
 
 import { AURORA_DENSE_META, AURORA_MUTED_LABEL } from '@/components/aurora/tokens'
+import { ProjectWorkspaceRequired } from '@/components/auth/project-workspace-required'
 import { DashboardPanel } from '@/components/dashboard/panel'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -20,8 +21,7 @@ import {
   type SkillVisibility,
 } from '@/lib/api/skill-library-client'
 import { isAbortError } from '@/lib/api/service-action-client'
-import { shouldBypassBrowserSessionAuth } from '@/lib/auth/auth-mode'
-import { authorityIdentity, getBrowserSessionContextIdentity, selectSessionWorkspace, useBrowserSession } from '@/lib/auth/session'
+import { getBrowserSessionContextIdentity, useProjectBoundSessionScope } from '@/lib/auth/session'
 import { cn, getErrorMessage } from '@/lib/utils'
 
 const STARTER = `---
@@ -66,26 +66,11 @@ function LifecycleRail({ selected, validation, libraryPublished = false }: { sel
 }
 
 export function SkillLibraryPageContent() {
-  const session = useBrowserSession()
-  const bypassBrowserSessionAuth = shouldBypassBrowserSessionAuth()
-  const projectId = session.status === 'authenticated' ? session.projectId : undefined
-
-  if (projectId && session.status === 'authenticated') {
-    // Key the project-scoped editor to the caller and current authority
-    // identity so workspace, login, or policy changes cannot leave stale
-    // Artifacts or in-flight editor state visible in a new context.
-    const scopeKey = `${session.user.sub}:${projectId}:${authorityIdentity(session.authority)}`
-    return <ProjectScopedSkillLibraryPageContent key={scopeKey} />
-  }
-
-  const projects = session.status === 'authenticated' ? session.authority?.projects ?? [] : []
-  const chooseProject = (nextProjectId: string) => {
-    try {
-      selectSessionWorkspace({ projectId: nextProjectId })
-    } catch (cause) {
-      toast.error(getErrorMessage(cause, 'The project workspace could not be selected.'))
-    }
-  }
+  // Key the project-scoped editor to the session scope (caller, authority,
+  // project) so workspace, login, or policy changes cannot leave stale
+  // Artifacts or in-flight editor state visible in a new context.
+  const scope = useProjectBoundSessionScope()
+  if (scope) return <ProjectScopedSkillLibraryPageContent key={scope} />
 
   return (
     <div className="grid gap-4">
@@ -93,33 +78,7 @@ export function SkillLibraryPageContent() {
         <h2 className="font-display text-xl font-semibold">Artifact Library</h2>
         <p className={cn(AURORA_DENSE_META, 'mt-1 text-aurora-text-muted')}>Durable, revisioned artifacts owned by Labby. Agent Skills are the first supported kind.</p>
       </div>
-
-      {session.status === 'loading' && !bypassBrowserSessionAuth ? (
-        <div className="flex min-h-56 items-center justify-center"><Loader2 className="size-5 animate-spin" /></div>
-      ) : session.status === 'loading' ? (
-        <DashboardPanel title="Project required">
-          <p className="text-sm text-aurora-text-muted">Mock data mode does not project an authenticated project. Use a live project-bound session to manage the Artifact Library.</p>
-        </DashboardPanel>
-      ) : session.status === 'authenticated' ? (
-        <DashboardPanel title="Project required">
-          <p className="text-sm text-aurora-text-muted">The Artifact Library is project-scoped. Select an eligible project workspace to continue.</p>
-          {projects.length > 0 ? (
-            <div className="mt-4 flex flex-wrap gap-2">
-              {projects.map(project => (
-                <Button key={project.id} variant="outline" size="sm" onClick={() => chooseProject(project.id)}>
-                  {project.name ?? project.id}
-                </Button>
-              ))}
-            </div>
-          ) : (
-            <p className={cn(AURORA_DENSE_META, 'mt-3 text-aurora-text-muted')}>No eligible project is available for this session. Create or assign a project in the Control Plane, then refresh your session.</p>
-          )}
-        </DashboardPanel>
-      ) : (
-        <DashboardPanel title="Library unavailable">
-          <p className="text-sm text-destructive">{session.status === 'auth_error' ? session.message : 'Sign in to select a project workspace.'}</p>
-        </DashboardPanel>
-      )}
+      <ProjectWorkspaceRequired description="The Artifact Library is project-scoped. Select an eligible project workspace to continue." />
     </div>
   )
 }

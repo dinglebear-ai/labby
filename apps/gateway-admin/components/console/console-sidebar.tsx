@@ -29,7 +29,7 @@ import {
   type ConsoleNavItem,
 } from '@/components/console/nav-model'
 import { sessionPrimaryEmail } from '@/lib/auth/session-presenter'
-import { LogoutRevocationError, logoutBrowserSession, selectSessionWorkspace, useBrowserSession } from '@/lib/auth/session'
+import { LogoutRevocationError, WorkspaceSelectionError, logoutBrowserSession, selectSessionWorkspace, useBrowserSession } from '@/lib/auth/session'
 
 /**
  * Switch the active workspace and report a rejected selection instead of
@@ -41,7 +41,8 @@ function switchWorkspace(selection: { teamId?: string | null; projectId?: string
     selectSessionWorkspace(selection)
     return true
   } catch (error) {
-    toast.error(error instanceof Error ? error.message : 'The workspace could not be switched.')
+    if (!(error instanceof WorkspaceSelectionError)) throw error
+    toast.error(error.message)
     return false
   }
 }

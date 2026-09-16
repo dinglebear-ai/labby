@@ -1,11 +1,12 @@
 'use client'
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { GitFork, Box, Check, ChevronDown, ChevronRight, Copy, Download, ExternalLink, Filter, Globe, Grid2X2, Link2, List, Loader2, LockKeyhole, RefreshCw, Search, Table2, Users, X } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { AppHeader } from '@/components/app-header'
+import { ProjectWorkspaceRequired } from '@/components/auth/project-workspace-required'
 import { AURORA_PAGE_FRAME, AURORA_PAGE_SHELL } from '@/components/aurora/tokens'
 import { ConsoleHero } from '@/components/console/console-hero'
 import { DashboardPanel } from '@/components/dashboard/panel'
@@ -20,7 +21,9 @@ import { localLibraryArtifact } from './local-library-model'
 import { controlPlaneAction } from '@/lib/api/artifact-control-client'
 import { LibraryNewLoadout } from './library-new-loadout'
 import { LibraryTabs } from '@/components/depot/depot-workspace-pages'
-import { getBrowserSessionEpoch, subscribeToBrowserSession } from '@/lib/auth/session-store'
+import { shouldBypassBrowserSessionAuth } from '@/lib/auth/auth-mode'
+import { useProjectBoundSessionScope } from '@/lib/auth/session'
+import { getBrowserSessionEpoch } from '@/lib/auth/session-store'
 import { artifactDescription, artifactExportFilename, artifactId, artifactKind, artifactLabel, collectArtifactKinds, collectArtifactTags, filterLibraryArtifacts, sortLibraryArtifacts, serializeArtifact, filterLibraryView, libraryRevisionDate, type LibraryView } from './library-model'
 import { ARTIFACT_TYPES, ArtifactTypeMark, artifactTypeDefinition } from './artifact-type'
 import { updateLibraryUrl as updateUrl } from './library-url'
@@ -121,9 +124,19 @@ export function LibrarySortMenu({ sort, onSort }: { sort: 'catalog' | 'name' | '
 }
 
 export function LibraryPageContent() {
-  const sessionEpoch = useSyncExternalStore(subscribeToBrowserSession, getBrowserSessionEpoch, () => 0)
-  // Session changes invalidate both retained data and every in-flight read.
-  return <SessionLibraryPage key={sessionEpoch} />
+  // Artifact reads are project-scoped. Do not mount the collection until the
+  // session is bound to a project; changing project scope remounts the page so
+  // retained data and in-flight reads cannot bleed across project boundaries.
+  // Mock-data previews intentionally bypass browser-session auth.
+  const scope = useProjectBoundSessionScope()
+  if (scope || shouldBypassBrowserSessionAuth()) return <SessionLibraryPage key={scope || 'mock-data'} />
+  return <>
+    <AppHeader breadcrumbs={[{ label: 'Labby' }, { label: 'Library' }]} />
+    <div className={`${AURORA_PAGE_SHELL} min-w-0 flex-1`}><div className={`${AURORA_PAGE_FRAME} gap-3.5`}>
+      <ConsoleHero eyebrow="Labby · Library" title="Library" footer={<LibraryTabs active="artifacts" attached />} />
+      <ProjectWorkspaceRequired description="The Library is project-scoped. Select an eligible project workspace to continue." />
+    </div></div>
+  </>
 }
 
 function SessionLibraryPage() {

@@ -604,7 +604,9 @@ test('every admin route stays overflow-free on narrow phone, phone, and tablet',
     }
     await page.goto(`${baseUrl}/`, { waitUntil: 'networkidle' })
     const menu = page.getByRole('button', { name: 'Open navigation' })
-    assert.equal(await page.locator('aside[data-console-sidebar]').getAttribute('aria-hidden'), 'true')
+    // The sidebar only becomes hidden once the client-side viewport effect
+    // has run, which can land after network idle on a loaded runner.
+    await assert.doesNotReject(() => page.locator('aside[data-console-sidebar][aria-hidden="true"]').waitFor({ state: 'attached' }))
     assert.equal(await page.locator('[data-mobile-nav-backdrop]').count(), 0)
     const menuBox = await menu.boundingBox()
     assert.ok(menuBox && menuBox.width >= 44 && menuBox.height >= 44)
