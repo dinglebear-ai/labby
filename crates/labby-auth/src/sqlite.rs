@@ -574,11 +574,12 @@ impl SqliteStore {
     pub async fn find_authorized_bound_browser_session(
         &self,
         session_id: &str,
-        admin_email: &str,
+        admin_emails: &[String],
         allowed_domains: &[String],
     ) -> Result<Option<(crate::types::ProviderBound<BrowserSessionRow>, bool)>, AuthError> {
         let session_id = session_id.to_string();
-        let admin_email = admin_email.to_string();
+        let admin_emails = serde_json::to_string(admin_emails)
+            .map_err(|error| AuthError::Storage(format!("encode admin emails: {error}")))?;
         let domains = serde_json::to_string(allowed_domains)
             .map_err(|error| AuthError::Storage(format!("encode allowed domains: {error}")))?;
         let now = now_unix();
@@ -587,7 +588,7 @@ impl SqliteStore {
                 "SELECT session_id, subject, email, csrf_token, created_at, expires_at,
                         project_binding_json, identity_issuer, provider_generation,
                         CASE WHEN email IS NOT NULL AND (
-                          email = ?3 COLLATE NOCASE OR
+                          EXISTS (SELECT 1 FROM json_each(?3) WHERE lower(value) = lower(browser_sessions.email)) OR
                           EXISTS (SELECT 1 FROM allowed_users WHERE allowed_users.email = browser_sessions.email COLLATE NOCASE) OR
                           EXISTS (SELECT 1 FROM json_each(?4) WHERE
                             lower(value) = lower(substr(browser_sessions.email, instr(browser_sessions.email, '@') + 1)))
@@ -595,7 +596,7 @@ impl SqliteStore {
                    FROM browser_sessions
                   WHERE session_id = ?1 AND expires_at > ?2
                     AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)",
-                params![session_id, now, admin_email, domains],
+                params![session_id, now, admin_emails, domains],
                 |row| Ok((crate::types::ProviderBound {
                     value: row_to_browser_session(row)?,
                     binding: crate::types::ProviderBinding {
@@ -1357,7 +1358,8 @@ fn open_connection(path: &Path) -> Result<Connection, AuthError> {
         CREATE TABLE IF NOT EXISTS allowed_users (
             email       TEXT PRIMARY KEY NOT NULL,
             added_by    TEXT NOT NULL,
-            created_at  INTEGER NOT NULL
+            created_at  INTEGER NOT NULL,
+            role        TEXT NOT NULL DEFAULT 'member'
         );",
     )
     .map_err(sqlite_error)?;
@@ -1378,6 +1380,12 @@ fn open_connection(path: &Path) -> Result<Connection, AuthError> {
         "refresh_tokens",
         "resource",
         "TEXT NOT NULL DEFAULT ''",
+    )?;
+    add_column_if_missing(
+        &conn,
+        "allowed_users",
+        "role",
+        "TEXT NOT NULL DEFAULT 'member'",
     )?;
 
     if !existed {
@@ -3445,7 +3453,7 @@ mod tests {
     async fn allowed_users_add_and_list() {
         let store = temp_store().await;
         store
-            .add_allowed_user("alice@example.com", "admin", now_unix())
+            .add_allowed_user("alice@example.com", "admin", "member", now_unix())
             .await
             .unwrap();
         let rows = store.list_allowed_users().await.unwrap();
@@ -3459,11 +3467,11 @@ mod tests {
         let store = temp_store().await;
         let now = now_unix();
         store
-            .add_allowed_user("bob@example.com", "admin", now)
+            .add_allowed_user("bob@example.com", "admin", "member", now)
             .await
             .unwrap();
         let err = store
-            .add_allowed_user("bob@example.com", "admin2", now)
+            .add_allowed_user("bob@example.com", "admin2", "member", now)
             .await
             .unwrap_err();
         assert!(
@@ -3476,7 +3484,7 @@ mod tests {
     async fn allowed_users_input_is_lowercased() {
         let store = temp_store().await;
         store
-            .add_allowed_user("Alice@Example.COM", "admin", now_unix())
+            .add_allowed_user("Alice@Example.COM", "admin", "member", now_unix())
             .await
             .unwrap();
         let rows = store.list_allowed_users().await.unwrap();
@@ -3499,15 +3507,15 @@ mod tests {
         let store = temp_store().await;
         let base = now_unix();
         store
-            .add_allowed_user("third@example.com", "admin", base + 2)
+            .add_allowed_user("third@example.com", "admin", "member", base + 2)
             .await
             .unwrap();
         store
-            .add_allowed_user("first@example.com", "admin", base)
+            .add_allowed_user("first@example.com", "admin", "member", base)
             .await
             .unwrap();
         store
-            .add_allowed_user("second@example.com", "admin", base + 1)
+            .add_allowed_user("second@example.com", "admin", "member", base + 1)
             .await
             .unwrap();
         let rows = store.list_allowed_users().await.unwrap();
@@ -3578,6 +3586,7 @@ mod tests {
             email: String::new(),
             added_by: String::new(),
             created_at: 0,
+            role: String::new(),
         }
     }
 }

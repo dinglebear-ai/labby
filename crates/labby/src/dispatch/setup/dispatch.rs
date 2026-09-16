@@ -111,7 +111,11 @@ async fn dispatch_inner(
             blocking_params("settings.update", params, settings_update_action).await
         }
         "settings.env.update" => {
-            blocking_params("settings.env.update", params, settings_env_update_action).await
+            let params = params.clone();
+            run_blocking_setup("settings.env.update", move || {
+                settings_env_update_action(caller, &params)
+            })
+            .await
         }
         "settings.config.update" => {
             blocking_params(
@@ -368,8 +372,11 @@ fn parse_update_entries(
     })
 }
 
-fn settings_env_update_action(params: &Value) -> Result<Value, ToolError> {
+fn settings_env_update_action(caller: SetupCaller, params: &Value) -> Result<Value, ToolError> {
     let entries = parse_update_entries(params)?;
+    // Authentication keys (for example the administrator list) are reserved
+    // for the operator on this path exactly as on draft.set/draft.commit.
+    caller.ensure_may_write(entries.iter().map(|entry| entry.key.as_str()))?;
     let env_entries = super::settings::env_entries_from_updates(&entries)?;
     let env = env_path();
     let expected_mtime = snapshot_mtime(&env);
@@ -1550,6 +1557,102 @@ mod tests {
             std::fs::read_to_string(&env_file)
                 .unwrap()
                 .contains("LABBY_LOG=labby=warn")
+        );
+    }
+
+    fn admin_list_update(value: Value, previous: Value) -> Value {
+        json!({
+            "section": "authentication",
+            "confirm": true,
+            "entries": [{
+                "key": "LABBY_AUTH_ADMIN_EMAIL",
+                "value": value,
+                "previous": previous
+            }]
+        })
+    }
+
+    #[tokio::test]
+    async fn settings_env_update_reserves_the_admin_list_for_the_operator() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let lab_dir = temp.path().join("lab-home");
+        std::fs::create_dir_all(&lab_dir).expect("lab dir");
+        let env_file = lab_dir.join(".env");
+        std::fs::write(&env_file, "LABBY_AUTH_ADMIN_EMAIL=owner@example.com\n").expect("write env");
+        let _lab_home_guard = crate::dispatch::helpers::TestLabHomeGuard::set(lab_dir.clone());
+
+        let err = dispatch_for_caller(
+            SetupCaller::Delegated,
+            "settings.env.update",
+            admin_list_update(
+                json!(["owner@example.com", "delegated@example.com"]),
+                json!(["owner@example.com"]),
+            ),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.kind(), "forbidden");
+        assert_eq!(
+            std::fs::read_to_string(&env_file).unwrap(),
+            "LABBY_AUTH_ADMIN_EMAIL=owner@example.com\n",
+            "a delegated caller must not change the admin list"
+        );
+
+        let updated = dispatch_for_caller(
+            SetupCaller::Operator,
+            "settings.env.update",
+            admin_list_update(
+                json!([
+                    " Owner@Example.com ",
+                    "second-admin@example.com",
+                    "owner@example.com"
+                ]),
+                json!(["owner@example.com"]),
+            ),
+        )
+        .await
+        .expect("operator updates the admin list");
+        assert_eq!(
+            updated["values"]["LABBY_AUTH_ADMIN_EMAIL"],
+            json!(["owner@example.com", "second-admin@example.com"])
+        );
+        assert!(
+            std::fs::read_to_string(&env_file)
+                .unwrap()
+                .contains("LABBY_AUTH_ADMIN_EMAIL=owner@example.com,second-admin@example.com")
+        );
+    }
+
+    #[tokio::test]
+    async fn settings_env_update_refuses_an_empty_or_malformed_admin_list() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let lab_dir = temp.path().join("lab-home");
+        std::fs::create_dir_all(&lab_dir).expect("lab dir");
+        let env_file = lab_dir.join(".env");
+        std::fs::write(&env_file, "LABBY_AUTH_ADMIN_EMAIL=owner@example.com\n").expect("write env");
+        let _lab_home_guard = crate::dispatch::helpers::TestLabHomeGuard::set(lab_dir.clone());
+
+        for value in [
+            json!([]),
+            json!(["  "]),
+            json!(["not-an-email"]),
+            json!(["owner@example.com,other@example.com"]),
+            json!("owner@example.com"),
+        ] {
+            let err = dispatch_for_caller(
+                SetupCaller::Operator,
+                "settings.env.update",
+                admin_list_update(value.clone(), json!(["owner@example.com"])),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(err.kind(), "invalid_param", "{value}");
+        }
+        assert_eq!(
+            std::fs::read_to_string(&env_file).unwrap(),
+            "LABBY_AUTH_ADMIN_EMAIL=owner@example.com\n"
         );
     }
 

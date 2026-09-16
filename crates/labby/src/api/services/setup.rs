@@ -95,16 +95,17 @@ fn setup_caller(
     has_local_capability: bool,
 ) -> crate::dispatch::setup::SetupCaller {
     use crate::dispatch::setup::{SetupCaller, SetupCallerEvidence};
-    let configured_admin_email = state
+    let configured_admin_emails = state
         .oauth_state
         .as_ref()
-        .map(|auth_state| auth_state.config.admin_email.as_str())
+        .map(|auth_state| auth_state.config.admin_emails.as_slice())
         .or_else(|| {
             state
                 .auth_config
                 .as_ref()
-                .map(|config| config.admin_email.as_str())
-        });
+                .map(|config| config.admin_emails.as_slice())
+        })
+        .unwrap_or_default();
     SetupCaller::classify(SetupCallerEvidence {
         local_capability: has_local_capability,
         operator_credential: identity.is_some_and(|identity| {
@@ -116,7 +117,7 @@ fn setup_caller(
         session_email: auth
             .filter(|context| context.via_session)
             .and_then(|context| context.email.as_deref()),
-        configured_admin_email,
+        configured_admin_emails,
     })
 }
 

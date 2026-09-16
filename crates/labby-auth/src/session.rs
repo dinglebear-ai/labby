@@ -160,7 +160,7 @@ mod tests {
             Some(url::Url::parse("https://syslog.example.com").expect("public url"));
         config.google.client_id = "client-id".into();
         config.google.client_secret = "client-secret".into();
-        config.admin_email = "admin@example.com".into();
+        config.admin_emails = vec!["admin@example.com".into()];
         config.token_encryption_key = Some(crate::at_rest::TokenEncryptionKey::from_passphrase(
             "session-test-provider-key",
         ));

@@ -2250,7 +2250,7 @@ mod tests {
         )
         .unwrap();
         let mut config = (*base.config).clone();
-        config.admin_email = "admin@example.com".into();
+        config.admin_emails = vec!["admin@example.com".into()];
         let state = AuthState::for_tests_with_provider(
             config,
             base.store.clone(),
@@ -2315,7 +2315,7 @@ mod tests {
         )
         .unwrap();
         let mut config = (*base.config).clone();
-        config.admin_email = "admin@example.com".into();
+        config.admin_emails = vec!["admin@example.com".into()];
         let state = AuthState::for_tests_with_provider(
             config,
             base.store.clone(),
@@ -2329,7 +2329,12 @@ mod tests {
         );
         state
             .store
-            .add_allowed_user("user@example.com", "admin", crate::util::now_unix())
+            .add_allowed_user(
+                "user@example.com",
+                "admin",
+                "member",
+                crate::util::now_unix(),
+            )
             .await
             .unwrap();
         let provider_verified_at = crate::util::now_unix()
@@ -2392,7 +2397,12 @@ mod tests {
 
         state
             .store
-            .add_allowed_user("expired@example.com", "admin", crate::util::now_unix())
+            .add_allowed_user(
+                "expired@example.com",
+                "admin",
+                "member",
+                crate::util::now_unix(),
+            )
             .await
             .unwrap();
         state
@@ -2751,7 +2761,7 @@ mod tests {
         let replacement = first_json.refresh_token.expect("replacement refresh token");
 
         let mut config = (*state.config).clone();
-        config.admin_email = "replacement-admin@example.com".to_string();
+        config.admin_emails = vec!["replacement-admin@example.com".to_string()];
         let offboarded = AuthState::for_tests(
             config,
             state.store.clone(),
@@ -4005,7 +4015,7 @@ mod tests {
             .await
             .unwrap();
         let mut config = (*authorized.config).clone();
-        config.admin_email = "replacement-admin@example.com".to_string();
+        config.admin_emails = vec!["replacement-admin@example.com".to_string()];
         let state = AuthState::for_tests(
             config,
             authorized.store.clone(),
