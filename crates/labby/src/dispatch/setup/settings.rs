@@ -1498,25 +1498,40 @@ fn env_string_list_value(field: &SettingsFieldSpec, value: &Value) -> Result<Str
         .collect::<Vec<_>>()
         .join(",");
     if field.key == ADMIN_EMAILS_KEY {
-        let emails = labby_auth::config::parse_admin_emails(&joined);
-        if emails.is_empty() {
-            return Err(invalid_field(
-                field,
-                "must list at least one administrator; an empty list locks every account out",
-            ));
-        }
-        if !emails
-            .iter()
-            .all(|email| labby_auth::config::is_plausible_email(email))
-        {
-            return Err(invalid_field(
-                field,
-                "entries must each be a single email address",
-            ));
-        }
-        return Ok(emails.join(","));
+        return validate_admin_email_list(&joined).map_err(|message| invalid_field(field, message));
     }
     Ok(joined)
+}
+
+/// Validate a raw `LABBY_AUTH_ADMIN_EMAIL` value with the parser the server
+/// uses at startup and return its canonical comma-separated form. Every setup
+/// write path (`settings.env.update`, `draft.set`, `draft.commit`) goes
+/// through this one check, so no path can stage a value that makes the next
+/// start fail closed.
+pub(super) fn validate_admin_email_list(raw: &str) -> Result<String, &'static str> {
+    let emails = labby_auth::config::parse_admin_emails(raw);
+    if emails.is_empty() {
+        return Err("must list at least one administrator; an empty list locks every account out");
+    }
+    if !emails
+        .iter()
+        .all(|email| labby_auth::config::is_plausible_email(email))
+    {
+        return Err("entries must each be a single email address");
+    }
+    Ok(emails.join(","))
+}
+
+/// Value-level validation for an environment entry headed for `.env`,
+/// independent of which setup action carries it.
+pub(super) fn validate_env_entry_value(key: &str, value: &str) -> Result<(), ToolError> {
+    if key == ADMIN_EMAILS_KEY {
+        validate_admin_email_list(value).map_err(|message| ToolError::InvalidParam {
+            message: format!("{key} {message}"),
+            param: key.to_string(),
+        })?;
+    }
+    Ok(())
 }
 
 fn env_list_value(raw: &str) -> Value {
