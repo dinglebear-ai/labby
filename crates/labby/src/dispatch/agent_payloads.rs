@@ -15,6 +15,24 @@ pub(crate) const MAX_AGENT_INSTRUCTIONS_BYTES: usize = 32 * 1024;
 const MAX_AGENT_PAYLOAD_BYTES: usize = MAX_AGENT_INSTRUCTIONS_BYTES * 6 + 1024;
 pub(crate) const MAX_TASK_INPUT_BYTES: usize = 32 * 1024;
 pub(crate) const MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
+/// Largest output text returned inline in one MCP/HTTP response. A stored
+/// output may be up to [`MAX_OUTPUT_BYTES`]; anything past this cap is cut at
+/// a character boundary and flagged `output_truncated`, and the immutable
+/// `output_digest` remains the key for the full bytes.
+pub(crate) const MAX_INLINE_OUTPUT_BYTES: usize = 256 * 1024;
+
+/// Bound `output` for an inline response: `(text, truncated)`.
+pub(crate) fn inline_output(mut output: String) -> (String, bool) {
+    if output.len() <= MAX_INLINE_OUTPUT_BYTES {
+        return (output, false);
+    }
+    let mut end = MAX_INLINE_OUTPUT_BYTES;
+    while !output.is_char_boundary(end) {
+        end -= 1;
+    }
+    output.truncate(end);
+    (output, true)
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -405,6 +423,20 @@ mod tests {
         let output_digest = store.store_output("hello").unwrap();
         assert_eq!(task_digest, output_digest, "digests remain byte-addressed");
         assert_eq!(store.load_output(&output_digest).unwrap(), "hello");
+    }
+
+    #[test]
+    fn inline_output_is_bounded_on_a_char_boundary() {
+        let (small, truncated) = inline_output("hello".into());
+        assert_eq!((small.as_str(), truncated), ("hello", false));
+        // Multi-byte text straddling the cap is cut before the split character.
+        let mut text = "a".repeat(MAX_INLINE_OUTPUT_BYTES - 1);
+        text.push('\u{00e9}');
+        text.push_str("tail");
+        let (bounded, truncated) = inline_output(text);
+        assert!(truncated);
+        assert_eq!(bounded.len(), MAX_INLINE_OUTPUT_BYTES - 1);
+        assert!(bounded.chars().all(|c| c == 'a'));
     }
 
     #[test]

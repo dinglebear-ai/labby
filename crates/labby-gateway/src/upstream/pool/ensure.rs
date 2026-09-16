@@ -549,13 +549,8 @@ impl UpstreamPool {
             self.acquire_or_connect_subject(config, subject).await?;
             return Ok(true);
         }
-        let connect_lock = self.lazy_connect_lock(&config.name).await;
-        let _connect_guard = connect_lock.lock().await;
-        anyhow::ensure!(
-            self.lazy_connect_gate_is_current(&config.name, &connect_lock)
-                .await,
-            "upstream configuration changed before reprobe"
-        );
+        // The gate is taken inside `reprobe_upstream`, and only for the
+        // reconnect: a heartbeat of a ready upstream must not hold it.
         self.reprobe_upstream(config, oauth_subject, runtime_owner)
             .await
     }

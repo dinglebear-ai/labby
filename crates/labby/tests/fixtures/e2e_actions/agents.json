@@ -6,18 +6,18 @@
   "success_action": "agents.list",
   "invalid_action": "schema",
   "policy_action": "agents.delete",
-  "workflow": ["agents.create", "agents.update", "agents.suspend", "agents.delete"],
+  "workflow": [
+    "agents.create",
+    "agents.update",
+    "agents.suspend",
+    "agents.delete"
+  ],
   "parameters": {
     "action": "agents.list",
     "agent_id": "matrix-agent",
-    "catalog_generation": "matrix-catalog-generation",
-    "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "harness_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-    "image_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-    "loadout_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "instructions": "Summarize the matrix input.",
     "owner_id": "bootstrap-owner",
     "owner_kind": "personal",
-    "repository_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
     "session_id": "matrix-session"
   },
   "action_params": {}

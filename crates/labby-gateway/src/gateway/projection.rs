@@ -898,8 +898,15 @@ pub(super) async fn scoped_server_view(
     view.exposed_prompt_count = summary.exposed_prompt_count;
     view.discovered_skill_count = summary.discovered_skill_count;
     view.exposed_skill_count = summary.exposed_skill_count;
-    // A different caller's shared capability failures do not describe this peer.
+    // A different caller's shared capability failures do not describe this peer;
+    // this subject's own connect failure does.
     view.warnings.clear();
+    if let Some(message) = &scoped.last_error {
+        view.warnings.push(super::view_models::ServerWarningView {
+            code: upstream_warning_code(message).to_string(),
+            message: message.clone(),
+        });
+    }
     if !scoped.tools_known || !scoped.resources_known || !scoped.prompts_known {
         view.warnings.push(super::view_models::ServerWarningView {
             code: "catalog_warming".to_owned(),
@@ -931,8 +938,13 @@ pub(super) async fn scoped_runtime_view(
     view.exposed_prompt_count = scoped.summary.exposed_prompt_count;
     view.skill_count = scoped.summary.discovered_skill_count;
     view.exposed_skill_count = scoped.summary.exposed_skill_count;
-    view.last_error = None;
-    view.dependency_hint = None;
+    // The shared connection's error does not describe this subject's peer;
+    // the subject's own connect failure does.
+    view.dependency_hint = scoped
+        .last_error
+        .as_deref()
+        .and_then(dependency_hint_from_error);
+    view.last_error = scoped.last_error;
     view
 }
 

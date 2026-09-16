@@ -163,10 +163,19 @@ fn bootstrap_skill_library(
     let snapshot = store
         .library_snapshot()
         .context("load Skill Library metadata")?;
-    let imports = configure_skill_library_imports(config, &artifacts_root)?;
+    // Admit `[[artifacts.sources]]` once so the import coordinator and the
+    // control plane project exactly the same sources and each disabled source
+    // is warned about exactly once.
+    let sources = crate::dispatch::artifact_sources::admit_host_sources(
+        &config.artifacts,
+        &config.depot,
+        &|name| std::env::var_os(name),
+    );
+    sources.warn_rejections();
+    let imports = configure_skill_library_imports(&sources, config, &artifacts_root)?;
     let controls = Arc::new(
-        crate::dispatch::artifact_control::ArtifactControlPlane::from_host_configs(
-            &config.artifacts,
+        crate::dispatch::artifact_control::ArtifactControlPlane::from_admitted_sources(
+            &sources,
             &config.depot,
         )
         .map_err(|error| anyhow::anyhow!(error.to_string()))?,
@@ -223,12 +232,15 @@ fn bootstrap_skill_library(
 
 #[cfg(feature = "skills")]
 fn configure_skill_library_imports(
+    sources: &crate::dispatch::artifact_sources::HostArtifactSources<'_>,
     config: &LabConfig,
     artifacts_root: &Path,
 ) -> Result<Arc<crate::dispatch::skill_library::import::ImportCoordinator>> {
-    crate::dispatch::skill_library::import::ImportCoordinator::from_host_config(
+    crate::dispatch::skill_library::import::ImportCoordinator::from_admitted_sources(
+        sources,
         config,
         &artifacts_root.join("acquisition"),
+        &|name| std::env::var_os(name),
     )
     .map(Arc::new)
     .context("configure Skill Library exact-source adapters")
@@ -353,6 +365,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         requested_service_count = args.services.len(),
         "starting labby serve bootstrap"
     );
+    log_inherited_app_surface_defaults(&config_path, config);
 
     crate::registry::set_runtime_built_in_upstream_apis_enabled(
         config.services.built_in_upstream_apis_enabled,
@@ -694,7 +707,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     let oauth_enabled = matches!(auth_config.mode, AuthMode::OAuth);
     config
         .depot
-        .validate_public_acquisition(&config.artifacts)
+        .validate_public_acquisition_with_env(&config.artifacts, &|name| std::env::var_os(name))
         .map_err(anyhow::Error::msg)?;
     let depot_secrets = crate::dispatch::depot::manager::SecretSnapshot::capture(&config.depot);
     depot_secrets
@@ -975,6 +988,39 @@ fn resolve_web_ui_auth_disabled(
     // the bypass.
     let _ = (web_assets_enabled, oauth_enabled);
     Ok(false)
+}
+
+/// Name the Labby-owned app surfaces whose `config.toml` section is absent
+/// and which therefore run at their on-by-default posture. One INFO line at
+/// startup, only when something is inherited, so an install upgraded from a
+/// release where Code Mode and the MCP App UIs defaulted off can see why they
+/// appeared. A missing file inherits everything; an unreadable one is the
+/// loader's error to report.
+fn log_inherited_app_surface_defaults(config_path: &Path, config: &LabConfig) {
+    let raw = match std::fs::read_to_string(config_path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(_) => return,
+    };
+    let inherited = crate::config::inherited_app_surface_sections(&raw);
+    if inherited.is_empty() {
+        return;
+    }
+    tracing::info!(
+        subsystem = "startup",
+        phase = "bootstrap.app_surface_defaults",
+        inherited_sections = ?inherited,
+        code_mode_enabled = config.code_mode.enabled,
+        code_mode_ui_enabled = config.code_mode.mcp_ui_enabled,
+        mcp_apps_manager = config.mcp_apps.manager,
+        mcp_apps_add_server = config.mcp_apps.add_server,
+        mcp_apps_server_logs = config.mcp_apps.server_logs,
+        mcp_apps_gateway_status = config.mcp_apps.gateway_status,
+        mcp_apps_settings = config.mcp_apps.settings,
+        "config.toml declares no [code_mode] or [mcp_apps] section; Code Mode and \
+         the Labby-owned MCP App UIs default to enabled — set the switches to \
+         false to opt out"
+    );
 }
 
 #[cfg(unix)]
@@ -2934,10 +2980,20 @@ mod tests {
             },
             ..LabConfig::default()
         };
-        assert!(configure_skill_library_imports(&config, root.path()).is_ok());
+        let sources = crate::dispatch::artifact_sources::admit_host_sources(
+            &config.artifacts,
+            &config.depot,
+            &|_| None,
+        );
+        assert!(configure_skill_library_imports(&sources, &config, root.path()).is_ok());
 
         config.artifacts = ArtifactPreferences::default();
-        assert!(configure_skill_library_imports(&config, root.path()).is_ok());
+        let sources = crate::dispatch::artifact_sources::admit_host_sources(
+            &config.artifacts,
+            &config.depot,
+            &|_| None,
+        );
+        assert!(configure_skill_library_imports(&sources, &config, root.path()).is_ok());
     }
 
     #[test]

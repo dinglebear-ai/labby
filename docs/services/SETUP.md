@@ -140,7 +140,7 @@ Plugin lifecycle and other local host mutations are additionally constrained by 
 
 ### Config validation
 
-`setup check` and `setup repair` include a blocking `config` check. It loads `config.toml` through the same loader as `labby serve` and runs the startup validations that can stop serve or start it with a subsystem unavailable: Public Depot acquisition binding, local Depot credentials, Depot host policy, the Artifact control plane, and Skill Library exact-source adapter construction. It starts no listeners and makes no network calls. Adapter staging uses a temporary directory, never `LABBY_HOME`. On failure, `message` lists each problem as `fatal: <error chain>` (serve exits) or `degraded: <error chain>` (serve starts with Artifact services unavailable). `doctor system.checks` reports the same validation as `config:startup-validation`.
+`setup check` and `setup repair` include a blocking `config` check. It loads `config.toml` through the same loader as `labby serve` and runs the startup validations that can stop serve or start it with a subsystem unavailable: Public Depot acquisition binding, local Depot credentials, Depot host policy, the Artifact control plane, and Skill Library exact-source adapter construction. It starts no listeners and makes no network calls. Adapter staging uses a temporary directory, never `LABBY_HOME`. On failure, `message` lists each problem as `fatal: <error chain>` (serve exits) or `degraded: <error chain>` (serve starts with Artifact services unavailable, or with the named `[[artifacts.sources]]` entry disabled on every Artifact path, for example because its `pinned_addresses` are not authorized for its host). `doctor system.checks` reports the same validation as `config:startup-validation`.
 
 ### Access-store projection
 
@@ -189,8 +189,13 @@ service by default; Linux x86_64 hosts with a reachable Incus daemon can select
 `--deployment incus`. A server binds to `127.0.0.1:8765` unless explicitly changed.
 Google and Authelia configuration require provider credentials and a public URL.
 Client setup saves the selected gateway URL and uses browser OAuth or a bearer
-token. The optional desktop app is downloaded from the matching release and its
-provenance is verified before installation.
+token. The optional desktop app is off by default in the interactive prompt;
+`--desktop` or `LABBY_SETUP_DESKTOP=1` selects it. It is downloaded from the
+matching release and its provenance is verified before installation. When no
+published desktop package exists for the platform or version, or its download
+or verification fails, setup still succeeds because the server or client
+configuration is already complete: the summary reports `desktop_installed:
+false` with `desktop_error` naming the reason, and a warning goes to stderr.
 
 For a fresh bearer-only server, explicit setup creates the durable first owner
 for its static credential. It preserves an existing owner and refuses a blocked
@@ -198,7 +203,13 @@ access store. OAuth deployments retain their authenticated owner-bootstrap flow.
 Browser token sign-in exchanges the configured bearer for an HttpOnly session
 cookie; the bearer is not retained by the browser, and restarting Labby invalidates
 those derived sessions. Mixed browser identities must be signed out before
-switching authentication methods.
+switching authentication methods. Browser token sign-in is offered only over
+HTTPS or a direct loopback connection: a bearer-only server reached over plain
+HTTP from another host, or through a reverse proxy that does not terminate TLS,
+does not show the token form and refuses the exchange with `forbidden`. When a
+TLS-terminating proxy fronts Labby, set `LABBY_PUBLIC_URL=https://labby.example.com`
+so the exchange is accepted behind it. Bearer tokens presented directly in the
+`Authorization` header by CLI and MCP clients are unaffected.
 
 Run setup as your ordinary user. Native Linux setup requests elevation for the
 service portion, then installs an optional desktop app as the original user.

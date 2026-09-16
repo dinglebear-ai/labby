@@ -14,7 +14,16 @@ use thiserror::Error;
 
 use crate::authority::{
     AuthorityEpochVector, AuthorityLease, AuthorityLeaseError, AuthoritySafeBoundary,
+    MAX_AUTHORITY_LEASE_MILLIS,
 };
+
+/// Hard runtime bound for one direct Agent run or one Agent Task attempt.
+///
+/// Every authority lease issued for execution must cover this bound, so it can
+/// never exceed the shared lease maximum; the assertion below keeps the two
+/// contracts from drifting apart silently.
+pub const AGENT_MAX_RUNTIME_MILLIS: u64 = 300_000;
+const _: () = assert!(AGENT_MAX_RUNTIME_MILLIS <= MAX_AUTHORITY_LEASE_MILLIS);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AgentResourceBounds {
@@ -134,7 +143,9 @@ impl Cancellation {
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release)
     }
-    pub(crate) fn is_cancelled(&self) -> bool {
+    /// Whether cancellation has been requested.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
     }
 }

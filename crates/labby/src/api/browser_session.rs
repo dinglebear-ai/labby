@@ -65,6 +65,25 @@ fn actor_key_for_session(
         .map(crate::observability::activity::ActorKey::into_arc)
 }
 
+/// Transport facts for a static-bearer browser session cookie, derived from
+/// the same `labby_auth` rule the auth layer applies to this cookie on
+/// protected routes. `/auth/session` runs outside the layer, so this is how
+/// introspection stays in agreement with the middleware.
+fn static_cookie_context(
+    state: &AppState,
+    session: &labby_auth::types::BrowserSessionRow,
+) -> AuthContext {
+    let deriver = state
+        .actor_key_deriver
+        .clone()
+        .map(crate::api::router_middleware::lab_auth_deriver);
+    labby_auth::static_session::browser_session_auth_context(
+        deriver.as_deref(),
+        &state.static_token_scopes(),
+        session,
+    )
+}
+
 fn static_bearer_login_available(state: &AppState) -> bool {
     let config = state
         .oauth_state
@@ -76,6 +95,15 @@ fn static_bearer_login_available(state: &AppState) -> bool {
             config.disable_static_token_with_oauth
                 && matches!(config.mode, labby_auth::config::AuthMode::OAuth)
         })
+}
+
+/// Whether the login screen may offer browser token sign-in to this request.
+/// The static bearer must be usable, and the exchange it leads to must be one
+/// [`bearer_exchange_allowed`] would accept over this transport; advertising
+/// it over plaintext from another host would invite the operator to paste the
+/// long-lived credential into a request the server then refuses.
+fn bearer_login_advertised(state: &AppState, headers: &HeaderMap) -> bool {
+    static_bearer_login_available(state) && bearer_exchange_allowed(state, headers)
 }
 
 fn static_browser_session(
@@ -439,6 +467,9 @@ async fn fallback_session_identity(
 /// Presentation fields for an authenticated session, independent of authority.
 struct SessionView {
     login_available: bool,
+    /// Whether this browser may offer bearer token sign-in from where it
+    /// stands; see [`bearer_login_advertised`].
+    bearer_login_available: bool,
     user: SessionUser,
     project_id: Option<String>,
     expires_at: i64,
@@ -463,6 +494,18 @@ struct SessionCaller {
 }
 
 impl SessionCaller {
+    /// Transport facts from an [`AuthContext`], whichever path minted it.
+    fn from_context(identity: labby_auth::VerifiedIdentity, context: AuthContext) -> Self {
+        Self {
+            identity,
+            via_session: context.via_session,
+            transport_admin: scopes_grant_admin(&context.scopes),
+            subject: context.sub,
+            email: context.email,
+            scopes: context.scopes,
+        }
+    }
+
     /// The predicate the administrator-list and allowlist routes enforce
     /// (`auth_admin::require_admin`): a browser session whose email is in
     /// `LABBY_AUTH_ADMIN_EMAIL`.
@@ -665,7 +708,7 @@ async fn project_session(
         &authority,
         owner_bootstrap_available,
         is_configured_admin,
-        static_bearer_login_available(state),
+        view.bearer_login_available,
     )
 }
 
@@ -868,6 +911,12 @@ fn finish_session_get(
     }
 }
 
+/// The long-lived operator bearer may cross the wire only over TLS or a
+/// loopback hop. A configured HTTPS public URL proves TLS at the proxy; without
+/// it the request must be a direct loopback connection, judged by the same
+/// rules as the local-session and bootstrap-proof routes: any forwarding
+/// header means a proxy rewrote `Host`, and loopback is decided by the shared
+/// host validator rather than a local parse.
 fn bearer_exchange_allowed(state: &AppState, headers: &HeaderMap) -> bool {
     if state
         .auth_config
@@ -877,30 +926,23 @@ fn bearer_exchange_allowed(state: &AppState, headers: &HeaderMap) -> bool {
     {
         return true;
     }
-    let Some(authority) = headers
+    if crate::api::host_validation::has_forwarding_headers(headers) {
+        return false;
+    }
+    headers
         .get(header::HOST)
         .and_then(|value| value.to_str().ok())
-    else {
-        return false;
-    };
-    let Ok(url) = url::Url::parse(&format!("http://{authority}")) else {
-        return false;
-    };
-    match url.host() {
-        Some(url::Host::Ipv4(value)) => value.is_loopback(),
-        Some(url::Host::Ipv6(value)) => value.is_loopback(),
-        Some(url::Host::Domain(value)) => value.eq_ignore_ascii_case("localhost"),
-        None => false,
-    }
+        .is_some_and(crate::api::host_validation::is_loopback_host_value)
 }
 
-fn bearer_exchange_error(status: StatusCode, message: &str) -> Response {
-    (
-        status,
-        [(header::CACHE_CONTROL, "private, no-store")],
-        Json(serde_json::json!({ "ok": false, "message": message })),
-    )
-        .into_response()
+/// A bearer-exchange refusal in the shared agent-error envelope. `kind` is one
+/// of the stable vocabulary entries documented in docs/dev/ERRORS.md; HTTP
+/// status follows from it through `ApiError`, never from this call site.
+fn bearer_exchange_refusal(kind: &str, message: &str) -> Response {
+    tool_error_response(ToolError::Sdk {
+        sdk_kind: kind.to_owned(),
+        message: message.to_owned(),
+    })
 }
 
 pub async fn auth_bearer_session(
@@ -919,13 +961,13 @@ pub async fn auth_bearer_session(
             Some("secure_transport_required"),
             None,
         );
-        return bearer_exchange_error(
-            StatusCode::BAD_REQUEST,
+        return bearer_exchange_refusal(
+            "forbidden",
             "bearer browser sign-in requires HTTPS or a loopback origin",
         );
     }
     if !static_bearer_login_available(&state) {
-        return bearer_exchange_error(StatusCode::UNAUTHORIZED, "invalid bearer credential");
+        return bearer_exchange_refusal("auth_failed", "invalid bearer credential");
     }
     let Some(expected) = state.bearer_token.as_ref() else {
         log_auth_dispatch(
@@ -935,7 +977,7 @@ pub async fn auth_bearer_session(
             Some("not_configured"),
             None,
         );
-        return bearer_exchange_error(StatusCode::UNAUTHORIZED, "invalid bearer credential");
+        return bearer_exchange_refusal("auth_failed", "invalid bearer credential");
     };
     let Some(token) = headers
         .get(header::AUTHORIZATION)
@@ -949,7 +991,7 @@ pub async fn auth_bearer_session(
             Some("missing_credential"),
             None,
         );
-        return bearer_exchange_error(StatusCode::UNAUTHORIZED, "invalid bearer credential");
+        return bearer_exchange_refusal("auth_failed", "invalid bearer credential");
     };
     if !labby_auth::tokens_equal(&token, expected.as_ref()) {
         log_auth_dispatch(
@@ -959,7 +1001,7 @@ pub async fn auth_bearer_session(
             Some("invalid_credential"),
             None,
         );
-        return bearer_exchange_error(StatusCode::UNAUTHORIZED, "invalid bearer credential");
+        return bearer_exchange_refusal("auth_failed", "invalid bearer credential");
     }
     match labby_auth::static_session::has_other_browser_session(
         &headers,
@@ -969,8 +1011,8 @@ pub async fn auth_bearer_session(
     .await
     {
         Ok(true) => {
-            return bearer_exchange_error(
-                StatusCode::CONFLICT,
+            return bearer_exchange_refusal(
+                "conflict",
                 "Sign out of the current browser session before using a setup token.",
             );
         }
@@ -978,8 +1020,8 @@ pub async fn auth_bearer_session(
         Ok(false) => {}
     }
     let Some(session_state) = state.static_browser_session_state.as_ref() else {
-        return bearer_exchange_error(
-            StatusCode::SERVICE_UNAVAILABLE,
+        return bearer_exchange_refusal(
+            "service_unavailable",
             "bearer browser sessions are unavailable",
         );
     };
@@ -987,10 +1029,7 @@ pub async fn auth_bearer_session(
         Ok(session) => session,
         Err(error) => {
             tracing::error!(error = %error, "failed to create static bearer browser session");
-            return bearer_exchange_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to create browser session",
-            );
+            return internal_error_response("failed to create browser session");
         }
     };
     let mut response = no_store_json(serde_json::json!({ "ok": true }));
@@ -1018,8 +1057,8 @@ async fn reject_mixed_static_sessions(state: &AppState, headers: &HeaderMap) -> 
     .await
     {
         Ok(false) => None,
-        Ok(true) => Some(bearer_exchange_error(
-            StatusCode::CONFLICT,
+        Ok(true) => Some(bearer_exchange_refusal(
+            "conflict",
             "Multiple browser sessions are present. Clear this site's cookies and sign in again.",
         )),
         Err(_) => Some(internal_error_response("failed to load browser session")),
@@ -1067,6 +1106,7 @@ pub async fn auth_session(
                     };
                     let view = SessionView {
                         login_available,
+                        bearer_login_available: bearer_login_advertised(&state, &headers),
                         user: SessionUser {
                             sub: binding.principal_id.clone(),
                             email: session.email.clone(),
@@ -1099,25 +1139,19 @@ pub async fn auth_session(
                 "static-bearer:primary",
             )
             .map_err(|_| ToolError::internal_message("authenticated identity is invalid"))?;
-            let caller = SessionCaller {
-                identity,
-                via_session: false,
-                subject: "static-bearer".to_owned(),
-                email: None,
-                scopes: Vec::new(),
-                transport_admin: true,
-            };
+            let context = static_cookie_context(&state, &session);
             let view = SessionView {
                 login_available,
+                bearer_login_available: bearer_login_advertised(&state, &headers),
                 user: SessionUser {
-                    sub: "static-bearer".to_owned(),
-                    email: None,
+                    sub: context.sub.clone(),
+                    email: context.email.clone(),
                 },
                 project_id: None,
                 expires_at: session.expires_at,
-                csrf_token: session.csrf_token.clone(),
+                csrf_token: context.csrf_token.clone().unwrap_or_default(),
             };
-            project_session(&state, caller, view).await
+            project_session(&state, SessionCaller::from_context(identity, context), view).await
         }
         .await;
         return finish_session_get(request_id.as_deref(), start, None, outcome);
@@ -1170,6 +1204,7 @@ pub async fn auth_session(
             };
             let view = SessionView {
                 login_available,
+                bearer_login_available: bearer_login_advertised(&state, &headers),
                 user: SessionUser {
                     sub: "static-bearer".to_owned(),
                     email: None,
@@ -1186,7 +1221,7 @@ pub async fn auth_session(
 
     let Some(auth_state) = oauth_state(&state) else {
         let response =
-            unauthenticated_session_response(false, static_bearer_login_available(&state));
+            unauthenticated_session_response(false, bearer_login_advertised(&state, &headers));
         log_auth_dispatch("session.get", request_id.as_deref(), start, None, None);
         return response;
     };
@@ -1199,6 +1234,7 @@ pub async fn auth_session(
                 let caller = oauth_cookie_caller(auth_state, &session, identity);
                 let view = SessionView {
                     login_available,
+                    bearer_login_available: bearer_login_advertised(&state, &headers),
                     user: SessionUser {
                         sub: session.subject.clone(),
                         email: session.email.clone(),
@@ -1285,23 +1321,16 @@ async fn authenticated_context_session(
     };
     let view = SessionView {
         login_available: false,
+        bearer_login_available: bearer_login_advertised(state, headers),
         user: SessionUser {
             sub: context.sub.clone(),
             email: context.email.clone(),
         },
         project_id,
         expires_at,
-        csrf_token: context.csrf_token.unwrap_or_default(),
+        csrf_token: context.csrf_token.clone().unwrap_or_default(),
     };
-    let caller = SessionCaller {
-        identity,
-        via_session: context.via_session,
-        transport_admin: scopes_grant_admin(&context.scopes),
-        subject: context.sub,
-        email: context.email,
-        scopes: context.scopes,
-    };
-    project_session(state, caller, view).await
+    project_session(state, SessionCaller::from_context(identity, context), view).await
 }
 
 pub async fn auth_logout(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
@@ -1625,6 +1654,271 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bearer_exchange_refuses_forwarded_loopback_host() {
+        // Labby on 127.0.0.1 behind a same-host plaintext proxy sees a loopback
+        // Host header while the operator bearer crossed the LAN in clear text.
+        // Any forwarding header means a proxy is in the path; only a configured
+        // https public_url proves TLS, so the exchange must refuse, exactly as
+        // the sibling local-session and bootstrap-proof routes do.
+        let state = AppState::new()
+            .with_bearer_token(Some(std::sync::Arc::from("operator-token")))
+            .with_static_browser_session_state(
+                labby_auth::static_session::StaticBrowserSessionState::new(false),
+            );
+        let exchange = |host: &'static str, forwarded: Option<(&'static str, &'static str)>| {
+            let state = state.clone();
+            async move {
+                let mut headers = HeaderMap::new();
+                headers.insert(header::HOST, HeaderValue::from_static(host));
+                headers.insert(
+                    header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer operator-token"),
+                );
+                if let Some((name, value)) = forwarded {
+                    headers.insert(name, HeaderValue::from_static(value));
+                }
+                auth_bearer_session(State(state), headers)
+                    .await
+                    .into_response()
+            }
+        };
+        for (name, value) in [
+            ("forwarded", "for=192.168.1.20;proto=http"),
+            ("x-forwarded-for", "192.168.1.20"),
+            ("x-forwarded-host", "lan-name"),
+            ("x-forwarded-proto", "http"),
+            ("x-forwarded-proto", "https"),
+            ("x-real-ip", "192.168.1.20"),
+        ] {
+            let response = exchange("127.0.0.1:8765", Some((name, value))).await;
+            assert!(
+                response.status().is_client_error(),
+                "{name}: {}",
+                response.status()
+            );
+            assert!(
+                !response.headers().contains_key(header::SET_COOKIE),
+                "{name}"
+            );
+        }
+        // Parity with the shared loopback rule: bracketed IPv6 and
+        // case-insensitive localhost still mint a session without a proxy.
+        for host in ["[::1]:8765", "LOCALHOST:8765", "127.0.0.1"] {
+            let response = exchange(host, None).await;
+            assert_eq!(response.status(), StatusCode::OK, "{host}");
+            assert!(
+                response.headers().contains_key(header::SET_COOKIE),
+                "{host}"
+            );
+        }
+        let response = exchange("192.168.1.20:8765", None).await;
+        assert!(response.status().is_client_error());
+        assert!(!response.headers().contains_key(header::SET_COOKIE));
+    }
+
+    #[tokio::test]
+    async fn bearer_exchange_errors_carry_stable_kinds() {
+        // Every refusal from the bearer exchange and from static-cookie
+        // introspection uses the shared ApiError envelope: a stable `kind` plus
+        // the versioned recovery contract, never a bare `{ok:false,message}`.
+        async fn envelope(response: Response) -> (StatusCode, serde_json::Value) {
+            let status = response.status();
+            assert_eq!(
+                response.headers()[header::CACHE_CONTROL],
+                "private, no-store"
+            );
+            assert!(!response.headers().contains_key(header::SET_COOKIE));
+            let body = axum::body::to_bytes(response.into_body(), 16384)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["contract_version"], 1, "{body}");
+            assert!(body["message"].is_string(), "{body}");
+            assert!(body["recovery"]["action"].is_string(), "{body}");
+            assert!(body.get("ok").is_none(), "{body}");
+            (status, body)
+        }
+        let state = AppState::new()
+            .with_bearer_token(Some(std::sync::Arc::from("operator-token")))
+            .with_static_browser_session_state(
+                labby_auth::static_session::StaticBrowserSessionState::new(false),
+            );
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("192.168.1.20:8765"));
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer operator-token"),
+        );
+        let (status, body) = envelope(
+            auth_bearer_session(State(state.clone()), headers.clone())
+                .await
+                .into_response(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["kind"], "forbidden");
+
+        headers.insert(header::HOST, HeaderValue::from_static("localhost:8765"));
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer not-the-operator-token"),
+        );
+        let (status, body) = envelope(
+            auth_bearer_session(State(state.clone()), headers.clone())
+                .await
+                .into_response(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["kind"], "auth_failed");
+        headers.remove(header::AUTHORIZATION);
+        let (status, body) = envelope(
+            auth_bearer_session(State(state.clone()), headers.clone())
+                .await
+                .into_response(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["kind"], "auth_failed");
+
+        // A competing browser session conflicts on both the exchange and the
+        // static-cookie introspection.
+        let directory = tempfile::tempdir().unwrap();
+        let project = labby_auth::project_session::ProjectSessionState::open(
+            directory.path().join("project.db"),
+            "__Host-project-session",
+        )
+        .await
+        .unwrap();
+        project
+            .store
+            .upsert_browser_session(BrowserSessionRow {
+                session_id: "project-session".into(),
+                subject: "project-user".into(),
+                email: None,
+                csrf_token: "project-csrf".into(),
+                created_at: labby_auth::util::now_unix(),
+                expires_at: labby_auth::util::now_unix() + 3600,
+                project_binding: None,
+            })
+            .await
+            .unwrap();
+        let mut mixed = state.clone();
+        mixed.project_session_state = Some(std::sync::Arc::new(project));
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer operator-token"),
+        );
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_static("__Host-project-session=project-session"),
+        );
+        let (status, body) = envelope(
+            auth_bearer_session(State(mixed.clone()), headers.clone())
+                .await
+                .into_response(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["kind"], "conflict");
+        let sessions = mixed.static_browser_session_state.as_ref().unwrap();
+        let row = sessions.create().unwrap();
+        headers.remove(header::AUTHORIZATION);
+        headers.insert(
+            header::COOKIE,
+            format!(
+                "__Host-project-session=project-session; {}={}",
+                sessions.cookie_name(),
+                row.session_id
+            )
+            .parse()
+            .unwrap(),
+        );
+        let (status, body) = envelope(
+            auth_session(State(mixed), headers.clone(), None, None)
+                .await
+                .into_response(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["kind"], "conflict");
+
+        // No static session store: the exchange is unavailable, not broken.
+        let unavailable =
+            AppState::new().with_bearer_token(Some(std::sync::Arc::from("operator-token")));
+        headers.remove(header::COOKIE);
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer operator-token"),
+        );
+        let (status, body) = envelope(
+            auth_bearer_session(State(unavailable), headers)
+                .await
+                .into_response(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["kind"], "service_unavailable");
+    }
+
+    #[tokio::test]
+    async fn unauthenticated_session_does_not_advertise_bearer_login_over_plaintext_remote_host() {
+        // The login screen offers the bearer form only when the exchange it
+        // leads to would be accepted: HTTPS via the public URL or a direct
+        // loopback hop. A bearer-only install reached over plain HTTP from
+        // another host must not invite the operator to paste the token.
+        let state = AppState::new()
+            .with_bearer_token(Some(std::sync::Arc::from("operator-token")))
+            .with_static_browser_session_state(
+                labby_auth::static_session::StaticBrowserSessionState::new(false),
+            );
+        let session = |host: &'static str, forwarded: bool| {
+            let state = state.clone();
+            async move {
+                let mut headers = HeaderMap::new();
+                headers.insert(header::HOST, HeaderValue::from_static(host));
+                if forwarded {
+                    headers.insert("x-forwarded-proto", HeaderValue::from_static("http"));
+                }
+                let response = auth_session(State(state), headers, None, None)
+                    .await
+                    .into_response();
+                assert_eq!(response.status(), StatusCode::OK);
+                let body = axum::body::to_bytes(response.into_body(), 16384)
+                    .await
+                    .unwrap();
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap()
+            }
+        };
+        let remote = session("192.168.1.20:8765", false).await;
+        assert_eq!(remote["authenticated"], false);
+        assert_eq!(remote["bearer_login_available"], false, "{remote}");
+        let proxied = session("127.0.0.1:8765", true).await;
+        assert_eq!(proxied["bearer_login_available"], false, "{proxied}");
+        let local = session("localhost:8765", false).await;
+        assert_eq!(local["bearer_login_available"], true, "{local}");
+
+        // Operators must be able to find the requirement and the TLS-proxy
+        // unlock without reading source.
+        for (doc, path) in [
+            (
+                include_str!("../../../../docs/services/SETUP.md"),
+                "docs/services/SETUP.md",
+            ),
+            (include_str!("../../../../README.md"), "README.md"),
+        ] {
+            assert!(
+                doc.contains("HTTPS or a direct loopback connection"),
+                "{path} must document when browser token sign-in is offered"
+            );
+            assert!(
+                doc.contains("LABBY_PUBLIC_URL=https://"),
+                "{path} must document that an HTTPS public URL unlocks it behind a TLS proxy"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn static_browser_exchange_introspection_and_logout() {
         let state = AppState::new()
             .with_bearer_token(Some(std::sync::Arc::from("operator-token")))
@@ -1672,6 +1966,121 @@ mod tests {
             .into_response();
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
         assert!(static_browser_session(&state, &headers).is_none());
+    }
+
+    /// `GET /auth/session` runs outside the auth layer, so the static-cookie
+    /// branch states its own transport facts. Those facts must be the ones the
+    /// middleware mints for the same cookie on authenticated routes: the
+    /// middleware grants the configured static-token scopes `via_session`,
+    /// and introspection must not report a different admin ceiling.
+    #[tokio::test]
+    async fn static_cookie_session_facts_match_middleware() {
+        use tower::ServiceExt as _;
+        let directory = tempfile::tempdir().unwrap();
+        let config = labby_auth::config::AuthConfig {
+            mode: labby_auth::config::AuthMode::OAuth,
+            public_url: Some("https://lab.example.com".parse().unwrap()),
+            sqlite_path: directory.path().join("auth.db"),
+            key_path: directory.path().join("auth-key.pem"),
+            admin_emails: vec!["owner@example.com".into()],
+            session_cookie_name: "__Host-labby-session".into(),
+            // Deliberately below the legacy grant so a disagreement between
+            // the two derivations is observable as the admin ceiling.
+            static_token_scopes: vec!["lab:read".into()],
+            google: labby_auth::config::GoogleConfig {
+                client_id: "client".into(),
+                client_secret: "secret".into(),
+                callback_url: None,
+                callback_path: "/auth/google/callback".into(),
+                scopes: vec!["openid".into(), "email".into()],
+            },
+            token_encryption_key: Some(
+                labby_auth::at_rest::TokenEncryptionKey::from_encoded(&"11".repeat(32)).unwrap(),
+            ),
+            ..Default::default()
+        };
+        let auth = labby_auth::state::AuthState::new(config.clone())
+            .await
+            .unwrap();
+        let state = AppState::new()
+            .with_auth_config(config)
+            .with_oauth_state(auth.clone())
+            .with_bearer_token(Some(std::sync::Arc::from("operator-token")))
+            .with_static_browser_session_state(
+                labby_auth::static_session::StaticBrowserSessionState::new(false),
+            );
+        let sessions = state.static_browser_session_state.clone().unwrap();
+        let row = sessions.create().unwrap();
+        let cookie = format!("{}={}", sessions.cookie_name(), row.session_id);
+
+        // The facts the auth layer attaches for this cookie on a protected route.
+        let layer = labby_auth::middleware::AuthLayer::from_state(std::sync::Arc::new(auth))
+            .with_static_token(Some(std::sync::Arc::from("operator-token")))
+            .with_allow_session_cookie(true)
+            .with_static_browser_session_state(Some(sessions.clone()));
+        let probe = axum::Router::new()
+            .route(
+                "/probe",
+                axum::routing::get(|Extension(context): Extension<AuthContext>| async move {
+                    Json(serde_json::json!({
+                        "sub": context.sub,
+                        "via_session": context.via_session,
+                        "scopes": context.scopes,
+                        "csrf_token": context.csrf_token,
+                    }))
+                }),
+            )
+            .route_layer(layer);
+        let response = probe
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/probe")
+                    .header(header::COOKIE, &cookie)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 16384)
+            .await
+            .unwrap();
+        let middleware: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let middleware_scopes: Vec<String> =
+            serde_json::from_value(middleware["scopes"].clone()).unwrap();
+        assert_eq!(middleware["via_session"], true);
+        assert_eq!(middleware_scopes, vec!["lab:read".to_string()]);
+
+        // The introspection branch derives its caller from the shared rule.
+        let context = static_cookie_context(&state, &row);
+        assert_eq!(middleware["via_session"], context.via_session);
+        assert_eq!(middleware["sub"], context.sub);
+        assert_eq!(
+            middleware["csrf_token"],
+            serde_json::json!(context.csrf_token)
+        );
+        assert_eq!(middleware_scopes, context.scopes);
+
+        // Introspection for the same cookie must project the same facts.
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("localhost:8765"));
+        headers.insert(header::COOKIE, cookie.parse().unwrap());
+        let response = auth_session(State(state.clone()), headers.clone(), None, None)
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 16384)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["authenticated"], true);
+        assert_eq!(payload["user"]["sub"], middleware["sub"]);
+        assert_eq!(payload["csrf_token"], middleware["csrf_token"]);
+        assert_eq!(
+            payload["is_admin"],
+            scopes_grant_admin(&middleware_scopes),
+            "introspection admin ceiling must follow the middleware's scopes: {payload}"
+        );
     }
 
     #[tokio::test]
@@ -1868,6 +2277,9 @@ mod tests {
             .with_project_session_state(session_state)
             .with_bearer_token(Some(std::sync::Arc::from("operator-token")));
         let mut headers = HeaderMap::new();
+        // A browser always sends Host; bearer login is advertised only where
+        // the exchange would be accepted, so this is a direct loopback hop.
+        headers.insert(header::HOST, HeaderValue::from_static("localhost:8765"));
         headers.insert(
             header::COOKIE,
             HeaderValue::from_static("__Host-labby-session=project-session"),
@@ -1955,6 +2367,7 @@ mod tests {
             });
         let view = |sub: &str| SessionView {
             login_available: false,
+            bearer_login_available: false,
             user: SessionUser {
                 sub: sub.to_owned(),
                 email: None,
@@ -2138,6 +2551,7 @@ mod tests {
         fn view(sub: &str) -> SessionView {
             SessionView {
                 login_available: true,
+                bearer_login_available: false,
                 user: SessionUser {
                     sub: sub.to_owned(),
                     email: None,

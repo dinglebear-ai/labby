@@ -5527,7 +5527,8 @@
               "agents.suspend",
               "agents.delete",
               "agents.run",
-              "agents.session.status"
+              "agents.session.status",
+              "agents.session.cancel"
             ]
           },
           "params": {
@@ -5540,7 +5541,8 @@
         "required": [
           "agent_id",
           "owner_kind",
-          "owner_id"
+          "owner_id",
+          "instructions"
         ],
         "properties": {
           "agent_id": {
@@ -5621,6 +5623,21 @@
             "type": "string"
           },
           "input": {
+            "type": "string"
+          }
+        }
+      },
+      "AgentsAgentsSessionCancelParams": {
+        "type": "object",
+        "required": [
+          "agent_id",
+          "session_id"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "session_id": {
             "type": "string"
           }
         }
@@ -9999,7 +10016,8 @@
           "idempotency_key",
           "owner_kind",
           "owner_id",
-          "agent_id"
+          "agent_id",
+          "input"
         ],
         "properties": {
           "agent_id": {

@@ -62,6 +62,11 @@ const SHARED_NON_SERVICES: &[&str] = &[
     // denial, caller-error, and outage classification. It declares no actions
     // and dispatches nothing.
     "access_errors",
+    // `artifact_sources` is the single admission rule for host-configured
+    // `[[artifacts.sources]]`, shared by the artifact control plane and the
+    // Skill Library import path so both reach one verdict per source. It
+    // declares no actions and dispatches nothing.
+    "artifact_sources",
     "helpers",
     "redact",
     "path_safety",

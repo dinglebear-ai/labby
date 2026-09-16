@@ -46,6 +46,12 @@ use super::tools::MAX_UPSTREAM_RESOURCES;
 /// stalls every queued OAuth writer behind one slow upstream.
 const CATALOG_LISTING_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Number of resource serializations performed while bounding the merged
+/// envelope; tests assert each resource is measured once.
+#[cfg(test)]
+pub(super) static MERGED_RESOURCE_MEASUREMENTS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 /// One regular upstream Resource with its exact pre-rewrite provenance.
 ///
 /// This is observational listing metadata, not read authority or a grant.
@@ -479,19 +485,6 @@ impl UpstreamPool {
                         exposed_count += 1;
                     }
                     log_exposure_filter(&name, "resources", hidden_count, exposed_count, false);
-                    resources.sort_by(|left, right| {
-                        (&left.upstream_name, &left.native_uri)
-                            .cmp(&(&right.upstream_name, &right.native_uri))
-                    });
-                    let mut bytes = 2usize;
-                    resources.retain(|item| {
-                        bytes = bytes.saturating_add(
-                            serde_json::to_vec(&item.resource)
-                                .map_or(usize::MAX, |body| body.len() + 1),
-                        );
-                        bytes <= max_response_bytes()
-                    });
-                    resources.truncate(MAX_UPSTREAM_RESOURCES);
                 }
                 Err(error_text) => {
                     if !self
@@ -510,6 +503,25 @@ impl UpstreamPool {
                 }
             }
         }
+
+        // Bound only the merged envelope, after every server's complete,
+        // independently validated snapshot has been published above. One
+        // pass in (upstream, URI) order keeps the result independent of
+        // completion order and measures each resource exactly once.
+        resources.sort_by(|left, right| {
+            (&left.upstream_name, &left.native_uri).cmp(&(&right.upstream_name, &right.native_uri))
+        });
+        let max_bytes = max_response_bytes();
+        let mut bytes = 2usize;
+        resources.retain(|item| {
+            #[cfg(test)]
+            MERGED_RESOURCE_MEASUREMENTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            bytes = bytes.saturating_add(
+                serde_json::to_vec(&item.resource).map_or(usize::MAX, |body| body.len() + 1),
+            );
+            bytes <= max_bytes
+        });
+        resources.truncate(MAX_UPSTREAM_RESOURCES);
 
         self.schedule_observed_upstream_subscription_refreshes(subscription_refreshes)
             .await;
@@ -1002,6 +1014,58 @@ mod tests {
             .await
             .expect("permit becomes available")
             .expect("gate remains open"),
+        );
+    }
+
+    /// Every upstream publishes 600 resources. Bounding the merged envelope
+    /// must measure each resource once, not re-sort and re-serialize the whole
+    /// merged list every time one more upstream completes.
+    #[derive(Clone, Default)]
+    struct ManyResourcesServer;
+
+    impl ServerHandler for ManyResourcesServer {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        }
+
+        async fn list_resources(
+            &self,
+            _request: Option<PaginatedRequestParams>,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<ListResourcesResult, ErrorData> {
+            Ok(ListResourcesResult::with_all_items(
+                (0..600)
+                    .map(|index| Resource::new(format!("test://{index}"), format!("r{index}")))
+                    .collect(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn merged_resource_cap_serializes_each_resource_once() {
+        let pool = catalog_pool_with_server("many-0", ManyResourcesServer).await;
+        for index in 1..5 {
+            let name = format!("many-{index}");
+            let other = catalog_pool_with_server(&name, ManyResourcesServer).await;
+            let (connection, entry) = other.remove_connection_catalog_entry(&name).await;
+            pool.install_connection_catalog_entry(
+                name.clone(),
+                connection.expect("fixture connection"),
+                entry.expect("fixture entry"),
+            )
+            .await
+            .expect("connection identity");
+            pool.resource_upstreams.write().await.push(name);
+        }
+        MERGED_RESOURCE_MEASUREMENTS.store(0, Ordering::SeqCst);
+
+        let resources = pool.list_upstream_resources_allowed(None).await;
+
+        assert_eq!(resources.len(), 3000.min(MAX_UPSTREAM_RESOURCES));
+        let measurements = MERGED_RESOURCE_MEASUREMENTS.load(Ordering::SeqCst);
+        assert!(
+            measurements <= 3000,
+            "each resource must be measured once while bounding the merged envelope; measured {measurements} times"
         );
     }
 

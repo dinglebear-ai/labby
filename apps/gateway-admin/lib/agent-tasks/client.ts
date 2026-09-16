@@ -19,6 +19,8 @@ export type AgentRunResult = {
   status: string
   output_digest: string
   output?: string | null
+  /** True when the inline output was cut at the 256 KiB cap; the digest keys the full bytes. */
+  output_truncated?: boolean
   authority_expires_at: number
 }
 
@@ -26,6 +28,11 @@ export type AgentSessionStatus = {
   agent_id: string
   session_id: string
   status: unknown
+}
+
+export type AgentSessionCancel = AgentSessionStatus & {
+  /** True when a live in-process run was signalled; false reports the durable status unchanged. */
+  cancel_requested: boolean
 }
 
 export type TaskView = {
@@ -40,7 +47,7 @@ export type TaskView = {
   error_code?: string | null
 }
 
-export type TaskResult = TaskView & { output?: string | null }
+export type TaskResult = TaskView & { output?: string | null; output_truncated?: boolean }
 
 export type CreateAgentInput = {
   agentId: string
@@ -175,6 +182,10 @@ export async function runAgent(agentId: string, input = '', signal?: AbortSignal
 
 export async function getAgentSessionStatus(agentId: string, sessionId: string, signal?: AbortSignal): Promise<AgentSessionStatus> {
   return action('agents', 'agents.session.status', { agent_id: agentId, session_id: sessionId }, signal)
+}
+
+export async function cancelAgentSession(agentId: string, sessionId: string, signal?: AbortSignal): Promise<AgentSessionCancel> {
+  return action('agents', 'agents.session.cancel', { agent_id: agentId, session_id: sessionId }, signal)
 }
 
 export async function listTasks(signal?: AbortSignal): Promise<TaskView[]> {

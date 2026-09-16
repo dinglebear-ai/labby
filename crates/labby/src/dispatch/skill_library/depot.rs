@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use labby_runtime::artifacts::provider::{
     ArtifactFetchPolicy, ArtifactRequestHeaderProvider, ArtifactSourceCredential,
-    ExactArtifactRequest, ExactArtifactSource, GuardedExactArtifactProvider,
+    ExactArtifactRequest, ExactArtifactSource, GuardedExactArtifactProvider, GuardedHttpTransport,
 };
 use labby_runtime::artifacts::{ArtifactAcquisition, ArtifactError};
 use url::Url;
@@ -89,14 +89,24 @@ impl DepotConnection {
         policy: ArtifactFetchPolicy,
     ) -> Result<Self, ArtifactError> {
         let source_id = source_id.into();
-        let provider = GuardedExactArtifactProvider::configured_http(
+        let transport = GuardedHttpTransport::new(
             endpoint.clone(),
             pinned_addresses.clone(),
             trusted_private_addresses.clone(),
             credential,
-            staging_root,
-            policy,
+            &policy,
         )?;
+        // Only a validated connection gets a staging directory, so a rejected
+        // source leaves nothing under the acquisition root. The provider
+        // requires the directory to be private before it accepts it.
+        let staging_root = staging_root.into();
+        std::fs::create_dir_all(&staging_root)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&staging_root, std::fs::Permissions::from_mode(0o700))?;
+        }
+        let provider = GuardedExactArtifactProvider::new(transport, staging_root, policy)?;
         // ExactArtifactRequest performs the authoritative URL/DNS/credential validation before IO.
         let credential_origin = Some(endpoint.clone());
         let runtime = RuntimeDepot {
