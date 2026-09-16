@@ -131,12 +131,17 @@ test('writing tips toggle reclaims editor width without resetting the draft', as
     assert.match(chrome.textContent!, /authenticated workspace required/)
     assert.equal(chrome.parentElement, editor.closest('section'))
     const draft = editor.value
-    const gutter = editor.parentElement!.querySelector<HTMLElement>('[aria-hidden="true"] > div')!
+    const editorViewport = editor.parentElement!
+    const gutter = editorViewport.querySelector<HTMLElement>('[aria-hidden="true"] > div')!
+    const highlight = editorViewport.querySelector<HTMLPreElement>('pre[aria-hidden="true"]')!
     assert.equal(gutter.textContent!.split('\n').length, draft.split('\n').length)
     assert.equal(editor.getAttribute('wrap'), 'off')
+    assert.match(editorViewport.className, /overflow-hidden/, 'the translated syntax layer must be clipped to the editor viewport')
     editor.scrollTop = 42
+    editor.scrollLeft = 11
     await act(async () => editor.dispatchEvent((new window.Event('scroll', { bubbles: true }) as unknown as Event)))
     assert.equal(gutter.style.transform, 'translateY(-42px)')
+    assert.equal(highlight.style.transform, 'translate(-11px, -42px)')
     assert.doesNotMatch(editor.closest('section')!.className, /min-h-\[680px\]/)
     assert.equal(tips.hidden, false)
     await toggleTips()

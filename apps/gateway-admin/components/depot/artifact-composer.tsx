@@ -539,7 +539,7 @@ export function ArtifactComposer() {
               setContent(result.content)
               requestAnimationFrame(() => { editor.focus(); editor.setSelectionRange(result.cursor, result.cursor) })
             }} /> : null}
-            <div className="relative min-w-0 bg-aurora-control-surface pl-11">
+            <div className="relative min-w-0 overflow-hidden bg-aurora-control-surface pl-11">
               <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 left-0 w-11 select-none overflow-hidden border-r border-aurora-border-subtle bg-aurora-page-bg text-right font-mono text-[12.5px] leading-[1.7] tabular-nums text-aurora-text-muted"><div ref={gutterRef} className="whitespace-pre py-3.5 pr-2.5 opacity-70">{Array.from({ length: content.split('\n').length }, (_, index) => index + 1).join('\n')}</div></div>
               <pre ref={highlightRef} aria-hidden="true" className="pointer-events-none absolute inset-0 ml-11 overflow-hidden whitespace-pre py-3.5 pl-3.5 pr-[18px] font-mono text-[12.5px] leading-[1.7] text-aurora-text-primary"><HighlightedArtifactSource content={content} /></pre>
               <textarea ref={contentRef} aria-label="Artifact content" wrap="off" spellCheck={false} placeholder="Write the instructions…" value={content} onScroll={event => { if (gutterRef.current) gutterRef.current.style.transform = `translateY(-${event.currentTarget.scrollTop}px)`; if (highlightRef.current) highlightRef.current.style.transform = `translate(${-event.currentTarget.scrollLeft}px, ${-event.currentTarget.scrollTop}px)` }} onKeyDown={event => {
