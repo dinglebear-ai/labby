@@ -184,13 +184,9 @@ impl ImportCoordinator {
         }
     }
 
-    pub(crate) fn from_host_config(
-        config: &crate::config::LabConfig,
-        staging_root: &Path,
-    ) -> Result<Self, ArtifactError> {
-        Self::from_host_config_with_env(config, staging_root, &|name| std::env::var_os(name))
-    }
-
+    /// Test convenience: the composition root admits once and hands
+    /// `from_admitted_sources` the same verdict it gives the control plane.
+    #[cfg(test)]
     pub(crate) fn from_host_config_with_env(
         config: &crate::config::LabConfig,
         staging_root: &Path,

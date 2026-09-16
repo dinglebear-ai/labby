@@ -16,6 +16,7 @@ use labby_primitives::action::{ActionSpec, ParamSpec};
 use labby_runtime::artifacts::provider::ArtifactRequestHeaderProvider;
 use serde_json::Value;
 
+#[cfg(test)]
 use crate::config::ArtifactPreferences;
 use crate::dispatch::error::ToolError;
 
@@ -255,9 +256,9 @@ impl ArtifactControlPlane {
 
     /// Bootstrap optional remote authorities independently of the local library.
     ///
-    /// Admission runs once here and its rejections are warned once. When the
-    /// host also builds the import coordinator, admit once at the composition
-    /// root and hand both constructors the same verdict instead.
+    /// Test convenience: the composition root admits once and hands
+    /// `from_admitted_sources` the same verdict it gives the import coordinator.
+    #[cfg(test)]
     pub(crate) fn from_host_configs(
         config: &ArtifactPreferences,
         depot: &crate::config::depot::DepotPreferences,
