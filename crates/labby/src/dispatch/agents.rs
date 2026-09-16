@@ -873,8 +873,20 @@ pub(crate) fn execution_safe_boundaries() -> Vec<AuthoritySafeBoundary> {
 }
 fn materialize_llm_payload(
     store: &crate::access::AccessStore,
+    params: Value,
+    prior: Option<&AgentDefinition>,
+) -> Result<Value, ToolError> {
+    materialize_llm_payload_with(store, params, prior, current_harness_digest)
+}
+
+/// Materialize the LLM payload with an explicit harness-digest source so the
+/// ordering against the content-addressed write can be tested without the
+/// provider environment.
+fn materialize_llm_payload_with(
+    store: &crate::access::AccessStore,
     mut params: Value,
     prior: Option<&AgentDefinition>,
+    harness: impl FnOnce() -> Result<String, ToolError>,
 ) -> Result<Value, ToolError> {
     let explicit_instructions = params
         .get("instructions")
@@ -908,10 +920,13 @@ fn materialize_llm_payload(
     let model = explicit_model
         .or_else(|| inherited.as_ref().map(|payload| payload.model.clone()))
         .unwrap_or_else(|| DEFAULT_MODEL.to_owned());
+    // Resolve the provider before the content-addressed write: a create that
+    // fails for lack of a provider must not leave an immutable payload behind
+    // that no revision references.
+    let harness_digest = harness()?;
     let expected_content_digest = params.get("content_digest").and_then(Value::as_str);
     let content_digest =
         payloads.store_agent(Some(&model), &instructions, expected_content_digest)?;
-    let harness_digest = current_harness_digest()?;
     if params
         .get("harness_digest")
         .and_then(Value::as_str)
@@ -1811,6 +1826,26 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.kind(), "unavailable");
+    }
+
+    /// Resolving the provider must come before the content-addressed write:
+    /// a create that fails because the provider is unconfigured must not
+    /// leave an immutable payload behind that no revision references.
+    #[tokio::test]
+    async fn create_without_provider_url_leaves_no_orphaned_payload() {
+        let (_directory, store, _owner) = fixture().await;
+        let error = materialize_llm_payload_with(&store, agent_params("orphan"), None, || {
+            Err(ToolError::Sdk {
+                sdk_kind: "unavailable".into(),
+                message: "provider unconfigured".into(),
+            })
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), "unavailable");
+        assert!(
+            !store.storage_dir().join("agent-payloads").exists(),
+            "a failed create must not materialize an orphaned Agent payload"
+        );
     }
 
     #[tokio::test]
