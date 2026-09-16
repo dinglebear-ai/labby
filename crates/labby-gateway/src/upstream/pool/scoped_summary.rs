@@ -24,6 +24,9 @@ pub(crate) struct SubjectSummary {
     pub tools_known: bool,
     pub resources_known: bool,
     pub prompts_known: bool,
+    /// Sanitized reason this subject's last connect attempt failed, present
+    /// only while no live connection has replaced that attempt.
+    pub last_error: Option<String>,
 }
 
 impl UpstreamPool {
@@ -35,9 +38,14 @@ impl UpstreamPool {
         let Some(subject) = subject else {
             return SubjectSummary::default();
         };
+        let key = (config.name.clone(), subject.to_owned());
+        let last_error = self.subject_connect_errors.read().await.get(&key).cloned();
         let cache = self.subject_connections.read().await;
-        let Some(entry) = cache.get(&(config.name.clone(), subject.to_owned())) else {
-            return SubjectSummary::default();
+        let Some(entry) = cache.get(&key) else {
+            return SubjectSummary {
+                last_error,
+                ..SubjectSummary::default()
+            };
         };
         let connected = config.enabled
             && !entry.peer.is_transport_closed()
@@ -50,6 +58,7 @@ impl UpstreamPool {
             resolve_request_prompt_exposure_policy(&config.name, config.expose_prompts.clone());
         SubjectSummary {
             connected,
+            last_error: None,
             tools_known: true,
             resources_known: !config.proxy_resources || entry.optional_catalogs.resources.is_some(),
             prompts_known: !config.proxy_prompts || entry.optional_catalogs.prompts.is_some(),

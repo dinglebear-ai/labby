@@ -16,7 +16,8 @@ use labby_primitives::action::{ActionSpec, ParamSpec};
 use labby_runtime::artifacts::provider::ArtifactRequestHeaderProvider;
 use serde_json::Value;
 
-use crate::config::{ArtifactPreferences, ArtifactSourceKind};
+#[cfg(test)]
+use crate::config::ArtifactPreferences;
 use crate::dispatch::error::ToolError;
 
 const REMOTE_CONNECTION: ParamSpec = ParamSpec {
@@ -254,106 +255,61 @@ impl ArtifactControlPlane {
     }
 
     /// Bootstrap optional remote authorities independently of the local library.
+    ///
+    /// Test convenience: the composition root admits once and hands
+    /// `from_admitted_sources` the same verdict it gives the import coordinator.
+    #[cfg(test)]
     pub(crate) fn from_host_configs(
         config: &ArtifactPreferences,
         depot: &crate::config::depot::DepotPreferences,
     ) -> Result<Self, ToolError> {
-        let mut result = Self::from_configs(&ArtifactPreferences::default(), depot)?;
-        let mut ids = std::collections::BTreeSet::new();
-        for source in &config.sources {
-            if source.id == "public" && depot.validate_public_acquisition(config).is_err() {
-                tracing::warn!(connection_id = %source.id, "public acquisition binding invalid; control source disabled");
-                continue;
-            }
-            if !ids.insert(&source.id) {
-                result.clients.remove(&source.id);
-                tracing::warn!(connection_id = %source.id, "duplicate Artifact control connection; source disabled");
-                continue;
-            }
-            if source.id != "public"
-                && depot.public_read_binding.as_ref().is_some_and(|binding| {
-                    source.bearer_token_env.as_deref() == Some(&binding.bearer_token_env)
-                })
-            {
-                tracing::warn!(connection_id = %source.id, "public credential cannot authorize another control source; source disabled");
-                continue;
-            }
-            match Self::from_configs(
-                &ArtifactPreferences {
-                    sources: vec![source.clone()],
-                },
-                depot,
-            ) {
-                Ok(mut remote) => result.clients.append(&mut remote.clients),
-                Err(error) => {
-                    tracing::warn!(connection_id = %source.id, error = %error, "Artifact control connection unavailable; source disabled")
-                }
-            }
-        }
-        Ok(result)
+        let sources = super::artifact_sources::admit_host_sources(config, depot, &|name| {
+            std::env::var_os(name)
+        });
+        sources.warn_rejections();
+        Self::from_admitted_sources(&sources, depot)
     }
 
+    /// Strict test constructor: the first source the shared admission rejects
+    /// fails the whole control plane.
+    #[cfg(test)]
     pub(crate) fn from_configs(
         config: &ArtifactPreferences,
         depot: &crate::config::depot::DepotPreferences,
     ) -> Result<Self, ToolError> {
-        if config.sources.iter().any(|source| {
-            source.kind == ArtifactSourceKind::Repository && source.control_plane_url.is_some()
-        }) {
-            return Err(ToolError::InvalidParam {
-                message: "control_plane_url is supported only for Depot sources".to_owned(),
-                param: "control_plane_url".to_owned(),
-            });
+        let sources = super::artifact_sources::admit_host_sources(config, depot, &|name| {
+            std::env::var_os(name)
+        });
+        if let Some(rejected) = sources.rejected.first() {
+            return Err(rejected.to_tool_error());
         }
-        let mut clients = BTreeMap::new();
-        for source in config.sources.iter().filter(|source| {
-            source.kind == ArtifactSourceKind::Depot && source.control_plane_url.is_some()
-        }) {
-            if clients.contains_key(&source.id) {
-                return Err(ToolError::Conflict {
-                    message: "Duplicate Artifact authority connection".to_owned(),
-                    existing_id: source.id.clone(),
-                });
-            }
-            let control_plane_url = source
-                .control_plane_url
-                .as_deref()
-                .expect("filtered to configured control-plane URLs");
-            let parsed = labby_primitives::ssrf::parse_validated_https_url(control_plane_url)
-                .map_err(|_| ToolError::InvalidParam {
-                    message: "Artifact control-plane URL must be a public HTTPS origin".to_owned(),
-                    param: "control_plane_url".to_owned(),
-                })?;
-            if parsed.path() != "/" {
-                return Err(ToolError::InvalidParam {
-                    message: "Artifact control-plane URL must not include a path".to_owned(),
-                    param: "control_plane_url".to_owned(),
-                });
-            }
-            let policy =
-                super::depot::manager::host_policy(depot).map_err(|_| ToolError::InvalidParam {
-                    message: "Artifact authority host policy is invalid".to_owned(),
-                    param: "depot.private_hosts".to_owned(),
-                })?;
-            super::depot::network::validate_addresses(
-                parsed.host_str().unwrap_or_default(),
-                &source.pinned_addresses,
-                &policy,
-            )
-            .map_err(|_| ToolError::InvalidParam {
-                message: "Artifact authority pins are not authorized by host policy".to_owned(),
-                param: "pinned_addresses".to_owned(),
-            })?;
-            clients.insert(
-                source.id.clone(),
-                AuthorityConnection {
-                    control_plane_url: control_plane_url.to_owned(),
-                    pinned_addresses: source.pinned_addresses.clone(),
-                    bearer_token_env: source.bearer_token_env.clone(),
-                    permits: Arc::new(tokio::sync::Semaphore::new(16)),
-                },
-            );
-        }
+        Self::from_admitted_sources(&sources, depot)
+    }
+
+    /// Build authority connections for every admitted source that names a
+    /// control-plane origin. Admission already validated the origin and the
+    /// pins against both hosts; nothing is re-derived here.
+    pub(crate) fn from_admitted_sources(
+        sources: &super::artifact_sources::HostArtifactSources<'_>,
+        depot: &crate::config::depot::DepotPreferences,
+    ) -> Result<Self, ToolError> {
+        let clients = sources
+            .admitted
+            .iter()
+            .filter_map(|admitted| {
+                let source = admitted.source;
+                let control_plane_url = source.control_plane_url.as_deref()?;
+                Some((
+                    source.id.clone(),
+                    AuthorityConnection {
+                        control_plane_url: control_plane_url.to_owned(),
+                        pinned_addresses: source.pinned_addresses.clone(),
+                        bearer_token_env: source.bearer_token_env.clone(),
+                        permits: Arc::new(tokio::sync::Semaphore::new(16)),
+                    },
+                ))
+            })
+            .collect();
         let delegation = delegation_configuration(depot)?;
         Ok(Self {
             clients,
@@ -1203,6 +1159,59 @@ pinned_addresses = ["10.1.0.8"]
         let controls =
             ArtifactControlPlane::from_host_configs(&config.artifacts, &config.depot).unwrap();
         assert!(controls.clients.is_empty());
+    }
+
+    /// Review scenario A: the host grants the LAN pin for the control-plane
+    /// host only. The control plane admitted the source while the import path
+    /// refused it, so `artifacts.list` worked and `artifacts.import` reported
+    /// an unknown source. Both projections must reach the same verdict for
+    /// every configured source.
+    #[test]
+    fn control_plane_and_import_agree_on_every_source() {
+        use crate::dispatch::skill_library::import::ImportCoordinator;
+
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let root = tempfile::tempdir().unwrap();
+        let mut config: crate::config::LabConfig = toml::from_str(
+            r#"
+[depot.private_hosts]
+"cp.example.com" = ["10.1.0.8"]
+[[artifacts.sources]]
+id = "private"
+kind = "depot"
+endpoint = "https://depot.example.com/api/artifacts/exact"
+control_plane_url = "https://cp.example.com"
+pinned_addresses = ["10.1.0.8"]
+"#,
+        )
+        .unwrap();
+        let enabled_on_both = |config: &crate::config::LabConfig| {
+            let controls =
+                ArtifactControlPlane::from_host_configs(&config.artifacts, &config.depot).unwrap();
+            let imports =
+                ImportCoordinator::from_host_config_with_env(config, root.path(), &|_| None)
+                    .unwrap();
+            let control_ids = controls.clients.keys().cloned().collect::<Vec<_>>();
+            let import_ids = imports.depot_connection_ids();
+            assert_eq!(
+                control_ids, import_ids,
+                "control plane and import must enable exactly the same sources"
+            );
+            control_ids
+        };
+        assert!(
+            enabled_on_both(&config).is_empty(),
+            "a pin granted for the control-plane host alone must disable the source on both paths"
+        );
+        config.depot.extra.insert(
+            "private_hosts".to_owned(),
+            toml::Value::try_from(std::collections::BTreeMap::from([
+                ("cp.example.com", vec!["10.1.0.8"]),
+                ("depot.example.com", vec!["10.1.0.8"]),
+            ]))
+            .unwrap(),
+        );
+        assert_eq!(enabled_on_both(&config), ["private"]);
     }
 
     #[test]

@@ -201,6 +201,15 @@ impl UpstreamPool {
             .unwrap_or_default()
     }
 
+    /// Heartbeat the existing connection and reconnect when it is gone or
+    /// unresponsive.
+    ///
+    /// The heartbeat (`tools/list` on the current peer) runs without the
+    /// upstream's connect gate: its publication is incarnation-fenced, so a
+    /// concurrent replacement cannot be overwritten by a stale listing, and
+    /// callers that need the gate are not parked behind a slow listing for up
+    /// to the discovery timeout. Only the reconnect holds the gate, and the
+    /// prompt/resource cache refresh that follows runs after it is released.
     pub(super) async fn reprobe_upstream(
         &self,
         config: &UpstreamConfig,
@@ -218,60 +227,49 @@ impl UpstreamPool {
             transport = upstream_transport(config),
             "upstream reprobe start"
         );
-        let existing = self.observe_connection_catalog_entry(&config.name).await;
-
-        if let Some(observed) = existing.as_ref() {
-            let peer = &observed.peer;
-            match catalog_pagination::list_tools(peer, DISCOVERY_TIMEOUT, MAX_UPSTREAM_TOOLS).await
-            {
-                Ok(tools) => {
-                    if !self.publish_observed_tools(observed, tools).await {
-                        return Ok(false);
-                    }
-                    tracing::info!(
-                        surface = "dispatch",
-                        service = "upstream.pool",
-                        action = "upstream.reprobe",
-                        event = "heartbeat.finish",
-                        operation = "health",
-                        upstream = %config.name,
-                        transport = upstream_transport(config),
-                        elapsed_ms = started.elapsed().as_millis(),
-                        "upstream heartbeat succeeded"
-                    );
-                    return Ok(true);
-                }
-                Err(error) => {
-                    if self
-                        .apply_to_observed_entry(observed, |entry| {
-                            super::health::record_failure_on_entry(
-                                &config.name,
-                                entry,
-                                UpstreamCapability::Tools,
-                                format!("upstream heartbeat failed: {}", error.bounded_text()),
-                            );
-                        })
-                        .await
-                        .is_none()
-                    {
-                        return Ok(false);
-                    }
-                    tracing::warn!(
-                        surface = "dispatch",
-                        service = "upstream.pool",
-                        action = "upstream.reprobe",
-                        event = "heartbeat.error",
-                        operation = "health",
-                        upstream = %config.name,
-                        transport = upstream_transport(config),
-                        elapsed_ms = started.elapsed().as_millis(),
-                        kind = error.kind(),
-                        error = %error.bounded_text(),
-                        "upstream heartbeat failed"
-                    );
-                }
+        let heartbeat_of = match self.heartbeat_existing_connection(config, started).await {
+            Heartbeat::Published => return Ok(true),
+            Heartbeat::Stale => return Ok(false),
+            Heartbeat::Reconnect { previous } => previous,
+        };
+        {
+            let gate = self.lazy_connect_lock(&config.name).await;
+            let _guard = gate.lock().await;
+            anyhow::ensure!(
+                self.lazy_connect_gate_is_current(&config.name, &gate).await,
+                "upstream configuration changed before reprobe"
+            );
+            // Another connect may have replaced the peer while the heartbeat
+            // ran gate-free; a replacement is not something to tear down.
+            let current = self
+                .observe_connection_catalog_entry(&config.name)
+                .await
+                .map(|observed| observed.incarnation());
+            if current != heartbeat_of {
+                tracing::debug!(
+                    surface = "dispatch",
+                    service = "upstream.pool",
+                    action = "upstream.reprobe",
+                    event = "superseded",
+                    operation = "health",
+                    upstream = %config.name,
+                    "connection replaced during heartbeat; skipping reconnect"
+                );
+                return Ok(false);
             }
-        } else {
+            self.reconnect_upstream(config, oauth_subject, runtime_owner)
+                .await?;
+        }
+        self.refresh_capability_caches_after_connect(config).await;
+        Ok(true)
+    }
+
+    async fn heartbeat_existing_connection(
+        &self,
+        config: &UpstreamConfig,
+        started: Instant,
+    ) -> Heartbeat {
+        let Some(observed) = self.observe_connection_catalog_entry(&config.name).await else {
             tracing::warn!(
                 surface = "dispatch",
                 service = "upstream.pool",
@@ -284,8 +282,73 @@ impl UpstreamPool {
                 kind = "upstream_not_connected",
                 "upstream reprobe found no existing connection"
             );
+            return Heartbeat::Reconnect { previous: None };
+        };
+        match catalog_pagination::list_tools(&observed.peer, DISCOVERY_TIMEOUT, MAX_UPSTREAM_TOOLS)
+            .await
+        {
+            Ok(tools) => {
+                if !self.publish_observed_tools(&observed, tools).await {
+                    return Heartbeat::Stale;
+                }
+                tracing::info!(
+                    surface = "dispatch",
+                    service = "upstream.pool",
+                    action = "upstream.reprobe",
+                    event = "heartbeat.finish",
+                    operation = "health",
+                    upstream = %config.name,
+                    transport = upstream_transport(config),
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "upstream heartbeat succeeded"
+                );
+                Heartbeat::Published
+            }
+            Err(error) => {
+                if self
+                    .apply_to_observed_entry(&observed, |entry| {
+                        super::health::record_failure_on_entry(
+                            &config.name,
+                            entry,
+                            UpstreamCapability::Tools,
+                            format!("upstream heartbeat failed: {}", error.bounded_text()),
+                        );
+                    })
+                    .await
+                    .is_none()
+                {
+                    return Heartbeat::Stale;
+                }
+                tracing::warn!(
+                    surface = "dispatch",
+                    service = "upstream.pool",
+                    action = "upstream.reprobe",
+                    event = "heartbeat.error",
+                    operation = "health",
+                    upstream = %config.name,
+                    transport = upstream_transport(config),
+                    elapsed_ms = started.elapsed().as_millis(),
+                    kind = error.kind(),
+                    error = %error.bounded_text(),
+                    "upstream heartbeat failed"
+                );
+                Heartbeat::Reconnect {
+                    previous: Some(observed.incarnation()),
+                }
+            }
         }
+    }
 
+    /// Replace the upstream's connection. The caller holds the upstream's
+    /// connect gate; the capability cache refresh is deliberately not part of
+    /// this step so the caller can release the gate before running it.
+    pub(super) async fn reconnect_upstream(
+        &self,
+        config: &UpstreamConfig,
+        oauth_subject: Option<&str>,
+        runtime_owner: Option<&UpstreamRuntimeOwner>,
+    ) -> anyhow::Result<()> {
+        let started = Instant::now();
         let stale_connection = self.remove_connection_binding(&config.name).await;
         if let Some(connection) = stale_connection {
             connection
@@ -314,7 +377,6 @@ impl UpstreamPool {
             .await?;
         self.record_success_for(&config.name, UpstreamCapability::Tools)
             .await;
-        self.refresh_capability_caches_after_connect(config).await;
         tracing::info!(
             surface = "dispatch",
             service = "upstream.pool",
@@ -326,8 +388,20 @@ impl UpstreamPool {
             elapsed_ms = started.elapsed().as_millis(),
             "upstream reprobe reconnect succeeded"
         );
-        Ok(true)
+        Ok(())
     }
+}
+
+/// Outcome of heartbeating an upstream's existing connection.
+enum Heartbeat {
+    /// The peer answered and its tool catalog was published.
+    Published,
+    /// The peer answered, but the catalog it belonged to has been replaced.
+    Stale,
+    /// No usable peer; reconnect unless `previous` is no longer current.
+    Reconnect {
+        previous: Option<super::incarnation::ConnectionIncarnation>,
+    },
 }
 
 fn reprobe_sleep_for(upstream: &str, attempt: u32) -> std::time::Duration {
@@ -344,8 +418,72 @@ fn reprobe_sleep_for(upstream: &str, attempt: u32) -> std::time::Duration {
 
 #[cfg(test)]
 mod tests {
+    use rmcp::model::{
+        ErrorData, ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerInfo,
+    };
+    use rmcp::service::RequestContext;
+    use rmcp::{RoleServer, ServerHandler};
+
     use super::super::testsupport::*;
     use super::*;
+
+    /// A server whose `tools/list` is slow, standing in for a wedged upstream
+    /// under heartbeat.
+    #[derive(Clone, Default)]
+    struct SlowListToolsServer;
+
+    impl ServerHandler for SlowListToolsServer {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        }
+
+        async fn list_tools(
+            &self,
+            _request: Option<PaginatedRequestParams>,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<ListToolsResult, ErrorData> {
+            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+            Ok(ListToolsResult::with_all_items(vec![test_tool("slow")]))
+        }
+    }
+
+    /// The heartbeat of a connected upstream must not hold that upstream's
+    /// connect gate: callers that need the gate (a cooling-down or
+    /// not-yet-connected caller) would otherwise wait behind a slow
+    /// `tools/list` for up to the discovery timeout.
+    #[tokio::test]
+    async fn heartbeat_does_not_block_ready_check_for_callers() {
+        let pool = catalog_pool_with_server("slow-heartbeat", SlowListToolsServer).await;
+        let config = named_test_upstream_config("slow-heartbeat");
+        let heartbeat = tokio::spawn({
+            let pool = std::sync::Arc::clone(&pool);
+            let config = config.clone();
+            async move {
+                pool.reprobe_tools_for_upstream_as(&config, None, None)
+                    .await
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let started = Instant::now();
+        pool.ensure_connection_for_upstream(&config, None, None)
+            .await
+            .expect("ready upstream");
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(200),
+            "ready check waited behind the heartbeat: {:?}",
+            started.elapsed()
+        );
+        let gate = pool.lazy_connect_lock("slow-heartbeat").await;
+        assert!(
+            gate.try_lock().is_ok(),
+            "the heartbeat must not hold the connect gate while its tools/list is in flight"
+        );
+        heartbeat
+            .await
+            .expect("heartbeat task")
+            .expect("heartbeat succeeds");
+    }
 
     #[tokio::test]
     async fn ensure_probe_task_registers_before_returning() {

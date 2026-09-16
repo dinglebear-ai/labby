@@ -1,7 +1,7 @@
 'use client'
 
 import useSWR, { useSWRConfig } from 'swr'
-import { gatewayApi } from '@/lib/api/gateway-client'
+import { gatewayApi, RELOAD_IN_FLIGHT_MESSAGE } from '@/lib/api/gateway-client'
 import {
   getMockGatewayFallback,
   getMockGatewaysFallback,
@@ -42,7 +42,7 @@ import type {
   DiscoveredMcpServer,
   GatewayImportResult,
 } from '@/lib/types/gateway'
-import { useCallback, useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { loadGatewayConfiguration, loadGatewayRuntime, loadGatewayToolInventory } from '@/lib/api/gateway-progressive'
 import { withRequestTiming } from '@/lib/api/request-timing'
 
@@ -729,14 +729,34 @@ export function useGatewayMutations() {
     return await gatewayApi.test(id, signal)
   }, [])
 
+  // Reloads in flight from this client, by server id. A second click or a
+  // bulk reload that overlaps a running restart is answered locally instead of
+  // queueing another restart request; the backend deduplicates per upstream
+  // too, so the two layers never disagree about what is running.
+  const reloadsInFlight = useRef<Set<string>>(new Set())
   const reloadGateway = useCallback(async (id: string): Promise<ReloadGatewayResult> => {
     if (USE_MOCK_DATA) {
       await mockDelay(2000) // Longer delay for reload
       return mockReloadResult
     }
-    const result = await gatewayApi.reload(id)
-    await refreshGatewayCache(id)
-    return result
+    if (reloadsInFlight.current.has(id)) {
+      return {
+        success: false,
+        pending: true,
+        message: RELOAD_IN_FLIGHT_MESSAGE,
+        // No request was made, so no counts were observed.
+        previous_tool_count: 0,
+        new_tool_count: 0,
+      }
+    }
+    reloadsInFlight.current.add(id)
+    try {
+      const result = await gatewayApi.reload(id)
+      await refreshGatewayCache(id)
+      return result
+    } finally {
+      reloadsInFlight.current.delete(id)
+    }
   }, [refreshGatewayCache])
 
   const setExposurePolicy = useCallback(async (id: string, policy: ExposurePolicy): Promise<ExposurePolicy> => {

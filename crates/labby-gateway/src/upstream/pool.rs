@@ -74,6 +74,7 @@ mod prompts_exposure_tests;
 mod prompts_get;
 mod prompts_list;
 mod recovery;
+pub use recovery::UpstreamRestart;
 mod registration;
 mod relay;
 mod relay_cache;
@@ -348,6 +349,11 @@ pub struct UpstreamPool {
     ///
     /// Keyed by `(upstream_name, subject)`.
     subject_connections: Arc<RwLock<HashMap<(String, String), SubjectScopedConnection>>>,
+    /// Sanitized reason the last connect for an `(upstream, subject)` pair
+    /// failed, kept until a connect for that pair succeeds or the pair is
+    /// evicted. Identity-scoped views read it so an OAuth upstream whose
+    /// subject cannot connect shows why instead of an empty `last_error`.
+    subject_connect_errors: Arc<RwLock<HashMap<(String, String), String>>>,
     /// Per-`(upstream, subject)` single-flight locks so concurrent first-requests
     /// for the same key do not open duplicate OAuth connections (mirrors the
     /// `lazy_connect_locks` gate used by the normal pool path).
@@ -613,6 +619,7 @@ impl UpstreamPool {
             skills_refresh_tasks: TaskTracker::new(),
             skills_refresh_cancel: CancellationToken::new(),
             subject_connections: Arc::new(RwLock::new(HashMap::new())),
+            subject_connect_errors: Arc::new(RwLock::new(HashMap::new())),
             subject_connect_locks: Arc::new(RwLock::new(HashMap::new())),
             relay_connections: Arc::new(RwLock::new(HashMap::new())),
             relay_connect_locks: Arc::new(RwLock::new(HashMap::new())),

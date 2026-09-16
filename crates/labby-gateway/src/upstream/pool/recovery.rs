@@ -1,6 +1,7 @@
 //! Per-upstream recovery and incarnation-fenced tool catalog publication.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 
 use labby_runtime::gateway_config::UpstreamConfig;
@@ -10,23 +11,57 @@ use super::UpstreamPool;
 use super::helpers::cached_upstream_tool;
 use super::incarnation::ObservedConnectionCatalogEntry;
 
+/// Outcome of one [`UpstreamPool::restart_upstream`] transaction. By the time
+/// it is returned the owned connection has been shut down and the
+/// between-stop-and-start hook has run; `reconnect` says whether the
+/// replacement connected.
+#[derive(Debug)]
+pub struct UpstreamRestart<T> {
+    /// Output of the between-stop-and-start hook.
+    pub between: T,
+    /// `Err` when the replacement failed to connect. The old connection is
+    /// already gone, so the upstream stays down until a later connect
+    /// succeeds; the caller decides how to record and report the failure.
+    pub reconnect: anyhow::Result<()>,
+}
+
 impl UpstreamPool {
     /// Restart the selected runtime without changing its desired enabled state.
     /// The manager owns the task so a disconnected operator request cannot
     /// interrupt the stop/start transaction.
-    pub async fn restart_upstream(
+    ///
+    /// `between_stop_and_start` runs after the owned connection has been shut
+    /// down and before the replacement connects, while the per-upstream
+    /// connect gate is still held. The manager uses it to reap stale runtime
+    /// processes from earlier generations: running it after the reconnect
+    /// would match the replacement child, and running it before the shutdown
+    /// would race the graceful process-group teardown. Its output is returned
+    /// unchanged so the caller can report it alongside the restart.
+    ///
+    /// The stop and hook phases are the transaction. The replacement's connect
+    /// result is returned in [`UpstreamRestart::reconnect`] rather than as this
+    /// function's error: by then the old connection is already gone and the
+    /// hook's output still has to reach the caller. This function fails only
+    /// when the transaction cannot run, because the upstream is disabled or
+    /// its configuration changed before the connect gate was acquired.
+    pub async fn restart_upstream<C, F>(
         &self,
         config: &UpstreamConfig,
         oauth_subject: Option<&str>,
         owner: Option<&UpstreamRuntimeOwner>,
-    ) -> anyhow::Result<()> {
+        between_stop_and_start: C,
+    ) -> anyhow::Result<UpstreamRestart<F::Output>>
+    where
+        C: FnOnce() -> F,
+        F: Future,
+    {
         anyhow::ensure!(config.enabled, "upstream `{}` is disabled", config.name);
         // A runtime swap may publish a fresh pool before its normal lazy-seed
         // reconciliation has run. Restart remains self-contained in that
         // window instead of failing because the catalog row is absent.
         self.ensure_lazy_upstream_entry(config).await;
         let gate = self.lazy_connect_lock(&config.name).await;
-        let _guard = gate.lock().await;
+        let guard = gate.lock().await;
         anyhow::ensure!(
             self.lazy_connect_gate_is_current(&config.name, &gate).await,
             "upstream configuration changed before restart"
@@ -36,15 +71,27 @@ impl UpstreamPool {
         {
             self.invalidate_oauth_subject_sessions(&config.name, subject, "upstream.restart")
                 .await;
-            self.acquire_or_connect_subject(config, subject).await?;
-            return Ok(());
+            let between = between_stop_and_start().await;
+            let reconnect = self
+                .acquire_or_connect_subject(config, subject)
+                .await
+                .map(drop);
+            return Ok(UpstreamRestart { between, reconnect });
         }
         self.begin_subscription_generation(&config.name).await;
         if let Some(connection) = self.remove_connection_binding(&config.name).await {
             connection.shutdown(&config.name, "upstream.restart").await;
         }
-        self.reprobe_upstream(config, oauth_subject, owner).await?;
-        Ok(())
+        let between = between_stop_and_start().await;
+        let reconnect = self.reconnect_upstream(config, oauth_subject, owner).await;
+        // The connect attempt is over; callers waiting on the gate can proceed
+        // now. The prompt/resource cache refresh is served by the replacement
+        // connection and needs no gate, so it runs after the release.
+        drop(guard);
+        if reconnect.is_ok() {
+            self.refresh_capability_caches_after_connect(config).await;
+        }
+        Ok(UpstreamRestart { between, reconnect })
     }
 
     pub(super) async fn lazy_connect_gate_is_current(
@@ -209,6 +256,117 @@ mod catalog_isolation_tests {
             assert!(entry.prompt_last_error.is_none());
             assert!(entry.prompt_health.is_routable());
         }
+    }
+}
+
+#[cfg(test)]
+mod gate_release_tests {
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    use serde_json::{Value, json};
+    use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+
+    use super::super::testsupport::test_upstream_config;
+    use super::UpstreamPool;
+
+    /// A handshake slow enough for a waiter to arrive before the connection
+    /// is installed, a fast tool listing, and slow prompt and resource
+    /// listings.
+    struct SlowCapabilityResponder {
+        handshake_delay: Duration,
+        delay: Duration,
+    }
+
+    impl Respond for SlowCapabilityResponder {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            let body: Value = serde_json::from_slice(&request.body).expect("JSON-RPC request");
+            let method = body
+                .get("method")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let id = body.get("id").cloned().unwrap_or(Value::Null);
+            let reply = |result: Value| {
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
+            };
+            match method {
+                "server/discover" => reply(json!({
+                    "resultType": "complete",
+                    "supportedVersions": ["2026-07-28"],
+                    "capabilities": {"tools": {}, "prompts": {}, "resources": {}},
+                    "serverInfo": {"name": "gate-release", "version": "1.0.0"},
+                    "ttlMs": 0,
+                    "cacheScope": "private"
+                }))
+                .set_delay(self.handshake_delay),
+                "tools/list" => reply(json!({"tools": [{
+                    "name": "gate_echo",
+                    "description": "gate release proof",
+                    "inputSchema": {"type": "object"}
+                }]})),
+                "prompts/list" => reply(json!({"prompts": []})).set_delay(self.delay),
+                "resources/list" => reply(json!({"resources": []})).set_delay(self.delay),
+                "resources/templates/list" => reply(json!({"resourceTemplates": []})),
+                _ => ResponseTemplate::new(202),
+            }
+        }
+    }
+
+    /// A restart holds the upstream's connect gate only through the
+    /// reconnect. The prompt/resource cache refresh that follows runs after
+    /// the gate is released, so a caller waiting to connect proceeds as soon
+    /// as the replacement connection is installed.
+    #[tokio::test]
+    async fn restart_releases_connect_gate_before_capability_refresh() {
+        let server = MockServer::start().await;
+        Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/mcp"))
+            .respond_with(SlowCapabilityResponder {
+                handshake_delay: Duration::from_millis(300),
+                delay: Duration::from_millis(1500),
+            })
+            .mount(&server)
+            .await;
+        let mut config = test_upstream_config();
+        config.name = "gate-release".into();
+        config.url = Some(format!("{}/mcp", server.uri()));
+        config.proxy_prompts = true;
+        config.proxy_resources = true;
+        let pool = Arc::new(UpstreamPool::new());
+        pool.seed_lazy_upstreams(std::slice::from_ref(&config))
+            .await;
+
+        let restart = tokio::spawn({
+            let pool = Arc::clone(&pool);
+            let config = config.clone();
+            async move {
+                pool.restart_upstream(&config, None, None, || async {})
+                    .await
+            }
+        });
+        // Wait until the restart owns the gate so the caller below is a
+        // genuine waiter rather than the connector.
+        let gate = pool.lazy_connect_lock("gate-release").await;
+        for _ in 0..200 {
+            if gate.try_lock().is_err() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(gate.try_lock().is_err(), "restart must be holding the gate");
+
+        let started = Instant::now();
+        pool.ensure_connection_for_upstream(&config, None, None)
+            .await
+            .expect("connection becomes ready");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "the waiter must not sit behind the capability refresh: {:?}",
+            started.elapsed()
+        );
+        let restarted = restart.await.expect("restart task").expect("restart");
+        restarted.reconnect.expect("the replacement connects");
     }
 }
 
