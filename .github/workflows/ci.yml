@@ -1299,7 +1299,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [unit-1, unit-2, labby-int-1, labby-int-2, labby-int-3, labby-int-4, crates]
+        shard: [unit-1, unit-2, unit-3, unit-4, labby-int-1, labby-int-2, labby-int-3, labby-int-4, labby-int-5, crates]
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -1321,7 +1321,9 @@ jobs:
       - name: Warm gateway lib-test harness
         # Keep this large harness from linking concurrently with Labby's test
         # targets during nextest discovery; that overlap exceeds the runner's
-        # memory ceiling even though either harness fits on its own.
+        # memory ceiling even though either harness fits on its own. Only the
+        # unit shards run the labby-gateway lib tests.
+        if: startsWith(matrix.shard, 'unit-')
         run: cargo test -p labby-gateway --all-features --lib --no-run --locked
       - name: Qualify production-shaped access migration, rollback, and approval gate
         # The whole migrations module: v4/v5 rehearsals, every legacy version
@@ -1343,8 +1345,12 @@ jobs:
         # (any new file joins a shard automatically), and `crates` covers the
         # extracted crates' integration tests plus the workspace doctests that
         # used to run inside the blocking Rustdoc job.
+        # The unit shards link the labby and labby-gateway lib harnesses, the
+        # two largest links in the workspace, so they keep the bounded job
+        # count. The other shards link many small binaries and use the
+        # hosted runner's four cores.
         env:
-          CARGO_BUILD_JOBS: 2
+          CARGO_BUILD_JOBS: ${{ startsWith(matrix.shard, 'unit-') && '2' || '4' }}
           SHARD: ${{ matrix.shard }}
         run: scripts/ci/run-test-shard.sh "$SHARD"
       - name: Upload nextest report

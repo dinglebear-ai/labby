@@ -1231,10 +1231,13 @@ fn merge_gate_shards_heavy_suites_to_stay_under_ten_minutes() {
         [
             "unit-1",
             "unit-2",
+            "unit-3",
+            "unit-4",
             "labby-int-1",
             "labby-int-2",
             "labby-int-3",
             "labby-int-4",
+            "labby-int-5",
             "crates"
         ],
         "the workspace suite must stay split into target-selecting shards"
@@ -1255,7 +1258,7 @@ fn merge_gate_shards_heavy_suites_to_stay_under_ten_minutes() {
     let shard_runner = fs::read_to_string(repo_root().join("scripts/ci/run-test-shard.sh"))
         .expect("read scripts/ci/run-test-shard.sh");
     for required in [
-        "--partition \"hash:${shard#unit-}/2\"",
+        "--partition \"hash:${index}/${unit_shards}\"",
         "for file in crates/labby/tests/*.rs",
         "cargo nextest run -p labby",
         "--exclude labby",

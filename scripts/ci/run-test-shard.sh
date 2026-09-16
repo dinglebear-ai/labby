@@ -9,10 +9,11 @@
 set -euo pipefail
 
 shard="${1:-}"
-labby_integration_shards=4
+labby_integration_shards=5
+unit_shards=4
 
 usage() {
-  echo "usage: $0 <unit-1|unit-2|labby-int-1..${labby_integration_shards}|crates>" >&2
+  echo "usage: $0 <unit-1..${unit_shards}|labby-int-1..${labby_integration_shards}|crates>" >&2
   exit 64
 }
 
@@ -20,12 +21,19 @@ usage() {
 common=(--all-features --locked --profile ci)
 
 case "$shard" in
-  unit-1|unit-2)
+  unit-*)
     # Library and binary unit-test harnesses for every crate, split by test
     # hash. The `labby` lib harness is the single largest link in the
-    # workspace, so both halves pay for it once and then run half the cases.
+    # workspace, so every slice pays for it once and then runs its share.
+    index="${shard#unit-}"
+    case "$index" in
+      ''|*[!0-9]*) usage ;;
+    esac
+    if [ "$index" -lt 1 ] || [ "$index" -gt "$unit_shards" ]; then
+      usage
+    fi
     cargo nextest run --workspace "${common[@]}" --lib --bins \
-      --partition "hash:${shard#unit-}/2"
+      --partition "hash:${index}/${unit_shards}"
     ;;
   labby-int-*)
     # `crates/labby/tests/*.rs` are 60 separate binaries that each link the
