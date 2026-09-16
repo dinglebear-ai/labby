@@ -264,8 +264,8 @@ export function AllowedUsersPanel() {
             <AlertDialogTitle>Remove user?</AlertDialogTitle>
             <AlertDialogDescription>
               {pendingRemove
-                ? `${pendingRemove.email} will be signed out and can no longer sign in.`
-                : 'This user will be signed out and can no longer sign in.'}
+                ? `${pendingRemove.email} will be signed out, can no longer sign in, and loses the Team, Project, and administrator access this entry granted.`
+                : 'This user will be signed out, can no longer sign in, and loses the Team, Project, and administrator access this entry granted.'}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

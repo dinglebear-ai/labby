@@ -97,9 +97,9 @@ export function buildDirtyEntriesByBackend(
   initialValues: Record<string, unknown>,
   sources: SettingsState['sources'] = {},
 ): { envEntries: SettingsUpdateEntry[]; configEntries: SettingsUpdateEntry[] } {
-  const editable = editableFields(fields).filter((field) => {
-    return !(field.backend === 'config_toml' && sources[field.key]?.overridden_by_env)
-  })
+  // A config.toml field shadowed by an env var, or an env field the process
+  // environment overrides, cannot be changed from here; never submit either.
+  const editable = editableFields(fields).filter((field) => !sources[field.key]?.overridden_by_env)
   const backendByKey = new Map(editable.map((field) => [field.key, field.backend]))
   const entries = buildDirtyEntries(editable, changedKeys, values, initialValues)
   return {

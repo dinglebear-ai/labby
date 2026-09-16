@@ -114,6 +114,12 @@ test('AllowedUsersPanel asks for confirmation before removing a user', async () 
 
     const dialog = document.body.querySelector('[data-slot="alert-dialog-content"]')
     assert.ok(dialog)
+    // Removal revokes the Team, Project, and platform-admin access the entry
+    // granted at first sign-in, not only the ability to sign in.
+    assert.match(
+      dialog.textContent ?? '',
+      /operator@example\.com will be signed out, can no longer sign in, and loses the Team, Project, and administrator access this entry granted\./,
+    )
     const confirmButton = [...dialog.querySelectorAll('button')]
       .find((button) => button.textContent?.trim() === 'Remove user')
     assert.ok(confirmButton)
