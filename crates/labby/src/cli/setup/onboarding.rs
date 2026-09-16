@@ -143,8 +143,8 @@ fn rederive_invoking_identity(
         );
     }
     Ok(SetupPlan {
-        invoking_user,
         invoking_home,
+        invoking_user,
         ..plan
     })
 }

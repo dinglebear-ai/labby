@@ -172,7 +172,7 @@ sleep 120
         let _updater_cleanup = GroupCleanup(updater_pid);
         // The updater child owns the lock once it publishes `updater.ready`;
         // only the installer's own start is held to the short deadline.
-        tokio::time::timeout(Duration::from_secs(60), async {
+        tokio::time::timeout(Duration::from_mins(1), async {
             while !dir.path().join("updater.ready").exists() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
