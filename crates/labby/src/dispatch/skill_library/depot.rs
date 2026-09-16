@@ -36,6 +36,7 @@ struct RuntimeDepot {
     endpoint: Url,
     credential_origin: Option<Url>,
     pinned_addresses: BTreeSet<IpAddr>,
+    trusted_private_addresses: BTreeSet<IpAddr>,
     source: ExactArtifactSource,
 }
 
@@ -57,6 +58,7 @@ impl DepotExactProvider for RuntimeDepot {
                         endpoint: self.endpoint.clone(),
                         credential_origin: self.credential_origin.clone(),
                         pinned_addresses: self.pinned_addresses.clone(),
+                        trusted_private_addresses: self.trusted_private_addresses.clone(),
                     },
                     headers.as_deref(),
                 )
@@ -82,6 +84,7 @@ impl DepotConnection {
         endpoint: Url,
         credential: Option<ArtifactSourceCredential>,
         pinned_addresses: BTreeSet<IpAddr>,
+        trusted_private_addresses: BTreeSet<IpAddr>,
         staging_root: impl Into<std::path::PathBuf>,
         policy: ArtifactFetchPolicy,
     ) -> Result<Self, ArtifactError> {
@@ -89,6 +92,7 @@ impl DepotConnection {
         let provider = GuardedExactArtifactProvider::configured_http(
             endpoint.clone(),
             pinned_addresses.clone(),
+            trusted_private_addresses.clone(),
             credential,
             staging_root,
             policy,
@@ -101,6 +105,7 @@ impl DepotConnection {
             endpoint,
             credential_origin,
             pinned_addresses,
+            trusted_private_addresses,
             source,
         };
         Ok(Self {

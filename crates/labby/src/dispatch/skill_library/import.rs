@@ -200,9 +200,11 @@ impl ImportCoordinator {
             .depot
             .validate_public_acquisition(&config.artifacts)
             .map_err(ArtifactError::Conflict)?;
+        // The same host-file-only private-address grants the Depot client
+        // honors (`[depot.private_hosts]`) apply to exact-source connections.
         let host_policy = crate::dispatch::depot::manager::host_policy(&config.depot)
             .map_err(ArtifactError::Conflict)?;
-        let mut imports = Self::from_config_with_env_and_private_hosts(
+        let mut imports = Self::from_config_with_env(
             &config.artifacts,
             staging_root,
             env,
@@ -246,19 +248,15 @@ impl ImportCoordinator {
         config: &crate::config::ArtifactPreferences,
         staging_root: &Path,
     ) -> Result<Self, ArtifactError> {
-        Self::from_config_with_env(config, staging_root, &|name| std::env::var_os(name))
+        Self::from_config_with_env(
+            config,
+            staging_root,
+            &|name| std::env::var_os(name),
+            &BTreeMap::new(),
+        )
     }
 
-    #[cfg(test)]
     fn from_config_with_env(
-        config: &crate::config::ArtifactPreferences,
-        staging_root: &Path,
-        env: &impl Fn(&str) -> Option<std::ffi::OsString>,
-    ) -> Result<Self, ArtifactError> {
-        Self::from_config_with_env_and_private_hosts(config, staging_root, env, &BTreeMap::new())
-    }
-
-    fn from_config_with_env_and_private_hosts(
         config: &crate::config::ArtifactPreferences,
         staging_root: &Path,
         env: &impl Fn(&str) -> Option<std::ffi::OsString>,
@@ -322,22 +320,11 @@ impl ImportCoordinator {
                     labby_runtime::artifacts::provider::ExactArtifactSource::Repository
                 }
             };
-            let allowed_private_addresses = endpoint
+            let trusted_private_addresses = endpoint
                 .host_str()
                 .and_then(|host| private_hosts.get(host))
                 .cloned()
                 .unwrap_or_default();
-            let network_policy = crate::dispatch::depot::network::NetworkPolicy {
-                private_hosts: private_hosts.clone(),
-                #[cfg(test)]
-                allow_test_loopback: false,
-            };
-            crate::dispatch::depot::network::validate_addresses(
-                endpoint.host_str().unwrap_or_default(),
-                &source.pinned_addresses,
-                &network_policy,
-            )
-            .map_err(|_| ArtifactError::UnsafePath("provider_dns_address"))?;
             let connection = DepotConnection::configured(
                 kind,
                 source.id.clone(),
@@ -348,11 +335,9 @@ impl ImportCoordinator {
                     .iter()
                     .copied()
                     .collect::<BTreeSet<_>>(),
+                trusted_private_addresses,
                 source_root,
-                labby_runtime::artifacts::provider::ArtifactFetchPolicy {
-                    allowed_private_addresses,
-                    ..Default::default()
-                },
+                Default::default(),
             )?;
             match source.kind {
                 crate::config::ArtifactSourceKind::Depot => {
@@ -931,6 +916,7 @@ mod tests {
                             .expect("fixture URL"),
                         credential_origin: None,
                         pinned_addresses: BTreeSet::from([IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))]),
+                        trusted_private_addresses: BTreeSet::new(),
                     })
                     .await
             })
@@ -2058,29 +2044,46 @@ mod tests {
         assert!(coordinator.repository.contains_key("repository-primary"));
     }
 
+    /// A source pinned to a LAN reverse proxy (e.g. SWAG terminating TLS for
+    /// the Depot hostname) configures only when `[depot.private_hosts]`
+    /// grants that exact address for that host.
     #[test]
-    fn host_config_admits_an_exact_source_on_an_explicitly_allowed_private_host() {
+    fn private_pinned_source_requires_a_depot_private_hosts_grant() {
+        use std::net::{IpAddr, Ipv4Addr};
+
         drop(rustls::crypto::ring::default_provider().install_default());
         let root = tempfile::tempdir().unwrap();
-        let config: crate::config::LabConfig = toml::from_str(
-            r#"
-            [depot.private_hosts]
-            "depot.dinglebear.ai" = ["10.1.0.8"]
+        let lan = IpAddr::V4(Ipv4Addr::new(10, 1, 0, 8));
+        let config = crate::config::ArtifactPreferences {
+            sources: vec![crate::config::ArtifactSourceConfig {
+                id: "public".to_owned(),
+                kind: crate::config::ArtifactSourceKind::Depot,
+                endpoint: "https://depot.example/api/artifacts/exact".to_owned(),
+                control_plane_url: None,
+                pinned_addresses: vec![lan],
+                bearer_token_env: None,
+            }],
+        };
+        let no_env = |_: &str| None;
 
-            [[artifacts.sources]]
-            id = "public"
-            kind = "depot"
-            endpoint = "https://depot.dinglebear.ai/api/artifacts/exact"
-            pinned_addresses = ["10.1.0.8"]
-            "#,
-        )
-        .unwrap();
-
+        assert!(matches!(
+            ImportCoordinator::from_config_with_env(
+                &config,
+                root.path(),
+                &no_env,
+                &BTreeMap::new()
+            ),
+            Err(ArtifactError::UnsafePath("provider_dns_address"))
+        ));
+        let other_host = BTreeMap::from([("elsewhere.example".to_owned(), BTreeSet::from([lan]))]);
+        assert!(
+            ImportCoordinator::from_config_with_env(&config, root.path(), &no_env, &other_host)
+                .is_err()
+        );
+        let granted = BTreeMap::from([("depot.example".to_owned(), BTreeSet::from([lan]))]);
         let coordinator =
-            ImportCoordinator::from_host_config_with_env(&config, root.path(), &|_| None).expect(
-                "the host's exact private-address grant should apply to artifact acquisition",
-            );
-
+            ImportCoordinator::from_config_with_env(&config, root.path(), &no_env, &granted)
+                .unwrap();
         assert!(coordinator.depot.contains_key("public"));
     }
 
