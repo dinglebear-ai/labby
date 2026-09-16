@@ -87,7 +87,11 @@ the [stdio MCP proxy guide](./docs/guides/STDIO_MCP_PROXY.md).
 
 ### Install A Release
 
+Prerequisites for the verified release path are `curl`, `tar`, a SHA-256 tool (`sha256sum` or `shasum`), and an authenticated GitHub CLI (`gh`) build that supports `gh attestation verify`. The installer checks all of these before any Labby release download so a fresh machine fails fast with an actionable dependency message rather than downloading an artifact it cannot verify. Ubuntu 26.04's distro package currently ships `gh 2.46.0`, which is too old for this trust path; install or upgrade GitHub CLI from GitHub's current official packages/releases, verify `gh attestation verify --help`, then run `gh auth login` (or provide `GH_TOKEN` for headless automation).
+
 Linux/macOS:
+
+> **Release compatibility gate:** this installer-bearing flow starts with a qualified release that publishes `labby-install.sh` and contains the first-run `labby setup --role ...` interface. The public `v1.13.3` release predates that contract, so do not use it with this runbook. Confirm the selected tag exposes `labby-install.sh` before continuing.
 
 ```bash
 version=vX.Y.Z
@@ -137,6 +141,9 @@ asks whether this machine should run a server or connect to an existing one.
 Server setup configures authentication and a managed native service, or an Incus
 container on supported Linux hosts. Client setup saves the explicit gateway URL
 and configures browser sign-in or a bearer token. Desktop installation is optional.
+For Labby's supported ChatGPT web connection, configure the server in OAuth mode
+and expose it through a publicly reachable HTTPS `LABBY_PUBLIC_URL`; bearer-only
+mode is for local/CLI clients and is not the supported ChatGPT web path.
 The PowerShell installer installs the binary; run setup separately as shown above.
 
 For unattended shell installs, set `LABBY_SETUP_ROLE=server` or `client` and the
