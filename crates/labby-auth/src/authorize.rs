@@ -589,9 +589,10 @@ pub async fn callback(
         .viewer_domain_for_verified_email(google.email.as_deref(), google.email_verified)
         .is_some()
         && !google.email.as_deref().is_some_and(|email| {
+            let email = crate::util::normalize_email(email);
             allowed
                 .iter()
-                .any(|entry| entry.eq_ignore_ascii_case(email.trim()))
+                .any(|entry| crate::util::normalize_email(entry) == email)
         });
     let admission = if domain_only_viewer {
         Err(AuthError::AuthFailed(

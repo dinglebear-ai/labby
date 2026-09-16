@@ -152,6 +152,32 @@ pub fn with_env_override<T>(values: HashMap<String, String>, f: impl FnOnce() ->
     })
 }
 
+thread_local! {
+    static ENV_KEYS_OUTSIDE_DOTENV_OVERRIDE: RefCell<Option<std::collections::BTreeSet<String>>> =
+        const { RefCell::new(None) };
+}
+
+/// Whether `name` is controlled by the process environment rather than by
+/// `.env`; see [`crate::config::env_key_set_outside_dotenv`]. A thread-local
+/// override lets tests model a service-manager-set variable.
+pub fn env_set_outside_dotenv(name: &str) -> bool {
+    ENV_KEYS_OUTSIDE_DOTENV_OVERRIDE
+        .with(|slot| slot.borrow().as_ref().map(|keys| keys.contains(name)))
+        .unwrap_or_else(|| crate::config::env_key_set_outside_dotenv(name))
+}
+
+pub fn with_env_keys_set_outside_dotenv<T>(
+    keys: std::collections::BTreeSet<String>,
+    f: impl FnOnce() -> T,
+) -> T {
+    ENV_KEYS_OUTSIDE_DOTENV_OVERRIDE.with(|slot| {
+        let previous = slot.replace(Some(keys));
+        let result = f();
+        slot.replace(previous);
+        result
+    })
+}
+
 /// Serialize any `Serialize` value to `serde_json::Value`.
 pub fn to_json<T: serde::Serialize>(v: T) -> Result<Value, ToolError> {
     serde_json::to_value(v).map_err(|e| ToolError::Sdk {

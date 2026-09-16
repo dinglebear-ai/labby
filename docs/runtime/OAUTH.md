@@ -1,7 +1,7 @@
 ---
 title: "HTTP Auth Modes"
 created: "2026-07-30"
-updated: "2026-09-13"
+updated: "2026-09-16"
 ---
 
 # HTTP Auth Modes
@@ -817,14 +817,20 @@ current binding unless `--project-id` replaces it or `--clear-project-id`
 explicitly removes it.
 
 Allowlist removal is an immediate revocation boundary for renewable browser
-and upstream credentials. `DELETE /v1/auth/allowed-emails/{email}` resolves
-every subject associated with the email, then atomically removes the allowlist
-entry, browser sessions, local refresh grants, pending authorization codes, and
-central Google provider credentials while advancing the provider revocation
-epochs. Before the request succeeds, Labby also evicts the subjects from its
-OAuth client cache and drains their generic, subject-scoped, relay, and
-task-retained upstream peers. A later upstream use must therefore authorize
-again instead of reusing an old credential or connection.
+and upstream credentials and for the durable access the entry granted.
+`DELETE /v1/auth/allowed-emails/{email}` first revokes, in the access store,
+the Initial Team membership, default-Project membership, and platform
+administrator grant that allowlist admission created for every
+provider-verified identity of the email (audited as
+`access.allowlist.revoke`; see [Access](../services/ACCESS.md#onboard-a-teammate-no-access-yet)),
+then resolves every subject associated with the email and atomically removes
+the allowlist entry, browser sessions, local refresh grants, pending
+authorization codes, and central Google provider credentials while advancing
+the provider revocation epochs. Before the request succeeds, Labby also evicts
+the subjects from its OAuth client cache and drains their generic,
+subject-scoped, relay, and task-retained upstream peers. A later upstream use
+must therefore authorize again instead of reusing an old credential or
+connection.
 
 Already-issued signed access tokens are stateless and therefore remain usable
 only until their configured `LABBY_AUTH_ACCESS_TOKEN_TTL_SECS` expiry (3600
@@ -866,14 +872,21 @@ back to an identical built-in string only when the field is absent. Onboarding
 steps are in [Onboard a teammate](../services/ACCESS.md#onboard-a-teammate-no-access-yet).
 
 Other fields present in all three states: `authenticated`, `login_available`,
-`is_admin`, `user` (`sub`, `email`), `project_id`, `project`, `owner`,
-`organization_id`, `teams`, `projects`, `capabilities`, `authority_generation`,
-`expires_at`, `csrf_token`, and `owner_bootstrap_available`. In the `transport`
-and `unprovisioned` states the lists are empty and the IDs are `null`.
+`is_admin`, `is_configured_admin`, `user` (`sub`, `email`), `project_id`,
+`project`, `owner`, `organization_id`, `teams`, `projects`, `capabilities`,
+`authority_generation`, `expires_at`, `csrf_token`, and
+`owner_bootstrap_available`. In the `transport` and `unprovisioned` states the
+lists are empty and the IDs are `null`.
 
 - `is_admin` is `true` in `ready` only when `capabilities` contains
   `platform.manage`; in `transport` it reflects whether the transport
   credential carries `lab:admin`; in `unprovisioned` it is always `false`.
+- `is_configured_admin` is `true` only for a browser session whose email is
+  listed in `LABBY_AUTH_ADMIN_EMAIL`, in every authority state. It is the
+  predicate the administrator-list (`setup.settings.env.update` for the
+  `authentication` section) and allowlist (`/v1/auth/allowed-emails`) routes
+  enforce; `is_admin` alone, which every allowlist-admitted admin holds, does
+  not reach them. The web UI shows those controls only when it is `true`.
 - `owner_bootstrap_available` is `true` only when `authority_state` is
   `transport` and the caller is an OAuth browser session for the same subject,
   holding `lab:admin`, whose email equals `LABBY_AUTH_ADMIN_EMAIL`. It is always
@@ -882,7 +895,7 @@ and `unprovisioned` states the lists are empty and the IDs are `null`.
 
 Development bypass (`web_ui_auth_disabled`) returns a different, dev-only
 shape: `authenticated: true`, `login_available: false`, `is_admin: true`,
-`dev_authority_bypass: true`, a synthetic `labby-dev` user, and an empty
+`is_configured_admin: true`, `dev_authority_bypass: true`, a synthetic `labby-dev` user, and an empty
 `csrf_token`, with no `authority_state` or `owner_bootstrap_available`.
 
 Follow-up: `/auth/session` (and `/v1/access/owner-link/consume`) are listed in

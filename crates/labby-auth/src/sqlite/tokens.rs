@@ -690,7 +690,7 @@ impl SqliteStore {
         email: &str,
     ) -> Result<bool, AuthError> {
         let subject = subject.to_string();
-        let email = email.trim().to_ascii_lowercase();
+        let email = crate::util::normalize_email(email);
         let now = now_unix();
         self.with_conn(move |conn| {
             conn.execute(
@@ -741,7 +741,7 @@ impl SqliteStore {
         &self,
         email: &str,
     ) -> Result<bool, AuthError> {
-        let email = email.trim().to_ascii_lowercase();
+        let email = crate::util::normalize_email(email);
         self.with_conn(move |conn| {
             conn.query_row(
                 "SELECT EXISTS(
