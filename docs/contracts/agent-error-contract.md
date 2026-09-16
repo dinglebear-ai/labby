@@ -69,7 +69,7 @@ Surfaces add relevant identity without leaking request secrets:
 
 For oversized responses, use supported pagination, ranges, or field selection. A size error does not guarantee omitted bytes were retained: use a resource or artifact reference only when one was actually returned. For `invalid_cursor`, restart the same listing without its cursor, preserve filters and scope, and deduplicate previously processed items.
 
-State-specific recovery keeps the original stable kind. OAuth state errors require a fresh authenticated flow; issuer/resource mismatches and unsupported PKCE methods require correcting the server or configuration without weakening validation. Stale enrichment suggestions and merge conflicts require regenerating against current state. Missing workspace configuration identifies `workspace.root`; startup-mounted route conflicts require a coordinated service restart after inspecting staged configuration.
+State-specific recovery keeps the original stable kind. OAuth state errors require a fresh authenticated flow; issuer/resource mismatches and unsupported PKCE methods require correcting the server or configuration without weakening validation. Stale enrichment suggestions and merge conflicts require regenerating against current state. Missing workspace configuration identifies `workspace.root`; startup-mounted route conflicts require a coordinated service restart after inspecting staged configuration. `authority_changed` is a `policy` origin with `side_effects: possible`: the Agent session or Task attempt was fenced after it may have reached its provider, so the caller confirms current authority and inspects partial work before starting a new run rather than resuming the fenced one.
 
 ## Surface rules
 
