@@ -27,8 +27,8 @@ use labby_primitives::{
 };
 use labby_runtime::{
     agent_runtime::{
-        AgentExecutionOutput, AgentExecutionRequest, AgentResourceBounds, AgentRuntimeError,
-        Cancellation, system_now_millis,
+        AGENT_MAX_RUNTIME_MILLIS, AgentExecutionOutput, AgentExecutionRequest, AgentResourceBounds,
+        AgentRuntimeError, Cancellation, system_now_millis,
     },
     authority::AuthoritySafeBoundary,
     task_runtime::{ScheduledTask, TaskLedger, TaskRuntimeError, TaskScheduler, execute_task},
@@ -44,7 +44,7 @@ static TASK_SCHEDULER: LazyLock<TaskScheduler> =
     LazyLock::new(|| TaskScheduler::new(4).expect("valid fixed task quota"));
 static TASK_CANCELLATIONS: LazyLock<Mutex<HashMap<String, (u32, Cancellation)>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
-const TASK_MAX_RUNTIME_MILLIS: u64 = 300_000;
+const TASK_MAX_RUNTIME_MILLIS: u64 = AGENT_MAX_RUNTIME_MILLIS;
 const TASK_ATTEMPT_LEASE_MILLIS: u64 = TASK_MAX_RUNTIME_MILLIS;
 
 const fn param(name: &'static str) -> ParamSpec {
@@ -488,6 +488,14 @@ fn authority_request(
     now: u64,
 ) -> Result<AuthorityRequest, ToolError> {
     let action = ActionRef::new("tasks", name).map_err(|_| invalid("action"))?;
+    // The queue lease is carried into the fenced attempt and rechecked at its
+    // safe boundaries, so it must cover the whole runtime bound.
+    let spec = ActionAuthoritySpec::new(action.clone(), ResourceFamily::Task, capability);
+    let spec = if name == "tasks.queue" {
+        spec.with_lease_lifetime_millis(TASK_MAX_RUNTIME_MILLIS)
+    } else {
+        spec
+    };
     Ok(AuthorityRequest::new(
         context.identity.clone(),
         ActionAuthoritySpec::SCHEMA_VERSION,
@@ -504,11 +512,7 @@ fn authority_request(
             AuthoritySafeBoundary::BeforeDispatch,
             AuthoritySafeBoundary::BeforeCommit,
         ],
-        vec![ActionAuthoritySpec::new(
-            action,
-            ResourceFamily::Task,
-            capability,
-        )],
+        vec![spec],
     ))
 }
 
@@ -1493,6 +1497,28 @@ mod tests {
         moved.owner = OwnerScope::Team(TeamId::new("other-team").unwrap());
         assert!(!pinned_revision_matches(&moved, &intent));
     }
+    #[tokio::test]
+    async fn queue_lease_covers_the_runtime_bound() {
+        let (_dir, store, owner) = fixture().await;
+        let context = task_context(&store, &owner);
+        let now = now().unwrap();
+        let request = authority_request(
+            &context,
+            "tasks.queue",
+            &OwnerScope::Personal(PrincipalId::new(BOOTSTRAP_PRINCIPAL).unwrap()),
+            "any-task".to_owned(),
+            Capability::ScopeOperate,
+            now,
+        )
+        .unwrap();
+        let lease = authorize_action(&store, request).await.unwrap();
+        assert!(
+            lease.expires_at_millis() - now >= TASK_MAX_RUNTIME_MILLIS,
+            "a tasks.queue lease must cover the runtime bound, got {} ms",
+            lease.expires_at_millis() - now
+        );
+    }
+
     #[tokio::test]
     async fn queue_denies_when_pinned_agent_revision_drifted() {
         let (_dir, store, owner) = fixture().await;

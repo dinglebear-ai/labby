@@ -26,6 +26,9 @@ identifies the configured OpenAI-compatible provider endpoint, so a revision
 cannot silently move to a different execution provider. Updating an Agent creates the next immutable
 revision. Suspension or deletion blocks future runs. Runtime leases are checked
 at safe boundaries so membership or policy revocation fences retained execution.
+The authority lease issued for `agents.run` and `tasks.queue` covers the full
+300 s runtime bound; every other Agent and Task action keeps the short
+request-scoped lease.
 
 Product Agent execution uses the same OpenAI-compatible provider abstraction as
 the Assistant. Configure `LABBY_PHOENIX_OPENAI_BASE_URL` and, when required,

@@ -26,8 +26,9 @@ use labby_primitives::{
 };
 use labby_runtime::{
     agent_runtime::{
-        AgentAuthority, AgentExecutionOutput, AgentExecutionRequest, AgentExecutor,
-        AgentResourceBounds, AgentRuntimeError, Cancellation, ExecutionGuard, execute_agent,
+        AGENT_MAX_RUNTIME_MILLIS, AgentAuthority, AgentExecutionOutput, AgentExecutionRequest,
+        AgentExecutor, AgentResourceBounds, AgentRuntimeError, Cancellation, ExecutionGuard,
+        execute_agent,
     },
     authority::{AuthorityEpochVector, AuthoritySafeBoundary},
 };
@@ -407,7 +408,7 @@ pub(crate) async fn dispatch(
                     },
                     lease,
                     bounds: AgentResourceBounds {
-                        max_runtime_millis: 300_000,
+                        max_runtime_millis: AGENT_MAX_RUNTIME_MILLIS,
                         max_output_bytes: 16 * 1024 * 1024,
                         max_external_effects: 1_000,
                     },
@@ -663,6 +664,15 @@ fn authority_request(
     now: u64,
 ) -> Result<AuthorityRequest, ToolError> {
     let action = ActionRef::new("agents", name).map_err(|_| invalid("action"))?;
+    // A run is fenced against its lease at every safe boundary, so the lease
+    // issued for it must outlive the runtime bound; every other action keeps
+    // the short request lease.
+    let spec = ActionAuthoritySpec::new(action.clone(), ResourceFamily::Agent, capability);
+    let spec = if name == "agents.run" {
+        spec.with_lease_lifetime_millis(AGENT_MAX_RUNTIME_MILLIS)
+    } else {
+        spec
+    };
     Ok(AuthorityRequest::new(
         context.identity.clone(),
         ActionAuthoritySpec::SCHEMA_VERSION,
@@ -679,11 +689,7 @@ fn authority_request(
             AuthoritySafeBoundary::BeforeDispatch,
             AuthoritySafeBoundary::BeforeCommit,
         ],
-        vec![ActionAuthoritySpec::new(
-            action,
-            ResourceFamily::Agent,
-            capability,
-        )],
+        vec![spec],
     ))
 }
 fn materialize_llm_payload(
@@ -1249,6 +1255,40 @@ mod tests {
             .unwrap();
         let listed = dispatch(reader, "agents.list", json!({})).await.unwrap();
         assert!(listed["agents"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_lease_covers_the_runtime_bound() {
+        let (_dir, store, owner) = fixture().await;
+        let context = agent_context(&store, &owner);
+        let now = now().unwrap();
+        let request = authority_request(
+            &context,
+            "agents.run",
+            &OwnerScope::Personal(PrincipalId::new(BOOTSTRAP_PRINCIPAL).unwrap()),
+            "any-agent",
+            Capability::ScopeOperate,
+            now,
+        )
+        .unwrap();
+        let lease = authorize_action(&store, request).await.unwrap();
+        assert!(
+            lease.expires_at_millis() - now >= AGENT_MAX_RUNTIME_MILLIS,
+            "an agents.run lease must cover the runtime bound, got {} ms",
+            lease.expires_at_millis() - now
+        );
+        // Every other Agent action keeps the short request lease.
+        let read = authority_request(
+            &context,
+            "agents.get",
+            &OwnerScope::Personal(PrincipalId::new(BOOTSTRAP_PRINCIPAL).unwrap()),
+            "any-agent",
+            Capability::ScopeRead,
+            now,
+        )
+        .unwrap();
+        let read_lease = authorize_action(&store, read).await.unwrap();
+        assert!(read_lease.expires_at_millis() - now < AGENT_MAX_RUNTIME_MILLIS);
     }
 
     #[tokio::test]
