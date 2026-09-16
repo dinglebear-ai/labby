@@ -2145,6 +2145,23 @@ fn load_toml_from_paths(candidates: &[PathBuf]) -> Result<LabConfig> {
     Ok(LabConfig::default())
 }
 
+/// Labby-owned app-surface sections that `raw` (a `config.toml` document)
+/// does not declare and therefore inherits at their on-by-default posture:
+/// `code_mode` (Code Mode plus its inspector UI) and `mcp_apps` (every
+/// Labby-owned MCP App UI). Startup names these once so an install upgraded
+/// from a release where they defaulted off sees the change. Unparseable input
+/// yields nothing; the config loader owns that error.
+#[must_use]
+pub fn inherited_app_surface_sections(raw: &str) -> Vec<&'static str> {
+    let Ok(table) = raw.parse::<toml::Table>() else {
+        return Vec::new();
+    };
+    ["code_mode", "mcp_apps"]
+        .into_iter()
+        .filter(|section| !table.contains_key(*section))
+        .collect()
+}
+
 fn validate_top_level_extension_boundary(raw: &str) -> Result<()> {
     let table = raw.parse::<toml::Table>()?;
     const OWNED: &[&str] = &[
@@ -2971,6 +2988,36 @@ mod tests {
 
         std::fs::write(&path, "[external_extension]\nmode = \"custom\"\n").unwrap();
         assert!(load_toml(&[path]).is_ok());
+    }
+
+    #[test]
+    fn inherited_app_surface_sections_name_only_the_absent_tables() {
+        // An existing config.toml written before Code Mode and the Labby MCP
+        // Apps defaulted on inherits those defaults silently unless startup
+        // names them. Only genuinely absent sections are reported.
+        assert_eq!(
+            inherited_app_surface_sections(""),
+            vec!["code_mode", "mcp_apps"]
+        );
+        assert_eq!(
+            inherited_app_surface_sections("[mcp]\nport = 8765\n"),
+            vec!["code_mode", "mcp_apps"]
+        );
+        assert_eq!(
+            inherited_app_surface_sections("[code_mode]\nenabled = false\n"),
+            vec!["mcp_apps"]
+        );
+        assert_eq!(
+            inherited_app_surface_sections(
+                "[code_mode]\nenabled = true\n[mcp_apps]\nmanager = false\n"
+            ),
+            Vec::<&str>::new()
+        );
+        // Unparseable input is the loader's error to report, not this hint's.
+        assert_eq!(
+            inherited_app_surface_sections("mcp = \"bad"),
+            Vec::<&str>::new()
+        );
     }
 
     #[test]

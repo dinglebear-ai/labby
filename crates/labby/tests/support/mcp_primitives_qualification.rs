@@ -36,6 +36,11 @@ pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const CLIENT_RESPONSE_CAP: usize = 12 * 1024 * 1024;
 const BYTE_BOMB_BYTES: usize = 10 * 1024 * 1024 + 16 * 1024;
 const TOKEN: &str = "q1-primitives-qualification-token";
+/// Code Mode is on by default and hides the raw per-service tools behind its
+/// `search`/`describe`/execute primitives. These qualification suites call the
+/// raw `gateway` tool directly, so their Labby instances opt out explicitly
+/// rather than depending on the product default.
+pub(crate) const RAW_GATEWAY_TOOL_CONFIG: &str = "[code_mode]\nenabled = false\n\n";
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PrimitiveClient {
@@ -687,6 +692,7 @@ impl PrimitiveQualification {
         let mut config = String::from(
             "upstream_request_timeout_ms = 15000\nupstream_relay_timeout_ms = 15000\n\n",
         );
+        config.push_str(RAW_GATEWAY_TOOL_CONFIG);
         for fixture in fixtures {
             config.push_str(&format!(
                 "[[upstream]]\nname = {}\nenabled = true\nurl = {}\nproxy_resources = true\nproxy_prompts = true\n\n",

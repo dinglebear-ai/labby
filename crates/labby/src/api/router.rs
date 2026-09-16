@@ -916,8 +916,7 @@ pub(crate) fn build_router_with_external_auth(
             Some(state) => AuthLayer::from_state(state),
             // Bearer-only path (no OAuth state): grant the same legacy scopes
             // that the old middleware always issued for static-token requests.
-            None => AuthLayer::new()
-                .with_static_token_scopes(vec!["lab:read".to_string(), "lab:admin".to_string()]),
+            None => AuthLayer::new().with_static_token_scopes(state.static_token_scopes()),
         };
         layer = layer
             .with_static_token(static_token.clone())

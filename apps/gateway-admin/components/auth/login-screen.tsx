@@ -46,10 +46,12 @@ export function LoginScreen({ errorMessage, requestId, returnTo }: LoginScreenPr
       if (next.status !== 'authenticated') {
         throw new Error('Labby accepted the exchange but did not create a browser session.')
       }
-      setToken('')
     } catch (error) {
       setBearerError(error instanceof Error ? error.message : 'Labby rejected that bearer token.')
     } finally {
+      // The setup token is a long-lived operator credential; whether the
+      // exchange succeeded or was refused, it must not linger in the form.
+      setToken('')
       setSubmitting(false)
     }
   }
@@ -83,7 +85,7 @@ export function LoginScreen({ errorMessage, requestId, returnTo }: LoginScreenPr
             <input
               id="labby-bearer-token"
               type="password"
-              autoComplete="current-password"
+              autoComplete="off"
               spellCheck={false}
               value={token}
               onChange={(event) => setToken(event.currentTarget.value)}

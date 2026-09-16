@@ -176,7 +176,7 @@ make_path_without_gh() {
     done
 }
 
-test_release_install_fails_before_network_without_gh() {
+test_release_install_fails_before_download_without_gh() {
     local case_root="$test_root/missing-gh"
     local fixtures="$case_root/fixtures" fake_bin="$case_root/fake-bin" home="$case_root/home"
     local sysbin="$case_root/sysbin"
@@ -191,10 +191,10 @@ test_release_install_fails_before_network_without_gh() {
         fail "release installer succeeded without GitHub CLI"
     fi
     assert_contains "$case_root/err" "GitHub CLI (gh) is required to verify Labby release provenance"
-    [ ! -s "$case_root/curl.log" ] || fail "installer performed network I/O before reporting the missing trust dependency"
+    [ ! -s "$case_root/curl.log" ] || fail "installer started a release download before reporting the missing trust dependency"
 }
 
-test_release_install_fails_before_network_without_gh_attestation_support() {
+test_release_install_fails_before_download_without_gh_attestation_support() {
     local case_root="$test_root/old-gh"
     local fixtures="$case_root/fixtures" fake_bin="$case_root/fake-bin" home="$case_root/home"
     mkdir -p "$fixtures" "$home"
@@ -210,10 +210,10 @@ EOF
         fail "release installer succeeded with a GitHub CLI lacking attestation support"
     fi
     assert_contains "$case_root/err" "GitHub CLI (gh) with attestation support is required"
-    [ ! -s "$case_root/curl.log" ] || fail "installer performed network I/O before reporting unsupported GitHub CLI"
+    [ ! -s "$case_root/curl.log" ] || fail "installer started a release download before reporting unsupported GitHub CLI"
 }
 
-test_release_install_fails_before_network_without_gh_authentication() {
+test_release_install_fails_before_download_without_gh_authentication() {
     local case_root="$test_root/unauthenticated-gh"
     local fixtures="$case_root/fixtures" fake_bin="$case_root/fake-bin" home="$case_root/home"
     mkdir -p "$fixtures" "$home"
@@ -996,9 +996,9 @@ test_artifact_retention_keeps_only_current_and_rollback
 test_durability_barrier_failure_prevents_activation
 test_launchd_integrates_updates_after_health_check
 test_root_installer_is_self_contained_when_piped_from_arbitrary_cwd
-test_release_install_fails_before_network_without_gh
-test_release_install_fails_before_network_without_gh_attestation_support
-test_release_install_fails_before_network_without_gh_authentication
+test_release_install_fails_before_download_without_gh
+test_release_install_fails_before_download_without_gh_attestation_support
+test_release_install_fails_before_download_without_gh_authentication
 test_latest_api_failure_never_uses_mutable_latest_download
 test_release_failure_matrix_preserves_existing_binary
 test_checksum_ignores_sidecar_subject_and_hashes_requested_archive

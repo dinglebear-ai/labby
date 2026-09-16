@@ -9,11 +9,16 @@ use std::time::Duration;
 
 use dashmap::DashMap;
 
+use crate::auth_context::AuthContext;
 use crate::error::AuthError;
+use crate::middleware::ActorKeyDeriver;
 use crate::types::BrowserSessionRow;
 use crate::util::{now_unix, random_token};
 
 pub const STATIC_BROWSER_SESSION_COOKIE_NAME: &str = "labby_bearer_session";
+/// Subject reported for the static bearer credential and every browser
+/// session derived from it.
+pub const STATIC_BEARER_SUBJECT: &str = "static-bearer";
 #[allow(clippy::duration_suboptimal_units)]
 const DEFAULT_TTL: Duration = Duration::from_secs(8 * 60 * 60);
 const MAX_SESSIONS: usize = 256;
@@ -59,7 +64,7 @@ impl StaticBrowserSessionState {
             .map_err(|_| AuthError::Config("static browser session TTL is too large".into()))?;
         let row = BrowserSessionRow {
             session_id: random_token(32)?,
-            subject: "static-bearer".to_string(),
+            subject: STATIC_BEARER_SUBJECT.to_string(),
             email: None,
             csrf_token: random_token(24)?,
             created_at,
@@ -108,6 +113,32 @@ impl StaticBrowserSessionState {
     fn remove_expired(&self) {
         let now = now_unix();
         self.sessions.retain(|_, row| row.expires_at > now);
+    }
+}
+
+/// The [`AuthContext`] every surface reports for a request that carries a
+/// valid static-bearer browser session cookie.
+///
+/// The auth middleware attaches this on routes behind the layer. `/auth/session`
+/// introspection runs outside the layer and must project the same transport
+/// facts (`via_session`, the configured static-token scopes, the subject, and
+/// the per-session CSRF token), so both derive from here rather than
+/// restating them.
+#[must_use]
+pub fn browser_session_auth_context(
+    actor_key_deriver: Option<&ActorKeyDeriver>,
+    static_token_scopes: &[String],
+    session: &BrowserSessionRow,
+) -> AuthContext {
+    let sub = STATIC_BEARER_SUBJECT.to_string();
+    AuthContext {
+        actor_key: actor_key_deriver.and_then(|derive| derive(&sub)),
+        sub,
+        scopes: static_token_scopes.to_vec(),
+        issuer: "local".to_string(),
+        via_session: true,
+        csrf_token: Some(session.csrf_token.clone()),
+        email: None,
     }
 }
 

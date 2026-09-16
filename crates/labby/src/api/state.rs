@@ -401,6 +401,20 @@ impl AppState {
         self
     }
 
+    /// Scopes minted for the static bearer credential and the browser session
+    /// cookie derived from it.
+    ///
+    /// The auth layer takes them from the OAuth configuration when one is
+    /// mounted and otherwise grants the legacy bearer-only pair. Routes that
+    /// run outside the layer, such as `/auth/session`, must project the same
+    /// list, so both read it from here.
+    pub(crate) fn static_token_scopes(&self) -> Vec<String> {
+        self.oauth_state
+            .as_ref()
+            .map(|auth| auth.config.static_token_scopes.clone())
+            .unwrap_or_else(|| vec!["lab:read".to_string(), "lab:admin".to_string()])
+    }
+
     #[must_use]
     pub fn with_actor_key_deriver(
         mut self,
