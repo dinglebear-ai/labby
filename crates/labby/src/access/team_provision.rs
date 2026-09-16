@@ -152,25 +152,30 @@ pub(super) fn provision_allowlisted(
             )
             .map_err(map_sqlite_error)?;
     }
-    transaction
-        .execute(
-            "UPDATE access_metadata SET global_revision=global_revision+1,updated_at=?1 WHERE singleton=1",
+    let revision: i64 = transaction
+        .query_row(
+            "UPDATE access_metadata SET global_revision=global_revision+1,updated_at=?1
+             WHERE singleton=1 RETURNING global_revision",
             [now],
+            |row| row.get(0),
         )
         .map_err(map_sqlite_error)?;
+    // Keyed by revision like `team::audit`, so a re-admission after a hard
+    // delete never collides with the earlier admission's audit row.
+    let target_fingerprint = hex::encode(Sha256::digest(format!(
+        "team_membership\0{INITIAL_TEAM_ID}\0{principal_id}"
+    )));
     transaction
         .execute(
             "INSERT INTO access_audit(event_id,occurred_at,correlation_id,actor_principal_id,organization_id,project_id,action,target_kind,target_fingerprint,decision,reason_code,policy_epoch,metadata_json)
              VALUES(?1,?2,NULL,?3,?4,?5,'access.allowlist.provision','team_membership',?6,'allow','allowlist_admission',?7,?8)",
             params![
-                format!("allowlist-provision-{}", identity.safe_fingerprint().replace(':', "-")),
+                format!("allowlist-provision-{revision}-{}", &target_fingerprint[..16]),
                 now,
                 principal_id,
                 organization_id,
                 project_id,
-                hex::encode(Sha256::digest(format!(
-                    "team_membership\0{INITIAL_TEAM_ID}\0{principal_id}"
-                ))),
+                target_fingerprint,
                 organization_epoch,
                 admitted_by.audit_metadata(role).to_string()
             ],
@@ -520,13 +525,16 @@ fn provision_in_transaction(
                 "INSERT INTO project_memberships(membership_id,organization_id,project_id,principal_id,role,status,created_by,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,'active',?6,?7,?7)",
                 params![membership_id, organization_id, project_id, principal_id, role, creator, now],
             ).map_err(map_sqlite_error)?;
-            transaction.execute(
-                "UPDATE access_metadata SET global_revision=global_revision+1,updated_at=?1 WHERE singleton=1",
+            let revision: i64 = transaction.query_row(
+                "UPDATE access_metadata SET global_revision=global_revision+1,updated_at=?1 WHERE singleton=1 RETURNING global_revision",
                 [now],
+                |row| row.get(0),
             ).map_err(map_sqlite_error)?;
+            // Keyed by revision like `team::audit`, so re-admission after a
+            // membership clean-up never collides on the audit PRIMARY KEY.
             transaction.execute(
                 "INSERT INTO access_audit(event_id,occurred_at,correlation_id,actor_principal_id,organization_id,project_id,action,target_kind,target_fingerprint,decision,reason_code,policy_epoch,metadata_json) VALUES(?1,?2,NULL,?3,?4,?5,'access.team_member.provision','project_membership',?6,'allow','verified_team_admission',?7,?8)",
-                params![format!("team-provision-{scoped_fingerprint}"), now, principal_id, organization_id, project_id, scoped_fingerprint, organization_epoch, serde_json::json!({"role": role}).to_string()],
+                params![format!("team-provision-{revision}-{}", &scoped_fingerprint[..16]), now, principal_id, organization_id, project_id, scoped_fingerprint, organization_epoch, serde_json::json!({"role": role}).to_string()],
             ).map_err(map_sqlite_error)?;
             Ok((
                 TeamMemberProvisionOutcome::Created,
@@ -942,6 +950,64 @@ mod tests {
         assert!(!snapshot.platform_administrator);
         assert!(snapshot.teams.is_empty());
         assert_eq!(audit_count(&store, "access.allowlist.provision").await, 1);
+    }
+
+    /// Finding 11: the admission audit id is unique per admission, not per
+    /// identity, so a later hard delete of a Principal cannot make its
+    /// re-admission collide on the audit PRIMARY KEY.
+    #[tokio::test]
+    async fn allowlist_provision_audit_event_ids_are_unique_per_admission() {
+        let (_directory, store) = fixture().await;
+        let eli = identity("eli-readmitted");
+        store
+            .provision_allowlisted(eli.clone(), AllowedUserRole::Member, allowlist_entry())
+            .await
+            .unwrap();
+        // A hard clean-up removes the memberships and grant the admission
+        // created but keeps the Principal (the audit trail references it) and
+        // the audit rows; the same identity is then admitted again.
+        store
+            .execute_test_statement(
+                "DELETE FROM team_memberships WHERE principal_id LIKE 'team-member-%';
+                 DELETE FROM project_memberships WHERE principal_id LIKE 'team-member-%';
+                 DELETE FROM platform_administrators WHERE principal_id LIKE 'team-member-%';",
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .provision_allowlisted(eli, AllowedUserRole::Member, allowlist_entry())
+                .await
+                .unwrap(),
+            TeamMemberProvisionOutcome::Created
+        );
+        let ids: Vec<String> = store
+            .with_connection(|connection| {
+                let mut statement = connection
+                    .prepare(
+                        "SELECT event_id FROM access_audit WHERE action='access.allowlist.provision' ORDER BY event_id",
+                    )
+                    .map_err(map_sqlite_error)?;
+                let ids = statement
+                    .query_map([], |row| row.get(0))
+                    .map_err(map_sqlite_error)?
+                    .collect::<rusqlite::Result<Vec<String>>>()
+                    .map_err(map_sqlite_error)?;
+                Ok(ids)
+            })
+            .await
+            .unwrap();
+        assert_eq!(ids.len(), 2, "{ids:?}");
+        assert_ne!(ids[0], ids[1]);
+        for id in &ids {
+            let mut parts = id
+                .strip_prefix("allowlist-provision-")
+                .unwrap()
+                .splitn(2, '-');
+            let revision: u64 = parts.next().unwrap().parse().expect("revision prefix");
+            assert!(revision > 0);
+            assert_eq!(parts.next().unwrap().len(), 16, "target fingerprint prefix");
+        }
     }
 
     /// An identity that already holds an Initial Team membership was admitted
