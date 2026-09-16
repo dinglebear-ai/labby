@@ -77,7 +77,8 @@ async fn q5_multihop_tools_prompts_resources_templates_and_skills_round_trip_onc
         .await
         .expect("origin fixture");
     let leaf_config = format!(
-        "upstream_request_timeout_ms = 15000\n[[upstream]]\nname = \"origin\"\nenabled = true\nurl = {}\nproxy_resources = true\nproxy_prompts = true\n",
+        "upstream_request_timeout_ms = 15000\n{}[[upstream]]\nname = \"origin\"\nenabled = true\nurl = {}\nproxy_resources = true\nproxy_prompts = true\n",
+        primitives::RAW_GATEWAY_TOOL_CONFIG,
         serde_json::to_string(&fixture.url()).expect("fixture URL")
     );
     let leaf = live_labby::LiveLabbyBuilder::new()
@@ -120,7 +121,8 @@ async fn q5_multihop_tools_prompts_resources_templates_and_skills_round_trip_onc
     );
     leaf_client.cancel().await.expect("leaf bootstrap cleanup");
     let edge_config = format!(
-        "upstream_request_timeout_ms = 15000\n[[upstream]]\nname = \"leaf\"\nenabled = true\nurl = {}\nbearer_token_env = \"Q5_LEAF_TOKEN\"\nproxy_resources = true\nproxy_prompts = true\nproxy_skills = true\n",
+        "upstream_request_timeout_ms = 15000\n{}[[upstream]]\nname = \"leaf\"\nenabled = true\nurl = {}\nbearer_token_env = \"Q5_LEAF_TOKEN\"\nproxy_resources = true\nproxy_prompts = true\nproxy_skills = true\n",
+        primitives::RAW_GATEWAY_TOOL_CONFIG,
         serde_json::to_string(&format!("{}/mcp", leaf.connection().base_url)).expect("leaf URL")
     );
     let edge = live_labby::LiveLabbyBuilder::new()
@@ -355,7 +357,8 @@ async fn q5_upstream_auth_failure_is_partial_fail_closed_and_redacted() {
         .await
         .expect("auth leaf");
     let config = format!(
-        "upstream_request_timeout_ms = 15000\n[[upstream]]\nname = \"denied-leaf\"\nenabled = true\nurl = {}\nbearer_token_env = \"Q5_WRONG_TOKEN\"\nproxy_resources = true\nproxy_prompts = true\nproxy_skills = true\n",
+        "upstream_request_timeout_ms = 15000\n{}[[upstream]]\nname = \"denied-leaf\"\nenabled = true\nurl = {}\nbearer_token_env = \"Q5_WRONG_TOKEN\"\nproxy_resources = true\nproxy_prompts = true\nproxy_skills = true\n",
+        primitives::RAW_GATEWAY_TOOL_CONFIG,
         serde_json::to_string(&format!("{}/mcp", leaf.connection().base_url)).expect("leaf URL")
     );
     let edge = live_labby::LiveLabbyBuilder::new()
