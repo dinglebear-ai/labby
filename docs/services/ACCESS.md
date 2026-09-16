@@ -191,6 +191,12 @@ Owner bootstrap never migrates an existing older-schema store. Upgrading a
 v1–v6 store to v7 is the offline `labby state migrate-access` flow in
 [MIGRATION.md](../access-control/MIGRATION.md).
 
+Because every schema crossing costs the operator an approved offline
+migration, the schema version is bumped only when a shipped feature reads or
+writes the new tables. Tables with no reader or writer outside the migration
+code do not justify a bump; the migration test suite pins the current schema
+to the v7 table set until a consuming feature lands.
+
 ## Owner identity link
 
 Owner-link adds one more external identity to the existing owner Principal. It
