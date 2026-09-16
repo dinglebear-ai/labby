@@ -1339,9 +1339,12 @@ if authenticated_action; then exit 93; fi
         paths = ["Cargo.toml", "packages/labby-mcp/package.json", "server.json",
                  "apps/labby-desktop/package.json", "apps/labby-desktop/src-tauri/Cargo.toml",
                  "apps/labby-desktop/src-tauri/tauri.conf.json"]
+        # The verification workspace pins labby-model at the exact release
+        # version; the patch script refuses to run without that manifest.
+        pinned = "verification/hosts/labby/Cargo.toml"
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for path in paths:
+            for path in paths + [pinned]:
                 target = root / path
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(self.text(path))
@@ -1353,6 +1356,7 @@ if authenticated_action; then exit 93; fi
                         self.assertEqual(json.loads(text)["version"], version, path)
                     else:
                         self.assertIn(f'version = "{version}"', text, path)
+                self.assertIn(f'labby-model = {{ version = "={version}"', (root / pinned).read_text(), pinned)
                 first = {path: (root / path).read_bytes() for path in paths}
                 subprocess.run([sys.executable, "-", version], input=code, text=True, cwd=root, check=True)
                 self.assertEqual(first, {path: (root / path).read_bytes() for path in paths})

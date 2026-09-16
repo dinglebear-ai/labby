@@ -159,14 +159,34 @@ test_root_installer_is_self_contained_when_piped_from_arbitrary_cwd() {
     [ "$("$home/bin/labby")" = release-v1 ] || fail "piped root installer was not self-contained"
 }
 
+# A PATH made of every system executable except gh. Removing the fake gh is
+# not enough: GitHub-hosted runners ship a real /usr/bin/gh, which the
+# installer would find next and then fail one probe later with a different
+# message than the missing-tool one this case verifies.
+make_path_without_gh() {
+    local sysbin=$1 dir entry
+    mkdir -p "$sysbin"
+    for dir in /usr/bin /bin /usr/sbin /sbin; do
+        [ -d "$dir" ] || continue
+        for entry in "$dir"/*; do
+            [ -x "$entry" ] || continue
+            [ "$(basename "$entry")" != gh ] || continue
+            [ -e "$sysbin/$(basename "$entry")" ] || ln -s "$entry" "$sysbin/"
+        done
+    done
+}
+
 test_release_install_fails_before_network_without_gh() {
     local case_root="$test_root/missing-gh"
     local fixtures="$case_root/fixtures" fake_bin="$case_root/fake-bin" home="$case_root/home"
+    local sysbin="$case_root/sysbin"
     mkdir -p "$fixtures" "$home"
     make_release "$fixtures" v1.0.0 release-v1
     make_fake_tools "$fake_bin" "$fixtures"
     rm "$fake_bin/gh"
-    if run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v1.0.0 \
+    make_path_without_gh "$sysbin"
+    if run_installer "$home" "$fixtures" "$fake_bin" PATH="$fake_bin:$sysbin" \
+        LABBY_INSTALL_VERSION=v1.0.0 \
         LABBY_TEST_CURL_LOG="$case_root/curl.log" >"$case_root/out" 2>"$case_root/err"; then
         fail "release installer succeeded without GitHub CLI"
     fi
