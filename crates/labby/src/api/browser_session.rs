@@ -698,9 +698,23 @@ async fn admit_allowlisted_identity(state: &AppState, caller: &SessionCaller) ->
             );
             false
         }
+        // Expected while the durable state that refuses it stands (a disabled
+        // or suspended membership); the session polls this on every read, so
+        // it is not an operator warning.
+        Err(error @ crate::access::AllowlistProvisionError::Refused) => {
+            tracing::debug!(
+                surface = "api",
+                service = "auth",
+                action = "session.get",
+                reason = %error,
+                "allowlist admission refused by durable state; session stays unprovisioned"
+            );
+            false
+        }
         Err(error) => {
-            // Fail closed to `unprovisioned`, but leave a trace; identity and
-            // email are never logged.
+            // Deadline exhausted or store unavailable: fail closed to
+            // `unprovisioned`, but leave a trace; identity and email are
+            // never logged.
             tracing::warn!(
                 surface = "api",
                 service = "auth",
@@ -1739,6 +1753,27 @@ mod tests {
         .unwrap();
         assert_eq!(body["is_admin"], true);
         assert_eq!(body["is_configured_admin"], false);
+    }
+
+    /// Finding 6: first-sign-in admission must not fail closed after the
+    /// 100 ms bootstrap-writer wait. A writer held for 300 ms (audit or
+    /// policy persistence in flight) is normal contention, not an outage.
+    #[tokio::test]
+    async fn allowlisted_admission_waits_for_a_busy_writer() {
+        let fixture = AllowlistFixture::new().await;
+        let writer = fixture
+            .state
+            .access_runtime
+            .acquire_bootstrap_writer()
+            .await
+            .unwrap();
+        let release = async {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            drop(writer);
+        };
+        let (body, ()) = tokio::join!(fixture.session("eli-sub", "eli@example.com"), release);
+        assert_eq!(body["authority_state"], "ready");
+        assert_eq!(fixture.provision_audit_rows(), 1);
     }
 
     /// Finding 2: the allowlist lookup and the durable provisioning live in

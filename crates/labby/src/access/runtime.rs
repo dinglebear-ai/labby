@@ -8,6 +8,10 @@ const BOOTSTRAP_WRITER_DEADLINE: std::time::Duration = std::time::Duration::from
 // Credential admission shares this writer with audit and policy persistence.
 // Give normal concurrent requests the same bounded wait as credential reads.
 const SECURITY_ADMISSION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(1);
+// First-sign-in allowlist admission and its revocation also share the writer.
+// A writer held by an audit or policy commit is ordinary contention, not an
+// outage: wait long enough to ride it out, but keep the session read bounded.
+const ALLOWLIST_ADMISSION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
 
 use super::bootstrap::{BootstrapOutcome, BootstrapOwnerInput};
 use super::credential_verifier::{AccessCredentialAdapter, CredentialReadPool, LiveAuthority};
@@ -113,6 +117,10 @@ pub(crate) enum AllowlistProvisionError {
     /// that state stands; retrying cannot help.
     #[error("existing durable state refuses allowlist admission")]
     Refused,
+    /// The access writer stayed busy past the admission deadline. The next
+    /// session read retries; sustained occurrences point at writer contention.
+    #[error("access writer stayed busy past the allowlist admission deadline")]
+    WriterBusy,
     /// The access store or its lifecycle is unavailable.
     #[error(transparent)]
     Runtime(AccessRuntimeError),
@@ -294,10 +302,7 @@ impl AccessRuntime {
         F: FnOnce() -> Fut,
         Fut: Future<Output = Option<(super::AllowlistRole, super::AllowlistAdmission)>>,
     {
-        let _writer = self
-            .acquire_bootstrap_writer()
-            .await
-            .map_err(AllowlistProvisionError::Runtime)?;
+        let _writer = self.acquire_allowlist_writer().await?;
         let Some((role, admitted_by)) = revalidate().await else {
             return Err(AllowlistProvisionError::Withdrawn);
         };
@@ -339,7 +344,13 @@ impl AccessRuntime {
             }
             Err(error) => return Err(error),
         };
-        let writer = self.acquire_bootstrap_writer().await?;
+        let writer = self
+            .acquire_allowlist_writer()
+            .await
+            .map_err(|error| match error {
+                AllowlistProvisionError::Runtime(error) => error,
+                _ => AccessRuntimeError::LifecycleUnavailable,
+            })?;
         let mut outcomes = Vec::with_capacity(identities.len());
         for identity in identities {
             outcomes.push(
@@ -353,6 +364,25 @@ impl AccessRuntime {
             outcomes,
             _admission_fence: Some(writer),
         })
+    }
+
+    /// The bootstrap writer with the allowlist admission deadline, telling a
+    /// busy writer (retry on the next session read) apart from a closed one.
+    async fn acquire_allowlist_writer(
+        &self,
+    ) -> Result<OwnedSemaphorePermit, AllowlistProvisionError> {
+        match tokio::time::timeout(
+            ALLOWLIST_ADMISSION_DEADLINE,
+            Arc::clone(&self.bootstrap_writer).acquire_owned(),
+        )
+        .await
+        {
+            Ok(Ok(permit)) => Ok(permit),
+            Ok(Err(_)) => Err(AllowlistProvisionError::Runtime(
+                AccessRuntimeError::LifecycleUnavailable,
+            )),
+            Err(_) => Err(AllowlistProvisionError::WriterBusy),
+        }
     }
 
     async fn security_store(&self) -> Result<AccessStore, AccessRuntimeError> {
