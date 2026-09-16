@@ -65,6 +65,25 @@ fn actor_key_for_session(
         .map(crate::observability::activity::ActorKey::into_arc)
 }
 
+/// Transport facts for a static-bearer browser session cookie, derived from
+/// the same `labby_auth` rule the auth layer applies to this cookie on
+/// protected routes. `/auth/session` runs outside the layer, so this is how
+/// introspection stays in agreement with the middleware.
+fn static_cookie_context(
+    state: &AppState,
+    session: &labby_auth::types::BrowserSessionRow,
+) -> AuthContext {
+    let deriver = state
+        .actor_key_deriver
+        .clone()
+        .map(crate::api::router_middleware::lab_auth_deriver);
+    labby_auth::static_session::browser_session_auth_context(
+        deriver.as_deref(),
+        &state.static_token_scopes(),
+        session,
+    )
+}
+
 fn static_bearer_login_available(state: &AppState) -> bool {
     let config = state
         .oauth_state
@@ -475,6 +494,18 @@ struct SessionCaller {
 }
 
 impl SessionCaller {
+    /// Transport facts from an [`AuthContext`], whichever path minted it.
+    fn from_context(identity: labby_auth::VerifiedIdentity, context: AuthContext) -> Self {
+        Self {
+            identity,
+            via_session: context.via_session,
+            transport_admin: scopes_grant_admin(&context.scopes),
+            subject: context.sub,
+            email: context.email,
+            scopes: context.scopes,
+        }
+    }
+
     fn bootstrap_caller(&self) -> OwnerBootstrapCaller<'_> {
         OwnerBootstrapCaller {
             via_session: self.via_session,
@@ -1058,26 +1089,19 @@ pub async fn auth_session(
                 "static-bearer:primary",
             )
             .map_err(|_| ToolError::internal_message("authenticated identity is invalid"))?;
-            let caller = SessionCaller {
-                identity,
-                via_session: false,
-                subject: "static-bearer".to_owned(),
-                email: None,
-                scopes: Vec::new(),
-                transport_admin: true,
-            };
+            let context = static_cookie_context(&state, &session);
             let view = SessionView {
                 login_available,
                 bearer_login_available: bearer_login_advertised(&state, &headers),
                 user: SessionUser {
-                    sub: "static-bearer".to_owned(),
-                    email: None,
+                    sub: context.sub.clone(),
+                    email: context.email.clone(),
                 },
                 project_id: None,
                 expires_at: session.expires_at,
-                csrf_token: session.csrf_token.clone(),
+                csrf_token: context.csrf_token.clone().unwrap_or_default(),
             };
-            project_session(&state, caller, view).await
+            project_session(&state, SessionCaller::from_context(identity, context), view).await
         }
         .await;
         return finish_session_get(request_id.as_deref(), start, None, outcome);
@@ -1253,17 +1277,9 @@ async fn authenticated_context_session(
         },
         project_id,
         expires_at,
-        csrf_token: context.csrf_token.unwrap_or_default(),
+        csrf_token: context.csrf_token.clone().unwrap_or_default(),
     };
-    let caller = SessionCaller {
-        identity,
-        via_session: context.via_session,
-        transport_admin: scopes_grant_admin(&context.scopes),
-        subject: context.sub,
-        email: context.email,
-        scopes: context.scopes,
-    };
-    project_session(state, caller, view).await
+    project_session(state, SessionCaller::from_context(identity, context), view).await
 }
 
 pub async fn auth_logout(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
@@ -1899,6 +1915,118 @@ mod tests {
             .into_response();
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
         assert!(static_browser_session(&state, &headers).is_none());
+    }
+
+    /// `GET /auth/session` runs outside the auth layer, so the static-cookie
+    /// branch states its own transport facts. Those facts must be the ones the
+    /// middleware mints for the same cookie on authenticated routes: the
+    /// middleware grants the configured static-token scopes `via_session`,
+    /// and introspection must not report a different admin ceiling.
+    #[tokio::test]
+    async fn static_cookie_session_facts_match_middleware() {
+        use tower::ServiceExt as _;
+        let directory = tempfile::tempdir().unwrap();
+        let config = labby_auth::config::AuthConfig {
+            mode: labby_auth::config::AuthMode::OAuth,
+            public_url: Some("https://lab.example.com".parse().unwrap()),
+            sqlite_path: directory.path().join("auth.db"),
+            key_path: directory.path().join("auth-key.pem"),
+            admin_emails: vec!["owner@example.com".into()],
+            session_cookie_name: "__Host-labby-session".into(),
+            // Deliberately below the legacy grant so a disagreement between
+            // the two derivations is observable as the admin ceiling.
+            static_token_scopes: vec!["lab:read".into()],
+            google: labby_auth::config::GoogleConfig {
+                client_id: "client".into(),
+                client_secret: "secret".into(),
+                callback_url: None,
+                callback_path: "/auth/google/callback".into(),
+                scopes: vec!["openid".into(), "email".into()],
+            },
+            token_encryption_key: Some(
+                labby_auth::at_rest::TokenEncryptionKey::from_encoded(&"11".repeat(32)).unwrap(),
+            ),
+            ..Default::default()
+        };
+        let auth = labby_auth::state::AuthState::new(config.clone())
+            .await
+            .unwrap();
+        let state = AppState::new()
+            .with_auth_config(config)
+            .with_oauth_state(auth.clone())
+            .with_bearer_token(Some(std::sync::Arc::from("operator-token")))
+            .with_static_browser_session_state(
+                labby_auth::static_session::StaticBrowserSessionState::new(false),
+            );
+        let sessions = state.static_browser_session_state.clone().unwrap();
+        let row = sessions.create().unwrap();
+        let cookie = format!("{}={}", sessions.cookie_name(), row.session_id);
+
+        // The facts the auth layer attaches for this cookie on a protected route.
+        let layer = labby_auth::middleware::AuthLayer::from_state(std::sync::Arc::new(auth))
+            .with_static_token(Some(std::sync::Arc::from("operator-token")))
+            .with_allow_session_cookie(true)
+            .with_static_browser_session_state(Some(sessions.clone()));
+        let probe = axum::Router::new()
+            .route(
+                "/probe",
+                axum::routing::get(|Extension(context): Extension<AuthContext>| async move {
+                    Json(serde_json::json!({
+                        "sub": context.sub,
+                        "via_session": context.via_session,
+                        "scopes": context.scopes,
+                        "csrf_token": context.csrf_token,
+                    }))
+                }),
+            )
+            .route_layer(layer);
+        let response = probe
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/probe")
+                    .header(header::COOKIE, &cookie)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 16384)
+            .await
+            .unwrap();
+        let middleware: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let middleware_scopes: Vec<String> =
+            serde_json::from_value(middleware["scopes"].clone()).unwrap();
+        assert_eq!(middleware["via_session"], true);
+        assert_eq!(middleware_scopes, vec!["lab:read".to_string()]);
+
+        // The introspection branch derives its caller from the shared rule.
+        let context = static_cookie_context(&state, &row);
+        assert_eq!(middleware["via_session"], context.via_session);
+        assert_eq!(middleware["sub"], context.sub);
+        assert_eq!(middleware["csrf_token"], serde_json::json!(context.csrf_token));
+        assert_eq!(middleware_scopes, context.scopes);
+
+        // Introspection for the same cookie must project the same facts.
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("localhost:8765"));
+        headers.insert(header::COOKIE, cookie.parse().unwrap());
+        let response = auth_session(State(state.clone()), headers.clone(), None, None)
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 16384)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["authenticated"], true);
+        assert_eq!(payload["user"]["sub"], middleware["sub"]);
+        assert_eq!(payload["csrf_token"], middleware["csrf_token"]);
+        assert_eq!(
+            payload["is_admin"],
+            scopes_grant_admin(&middleware_scopes),
+            "introspection admin ceiling must follow the middleware's scopes: {payload}"
+        );
     }
 
     #[tokio::test]

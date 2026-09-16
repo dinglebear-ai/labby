@@ -708,21 +708,16 @@ async fn authenticate(
         if !session_csrf_valid(&request, &session) {
             return Err(csrf_error_response("missing or invalid csrf token"));
         }
-        let sub = "static-bearer".to_string();
         let identity = VerifiedIdentity::local_credential(
             Authenticator::StaticBearer,
             "static-bearer:primary",
         )
         .expect("the configured static bearer slot has a stable non-empty identity");
-        let auth = AuthContext {
-            actor_key: derive_actor_key(layer.actor_key_deriver.as_deref(), &sub),
-            sub,
-            scopes: layer.static_token_scopes.clone(),
-            issuer: "local".to_string(),
-            via_session: true,
-            csrf_token: Some(session.csrf_token.clone()),
-            email: None,
-        };
+        let auth = crate::static_session::browser_session_auth_context(
+            layer.actor_key_deriver.as_deref(),
+            &layer.static_token_scopes,
+            &session,
+        );
         if let Some(response) = insufficient_scope_response(layer, &auth.scopes) {
             return Err(response);
         }
