@@ -439,17 +439,20 @@ fn has_snippet_extension(path: &Path) -> bool {
 
 fn read_snippet_body(path: &Path) -> Result<String, ToolError> {
     let file = fs::File::open(path).map_err(|e| io_error("open snippet", path, e))?;
-    let mut body = String::new();
+    let mut bytes = Vec::new();
     file.take((MAX_SNIPPET_FILE_BYTES + 1) as u64)
-        .read_to_string(&mut body)
+        .read_to_end(&mut bytes)
         .map_err(|e| io_error("read snippet", path, e))?;
-    if body.len() > MAX_SNIPPET_FILE_BYTES {
+    if bytes.len() > MAX_SNIPPET_FILE_BYTES {
         return Err(ToolError::InvalidParam {
             message: format!("snippet file exceeds {MAX_SNIPPET_FILE_BYTES} bytes"),
             param: "body".to_string(),
         });
     }
-    Ok(body)
+    String::from_utf8(bytes).map_err(|_| ToolError::InvalidParam {
+        message: "snippet file must contain valid UTF-8".to_string(),
+        param: "body".to_string(),
+    })
 }
 
 fn read_resolved(
@@ -1319,6 +1322,17 @@ mod tests {
         let error = read_resolved("demo", SnippetSource::User, path)
             .expect_err("oversized on-disk snippet must fail before a full read");
         assert!(format!("{error}").contains("snippet file exceeds"));
+    }
+
+    #[test]
+    fn read_resolved_rejects_non_utf8_snippet_files() {
+        let dir = tempfile::tempdir().expect("temp snippets");
+        let path = dir.path().join("demo.js");
+        fs::write(&path, [0xff, 0xfe, 0xfd]).expect("write non-UTF8 fixture");
+
+        let error = read_resolved("demo", SnippetSource::User, path)
+            .expect_err("saved snippets are UTF-8 text");
+        assert!(format!("{error}").contains("valid UTF-8"));
     }
 
     #[test]
