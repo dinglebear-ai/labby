@@ -5290,7 +5290,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": false
+      "web_ui": true
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -5992,7 +5992,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",

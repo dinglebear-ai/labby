@@ -54,6 +54,15 @@ impl UpstreamPool {
             }
             count
         };
+        // Wait out existing connection attempts before replacing their config.
+        // Replace the gates while holding the old guards. Waiters validate
+        // their gate after acquiring it and reject superseded configurations.
+        let mut names = reconnect_names.iter().collect::<Vec<_>>();
+        names.sort_unstable();
+        let mut connect_guards = Vec::with_capacity(names.len());
+        for name in names {
+            connect_guards.push(self.lazy_connect_lock(name).await.lock_owned().await);
+        }
         let (drained, removed_catalog_count) = self
             .remove_connection_catalog_entries(reconnect_names.iter())
             .await;
@@ -68,14 +77,14 @@ impl UpstreamPool {
             join_all(futs).await;
             count
         };
+        self.seed_lazy_upstreams(configs).await;
         {
             let mut locks = self.lazy_connect_locks.write().await;
-            for upstream_name in reconnect_names {
-                locks.remove(upstream_name);
+            for name in reconnect_names {
+                locks.remove(name);
             }
         }
-
-        self.seed_lazy_upstreams(configs).await;
+        drop(connect_guards);
 
         tracing::info!(
             surface = "dispatch",
