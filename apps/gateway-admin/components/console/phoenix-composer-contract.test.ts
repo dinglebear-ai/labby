@@ -6,7 +6,7 @@ const source = readFileSync(new URL('./console-global-tools.tsx', import.meta.ur
 
 test('Phoenix composer accepts pasted files and keeps typing enabled while a turn runs', () => {
   assert.match(source, /onPaste=\{\(event\) => \{ if \(event\.clipboardData\.files\.length\)/)
-  const textarea = source.match(/<Textarea aria-label=\"Message Phoenix\"[\s\S]*?\/>/)?.[0] ?? ''
+  const textarea = source.match(/<Textarea aria-label="Message Phoenix"[\s\S]*?\/>/)?.[0] ?? ''
   assert.ok(textarea, 'Phoenix textarea must exist')
   assert.doesNotMatch(textarea, /disabled=\{sending/)
   assert.match(textarea, /Message Phoenix while it works/)

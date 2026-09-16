@@ -269,7 +269,8 @@ function mockControlArtifact(item: FederatedArtifact): DepotArtifact {
     id: item.id ?? item.artifactId, kind: item.kind, namespace: item.namespace, name: item.name, title: item.title, description: item.description,
     currentRevisionId: item.currentRevisionId, contentDigest: item.contentDigest, revisionCount: item.revisionCount,
     sourceOrigin: item.sourceOrigin, publisherVerified: item.publisherVerified, metrics: item.metrics, readme: item.readme, provenance: item.provenance,
-    upstreamBehind: item.upstreamBehind, updatedLabel: item.updatedLabel, descriptor: item.descriptor, publication: item.publication, license: item.license, lineage: item.lineage,
+    upstreamBehind: item.upstreamBehind, updatedLabel: item.updatedLabel, descriptor: item.descriptor, publication: item.publication, license: item.license,
+    lineage: item.lineage ? { following: item.lineage.following, upstreamArtifactId: item.lineage.upstreamArtifactId ?? undefined, forkedFromArtifactId: item.lineage.forkedFromArtifactId } : undefined,
     currentRevision: item.currentRevision ? { id: item.currentRevision.id, contentDigest: item.currentRevision.contentDigest, createdAt: item.updatedAt ?? item.currentRevision.authoredAt ?? undefined, fileCount: item.currentRevision.fileCount } : undefined,
   }
 }

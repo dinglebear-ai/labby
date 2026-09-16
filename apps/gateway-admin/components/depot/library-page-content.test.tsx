@@ -53,14 +53,16 @@ test('compact collection table preserves real metadata and single inspection act
     const table = document.querySelector('table')!
     assert.equal(table.getAttribute('aria-label'), 'Library artifacts')
     assert.match(table.className, /table-fixed/)
-    assert.match(table.parentElement!.className, /max-h-\[56vh\]/)
+    assert.match(table.parentElement!.className, /overflow-auto/)
+    assert.equal(table.parentElement!.style.maxHeight, '55.3vh')
     assert.deepEqual([...table.querySelectorAll('th')].map(cell => cell.textContent), ['Kind', 'Artifact', 'Tags', 'Visibility', 'Upstream', 'Updated', 'Actions'])
     assert.ok(table.querySelector('[title="actual-owner"]'))
     assert.match(table.textContent ?? '', /automation/)
     assert.match(table.textContent ?? '', /verified-source/)
     assert.match(table.textContent ?? '', /Public/)
-    const inspect = table.querySelector<HTMLButtonElement>('button')!
-    assert.equal(inspect.getAttribute('aria-label'), 'Inspect Real artifact')
+    // The row now leads with a selection control; find the inspect action by name.
+    const inspect = table.querySelector<HTMLButtonElement>('button[aria-label="Inspect Real artifact"]')!
+    assert.ok(inspect)
     await act(async () => inspect.click())
     assert.deepEqual(selected, ['one'])
     await act(async () => table.querySelector<HTMLTableCellElement>('tbody td')!.click())
@@ -113,7 +115,7 @@ test('tag rail shows supplied loaded counts and toggles the selected tag', async
     const active = tags.querySelector<HTMLButtonElement>('[aria-pressed="true"]')!
     await act(async () => active.click())
     assert.deepEqual(selected, [undefined])
-    await act(async () => [...tags.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'tools1')!.click())
+    await act(async () => [...tags.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '#tools1')!.click())
     assert.deepEqual(selected, [undefined, 'tools'])
   } finally { await view.unmount() }
 })

@@ -35,7 +35,11 @@ const demoArtifacts = [
   ['Snippet', 'gateway-reconcile', 'Probe disconnected servers and summarize the delta.', '#gateway'],
 ]
 
-export type LibrarySection = 'artifacts' | 'loadouts' | 'snippets' | 'tools'
+/**
+ * Library umbrella pages. The four primary mock tabs render; `skills` is the
+ * Skills page under the same Library hero, which highlights no primary tab.
+ */
+export type LibrarySection = 'artifacts' | 'loadouts' | 'snippets' | 'skills' | 'tools'
 
 const LIBRARY_TABS = [
   ['artifacts', '/library', 'Artifacts', Box, 'var(--aurora-text-primary)'],

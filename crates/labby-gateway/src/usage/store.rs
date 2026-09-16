@@ -1613,7 +1613,6 @@ mod tests {
                 .windows(2)
                 .all(|pair| pair[0].ts_unix <= pair[1].ts_unix)
         );
-        assert!(metrics.timeseries.last().unwrap().ts_unix <= i64::MAX);
     }
 
     #[tokio::test]

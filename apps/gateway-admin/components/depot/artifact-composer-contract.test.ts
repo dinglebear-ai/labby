@@ -9,7 +9,7 @@ test('Creator starts with writing tips collapsed', () => {
 })
 
 test('Creator exposes a dedicated icon-only new-artifact action', () => {
-  assert.match(source, /aria-label=\"Create new artifact\"/)
+  assert.match(source, /aria-label="Create new artifact"/)
   assert.match(source, /onClick=\{newArtifact\}/)
   assert.match(source, /<CirclePlus[^>]*\/>/)
 })

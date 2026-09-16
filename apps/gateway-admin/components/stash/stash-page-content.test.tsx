@@ -73,7 +73,7 @@ test('Stash accessibility gate covers names, status, upload equivalence, and red
 
   const status = view.container.querySelector('[role="status"][aria-live="polite"]')
   assert.ok(status, 'mutation results require a polite live region')
-  const uploadButtons = [...view.container.querySelectorAll('button')].filter(button => /upload|drop files here/i.test(button.textContent || ''))
+  const uploadButtons = [...view.container.querySelectorAll('button')].filter(button => /upload|drop files here/i.test(button.textContent || '') || /upload/i.test(button.getAttribute('aria-label') || ''))
   assert.equal(uploadButtons.length >= 2, true, 'button and drop-zone upload paths must both be operable controls')
   const dropTarget = uploadButtons.find(button => /drop files here/i.test(button.textContent || ''))
   assert.ok(dropTarget)
