@@ -52,6 +52,9 @@ pub struct SqliteCredentialStore {
     key: EncryptionKey,
     upstream_name: String,
     subject: String,
+    // rmcp serializes a client's load/refresh/save through its manager mutex.
+    // Separate managers retain independent observations of the durable row.
+    loaded_blob: std::sync::Mutex<Option<Vec<u8>>>,
 }
 
 impl SqliteCredentialStore {
@@ -66,6 +69,7 @@ impl SqliteCredentialStore {
             key,
             upstream_name: upstream_name.into(),
             subject: subject.into(),
+            loaded_blob: std::sync::Mutex::new(None),
         }
     }
 }
@@ -101,6 +105,10 @@ impl CredentialStore for SqliteCredentialStore {
             let creds: StoredCredentials = serde_json::from_slice(&plaintext)
                 .map_err(|e| AuthError::InternalError(format!("deserialize credentials: {e}")))?;
 
+            *self
+                .loaded_blob
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(row.token_blob);
             Ok(Some(creds))
         })
     }
@@ -153,10 +161,34 @@ impl CredentialStore for SqliteCredentialStore {
                 refresh_token_present,
             };
 
-            self.store
-                .upsert_upstream_oauth_credentials(row)
-                .await
-                .map_err(|e| AuthError::InternalError(e.to_string()))
+            let expected = self
+                .loaded_blob
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            let next_blob = row.token_blob.clone();
+            if let Some(expected) = expected {
+                let replaced = self
+                    .store
+                    .replace_upstream_oauth_credentials_if_current(row, expected)
+                    .await
+                    .map_err(|e| AuthError::InternalError(e.to_string()))?;
+                if !replaced {
+                    return Err(AuthError::AuthorizationRequired);
+                }
+            } else {
+                // A freshly admitted authorization code exchange has no loaded
+                // refresh authority and intentionally installs a new grant.
+                self.store
+                    .upsert_upstream_oauth_credentials(row)
+                    .await
+                    .map_err(|e| AuthError::InternalError(e.to_string()))?;
+            }
+            *self
+                .loaded_blob
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(next_blob);
+            Ok(())
         })
     }
 

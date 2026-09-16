@@ -330,8 +330,8 @@ async fn acquire_response_permit(
     budget: Arc<tokio::sync::Semaphore>,
     weight: u32,
 ) -> Result<tokio::sync::OwnedSemaphorePermit, CappedResponseBodyError> {
-    // SSE streams can retain their permits indefinitely. A response waiting
-    // behind those streams must terminate even when no caller deadline exists.
+    // Finite bodies and observed SSE buffer growth share this admission path.
+    // Bound the wait so a saturated peer cannot stall without a caller deadline.
     tokio::time::timeout(RESPONSE_BUDGET_WAIT, budget.acquire_many_owned(weight))
         .await
         .map_err(|_| CappedResponseBodyError::BudgetExhausted)?

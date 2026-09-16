@@ -122,7 +122,7 @@ impl UpstreamPool {
                 let result = tokio::select! {
                     biased;
                     _ = cancel.cancelled() => break,
-                    result = pool.reprobe_upstream(&config, None, None) => result,
+                    result = pool.reprobe_tools_for_upstream_as(&config, None, None) => result,
                 };
                 match result {
                     Ok(true) => {
@@ -218,21 +218,16 @@ impl UpstreamPool {
             transport = upstream_transport(config),
             "upstream reprobe start"
         );
-        let existing_peer = {
-            let connections = self.connections.read().await;
-            connections
-                .get(&config.name)
-                .map(|connection| connection.peer.clone())
-        };
+        let existing = self.observe_connection_catalog_entry(&config.name).await;
 
-        if let Some(peer) = existing_peer {
-            match catalog_pagination::list_tools(&peer, DISCOVERY_TIMEOUT, MAX_UPSTREAM_TOOLS).await
+        if let Some(observed) = existing.as_ref() {
+            let peer = &observed.peer;
+            match catalog_pagination::list_tools(peer, DISCOVERY_TIMEOUT, MAX_UPSTREAM_TOOLS).await
             {
                 Ok(tools) => {
-                    self.replace_catalog_tools(config, tools, Some(peer_declares_skills(&peer)))
-                        .await;
-                    self.record_success_for(&config.name, UpstreamCapability::Tools)
-                        .await;
+                    if !self.publish_observed_tools(observed, tools).await {
+                        return Ok(false);
+                    }
                     tracing::info!(
                         surface = "dispatch",
                         service = "upstream.pool",
@@ -247,12 +242,20 @@ impl UpstreamPool {
                     return Ok(true);
                 }
                 Err(error) => {
-                    self.record_failure_for(
-                        &config.name,
-                        UpstreamCapability::Tools,
-                        format!("upstream heartbeat failed: {}", error.bounded_text()),
-                    )
-                    .await;
+                    if self
+                        .apply_to_observed_entry(observed, |entry| {
+                            super::health::record_failure_on_entry(
+                                &config.name,
+                                entry,
+                                UpstreamCapability::Tools,
+                                format!("upstream heartbeat failed: {}", error.bounded_text()),
+                            );
+                        })
+                        .await
+                        .is_none()
+                    {
+                        return Ok(false);
+                    }
                     tracing::warn!(
                         surface = "dispatch",
                         service = "upstream.pool",
@@ -311,6 +314,7 @@ impl UpstreamPool {
             .await?;
         self.record_success_for(&config.name, UpstreamCapability::Tools)
             .await;
+        self.refresh_capability_caches_after_connect(config).await;
         tracing::info!(
             surface = "dispatch",
             service = "upstream.pool",

@@ -34,7 +34,6 @@ impl UpstreamPool {
         let barrier = Arc::clone(&self.oauth_invalidation_barrier)
             .write_owned()
             .await;
-        cache.advance_lifecycle_epoch();
         for (upstream, subject) in victims {
             self.invalidate_oauth_subject_sessions_guarded(
                 &upstream,
@@ -53,9 +52,6 @@ impl UpstreamPool {
         reason: &'static str,
     ) -> OAuthSessionInvalidation {
         let _barrier = self.oauth_invalidation_barrier.write().await;
-        if let Some(cache) = &self.oauth_client_cache {
-            cache.advance_lifecycle_epoch();
-        }
         self.invalidate_oauth_subject_sessions_guarded(upstream, subject, reason)
             .await
     }
@@ -67,6 +63,7 @@ impl UpstreamPool {
         reason: &'static str,
     ) -> OAuthSessionInvalidation {
         if let Some(cache) = &self.oauth_client_cache {
+            cache.advance_subject_epoch(upstream, subject);
             cache.evict_subject(upstream, subject);
         }
         let subject_connection = self
@@ -149,9 +146,6 @@ impl UpstreamPool {
         reason: &'static str,
     ) -> OAuthSessionInvalidation {
         let _barrier = self.oauth_invalidation_barrier.write().await;
-        if let Some(cache) = &self.oauth_client_cache {
-            cache.advance_lifecycle_epoch();
-        }
         self.invalidate_oauth_upstream_sessions_guarded(upstreams, reason)
             .await
     }
@@ -164,6 +158,7 @@ impl UpstreamPool {
         let upstreams = upstreams.iter().map(String::as_str).collect::<HashSet<_>>();
         if let Some(cache) = &self.oauth_client_cache {
             for upstream in &upstreams {
+                cache.advance_upstream_epoch(upstream);
                 cache.evict_upstream(upstream);
             }
         }

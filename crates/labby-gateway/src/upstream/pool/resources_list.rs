@@ -370,74 +370,69 @@ impl UpstreamPool {
         // failing upstream.
         //
         // Issue RPCs in parallel, then sort by upstream name for deterministic order.
-        let mut futures = FuturesUnordered::new();
-        let shared_budget = Arc::new(catalog_pagination::SharedCatalogBudget::new(
-            MAX_UPSTREAM_RESOURCES,
-            max_response_bytes(),
-        ));
-        for observed in observed_peers {
-            let name = observed.upstream().to_string();
-            let peer = observed.peer.clone();
-            let request_timeout = catalog_listing_timeout(self.request_timeout);
-            let shared_budget = Arc::clone(&shared_budget);
-            futures.push(async move {
-                let started = Instant::now();
-                let event = UpstreamRequestLog::resources_list(&name, false);
-                log_upstream_request_start(event);
-                let result = match catalog_pagination::list_resources_with_budget(
-                    &peer,
-                    request_timeout,
-                    MAX_UPSTREAM_RESOURCES,
-                    &shared_budget,
-                )
-                .await
-                {
-                    Ok(resources) => {
-                        let response_bytes =
-                            serde_json::to_vec(&resources).map_or(usize::MAX, |body| body.len());
-                        log_upstream_request_finish(
-                            event,
-                            started.elapsed().as_millis(),
-                            Some(response_bytes),
-                        );
-                        Ok(resources)
-                    }
-                    Err(catalog_pagination::CatalogPaginationError::Service(error))
-                        if is_capability_unsupported(&error) =>
+        // Each peer gets its own bounded walk. A fleet envelope limit must
+        // never become a failure in another server's capability circuit.
+        let mut futures = futures::stream::iter(observed_peers)
+            .map(|observed| {
+                let name = observed.upstream().to_string();
+                let peer = observed.peer.clone();
+                let request_timeout = catalog_listing_timeout(self.request_timeout);
+                async move {
+                    let started = Instant::now();
+                    let event = UpstreamRequestLog::resources_list(&name, false);
+                    log_upstream_request_start(event);
+                    let result = match catalog_pagination::list_resources(
+                        &peer,
+                        request_timeout,
+                        MAX_UPSTREAM_RESOURCES,
+                    )
+                    .await
                     {
-                        log_upstream_request_finish(event, started.elapsed().as_millis(), Some(0));
-                        tracing::debug!(
-                            upstream = %name,
-                            "upstream does not implement resources/list — capability absent"
-                        );
-                        Ok(Vec::new())
-                    }
-                    Err(error) => {
-                        let error_text = error.bounded_text();
-                        log_upstream_request_error(
-                            event,
-                            started.elapsed().as_millis(),
-                            error.kind(),
-                            Some(&error_text),
-                            None,
-                            None,
-                        );
-                        Err(error_text)
-                    }
-                };
-                (observed, result)
-            });
-        }
-
-        let mut results = Vec::new();
-        while let Some(item) = futures.next().await {
-            results.push(item);
-        }
-        results.sort_unstable_by(|a, b| a.0.upstream().cmp(b.0.upstream()));
+                        Ok(resources) => {
+                            let response_bytes = serde_json::to_vec(&resources)
+                                .map_or(usize::MAX, |body| body.len());
+                            log_upstream_request_finish(
+                                event,
+                                started.elapsed().as_millis(),
+                                Some(response_bytes),
+                            );
+                            Ok(resources)
+                        }
+                        Err(catalog_pagination::CatalogPaginationError::Service(error))
+                            if is_capability_unsupported(&error) =>
+                        {
+                            log_upstream_request_finish(
+                                event,
+                                started.elapsed().as_millis(),
+                                Some(0),
+                            );
+                            tracing::debug!(
+                                upstream = %name,
+                                "upstream does not implement resources/list — capability absent"
+                            );
+                            Ok(Vec::new())
+                        }
+                        Err(error) => {
+                            let error_text = error.bounded_text();
+                            log_upstream_request_error(
+                                event,
+                                started.elapsed().as_millis(),
+                                error.kind(),
+                                Some(&error_text),
+                                None,
+                                None,
+                            );
+                            Err(error_text)
+                        }
+                    };
+                    (observed, result)
+                }
+            })
+            .buffer_unordered(super::helpers::upstream_discovery_concurrency(None));
 
         let mut resources = Vec::new();
         let mut subscription_refreshes = Vec::new();
-        for (observed, result) in results {
+        while let Some((observed, result)) = futures.next().await {
             let name = observed.upstream().to_string();
             match result {
                 Ok(upstream_resources) => {
@@ -466,14 +461,6 @@ impl UpstreamPool {
                             hidden_count += 1;
                             continue;
                         }
-                        if resources.len() >= MAX_UPSTREAM_RESOURCES {
-                            tracing::warn!(
-                                upstream = %name,
-                                limit = MAX_UPSTREAM_RESOURCES,
-                                "upstream resource catalog exceeds limit — truncating to cap"
-                            );
-                            break;
-                        }
                         // MCP Apps (mcp-ui) widget resources keep their native
                         // `ui://…` URI: a tool result's `_meta.ui.resourceUri`
                         // references that exact URI, and the host reads it back
@@ -492,6 +479,19 @@ impl UpstreamPool {
                         exposed_count += 1;
                     }
                     log_exposure_filter(&name, "resources", hidden_count, exposed_count, false);
+                    resources.sort_by(|left, right| {
+                        (&left.upstream_name, &left.native_uri)
+                            .cmp(&(&right.upstream_name, &right.native_uri))
+                    });
+                    let mut bytes = 2usize;
+                    resources.retain(|item| {
+                        bytes = bytes.saturating_add(
+                            serde_json::to_vec(&item.resource)
+                                .map_or(usize::MAX, |body| body.len() + 1),
+                        );
+                        bytes <= max_response_bytes()
+                    });
+                    resources.truncate(MAX_UPSTREAM_RESOURCES);
                 }
                 Err(error_text) => {
                     if !self
@@ -754,6 +754,21 @@ impl UpstreamPool {
                 )
                 .await
                 .map_err(|error| error.to_string());
+                if let Ok(resources) = &result {
+                    pool.record_subject_optional_catalog(
+                        &config.name,
+                        &subject,
+                        &peer,
+                        Some(
+                            resources
+                                .iter()
+                                .map(|resource| resource.uri.clone())
+                                .collect(),
+                        ),
+                        None,
+                    )
+                    .await;
+                }
                 (config.name.clone(), policy, result)
             });
         }
@@ -1733,6 +1748,7 @@ mod tests {
         pool.subject_connections.write().await.insert(
             ("linear".to_string(), "alice".to_string()),
             SubjectScopedConnection {
+                optional_catalogs: Default::default(),
                 _connection: connection,
                 peer,
                 tools: Vec::new(),
@@ -1777,6 +1793,7 @@ mod tests {
         pool.subject_connections.write().await.insert(
             ("google-drive".to_string(), "alice".to_string()),
             SubjectScopedConnection {
+                optional_catalogs: Default::default(),
                 _connection: connection,
                 peer,
                 tools: Vec::new(),
@@ -1832,6 +1849,7 @@ mod tests {
         pool.subject_connections.write().await.insert(
             ("slow".to_string(), "alice".to_string()),
             SubjectScopedConnection {
+                optional_catalogs: Default::default(),
                 _connection: connection,
                 peer,
                 tools: Vec::new(),

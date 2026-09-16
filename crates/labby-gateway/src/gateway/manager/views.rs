@@ -240,6 +240,18 @@ impl GatewayManager {
         scope: &GatewayEnrichmentScope,
     ) -> Result<Vec<ServerView>, ToolError> {
         let mut views = self.list().await?;
+        let (cfg, pool) = self.published_config_and_pool().await;
+        for view in &mut views {
+            if let Some(upstream) = cfg
+                .upstream
+                .iter()
+                .find(|upstream| upstream.name == view.id && upstream.oauth.is_some())
+            {
+                *view =
+                    scoped_server_view(pool.as_deref(), upstream, scope.oauth_subject.as_deref())
+                        .await;
+            }
+        }
         if let Some(visible) = scope.route_visible_upstreams.as_ref() {
             views.retain(|view| view.source == "custom_gateway" && visible.contains(&view.id));
         }
@@ -295,7 +307,14 @@ impl GatewayManager {
         scope: &GatewayEnrichmentScope,
     ) -> Result<GatewayView, ToolError> {
         scope.ensure_visible(name)?;
-        self.get(name).await
+        let mut view = self.get(name).await?;
+        let (cfg, pool) = self.published_config_and_pool().await;
+        if let Some(upstream) = cfg.upstream.iter().find(|upstream| upstream.name == name) {
+            view.runtime =
+                scoped_runtime_view(pool.as_deref(), upstream, scope.oauth_subject.as_deref())
+                    .await;
+        }
+        Ok(view)
     }
 
     pub async fn surface_enabled_for_service(&self, service: &str, surface: &str) -> bool {
@@ -384,7 +403,11 @@ impl GatewayManager {
         };
         let mut items = Vec::new();
         for upstream in &upstreams {
-            items.push(runtime_view(pool.as_deref(), &upstream.name, prompt_owners.as_ref()).await);
+            items.push(if upstream.oauth.is_some() {
+                scoped_runtime_view(pool.as_deref(), upstream, scope.oauth_subject.as_deref()).await
+            } else {
+                runtime_view(pool.as_deref(), &upstream.name, prompt_owners.as_ref()).await
+            });
         }
         Ok(items)
     }

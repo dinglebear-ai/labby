@@ -363,6 +363,8 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
       const result = await reloadGateway(gateway.id)
       if (result.success) {
         toast.success(`Server reloaded: ${result.new_tool_count} tools discovered`)
+      } else if (result.pending) {
+        toast.info(result.message)
       } else {
         toast.error(result.message)
       }

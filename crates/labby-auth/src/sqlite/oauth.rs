@@ -7,6 +7,39 @@ use crate::types::{UpstreamOauthCredentialRow, UpstreamOauthStateRow};
 use crate::util::now_unix;
 
 impl SqliteStore {
+    /// Replace only the exact encrypted credential loaded by a refresh.
+    /// Encryption uses a fresh nonce on every write, including reauthorization,
+    /// so deletion or replacement cannot be undone by a delayed response.
+    pub async fn replace_upstream_oauth_credentials_if_current(
+        &self,
+        row: UpstreamOauthCredentialRow,
+        expected_blob: Vec<u8>,
+    ) -> Result<bool, AuthError> {
+        self.with_conn(move |conn| {
+            conn.execute(
+                "UPDATE upstream_oauth_credentials SET client_id=?3,
+                    granted_scopes_json=?4, token_blob=?5, token_blob_nonce=?6,
+                    token_received_at=?7, access_token_expires_at=?8, refresh_token_present=?9
+                 WHERE upstream_name=?1 AND subject=?2 AND token_blob=?10",
+                params![
+                    row.upstream_name,
+                    row.subject,
+                    row.client_id,
+                    row.granted_scopes_json,
+                    row.token_blob,
+                    row.token_blob_nonce,
+                    row.token_received_at,
+                    row.access_token_expires_at,
+                    i64::from(row.refresh_token_present),
+                    expected_blob
+                ],
+            )
+            .map(|changed| changed == 1)
+            .map_err(sqlite_error)
+        })
+        .await
+    }
+
     pub async fn upsert_upstream_oauth_credentials(
         &self,
         row: UpstreamOauthCredentialRow,
