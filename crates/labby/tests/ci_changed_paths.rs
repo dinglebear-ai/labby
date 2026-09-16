@@ -1210,6 +1210,130 @@ fn ci_gate_aggregates_every_non_advisory_job() {
     }
 }
 
+/// The merge gate must finish in about ten minutes. That budget is kept by
+/// fanning the long serial suites out across matrix shards, by moving the
+/// slow non-gating suites (coverage, the gateway-slice re-run, doctests) off
+/// the pull-request path, and by caching the macOS build that has no fleet
+/// kache. Regressing any of these silently reinstates a 35-minute gate.
+#[test]
+fn merge_gate_shards_heavy_suites_to_stay_under_ten_minutes() {
+    let text = ci_workflow_text();
+    let workflow = ci_workflow_yaml(&text);
+
+    let test_shards: Vec<&str> = workflow["jobs"]["test"]["strategy"]["matrix"]["shard"]
+        .as_array()
+        .expect("test job declares a shard matrix")
+        .iter()
+        .map(|shard| shard.as_str().expect("shard name"))
+        .collect();
+    assert_eq!(
+        test_shards,
+        [
+            "unit-1",
+            "unit-2",
+            "labby-int-1",
+            "labby-int-2",
+            "labby-int-3",
+            "crates"
+        ],
+        "the workspace suite must stay split into target-selecting shards"
+    );
+    let test_job = text
+        .split("  test:\n")
+        .nth(1)
+        .and_then(|section| section.split("\n  test-fork:").next())
+        .expect("test job");
+    assert!(
+        test_job.contains("scripts/ci/run-test-shard.sh"),
+        "test shards must run through the shared shard runner"
+    );
+    assert!(
+        test_job.contains("name: nextest-junit-${{ matrix.shard }}"),
+        "every shard must upload its own nextest report"
+    );
+    let shard_runner = fs::read_to_string(repo_root().join("scripts/ci/run-test-shard.sh"))
+        .expect("read scripts/ci/run-test-shard.sh");
+    for required in [
+        "--partition \"hash:${shard#unit-}/2\"",
+        "for file in crates/labby/tests/*.rs",
+        "cargo nextest run -p labby",
+        "--exclude labby",
+        "cargo test --doc --workspace --all-features --locked",
+    ] {
+        assert!(
+            shard_runner.contains(required),
+            "scripts/ci/run-test-shard.sh must keep `{required}`"
+        );
+    }
+
+    let rustdoc_job = text
+        .split("  rustdoc:\n")
+        .nth(1)
+        .and_then(|section| section.split("\n  clippy:").next())
+        .expect("rustdoc job");
+    assert!(
+        rustdoc_job.contains("run: just rustdoc\n") && !rustdoc_job.contains("rustdoc-check"),
+        "the blocking Rustdoc job builds docs only; doctests run in the test `crates` shard"
+    );
+
+    let coverage_if = workflow["jobs"]["rust-coverage"]["if"]
+        .as_str()
+        .expect("rust-coverage has an if");
+    assert!(
+        coverage_if.contains("github.event_name != 'pull_request'"),
+        "coverage must stay off the pull-request path"
+    );
+    let feature_slices = text
+        .split("  feature-slices:\n")
+        .nth(1)
+        .and_then(|section| section.split("\n  extracted-crate-slices:").next())
+        .expect("feature-slices job");
+    assert!(
+        feature_slices
+            .contains("if: matrix.slice == 'gateway' && github.event_name != 'pull_request'"),
+        "the gateway-slice full suite must stay off the pull-request path"
+    );
+
+    let conformance_lanes = workflow["jobs"]["mcp-conformance"]["strategy"]["matrix"]["lane"]
+        .as_array()
+        .expect("mcp-conformance declares lanes");
+    assert_eq!(
+        conformance_lanes.len(),
+        5,
+        "conformance suites must stay fanned out"
+    );
+    let conformance_job = text
+        .split("  mcp-conformance:\n")
+        .nth(1)
+        .and_then(|section| section.split("\n  test:").next())
+        .expect("mcp-conformance job");
+    for lane in conformance_lanes {
+        let lane = lane.as_str().expect("lane name");
+        assert!(
+            conformance_job.contains(&format!("if: matrix.lane == '{lane}'")),
+            "conformance lane `{lane}` must own at least one suite step"
+        );
+    }
+    let regression_shards = workflow["jobs"]["mcp-regressions"]["strategy"]["matrix"]["shard"]
+        .as_array()
+        .expect("mcp-regressions declares shards");
+    assert_eq!(
+        regression_shards.len(),
+        3,
+        "MCP regressions must stay fanned out"
+    );
+
+    let macos_job = text
+        .split("  macos-installer:\n")
+        .nth(1)
+        .and_then(|section| section.split("\n  frontend-assets:").next())
+        .expect("macos-installer job");
+    assert!(
+        macos_job.contains("Swatinem/rust-cache@"),
+        "the macOS lane has no fleet kache and must cache its Cargo build"
+    );
+}
+
 /// A stand-in for a base commit whose classifier predates the `unraid` key.
 #[cfg(unix)]
 const STALE_CLASSIFIER: &str = r#"import argparse

@@ -367,6 +367,14 @@ jobs:
           persist-credentials: false
       - name: Install Rust and kache
         uses: ./.github/actions/setup-rust-kache
+      - name: Cache Cargo artifacts (the fleet kache remote is Linux-only)
+        # Without a cache this job rebuilt Labby's all-features test harness
+        # from scratch on every run (13+ minutes), making it the longest job
+        # on the merge gate. The Windows lane already relies on this action.
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+        with:
+          shared-key: macos-installer
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Run installer contracts on macOS
         run: scripts/tests/installers.sh
       - name: Run macOS updater and recovery lifecycle tests
@@ -891,11 +899,14 @@ jobs:
               --features ${{ matrix.slice }} --all-targets --locked
           fi
       - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
-        if: matrix.slice == 'gateway'
+        if: matrix.slice == 'gateway' && github.event_name != 'pull_request'
         with:
           install_args: cargo:cargo-nextest
       - name: Run gateway-slice test suite
-        if: matrix.slice == 'gateway'
+        # A second full product test run (24 minutes) in the gateway-only
+        # configuration. Pull requests keep the all-target compile proof
+        # above; the suite itself runs on pushes to main and manual runs.
+        if: matrix.slice == 'gateway' && github.event_name != 'pull_request'
         run: >-
           cargo nextest run -p labby --no-default-features
           --features gateway,proxy-testkit --locked
@@ -1031,8 +1042,12 @@ jobs:
       - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
         with:
           install_args: just
-      - name: Build and verify Rustdoc
-        run: just rustdoc-check
+      - name: Build strict Rustdoc
+        # Doctests (`cargo test --doc`) compile every example as its own
+        # crate and took most of this job's nine minutes; they now run in the
+        # non-blocking `test` job's `crates` shard. The strict doc build is
+        # what gates a merge.
+        run: just rustdoc
       - name: Upload Rustdoc HTML
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -1085,13 +1100,19 @@ jobs:
           -- -D warnings
 
   mcp-regressions:
-    name: MCP focused regressions
+    name: MCP focused regressions (${{ matrix.shard }})
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.rust_test == 'true' }}
+    # One serial job took 13 minutes; each shard warms the same kache-backed
+    # targets and then runs a third of the suites in parallel.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [route-scope, relay-controls, lifecycle-skills]
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -1108,23 +1129,28 @@ jobs:
       - name: Warm MCP regression targets
         run: cargo build -p labby --all-features --lib --bins --locked
       - name: MCP route-scope resources/tools and list pagination
+        if: matrix.shard == 'route-scope'
         run: |
           cargo test -p labby --all-features --locked mcp::handlers_resources::
           cargo test -p labby --all-features --locked mcp::handlers_tools::tests
       - name: Upstream ui resource route scope
+        if: matrix.shard == 'relay-controls'
         run: |
           cargo test -p labby-gateway --features testkit --locked read_upstream_ui_resource
           cargo test -p labby-gateway --lib --features testkit --locked healthy_tool_names_allowed_matches_route_and_exposure_filters
       - name: Elicitation and relay controls
+        if: matrix.shard == 'relay-controls'
         run: |
           cargo test -p labby --all-features --locked destructive_builtin_uses_stateless_mrtr_elicitation
           cargo test -p labby-gateway --lib --locked upstream_input_required_is_preserved_for_downstream
           cargo test -p labby-gateway --lib --locked stateless_adapter_ignores_legacy_session_ids_in_both_directions
       - name: Lifecycle, SEP-2243 headers, caching, and subscriptions
+        if: matrix.shard == 'lifecycle-skills'
         run: |
           cargo test -p labby --all-features --locked cli::serve::tests::http_mcp_
           cargo test -p labby --all-features --locked stateless_subscription_receives_catalog_notifications
       - name: Accepted SEP-2640 server, client, and intermediary behavior
+        if: matrix.shard == 'lifecycle-skills'
         run: |
           cargo test -p labby-runtime --all-features --locked --test skills_contract_conformance
           cargo test -p labby-runtime --all-features --locked --test sep_2640_uri_conformance
@@ -1133,10 +1159,16 @@ jobs:
           cargo test -p labby --all-features --locked --test skills_mcp_e2e skills_
 
   mcp-conformance:
-    name: MCP 2026-07-28 conformance
+    name: MCP 2026-07-28 conformance (${{ matrix.lane }})
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     needs: changes
+    # The five suites ran back to back for 13 minutes; each lane now runs one
+    # of them after the shared toolchain setup.
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [auth-contracts, openai-auth, mcp-auth, spec-oracles, dated-suites]
     env:
       # Overrides the workflow-level `RUSTFLAGS: -D warnings`, which the
       # vendored `mcp-conformance` SDK checkout cannot build under. The script
@@ -1163,18 +1195,25 @@ jobs:
         with:
           install_args: cargo:cargo-nextest
       - name: Verify Labby auth core and extension contracts
+        if: matrix.lane == 'auth-contracts'
         run: cargo test -p labby-auth --all-features --locked
       - name: Verify authoritative auth requirement matrix
+        if: matrix.lane == 'auth-contracts'
         run: python3 -m unittest scripts.ci.test_auth_spec_matrix
       - name: Verify frozen MCP source digests and extraction reproducibility
+        if: matrix.lane == 'mcp-auth'
         run: python3 scripts/ci/refresh_mcp_auth_denominator.py --check
       - name: Verify current OpenAI authentication source denominator
+        if: matrix.lane == 'openai-auth'
         run: python3 scripts/ci/refresh_openai_auth_denominator.py --check
       - name: Verify requirement-specific OpenAI authentication contracts
+        if: matrix.lane == 'openai-auth'
         run: scripts/ci/openai-auth-conformance.sh
       - name: Verify requirement-specific MCP authorization contracts
+        if: matrix.lane == 'mcp-auth'
         run: python3 scripts/ci/mcp_auth_normative_conformance.py
       - name: Checkout immutable MCP specification source
+        if: matrix.lane == 'spec-oracles'
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           repository: modelcontextprotocol/modelcontextprotocol
@@ -1182,26 +1221,30 @@ jobs:
           path: target/mcp-spec-source
           persist-credentials: false
       - name: Fetch locked dependencies for offline evidence binding
+        if: matrix.lane == 'spec-oracles'
         run: cargo fetch --locked
       - name: Validate full specification inventory and fail-closed reporter
+        if: matrix.lane == 'spec-oracles'
         run: |
           python3 -m unittest scripts.ci.test_extract_mcp_spec_requirements scripts.ci.test_extract_mcp_schema_requirements scripts.ci.test_mcp_spec_compliance scripts.ci.test_mcp_oracle_runner
           python3 scripts/ci/mcp_spec_compliance.py check --spec-checkout target/mcp-spec-source
       - name: Run registered specification oracles (not a full-compliance claim)
+        if: matrix.lane == 'spec-oracles'
         run: python3 scripts/ci/mcp_spec_compliance.py run --gate oracles --spec-checkout target/mcp-spec-source
       - name: Preserve specification coverage gaps and execution receipts
-        if: always()
+        if: always() && matrix.lane == 'spec-oracles'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: mcp-spec-compliance
           path: target/mcp-spec-compliance
           if-no-files-found: warn
       - name: Run dated protocol and extension suites
+        if: matrix.lane == 'dated-suites'
         run: |
           python3 -m unittest scripts/ci/test_mcp_conformance_script.py
           scripts/ci/mcp-conformance.sh
       - name: Upload conformance reports
-        if: always()
+        if: always() && matrix.lane == 'dated-suites'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: mcp-conformance
@@ -1209,7 +1252,7 @@ jobs:
           if-no-files-found: warn
 
   test:
-    name: Test
+    name: Test (${{ matrix.shard }})
     # Runs on the org's self-hosted rust pool (tootie). Those runners bake the
     # fleet Rust toolchain and kache, and carry the fleet kache remote in
     # /home/runner/.config/kache/config.toml, so this job needs no repository
@@ -1240,6 +1283,14 @@ jobs:
         github.event.pull_request.head.repo.full_name == github.repository
       )
     needs: [changes, frontend-assets]
+    # One runner needed 40 minutes for the whole workspace: it linked all 60
+    # `crates/labby/tests` binaries at bounded concurrency and then ran 7,800
+    # tests serially. Each shard below compiles only its own targets, so the
+    # pool runs them side by side instead of one runner doing everything.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [unit-1, unit-2, labby-int-1, labby-int-2, labby-int-3, crates]
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -1274,6 +1325,7 @@ jobs:
       - name: Qualify production-shaped access migration, rollback, and approval gate
         # The whole migrations module: v4/v5 rehearsals, every legacy version
         # refusing without evidence, and the end-to-end approval gate.
+        if: matrix.shard == 'unit-1'
         run: |
           cargo test -p labby --all-features --locked --lib \
             access::migrations::
@@ -1281,14 +1333,24 @@ jobs:
         # Default concurrency can link the labby and labby-gateway harnesses
         # together and exceed the runner's memory ceiling. One job is too
         # slow for the JIT runner lifetime, so retain bounded parallelism.
+        #
+        # Shards select Cargo *targets*, not nextest filters, because nextest
+        # builds every selected target before filtering: a hash partition of
+        # the whole workspace would still link all 60 integration binaries on
+        # every runner. `unit-*` halve the library/binary harnesses by test
+        # hash, `labby-int-*` split the `crates/labby/tests` binaries by file
+        # (any new file joins a shard automatically), and `crates` covers the
+        # extracted crates' integration tests plus the workspace doctests that
+        # used to run inside the blocking Rustdoc job.
         env:
           CARGO_BUILD_JOBS: 2
-        run: cargo nextest run --workspace --all-features --locked --profile ci
+          SHARD: ${{ matrix.shard }}
+        run: scripts/ci/run-test-shard.sh "$SHARD"
       - name: Upload nextest report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: nextest-junit
+          name: nextest-junit-${{ matrix.shard }}
           path: target/nextest/ci/junit.xml
           if-no-files-found: warn
           retention-days: 14
@@ -1658,6 +1720,9 @@ jobs:
   rust-coverage:
     name: Rust coverage
     runs-on: ubuntu-24.04
+    # Coverage re-runs the entire workspace suite under llvm-cov (30+
+    # minutes) and never blocked a merge; a pull request gains nothing from
+    # it, so it now runs on pushes to main, schedules, and manual dispatch.
     # Non-blocking: ci-gate does not wait for this job, and a failure here
     # must not fail the CI run that release-please consumes.
     continue-on-error: true
@@ -1666,7 +1731,7 @@ jobs:
       RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     needs: [changes, frontend-assets]
     # Coverage is a required regression gate for Rust changes, including PRs.
-    if: ${{ needs.changes.outputs.rust_test == 'true' }}
+    if: ${{ needs.changes.outputs.rust_test == 'true' && github.event_name != 'pull_request' }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
