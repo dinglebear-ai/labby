@@ -311,38 +311,27 @@ def dependency_fingerprint(root: Path) -> str:
 def execute(command: list[str], timeout: int) -> tuple[int | None, str]:
     """Bound the whole test process group, not just the Cargo parent process."""
     require(os.name == "posix", "oracle execution currently requires POSIX process-group containment")
-
-    def terminate(signum: int, _frame: object) -> None:
-        # CI cancellation must unwind through the same cleanup as Ctrl-C.
-        raise SystemExit(128 + signum)
-
-    previous_term_handler = signal.signal(signal.SIGTERM, terminate)
+    process = subprocess.Popen(command, cwd=ROOT, start_new_session=True)
     try:
-        process = subprocess.Popen(command, cwd=ROOT, start_new_session=True)
+        code = process.wait(timeout=timeout)
+        return code, "passed" if code == 0 else "failed"
+    except subprocess.TimeoutExpired:
         try:
-            code = process.wait(timeout=timeout)
-            return code, "passed" if code == 0 else "failed"
-        except BaseException as error:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        finally:
+            # Descendants can outlive a terminated Cargo parent.
             try:
-                os.killpg(process.pid, signal.SIGTERM)
+                os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
-            finally:
-                # Descendants can outlive a terminated Cargo parent.
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                process.wait()
-            if isinstance(error, subprocess.TimeoutExpired):
-                return None, "timeout"
-            raise
-    finally:
-        signal.signal(signal.SIGTERM, previous_term_handler)
+            process.wait()
+        return None, "timeout"
 
 
 def invalidate_evidence(receipt: Path, report: Path) -> None:
