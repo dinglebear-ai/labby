@@ -336,7 +336,7 @@ mod gate_release_tests {
             .await
             .expect("connection becomes ready");
         assert!(
-            started.elapsed() < Duration::from_millis(1000),
+            started.elapsed() < Duration::from_secs(1),
             "the waiter must not sit behind the capability refresh: {:?}",
             started.elapsed()
         );

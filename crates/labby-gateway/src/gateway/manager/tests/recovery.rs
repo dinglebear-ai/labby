@@ -25,7 +25,6 @@ async fn config_mutation_wait_is_bounded() {
     let held = manager
         .acquire_config_mutation()
         .await
-        .ok()
         .expect("first lease");
     let error = manager
         .acquire_config_mutation_within(Duration::from_millis(50))

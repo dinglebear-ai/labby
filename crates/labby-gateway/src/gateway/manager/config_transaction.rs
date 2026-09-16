@@ -22,7 +22,7 @@ use super::{ConfigMutationGuard, GatewayManager};
 /// lease for about a minute. Twice that lets every such holder finish while a
 /// caller behind a truly wedged holder still gets an answer instead of parking
 /// forever.
-pub(crate) const CONFIG_MUTATION_WAIT: Duration = Duration::from_secs(120);
+pub(crate) const CONFIG_MUTATION_WAIT: Duration = Duration::from_mins(2);
 
 /// Project durable desired config onto what this running process can honestly
 /// claim is live without a restart.

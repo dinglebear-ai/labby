@@ -1055,7 +1055,7 @@ mod tests {
             )
             .await
             .expect("connection identity");
-            pool.resource_upstreams.write().await.push(name.into());
+            pool.resource_upstreams.write().await.push(name);
         }
         MERGED_RESOURCE_MEASUREMENTS.store(0, Ordering::SeqCst);
 
