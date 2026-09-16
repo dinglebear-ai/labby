@@ -10,6 +10,9 @@ pub(crate) const API_KEY_ENV: &str = "LABBY_PHOENIX_OPENAI_API_KEY";
 const REQUEST_TIMEOUT: Duration = Duration::from_mins(5);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_ERROR_BODY_BYTES: usize = 8 * 1024;
+// A 16 MiB UTF-8 completion can expand close to 6x when JSON-escaped. Keep
+// provider responses bounded without rejecting the runtime's valid output range.
+const MAX_SUCCESS_BODY_BYTES: usize = 100 * 1024 * 1024;
 
 #[derive(Clone)]
 pub(crate) struct OpenAiBackend {
@@ -38,15 +41,20 @@ impl OpenAiBackend {
         let mut base_url = Url::parse(base_url).map_err(|_| invalid_endpoint())?;
         if !matches!(base_url.scheme(), "http" | "https")
             || !base_url.has_host()
+            || !base_url.username().is_empty()
+            || base_url.password().is_some()
             || base_url.query().is_some()
             || base_url.fragment().is_some()
         {
             return Err(invalid_endpoint());
         }
-        if !base_url.path().ends_with('/') {
-            let path = format!("{}/", base_url.path().trim_end_matches('/'));
-            base_url.set_path(&path);
-        }
+        let path = base_url.path().trim_end_matches('/');
+        let normalized_path = if path.is_empty() {
+            "/".to_owned()
+        } else {
+            format!("{path}/")
+        };
+        base_url.set_path(&normalized_path);
         let http = Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
@@ -59,7 +67,10 @@ impl OpenAiBackend {
         Ok(Self {
             http,
             base_url,
-            api_key: api_key.filter(|value| !value.trim().is_empty()),
+            api_key: api_key.and_then(|value| {
+                let value = value.trim();
+                (!value.is_empty()).then(|| value.to_owned())
+            }),
         })
     }
 
@@ -161,15 +172,46 @@ impl OpenAiBackend {
             unavailable(format!("Phoenix provider request to {url} failed: {error}"))
         })?;
         let status = response.status();
-        let bytes = response.bytes().await.map_err(|error| {
-            unavailable(format!("Phoenix provider response read failed: {error}"))
-        })?;
+        let bytes = if status.is_success() {
+            read_body_limited(response, MAX_SUCCESS_BODY_BYTES, true).await?
+        } else {
+            read_body_limited(response, MAX_ERROR_BODY_BYTES, false).await?
+        };
         if !status.is_success() {
             return Err(provider_http_error(status, &bytes));
         }
         serde_json::from_slice(&bytes)
             .map_err(|error| protocol(format!("Phoenix provider returned invalid JSON: {error}")))
     }
+}
+
+async fn read_body_limited(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+    reject_overflow: bool,
+) -> Result<Vec<u8>, ToolError> {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| unavailable(format!("Phoenix provider response read failed: {error}")))?
+    {
+        let remaining = max_bytes.saturating_sub(bytes.len());
+        if chunk.len() > remaining {
+            if reject_overflow {
+                return Err(protocol(
+                    "Phoenix provider response exceeded the configured size bound",
+                ));
+            }
+            bytes.extend_from_slice(&chunk[..remaining]);
+            break;
+        }
+        bytes.extend_from_slice(&chunk);
+        if bytes.len() == max_bytes && !reject_overflow {
+            break;
+        }
+    }
+    Ok(bytes)
 }
 
 fn encode_path_segment(value: &str) -> String {
@@ -179,7 +221,7 @@ fn encode_path_segment(value: &str) -> String {
 fn invalid_endpoint() -> ToolError {
     ToolError::InvalidParam {
         message: format!(
-            "{BASE_URL_ENV} must be an absolute http(s) URL without query or fragment"
+            "{BASE_URL_ENV} must be an absolute http(s) URL without credentials, query, or fragment"
         ),
         param: BASE_URL_ENV.into(),
     }
@@ -231,7 +273,10 @@ mod tests {
         drop(rustls::crypto::ring::default_provider().install_default());
         let backend = OpenAiBackend::from_url("http://127.0.0.1:43871/v1", None).unwrap();
         assert_eq!(backend.base_url().as_str(), "http://127.0.0.1:43871/v1/");
+        let normalized = OpenAiBackend::from_url("https://example.test/v1///", None).unwrap();
+        assert_eq!(normalized.base_url().as_str(), "https://example.test/v1/");
         assert!(OpenAiBackend::from_url("file:///tmp/provider", None).is_err());
+        assert!(OpenAiBackend::from_url("https://user:secret@example.test/v1", None).is_err());
         assert!(OpenAiBackend::from_url("https://example.test/v1?token=secret", None).is_err());
     }
 }
