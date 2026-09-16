@@ -4,41 +4,44 @@ use rusqlite::params;
 use super::rows::row_to_allowed_user;
 use super::{SqliteStore, sqlite_error};
 use crate::error::AuthError;
-use crate::types::AllowedUserRow;
+use crate::types::{AllowedUserRole, AllowedUserRow};
 use crate::util::{fingerprint, normalize_email, now_unix};
 
 impl SqliteStore {
-    /// Roles an allowlist entry may grant at first sign-in.
-    pub const ALLOWED_USER_ROLES: [&'static str; 2] = ["member", "admin"];
-
     /// Add an email address to the allowlist with the access it receives at
     /// first sign-in.
     ///
     /// `email` is stored through [`normalize_email`], the same fold every
-    /// lookup applies. Returns `AuthError::Validation` if the email is already
-    /// present or `role` is not one of [`Self::ALLOWED_USER_ROLES`].
+    /// lookup applies. `role` is the wire form of [`AllowedUserRole`]; this
+    /// is the single place it is validated for every surface. Returns
+    /// `AuthError::Validation` if the email is already present or `role` is
+    /// not in the vocabulary.
     pub async fn add_allowed_user(
         &self,
         email: &str,
         added_by: &str,
         role: &str,
         created_at: i64,
-    ) -> Result<(), AuthError> {
-        if !Self::ALLOWED_USER_ROLES.contains(&role) {
-            return Err(AuthError::Validation(
-                "allowlist role must be `member` or `admin`".into(),
-            ));
-        }
+    ) -> Result<AllowedUserRole, AuthError> {
+        let Some(role) = AllowedUserRole::parse(role) else {
+            return Err(AuthError::Validation(format!(
+                "allowlist role must be one of {}",
+                AllowedUserRole::ALL
+                    .iter()
+                    .map(|role| format!("`{role}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        };
         let email = normalize_email(email);
         let fp = fingerprint(&email);
         let added_by = added_by.to_string();
-        let role = role.to_string();
         self.with_conn(move |conn| {
             let changed = conn
                 .execute(
                     "INSERT INTO allowed_users (email, added_by, created_at, role)
                      VALUES (?1, ?2, ?3, ?4)",
-                    params![email, added_by, created_at, role],
+                    params![email, added_by, created_at, role.as_str()],
                 )
                 .map_err(|error| match error {
                     rusqlite::Error::SqliteFailure(ref e, _)
@@ -51,7 +54,7 @@ impl SqliteStore {
                     other => sqlite_error(other),
                 })?;
             debug_assert_eq!(changed, 1);
-            Ok(())
+            Ok(role)
         })
         .await
     }

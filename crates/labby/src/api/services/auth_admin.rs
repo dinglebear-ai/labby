@@ -256,25 +256,13 @@ async fn list_allowed_emails(
 #[derive(Deserialize)]
 struct AddEmailBody {
     email: String,
+    /// Wire form of `labby_auth::AllowedUserRole`; the store validates it.
     #[serde(default = "default_allowlist_role")]
     role: String,
 }
 
 fn default_allowlist_role() -> String {
-    "member".to_string()
-}
-
-/// Validate a caller-supplied allowlist role against the store's accepted set.
-fn validate_role(raw: &str) -> Result<&str, ToolError> {
-    let role = raw.trim();
-    if labby_auth::sqlite::SqliteStore::ALLOWED_USER_ROLES.contains(&role) {
-        Ok(role)
-    } else {
-        Err(ToolError::Sdk {
-            sdk_kind: "validation_failed".to_string(),
-            message: "role must be `member` or `admin`".to_string(),
-        })
-    }
+    labby_auth::AllowedUserRole::Member.as_str().to_string()
 }
 
 /// `POST /v1/auth/allowed-emails`
@@ -348,20 +336,6 @@ async fn add_allowed_email(
         }
     };
 
-    let role = match validate_role(&body.role) {
-        Ok(role) => role.to_owned(),
-        Err(err) => {
-            log_auth_dispatch(
-                action,
-                req_id.as_deref(),
-                start,
-                Some(err.kind()),
-                actor_key,
-            );
-            return no_store(ApiError::new(err).into_response());
-        }
-    };
-
     let email_fp = fingerprint(&email);
     let added_by = auth.sub.clone();
     let created_at = now_unix();
@@ -375,12 +349,14 @@ async fn add_allowed_email(
         "auth.allowed_user.add intent"
     );
 
-    match auth_state
+    // The store owns the role vocabulary; an unknown role is its
+    // `validation_failed`.
+    let role = match auth_state
         .store
-        .add_allowed_user(&email, &added_by, &role, created_at)
+        .add_allowed_user(&email, &added_by, &body.role, created_at)
         .await
     {
-        Ok(()) => {}
+        Ok(role) => role,
         Err(err) => {
             let kind = err.kind();
             tracing::warn!(
@@ -395,7 +371,7 @@ async fn add_allowed_email(
             log_auth_dispatch(action, req_id.as_deref(), start, Some(kind), actor_key);
             return no_store(ApiError::new(auth_err(err)).into_response());
         }
-    }
+    };
 
     let entry = labby_auth::types::AllowedUserRow {
         email: email.clone(),
@@ -670,7 +646,7 @@ mod tests {
     use axum::http::{Request, StatusCode, header};
     use tower::ServiceExt;
 
-    use crate::access::{AccessRuntime, AllowlistAdmission, AllowlistRole, BootstrapOwnerInput};
+    use crate::access::{AccessRuntime, AllowedUserRole, AllowlistAdmission, BootstrapOwnerInput};
     use crate::api::router::build_router;
     use crate::api::state::AppState;
 
@@ -903,7 +879,7 @@ mod tests {
             .runtime
             .provision_allowlisted(colleague.clone(), || async {
                 Some((
-                    AllowlistRole::Admin,
+                    AllowedUserRole::Admin,
                     AllowlistAdmission::AllowlistEntry {
                         added_by_fingerprint: "fp".into(),
                     },
@@ -964,7 +940,7 @@ mod tests {
             .runtime
             .provision_allowlisted(colleague.clone(), || async {
                 Some((
-                    AllowlistRole::Admin,
+                    AllowedUserRole::Admin,
                     AllowlistAdmission::AllowlistEntry {
                         added_by_fingerprint: "fp".into(),
                     },

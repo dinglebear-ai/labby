@@ -1356,7 +1356,7 @@ impl AccessStore {
     pub(crate) async fn provision_allowlisted(
         &self,
         identity: labby_auth::VerifiedIdentity,
-        role: super::AllowlistRole,
+        role: super::AllowedUserRole,
         admitted_by: super::AllowlistAdmission,
     ) -> AccessStoreResult<super::TeamMemberProvisionOutcome> {
         self.with_connection(move |connection| {

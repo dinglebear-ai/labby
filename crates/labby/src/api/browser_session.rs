@@ -735,12 +735,12 @@ async fn allowlist_admission(
     config: &labby_auth::config::AuthConfig,
     email: &str,
 ) -> Option<(
-    crate::access::AllowlistRole,
+    crate::access::AllowedUserRole,
     crate::access::AllowlistAdmission,
 )> {
     if config.is_admin_email(email) {
         return Some((
-            crate::access::AllowlistRole::Admin,
+            crate::access::AllowedUserRole::Admin,
             crate::access::AllowlistAdmission::ConfiguredAdminEmail,
         ));
     }
@@ -757,25 +757,15 @@ async fn allowlist_admission(
             return None;
         }
     };
-    allowed.and_then(|row| match crate::access::AllowlistRole::parse(&row.role) {
-        // `added_by` is the adding administrator's provider subject: only
-        // its fingerprint is carried into the audit record.
-        Some(role) => Some((
-            role,
+    // `added_by` is the adding administrator's provider subject: only its
+    // fingerprint is carried into the audit record.
+    allowed.map(|row| {
+        (
+            row.role,
             crate::access::AllowlistAdmission::AllowlistEntry {
                 added_by_fingerprint: labby_auth::util::fingerprint(&row.added_by),
             },
-        )),
-        None => {
-            tracing::debug!(
-                surface = "api",
-                service = "auth",
-                action = "session.get",
-                role = %row.role,
-                "allowlist entry has an unknown role; identity not admitted"
-            );
-            None
-        }
+        )
     })
 }
 

@@ -3586,7 +3586,7 @@ mod tests {
             email: String::new(),
             added_by: String::new(),
             created_at: 0,
-            role: String::new(),
+            role: crate::types::AllowedUserRole::Member,
         }
     }
 }

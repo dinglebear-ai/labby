@@ -9,7 +9,7 @@ use sha2::{Digest as _, Sha256};
 use crate::at_rest::TokenEncryptionKey;
 use crate::jwt::{AccessClaims, SigningKeys};
 use crate::types::{
-    AllowedUserRow, AuthorizationCodeRow, BrowserLoginStateRow, BrowserSessionRow,
+    AllowedUserRole, AllowedUserRow, AuthorizationCodeRow, BrowserLoginStateRow, BrowserSessionRow,
     GoogleProviderCredentialUpdate, ProviderSwitchRevocation, RefreshTokenRow, RegisteredClient,
     UpstreamOauthCredentialRow, UpstreamOauthStateRow,
 };
@@ -3051,10 +3051,10 @@ async fn legacy_allowlist_rows_without_role_read_back_as_member() {
         .await
         .unwrap()
         .expect("legacy row is readable");
-    assert_eq!(row.role, "member");
+    assert_eq!(row.role, AllowedUserRole::Member);
     let rows = store.list_allowed_users().await.unwrap();
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].role, "member");
+    assert_eq!(rows[0].role, AllowedUserRole::Member);
 }
 
 /// Finding 8: the role vocabulary is enforced by the schema, not only by the
@@ -3197,6 +3197,52 @@ async fn schema_migration_v18_refuses_a_legacy_row_with_an_unknown_role() {
         17,
         "a refused migration leaves the store at the previous version"
     );
+}
+
+/// Finding 10: one role vocabulary. The store parses the wire form once, the
+/// schema mirrors it, and the row carries the typed role.
+#[tokio::test]
+async fn allowed_user_role_is_the_single_vocabulary() {
+    assert_eq!(
+        AllowedUserRole::parse("member"),
+        Some(AllowedUserRole::Member)
+    );
+    assert_eq!(
+        AllowedUserRole::parse("admin"),
+        Some(AllowedUserRole::Admin)
+    );
+    for rejected in ["Admin", " admin", "owner", ""] {
+        assert_eq!(AllowedUserRole::parse(rejected), None, "{rejected:?}");
+    }
+    assert_eq!(
+        serde_json::to_value(AllowedUserRole::Admin).unwrap(),
+        serde_json::json!("admin")
+    );
+    assert_eq!(
+        serde_json::from_value::<AllowedUserRole>(serde_json::json!("member")).unwrap(),
+        AllowedUserRole::Member
+    );
+    let store = temp_store().await;
+    assert_eq!(
+        store
+            .add_allowed_user("a@example.com", "admin-sub", "admin", now_unix())
+            .await
+            .unwrap(),
+        AllowedUserRole::Admin
+    );
+    let error = store
+        .add_allowed_user("b@example.com", "admin-sub", "owner", now_unix())
+        .await
+        .unwrap_err();
+    assert!(matches!(error, crate::error::AuthError::Validation(_)));
+    assert!(error.to_string().contains("`member`") && error.to_string().contains("`admin`"));
+    let row = store
+        .find_allowed_user("a@example.com")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.role, AllowedUserRole::Admin);
+    assert_eq!(serde_json::to_value(&row).unwrap()["role"], "admin");
 }
 
 #[tokio::test]
@@ -3351,7 +3397,7 @@ async fn allowlist_rows_store_a_role_and_are_found_case_insensitively() {
         .unwrap()
         .unwrap();
     assert_eq!(eli.email, "eli@example.com");
-    assert_eq!(eli.role, "admin");
+    assert_eq!(eli.role, AllowedUserRole::Admin);
     assert!(
         store
             .find_allowed_user("nobody@example.com")
@@ -3382,6 +3428,6 @@ fn _assert_allowed_user_row_type() -> AllowedUserRow {
         email: String::new(),
         added_by: String::new(),
         created_at: 0,
-        role: String::new(),
+        role: AllowedUserRole::Member,
     }
 }

@@ -1,4 +1,4 @@
-use labby_auth::{PrincipalLink, VerifiedIdentity};
+use labby_auth::{AllowedUserRole, PrincipalLink, VerifiedIdentity};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
@@ -44,31 +44,6 @@ pub(super) fn provision_viewer(
 
 const INITIAL_TEAM_ID: &str = "bootstrap-initial-team";
 
-/// Access an allowlist entry grants at first sign-in. Product-owned admission
-/// only; callers cannot request `owner`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum AllowlistRole {
-    Member,
-    Admin,
-}
-
-impl AllowlistRole {
-    pub(crate) fn parse(value: &str) -> Option<Self> {
-        match value {
-            "member" => Some(Self::Member),
-            "admin" => Some(Self::Admin),
-            _ => None,
-        }
-    }
-
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Member => "member",
-            Self::Admin => "admin",
-        }
-    }
-}
-
 /// Who authorized an allowlist admission. Recorded on the
 /// `access.allowlist.provision` audit row so a grant can be traced back to the
 /// administrator who allowed the email, or to the deployment's configured
@@ -84,7 +59,7 @@ pub(crate) enum AllowlistAdmission {
 }
 
 impl AllowlistAdmission {
-    fn audit_metadata(&self, role: AllowlistRole) -> serde_json::Value {
+    fn audit_metadata(&self, role: AllowedUserRole) -> serde_json::Value {
         match self {
             Self::AllowlistEntry {
                 added_by_fingerprint,
@@ -110,7 +85,7 @@ impl AllowlistAdmission {
 pub(super) fn provision_allowlisted(
     connection: &mut Connection,
     identity: &VerifiedIdentity,
-    role: AllowlistRole,
+    role: AllowedUserRole,
     admitted_by: AllowlistAdmission,
 ) -> AccessStoreResult<TeamMemberProvisionOutcome> {
     let project_id = super::bootstrap::PROJECT_ID;
@@ -130,8 +105,8 @@ pub(super) fn provision_allowlisted(
         identity,
         project_id,
         match role {
-            AllowlistRole::Member => InitialRole::Member,
-            AllowlistRole::Admin => InitialRole::Admin,
+            AllowedUserRole::Member => InitialRole::Member,
+            AllowedUserRole::Admin => InitialRole::Admin,
         },
         now,
     )?;
@@ -167,7 +142,7 @@ pub(super) fn provision_allowlisted(
     if epoch_updates != 1 {
         return Err(AccessStoreError::TeamUnavailable);
     }
-    if role == AllowlistRole::Admin {
+    if role == AllowedUserRole::Admin {
         transaction
             .execute(
                 "INSERT INTO platform_administrators(principal_id,status,authority_epoch,granted_by,created_at,updated_at,revoked_at)
@@ -663,7 +638,7 @@ mod tests {
         let eli = identity("eli");
         assert_eq!(
             store
-                .provision_allowlisted(eli.clone(), AllowlistRole::Member, allowlist_entry())
+                .provision_allowlisted(eli.clone(), AllowedUserRole::Member, allowlist_entry())
                 .await
                 .unwrap(),
             TeamMemberProvisionOutcome::Created
@@ -681,7 +656,7 @@ mod tests {
         // Repeat sign-in is a no-op and never upgrades the role.
         assert_eq!(
             store
-                .provision_allowlisted(eli.clone(), AllowlistRole::Admin, allowlist_entry())
+                .provision_allowlisted(eli.clone(), AllowedUserRole::Admin, allowlist_entry())
                 .await
                 .unwrap(),
             TeamMemberProvisionOutcome::AlreadyActive
@@ -697,7 +672,7 @@ mod tests {
         let eli = identity("eli-admin");
         assert_eq!(
             store
-                .provision_allowlisted(eli.clone(), AllowlistRole::Admin, allowlist_entry())
+                .provision_allowlisted(eli.clone(), AllowedUserRole::Admin, allowlist_entry())
                 .await
                 .unwrap(),
             TeamMemberProvisionOutcome::Created
@@ -761,7 +736,7 @@ mod tests {
         let (_directory, store) = fixture().await;
         let eli = identity("eli-revoked");
         store
-            .provision_allowlisted(eli.clone(), AllowlistRole::Admin, allowlist_entry())
+            .provision_allowlisted(eli.clone(), AllowedUserRole::Admin, allowlist_entry())
             .await
             .unwrap();
         let outcome = store
@@ -826,7 +801,7 @@ mod tests {
         // Re-adding the email later never re-provisions through the allowlist.
         assert_eq!(
             store
-                .provision_allowlisted(eli.clone(), AllowlistRole::Admin, allowlist_entry())
+                .provision_allowlisted(eli.clone(), AllowedUserRole::Admin, allowlist_entry())
                 .await
                 .unwrap(),
             TeamMemberProvisionOutcome::AlreadyActive
@@ -885,8 +860,8 @@ mod tests {
             .unwrap();
         let eli = identity("concurrent-allowlisted");
         let (first, second) = tokio::join!(
-            store.provision_allowlisted(eli.clone(), AllowlistRole::Admin, allowlist_entry()),
-            second.provision_allowlisted(eli.clone(), AllowlistRole::Admin, allowlist_entry()),
+            store.provision_allowlisted(eli.clone(), AllowedUserRole::Admin, allowlist_entry()),
+            second.provision_allowlisted(eli.clone(), AllowedUserRole::Admin, allowlist_entry()),
         );
         let outcomes = [first.unwrap(), second.unwrap()];
         assert_eq!(
@@ -932,7 +907,7 @@ mod tests {
         let (_directory, store) = fixture().await;
         let eli = identity("eli-revoked-by-admin");
         store
-            .provision_allowlisted(eli.clone(), AllowlistRole::Member, allowlist_entry())
+            .provision_allowlisted(eli.clone(), AllowedUserRole::Member, allowlist_entry())
             .await
             .unwrap();
         store
@@ -944,7 +919,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             store
-                .provision_allowlisted(eli.clone(), AllowlistRole::Admin, allowlist_entry())
+                .provision_allowlisted(eli.clone(), AllowedUserRole::Admin, allowlist_entry())
                 .await
                 .unwrap(),
             TeamMemberProvisionOutcome::AlreadyActive
@@ -992,7 +967,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             store
-                .provision_allowlisted(eli.clone(), AllowlistRole::Admin, allowlist_entry())
+                .provision_allowlisted(eli.clone(), AllowedUserRole::Admin, allowlist_entry())
                 .await
                 .unwrap(),
             TeamMemberProvisionOutcome::AlreadyActive
@@ -1022,7 +997,7 @@ mod tests {
             store
                 .provision_allowlisted(
                     identity("rollback"),
-                    AllowlistRole::Admin,
+                    AllowedUserRole::Admin,
                     allowlist_entry()
                 )
                 .await

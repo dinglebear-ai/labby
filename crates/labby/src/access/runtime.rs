@@ -300,7 +300,7 @@ impl AccessRuntime {
     ) -> Result<super::TeamMemberProvisionOutcome, AllowlistProvisionError>
     where
         F: FnOnce() -> Fut,
-        Fut: Future<Output = Option<(super::AllowlistRole, super::AllowlistAdmission)>>,
+        Fut: Future<Output = Option<(super::AllowedUserRole, super::AllowlistAdmission)>>,
     {
         let _writer = self.acquire_allowlist_writer().await?;
         let Some((role, admitted_by)) = revalidate().await else {
