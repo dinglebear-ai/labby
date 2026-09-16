@@ -729,8 +729,8 @@
       "no-default",
       "skills"
     ],
-    "scenario_kind": "stateful_scenario",
-    "scenario_id": "stateful_scenario::agents::agents_delete",
+    "scenario_kind": "destructive_isolated",
+    "scenario_id": "destructive_isolated::agents::agents_delete",
     "minimum_evidence": "cross_surface_parity",
     "api_minimum": "live_state_transition",
     "setup_ref": "disposable-home",

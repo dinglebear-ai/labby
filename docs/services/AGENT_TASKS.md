@@ -22,7 +22,12 @@ content-addressed payload store, pins that payload with `content_digest`, and
 derives every other revision digest from the payload and the configured
 provider, so the required parameters alone are sufficient. Supplied digests are
 verification only. `agents.update` accepts new `instructions` or a new `model`
-and inherits the rest from the prior revision. Agent payloads, Task inputs, and outputs use
+and inherits the rest from the prior revision. `agents.delete` is
+`destructive: true` in the shared action metadata: a deleted definition is
+filtered out of every read and has no restore action, so MCP elicitation, the
+web confirmation, and the `agents` tool's `destructiveHint` all derive from
+that one flag. `agents.suspend` is a reversible state change and is not
+destructive. Agent payloads, Task inputs, and outputs use
 separate CAS namespaces under `agent-payloads/`, while digest values remain the
 SHA-256 of the exact stored bytes. Reads re-verify the digest, and a digest from
 one namespace never resolves through another namespace. The harness digest

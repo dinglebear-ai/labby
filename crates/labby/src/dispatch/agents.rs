@@ -83,6 +83,22 @@ const fn action(
         returns: "object",
     }
 }
+/// An action that causes permanent, unrecoverable loss under the shared
+/// destructive policy; surfaces derive confirmation from this flag alone.
+const fn destructive_action(
+    name: &'static str,
+    description: &'static str,
+    params: &'static [ParamSpec],
+) -> ActionSpec {
+    ActionSpec {
+        name,
+        description,
+        destructive: true,
+        requires_admin: false,
+        params,
+        returns: "object",
+    }
+}
 pub const ACTIONS: &[ActionSpec] = &[
     action(
         "agents.create",
@@ -127,7 +143,13 @@ pub const ACTIONS: &[ActionSpec] = &[
         ],
     ),
     action("agents.suspend", "Suspend an Agent", &[param("agent_id")]),
-    action("agents.delete", "Delete an Agent", &[param("agent_id")]),
+    // Deleted definitions are filtered out of every read and have no restore
+    // action, so deletion is permanent loss, not a reversible state change.
+    destructive_action(
+        "agents.delete",
+        "Permanently delete an Agent definition",
+        &[param("agent_id")],
+    ),
     action(
         "agents.run",
         "Start a pinned Agent session",
@@ -1304,6 +1326,27 @@ mod tests {
         );
         assert!(ACTIONS.iter().all(|a| a.name.starts_with("agents.")));
     }
+    /// Deletion filters the definition out of every read with no restore
+    /// action, so it is permanent loss under the shared destructive policy.
+    #[test]
+    fn delete_is_marked_destructive() {
+        let delete = ACTIONS
+            .iter()
+            .find(|action| action.name == "agents.delete")
+            .unwrap();
+        assert!(delete.destructive);
+        assert!(
+            !delete.requires_admin,
+            "destructive and admin are separate axes"
+        );
+        // Suspension is reversible and cancellation stops work in flight;
+        // neither loses data.
+        for name in ["agents.suspend", "agents.session.cancel", "agents.run"] {
+            let action = ACTIONS.iter().find(|action| action.name == name).unwrap();
+            assert!(!action.destructive, "{name}");
+        }
+    }
+
     #[tokio::test]
     async fn context_free_is_fail_closed() {
         assert_eq!(

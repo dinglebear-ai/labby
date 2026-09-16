@@ -743,8 +743,8 @@
   {
     "service": "agents",
     "action": "agents.delete",
-    "description": "Delete an Agent",
-    "destructive": false,
+    "description": "Permanently delete an Agent definition",
+    "destructive": true,
     "requires_admin": false,
     "required_scopes": [],
     "authorization_boundary": "resource_capability",

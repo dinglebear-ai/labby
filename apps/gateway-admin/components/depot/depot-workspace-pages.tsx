@@ -11,12 +11,9 @@ import { AppHeader } from '@/components/app-header'
 import { AURORA_PAGE_FRAME, AURORA_PAGE_SHELL } from '@/components/aurora/tokens'
 import { ConsoleHero } from '@/components/console/console-hero'
 import { DashboardPanel } from '@/components/dashboard/panel'
+import { ActionConfirmationDialog } from '@/components/action-confirmation-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import {
-  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
-  AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { ArtifactComposer } from './artifact-composer'
@@ -26,6 +23,10 @@ import {
   queueTask, runAgent, suspendAgent, updateAgent,
   type AgentRunResult, type AgentView, type OwnerKind, type TaskResult, type TaskView,
 } from '@/lib/agent-tasks/client'
+import {
+  DELETE_AGENT_CONFIRM_LABEL, DELETE_AGENT_TITLE, actionRequiresConfirmation, deleteAgentDescription,
+} from '@/lib/agent-tasks/confirmation'
+import { useCommandCatalog } from '@/lib/hooks/use-command-catalog'
 
 const demoArtifacts = [
   ['Skill', 'repo-triage', 'Cluster open PRs and issues, then draft a triage note.', '#review · #github'],
@@ -182,6 +183,10 @@ function AgentSessionSheet({ agent, onOpenChange, onChanged }: { agent: AgentVie
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  // The confirmation is derived from the shared action catalog's destructive
+  // flag, the same metadata that drives MCP elicitation and CLI prompts.
+  const { data: catalog } = useCommandCatalog()
+  const deleteRequiresConfirmation = actionRequiresConfirmation(catalog, 'agents', 'agents.delete')
 
   useEffect(() => {
     setInput('')
@@ -255,23 +260,20 @@ function AgentSessionSheet({ agent, onOpenChange, onChanged }: { agent: AgentVie
         </section>
         <section className="flex flex-wrap gap-2 border-t border-aurora-border-subtle pt-5">
           {agent?.state==='active'?<Button variant="outline" onClick={()=>void suspend()} disabled={busy}><Pause/>Suspend</Button>:null}
-          <Button variant="outline" onClick={()=>setConfirmDelete(true)} disabled={busy||!agent}>Delete Agent</Button>
+          <Button variant="outline" onClick={()=>{ if (deleteRequiresConfirmation) setConfirmDelete(true); else void remove() }} disabled={busy||!agent}>Delete Agent</Button>
         </section>
       </div>
     </SheetContent>
   </Sheet>
-  <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
-    <AlertDialogContent>
-      <AlertDialogHeader>
-        <AlertDialogTitle>Delete Agent definition?</AlertDialogTitle>
-        <AlertDialogDescription>Delete {agent?.agent_id ?? 'this Agent'} from the active Agent catalog. Existing durable Task records remain immutable.</AlertDialogDescription>
-      </AlertDialogHeader>
-      <AlertDialogFooter>
-        <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
-        <AlertDialogAction onClick={()=>void remove()} disabled={busy}>{busy?'Deleting…':'Delete Agent'}</AlertDialogAction>
-      </AlertDialogFooter>
-    </AlertDialogContent>
-  </AlertDialog>
+  <ActionConfirmationDialog
+    open={confirmDelete}
+    title={DELETE_AGENT_TITLE}
+    description={deleteAgentDescription(agent?.agent_id ?? 'this Agent')}
+    confirmLabel={DELETE_AGENT_CONFIRM_LABEL}
+    busy={busy}
+    onOpenChange={setConfirmDelete}
+    onConfirm={()=>void remove()}
+  />
   </>
 }
 

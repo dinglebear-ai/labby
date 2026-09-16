@@ -574,8 +574,8 @@
         },
         {
           "name": "agents.delete",
-          "description": "Delete an Agent",
-          "destructive": false,
+          "description": "Permanently delete an Agent definition",
+          "destructive": true,
           "requires_admin": false,
           "required_scopes": [],
           "params": [
