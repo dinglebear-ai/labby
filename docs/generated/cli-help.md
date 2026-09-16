@@ -559,6 +559,39 @@ Options:
       --skip-deps
           Skip runtime dependency installation and only converge user/service state
 
+      --role <ROLE>
+          Configure this machine as a Labby server or as a client of another server
+
+          [possible values: server, client]
+
+      --deployment <DEPLOYMENT>
+          Server deployment backend. Native is the fastest path; Incus is isolated
+
+          [possible values: native, incus]
+
+      --host <HOST>
+          Server listen address. Defaults to 127.0.0.1
+
+      --port <PORT>
+          Server listen or published port. Defaults to 8765
+
+      --server-url <SERVER_URL>
+          Explicit Labby server URL for client mode
+
+      --public-url <PUBLIC_URL>
+          Public browser/OAuth URL for the server
+
+      --oauth <OAUTH>
+          Authentication provider to configure during setup. Bearer remains available as break-glass auth
+
+          [possible values: none, google, authelia]
+
+      --desktop
+          Install the Labby desktop app when a published package is available for this platform
+
+      --no-desktop
+          Do not install the Labby desktop app
+
   -h, --help
           Print help
 ```

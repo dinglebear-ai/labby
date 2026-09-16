@@ -121,10 +121,11 @@ pub(crate) const SECURITY_INVARIANTS: &[SecurityInvariant] = &[
 ];
 
 // Reviewed union: five multi-user service routes plus four desktop handoff
-// routes, owner-link consume, the GET/POST Depot publish pair, and native CLI metadata.
-pub(crate) const PINNED_ROUTE_COUNT: usize = 133;
+// routes, owner-link consume, the GET/POST Depot publish pair, native CLI metadata,
+// and the handler-authenticated POST /auth/bearer-session exchange.
+pub(crate) const PINNED_ROUTE_COUNT: usize = 134;
 pub(crate) const PINNED_METHOD_PATH_SHA256: &str =
-    "9d51842b2d889d0319491703c6a2ed0b7c9104d356bbd0953a831581dd8c6382";
+    "3129b6fbbf55baf9f9be438c47050469527a3d6b5fe7fc274591643e6efc5f67";
 
 impl SecurityInvariant {
     pub(crate) fn validate_descriptor(&self, route: &RouteDescriptor) -> Result<(), String> {
@@ -347,6 +348,23 @@ mod tests {
             PINNED_METHOD_PATH_SHA256,
             "the independent method/path denominator changed; review and deliberately repin"
         );
+    }
+
+    #[test]
+    fn bearer_session_exchange_uses_the_handler_authenticated_protocol_recipe() {
+        let cases = route_cases().expect("route cases");
+        let exchange = cases
+            .iter()
+            .find(|case| case.key() == "POST /auth/bearer-session")
+            .expect("bearer exchange recipe");
+        assert_eq!(exchange.class, RequestClass::OAuthProtocol);
+        assert_eq!(exchange.descriptor.handler_identity, "auth_bearer_session");
+        // Credential exchange authenticates in its handler before issuing a cookie.
+        assert!(!exchange.descriptor.auth_required);
+        assert!(!exchange.descriptor.session_cookie_allowed);
+        invariant_for(exchange.class)
+            .validate_descriptor(&exchange.descriptor)
+            .expect("protocol security axes");
     }
 
     #[test]

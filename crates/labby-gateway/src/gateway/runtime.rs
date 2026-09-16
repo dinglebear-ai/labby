@@ -1300,8 +1300,17 @@ mod tests {
     async fn runtime_state_failure_does_not_publish_candidate_pool_or_config() {
         let dir = tempfile::tempdir().expect("tempdir");
         let config_path = dir.path().join("config.toml");
-        crate::gateway::config::write_gateway_config(&config_path, &GatewayConfig::default())
-            .expect("seed config");
+        crate::gateway::config::write_gateway_config(
+            &config_path,
+            &GatewayConfig {
+                code_mode: labby_runtime::gateway_config::CodeModeConfig {
+                    enabled: false,
+                    ..Default::default()
+                },
+                ..GatewayConfig::default()
+            },
+        )
+        .expect("seed config");
         let manager = GatewayManager::new(config_path.clone(), GatewayRuntimeHandle::default());
         manager
             .reload_with_origin(None, None)

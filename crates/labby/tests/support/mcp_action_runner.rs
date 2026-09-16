@@ -184,7 +184,9 @@ impl BuiltinMcpRunner {
     }
 
     pub(crate) async fn start() -> Result<Self, String> {
-        Self::start_with_config(None).await
+        // This runner exercises raw service/action dispatch. Its separate Code
+        // Mode constructor covers the intentionally enabled product default.
+        Self::start_with_config(Some("[code_mode]\nenabled = false\n")).await
     }
 
     pub(crate) async fn start_code_mode() -> Result<Self, String> {

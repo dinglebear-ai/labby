@@ -85,6 +85,7 @@ fn installer_command(script: &Path, tag: &str, directory: &Path) -> Command {
         .env("LABBY_INSTALL_VERSION", tag)
         .env("LABBY_INSTALL_DIR", directory)
         .env("LABBY_INSTALL_REPO", REPO)
+        .env("LABBY_INSTALL_NO_SETUP", "1")
         .env("LABBY_ALLOW_SOURCE_FALLBACK", "0");
     command
 }

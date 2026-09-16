@@ -189,6 +189,29 @@ jobs:
               raise SystemExit(f"expected exactly 1 substitution in {path}, got {count}")
           open(path, "w").write(patched)
 
+          desktop_cargo_path = "apps/labby-desktop/src-tauri/Cargo.toml"
+          desktop_cargo = open(desktop_cargo_path).read()
+          patched, count = re.subn(
+              r'(\[package\][^\[]*?\nversion = ")[^"]+(")',
+              lambda m: m.group(1) + new_version + m.group(2),
+              desktop_cargo,
+              count=1,
+              flags=re.DOTALL,
+          )
+          if count != 1:
+              raise SystemExit(f"expected exactly 1 substitution in {desktop_cargo_path}, got {count}")
+          open(desktop_cargo_path, "w").write(patched)
+          for desktop_path in [
+              "apps/labby-desktop/package.json",
+              "apps/labby-desktop/src-tauri/tauri.conf.json",
+          ]:
+              with open(desktop_path) as fh:
+                  desktop_manifest = json.load(fh)
+              desktop_manifest["version"] = new_version
+              with open(desktop_path, "w") as fh:
+                  json.dump(desktop_manifest, fh, indent=2)
+                  fh.write("\n")
+
           # The separate verification workspace pins the product's
           # labby-model at the exact release version.
           verify_host_path = "verification/hosts/labby/Cargo.toml"
@@ -231,9 +254,13 @@ jobs:
           # after the version bump — no compilation required. Offline first;
           # fall back to a networked update if the lockfile needs anything new.
           cargo update --workspace --offline || cargo update --workspace
+          # Desktop is a separate Cargo workspace; the root update cannot repair
+          # its package version in the independent lockfile.
+          cargo update --manifest-path apps/labby-desktop/src-tauri/Cargo.toml --workspace --offline || cargo update --manifest-path apps/labby-desktop/src-tauri/Cargo.toml --workspace
           cargo update --manifest-path verification/Cargo.toml -p labby-model --offline \
             || cargo update --manifest-path verification/Cargo.toml -p labby-model
           git diff --stat -- Cargo.toml Cargo.lock packages/labby-mcp/package.json server.json \
+            apps/labby-desktop/package.json apps/labby-desktop/src-tauri/Cargo.toml apps/labby-desktop/src-tauri/Cargo.lock apps/labby-desktop/src-tauri/tauri.conf.json \
             verification/hosts/labby/Cargo.toml verification/Cargo.lock
 
       - name: Commit and push if changed
@@ -241,6 +268,7 @@ jobs:
         run: |
           set -euo pipefail
           paths=(Cargo.toml Cargo.lock packages/labby-mcp/package.json server.json
+            apps/labby-desktop/package.json apps/labby-desktop/src-tauri/Cargo.toml apps/labby-desktop/src-tauri/Cargo.lock apps/labby-desktop/src-tauri/tauri.conf.json
             verification/hosts/labby/Cargo.toml verification/Cargo.lock)
           if git diff --quiet -- "${paths[@]}"; then
             echo "Release metadata already in sync, nothing to commit."

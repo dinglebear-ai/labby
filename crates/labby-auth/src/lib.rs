@@ -46,6 +46,8 @@ pub mod session;
 pub mod sqlite;
 pub mod state;
 #[cfg(feature = "http-axum")]
+pub mod static_session;
+#[cfg(feature = "http-axum")]
 pub mod token;
 pub mod trusted_host;
 pub mod types;

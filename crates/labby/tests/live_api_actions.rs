@@ -536,7 +536,9 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
             .env("LABBY_E2E_BOOTSTRAP_STATIC_OWNER", "1")
             .env("LABBY_E2E_DETERMINISTIC_EXECUTORS", "1")
             .existing_root(owned_root.path())
-            .config(format!("[workspace]\nroot = {:?}\n", workspace))
+            // The action matrix seeds deliberately unreachable upstreams. Pure
+            // snippet execution must retain the raw-mode catalog contract.
+            .config(format!("[workspace]\nroot = {:?}\n[code_mode]\nenabled = false\n", workspace))
             .start()
             .await
             .expect("live API daemon");
