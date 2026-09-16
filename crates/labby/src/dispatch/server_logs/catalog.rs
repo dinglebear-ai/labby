@@ -42,6 +42,12 @@ pub const ACTIONS: &[ActionSpec] = &[
                 description: "Exact tracing level filter, such as INFO, WARN, or ERROR",
             },
             ParamSpec {
+                name: "levels",
+                ty: "string[]",
+                required: false,
+                description: "Exact tracing levels to include; mutually exclusive with level",
+            },
+            ParamSpec {
                 name: "target",
                 ty: "string",
                 required: false,

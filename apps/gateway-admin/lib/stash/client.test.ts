@@ -27,11 +27,24 @@ test('list preserves opaque cursor and search while using the server page defaul
     return Response.json({ files: [], next_cursor: null })
   }
   await listFiles('opaque cursor', undefined, 'needle')
-  assert.equal(new URL(requested?.url || '').pathname, '/v1/stash/')
+  assert.equal(new URL(requested?.url || '').pathname, '/v1/stash')
   assert.equal(new URL(requested?.url || '').searchParams.has('limit'), false)
   assert.equal(new URL(requested?.url || '').searchParams.get('cursor'), 'opaque cursor')
   assert.equal(new URL(requested?.url || '').searchParams.get('query'), 'needle')
   assert.equal(requested?.credentials, 'include')
+})
+
+test('empty list requests use the canonical non-trailing-slash route', async () => {
+  let requested: Request | undefined
+  globalThis.fetch = async (input, init) => {
+    requested = new Request(new URL(String(input), 'http://labby.test'), init)
+    return Response.json({ files: [], next_cursor: null })
+  }
+
+  await listFiles()
+
+  assert.equal(new URL(requested?.url || '').pathname, '/v1/stash')
+  assert.equal(new URL(requested?.url || '').search, '')
 })
 
 test('binary upload passes the File body and csrf without JSON wrapping', async () => {
@@ -103,7 +116,7 @@ test('selected team is sent through owner headers and never through a URL', asyn
   assert.equal(downloadUrl('file-1'), '/v1/stash/files/file-1/content')
 })
 
-test('a personal workspace selects the principal stash, and a project workspace selects its bound team', async () => {
+test('a personal workspace relies on verified identity, and a project workspace selects its bound team', async () => {
   const observed: Array<[string | null, string | null]> = []
   globalThis.fetch = async (input, init) => {
     const request = new Request(new URL(String(input), 'http://labby.test'), init)
@@ -116,7 +129,7 @@ test('a personal workspace selects the principal stash, and a project workspace 
   await getStats()
   __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf-stash' })
   await getStats()
-  assert.deepEqual(observed, [['personal', 'principal-1'], ['team', 'team-1'], [null, null]])
+  assert.deepEqual(observed, [[null, null], ['team', 'team-1'], [null, null]])
 })
 
 test('download failures surface the structured stash error', async () => {

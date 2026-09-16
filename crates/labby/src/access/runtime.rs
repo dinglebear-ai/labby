@@ -1,4 +1,3 @@
-use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -196,50 +195,6 @@ enum RuntimeState {
     Blocked(AccessBlockedReason),
 }
 
-struct DeterministicDevContainerRuntime;
-
-impl labby_runtime::dev_container_runtime::ContainerRuntime for DeterministicDevContainerRuntime {
-    type Error = labby_runtime::dev_container_runtime::DisabledRuntimeError;
-
-    fn create<'a>(
-        &'a self,
-        _: labby_runtime::dev_container_runtime::EngineCreateRequest,
-    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-    fn inspect<'a>(
-        &'a self,
-        _: &'a labby_runtime::dev_container_runtime::EngineHandle,
-    ) -> std::pin::Pin<
-        Box<
-            dyn Future<
-                    Output = Result<labby_runtime::dev_container_runtime::EngineState, Self::Error>,
-                > + Send
-                + 'a,
-        >,
-    > {
-        Box::pin(async { Ok(labby_runtime::dev_container_runtime::EngineState::Running) })
-    }
-    fn start<'a>(
-        &'a self,
-        _: &'a labby_runtime::dev_container_runtime::EngineHandle,
-    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-    fn stop<'a>(
-        &'a self,
-        _: &'a labby_runtime::dev_container_runtime::EngineHandle,
-    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-    fn destroy<'a>(
-        &'a self,
-        _: &'a labby_runtime::dev_container_runtime::EngineHandle,
-    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-}
-
 /// Process-scoped owner of the access-store lifecycle.
 ///
 /// Construction is observational: it never creates or migrates the store. Only the explicit
@@ -251,7 +206,12 @@ pub(crate) struct AccessRuntime {
     bootstrap_writer: Arc<Semaphore>,
     dev_container_runtime: Arc<
         dyn labby_runtime::dev_container_runtime::ContainerRuntime<
-                Error = labby_runtime::dev_container_runtime::DisabledRuntimeError,
+                Error = super::DevContainerEngineError,
+            >,
+    >,
+    dev_container_image_runtime: Arc<
+        dyn labby_runtime::dev_container_image_runtime::ContainerImageRuntime<
+                Error = super::DevContainerEngineError,
             >,
     >,
 }
@@ -523,9 +483,8 @@ impl AccessRuntime {
                 AccessBlockedReason::Unavailable,
             ))),
             bootstrap_writer: Arc::new(Semaphore::new(1)),
-            dev_container_runtime: Arc::new(
-                labby_runtime::dev_container_runtime::DisabledContainerRuntime,
-            ),
+            dev_container_runtime: super::unavailable_dev_container_runtime(),
+            dev_container_image_runtime: super::unavailable_dev_container_image_runtime(),
         }
     }
 
@@ -554,30 +513,48 @@ impl AccessRuntime {
             tracing::warn!(?reason, "access runtime initialization blocked");
             state = RuntimeState::Blocked(reason);
         }
-        let dev_container_runtime: Arc<
-            dyn labby_runtime::dev_container_runtime::ContainerRuntime<
-                    Error = labby_runtime::dev_container_runtime::DisabledRuntimeError,
-                >,
-        > = if cfg!(feature = "proxy-testkit")
-            && std::env::var_os("LABBY_E2E_DETERMINISTIC_EXECUTORS").is_some()
-        {
-            Arc::new(DeterministicDevContainerRuntime)
-        } else {
-            Arc::new(labby_runtime::dev_container_runtime::DisabledContainerRuntime)
-        };
-        Self {
+        let runtime = Self {
             path: Arc::new(path),
             state: Arc::new(Mutex::new(state)),
             bootstrap_writer: Arc::new(Semaphore::new(1)),
-            dev_container_runtime,
+            dev_container_runtime: super::configured_dev_container_runtime(),
+            dev_container_image_runtime: super::configured_dev_container_image_runtime(),
+        };
+        let recovery_store = {
+            let state = runtime.state.lock().await;
+            match &*state {
+                RuntimeState::Ready { store, .. } => Some(store.clone()),
+                _ => None,
+            }
+        };
+        if let Some(store) = recovery_store {
+            tokio::spawn(
+                crate::dispatch::dev_containers::images::recover_interrupted(
+                    store,
+                    Arc::clone(&runtime.dev_container_image_runtime),
+                ),
+            );
         }
+        let schedule_state = Arc::downgrade(&runtime.state);
+        crate::dispatch::tasks::schedules::start(move || {
+            let schedule_state = schedule_state.clone();
+            async move {
+                let state = schedule_state.upgrade()?;
+                let state = state.lock().await;
+                Some(match &*state {
+                    RuntimeState::Ready { store, .. } => Some(store.clone()),
+                    _ => None,
+                })
+            }
+        });
+        runtime
     }
 
     pub(crate) fn with_dev_container_runtime(
         mut self,
         runtime: Arc<
             dyn labby_runtime::dev_container_runtime::ContainerRuntime<
-                    Error = labby_runtime::dev_container_runtime::DisabledRuntimeError,
+                    Error = super::DevContainerEngineError,
                 >,
         >,
     ) -> Self {
@@ -589,18 +566,32 @@ impl AccessRuntime {
         &self,
     ) -> Arc<
         dyn labby_runtime::dev_container_runtime::ContainerRuntime<
-                Error = labby_runtime::dev_container_runtime::DisabledRuntimeError,
+                Error = super::DevContainerEngineError,
             >,
     > {
-        // Test-only hook: compiled in only under `proxy-testkit` (test support,
-        // never a product slice), like the deterministic Agent/Task executor.
-        // Product builds compile the branch out; the variable has no effect.
-        if cfg!(feature = "proxy-testkit")
-            && std::env::var_os("LABBY_E2E_DETERMINISTIC_EXECUTORS").is_some()
-        {
-            return Arc::new(DeterministicDevContainerRuntime);
-        }
         Arc::clone(&self.dev_container_runtime)
+    }
+
+    pub(crate) fn with_dev_container_image_runtime(
+        mut self,
+        runtime: Arc<
+            dyn labby_runtime::dev_container_image_runtime::ContainerImageRuntime<
+                    Error = super::DevContainerEngineError,
+                >,
+        >,
+    ) -> Self {
+        self.dev_container_image_runtime = runtime;
+        self
+    }
+
+    pub(crate) fn dev_container_image_runtime(
+        &self,
+    ) -> Arc<
+        dyn labby_runtime::dev_container_image_runtime::ContainerImageRuntime<
+                Error = super::DevContainerEngineError,
+            >,
+    > {
+        Arc::clone(&self.dev_container_image_runtime)
     }
 
     pub(crate) async fn status(&self) -> AccessRuntimeStatus {
@@ -1233,7 +1224,7 @@ mod tests {
                 .inspect(&handle)
                 .await
                 .is_err(),
-            "product builds must keep the disabled engine (env set: {})",
+            "non-owner runtimes must keep an unavailable engine (env set: {})",
             std::env::var_os("LABBY_E2E_DETERMINISTIC_EXECUTORS").is_some()
         );
     }

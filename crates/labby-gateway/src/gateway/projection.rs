@@ -580,6 +580,11 @@ pub(super) async fn server_view_from_upstream(
         None => None,
     });
     let dependency_hint = last_error.as_deref().and_then(dependency_hint_from_error);
+    let enabled = upstream.enabled;
+    let runtime = match pool {
+        Some(pool) => pool.upstream_runtime_metadata(&upstream.name).await,
+        None => None,
+    };
     // Health-aware connectivity (mirrors `server_view_from_virtual_server`): an
     // upstream counts as connected when it has no recorded error and is either
     // actively exposing capabilities or healthy. The health term keeps lazily
@@ -592,11 +597,6 @@ pub(super) async fn server_view_from_upstream(
         || summary.exposed_skill_count > 0;
     let health_ok = health.map(|health| health.is_routable()).unwrap_or(false);
     let connected = last_error.is_none() && (exposing_capabilities || health_ok);
-    let enabled = upstream.enabled;
-    let runtime = match pool {
-        Some(pool) => pool.upstream_runtime_metadata(&upstream.name).await,
-        None => None,
-    };
     let pid = runtime.as_ref().and_then(|meta| meta.pid);
     // OAuth upstreams list tools per authenticated subject, so the shared
     // catalog stays empty by design; reporting it as warming would pin them in
@@ -632,6 +632,10 @@ pub(super) async fn server_view_from_upstream(
     let (command, args) = redacted_stdio_command(upstream);
 
     ServerView {
+        notification_incidents: match pool {
+            Some(pool) => pool.notification_incidents(&upstream.name).await,
+            None => Default::default(),
+        },
         id: upstream.name.clone(),
         name: upstream.name.clone(),
         display_name: upstream.display_name.clone(),
@@ -736,6 +740,7 @@ pub(super) fn server_view_from_virtual_server(
     }
 
     ServerView {
+        notification_incidents: Default::default(),
         id: record.id.clone(),
         name: service.clone(),
         display_name: None,

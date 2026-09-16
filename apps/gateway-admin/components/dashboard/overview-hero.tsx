@@ -2,13 +2,13 @@
 
 import * as React from 'react'
 import Link from 'next/link'
+import { useGatewayNotifications } from '@/lib/notification-acknowledgements'
 import {
   Activity,
   AlertTriangle,
   Cable,
   Coins,
   FileText,
-  BookOpen,
   Gauge,
   type LucideIcon,
   MessageSquare,
@@ -20,7 +20,6 @@ import {
 import { formatCompactNumber } from '@/lib/dashboard/dashboard-metrics'
 import type { LiveFleetStats } from '@/lib/dashboard/dashboard-metrics'
 import {
-  METRICS_WINDOWS,
   type DashboardMetrics,
   type MetricsWindow,
 } from '@/lib/types/metrics'
@@ -65,7 +64,7 @@ function HeroWindowPills({
 }) {
   return (
     <div role="tablist" aria-label="Activity window" style={{ display: 'inline-flex', gap: 5 }}>
-      {METRICS_WINDOWS.map((window) => {
+      {(['24h', '7d', '30d'] as const).map((window) => {
         const active = window === value
         return (
           <button
@@ -137,6 +136,7 @@ function heartbeatPoints(buckets: { calls: number }[]): string {
 }
 
 function gatewayTone(gateway: Gateway): { color: string; state: string } {
+  if (!gateway.enabled) return { color: 'var(--aurora-text-muted)', state: 'disabled' }
   if (!gateway.status.connected) {
     return { color: 'var(--aurora-error)', state: 'disconnected' }
   }
@@ -153,7 +153,7 @@ function StatCell({ stat, isLast }: { stat: HeroStat; isLast: boolean }) {
   const Icon = stat.icon
   const style: React.CSSProperties = {
     minWidth: 0,
-    padding: '4px 12px',
+    padding: '2px 12px',
     borderRadius: 8,
     textDecoration: 'none',
     borderRight: isLast
@@ -197,47 +197,46 @@ export function OverviewHero({
   const [manageHovered, setManageHovered] = React.useState(false)
   const secondsSinceLoad = useSecondsSince(loadedAt)
 
-  const troubled = gateways.filter(
+  const { isDismissed } = useGatewayNotifications()
+  const unhealthy = gateways.filter(gateway => gateway.enabled !== false && (!gateway.status.connected || !gateway.status.healthy || gateway.warnings.length > 0))
+  const troubled = unhealthy.filter(
     (gateway) =>
-      !gateway.status.connected || !gateway.status.healthy || gateway.warnings.length > 0,
+      gateway.enabled !== false && (
+        ((!gateway.status.connected || !gateway.status.healthy) && !isDismissed(`gateway:${gateway.name}:disconnected`)) ||
+        gateway.warnings.some(warning => !isDismissed(`gateway:${gateway.name}:warning:${warning.code}`))
+      ),
   )
-  const allHealthy = troubled.length === 0 && gateways.length > 0
+  const allHealthy = unhealthy.length === 0 && gateways.some(gateway => gateway.enabled !== false)
   const pulseColor = allHealthy
     ? 'var(--aurora-success)'
-    : troubled.length > 0
+    : unhealthy.length > 0
       ? 'var(--aurora-warn)'
       : 'var(--aurora-text-muted)'
   const pulseLabel = gateways.length === 0
     ? 'no servers'
     : allHealthy
       ? 'all systems nominal'
-      : `${troubled.length} need${troubled.length === 1 ? 's' : ''} attention`
+      : troubled.length === 0 ? 'no unacknowledged alerts' : `${troubled.length} need${troubled.length === 1 ? 's' : ''} attention`
 
-  const discoveredPrompts = gateways.reduce(
-    (sum, gateway) => sum + gateway.status.discovered_prompt_count,
+  const exposedPrompts = gateways.filter((gateway) => gateway.enabled !== false).reduce(
+    (sum, gateway) => sum + gateway.status.exposed_prompt_count,
     0,
   )
-  const discoveredResources = gateways.reduce(
-    (sum, gateway) => sum + gateway.status.discovered_resource_count,
-    0,
-  )
-  const discoveredSkills = gateways.reduce(
-    (sum, gateway) => sum + (gateway.status.discovered_skill_count ?? 0),
+  const exposedResources = gateways.filter((gateway) => gateway.enabled !== false).reduce(
+    (sum, gateway) => sum + gateway.status.exposed_resource_count,
     0,
   )
 
-  // The mock's strip vocabulary, extended with Skills as a first-class MCP
-  // primitive: Connected · Offline · Tools · Prompts · Resources · Skills ·
+  // The reference stat strip: Connected · Offline · Tools · Prompts · Resources ·
   // Upstream calls · Failed · Tokens · P95 latency. Only Failed carries a tone;
   // every other value renders in primary text.
   const usageHref = `/usage/?window=${activeWindow}`
   const stats: HeroStat[] = [
     { label: 'Connected', value: live.connectedServers, icon: Cable, href: '/gateways/' },
     { label: 'Offline', value: live.offlineServers, icon: PlugZap, href: '/gateways/' },
-    { label: 'Tools', value: live.discoveredTools, icon: Wrench, href: '/tools/' },
-    { label: 'Prompts', value: discoveredPrompts, icon: MessageSquare, href: '/gateways/' },
-    { label: 'Resources', value: discoveredResources, icon: FileText, href: '/gateways/' },
-    { label: 'Skills', value: discoveredSkills, icon: BookOpen, href: '/skills/' },
+    { label: 'Tools', value: live.exposedTools, icon: Wrench, href: '/tools/' },
+    { label: 'Prompts', value: exposedPrompts, icon: MessageSquare, href: '/gateways/' },
+    { label: 'Resources', value: exposedResources, icon: FileText, href: '/gateways/' },
     {
       label: 'Upstream calls',
       value: metrics ? formatCompactNumber(metrics.tool_calls.total) : '—',
@@ -268,6 +267,7 @@ export function OverviewHero({
   return (
     <div
       style={{
+        lineHeight: 'normal',
         borderRadius: 'var(--radius-3)',
         border:
           '1px solid color-mix(in srgb, var(--aurora-border-default) 45%, var(--aurora-page-bg))',
@@ -415,6 +415,7 @@ export function OverviewHero({
           <button
             type="button"
             data-icon-text-control="1"
+            data-visible-label="1"
             onClick={onRefresh}
             title="Refresh"
             aria-label="Refresh"
@@ -583,7 +584,7 @@ export function OverviewHero({
               whiteSpace: 'nowrap',
             }}
           >
-            {live.connectedServers}/{live.totalServers} healthy
+            {gateways.filter(gateway => gateway.enabled !== false && gateway.status.connected && gateway.status.healthy).length}/{live.totalServers} healthy
           </span>
         </Link>
       </div>

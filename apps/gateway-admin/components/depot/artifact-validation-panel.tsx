@@ -32,10 +32,8 @@ export function ArtifactValidationPanel({ kind, metadata, content, issues, onFie
   const total = skillSummary?.total ?? genericSummary.total
 
   return <aside aria-label="Draft validation" className="overflow-hidden rounded-aurora-2 border border-aurora-border-default bg-[linear-gradient(180deg,var(--aurora-panel-strong-top),var(--aurora-panel-strong))] shadow-aurora-medium">
-    <div className="border-b border-aurora-border-default bg-aurora-page-bg/35 px-[15px] py-[14px]">
-      <div className="flex items-center justify-between gap-2 text-[9.5px] font-bold uppercase tracking-[.13em] text-aurora-text-muted"><h2>Validation</h2><span>{passing} of {total}</span></div>
-      <div role="progressbar" aria-label="Passing validation checks" aria-valuemin={0} aria-valuemax={total} aria-valuenow={passing} className="mt-2 h-[3px] overflow-hidden rounded-full bg-aurora-border-subtle"><div className={passing === total ? 'h-full bg-aurora-success' : 'h-full bg-aurora-warn'} style={{ width: `${passing / total * 100}%` }} /></div>
-    </div>
+    <div className="flex items-center justify-between gap-2 border-b border-aurora-border-default/55 bg-[var(--gw0-0_38)] px-[15px] py-3 text-[9.5px] font-bold uppercase tracking-[.13em] text-aurora-text-muted"><h2>Validation</h2><span className={`text-[11px] font-[650] normal-case tracking-normal ${passing === total ? 'text-aurora-success' : 'text-aurora-warn'}`}>{passing} of {total}</span></div>
+    <div className="px-[15px] pb-1 pt-2.5"><div role="progressbar" aria-label="Passing validation checks" aria-valuemin={0} aria-valuemax={total} aria-valuenow={passing} className="h-1 overflow-hidden rounded-full bg-aurora-border-default/60"><div className={passing >= 5 ? 'h-full bg-aurora-success' : 'h-full bg-aurora-warn'} style={{ width: `${passing / total * 100}%` }} /></div></div>
     {rows.map(check => {
       const fieldIssues = issues.filter(issue => issue.field === check.field)
       const tone = check.passing ? 'text-aurora-success' : fieldIssues.some(issue => issue.severity === 'error') ? 'text-aurora-error' : 'text-aurora-warn'

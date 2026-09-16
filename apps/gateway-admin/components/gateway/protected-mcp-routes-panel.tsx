@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { CheckCircle2, Loader2, Plus, Radar, Save, ShieldCheck, Trash2, X } from 'lucide-react'
 import { toast } from 'sonner'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -214,6 +215,7 @@ export function ProtectedMcpRoutesPanel({ upstreamNames }: { upstreamNames?: str
     testProtectedRoute,
   } = useGatewayMutations()
 
+  const [editorOpen, setEditorOpen] = useState(false)
   const [editingName, setEditingName] = useState<string | null>(null)
   const [draft, setDraft] = useState<RouteDraft>(EMPTY_DRAFT)
   const [pendingAction, setPendingAction] = useState<string | null>(null)
@@ -250,6 +252,7 @@ export function ProtectedMcpRoutesPanel({ upstreamNames }: { upstreamNames?: str
   }
 
   const startCreate = () => {
+    setEditorOpen(true)
     setEditingName(null)
     setDraft({ ...EMPTY_DRAFT, upstream: upstreamNames?.[0] ?? '' })
     setTestResult(null)
@@ -258,6 +261,7 @@ export function ProtectedMcpRoutesPanel({ upstreamNames }: { upstreamNames?: str
   }
 
   const startEdit = (route: ProtectedMcpRoute) => {
+    setEditorOpen(true)
     setEditingName(route.name)
     setDraft(draftFromRoute(route))
     setTestResult(null)
@@ -400,139 +404,7 @@ export function ProtectedMcpRoutesPanel({ upstreamNames }: { upstreamNames?: str
     }
   }
 
-  return (
-    <div
-      id="protected-mcp-routes"
-      className="rounded-lg border bg-aurora-page-bg p-4"
-      data-protected-routes-panel
-    >
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <ShieldCheck className="size-4 text-aurora-text-muted" />
-            <h3 className="text-sm font-semibold text-aurora-text-primary">Protected MCP routes</h3>
-          </div>
-          <p className="mt-1 text-sm text-aurora-text-muted">
-            Publish public MCP route prefixes through Lab OAuth, targeting a private backend, one upstream, or a reusable Gateway Loadout.
-          </p>
-        </div>
-        <Button type="button" variant="outline" size="sm" onClick={startCreate}>
-          <Plus className="mr-2 size-4" />
-          New route
-        </Button>
-      </div>
-
-      {pendingRestartCount > 0 ? (
-        <div className="mt-4 rounded-lg border border-aurora-warning/35 bg-aurora-warning/10 px-3 py-2 text-sm text-aurora-text-primary">
-          {pendingRestartCount} protected route change{pendingRestartCount === 1 ? ' is' : 's are'} saved for restart.
-          The running process is still serving its startup-mounted gateway-subset routes.
-        </div>
-      ) : null}
-
-      {error ? (
-        <div className="mt-4 rounded-lg border border-aurora-error/30 bg-aurora-error/10 px-3 py-2 text-sm text-aurora-error">
-          {getErrorMessage(error, 'Failed to load protected routes')}
-        </div>
-      ) : null}
-
-      <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(22rem,0.7fr)_minmax(0,1fr)]">
-        <div className="order-2 overflow-hidden rounded-lg border xl:order-2">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Route</TableHead>
-                <TableHead>Backend</TableHead>
-                <TableHead className="w-[8rem] text-right">State</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {isLoading ? (
-                <TableRow>
-                  <TableCell colSpan={3} className="py-8 text-center text-aurora-text-muted">
-                    Loading protected routes...
-                  </TableCell>
-                </TableRow>
-              ) : sortedRoutes.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={3} className="py-8 text-center text-aurora-text-muted">
-                    No protected routes configured
-                  </TableCell>
-                </TableRow>
-              ) : (
-                sortedRoutes.map((route) => (
-                  <TableRow
-                    key={route.name}
-                    className={cn(
-                      route.pending_operation === 'remove' ? 'cursor-default opacity-75' : 'cursor-pointer',
-                      editingName === route.name && 'bg-aurora-control-surface/30',
-                    )}
-                    onClick={() => {
-                      if (route.pending_operation !== 'remove') startEdit(route)
-                    }}
-                  >
-                    <TableCell className="align-top">
-                      <div className="min-w-0">
-                        <p className="font-medium text-aurora-text-primary">{route.name}</p>
-                        <p className="mt-1 break-all font-mono text-xs text-aurora-text-muted">{routeResource(route)}</p>
-                        {route.scopes.length > 0 ? (
-                          <div className="mt-2 flex flex-wrap gap-1">
-                            {route.scopes.map((scope) => (
-                              <Badge key={scope} variant="secondary" className="text-[11px]">{scope}</Badge>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
-                    </TableCell>
-                    <TableCell className="align-top">
-                      <p className="break-all font-mono text-xs text-aurora-text-primary">
-                        {route.target?.kind === 'gateway_subset' && route.target.loadout
-                          ? `loadout:${route.target.loadout}`
-                          : route.upstream
-                            ? `upstream:${route.upstream}`
-                            : route.backend_url}
-                      </p>
-                      {route.health_path ? (
-                        <p className="mt-1 font-mono text-xs text-aurora-text-muted">health {route.health_path}</p>
-                      ) : null}
-                    </TableCell>
-                    <TableCell className="align-top text-right">
-                      <div className="flex justify-end gap-2">
-                        <Badge variant={route.enabled ? 'default' : 'secondary'}>
-                          {route.enabled ? 'Enabled' : 'Disabled'}
-                        </Badge>
-                        {route.restart_required ? (
-                          <Badge variant="outline" className="border-aurora-warning/50 text-aurora-warning">
-                            Restart · {route.pending_operation ?? 'update'}
-                          </Badge>
-                        ) : null}
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="icon"
-                          className="size-8"
-                          onClick={(event) => {
-                            event.stopPropagation()
-                            void handleRemove(route)
-                          }}
-                          disabled={pendingAction === `remove:${route.name}` || route.pending_operation === 'remove'}
-                          aria-label={`Remove protected route ${route.name}`}
-                          title="Remove protected route"
-                        >
-                          {pendingAction === `remove:${route.name}` ? (
-                            <Loader2 className="size-3.5 animate-spin" />
-                          ) : (
-                            <Trash2 className="size-3.5" />
-                          )}
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </div>
-
+  const routeEditor = (
         <div className="order-1 rounded-lg border bg-aurora-control-surface/10 p-4 xl:order-1">
           <div className="flex items-center justify-between gap-3">
             <div>
@@ -701,7 +573,7 @@ export function ProtectedMcpRoutesPanel({ upstreamNames }: { upstreamNames?: str
 
           <div className="mt-4 flex flex-wrap justify-end gap-2">
             {isEditing ? (
-              <Button type="button" variant="outline" size="sm" onClick={startCreate}>
+              <Button data-visible-label type="button" variant="outline" size="sm" onClick={startCreate}>
                 <X className="mr-2 size-4" />
                 Clear
               </Button>
@@ -732,6 +604,147 @@ export function ProtectedMcpRoutesPanel({ upstreamNames }: { upstreamNames?: str
             </Button>
           </div>
         </div>
+  )
+
+  return (
+    <div
+      id="protected-mcp-routes"
+      className={upstreamNames ? "min-w-0" : "rounded-lg border bg-aurora-page-bg p-4"}
+      data-protected-routes-panel
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="size-4 text-aurora-text-muted" />
+            <h3 className="text-sm font-semibold text-aurora-text-primary">Protected MCP routes</h3>
+          </div>
+          <p className="mt-1 text-sm text-aurora-text-muted">
+            Publish public MCP route prefixes through Lab OAuth, targeting a private backend, one upstream, or a reusable Gateway Loadout.
+          </p>
+        </div>
+        <Button data-visible-label type="button" variant="outline" size="sm" onClick={startCreate}>
+          <Plus className="mr-2 size-4" />
+          Add route
+        </Button>
+      </div>
+
+      {pendingRestartCount > 0 ? (
+        <div className="mt-4 rounded-lg border border-aurora-warning/35 bg-aurora-warning/10 px-3 py-2 text-sm text-aurora-text-primary">
+          {pendingRestartCount} protected route change{pendingRestartCount === 1 ? ' is' : 's are'} saved for restart.
+          The running process is still serving its startup-mounted gateway-subset routes.
+        </div>
+      ) : null}
+
+      {error ? (
+        <div className="mt-4 rounded-lg border border-aurora-error/30 bg-aurora-error/10 px-3 py-2 text-sm text-aurora-error">
+          {getErrorMessage(error, 'Failed to load protected routes')}
+        </div>
+      ) : null}
+
+      <div className={upstreamNames ? "mt-3" : "mt-4 grid gap-4 xl:grid-cols-[minmax(22rem,0.7fr)_minmax(0,1fr)]"}>
+        {upstreamNames ? <div className="space-y-3">
+          {isLoading ? <p className="p-4 text-xs text-aurora-text-muted">Loading protected routes…</p> : error ? null : sortedRoutes.length ? sortedRoutes.map((route) => <article key={route.name} className="overflow-hidden rounded-xl border border-aurora-border-default" style={{ background: 'var(--gw1-0_62)' }}>
+            <div className="flex items-center justify-between gap-3 border-b border-aurora-border-subtle px-4 py-3"><div className="flex items-center gap-2"><ShieldCheck size={14} className="text-aurora-accent-strong"/><strong className="text-[13px]">{route.name}</strong><span className="text-[10px] text-aurora-text-muted">{route.enabled ? 'Enabled' : 'Disabled'}{route.restart_required ? ' · restart required' : ''}</span></div><div className="flex gap-3 text-[11px]"><button type="button" onClick={() => startEdit(route)}>Edit</button><button type="button" disabled={pendingAction !== null} onClick={() => void handleRemove(route)} className="text-aurora-error">Remove</button></div></div>
+            <dl className="grid grid-cols-2 gap-4 px-4 py-3 lg:grid-cols-4">{[['Public endpoint', routeResource(route)], ['Upstream', route.upstream ?? route.backend_url ?? '—'], ['Scopes', route.scopes.join(', ') || 'None'], ['Health path', route.health_path ?? 'Not configured']].map(([label, value]) => <div key={label}><dt className="mb-1 text-[9.5px] font-bold uppercase tracking-wider text-aurora-text-muted">{label}</dt><dd className="break-all font-mono text-[11px]">{value}</dd></div>)}</dl>
+          </article>) : <p className="rounded-xl border border-aurora-border-default p-8 text-center text-xs text-aurora-text-muted">No protected routes target this server.</p>}
+        </div> : (        <div className="order-2 overflow-hidden rounded-lg border xl:order-2">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Route</TableHead>
+                <TableHead>Backend</TableHead>
+                <TableHead className="w-[8rem] text-right">State</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {isLoading ? (
+                <TableRow>
+                  <TableCell colSpan={3} className="py-8 text-center text-aurora-text-muted">
+                    Loading protected routes...
+                  </TableCell>
+                </TableRow>
+              ) : sortedRoutes.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={3} className="py-8 text-center text-aurora-text-muted">
+                    No protected routes configured
+                  </TableCell>
+                </TableRow>
+              ) : (
+                sortedRoutes.map((route) => (
+                  <TableRow
+                    key={route.name}
+                    className={cn(
+                      route.pending_operation === 'remove' ? 'cursor-default opacity-75' : 'cursor-pointer',
+                      editingName === route.name && 'bg-aurora-control-surface/30',
+                    )}
+                    onClick={() => {
+                      if (route.pending_operation !== 'remove') startEdit(route)
+                    }}
+                  >
+                    <TableCell className="align-top">
+                      <div className="min-w-0">
+                        <p className="font-medium text-aurora-text-primary">{route.name}</p>
+                        <p className="mt-1 break-all font-mono text-xs text-aurora-text-muted">{routeResource(route)}</p>
+                        {route.scopes.length > 0 ? (
+                          <div className="mt-2 flex flex-wrap gap-1">
+                            {route.scopes.map((scope) => (
+                              <Badge key={scope} variant="secondary" className="text-[11px]">{scope}</Badge>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    </TableCell>
+                    <TableCell className="align-top">
+                      <p className="break-all font-mono text-xs text-aurora-text-primary">
+                        {route.target?.kind === 'gateway_subset' && route.target.loadout
+                          ? `loadout:${route.target.loadout}`
+                          : route.upstream
+                            ? `upstream:${route.upstream}`
+                            : route.backend_url}
+                      </p>
+                      {route.health_path ? (
+                        <p className="mt-1 font-mono text-xs text-aurora-text-muted">health {route.health_path}</p>
+                      ) : null}
+                    </TableCell>
+                    <TableCell className="align-top text-right">
+                      <div className="flex justify-end gap-2">
+                        <Badge variant={route.enabled ? 'default' : 'secondary'}>
+                          {route.enabled ? 'Enabled' : 'Disabled'}
+                        </Badge>
+                        {route.restart_required ? (
+                          <Badge variant="outline" className="border-aurora-warning/50 text-aurora-warning">
+                            Restart · {route.pending_operation ?? 'update'}
+                          </Badge>
+                        ) : null}
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="icon"
+                          className="size-8"
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            void handleRemove(route)
+                          }}
+                          disabled={pendingAction === `remove:${route.name}` || route.pending_operation === 'remove'}
+                          aria-label={`Remove protected route ${route.name}`}
+                          title="Remove protected route"
+                        >
+                          {pendingAction === `remove:${route.name}` ? (
+                            <Loader2 className="size-3.5 animate-spin" />
+                          ) : (
+                            <Trash2 className="size-3.5" />
+                          )}
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </div>) }
+
+        {upstreamNames ? <Dialog open={editorOpen} onOpenChange={setEditorOpen}><DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl"><DialogHeader><DialogTitle>{isEditing ? 'Edit route' : 'Add route'}</DialogTitle><DialogDescription>Configure a protected MCP route for this server.</DialogDescription></DialogHeader>{routeEditor}</DialogContent></Dialog> : routeEditor}
       </div>
     </div>
   )

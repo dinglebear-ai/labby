@@ -207,6 +207,38 @@ impl VerifiedIdentity {
         )
     }
 
+    /// Rehydrate a previously authorized durable delegation from a trusted local store.
+    ///
+    /// This does not authenticate a request and must never consume caller-supplied
+    /// identity JSON. The caller must resolve the exact link against its current
+    /// active principal, organization and role policy before every admission.
+    /// Delegations outlive a bearer/session expiry, but not link or policy revocation.
+    /// Public only for the sibling product crate; this internal workspace crate is unpublished.
+    #[doc(hidden)]
+    pub fn for_durable_delegation(
+        authenticator: Authenticator,
+        transport_credential_issuer: impl Into<String>,
+        principal_link: PrincipalLink,
+    ) -> Result<Self, VerifiedIdentityError> {
+        match &principal_link {
+            PrincipalLink::External { issuer, subject } => {
+                let canonical = canonicalize_issuer(issuer)?;
+                if canonical != *issuer {
+                    return Err(VerifiedIdentityError::UntrustedIssuer);
+                }
+                if subject.trim().is_empty() {
+                    return Err(VerifiedIdentityError::EmptySubject);
+                }
+            }
+            PrincipalLink::LocalCredential { credential_id } => {
+                if credential_id.trim().is_empty() {
+                    return Err(VerifiedIdentityError::EmptyCredentialId);
+                }
+            }
+        }
+        Self::from_link(authenticator, transport_credential_issuer, principal_link)
+    }
+
     fn from_link(
         authenticator: Authenticator,
         transport_credential_issuer: impl Into<String>,
@@ -301,6 +333,34 @@ pub fn verified_identity_from_access_claims(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn durable_delegation_preserves_custom_provider_and_transport_facts() {
+        let link = PrincipalLink::External {
+            issuer: "https://identity.example/tenant".into(),
+            subject: "subject".into(),
+        };
+        let identity = VerifiedIdentity::for_durable_delegation(
+            Authenticator::OauthBearer,
+            "custom-transport",
+            link.clone(),
+        )
+        .unwrap();
+        assert_eq!(identity.principal_link(), &link);
+        assert_eq!(identity.transport_credential_issuer(), "custom-transport");
+        assert_eq!(identity.authenticator(), Authenticator::OauthBearer);
+        assert!(
+            VerifiedIdentity::for_durable_delegation(
+                Authenticator::OauthBearer,
+                "transport",
+                PrincipalLink::External {
+                    issuer: "http://identity.example".into(),
+                    subject: "subject".into()
+                }
+            )
+            .is_err()
+        );
+    }
+
     use super::*;
 
     #[test]

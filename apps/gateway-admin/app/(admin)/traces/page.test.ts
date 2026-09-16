@@ -10,6 +10,8 @@ test('traces reference hero describes its actual bounded collection contract', (
   assert.match(source, /limit: TRACE_QUERY_LIMIT/)
   assert.match(source, /stop_after_limit: true,\s+correlated_only: true/)
   assert.match(source, /aria-label="Search request traces"/)
+  assert.match(source, /label: 'P95', value: formatDuration\(summary\.p95_ms\), tone: 'var\(--aurora-warn\)'/)
+  assert.match(source, /`\$\{traces\.length\} correlated requests\$\{data\?\.truncated \? ' · bounded sample' : ''\}`/)
 })
 
 test('traces preserves keyed URL handoff and local filtering without changing query authority', () => {

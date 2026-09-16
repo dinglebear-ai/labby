@@ -18,6 +18,7 @@ import {
   AURORA_STRONG_PANEL,
 } from '@/components/gateway/gateway-theme'
 import type { ToolInventoryRow } from './gateway-list-state'
+import { gatewayDisplayName } from '@/lib/gateway-display-name'
 
 const TOOL_RENDER_LIMIT = 300
 
@@ -51,7 +52,7 @@ export function GatewayToolsTable({ rows }: { rows: ToolInventoryRow[] }) {
             <div className="grid gap-2 rounded-aurora-1 border border-aurora-border-strong bg-aurora-control-surface px-3 py-3">
               <div className="flex items-center justify-between gap-3">
                 <span className={AURORA_MUTED_LABEL}>Server</span>
-                <span className="text-sm font-medium text-aurora-text-primary">{row.gatewayName}</span>
+                <span className="text-sm font-medium text-aurora-text-primary" title={row.gatewayName}>{gatewayDisplayName(row.gatewayName)}</span>
               </div>
               <div className="flex items-center justify-between gap-3">
                 <span className={AURORA_MUTED_LABEL}>Transport</span>
@@ -86,7 +87,7 @@ export function GatewayToolsTable({ rows }: { rows: ToolInventoryRow[] }) {
                   </div>
                 </TableCell>
                 <TableCell className="px-4 py-4 align-top text-sm text-aurora-text-primary">
-                  {row.gatewayName}
+                  <span title={row.gatewayName}>{gatewayDisplayName(row.gatewayName)}</span>
                 </TableCell>
                 <TableCell className="px-4 py-4 align-top text-sm text-aurora-text-primary">
                   {row.exposed ? 'Exposed' : 'Hidden'}

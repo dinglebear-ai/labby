@@ -164,6 +164,22 @@ fn deterministic_round_robin_is_fair_and_provider_qualifies_identity() {
 }
 
 #[test]
+fn authoritative_totals_are_not_limited_to_the_retained_page() {
+    let mut providers = vec![ProviderPage::participating(
+        "public",
+        vec![json!({"id":"first-skill", "kind":"skill"})],
+        Some("next-page".into()),
+        Some(88_524),
+    )];
+
+    let response = merge_page(&mut providers, 0, 1).unwrap();
+
+    assert_eq!(response.items.len(), 1);
+    assert_eq!(response.known_total, Some(88_524));
+    assert!(response.total_is_exact);
+}
+
+#[test]
 fn list_and_detail_preserve_bounded_file_counts() {
     for count in [None, Some(0), Some(1), Some(2000)] {
         let mut raw = json!({"id": "files", "descriptor": {"id": "files"}, "currentRevision": {"id": "rev", "components": [], "metadata": {"private": true}}});

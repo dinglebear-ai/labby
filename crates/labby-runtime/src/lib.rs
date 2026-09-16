@@ -28,6 +28,8 @@ pub mod client_registry;
 pub mod code_mode_app;
 /// Dev Container admission and lifecycle validation without host execution.
 pub mod dev_container;
+/// Pluggable, recoverable Dev Container image build effects.
+pub mod dev_container_image_runtime;
 /// Pluggable Dev Container execution and restart recovery.
 pub mod dev_container_runtime;
 pub mod error;
@@ -42,6 +44,7 @@ pub mod response_body;
 pub mod secure_atomic_file;
 pub mod skills;
 pub mod task_runtime;
+pub mod usage_actor;
 
 pub use helpers::{env_non_empty, home_dir, lab_home};
 

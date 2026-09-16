@@ -73,6 +73,19 @@ pub(crate) struct AuthorityCeiling {
 }
 
 impl AuthorityCeiling {
+    /// Durable execution delegations never inherit platform privileges or
+    /// management rights: a restored schedule identity may read, create, and
+    /// operate scoped resources and nothing more.
+    pub(crate) fn durable_execution() -> Self {
+        Self {
+            capabilities: BTreeSet::from([
+                Capability::ScopeRead,
+                Capability::ScopeCreate,
+                Capability::ScopeOperate,
+            ]),
+        }
+    }
+
     pub(crate) fn from_auth_context(context: &AuthContext) -> Self {
         let has = |name: &str| context.scopes.iter().any(|scope| scope == name);
         let capabilities = if has("lab:admin") {

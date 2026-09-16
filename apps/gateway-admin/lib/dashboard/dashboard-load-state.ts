@@ -20,5 +20,6 @@ export function metricsLoadState(
 }
 
 export function shouldRetryMetrics(error: unknown): boolean {
+  if (error instanceof Error && error.name === 'AbortError') return false
   return !isMetricsUnsupported(error)
 }

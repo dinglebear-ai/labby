@@ -17,6 +17,7 @@
 pub mod depot;
 #[cfg(test)]
 mod depot_tests;
+pub mod dev_containers;
 pub mod env_merge;
 mod env_writer;
 pub mod host_write;
@@ -181,6 +182,25 @@ static RESOLVED_INSTALL_ANDROID_SDK: AtomicBool = AtomicBool::new(false);
 static RESOLVED_SYMBOLS: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 static RESOLVED_PROTECTED_MCP_TIMEOUT_SECS: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
 static RESOLVED_CATALOG_NOTIFICATION_TIMEOUT_MS: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
+#[derive(Clone)]
+pub(crate) struct ResolvedDevContainerConfig {
+    pub catalog: labby_runtime::dev_container_image_runtime::ApprovedProvisionCatalog,
+    pub secret_values: BTreeMap<String, String>,
+}
+
+static RESOLVED_DEV_CONTAINER_CONFIG: OnceLock<Mutex<ResolvedDevContainerConfig>> = OnceLock::new();
+#[cfg(test)]
+static DEV_CONTAINER_CONFIG_TEST_LOCK: OnceLock<std::sync::Arc<tokio::sync::Mutex<()>>> =
+    OnceLock::new();
+
+#[cfg(test)]
+pub(crate) async fn dev_container_config_test_guard() -> tokio::sync::OwnedMutexGuard<()> {
+    DEV_CONTAINER_CONFIG_TEST_LOCK
+        .get_or_init(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+        .lock_owned()
+        .await
+}
 
 fn resolved_symbols_cell() -> &'static Mutex<Option<String>> {
     RESOLVED_SYMBOLS.get_or_init(|| Mutex::new(None))
@@ -194,10 +214,37 @@ fn resolved_catalog_notification_timeout_cell() -> &'static Mutex<Option<u64>> {
     RESOLVED_CATALOG_NOTIFICATION_TIMEOUT_MS.get_or_init(|| Mutex::new(None))
 }
 
+fn resolved_dev_container_config_cell() -> &'static Mutex<ResolvedDevContainerConfig> {
+    RESOLVED_DEV_CONTAINER_CONFIG.get_or_init(|| {
+        Mutex::new(ResolvedDevContainerConfig {
+            catalog: labby_runtime::dev_container_image_runtime::ApprovedProvisionCatalog::deny_all(
+            ),
+            secret_values: BTreeMap::new(),
+        })
+    })
+}
+
+pub(crate) fn resolved_dev_container_build_catalog()
+-> labby_runtime::dev_container_image_runtime::ApprovedProvisionCatalog {
+    resolved_dev_container_config_cell()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .catalog
+        .clone()
+}
+
+pub(crate) fn resolved_dev_container_config() -> ResolvedDevContainerConfig {
+    resolved_dev_container_config_cell()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
 /// Resolve config.toml + env-var precedence for the small set of
 /// preferences read from call sites without direct config access, and cache
-/// the result process-wide. Call once, early, right after `config.toml`
-/// loads (before `.env` loads and before dispatch) — see `entrypoint.rs`.
+/// the result process-wide. Call once after `config.toml` and the canonical
+/// `.env` load but before dispatch, so opaque Dev Container secret references
+/// bind to one immutable process snapshot — see `entrypoint.rs`.
 pub(crate) fn install_resolved_preferences(config: &LabConfig) {
     RESOLVED_SHOW_ALL.store(
         env_flag_enabled("LABBY_SHOW_ALL") || config.mcp.show_all.unwrap_or(false),
@@ -218,6 +265,25 @@ pub(crate) fn install_resolved_preferences(config: &LabConfig) {
             || config.setup.install_android_sdk.unwrap_or(false),
         Ordering::Release,
     );
+    let dev_container_catalog = config
+        .dev_containers
+        .catalog()
+        .expect("LabConfig validation must precede resolved preference installation");
+    let dev_container_secret_values = dev_container_catalog
+        .environment_source_names()
+        .filter_map(|name| {
+            std::env::var(name)
+                .ok()
+                .filter(|value| !value.is_empty())
+                .map(|value| (name.to_owned(), value))
+        })
+        .collect();
+    *resolved_dev_container_config_cell()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = ResolvedDevContainerConfig {
+        catalog: dev_container_catalog,
+        secret_values: dev_container_secret_values,
+    };
     let symbols = std::env::var("LABBY_SYMBOLS")
         .ok()
         .or_else(|| config.output.symbols.clone());
@@ -413,6 +479,12 @@ pub struct LabConfig {
     /// Optional server-held exact-revision Skill acquisition connections.
     #[serde(default)]
     pub artifacts: ArtifactPreferences,
+    /// Container-local Codex App Server used by the Phoenix assistant.
+    #[serde(default)]
+    pub phoenix: PhoenixPreferences,
+    /// Operator-approved Dev Container image provisioning and build-network catalog.
+    #[serde(default)]
+    pub dev_containers: dev_containers::DevContainerPreferences,
     /// Maximum time to wait for one proxied upstream MCP tool/resource/prompt response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream_request_timeout_ms: Option<u64>,
@@ -475,6 +547,73 @@ pub struct LabConfig {
 impl Default for LabConfig {
     fn default() -> Self {
         toml::from_str("").expect("the empty built-in LabConfig must deserialize")
+    }
+}
+
+/// Backend used by the Phoenix assistant.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PhoenixProvider {
+    /// Launch a container-local Codex App Server.
+    #[default]
+    CodexAppServer,
+    /// Use an operator-configured OpenAI-compatible HTTP endpoint.
+    #[serde(rename = "openai_compatible")]
+    OpenAiCompatible,
+}
+
+/// Operator-owned launch boundary for Phoenix.
+///
+/// Every local path is resolved inside the Labby runtime environment. The browser
+/// never supplies an executable, Codex home, workspace path, or provider endpoint.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PhoenixPreferences {
+    /// Phoenix stays unavailable until an operator explicitly enables it.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Backend selected by the operator.
+    #[serde(default)]
+    pub provider: PhoenixProvider,
+    /// Absolute path to the Codex CLI installed in the Labby container.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<PathBuf>,
+    /// Isolated Codex home owned by the Labby container.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_home: Option<PathBuf>,
+    /// Read-only working directory visible to Phoenix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_root: Option<PathBuf>,
+    /// Optional pinned model. Omission uses the container's Codex default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+impl PhoenixPreferences {
+    fn validate(&self) -> Result<(), ConfigError> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if self.provider == PhoenixProvider::CodexAppServer {
+            let paths = [&self.command, &self.codex_home, &self.workspace_root];
+            if paths
+                .iter()
+                .any(|path| path.as_ref().is_none_or(|path| !path.is_absolute()))
+            {
+                return Err(ConfigError::InvalidProxyConfig {
+                    reason: "invalid [phoenix] configuration: enabled Codex App Server provider requires absolute command, codex_home, and workspace_root paths".into(),
+                });
+            }
+        }
+        if self.model.as_ref().is_some_and(|model| {
+            model.is_empty() || model.len() > 128 || model.contains(char::is_whitespace)
+        }) {
+            return Err(ConfigError::InvalidProxyConfig {
+                reason: "invalid [phoenix] configuration: model must be a bounded identifier"
+                    .into(),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -636,6 +775,12 @@ impl LabConfig {
             });
         }
         self.code_mode.validate()?;
+        self.phoenix.validate()?;
+        self.dev_containers
+            .validate()
+            .map_err(|reason| ConfigError::InvalidProxyConfig {
+                reason: format!("invalid [dev_containers] configuration: {reason}"),
+            })?;
         self.file_stash.validate()?;
         self.proxy
             .validate()
@@ -2030,6 +2175,7 @@ fn validate_top_level_extension_boundary(raw: &str) -> Result<()> {
         "web",
         "workspace",
         "file_stash",
+        "dev_containers",
         "oauth",
         "admin",
         "services",
@@ -2892,6 +3038,33 @@ mod tests {
         let future: LabConfig = toml::from_str("config_version = 999\n").unwrap();
         let error = future.validate().unwrap_err();
         assert!(error.to_string().contains("config_version 999"));
+    }
+
+    #[test]
+    fn phoenix_requires_operator_owned_absolute_paths_when_enabled() {
+        let disabled: LabConfig = toml::from_str("[phoenix]\nenabled = false\n").unwrap();
+        disabled.validate().unwrap();
+
+        let missing: LabConfig = toml::from_str("[phoenix]\nenabled = true\n").unwrap();
+        assert!(
+            missing
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("[phoenix]")
+        );
+
+        let configured: LabConfig = toml::from_str(
+            "[phoenix]\nenabled = true\ncommand = \"/home/labby/.local/bin/codex\"\ncodex_home = \"/home/labby/.codex\"\nworkspace_root = \"/home/labby\"\nmodel = \"gpt-5.6-sol\"\n",
+        )
+        .unwrap();
+        configured.validate().unwrap();
+
+        let openai_compatible: LabConfig = toml::from_str(
+            "[phoenix]\nenabled = true\nprovider = \"openai_compatible\"\nmodel = \"chatgpt-browser-medium\"\n",
+        )
+        .unwrap();
+        openai_compatible.validate().unwrap();
     }
 
     #[test]

@@ -235,12 +235,56 @@ impl AccessStore {
         actor: String,
         attempt: u32,
         now: i64,
+        schedule_admission: Option<super::task_schedule::ScheduleAdmission>,
     ) -> AccessStoreResult<labby_runtime::authority::AuthorityLease> {
         self.with_connection(move |connection| {
             let tx = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(map_sqlite_error)?;
             let lease = super::authority::authorize_action_in_transaction(&tx, request)?;
+            // A Task admitted by the durable scheduler may only be queued
+            // under a live claim fence for its occurrence; an ad-hoc queue of
+            // a scheduled Task, or a fence the schedule has since revised or
+            // paused, is refused inside the same transaction as the transition.
+            if to == labby_primitives::task::TaskState::Queued {
+                let scheduled: bool = tx
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM agent_task_schedule_attempts WHERE task_id=?1)",
+                        [&id],
+                        |row| row.get(0),
+                    )
+                    .map_err(map_sqlite_error)?;
+                match schedule_admission {
+                    Some(fence) => {
+                        let valid: bool = tx
+                            .query_row(
+                                "SELECT EXISTS(SELECT 1 FROM agent_task_schedule_attempts a \
+                                 JOIN agent_task_schedule_occurrences o USING(schedule_id,occurrence_key) \
+                                 JOIN agent_task_schedules s ON s.schedule_id=o.schedule_id AND s.revision=o.schedule_revision \
+                                 WHERE a.schedule_id=?1 AND a.occurrence_key=?2 AND a.claim_token=?3 \
+                                 AND o.schedule_revision=?4 AND a.claim_expires_at>?5 AND a.task_id=?6 \
+                                 AND a.state='pending' AND s.creator_principal_id=?7 AND a.attempt_number=?8)",
+                                rusqlite::params![
+                                    fence.schedule_id,
+                                    fence.occurrence_key,
+                                    fence.claim_token,
+                                    fence.revision,
+                                    now,
+                                    id,
+                                    lease.binding().principal_id(),
+                                    fence.attempt_number
+                                ],
+                                |row| row.get(0),
+                            )
+                            .map_err(map_sqlite_error)?;
+                        if !valid {
+                            return Err(AccessStoreError::NotAuthorized);
+                        }
+                    }
+                    None if scheduled => return Err(AccessStoreError::NotAuthorized),
+                    None => {}
+                }
+            }
             let task_owner: Option<(String, String)> = tx
                 .query_row(
                     "SELECT owner_kind,owner_id FROM agent_tasks WHERE task_id=?1",
@@ -2167,14 +2211,22 @@ mod tests {
                 "agent_definitions",
                 "agent_sessions",
                 "agent_task_audit",
+                "agent_task_schedule_attempts",
+                "agent_task_schedule_occurrences",
+                "agent_task_schedules",
                 "agent_tasks",
                 "authority_outbox_sequences",
                 "authority_projection_outbox",
                 "bootstrap_proofs",
                 "credential_idempotency",
+                "dev_container_image_builds",
                 "dev_container_instances",
+                "dev_container_launch_manifests",
                 "dev_container_ledger",
                 "dev_container_owner_quotas",
+                "dev_container_published_images",
+                "dev_container_template_drafts",
+                "dev_container_template_environment",
                 "dev_container_templates",
                 "gateway_team_credential_bindings",
                 "groups",

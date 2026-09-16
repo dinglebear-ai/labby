@@ -8,7 +8,7 @@ const metadata = { name: 'repo-triage', description: '<script>literal</script>',
 test('frontmatter preview uses composed fields as literal text, not executable HTML', () => {
   const html = renderToStaticMarkup(<ArtifactFrontmatterPreview kind="Skill" metadata={metadata} />)
   assert.match(html, /name: &quot;repo-triage&quot;/)
-  assert.match(html, /tags: \[review, github\]/)
+  assert.doesNotMatch(html, /tags:/)
   assert.match(html, /license: &quot;MIT&quot;/)
   assert.match(html, /allowed-tools: &quot;Read Search&quot;/)
   assert.match(html, /&lt;script&gt;literal&lt;\/script&gt;/)

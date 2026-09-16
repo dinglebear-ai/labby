@@ -3,6 +3,7 @@ import { cn } from '@/lib/utils'
 export interface MetricBarItem {
   key: string
   label: string
+  title?: string
   value: number
   /** Optional right-aligned formatted value (defaults to the number). */
   display?: string
@@ -14,6 +15,8 @@ const BAR_TONE = {
   accent: 'bg-gradient-to-r from-aurora-accent-deep to-aurora-accent-primary',
   strong: 'bg-gradient-to-r from-aurora-accent-primary to-aurora-accent-strong',
   error: 'bg-aurora-error',
+  pink: 'bg-aurora-accent-pink',
+  success: 'bg-aurora-success',
   warn: 'bg-aurora-warn',
 } as const
 
@@ -62,7 +65,7 @@ export function MetricBarList({
           </>
         )
         return (
-          <li key={item.key}>
+          <li key={item.key} title={item.title}>
             {item.onSelect ? (
               <button
                 type="button"

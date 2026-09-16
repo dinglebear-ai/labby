@@ -111,7 +111,7 @@ mod subscription_schedule;
 mod task_route;
 mod tasks;
 #[cfg(any(test, feature = "testkit"))]
-mod testsupport;
+pub(crate) mod testsupport;
 mod tool_call_cancel;
 mod tools;
 mod tools_call;

@@ -18,7 +18,10 @@
     "input": "matrix task input",
     "owner_id": "bootstrap-owner",
     "owner_kind": "personal",
-    "task_id": "matrix-task"
+    "task_id": "matrix-task",
+    "name": "Matrix schedule",
+    "schedule": "invalid-schedule",
+    "schedule_id": "matrix-schedule"
   },
   "action_params": {}
 }

@@ -1,7 +1,7 @@
 ---
 title: "Discover alignment"
 created: "2026-09-08"
-updated: "2026-09-08"
+updated: "2026-09-15"
 ---
 
 # Discover alignment
@@ -57,24 +57,27 @@ requires comparing the actual route against every structural item above, testing
 all represented operations with real authority, checking desktop/mobile and
 dark/light states, and verifying the qualified deployed revision and persistence.
 
-Current backing gaps: inspected Labby/Depot code has no canonical popularity,
+Current backing gaps: inspected Labby/Depot code still has no canonical popularity,
 co-install recommendation, or verified-publisher feed contract. Existing remote
-fork and local Skill acquisition are distinct operations. These gaps remain open;
-the card/modal refactor does not resolve them.
+fork, exact Artifact import, and local Skill acquisition/activation remain distinct
+operations. The aligned UI therefore keeps recommendation/feed structure visible
+without fabricating server rankings, and exposes only operations whose exact
+semantics are backed by the active mode and authority.
 
 ## Current acceptance disposition
 
 | Requirement | Current implementation | Remaining proof or work |
 | --- | --- | --- |
-| Hero, catalog summary, integrated search | Implemented; unknown crawl and verification values say Not reported | Real crawl and publisher-verification contracts |
-| Source/kind filter popover | Implemented, including narrow viewports and outside-click dismissal | Final deployed visual comparison |
-| Three recommendation rows | Not implemented | Canonical popularity, team recency, and loadout-pairing contracts |
-| Six discovery feeds | Not implemented; current kind filters are not feed substitutes | Server-ranked, paginated feed semantics |
-| Sort, density, layout controls | Implemented for the retained result window | Global feed sorting must remain a separate server contract |
-| Artifact cards | Kind, source, identity, description, real revision dates, and publication metadata | Capability chips, canonical metrics, and authorized acquisition actions |
-| Centered inspection modal | Implemented with source/revision metadata and explicit focus restoration | Content preview, installation formats, and authority-backed library/fork/activation flows |
-| Responsive interactions | Focused browser regression covers desktop and mobile bounds, source selection, modal closure, and density/layout | Full light/dark comparison and real operation persistence |
-| Deployment | No Discover changes deployed from this worktree | Integrate onto the qualified native/auth base, then verify production |
+| Hero, catalog summary, integrated search | Aligned to the reference at desktop; search remains full-width on narrow viewports and mock timestamps are deterministic | Real crawl and publisher-verification contracts remain optional/Not reported when absent |
+| Source/kind filter popover | Aligned desktop geometry; mobile hides crowded source shortcuts while retaining every source in the filter panel | Production persistence still depends on the authenticated gateway session |
+| Three recommendation rows | Reference-aligned in mock mode; live mode preserves all three rows with an explicit unavailable-evidence explanation | Canonical popularity, team-recency, and loadout-pairing contracts |
+| Six discovery feeds | All six reference tabs implemented; mock mode uses illustrative lenses, live mode retains the catalog window and explicitly says canonical feed evidence is unavailable | Server-ranked, paginated feed semantics |
+| Sort, density, layout controls | Reference-aligned trigger/menu; grid/list and comfortable/compact geometry verified in-browser | Global feed sorting remains a separate server contract |
+| Artifact cards | Reference-aligned grid/list/compact cards, search-match cues, exact mock metrics/spec chips, and truthful live evidence/action suppression | Canonical live recommendation metrics and any additional generic acquisition semantics |
+| Centered inspection modal | Mock preview matches the reference desktop/mobile geometry, README/install/upstream content, expandable contents, format menu, and action strip; live mode retains the real provenance/revision/readme/import inspector | Generic live Fork/Send semantics remain intentionally unexposed until authority contracts are exact |
+| States | Loading, empty, partial-provider, expired-window, all-failed coverage, and unavailable-feed behavior have explicit render/model tests | End-to-end failed-Depot UI requires an authenticated live gateway session |
+| Responsive interactions | Desktop/mobile, grid/list/compact, search/filters, Escape/outside close, focus restoration, no horizontal overflow, and dark/light themes verified in-browser | Re-verify after production deployment |
+| Deployment | Branch implementation is committed but not production-verified by this document | Push/integrate onto the qualified native/auth base, deploy, then verify the same state matrix |
 
 ### Verification notes, 2026-09-08
 
@@ -95,3 +98,41 @@ to Depot's 1,024-character limit, while still rejecting structured declarations,
 oversized values, and unknown license fields. The inspector displays the supplied
 declaration without implying that it has been reviewed. The focused 25-test
 client/card/model suite and desktop/mobile browser regression pass on Node 22.
+
+### Verification notes, 2026-09-15
+
+A side-by-side Playwright comparison against the locally extracted Gateway Console
+reference verified the default 1440 px Discover geometry, search state, empty state,
+filter panel, three recommendation rails, six shelf tabs, display-options popover,
+grid/list/compact result geometry, and the artifact inspector. The first default
+reference/live grid card measures 324.5 x 232 px at the same coordinates; the
+reference/live desktop inspector measures 722 x 466 px. At 390 x 844, the aligned
+preview inspector measures 342 x 637.140625 px with 24 px side gutters, while the
+Discover page remains one column with no horizontal overflow.
+
+Mock-only presentation logic is isolated from production semantics: reference
+metrics preserve their illustrative strings, kind teaching chips are derived only
+from the mock dataset, the design-time clock is fixed to the mock epoch, and the
+illustrative depot add command appears only in preview mode. Production cards and
+the production inspector continue to render only returned evidence and exact
+Artifact import/provenance operations.
+
+Dark and light modes were exercised through next-themes' persisted preference. The
+same card/modal geometry was retained while semantic foreground, surface, border,
+and shadow tokens changed as expected. Escape, explicit close, and actual backdrop
+interaction close the URL-controlled inspector, and focus returns to the originating
+artifact card. Selecting an install-format target closes its popover.
+
+Focused Discover regressions, the full Gateway Admin test suite, full ESLint,
+TypeScript, the 63-route production static build, route bundle budgets, and static
+build-ID verification passed on the declared Node 22 runtime after these changes.
+The repository's broad gateway-detail browser harness was also attempted separately;
+it exceeded the execution window and left a Node 24 test-runner child despite an
+explicit Node 22 parent, so that harness is not counted as passing evidence here.
+The Discover-specific Playwright state matrix described above completed directly.
+
+A disposable non-mock standalone preview was also started from an isolated app copy.
+It reached Labby's authentication boundary and rendered the authentication-error
+surface before Depot discovery could execute; therefore an end-to-end failed-Depot
+visual remains a deployment/authenticated-gateway verification item rather than
+being inferred from an unauthenticated dev preview.

@@ -500,6 +500,10 @@ pub fn build_route_descriptors() -> Vec<RouteDescriptor> {
         crate::api::services::agents::descriptors(),
     ));
     routes.extend(prefixed(
+        "/v1/phoenix",
+        crate::api::services::phoenix::descriptors(),
+    ));
+    routes.extend(prefixed(
         "/v1/tasks",
         crate::api::services::tasks::descriptors(),
     ));

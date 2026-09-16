@@ -267,6 +267,25 @@ fn seed_authority_fixtures(root: &std::path::Path) {
     use sha2::Digest as _;
 
     let connection = rusqlite::Connection::open(root.join("labby-home/access.db")).unwrap();
+    let image_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let catalog = labby_runtime::dev_container_image_runtime::ApprovedProvisionCatalog::deny_all();
+    let manifest = serde_json::json!({
+        "schema_version": 1,
+        "template_id": "matrix-template",
+        "source_build_id": "matrix-build",
+        "source_revision": 1,
+        "source_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "image_digest": image_digest,
+        "catalog_generation": catalog.generation(),
+        "catalog_digest": catalog.digest(),
+        "network_mask": 0,
+        "profiles": [],
+        "environment": [],
+    });
+    let manifest_digest = format!(
+        "sha256:{}",
+        hex::encode(sha2::Sha256::digest(serde_json::to_vec(&manifest).unwrap()))
+    );
     connection
         .execute(
             "INSERT OR IGNORE INTO principals(principal_id,organization_id,kind,status,display_name,created_at,updated_at) VALUES(?1,'bootstrap-local','user','active',NULL,1,1)",
@@ -275,8 +294,32 @@ fn seed_authority_fixtures(root: &std::path::Path) {
         .unwrap();
     connection
         .execute(
-            "INSERT OR IGNORE INTO dev_container_templates(template_id,image_digest,max_active_instances,cpu_millis,memory_bytes,disk_bytes,max_lifetime_seconds,host_capabilities_json,status,policy_epoch,created_at,updated_at) VALUES('matrix-template','sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',32,1000,1073741824,1073741824,3600,'[]','approved',1,1,1)",
+            "INSERT OR IGNORE INTO dev_container_templates(template_id,image_digest,max_active_instances,cpu_millis,memory_bytes,disk_bytes,max_lifetime_seconds,host_capabilities_json,status,policy_epoch,created_at,updated_at) VALUES('matrix-template',?1,32,1000,1073741824,1073741824,3600,'[]','approved',1,1,1)",
+            [image_digest],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO dev_container_template_drafts(template_id,owner_kind,owner_id,base_template_id,definition_json,max_active_instances,cpu_millis,memory_bytes,disk_bytes,max_lifetime_seconds,revision,authority_fingerprint,created_at,updated_at) VALUES('matrix-template','personal','bootstrap-owner','matrix-template','{}',32,1000,1073741824,1073741824,3600,1,'matrix-fixture',1,1)",
             [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO dev_container_image_builds(build_id,request_id,actor_principal_id,identity_ref_json,ceiling_json,template_id,source_revision,source_digest,source_snapshot_json,lifecycle_nonce,builder_instance_name,request_kind,state,step,progress,output_image_digest,authority_fingerprint,created_at,updated_at,started_at,completed_at) VALUES('matrix-build','matrix-request','matrix-principal','{}','{}','matrix-template',1,'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb','{}','0123456789abcdef0123456789abcdef','matrix-build-fixture','build','succeeded','complete',100,?1,'matrix-fixture',1,1,1,1)",
+            [image_digest],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO dev_container_launch_manifests(manifest_digest,template_id,source_build_id,source_revision,source_digest,image_digest,catalog_generation,catalog_digest,network_mask,profiles_json,environment_json,created_at) VALUES(?1,'matrix-template','matrix-build',1,'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',?2,?3,?4,0,'[]','[]',1)",
+            rusqlite::params![manifest_digest, image_digest, catalog.generation(), catalog.digest()],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE dev_container_templates SET launch_manifest_digest=?1 WHERE template_id='matrix-template'",
+            [&manifest_digest],
         )
         .unwrap();
     connection
@@ -385,7 +428,11 @@ async fn prepare_authority_action(
                 base,
                 "/v1/agents",
                 "agents.run",
-                serde_json::json!({"agent_id":params["agent_id"]}),
+                serde_json::json!({
+                    "agent_id": params["agent_id"],
+                    "input": "Inspect the isolated Agent fixture",
+                    "idempotency_key": format!("status-prerequisite-{action_id}"),
+                }),
                 true,
             )
             .await;

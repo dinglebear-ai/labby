@@ -1,7 +1,7 @@
 ---
 title: "Runtime Configuration"
 created: "2026-07-30"
-updated: "2026-08-26"
+updated: "2026-09-13"
 ---
 
 # Runtime Configuration
@@ -96,9 +96,37 @@ over `config.toml` with mode `0600`, and restarting before running doctor again.
 - `[public_urls]`: canonical external URLs.
 - `[[artifacts.sources]]`: server-owned exact Artifact acquisition
   connections used by durable Skill Library imports.
+- `[phoenix]`: container-local Codex App Server launch boundary for the Phoenix
+  assistant.
 
 Top-level gateway timeouts, import mode, tombstones, pending imports, and
 quarantined virtual servers are serialized alongside those sections.
+
+## Phoenix Assistant
+
+Phoenix is disabled by default. Enabling it requires absolute `command`,
+`codex_home`, and `workspace_root` paths in `[phoenix]`. Those paths resolve in
+the Labby runtime environment and must point to the Codex executable, its
+isolated account/configuration directory, and a container-owned workspace.
+Phoenix starts Codex through `codex app-server --stdio`, performs the versioned
+initialize handshake, and uses `thread/start` or `thread/resume` followed by
+`turn/start`. It forces `approvalPolicy = "never"` and `sandbox = "read-only"`;
+App Server requests that need interactive approval are rejected instead of
+being forwarded to the browser.
+
+The HTTP surface is `POST /v1/phoenix`. It requires a verified Labby identity,
+uses the browser session CSRF token for session and turn mutations, and maps
+opaque Phoenix session IDs to Codex thread IDs on the server. Codex paths,
+credentials, and thread IDs are never returned to the browser. Phoenix sessions
+survive individual App Server subprocesses through Codex's container-local
+thread store, while the opaque browser-to-thread mapping is process scoped and
+is reset when Labby restarts.
+
+Provision the Codex binary and authenticate the isolated `codex_home` inside
+the Incus container before setting `enabled = true`. Do not point this section
+at a mounted developer home or a remote App Server. The annotated example in
+[../../config/config.example.toml](../../config/config.example.toml) uses the
+Codex binary and home already provisioned by the supported Incus image.
 
 ## Depot Discovery Configuration
 

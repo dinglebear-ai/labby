@@ -52,8 +52,8 @@ test('buildLiveFleetStats counts connected vs offline servers', () => {
   ])
 
   assert.equal(stats.totalServers, 3)
-  assert.equal(stats.connectedServers, 1) // only connected AND healthy
-  assert.equal(stats.offlineServers, 2)
+  assert.equal(stats.connectedServers, 2) // Warnings do not disconnect an upstream.
+  assert.equal(stats.offlineServers, 1)
   assert.equal(stats.discoveredTools, 14)
   assert.equal(stats.exposedTools, 6)
   assert.equal(stats.warnings, 3)
@@ -68,13 +68,14 @@ test('buildLiveFleetStats handles empty fleet', () => {
 
 test('buildLiveFleetStats does not report intentionally disabled servers as offline', () => {
   const stats = buildLiveFleetStats([
-    gateway({ enabled: false, connected: false, healthy: false }),
-    gateway({ enabled: true, connected: false, healthy: false }),
+    gateway({ enabled: false, connected: false, healthy: false, exposed: 99 }),
+    gateway({ enabled: true, connected: false, healthy: false, exposed: 3 }),
   ])
 
   assert.equal(stats.totalServers, 2)
   assert.equal(stats.connectedServers, 0)
   assert.equal(stats.offlineServers, 1)
+  assert.equal(stats.exposedTools, 3)
 })
 
 test('formatCompactNumber abbreviates and trims trailing zero', () => {
@@ -117,4 +118,11 @@ test('warningsSignature is order-independent and tracks set changes', () => {
 
   assert.notEqual(s1, warningsSignature([mk('a', 'x', 'y')])) // removing a warning re-surfaces
   assert.equal(warningsSignature([]), '')
+})
+
+test('disabled servers with retained healthy status are not counted as healthy or offline', () => {
+  const stats = buildLiveFleetStats([gateway({ enabled: false, connected: true, healthy: true }), gateway({ enabled: true, connected: true, healthy: true })])
+  assert.equal(stats.totalServers, 2)
+  assert.equal(stats.connectedServers, 1)
+  assert.equal(stats.offlineServers, 0)
 })

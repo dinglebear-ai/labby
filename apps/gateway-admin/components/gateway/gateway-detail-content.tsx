@@ -8,13 +8,12 @@ import {
   type ButtonHTMLAttributes,
   type ReactNode,
 } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import {
   Play,
   RefreshCw,
   Pencil,
   Trash2,
-  Check,
   AlertTriangle,
   Clock,
   FileText,
@@ -49,7 +48,6 @@ import {
   removeGatewayDescription,
 } from './gateway-confirmations'
 import { AppHeader } from '@/components/app-header'
-import { useConsoleShell } from '@/components/console/console-shell-context'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
@@ -76,7 +74,13 @@ import { openIsolatedOauthPopup } from '@/lib/oauth-popup'
 import { useStableToolExposure } from './use-stable-tool-exposure'
 import { GatewayEnabledSetting } from './gateway-enabled-setting'
 import { ProtectedMcpRoutesPanel } from './protected-mcp-routes-panel'
+import useSWR from 'swr'
+import { fetchToolCalls, fetchGatewayUsageMetrics } from '@/lib/api/metrics-client'
+import { LogsPageContent } from '@/components/logs/logs-page-content'
+import { GatewayCompactCatalog } from './gateway-compact-catalog'
+import { GatewayActivityPanels } from './gateway-activity-panels'
 import { gatewayDetailStatus } from './gateway-detail-status'
+import { gatewayDisplayName } from '@/lib/gateway-display-name'
 import {
   DETAIL_NO_DATA,
   DETAIL_PANEL_GRID_STYLE,
@@ -222,10 +226,12 @@ function formatGatewayTimestamp(value: string | null | undefined): string {
 }
 
 export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
-  const { setSidebarCollapsed } = useConsoleShell()
   const router = useRouter()
+  const searchParams = useSearchParams()
   const { data: gateway, isLoading, error } = useGateway(gatewayId)
   const { data: protectedRoutes = [] } = useProtectedMcpRoutes()
+  const usage = useSWR(gatewayId ? ['gateway-detail-calls', gatewayId] : null, () => fetchToolCalls({ window: '24h', upstream: gatewayId!, limit: 5 }), { revalidateOnFocus: false })
+  const usageMetrics = useSWR(gatewayId ? ['gateway-detail-metrics', gatewayId] : null, () => fetchGatewayUsageMetrics('24h', gatewayId!), { revalidateOnFocus: false })
   const {
     testGateway,
     reloadGateway,
@@ -244,7 +250,6 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
   const [isReloading, setIsReloading] = useState(false)
   const [isCleaningRuntime, setIsCleaningRuntime] = useState(false)
   const [isAggressiveCleanup, setIsAggressiveCleanup] = useState(false)
-  const [configCopied, setConfigCopied] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
   const [removeConfirmationOpen, setRemoveConfirmationOpen] = useState(false)
   const [manageToolsMode, setManageToolsMode] = useState(false)
@@ -257,7 +262,8 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
   const [envDraft, setEnvDraft] = useState('')
   const [headerMenuOpen, setHeaderMenuOpen] = useState(false)
   const [isStartingOauth, setIsStartingOauth] = useState(false)
-  const [activeTab, setActiveTab] = useState<'overview' | 'catalog' | 'activity' | 'routes' | 'runtime' | 'config' | 'settings' | 'warnings' | 'logs'>('overview')
+  const [catalogEditorOpen, setCatalogEditorOpen] = useState(false)
+  const [activeTab, setActiveTab] = useState<'overview' | 'catalog' | 'activity' | 'routes' | 'runtime' | 'config' | 'settings' | 'warnings' | 'logs'>(searchParams.get('tab') === 'logs' ? 'logs' : 'overview')
   const [testResult, setTestResult] = useState<{ gateway: Gateway; result: Awaited<ReturnType<typeof testGateway>> } | null>(null)
   const [cleanupResult, setCleanupResult] = useState<{ gateway: Gateway; result: Awaited<ReturnType<typeof cleanupGateway>> } | null>(null)
   const [hasMounted, setHasMounted] = useState(false)
@@ -294,12 +300,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
 
   useEffect(() => {
     setHasMounted(true)
-    // The shell restores its persisted preference after hydration. Apply the
-    // server-detail compact rail on the next frame so that restore cannot
-    // overwrite the page-specific layout.
-    const frame = window.requestAnimationFrame(() => setSidebarCollapsed(true))
-    return () => window.cancelAnimationFrame(frame)
-  }, [setSidebarCollapsed])
+  }, [])
 
   useEffect(() => {
     setDraftSelectedToolNames(currentExposedToolNames)
@@ -378,9 +379,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
   const handleCopyConfig = async () => {
     try {
       await navigator.clipboard.writeText(clientConfigJson)
-      setConfigCopied(true)
       toast.success('Configuration copied to clipboard')
-      setTimeout(() => setConfigCopied(false), 2000)
     } catch {
       toast.error('Failed to copy configuration to clipboard')
     }
@@ -686,10 +685,10 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
     order is Test · View in Logs · Reload · Generate skill · Edit · More, where
     More is a chevron menu holding Copy .mcp.json / Enable-Disable / Remove.
 
-    Two of those have nothing behind them here — there is no per-server log
-    route and no skill generator — so they are omitted rather than rendered
-    dead. Remove stays a visible button instead of moving into a More menu we
-    have no other occupants for; its confirm flow is unchanged.
+    View in Logs uses the real detail log tab. Generate skill opens the Create
+    workspace with a draft derived from this server's current discovery catalog,
+    so the mock affordance is functional rather than decorative. More keeps
+    configuration, client-config copy, and destructive removal together.
   */
   const headerActions = (
     <div className="relative flex h-8 items-center" style={{ gap: 5 }}>
@@ -718,7 +717,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
         </DetailTopbarButton>
       )}
       <DetailTopbarButton
-        onClick={() => router.push(`/logs?server=${encodeURIComponent(gateway.id)}`)}
+        onClick={() => setActiveTab('logs')}
         aria-label="View server logs"
         title="View in Logs"
       >
@@ -735,9 +734,14 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
         </DetailTopbarButton>
       )}
       <DetailTopbarButton
-        onClick={() => router.push(`/create?gateway=${encodeURIComponent(gateway.id)}`)}
-        aria-label="Create artifact from server"
-        title="Generate artifact"
+        onClick={() => router.push(`/create?gateway=${encodeURIComponent(gateway.id)}&intent=generate-skill`)}
+        aria-label="Generate skill"
+        title="Generate SKILL.md from this server's schema"
+        style={{
+          borderColor: 'color-mix(in srgb, var(--aurora-accent-pink-deep) 55%, transparent)',
+          background: 'color-mix(in srgb, var(--aurora-accent-pink) 8%, var(--aurora-control-surface))',
+          color: 'var(--aurora-accent-pink)',
+        }}
       >
         <Sparkles size={13} />
       </DetailTopbarButton>
@@ -765,14 +769,21 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
   const isEnabled = gateway.enabled ?? true
   const detailStatus = gatewayDetailStatus({ enabled: isEnabled, connected: gateway.status.connected, healthy: gateway.status.healthy })
   const statusLabel = detailStatus.label
-  const statusDotColor = detailStatus.tone === 'connected' ? 'var(--aurora-accent-strong)' : 'var(--aurora-error)'
-  const statusDotHalo = detailStatus.tone === 'connected' ? 'rgba(103,203,250,0.16)' : 'rgba(199,132,144,0.10)'
+  const displayName = gateway.display_name?.trim() ? gatewayLabel(gateway) : gatewayDisplayName(gateway.name)
+  const statusDotColor = detailStatus.tone === 'connected'
+    ? 'var(--aurora-accent-strong)'
+    : detailStatus.tone === 'disabled'
+      ? 'var(--aurora-text-muted)'
+      : 'var(--aurora-error)'
+  const statusDotHalo = detailStatus.tone === 'connected'
+    ? 'rgba(103,203,250,0.16)'
+    : detailStatus.tone === 'disabled'
+      ? 'rgba(137,163,180,0.10)'
+      : 'rgba(199,132,144,0.10)'
   const transportLabel =
     gateway.transport === 'http' ? 'HTTP' : gateway.transport === 'stdio' ? 'STDIO' : 'IN-PROCESS'
   // Mock: dChips — PID, runtime age, and a Disabled marker.
   const headerChips = [
-    ...(gateway.status.pid ? [{ label: `PID ${gateway.status.pid}`, title: 'Runtime process id' }] : []),
-    ...(runtimeAgeLabel ? [{ label: runtimeAgeLabel, title: 'Runtime age' }] : []),
     ...(isEnabled ? [] : [{ label: 'Disabled', title: 'Excluded from the active catalog' }]),
   ]
   // Mock: dExposureStats — the strip's leading cell, one row per primitive kind.
@@ -795,12 +806,6 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
       exposed: gateway.status.exposed_prompt_count,
       discovered: gateway.status.discovered_prompt_count,
     },
-    {
-      label: 'Skills',
-      icon: <BookOpen size={13} />,
-      exposed: gateway.status.exposed_skill_count ?? 0,
-      discovered: gateway.status.discovered_skill_count ?? 0,
-    },
   ]
   const totalExposedPrimitives = exposureStats.reduce((total, stat) => total + stat.exposed, 0)
   const totalDiscoveredPrimitives = exposureStats.reduce((total, stat) => total + stat.discovered, 0)
@@ -817,31 +822,27 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
   }> = [
     {
       label: 'Calls',
-      value: DETAIL_NO_DATA,
+      value: usage.data?.filtered ?? DETAIL_NO_DATA,
       sub: 'last 24h',
-      title: 'Call volume · last 24h — not reported by the gateway API',
+      title: 'Retained upstream calls · last 24h',
     },
     {
       label: 'Errors',
-      value: DETAIL_NO_DATA,
+      value: usage.data?.analytics.failed ?? DETAIL_NO_DATA,
       sub: 'last 24h',
-      title: 'Errors · last 24h — not reported by the gateway API',
+      title: 'Failed upstream calls · last 24h',
     },
     {
-      label: 'Process',
-      value: gateway.status.pid ? `pid ${gateway.status.pid}` : DETAIL_NO_DATA,
-      sub: gateway.status.pid ? `pgid ${gateway.status.pgid ?? DETAIL_NO_DATA}` : 'not running',
-    },
-    {
-      label: 'Stale',
-      value: gateway.status.likely_stale_count ?? 0,
-      sub: 'likely_stale_count',
-    },
-    {
-      label: 'Memory',
+      label: 'Clients',
       value: DETAIL_NO_DATA,
-      sub: 'child RSS not reported',
-      title: 'Child-process memory is not reported by the gateway API',
+      sub: 'not reported per server',
+      title: 'Connected client inventory is gateway-wide and does not report per-upstream connections',
+    },
+    {
+      label: 'P50 latency',
+      value: usageMetrics.data ? `${usageMetrics.data.p50_elapsed_ms} ms` : DETAIL_NO_DATA,
+      sub: 'last 24h',
+      title: 'Median retained call duration over the last 24 hours',
     },
   ]
   /*
@@ -930,12 +931,12 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
       <AppHeader
         breadcrumbs={[
           { label: 'Gateway', href: '/gateways' },
-          { label: gateway.name }
+          { label: displayName }
         ]}
         actions={headerActions}
       />
 
-      <div className="flex-1 p-6 min-w-0 overflow-x-hidden">
+      <div className="flex-1 min-w-0 overflow-x-hidden">
         {!(gateway.enabled ?? true) ? (
           <div className="mb-4 flex items-start gap-3 rounded-lg border border-aurora-warn/30 bg-aurora-warn/10 px-4 py-3">
             <AlertTriangle className="mt-0.5 size-4 shrink-0 text-aurora-warn" />
@@ -947,7 +948,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
             </div>
           </div>
         ) : null}
-        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as typeof activeTab)} className="space-y-4">
+        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as typeof activeTab)} className="gap-3.5">
           {/*
             Header card — the mock's gateway detail *page* header, re-measured
             2026-08-14. Reaching it means clicking the server *name* (an <a> in
@@ -972,7 +973,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
             padding="16px 20px 0"
             style={{ borderRadius: 'var(--radius-3)', overflow: 'hidden' }}
           >
-            <div className="flex items-start justify-between gap-4">
+            <div data-detail-heading="1" className="flex items-start justify-between gap-4">
               <div className="min-w-0 flex-1">
                 <div className="flex min-w-0 flex-wrap items-center gap-2.5">
                   <span
@@ -988,6 +989,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                     }}
                   />
                   <h1
+                    title={gateway.name}
                     className="font-display break-words"
                     style={{
                       margin: 0,
@@ -998,7 +1000,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                       color: 'var(--aurora-text-primary)',
                     }}
                   >
-                    {gatewayLabel(gateway)}
+                    {displayName}
                   </h1>
                   {headerChips.map((chip) => (
                     <span
@@ -1029,8 +1031,8 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
               </div>
 
               {/* Meta lane — mock: transport, version, protocol, auth, status reason. */}
-              <div className="min-w-0 shrink-0 pt-1">
-                <div className="flex flex-wrap items-center justify-end gap-2.5 text-[11px] leading-none text-aurora-text-muted">
+              <div data-detail-meta="1" className="min-w-0 shrink-0 pt-1">
+                <div data-detail-meta-content="1" className="flex flex-wrap items-center justify-end gap-2.5 text-[11px] leading-none text-aurora-text-muted">
                   <HeaderMetaButton
                     onClick={async () => {
                       try {
@@ -1040,7 +1042,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                         toast.error('Failed to copy to clipboard')
                       }
                     }}
-                    aria-label="Copy command"
+                    aria-label={gateway.transport === 'http' ? 'Copy HTTP target' : 'Copy command'}
                     title={endpointDisplay}
                     style={{
                       color:
@@ -1050,13 +1052,6 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                     }}
                   >
                     {gateway.transport === 'http' ? <Globe size={15} /> : <Terminal size={15} />}
-                  </HeaderMetaButton>
-                  <HeaderMetaButton
-                    onClick={handleCopyConfig}
-                    aria-label="Copy client configuration"
-                    title="Copy .mcp.json entry"
-                  >
-                    {configCopied ? <Check size={14} /> : <Braces size={14} />}
                   </HeaderMetaButton>
                   <HeaderMetaDot />
                   <span style={{ fontWeight: 650 }}>{transportLabel}</span>
@@ -1095,60 +1090,18 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                       </DetailWarnPill>
                     </>
                   ) : null}
-                  {gateway.warnings.length > 0 ? (
-                    <>
-                      <HeaderMetaDot />
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <DetailWarnPill
-                            onClick={() => setActiveTab('warnings')}
-                            aria-label={`Open warnings (${gateway.warnings.length})`}
-                            style={{ height: 22, padding: '0 8px', borderRadius: 7 }}
-                          >
-                            <AlertTriangle size={11} />
-                            {gateway.warnings.length}
-                          </DetailWarnPill>
-                        </TooltipTrigger>
-                        <TooltipContent side="bottom" className="max-w-xs">
-                          {gateway.warnings[0].message}
-                          {gateway.warnings.length > 1 && (
-                            <span className="block mt-1 text-xs opacity-70">
-                              +{gateway.warnings.length - 1} more — see Warnings tab
-                            </span>
-                          )}
-                        </TooltipContent>
-                      </Tooltip>
-                    </>
-                  ) : null}
-                  {gateway.status.last_error ? (
+                  {gateway.warnings.length > 0 || (gateway.status.likely_stale_count ?? 0) > 0 ? (
                     <>
                       <HeaderMetaDot />
                       <span
-                        title={gateway.status.last_error}
-                        aria-label={`Status reason: ${gateway.status.last_error}`}
-                        className="inline-grid place-items-center text-aurora-warn"
-                        style={{ width: 18, height: 18, borderRadius: 5 }}
+                        className="inline-grid size-[18px] place-items-center rounded-[5px] text-aurora-warn"
+                        title={gateway.warnings[0]?.message ?? `${gateway.status.likely_stale_count} likely stale processes`}
+                        aria-label="Server needs attention"
                       >
                         <AlertTriangle size={13} />
                       </span>
                     </>
                   ) : null}
-                  <HeaderMetaDot />
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        className="inline-flex cursor-default items-center gap-1.5"
-                        style={{ fontVariantNumeric: 'tabular-nums' }}
-                        title={updatedAtLabel}
-                        aria-label={`Last updated ${updatedAtLabel}`}
-                      >
-                        <Clock size={11} />
-                        {updatedAtLabel}
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent side="left">{updatedAtLabel}</TooltipContent>
-                  </Tooltip>
                 </div>
               </div>
             </div>
@@ -1214,7 +1167,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                     gateway.discovery.prompts.length
                   }
                 />
-                <DetailTabTrigger value="activity" active={activeTab === 'activity'} label="Activity" />
+                <DetailTabTrigger value="activity" active={activeTab === 'activity'} label="Activity" count={usage.data?.filtered} />
                 <DetailTabTrigger
                   value="routes"
                   active={activeTab === 'routes'}
@@ -1229,47 +1182,26 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
 
           {/* Tab content */}
           <TabsContent value="overview">
-            <div className="space-y-4">
-              <div className="grid gap-3 xl:grid-cols-3">
+            <div className="space-y-3.5">
+              <div style={DETAIL_KV_GRID_STYLE}>
                 <DetailKeyValueCard label="Catalog" rows={[
                   { label: 'Tools · exposed / discovered', value: `${gateway.discovery.tools.filter((item) => item.exposed).length} / ${gateway.discovery.tools.length}` },
                   { label: 'Prompts', value: `${gateway.discovery.prompts.filter((item) => item.exposed).length} / ${gateway.discovery.prompts.length}` },
                   { label: 'Resources', value: `${gateway.discovery.resources.filter((item) => item.exposed).length} / ${gateway.discovery.resources.length}` },
                   { label: 'Skills', value: `${gateway.status.exposed_skill_count ?? 0} / ${gateway.status.discovered_skill_count ?? 0}` },
-                  { label: 'Most used tool', value: DETAIL_NO_DATA },
-                  { label: 'Most problematic', value: gateway.warnings.length ? gateway.warnings[0].code : 'none' },
+                  { label: 'Most used tool', value: usageMetrics.data?.top_tools[0]?.tool ?? DETAIL_NO_DATA },
+                  { label: 'Most problematic', value: usageMetrics.data ? [...usageMetrics.data.top_tools].sort((a, b) => b.failed - a.failed).find((tool) => tool.failed > 0)?.tool ?? 'none' : DETAIL_NO_DATA },
                 ]}/>
                 <DetailKeyValueCard label={gateway.transport === 'stdio' ? 'Process & storage' : 'Connection & network'} rows={runtimeFactRows}/>
                 <DetailKeyValueCard label="Server metadata" rows={serverMetadataRows}/>
               </div>
-              <div className="grid gap-3 xl:grid-cols-[minmax(0,3fr)_minmax(360px,2fr)]">
-                <DetailCard padding="0" className="overflow-hidden">
-                  <div className="flex h-10 items-center justify-between border-b border-aurora-border-subtle px-4">
-                    <span className="text-[10px] font-bold uppercase tracking-[.15em] text-aurora-text-muted">Tool calls · success vs errors · 24h</span>
-                    <span className="text-[10px] text-aurora-text-muted">Telemetry unavailable</span>
-                  </div>
-                  <div className="relative h-44 px-4 py-4">
-                    <div className="absolute inset-x-4 bottom-7 border-t border-aurora-border-subtle"/>
-                    <div className="absolute inset-x-4 top-1/3 border-t border-dashed border-aurora-border-subtle/70"/>
-                    <div className="absolute inset-x-4 top-2/3 border-t border-dashed border-aurora-border-subtle/70"/>
-                    <div className="grid h-full place-items-center text-xs text-aurora-text-muted">No call telemetry reported by this server</div>
-                    <span className="absolute bottom-2 left-4 text-[10px] text-aurora-text-muted">00:00</span>
-                    <span className="absolute bottom-2 right-4 text-[10px] text-aurora-text-muted">now</span>
-                  </div>
-                </DetailCard>
-                <DetailCard padding="0" className="overflow-hidden">
-                  <div className="flex h-10 items-center justify-between border-b border-aurora-border-subtle px-4">
-                    <span className="text-[10px] font-bold uppercase tracking-[.15em] text-aurora-text-muted">Recent calls</span>
-                    <button type="button" onClick={() => router.push(`/usage?server=${encodeURIComponent(gateway.id)}`)} className="text-[10px] font-semibold text-aurora-text-muted hover:text-aurora-text-primary">View Activity →</button>
-                  </div>
-                  <div className="grid h-44 place-items-center px-4 text-xs text-aurora-text-muted">No recent calls reported by the gateway API</div>
-                </DetailCard>
-              </div>
+              <GatewayActivityPanels data={usage.data} metrics={usageMetrics.data} error={usage.error} metricsError={usageMetrics.error} isLoading={usage.isLoading} onRetry={() => { void usage.mutate(); void usageMetrics.mutate() }} onOpenActivity={(callId) => router.push(`/usage?upstream=${encodeURIComponent(gateway.id)}${callId ? `&focus=${encodeURIComponent(callId)}` : ''}`)} />
             </div>
           </TabsContent>
 
           <TabsContent value="catalog">
-            <div className="space-y-4">
+            <GatewayCompactCatalog gateway={gateway} onSave={(config) => config.expose_tools ? setExposurePolicy(gateway.id, buildExposurePolicyFromDraft(allToolNames, config.expose_tools)) : updateGateway(gateway.id, { config })} onAdvanced={() => setCatalogEditorOpen((value) => !value)} />
+            {catalogEditorOpen ? <div className="mt-3.5 space-y-3.5">
               <DetailCard padding="14px 20px 16px">
                 <div className="space-y-3">
                   <div className="relative">
@@ -1460,16 +1392,16 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                   <p className="mt-2 text-sm text-aurora-text-muted">{gateway.config.proxy_mcp_ui ? 'UI resource proxying is enabled, but no individual UI resources were returned.' : 'Nothing of this type discovered.'}</p>
                 </DetailCard>
               ) : null}
-            </div>
+            </div> : null}
           </TabsContent>
 
           <TabsContent value="config">
             <DetailCard padding="0" className="overflow-hidden border-aurora-accent-primary/40">
-              <div className="flex h-12 items-center justify-between border-b border-aurora-border-subtle px-4">
+              <div className="flex h-12 items-center justify-between border-b border-aurora-border-subtle px-4" style={{ background: 'var(--gw0-0_38)' }}>
                 <div className="flex items-center gap-2 text-xs text-aurora-text-muted"><span>{gateway.name}</span><span>/</span><strong className="text-aurora-text-primary">.env</strong><Badge variant="outline" className="text-[9px] uppercase">Virtual</Badge></div>
-                <div className="flex gap-2"><Button variant="outline" size="sm" disabled>Revert</Button><Button size="sm" disabled>Save &amp; Restart</Button></div>
+                <div className="flex gap-2"><Button variant="outline" size="sm" className="h-[26px] rounded-lg px-2 text-[11px]" title="Values are hidden; use Edit server to replace variables" disabled>Revert</Button><Button size="sm" className="h-[26px] rounded-lg px-2 text-[11px]" title="Values are hidden; use Edit server to replace variables" disabled>Save &amp; Restart</Button></div>
               </div>
-              <div className="gateway-env-editor h-[380px] bg-aurora-page-bg">
+              <div className="gateway-env-editor h-[380px]" style={{ background: 'var(--gw1-0_62)' }}>
                 <EnvTextSurface path={`${gateway.name}/.env`} value={envDraft || '# Environment values are not returned by the gateway API.\n# Use Edit server to replace variables safely.'} mode="view" language="dotenv" embedded showToolbar={false}/>
               </div>
               <div className="flex h-8 items-center justify-between border-t border-aurora-border-subtle px-4 text-[10px] text-aurora-text-muted"><span>Values hidden</span><span>Secrets stay on the gateway; this view never interprets hidden values as empty.</span></div>
@@ -1477,15 +1409,9 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
           </TabsContent>
 
           <TabsContent value="activity">
-            <div className="grid gap-3 xl:grid-cols-2">
-              <DetailCard padding="0" className="overflow-hidden border-aurora-accent-primary/40">
-                <div className="border-b border-aurora-border-subtle px-4 py-3 text-[10px] font-bold uppercase tracking-[.15em] text-aurora-text-muted">Calls by tool · last 24 hours</div>
-                <div className="grid min-h-20 place-items-center px-4 text-xs text-aurora-text-muted">No per-tool call telemetry reported by the gateway API</div>
-              </DetailCard>
-              <DetailCard padding="0" className="overflow-hidden">
-                <div className="border-b border-aurora-border-subtle px-4 py-3 text-[10px] font-bold uppercase tracking-[.15em] text-aurora-text-muted">Recent calls</div>
-                <div className="grid min-h-20 place-items-center px-4 text-xs text-aurora-text-muted">No recent calls reported by the gateway API</div>
-              </DetailCard>
+            <div className="space-y-3">
+              <GatewayActivityPanels detailed data={usage.data} metrics={usageMetrics.data} error={usage.error} metricsError={usageMetrics.error} isLoading={usage.isLoading} onRetry={() => { void usage.mutate(); void usageMetrics.mutate() }} onOpenActivity={(callId) => router.push(`/usage?upstream=${encodeURIComponent(gateway.id)}${callId ? `&focus=${encodeURIComponent(callId)}` : ''}`)} />
+
             </div>
           </TabsContent>
 
@@ -1694,18 +1620,18 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                 <div style={DETAIL_PANEL_GRID_STYLE}>
                   <DetailMiniList
                     label="Clients · 24h"
-                    rows={[]}
-                    title="Per-client call counts. Not reported by the gateway API."
+                    rows={(usageMetrics.data?.top_actors ?? []).map((actor) => ({ name: actor.actor, value: actor.calls }))}
+                    title="Retained calls by client identity"
                   />
                   <DetailMiniList
                     label="Top tools · 24h"
-                    rows={[]}
-                    title="Per-tool call counts. Not reported by the gateway API."
+                    rows={(usageMetrics.data?.top_tools ?? []).map((tool) => ({ name: tool.tool, value: tool.calls }))}
+                    title="Retained calls by upstream tool"
                   />
                   <DetailMiniList
                     label="Calls · 24h"
-                    rows={[]}
-                    title="Call volume over the last 24h. Not reported by the gateway API."
+                    rows={usageMetrics.data ? [{ name: 'Total', value: usageMetrics.data.total_calls }, { name: 'Errors', value: usageMetrics.data.error_calls }] : []}
+                    title="Retained call volume over the last 24 hours"
                   />
                 </div>
               </div>
@@ -1817,12 +1743,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
               </DetailCard>
             </TabsContent>
           )}
-          <TabsContent value="logs">
-            <DetailCard padding="0" className="overflow-hidden border-aurora-accent-primary/40">
-              <div className="flex h-12 items-center justify-between border-b border-aurora-border-subtle px-4"><span className="text-[10px] font-bold uppercase tracking-[.15em] text-aurora-text-muted">Server log</span><div className="flex gap-2">{['All','Info','Warn','Error','Follow'].map((label,index)=><button key={label} type="button" className={cn('rounded-aurora-1 border px-3 py-1 text-[10px] font-semibold',index===0?'border-aurora-accent-primary bg-aurora-selected-bg text-aurora-accent-strong':'border-aurora-border-subtle bg-aurora-control-surface text-aurora-text-muted')}>{label}</button>)}</div></div>
-              <div className="min-h-80 bg-aurora-page-bg px-4 py-4 font-mono text-xs text-aurora-text-muted">No retained server log entries were returned for {gateway.name}.</div>
-            </DetailCard>
-          </TabsContent>
+          <TabsContent value="logs"><LogsPageContent embedded upstream={gateway.name}/></TabsContent>
         </Tabs>
       </div>
 

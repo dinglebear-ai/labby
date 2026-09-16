@@ -7,6 +7,149 @@ const GIT_CREDENTIALS: &str =
     include_str!("../../../deploy/team-labby/team-depot-git-credentials.json.example");
 const SOURCE_BOOTSTRAP: &str = include_str!("../../../deploy/team-labby/bootstrap-team-sources.sh");
 const DEPLOYMENT_README: &str = include_str!("../../../deploy/team-labby/README.md");
+const RELEASE_DOCKERFILE: &str = include_str!("../../../config/Dockerfile");
+
+fn cargo_manifest(path: &std::path::Path) -> toml::Value {
+    let body = std::fs::read_to_string(path).expect("Cargo manifest must be readable");
+    toml::from_str(&body).expect("Cargo manifest must contain valid TOML")
+}
+
+fn release_local_package_manifests(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let workspace = cargo_manifest(&root.join("Cargo.toml"));
+    let members = workspace["workspace"]["members"]
+        .as_array()
+        .expect("workspace members are an array");
+    let mut pending = members
+        .iter()
+        .map(|member| {
+            root.join(member.as_str().expect("workspace member is a string"))
+                .join("Cargo.toml")
+        })
+        .collect::<Vec<_>>();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut manifests = Vec::new();
+
+    while let Some(manifest) = pending.pop() {
+        let manifest = manifest
+            .canonicalize()
+            .expect("local package manifest must resolve");
+        if !seen.insert(manifest.clone()) {
+            continue;
+        }
+        let parsed = cargo_manifest(&manifest);
+        for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+            let Some(dependencies) = parsed.get(section).and_then(toml::Value::as_table) else {
+                continue;
+            };
+            for dependency in dependencies.values() {
+                let Some(path) = dependency
+                    .as_table()
+                    .and_then(|table| table.get("path"))
+                    .and_then(toml::Value::as_str)
+                else {
+                    continue;
+                };
+                let candidate = manifest
+                    .parent()
+                    .expect("manifest has a parent")
+                    .join(path)
+                    .join("Cargo.toml");
+                if candidate.exists() {
+                    let candidate = candidate.canonicalize().expect("local dependency resolves");
+                    if candidate.starts_with(root) {
+                        pending.push(candidate);
+                    }
+                }
+            }
+        }
+        manifests.push(manifest);
+    }
+
+    manifests.sort();
+    manifests
+}
+
+#[test]
+fn release_dockerfile_tracks_every_local_rust_package_needed_by_the_workspace() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("workspace root resolves");
+    let manifests = release_local_package_manifests(&root);
+    assert!(
+        manifests
+            .iter()
+            .any(|manifest| manifest.ends_with("verification/crates/verify-core/Cargo.toml")),
+        "transitive local dependency audit must include verification crates"
+    );
+    assert!(
+        RELEASE_DOCKERFILE.contains("COPY verification/Cargo.toml verification/Cargo.toml"),
+        "verification crates inherit their own workspace metadata, so the cache layer must copy verification/Cargo.toml"
+    );
+    assert!(
+        RELEASE_DOCKERFILE.contains("COPY verification/ verification/"),
+        "the real verification sources must replace cache-layer stubs before the final release build"
+    );
+    assert!(
+        RELEASE_DOCKERFILE.contains("COPY formal/ formal/"),
+        "labby-model embeds formal/invariants.toml, so the final build context must include formal inputs"
+    );
+    assert!(
+        RELEASE_DOCKERFILE.contains("RUN find crates verification -type f -exec touch {} +"),
+        "real workspace and verification sources must both invalidate synthetic cache stubs"
+    );
+
+    for manifest in manifests {
+        let directory = manifest.parent().expect("package manifest has a directory");
+        let relative = directory
+            .strip_prefix(&root)
+            .expect("local package lives below workspace root")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let parsed = cargo_manifest(&manifest);
+        let package = parsed["package"]["name"]
+            .as_str()
+            .expect("local package declares package.name");
+
+        assert!(
+            RELEASE_DOCKERFILE.contains(&format!("COPY {relative}/Cargo.toml")),
+            "release Dockerfile must copy {relative}/Cargo.toml into the dependency-cache layer"
+        );
+        assert!(
+            RELEASE_DOCKERFILE.contains(&format!("      {relative}/src \\")),
+            "release Dockerfile must create a stub source directory for {relative}"
+        );
+        let stub_target = if directory.join("src/lib.rs").exists() {
+            Some(format!("{relative}/src/lib.rs"))
+        } else if directory.join("src/main.rs").exists() {
+            Some(format!("{relative}/src/main.rs"))
+        } else {
+            None
+        };
+        assert!(
+            stub_target.is_some(),
+            "local package {relative} has no standard lib.rs or main.rs cache target"
+        );
+        let stub_target = stub_target.expect("cache target existence asserted above");
+        if relative.starts_with("verification/") {
+            assert!(
+                RELEASE_DOCKERFILE.contains(&format!(
+                    "echo '//! Dependency-cache stub.' > {stub_target}"
+                )),
+                "verification cache stub must retain crate-level docs for {relative}: {stub_target}"
+            );
+        } else {
+            assert!(
+                RELEASE_DOCKERFILE.contains(&stub_target),
+                "release Dockerfile must create a stub Cargo target for {relative}: {stub_target}"
+            );
+        }
+        assert!(
+            RELEASE_DOCKERFILE.contains(&format!("cargo clean -p {package}")),
+            "release Dockerfile must clean cached local package {package} before copying real sources"
+        );
+    }
+}
 
 #[test]
 fn team_depot_mounts_a_named_private_git_credential_map() {

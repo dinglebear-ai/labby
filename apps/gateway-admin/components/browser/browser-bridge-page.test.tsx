@@ -52,6 +52,9 @@ test('failed revocation preserves confirmation for retry; successful retry close
   const root = createRoot(container)
   try {
     await act(async () => root.render(<BrowserBridgePage />))
+    assert.match(container.textContent ?? '', /1 connected/)
+    assert.equal(container.querySelectorAll('[data-console-hero-stat-icon]').length, 0)
+    assert.ok(container.querySelector('[data-browser-connection-dot]'))
     await act(async () => button('Revoke').click())
     assert.ok(document.querySelector('[data-slot="alert-dialog-content"]'))
     await act(async () => {
@@ -94,6 +97,7 @@ test('session pagination exposes older bounded pages instead of hiding them', as
   try {
     await act(async () => root.render(<BrowserBridgePage />))
     assert.deepEqual(cursors, [undefined])
+    assert.match(container.textContent ?? '', /0 connected/)
     assert.ok(document.body.textContent?.includes('Session page 1'))
     await act(async () => button('Next pages').click())
     assert.deepEqual(cursors, [undefined, 'older-page'])
