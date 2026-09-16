@@ -1085,8 +1085,8 @@ fn cleanup_match_view(matched: &GatewayCleanupMatch) -> super::types::GatewayCle
 }
 
 #[cfg(target_os = "linux")]
-fn current_and_parent_pids() -> std::collections::HashSet<u32> {
-    let mut pids = std::collections::HashSet::from([std::process::id()]);
+fn current_and_parent_pids() -> HashSet<u32> {
+    let mut pids = HashSet::from([std::process::id()]);
     let parent = nix::unistd::getppid();
     if parent.as_raw() > 0 {
         pids.insert(parent.as_raw() as u32);
