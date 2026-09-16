@@ -131,7 +131,7 @@ pub(crate) async fn build_tools_render(
 ) -> Result<ToolsRender, ToolError> {
     let raw_tools = if use_cache {
         manager
-            .code_mode_catalog_tools_cached(Some(owner), oauth_subject)
+            .code_mode_catalog_tools_cached_allowed(Some(owner), oauth_subject, allowed_upstreams)
             .await?
     } else {
         manager

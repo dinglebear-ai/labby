@@ -12,6 +12,9 @@
 //! - [`DANGEROUS_DOCKER_FLAGS`] / [`DANGEROUS_NODE_FLAGS`] / [`DANGEROUS_BUN_FLAGS`] — argv flags that
 //!   are rejected for the corresponding runtime families.
 
+use std::collections::BTreeSet;
+use std::sync::{Mutex, OnceLock};
+
 use labby_runtime::error::ToolError;
 
 /// Runtime hints / commands the gateway is allowed to execute as stdio upstreams.
@@ -96,22 +99,37 @@ pub const DANGEROUS_DENO_FLAGS: &[&str] = &["eval", "--allow-all", "-A"];
 /// skip the command allowlist **entirely**. This is a coarse, global escape
 /// hatch — with it set, `bash`, `/bin/sh -c`, and arbitrary binaries like
 /// `/tmp/evil` all become spawnable. Prefer `extra_stdio_commands` and leave
-/// the guard on. When the bypass is active, every skipped validation emits a
-/// `WARN` so the weakened posture is visible in logs.
+/// the guard on. When the bypass is active, the first validation of each
+/// distinct command emits a `WARN`; repeats are suppressed so one unsafe
+/// setting cannot flood every CLI response while the weakened posture remains
+/// visible.
 ///
 /// Returns `invalid_param` if the command is not in either allowlist.
+fn warn_spawn_guard_bypass(command: &str) {
+    static WARNED_COMMANDS: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
+    let warned = WARNED_COMMANDS.get_or_init(|| Mutex::new(BTreeSet::new()));
+    let first_for_command = warned
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(command.to_string());
+    if first_for_command {
+        tracing::warn!(
+            service = "upstream.pool",
+            command = %command,
+            "SECURITY: spawn-guard bypass active — command allowlist NOT enforced \
+             (disable_spawn_guard = true); prefer scoping with [gateway] extra_stdio_commands; \
+             repeated warnings for this command are suppressed"
+        );
+    }
+}
+
 pub fn validate_stdio_command(
     command: &str,
     extra: &[String],
     bypass: bool,
 ) -> Result<(), ToolError> {
     if bypass {
-        tracing::warn!(
-            service = "upstream.pool",
-            command = %command,
-            "SECURITY: spawn-guard bypass active — command allowlist NOT enforced \
-             (disable_spawn_guard = true); prefer scoping with [gateway] extra_stdio_commands"
-        );
+        warn_spawn_guard_bypass(command);
         return Ok(());
     }
 
@@ -442,10 +460,11 @@ mod tests {
                     .without_time(),
             );
 
+        let command = "/tmp/spawn-guard-warn-oracle";
         {
             let _guard = tracing::subscriber::set_default(subscriber);
             // The bypass path must allow the otherwise-rejected command...
-            assert!(validate_stdio_command("bash", &[], true).is_ok());
+            assert!(validate_stdio_command(command, &[], true).is_ok());
         }
 
         // ...AND emit a WARN documenting the weakened posture (Sec-M2).
@@ -459,8 +478,41 @@ mod tests {
             "WARN must identify the spawn-guard bypass; captured logs: {logs}"
         );
         assert!(
-            logs.contains("bash"),
+            logs.contains(command),
             "WARN should record the bypassed command; captured logs: {logs}"
+        );
+    }
+
+    #[test]
+    fn command_bypass_warn_is_deduplicated_per_command() {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::{EnvFilter, fmt};
+
+        let _tracing_lock = TRACING_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let buf = SharedBuf::default();
+        let subscriber = tracing_subscriber::registry()
+            .with(EnvFilter::new("labby_gateway=warn"))
+            .with(
+                fmt::layer()
+                    .json()
+                    .with_writer(buf.clone())
+                    .with_ansi(false)
+                    .without_time(),
+            );
+        let command = "/tmp/spawn-guard-dedupe-oracle";
+
+        {
+            let _guard = tracing::subscriber::set_default(subscriber);
+            assert!(validate_stdio_command(command, &[], true).is_ok());
+            assert!(validate_stdio_command(command, &[], true).is_ok());
+            assert!(validate_stdio_command(command, &[], true).is_ok());
+        }
+
+        let logs = captured_logs(&buf);
+        assert_eq!(
+            logs.matches("spawn-guard bypass active").count(),
+            1,
+            "repeat validations of one command must not spam WARN output: {logs}"
         );
     }
 

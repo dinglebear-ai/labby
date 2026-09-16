@@ -249,7 +249,7 @@ async fn log_termination(
     let success = status.is_some_and(ExitStatus::success);
     let invalidated_count = invalidated_requests.len();
 
-    if expected && success && invalidated_count == 0 {
+    if invalidated_count == 0 {
         tracing::info!(
             surface = "dispatch",
             service = "upstream.pool",
@@ -261,10 +261,12 @@ async fn log_termination(
             expected,
             exit_code = ?code,
             exit_signal = ?signal,
+            wait_error = exit.wait_error.as_deref(),
             killed_after_timeout = exit.killed_after_timeout,
             invalidated_count,
             stderr_tail = %stderr_tail,
-            "stdio upstream child terminated"
+            success,
+            "stdio upstream child terminated without affected requests"
         );
     } else {
         tracing::warn!(

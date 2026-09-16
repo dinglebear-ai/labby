@@ -298,6 +298,14 @@ fn snippet_test_result(name: String, outcome: SnippetExecutionOutcome) -> Result
     }))
 }
 
+fn snippet_execution_scope(snippet: &super::store::ResolvedSnippet) -> ToolScope {
+    snippet
+        .tools
+        .as_ref()
+        .map(|declared| declared.intersect(&ToolScope::default()))
+        .unwrap_or_default()
+}
+
 async fn execute_snippet_outcome(
     manager: Option<&crate::dispatch::gateway::manager::GatewayManager>,
     name: &str,
@@ -316,13 +324,19 @@ async fn execute_snippet_outcome(
     let code = code_for_snippet(&snippet)?;
     let input = merge_snippet_input(&snippet, input)?;
     let code = wrap_snippet_with_input(&code, &input)?;
+    // Saved snippet source stays entirely on the execution plane. When the
+    // snippet declares exact upstream dependencies, use that declaration to
+    // scope catalog construction and dispatch instead of cold-probing every
+    // configured upstream. Snippets without declarations retain legacy
+    // unscoped behavior for compatibility.
+    let scope = snippet_execution_scope(&snippet);
     let outcome = broker
         .execute_with_raw_response(
             &code,
             CodeModeCaller::TrustedLocal,
             CodeModeSurface::Cli,
             config,
-            ToolScope::default(),
+            scope,
             // Snippet execution is a local trusted-CLI path with no durable-run
             // execution id; `None` keeps `record_step` write-free here.
             None,
@@ -403,6 +417,38 @@ mod tests {
             logs: vec![],
             artifacts: vec![],
         }
+    }
+
+    #[test]
+    fn saved_snippet_tool_declarations_scope_execution_catalog() {
+        use std::collections::BTreeMap;
+        use std::path::PathBuf;
+
+        use crate::dispatch::snippets::store::{ResolvedSnippet, SnippetSource};
+        use labby_codemode::snippet::tool_declarations::SnippetToolDeclarations;
+
+        let declared: SnippetToolDeclarations = vec![
+            "claude-macpoo::Bash".to_string(),
+            "claude-macpoo::Read".to_string(),
+        ]
+        .try_into()
+        .expect("valid exact tool declarations");
+        let snippet = ResolvedSnippet {
+            tools: Some(declared),
+            name: "scoped".to_string(),
+            description: None,
+            tags: Vec::new(),
+            inputs: BTreeMap::new(),
+            source: SnippetSource::User,
+            path: PathBuf::from("scoped.md"),
+            body: "async () => ({ ok: true })".to_string(),
+        };
+
+        let scope = snippet_execution_scope(&snippet);
+        assert!(scope.is_scoped());
+        assert!(scope.allows("claude-macpoo", "Bash"));
+        assert!(scope.allows("claude-macpoo", "Read"));
+        assert!(!scope.allows("github", "search_issues"));
     }
 
     #[test]

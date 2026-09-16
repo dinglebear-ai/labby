@@ -15,17 +15,18 @@ mod tool_declaration_tests;
 
 const SNIPPET_EXTENSIONS: &[&str] = &["md", "js"];
 
-/// Maximum size of a snippet's *executable* code — the extracted ```js block,
-/// or the whole file for bare `.js` snippets. This is what actually runs in
-/// code-mode, so it mirrors the host CLI source-size cap.
-const MAX_SNIPPET_CODE_BYTES: usize = 20 * 1024;
+/// Hard storage ceiling for a snippet's *executable* code — the extracted
+/// ```js block, or the whole file for bare `.js` snippets. Keep this aligned
+/// with Code Mode's hard source ceiling instead of a smaller snippet-only
+/// legacy cap. Hosts may still configure a lower `code_mode.max_source_bytes`,
+/// which is enforced when the snippet executes.
+const MAX_SNIPPET_CODE_BYTES: usize = crate::config::MAX_SOURCE_BYTES;
 
-/// Generous upper bound on the whole snippet markdown file (frontmatter + prose
-/// + fenced code). Tutorial-format snippets carry substantial prose that never
-/// executes, so the file bound is intentionally loose; only the extracted code
-/// is held to `MAX_SNIPPET_CODE_BYTES`. The file bound exists purely to reject
-/// pathological inputs before they are read fully into memory and parsed.
-const MAX_SNIPPET_FILE_BYTES: usize = 256 * 1024;
+/// Upper bound on the whole snippet markdown file (frontmatter + prose + fenced
+/// code). Snippets often front-load substantial agent context in prose that
+/// never executes, so give that context a full extra Code Mode source budget
+/// while still rejecting pathological files before parsing.
+const MAX_SNIPPET_FILE_BYTES: usize = 2 * crate::config::MAX_SOURCE_BYTES;
 
 /// Origin of a reusable Code Mode snippet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,7 +41,7 @@ pub enum SnippetSource {
 /// Discovery metadata for a built-in or user Code Mode snippet.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnippetInfo {
-    /// Optional exact-tool declaration; currently descriptive, not enforced.
+    /// Optional exact-tool declaration used to scope native saved-snippet execution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<SnippetToolDeclarations>,
     /// Stable snippet name.
@@ -63,8 +64,8 @@ pub struct SnippetInfo {
 /// Fully resolved snippet including its source body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedSnippet {
-    /// Optional declaration; an empty list expresses intended deny-all access.
-    /// Execution does not yet enforce this metadata.
+    /// Optional declaration; an empty list expresses deny-all upstream access.
+    /// Host saved-snippet execution intersects this with the caller policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<SnippetToolDeclarations>,
     /// Stable snippet name.
@@ -338,7 +339,11 @@ pub fn resolve_snippet(
     }
     Err(ToolError::Sdk {
         sdk_kind: "not_found".to_string(),
-        message: format!("snippet `{name}` not found"),
+        message: format!(
+            "snippet `{name}` not found; searched user snippets at `{}` and built-ins at `{}`",
+            user_dir.display(),
+            builtin_dir.display()
+        ),
     })
 }
 
@@ -536,6 +541,37 @@ pub fn validate_snippet_code(code: &str) -> Result<(), ToolError> {
             param: "body".to_string(),
         });
     }
+
+    // Parse the exact expression with the same QuickJS/Javy engine used by
+    // Code Mode, but never evaluate it. `compile_to_bytecode` declares a
+    // module and serializes bytecode only, so catalog discovery and explicit
+    // validation cannot execute snippet side effects. This closes the gap
+    // where a string could satisfy the cheap `async`/`=>` envelope check but
+    // still fail only when a real Code Mode execution tried to parse it.
+    let mut config = javy::Config::default();
+    config.memory_limit(64 * 1024 * 1024);
+    let runtime = javy::Runtime::new(config).map_err(|error| ToolError::Sdk {
+        sdk_kind: "internal_error".to_string(),
+        message: format!("unable to initialize JavaScript validator: {error}"),
+    })?;
+    let source = format!("export default ({code});");
+    runtime
+        .compile_to_bytecode("snippet-validation.js", &source)
+        .map_err(|error| {
+            let mut message = error.to_string();
+            if message.len() > 1024 {
+                let mut end = 1024;
+                while !message.is_char_boundary(end) {
+                    end -= 1;
+                }
+                message.truncate(end);
+                message.push_str("...");
+            }
+            ToolError::InvalidParam {
+                message: format!("snippet JavaScript is invalid: {message}"),
+                param: "body".to_string(),
+            }
+        })?;
     Ok(())
 }
 
@@ -988,6 +1024,44 @@ mod tests {
     }
 
     #[test]
+    fn validate_snippet_body_rejects_malformed_javascript_before_execution() {
+        let body = "---\nname: demo\ndescription: Broken snippet\ntags: []\n---\n\n```js\nasync () => { const broken = ; return broken; }\n```\n";
+        let error = validate_snippet_body("demo", body)
+            .expect_err("malformed JavaScript must fail static validation");
+        assert!(
+            format!("{error}").contains("snippet JavaScript is invalid"),
+            "syntax failure should explain that the JavaScript is invalid: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_snippet_code_parses_without_executing_function_body() {
+        let code = "async () => { throw new Error(\"validation must not execute me\"); }";
+        assert!(
+            validate_snippet_code(code).is_ok(),
+            "validation should compile the function expression without invoking it"
+        );
+    }
+
+    #[test]
+    fn resolve_snippet_not_found_reports_searched_authorities() {
+        let lab_home = tempfile::tempdir().expect("lab home");
+        let builtin = tempfile::tempdir().expect("builtin snippets");
+        let error = resolve_snippet(lab_home.path(), builtin.path(), "missing")
+            .expect_err("missing snippet must fail");
+        let message = format!("{error}");
+        assert!(message.contains("missing"));
+        assert!(
+            message.contains(&user_snippet_dir(lab_home.path()).display().to_string()),
+            "error must identify the user snippet authority: {message}"
+        );
+        assert!(
+            message.contains(&builtin.path().display().to_string()),
+            "error must identify the builtin snippet authority: {message}"
+        );
+    }
+
+    #[test]
     fn atomic_write_snippet_rejects_overwrite_without_force_under_lock() {
         // The authoritative no-overwrite guard lives INSIDE atomic_write_snippet,
         // under WRITE_LOCK — independent of create_user_snippet's pre-lock
@@ -1028,6 +1102,41 @@ mod tests {
         assert_eq!(meta.name, "demo");
         assert_eq!(meta.description, "Demo snippet");
         assert!(validate_snippet_body("demo", body).is_ok());
+    }
+
+    #[test]
+    fn snippet_catalog_exposes_metadata_without_saved_source() {
+        const SOURCE_SENTINEL: &str = "SOURCE_SENTINEL_MUST_STAY_EXECUTION_SIDE";
+        let lab_home = tempfile::tempdir().expect("temp lab home");
+        let builtin_dir = tempfile::tempdir().expect("temp builtin dir");
+        let code = format!(
+            "async () => {{ const marker = \"{SOURCE_SENTINEL}\"; return {{ ok: marker.length > 0 }}; }}"
+        );
+        create_user_snippet(
+            lab_home.path(),
+            "metadata-only",
+            &code,
+            Some("Metadata-only catalog oracle"),
+            false,
+        )
+        .expect("create user snippet");
+
+        let listed = list_snippets(lab_home.path(), builtin_dir.path())
+            .expect("list saved snippet metadata");
+        let serialized = serde_json::to_string(&listed).expect("serialize catalog metadata");
+        assert!(serialized.contains("metadata-only"));
+        assert!(serialized.contains("Metadata-only catalog oracle"));
+        assert!(
+            !serialized.contains(SOURCE_SENTINEL),
+            "saved source must not enter model-facing snippet catalog metadata"
+        );
+
+        let resolved = resolve_snippet(lab_home.path(), builtin_dir.path(), "metadata-only")
+            .expect("host-side source resolution");
+        assert!(
+            resolved.body.contains(SOURCE_SENTINEL),
+            "source must remain available to the execution plane"
+        );
     }
 
     #[test]
@@ -1106,7 +1215,10 @@ mod tests {
         assert!(validate_snippet_body("demo", &body).is_ok());
 
         // A code block that itself exceeds the code limit must fail.
-        let big_code = format!("async () => {{\n{}\nreturn 1;\n}}", "// pad\n".repeat(4096));
+        let big_code = format!(
+            "async () => {{\n{}\nreturn 1;\n}}",
+            "x".repeat(MAX_SNIPPET_CODE_BYTES)
+        );
         assert!(big_code.len() > MAX_SNIPPET_CODE_BYTES);
         let body = format!(
             "---\nname: demo\ndescription: Demo snippet\ntags: []\n---\n\n```js\n{big_code}\n```\n"
@@ -1117,13 +1229,33 @@ mod tests {
     }
 
     #[test]
+    fn validate_snippet_body_accepts_context_sized_code_beyond_legacy_20k() {
+        let context = "x".repeat(64 * 1024);
+        let code = format!(
+            "async () => {{ const context = \"{context}\"; return {{ ok: context.length > 0 }}; }}"
+        );
+        assert!(
+            code.len() > 20 * 1024,
+            "oracle must exceed the retired 20 KiB cap"
+        );
+        assert!(
+            code.len() < MAX_SNIPPET_CODE_BYTES,
+            "oracle should fit the Code Mode source budget"
+        );
+        assert!(validate_snippet_body("demo", &code).is_ok());
+    }
+
+    #[test]
     fn validate_snippet_body_bounds_bare_code_without_fences() {
         // A bare snippet body (no frontmatter, no fences) is its own code, so
         // the code bound governs the whole body directly.
         let small = "async () => ({ ok: true })";
         assert!(validate_snippet_body("demo", small).is_ok());
 
-        let big = format!("async () => {{\n{}\nreturn 1;\n}}", "// pad\n".repeat(4096));
+        let big = format!(
+            "async () => {{\n{}\nreturn 1;\n}}",
+            "x".repeat(MAX_SNIPPET_CODE_BYTES)
+        );
         assert!(big.len() > MAX_SNIPPET_CODE_BYTES);
         let error = validate_snippet_body("demo", &big)
             .expect_err("oversized bare code should be rejected");

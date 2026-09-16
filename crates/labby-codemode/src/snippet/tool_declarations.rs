@@ -13,9 +13,10 @@ pub const MAX_DECLARED_TOOLS: usize = 128;
 /// Bound one exact tool identifier independently of the source-file limit.
 pub const MAX_DECLARED_TOOL_ID_BYTES: usize = 1_024;
 
-/// Validated descriptive upstream-tool metadata, not an execution restriction.
-/// `Some(empty)` expresses an intended deny-all declaration; `None` records no
-/// declaration. Neither changes the caller's existing execution policy.
+/// Validated exact upstream-tool dependencies for saved snippets.
+/// `Some(empty)` expresses deny-all upstream access; `None` records no extra
+/// restriction. Host surfaces may intersect this declaration with the caller's
+/// existing policy, so it can only narrow authority and never grant it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "Vec<String>")]
 pub struct SnippetToolDeclarations(Vec<String>);

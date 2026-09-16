@@ -276,9 +276,17 @@ async () => {
 
 `codemode.run()` lazily resolves snippet source through the host, then evaluates
 `return await (<snippet-code>)(input)` inside the same Javy/QuickJS runtime as the
-caller. A snippet can call `codemode.<upstream>.<tool>()`, `callTool()`,
-`writeArtifact()`, and other snippets, bounded by the same Code Mode timeout plus
-per-run snippet depth/count/byte budgets.
+caller. The saved source stays on the execution plane: model-facing discovery
+exposes only snippet metadata and the invocation helper, and execution responses
+do not echo the resolved source. An invoking model therefore pays context for the
+name, input schema/arguments, and returned result, not for the stored program on
+every run. Source enters model context only when a caller explicitly reads, edits,
+reviews, or authors it.
+
+A snippet can call `codemode.<upstream>.<tool>()`, `callTool()`, `writeArtifact()`,
+and other snippets, bounded by the same Code Mode timeout plus per-run snippet
+depth/count/byte budgets. Those byte limits are parser/sandbox/storage safety
+limits, not an assertion that saved source must fit in the invoking LLM context.
 
 `writeArtifact()` defaults `contentType` to `text/plain` when omitted or blank.
 When provided, it must be a simple ASCII `type/subtype` media type, up to 256
@@ -507,7 +515,7 @@ their JSON MCP representation.
 
 Defaults:
 
-- `max_source_bytes = 131072`
+- `max_source_bytes = 1048576`
 - `max_response_bytes = 24576`
 - `max_response_tokens = 6000`
 

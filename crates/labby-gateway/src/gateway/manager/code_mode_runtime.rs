@@ -455,6 +455,16 @@ impl GatewayManager {
         owner: Option<&UpstreamRuntimeOwner>,
         oauth_subject: Option<&str>,
     ) -> Result<Vec<UpstreamTool>, ToolError> {
+        self.code_mode_catalog_tools_cached_allowed(owner, oauth_subject, None)
+            .await
+    }
+
+    pub async fn code_mode_catalog_tools_cached_allowed(
+        &self,
+        owner: Option<&UpstreamRuntimeOwner>,
+        oauth_subject: Option<&str>,
+        allowed_upstreams: Option<&BTreeSet<String>>,
+    ) -> Result<Vec<UpstreamTool>, ToolError> {
         use crate::gateway::code_mode::catalog_cache;
 
         let cfg = self.config.read().await.clone();
@@ -474,7 +484,11 @@ impl GatewayManager {
         // fresh tools are stored under (`None` for subject-scoped OAuth probes,
         // which are never cached).
         let mut pending: Vec<(UpstreamConfig, Option<String>)> = Vec::new();
-        for upstream in cfg.upstream.iter().filter(|u| u.enabled) {
+        for upstream in cfg
+            .upstream
+            .iter()
+            .filter(|u| u.enabled && upstream_allowed(&u.name, allowed_upstreams))
+        {
             if upstream.oauth.is_some() {
                 if oauth_subject.is_some() {
                     pending.push((upstream.clone(), None));
@@ -599,7 +613,7 @@ impl GatewayManager {
                 }
                 Ok(Some((upstream, _, Err(error)))) => {
                     outstanding.remove(&upstream.name);
-                    tracing::warn!(
+                    tracing::debug!(
                         surface = "dispatch",
                         service = "gateway",
                         action = "code_mode.catalog_cache",
@@ -712,7 +726,7 @@ impl GatewayManager {
             warn_suppressed(&suppressed);
         }
         if !in_flight.is_empty() || !not_attempted.is_empty() {
-            tracing::warn!(
+            tracing::info!(
                 surface = "dispatch",
                 service = "gateway",
                 action = "code_mode.catalog_cache",
@@ -1017,16 +1031,17 @@ impl GatewayManager {
         self.semantic_search_available_locked().await
     }
 
-    /// Record a TEI failure, starting/refreshing the cooldown window. Logs a
-    /// `tracing::warn!` only on the healthy→failing transition so repeated
-    /// failures during an active cooldown don't spam the log.
+    /// Record a TEI failure, starting/refreshing the cooldown window. This is a
+    /// recovered optional-dependency degradation, so log the healthy→failing
+    /// transition at INFO; repeated failures during an active cooldown stay
+    /// silent and normal CLI output is not polluted by a fallback that worked.
     pub(crate) async fn record_semantic_search_failure(&self, reason: &str) {
         let mut guard = self.semantic_search_last_failure.write().await;
         let was_healthy = guard.is_none();
         *guard = Some(Instant::now());
         drop(guard);
         if was_healthy {
-            tracing::warn!(
+            tracing::info!(
                 surface = "dispatch",
                 service = "code_mode",
                 action = "semantic_search",
@@ -1194,7 +1209,7 @@ impl GatewayManager {
 /// Separate from the budget-exhaustion warning: those upstreams may be perfectly
 /// healthy and merely slow, while these are known to have failed.
 fn warn_suppressed(suppressed: &[String]) {
-    tracing::warn!(
+    tracing::info!(
         surface = "dispatch",
         service = "gateway",
         action = "code_mode.catalog_cache",
