@@ -2302,3 +2302,2988 @@ fn prune_config_backups(parent: &Path, target: &Path) -> Result<usize> {
             let entry = entry?;
             let path = entry.path();
             let metadata = entry
+                .metadata()
+                .with_context(|| format!("inspect config backup {}", path.display()))?;
+            let modified = metadata
+                .modified()
+                .with_context(|| format!("inspect config backup {}", path.display()))?;
+            Ok(ConfigBackupCandidate {
+                path,
+                modified,
+                bytes: metadata.len(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let removals = select_config_backups_to_prune(
+        backups,
+        std::time::SystemTime::now(),
+        ConfigBackupRetention {
+            max_count: CONFIG_BACKUP_RETENTION,
+            max_age: CONFIG_BACKUP_MAX_AGE,
+            max_bytes: CONFIG_BACKUP_MAX_BYTES,
+        },
+    );
+    for backup in &removals {
+        std::fs::remove_file(backup)
+            .with_context(|| format!("remove old config backup {}", backup.display()))?;
+    }
+    Ok(removals.len())
+}
+
+fn select_config_backups_to_prune(
+    mut backups: Vec<ConfigBackupCandidate>,
+    now: std::time::SystemTime,
+    retention: ConfigBackupRetention,
+) -> Vec<PathBuf> {
+    backups.sort_by(|left, right| {
+        left.modified
+            .cmp(&right.modified)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    let Some(newest) = backups.last().map(|candidate| candidate.path.clone()) else {
+        return Vec::new();
+    };
+    let mut retained_count = backups.len();
+    let mut retained_bytes = backups.iter().fold(0_u64, |total, candidate| {
+        total.saturating_add(candidate.bytes)
+    });
+    let mut removals = Vec::new();
+    for candidate in backups {
+        if candidate.path == newest {
+            continue;
+        }
+        let expired = now
+            .duration_since(candidate.modified)
+            .is_ok_and(|age| age > retention.max_age);
+        let over_count = retained_count > retention.max_count.max(1);
+        let over_bytes = retained_bytes > retention.max_bytes;
+        if expired || over_count || over_bytes {
+            retained_count = retained_count.saturating_sub(1);
+            retained_bytes = retained_bytes.saturating_sub(candidate.bytes);
+            removals.push(candidate.path);
+        }
+    }
+    removals
+}
+
+fn backup_config_file(path: &Path, raw: &str) -> Result<PathBuf> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    let pid = std::process::id();
+    for _ in 0..10 {
+        let counter = CONFIG_BACKUP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let backup = path.with_extension(format!("toml.bak.{nanos}.{pid}.{counter}"));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&backup) {
+            Ok(mut file) => {
+                if let Err(error) = secret_files::restrict_secret_file_permissions(&backup) {
+                    drop(file);
+                    drop(std::fs::remove_file(&backup));
+                    return Err(error).with_context(|| {
+                        format!("restrict backup {} before writing", backup.display())
+                    });
+                }
+                file.write_all(raw.as_bytes())
+                    .with_context(|| format!("write backup {}", backup.display()))?;
+                file.sync_all()
+                    .with_context(|| format!("sync backup {}", backup.display()))?;
+                return Ok(backup);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(
+                    anyhow::Error::new(e).context(format!("create backup {}", backup.display()))
+                );
+            }
+        }
+    }
+    anyhow::bail!("failed to create unique backup for {}", path.display())
+}
+
+pub(crate) fn config_json_value_for_path(cfg: &LabConfig, path: &str) -> serde_json::Value {
+    match path {
+        "output.format" => serde_json::json!(cfg.output.format),
+        "mcp.transport" => serde_json::json!(cfg.mcp.transport),
+        "mcp.host" => serde_json::json!(cfg.mcp.host),
+        "mcp.port" => serde_json::json!(cfg.mcp.port),
+        "mcp.allowed_hosts" => serde_json::json!(cfg.mcp.allowed_hosts),
+        "log.filter" => serde_json::json!(cfg.log.filter),
+        "log.format" => serde_json::json!(cfg.log.format),
+        "local_logs.retention_days" => {
+            serde_json::json!(
+                cfg.local_logs
+                    .as_ref()
+                    .and_then(|value| value.retention_days)
+            )
+        }
+        "local_logs.max_bytes" => {
+            serde_json::json!(cfg.local_logs.as_ref().and_then(|value| value.max_bytes))
+        }
+        "local_logs.queue_capacity" => {
+            serde_json::json!(
+                cfg.local_logs
+                    .as_ref()
+                    .and_then(|value| value.queue_capacity)
+            )
+        }
+        "local_logs.subscriber_capacity" => {
+            serde_json::json!(
+                cfg.local_logs
+                    .as_ref()
+                    .and_then(|value| value.subscriber_capacity)
+            )
+        }
+        "api.cors_origins" => serde_json::json!(cfg.api.cors_origins),
+        "web.assets_dir" => {
+            serde_json::json!(
+                cfg.web
+                    .assets_dir
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+            )
+        }
+        "workspace.root" => {
+            serde_json::json!(
+                cfg.workspace
+                    .root
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+            )
+        }
+        "public_urls.app" => {
+            serde_json::json!(cfg.public_urls.as_ref().and_then(|value| value.app.clone()))
+        }
+        "public_urls.mcp_gateway" => serde_json::json!(
+            cfg.public_urls
+                .as_ref()
+                .and_then(|value| value.mcp_gateway.clone())
+        ),
+        "services.built_in_upstream_apis_enabled" => {
+            serde_json::json!(cfg.services.built_in_upstream_apis_enabled)
+        }
+        "services.tailscale.tailnet" => serde_json::json!(cfg.services.tailscale.tailnet),
+        "admin.enabled" => serde_json::json!(cfg.admin.enabled),
+        "code_mode.trace_params" => serde_json::json!(cfg.code_mode.trace_params),
+        "code_mode.timeout_ms" => serde_json::json!(cfg.code_mode.timeout_ms),
+        "code_mode.max_source_bytes" => serde_json::json!(cfg.code_mode.max_source_bytes),
+        "code_mode.max_response_bytes" => serde_json::json!(cfg.code_mode.max_response_bytes),
+        "code_mode.max_response_tokens" => serde_json::json!(cfg.code_mode.max_response_tokens),
+        "code_mode.token_estimate_divisor" => {
+            serde_json::json!(cfg.code_mode.token_estimate_divisor)
+        }
+        "code_mode.max_log_entries" => serde_json::json!(cfg.code_mode.max_log_entries),
+        "code_mode.max_log_bytes" => serde_json::json!(cfg.code_mode.max_log_bytes),
+        "gateway_import_mode" => serde_json::json!(cfg.gateway_import_mode),
+        "gateway.extra_stdio_commands" => serde_json::json!(cfg.gateway.extra_stdio_commands),
+        "upstream_request_timeout_ms" => serde_json::json!(cfg.upstream_request_timeout_ms),
+        "upstream_relay_timeout_ms" => serde_json::json!(cfg.upstream_relay_timeout_ms),
+        "web.disable_auth" => serde_json::json!(cfg.web.disable_auth),
+        "auth" => serde_json::to_value(&cfg.auth).unwrap_or(serde_json::Value::Null),
+        "code_mode.enabled" => serde_json::json!(cfg.code_mode.enabled),
+        "gateway.auto_reconnect" => serde_json::json!(cfg.gateway.auto_reconnect),
+        "gateway.disable_spawn_guard" => serde_json::json!(cfg.gateway.disable_spawn_guard),
+        "oauth.machines" => {
+            serde_json::to_value(&cfg.oauth.machines).unwrap_or(serde_json::Value::Null)
+        }
+        "upstream" => serde_json::to_value(&cfg.upstream).unwrap_or(serde_json::Value::Null),
+        "upstream_pending" => {
+            serde_json::to_value(&cfg.upstream_pending).unwrap_or(serde_json::Value::Null)
+        }
+        "upstream_import_tombstones" => {
+            serde_json::to_value(&cfg.upstream_import_tombstones).unwrap_or(serde_json::Value::Null)
+        }
+        "protected_mcp_routes" => {
+            serde_json::to_value(&cfg.protected_mcp_routes).unwrap_or(serde_json::Value::Null)
+        }
+        "virtual_servers" => {
+            serde_json::to_value(&cfg.virtual_servers).unwrap_or(serde_json::Value::Null)
+        }
+        "quarantined_virtual_servers" => serde_json::to_value(&cfg.quarantined_virtual_servers)
+            .unwrap_or(serde_json::Value::Null),
+        _ => serde_json::Value::Null,
+    }
+}
+
+/// Patch the non-secret built-in upstream API preference without rewriting
+/// unrelated TOML content.
+///
+/// This intentionally edits only `[services].built_in_upstream_apis_enabled`.
+/// It preserves comments, unknown keys, and plugin-owned sections that the
+/// full typed `LabConfig` serializer cannot round-trip.
+pub fn patch_built_in_upstream_apis_enabled(path: &Path, enabled: bool) -> Result<LabConfig> {
+    Ok(patch_config_scalars(
+        path,
+        &[ConfigScalarPatch::new(
+            "services.built_in_upstream_apis_enabled",
+            ConfigScalarValue::Bool(enabled),
+        )],
+    )?
+    .config)
+}
+
+#[allow(dead_code)]
+fn config_lock_path(path: &Path) -> PathBuf {
+    let mut lock = path.to_path_buf();
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("config.toml");
+    lock.set_file_name(format!("{file_name}.lock"));
+    lock
+}
+
+/// Names of the variables the process environment already carried when the
+/// first `load_dotenv` ran. dotenvy never overrides an existing variable, so
+/// these came from outside `.env` (a service manager, a container spec, the
+/// shell) and win over the file for the lifetime of the process.
+static PROCESS_ENV_KEYS_BEFORE_DOTENV: OnceLock<std::collections::BTreeSet<String>> =
+    OnceLock::new();
+
+/// Whether `key` was set in the process environment before `.env` was loaded,
+/// so an edit to `.env` cannot change its effective value. False until
+/// `load_dotenv` has run.
+#[must_use]
+pub fn env_key_set_outside_dotenv(key: &str) -> bool {
+    PROCESS_ENV_KEYS_BEFORE_DOTENV
+        .get()
+        .is_some_and(|keys| keys.contains(key))
+}
+
+/// Load `.env` files into the process environment.
+///
+/// Called after `load_toml()` and tracing init. Env vars loaded here
+/// override config.toml values at the point of use (each consumer checks
+/// env first, then falls back to config).
+pub fn load_dotenv() -> Result<()> {
+    // Names only, never values: the settings surface uses this to tell an
+    // externally managed variable from one `.env` supplied.
+    PROCESS_ENV_KEYS_BEFORE_DOTENV.get_or_init(|| {
+        std::env::vars_os()
+            .filter_map(|(key, _)| key.into_string().ok())
+            .collect()
+    });
+    // Candidates are ordered from authoritative installation state to the
+    // implicit development fallback. dotenvy preserves values loaded by an
+    // earlier candidate. An explicit LABBY_HOME excludes the CWD fallback.
+    for env_path in paths::dotenv_candidates()? {
+        if env_path.exists() {
+            dotenvy::from_path(&env_path)
+                .with_context(|| format!("failed to load {}", env_path.display()))?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Load `.env` + `config.toml` in a single call (convenience for tests).
+#[allow(dead_code)]
+pub fn load() -> Result<LabConfig> {
+    let cfg = load_toml(&toml_candidates()?)?;
+    load_dotenv()?;
+    Ok(cfg)
+}
+
+/// Resolve the Code Mode `openapi` provider config from the parsed `[openapi]`
+/// TOML section plus `OPENAPI_<LABEL>_*` env vars.
+///
+/// Non-secret fields come from TOML; credentials (`OPENAPI_<LABEL>_TOKEN` /
+/// `OPENAPI_<LABEL>_API_KEY`) come from `env`. `base_url` is mandatory; reserved
+/// or duplicate labels, a missing/invalid base_url, an invalid spec_url, and an
+/// ambiguous spec source are all hard config errors that fail boot.
+///
+/// `env` is injected (rather than read from the process environment directly) so
+/// tests stay hermetic. In production callers pass a `std::env::var`-backed closure.
+#[cfg(feature = "gateway")]
+pub fn load_openapi_provider_config(
+    section: &OpenApiTomlSection,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> std::result::Result<labby_openapi::OpenApiProviderConfig, ConfigError> {
+    use labby_openapi::{OpenApiCredential, OpenApiProviderConfig, OpenApiSpecConfig, SpecSource};
+
+    let mut specs = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for raw in &section.specs {
+        let label = raw.label.trim().to_string();
+        // The wire dispatch key is `openapi::<label>.<operationId>`, split on the
+        // first `.` (operationIds may themselves contain `.`). A label containing
+        // `.`, `:`, or whitespace would misroute that split, so restrict labels to
+        // an unambiguous charset. Also keeps the `OPENAPI_<LABEL>_*` credential
+        // env-var lookup well-formed.
+        if label.is_empty()
+            || !label
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return Err(ConfigError::InvalidLabel { label });
+        }
+        if labby_openapi::RESERVED_NAMESPACES.contains(&label.as_str()) {
+            return Err(ConfigError::ReservedLabel { label });
+        }
+        if !seen.insert(label.clone()) {
+            return Err(ConfigError::DuplicateLabel { label });
+        }
+        let base_url: url::Url = raw
+            .base_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| ConfigError::MissingBaseUrl {
+                label: label.clone(),
+            })?
+            .parse()
+            .map_err(|_| ConfigError::InvalidBaseUrl {
+                label: label.clone(),
+            })?;
+
+        let upper = label.to_uppercase();
+        let credential = env(&format!("OPENAPI_{upper}_TOKEN"))
+            .filter(|t| !t.is_empty())
+            .map(OpenApiCredential::BearerToken)
+            .or_else(|| {
+                env(&format!("OPENAPI_{upper}_API_KEY"))
+                    .filter(|k| !k.is_empty())
+                    .map(|value| OpenApiCredential::ApiKey {
+                        header: raw
+                            .api_key_header
+                            .clone()
+                            .filter(|h| !h.trim().is_empty())
+                            .unwrap_or_else(|| "X-API-Key".into()),
+                        value,
+                    })
+            });
+
+        let spec_source = match (
+            raw.spec_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
+            raw.spec_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
+        ) {
+            (Some(u), None) => {
+                SpecSource::Url(u.parse().map_err(|_| ConfigError::InvalidSpecUrl {
+                    label: label.clone(),
+                })?)
+            }
+            (None, Some(p)) => SpecSource::Path(p.into()),
+            _ => {
+                return Err(ConfigError::SpecSourceAmbiguous {
+                    label: label.clone(),
+                });
+            }
+        };
+
+        specs.push(OpenApiSpecConfig {
+            label,
+            spec_source,
+            base_url,
+            allowed_operations: raw.allowed_operations.clone(),
+            credential,
+        });
+    }
+    Ok(OpenApiProviderConfig { specs })
+}
+
+/// A string value that redacts itself in `Debug` and `Display` output.
+///
+/// Use for secret env values (`API_KEY`, `TOKEN`, `PASSWORD`) so they
+/// never leak through `Debug`-printing config structs or tracing fields.
+#[allow(dead_code)]
+#[derive(Clone, Deserialize, PartialEq, Eq)]
+pub struct Secret(String);
+
+impl Secret {
+    #[must_use]
+    pub const fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    #[allow(dead_code)]
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[REDACTED]")
+    }
+}
+
+impl std::fmt::Display for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[REDACTED]")
+    }
+}
+
+impl Serialize for Secret {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str("***REDACTED***")
+    }
+}
+
+/// Value from an instance env var — either plain text or a secret.
+///
+/// Always constructed programmatically via the private `scan_instances_from` helper; never
+/// deserialized from JSON. `Deserialize` is intentionally omitted — `Secret`
+/// serializes as `"***REDACTED***"` (a plain string), so an `#[serde(untagged)]`
+/// impl would silently pick `Plain` for every value, bypassing redaction.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize)]
+pub enum InstanceValue {
+    Plain(String),
+    Redacted(Secret),
+}
+
+impl InstanceValue {
+    #[must_use]
+    #[allow(dead_code)]
+    pub fn expose(&self) -> &str {
+        match self {
+            Self::Plain(s) => s,
+            Self::Redacted(s) => s.expose(),
+        }
+    }
+}
+
+/// Suffixes that carry secret values and must be wrapped in [`Secret`].
+#[allow(dead_code)]
+const SECRET_SUFFIXES: &[&str] = &["API_KEY", "TOKEN", "PASSWORD"];
+
+/// Parse multi-instance env vars for a given service prefix.
+///
+/// Returns a map from instance label (`"default"` or `"<label>"`) to the
+/// set of `(suffix, value)` pairs. Example: for prefix `UNRAID`, env vars
+/// `UNRAID_URL`, `UNRAID_API_KEY`, `UNRAID_NODE2_URL`, `UNRAID_NODE2_API_KEY`
+/// yield two entries keyed `"default"` and `"node2"`.
+///
+/// Suffixes are matched longest-first to avoid collisions when a label
+/// contains a shorter suffix as a substring.
+#[must_use]
+#[allow(dead_code)]
+pub fn scan_instances(prefix: &str) -> HashMap<String, HashMap<String, InstanceValue>> {
+    scan_instances_from(prefix, std::env::vars())
+}
+
+/// Inner implementation testable without mutating process env.
+fn scan_instances_from(
+    prefix: &str,
+    vars: impl Iterator<Item = (String, String)>,
+) -> HashMap<String, HashMap<String, InstanceValue>> {
+    let mut out: HashMap<String, HashMap<String, InstanceValue>> = HashMap::new();
+
+    let mut known_suffixes = ["URL", "API_KEY", "TOKEN", "USERNAME", "PASSWORD"];
+    known_suffixes.sort_by_key(|s| std::cmp::Reverse(s.len()));
+
+    let prefix_under = format!("{prefix}_");
+
+    for (key, value) in vars {
+        let Some(rest) = key.strip_prefix(&prefix_under) else {
+            continue;
+        };
+
+        for suffix in &known_suffixes {
+            let wrap = |v: String| {
+                if SECRET_SUFFIXES.contains(suffix) {
+                    InstanceValue::Redacted(Secret::new(v))
+                } else {
+                    InstanceValue::Plain(v)
+                }
+            };
+
+            if rest == *suffix {
+                out.entry("default".to_string())
+                    .or_default()
+                    .insert((*suffix).to_string(), wrap(value.clone()));
+                break;
+            }
+            if let Some(label) = rest.strip_suffix(&format!("_{suffix}"))
+                && !label.is_empty()
+            {
+                out.entry(label.to_ascii_lowercase())
+                    .or_default()
+                    .insert((*suffix).to_string(), wrap(value.clone()));
+                break;
+            }
+        }
+    }
+
+    out
+}
+
+#[cfg(test)]
+#[allow(clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn owned_section_typos_fail_while_foreign_top_level_extensions_survive() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[mcp]\nporrt = 9876\n\n[external_extension]\nmode = \"custom\"\n",
+        )
+        .unwrap();
+
+        let error = load_toml(std::slice::from_ref(&path)).unwrap_err();
+        let detail = format!("{error:#}");
+        assert!(detail.contains("porrt"), "{detail}");
+
+        std::fs::write(&path, "[external_extension]\nmode = \"custom\"\n").unwrap();
+        assert!(load_toml(&[path]).is_ok());
+    }
+
+    #[test]
+    fn inherited_app_surface_sections_name_only_the_absent_tables() {
+        // An existing config.toml written before Code Mode and the Labby MCP
+        // Apps defaulted on inherits those defaults silently unless startup
+        // names them. Only genuinely absent sections are reported.
+        assert_eq!(
+            inherited_app_surface_sections(""),
+            vec!["code_mode", "mcp_apps"]
+        );
+        assert_eq!(
+            inherited_app_surface_sections("[mcp]\nport = 8765\n"),
+            vec!["code_mode", "mcp_apps"]
+        );
+        assert_eq!(
+            inherited_app_surface_sections("[code_mode]\nenabled = false\n"),
+            vec!["mcp_apps"]
+        );
+        assert_eq!(
+            inherited_app_surface_sections(
+                "[code_mode]\nenabled = true\n[mcp_apps]\nmanager = false\n"
+            ),
+            Vec::<&str>::new()
+        );
+        // Unparseable input is the loader's error to report, not this hint's.
+        assert_eq!(
+            inherited_app_surface_sections("mcp = \"bad"),
+            Vec::<&str>::new()
+        );
+    }
+
+    #[test]
+    fn top_level_scalar_typos_fail_but_named_extension_tables_survive() {
+        for typo in ["mcpp = 1\n", "config_verzion = 1\n"] {
+            let error = validate_top_level_extension_boundary(typo).unwrap_err();
+            assert!(error.to_string().contains("unknown top-level scalar"));
+        }
+        validate_top_level_extension_boundary("[vendor.example]\nenabled = true\n").unwrap();
+    }
+
+    #[test]
+    fn missing_config_version_migrates_to_current_and_future_versions_fail() {
+        let legacy: LabConfig = toml::from_str("[mcp]\nport = 9876\n").unwrap();
+        assert_eq!(legacy.config_version, CURRENT_CONFIG_VERSION);
+        legacy.validate().unwrap();
+
+        let future: LabConfig = toml::from_str("config_version = 999\n").unwrap();
+        let error = future.validate().unwrap_err();
+        assert!(error.to_string().contains("config_version 999"));
+    }
+
+    #[test]
+    fn patching_legacy_config_persists_the_migrated_format_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[mcp]\nport = 8765\n").unwrap();
+
+        patch_config_scalars(
+            &path,
+            &[ConfigScalarPatch::new(
+                "mcp.port",
+                ConfigScalarValue::I64(9876),
+            )],
+        )
+        .unwrap();
+
+        let persisted = std::fs::read_to_string(path).unwrap();
+        assert!(persisted.contains("config_version = 1"), "{persisted}");
+    }
+
+    #[test]
+    fn config_mutations_retain_only_the_ten_newest_backups() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "config_version = 1\n[mcp]\nport = 8765\n").unwrap();
+        for port in 8800..8815 {
+            patch_config_scalars(
+                &path,
+                &[ConfigScalarPatch::new(
+                    "mcp.port",
+                    ConfigScalarValue::I64(port),
+                )],
+            )
+            .unwrap();
+        }
+
+        let backups = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".toml.bak."))
+            .count();
+        assert_eq!(backups, 10);
+    }
+
+    #[test]
+    fn committed_config_reports_post_commit_maintenance_failure_as_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "config_version = 1\n[mcp]\nport = 8765\n").unwrap();
+        std::fs::write(
+            dir.path().join(".labby-test-config-maintenance-failure"),
+            b"inject",
+        )
+        .unwrap();
+
+        let outcome = patch_config_scalars(
+            &path,
+            &[ConfigScalarPatch::new(
+                "mcp.port",
+                ConfigScalarValue::I64(9876),
+            )],
+        )
+        .expect("durable commit must not be reported as failed");
+
+        assert_eq!(outcome.config.mcp.port, Some(9876));
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("port = 9876")
+        );
+        assert!(
+            outcome
+                .maintenance_warning
+                .as_deref()
+                .is_some_and(|warning| warning.contains("configuration was committed"))
+        );
+        assert!(outcome.backup_path.is_some());
+    }
+
+    #[test]
+    fn backup_retention_enforces_age_and_bytes_without_pruning_newest() {
+        let now = std::time::UNIX_EPOCH + Duration::from_secs(10_000);
+        let candidates = vec![
+            ConfigBackupCandidate::fixture("old", 100, now - Duration::from_secs(5_000)),
+            ConfigBackupCandidate::fixture("large", 900, now - Duration::from_secs(20)),
+            ConfigBackupCandidate::fixture("newest", 900, now - Duration::from_secs(10)),
+        ];
+
+        let pruned = select_config_backups_to_prune(
+            candidates,
+            now,
+            ConfigBackupRetention {
+                max_count: 10,
+                max_age: Duration::from_secs(1_000),
+                max_bytes: 500,
+            },
+        );
+
+        assert_eq!(pruned, vec![PathBuf::from("old"), PathBuf::from("large")]);
+    }
+
+    #[test]
+    fn backup_retention_is_deterministic_for_equal_timestamps() {
+        let now = std::time::UNIX_EPOCH + Duration::from_secs(10_000);
+        let modified = now - Duration::from_secs(10);
+        let candidates = vec![
+            ConfigBackupCandidate::fixture("c", 1, modified),
+            ConfigBackupCandidate::fixture("a", 1, modified),
+            ConfigBackupCandidate::fixture("b", 1, modified),
+        ];
+
+        let pruned = select_config_backups_to_prune(
+            candidates,
+            now,
+            ConfigBackupRetention {
+                max_count: 2,
+                max_age: Duration::MAX,
+                max_bytes: u64::MAX,
+            },
+        );
+
+        assert_eq!(pruned, vec![PathBuf::from("a")]);
+    }
+
+    fn resolve_oauth_fixture(config: &AuthFileConfig) -> auth_config::AuthConfig {
+        resolve_auth_with_env(
+            Some(config),
+            [("LABBY_TOKEN_ENCRYPTION_KEY".to_string(), "11".repeat(32))],
+        )
+        .expect("OAuth fixture should resolve")
+    }
+
+    /// `install_resolved_preferences` must pick up config.toml values when no
+    /// overriding env var is set. This test does not touch process env, so
+    /// it's safe under both nextest's per-process isolation and cargo test's
+    /// threaded model, unlike a test that would need to mutate `std::env`.
+    #[test]
+    fn install_resolved_preferences_picks_up_config_toml_values() {
+        let mut config = LabConfig::default();
+        config.mcp.show_all = Some(true);
+        config.api.dev_mode = Some(true);
+        config.api.protected_mcp_connect_timeout_secs = Some(42);
+        config.mcp.catalog_notification_timeout_ms = Some(2_500);
+        config.code_mode.widget_callbacks = Some(true);
+        config.output.symbols = Some("ascii".to_string());
+
+        install_resolved_preferences(&config);
+
+        assert!(resolved_show_all(), "mcp.show_all should resolve true");
+        assert!(resolved_dev_mode(), "api.dev_mode should resolve true");
+        assert!(
+            resolved_widget_callbacks_enabled(),
+            "code_mode.widget_callbacks should resolve true"
+        );
+        assert_eq!(resolved_symbols().as_deref(), Some("ascii"));
+        assert_eq!(resolved_protected_mcp_connect_timeout_secs(), Some(42));
+        assert_eq!(
+            resolved_catalog_notification_timeout(),
+            Duration::from_millis(2_500)
+        );
+
+        // Restore defaults so this test doesn't leak state into whichever
+        // test the process/thread runs next (matches the existing
+        // process_code_mode_enabled restore-after-test convention below).
+        install_resolved_preferences(&LabConfig::default());
+        assert!(!resolved_show_all());
+        assert!(!resolved_dev_mode());
+        assert!(!resolved_widget_callbacks_enabled());
+        assert_eq!(resolved_symbols(), None);
+        assert_eq!(resolved_protected_mcp_connect_timeout_secs(), None);
+        assert_eq!(
+            resolved_catalog_notification_timeout(),
+            Duration::from_millis(DEFAULT_CATALOG_NOTIFICATION_TIMEOUT_MS)
+        );
+    }
+
+    fn parse_normalized_config(toml: &str) -> LabConfig {
+        let mut cfg: LabConfig = toml::from_str(toml).expect("parse");
+        cfg.normalize_protected_mcp_routes().expect("normalize");
+        cfg
+    }
+
+    #[test]
+    fn artifact_authority_urls_have_separate_config_contracts() {
+        let cfg = parse_normalized_config(
+            r#"
+[[artifacts.sources]]
+id = "primary"
+kind = "depot"
+endpoint = "https://depot.example/api/artifacts/exact"
+control_plane_url = "https://depot.example"
+pinned_addresses = ["8.8.8.8"]
+bearer_token_env = "LABBY_DEPOT_TOKEN"
+"#,
+        );
+        let source = &cfg.artifacts.sources[0];
+        assert_eq!(source.endpoint, "https://depot.example/api/artifacts/exact");
+        assert_eq!(
+            source.control_plane_url.as_deref(),
+            Some("https://depot.example")
+        );
+        assert_eq!(
+            source.bearer_token_env.as_deref(),
+            Some("LABBY_DEPOT_TOKEN")
+        );
+    }
+
+    #[cfg(feature = "gateway")]
+    fn openapi_section(toml: &str) -> OpenApiTomlSection {
+        toml::from_str::<LabConfig>(toml).expect("parse").openapi
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn openapi_reserved_label_rejected() {
+        let toml = r#"[[openapi.specs]]
+label = "git"
+base_url = "https://api.example.com"
+spec_url = "https://api.example.com/openapi.json"
+allowed_operations = ["getUser"]"#;
+        let err = load_openapi_provider_config(&openapi_section(toml), &|_| None).unwrap_err();
+        assert!(matches!(err, ConfigError::ReservedLabel { ref label } if label == "git"));
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn openapi_dotted_label_rejected() {
+        // A label containing `.` would misroute the `openapi::<label>.<operationId>`
+        // dispatch split — reject it at config load.
+        let toml = r#"[[openapi.specs]]
+label = "ven.dor"
+base_url = "https://api.example.com"
+spec_url = "https://api.example.com/openapi.json"
+allowed_operations = ["getUser"]"#;
+        let err = load_openapi_provider_config(&openapi_section(toml), &|_| None).unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidLabel { ref label } if label == "ven.dor"));
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn openapi_missing_base_url_rejected() {
+        let toml = r#"[[openapi.specs]]
+label = "vendor"
+spec_url = "https://api.example.com/openapi.json"
+allowed_operations = ["getUser"]"#;
+        let err = load_openapi_provider_config(&openapi_section(toml), &|_| None).unwrap_err();
+        assert!(matches!(err, ConfigError::MissingBaseUrl { .. }));
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn openapi_duplicate_label_rejected() {
+        let toml = r#"[[openapi.specs]]
+label = "vendor"
+base_url = "https://api.example.com"
+spec_url = "https://api.example.com/openapi.json"
+
+[[openapi.specs]]
+label = "vendor"
+base_url = "https://api2.example.com"
+spec_url = "https://api2.example.com/openapi.json""#;
+        let err = load_openapi_provider_config(&openapi_section(toml), &|_| None).unwrap_err();
+        assert!(matches!(err, ConfigError::DuplicateLabel { ref label } if label == "vendor"));
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn openapi_ambiguous_spec_source_rejected() {
+        let toml = r#"[[openapi.specs]]
+label = "vendor"
+base_url = "https://api.example.com"
+spec_url = "https://api.example.com/openapi.json"
+spec_path = "/tmp/openapi.json""#;
+        let err = load_openapi_provider_config(&openapi_section(toml), &|_| None).unwrap_err();
+        assert!(matches!(err, ConfigError::SpecSourceAmbiguous { .. }));
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn openapi_credential_read_from_env_not_toml() {
+        let toml = r#"[[openapi.specs]]
+label = "vendor"
+base_url = "https://api.example.com"
+spec_url = "https://api.example.com/openapi.json"
+allowed_operations = ["getUser"]"#;
+        let env = |k: &str| (k == "OPENAPI_VENDOR_TOKEN").then(|| "tok-123".to_string());
+        let cfg = load_openapi_provider_config(&openapi_section(toml), &env).unwrap();
+        assert!(cfg.specs[0].credential.is_some());
+        // Credential must NEVER round-trip through the TOML struct.
+        assert!(!format!("{:?}", cfg.specs[0]).contains("tok-123"));
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn openapi_api_key_uses_configured_header() {
+        let toml = r#"[[openapi.specs]]
+label = "vendor"
+base_url = "https://api.example.com"
+spec_url = "https://api.example.com/openapi.json"
+api_key_header = "X-Custom-Key""#;
+        let env = |k: &str| (k == "OPENAPI_VENDOR_API_KEY").then(|| "sk-abc".to_string());
+        let cfg = load_openapi_provider_config(&openapi_section(toml), &env).unwrap();
+        match &cfg.specs[0].credential {
+            Some(labby_openapi::OpenApiCredential::ApiKey { header, .. }) => {
+                assert_eq!(header, "X-Custom-Key");
+            }
+            _ => panic!("expected ApiKey credential"),
+        }
+    }
+
+    fn vars<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Iterator<Item = (String, String)> + 'a {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+    }
+
+    #[test]
+    fn service_preferences_default_enable_upstream_apis() {
+        let cfg = toml::from_str::<LabConfig>("").expect("empty config should parse");
+        assert!(cfg.services.built_in_upstream_apis_enabled);
+    }
+
+    #[test]
+    fn service_preferences_can_disable_upstream_apis() {
+        let cfg = toml::from_str::<LabConfig>(
+            r"
+            [services]
+            built_in_upstream_apis_enabled = false
+            ",
+        )
+        .expect("services config should parse");
+
+        assert!(!cfg.services.built_in_upstream_apis_enabled);
+    }
+
+    #[test]
+    fn patch_built_in_upstream_apis_preserves_comments_and_unknown_sections() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"# operator note
+[services]
+# keep this comment
+built_in_upstream_apis_enabled = true
+
+[plugin_owned]
+future = "keep"
+"#,
+        )
+        .unwrap();
+
+        let cfg = patch_built_in_upstream_apis_enabled(&path, false).unwrap();
+        assert!(!cfg.services.built_in_upstream_apis_enabled);
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("# operator note"));
+        assert!(raw.contains("# keep this comment"));
+        assert!(raw.contains("[plugin_owned]"));
+        assert!(raw.contains("future = \"keep\""));
+        assert!(raw.contains("built_in_upstream_apis_enabled = false"));
+    }
+
+    #[test]
+    fn patch_config_scalars_rejects_non_table_parent_without_mutating() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "mcp = \"bad\"\n").unwrap();
+        let err = patch_config_scalars(
+            &path,
+            &[ConfigScalarPatch::new(
+                "mcp.port",
+                ConfigScalarValue::I64(8765),
+            )],
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("not a table"),
+            "unexpected error: {err:#}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "mcp = \"bad\"\n");
+    }
+
+    #[test]
+    fn patch_config_scalars_updates_inline_table_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "services = { built_in_upstream_apis_enabled = true }\n",
+        )
+        .unwrap();
+        let outcome = patch_config_scalars(
+            &path,
+            &[ConfigScalarPatch::new(
+                "services.built_in_upstream_apis_enabled",
+                ConfigScalarValue::Bool(false),
+            )],
+        )
+        .unwrap();
+        assert!(!outcome.config.services.built_in_upstream_apis_enabled);
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("built_in_upstream_apis_enabled = false"));
+    }
+
+    #[test]
+    fn patch_config_scalars_unsets_optional_instead_of_empty_string() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[mcp]\nport = 8765\n").unwrap();
+        let outcome = patch_config_scalars(
+            &path,
+            &[ConfigScalarPatch::new(
+                "mcp.port",
+                ConfigScalarValue::UnsetOptional,
+            )],
+        )
+        .unwrap();
+        assert_eq!(outcome.config.mcp.port, None);
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("port"));
+    }
+
+    #[test]
+    fn patch_config_scalars_creates_backup_and_preserves_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "# keep\n[mcp]\nhost = \"127.0.0.1\"\n").unwrap();
+        let outcome = patch_config_scalars(
+            &path,
+            &[ConfigScalarPatch::new(
+                "mcp.port",
+                ConfigScalarValue::I64(8765),
+            )],
+        )
+        .unwrap();
+        let backup_path = outcome.backup_path.unwrap();
+        assert!(backup_path.is_file());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&backup_path)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+            assert_eq!(
+                std::fs::metadata(config_lock_path(&path))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600,
+                "the persistent config lock must use the secret-file policy"
+            );
+        }
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("# keep"));
+        assert!(raw.contains("port = 8765"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600,
+                "the replacement must not preserve a group/world-readable source mode"
+            );
+        }
+    }
+
+    #[test]
+    fn patch_config_scalars_skips_backup_and_write_for_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let raw = "[mcp]\nport = 8765\n";
+        std::fs::write(&path, raw).unwrap();
+        let outcome = patch_config_scalars(
+            &path,
+            &[ConfigScalarPatch::new(
+                "mcp.port",
+                ConfigScalarValue::I64(8765),
+            )],
+        )
+        .unwrap();
+        assert_eq!(outcome.backup_path, None);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
+    }
+
+    #[test]
+    fn patch_config_scalars_checked_rejects_stale_expected_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let raw = "[mcp]\nport = 8765\n";
+        std::fs::write(&path, raw).unwrap();
+        let err = patch_config_scalars_checked(
+            &path,
+            &[ConfigScalarPatch::new(
+                "mcp.port",
+                ConfigScalarValue::I64(8766),
+            )],
+            &[ExpectedConfigScalar::new(
+                "mcp.port",
+                serde_json::json!(9000),
+            )],
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("changed since it was loaded"),
+            "unexpected error: {err:#}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
+    }
+
+    #[test]
+    fn resolve_auth_reads_ttls_from_config_toml_fields() {
+        let cfg = AuthFileConfig {
+            mode: Some("oauth".to_string()),
+            public_url: Some("https://lab.example.com".to_string()),
+            sqlite_path: None,
+            key_path: None,
+            enable_dynamic_registration: None,
+            bootstrap_secret: Some("bootstrap".to_string()),
+            allowed_client_redirect_uris: Some(vec![
+                "https://callback.example.com/callback/*".to_string(),
+            ]),
+            allowed_email_domains: None,
+            viewer_email_domains: None,
+            viewer_project_id: None,
+            provider: None,
+            authelia_issuer_url: None,
+            authelia_client_id: None,
+            authelia_client_secret: None,
+            authelia_trusted_private_origin: None,
+            authelia_ca_certificate_path: None,
+            google_client_id: Some("client-id".to_string()),
+            google_client_secret: Some("client-secret".to_string()),
+            google_callback_path: Some("/auth/google/callback".to_string()),
+            google_scopes: Some(vec!["openid".to_string(), "email".to_string()]),
+            access_token_ttl_secs: Some(120),
+            refresh_token_ttl_secs: Some(3600),
+            auth_code_ttl_secs: Some(45),
+            admin_email: Some("admin@example.com".to_string()),
+            register_requests_per_minute: Some(5),
+            authorize_requests_per_minute: Some(15),
+            token_requests_per_minute: Some(25),
+            machine_clients: None,
+            enterprise_issuers: None,
+            max_pending_oauth_states: Some(256),
+            codex_issuer_compatibility: Some(true),
+        };
+
+        let resolved = resolve_oauth_fixture(&cfg);
+        assert_eq!(resolved.access_token_ttl.as_secs(), 120);
+        assert_eq!(resolved.refresh_token_ttl.as_secs(), 3600);
+        assert_eq!(resolved.auth_code_ttl.as_secs(), 45);
+        assert_eq!(
+            resolved.allowed_client_redirect_uris,
+            vec!["https://callback.example.com/callback/*".to_string()]
+        );
+        assert_eq!(resolved.register_requests_per_minute, 5);
+        assert_eq!(resolved.authorize_requests_per_minute, 15);
+        assert_eq!(resolved.token_requests_per_minute, 25);
+        assert_eq!(resolved.max_pending_oauth_states, 256);
+        assert!(resolved.codex_issuer_compatibility);
+    }
+
+    fn minimal_oauth_file_config() -> AuthFileConfig {
+        AuthFileConfig {
+            mode: Some("oauth".to_string()),
+            public_url: Some("https://lab.example.com".to_string()),
+            bootstrap_secret: Some("bootstrap".to_string()),
+            google_client_id: Some("client-id".to_string()),
+            google_client_secret: Some("client-secret".to_string()),
+            admin_email: Some("admin@example.com".to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn oauth_product_enables_dynamic_registration_by_default() {
+        let resolved = resolve_oauth_fixture(&minimal_oauth_file_config());
+        assert!(resolved.enable_dynamic_registration);
+    }
+
+    #[test]
+    fn oauth_product_allows_explicit_dynamic_registration_disable() {
+        let cfg = minimal_oauth_file_config();
+        let resolved = resolve_auth_with_env(
+            Some(&cfg),
+            [
+                (
+                    "LABBY_AUTH_ENABLE_DYNAMIC_REGISTRATION".into(),
+                    "false".into(),
+                ),
+                (
+                    "LABBY_TOKEN_ENCRYPTION_KEY".into(),
+                    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f".into(),
+                ),
+            ],
+        )
+        .unwrap();
+        assert!(!resolved.enable_dynamic_registration);
+    }
+
+    #[test]
+    fn oauth_product_environment_overrides_file_registration_policy() {
+        let cfg = AuthFileConfig {
+            enable_dynamic_registration: Some(false),
+            ..minimal_oauth_file_config()
+        };
+        assert!(!resolve_oauth_fixture(&cfg).enable_dynamic_registration);
+        let resolved = resolve_auth_with_env(
+            Some(&cfg),
+            [
+                (
+                    "LABBY_AUTH_ENABLE_DYNAMIC_REGISTRATION".into(),
+                    "true".into(),
+                ),
+                (
+                    "LABBY_TOKEN_ENCRYPTION_KEY".into(),
+                    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f".into(),
+                ),
+            ],
+        )
+        .unwrap();
+        assert!(resolved.enable_dynamic_registration);
+    }
+
+    #[test]
+    fn oauth_product_rejects_invalid_dynamic_registration_policy() {
+        let error = resolve_auth_with_env(
+            Some(&minimal_oauth_file_config()),
+            [(
+                "LABBY_AUTH_ENABLE_DYNAMIC_REGISTRATION".into(),
+                "maybe".into(),
+            )],
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("LABBY_AUTH_ENABLE_DYNAMIC_REGISTRATION")
+        );
+    }
+
+    #[test]
+    fn resolve_auth_accepts_authelia_only_file_configuration() {
+        let cfg = AuthFileConfig {
+            mode: Some("oauth".into()),
+            public_url: Some("https://lab.example.com/base".into()),
+            provider: Some("authelia".into()),
+            authelia_issuer_url: Some("https://auth.example.com/application/o/labby".into()),
+            authelia_client_id: Some("labby".into()),
+            authelia_client_secret: Some("secret".into()),
+            authelia_ca_certificate_path: Some("/etc/labby/authelia-ca.pem".into()),
+            admin_email: Some("admin@example.com".into()),
+            ..Default::default()
+        };
+        let resolved = resolve_auth_with_env(
+            Some(&cfg),
+            [(
+                "LABBY_TOKEN_ENCRYPTION_KEY".into(),
+                "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f".into(),
+            )],
+        )
+        .unwrap();
+        assert_eq!(
+            resolved.inbound_provider,
+            Some(auth_config::InboundProviderKind::Authelia)
+        );
+        assert_eq!(
+            resolved.authelia.unwrap().ca_certificate_path,
+            Some(PathBuf::from("/etc/labby/authelia-ca.pem"))
+        );
+        assert!(resolved.google.client_id.is_empty());
+    }
+
+    #[test]
+    fn resolve_auth_authelia_environment_overrides_file_configuration() {
+        let cfg = AuthFileConfig {
+            mode: Some("oauth".into()),
+            public_url: Some("https://lab.example.com".into()),
+            provider: Some("google".into()),
+            google_client_id: Some("legacy".into()),
+            google_client_secret: Some("legacy-secret".into()),
+            admin_email: Some("admin@example.com".into()),
+            ..Default::default()
+        };
+        let resolved = resolve_auth_with_env(
+            Some(&cfg),
+            [
+                ("LABBY_AUTH_PROVIDER".into(), "authelia".into()),
+                (
+                    "LABBY_AUTHELIA_ISSUER_URL".into(),
+                    "https://auth.example.com/application/o/labby".into(),
+                ),
+                ("LABBY_AUTHELIA_CLIENT_ID".into(), "labby".into()),
+                (
+                    "LABBY_AUTHELIA_CLIENT_SECRET".into(),
+                    "authelia-secret".into(),
+                ),
+                (
+                    "LABBY_AUTHELIA_CA_CERT_PATH".into(),
+                    "/run/secrets/authelia-ca.pem".into(),
+                ),
+                (
+                    "LABBY_TOKEN_ENCRYPTION_KEY".into(),
+                    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f".into(),
+                ),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            resolved.inbound_provider,
+            Some(auth_config::InboundProviderKind::Authelia)
+        );
+        let authelia = resolved.authelia.unwrap();
+        assert_eq!(authelia.client_id, "labby");
+        assert_eq!(
+            authelia.ca_certificate_path,
+            Some(PathBuf::from("/run/secrets/authelia-ca.pem"))
+        );
+    }
+
+    #[test]
+    fn doctor_projection_uses_resolved_file_only_authelia_provider() {
+        let cfg = AuthFileConfig {
+            mode: Some("oauth".into()),
+            public_url: Some("https://lab.example.com".into()),
+            provider: Some("authelia".into()),
+            authelia_issuer_url: Some("https://auth.example.com/application/o/labby".into()),
+            authelia_client_id: Some("labby".into()),
+            authelia_client_secret: Some("secret".into()),
+            admin_email: Some("admin@example.com".into()),
+            ..Default::default()
+        };
+        let resolved = resolve_auth_with_env(
+            Some(&cfg),
+            [(
+                "LABBY_TOKEN_ENCRYPTION_KEY".into(),
+                "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f".into(),
+            )],
+        )
+        .unwrap();
+        let findings = crate::dispatch::doctor::run_auth_checks_with_config(Some(&resolved));
+        let provider = findings
+            .iter()
+            .find(|finding| finding.check == "auth:provider")
+            .unwrap();
+        assert!(matches!(
+            provider.severity,
+            crate::dispatch::doctor::Severity::Ok
+        ));
+        assert!(provider.message.contains("authelia"));
+        assert!(
+            !findings
+                .iter()
+                .any(|finding| finding.check.starts_with("auth:google-")
+                    && matches!(finding.severity, crate::dispatch::doctor::Severity::Fail))
+        );
+    }
+
+    #[test]
+    fn resolve_auth_reads_allowed_email_domains_from_config_toml() {
+        let mut cfg = minimal_oauth_file_config();
+        cfg.allowed_email_domains = Some(vec![
+            "Lime-Technology.com".to_string(),
+            "@example.org".to_string(),
+        ]);
+
+        let resolved = resolve_oauth_fixture(&cfg);
+
+        // Normalized to lowercase with any leading `@` stripped, so operators can
+        // write either `example.org` or `@example.org`.
+        assert_eq!(
+            resolved.allowed_email_domains,
+            vec!["lime-technology.com".to_string(), "example.org".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolve_auth_defaults_allowed_email_domains_to_empty() {
+        let resolved = resolve_oauth_fixture(&minimal_oauth_file_config());
+        assert!(resolved.allowed_email_domains.is_empty());
+    }
+
+    #[test]
+    fn viewer_domain_policy_requires_an_explicit_host_project() {
+        let mut cfg = minimal_oauth_file_config();
+        cfg.viewer_email_domains = Some(vec!["example.org".into()]);
+        let error = resolve_auth_with_env(
+            Some(&cfg),
+            [("LABBY_TOKEN_ENCRYPTION_KEY".into(), "11".repeat(32))],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("auth.viewer_project_id"));
+        cfg.viewer_project_id = Some(" bootstrap-default ".into());
+        let error = resolve_auth_with_env(
+            Some(&cfg),
+            [("LABBY_TOKEN_ENCRYPTION_KEY".into(), "11".repeat(32))],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("auth.viewer_project_id"));
+        cfg.viewer_project_id = Some("bootstrap-default".into());
+        let resolved = resolve_oauth_fixture(&cfg);
+        assert_eq!(resolved.viewer_email_domains, vec!["example.org"]);
+    }
+
+    #[test]
+    fn viewer_domains_env_overrides_file_but_cannot_supply_project() {
+        let mut cfg = minimal_oauth_file_config();
+        cfg.viewer_email_domains = Some(vec!["old.example".into()]);
+        cfg.viewer_project_id = Some("bootstrap-default".into());
+        let resolved = resolve_auth_with_env(
+            Some(&cfg),
+            [
+                (
+                    "LABBY_AUTH_VIEWER_EMAIL_DOMAINS".into(),
+                    "new.example".into(),
+                ),
+                ("LABBY_TOKEN_ENCRYPTION_KEY".into(), "11".repeat(32)),
+            ],
+        )
+        .unwrap();
+        assert_eq!(resolved.viewer_email_domains, vec!["new.example"]);
+        cfg.viewer_project_id = None;
+        let error = resolve_auth_with_env(
+            Some(&cfg),
+            [
+                (
+                    "LABBY_AUTH_VIEWER_PROJECT_ID".into(),
+                    "bootstrap-default".into(),
+                ),
+                ("LABBY_TOKEN_ENCRYPTION_KEY".into(), "11".repeat(32)),
+            ],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("auth.viewer_project_id"));
+    }
+
+    #[test]
+    fn viewer_policy_is_default_off() {
+        let resolved = resolve_oauth_fixture(&minimal_oauth_file_config());
+        assert!(resolved.viewer_email_domains.is_empty());
+    }
+
+    #[test]
+    fn resolve_auth_preserves_structured_machine_and_enterprise_configuration() {
+        let machine = auth_config::MachineClientConfig {
+            client_id: "ci-agent".to_string(),
+            client_secret: Some("secret".to_string()),
+            jwks: None,
+            scopes: vec!["lab".to_string()],
+            resources: vec!["https://lab.example.com/mcp".to_string()],
+        };
+        let issuer = auth_config::EnterpriseIssuerConfig {
+            issuer: "https://idp.example.com".to_string(),
+            jwks_uri: Some("https://idp.example.com/jwks".parse().unwrap()),
+            jwks: None,
+            allowed_client_ids: vec!["ci-agent".to_string()],
+        };
+        let cfg = AuthFileConfig {
+            mode: Some("oauth".to_string()),
+            public_url: Some("https://lab.example.com".to_string()),
+            google_client_id: Some("google-client".to_string()),
+            google_client_secret: Some("google-secret".to_string()),
+            admin_email: Some("admin@example.com".to_string()),
+            machine_clients: Some(vec![machine.clone()]),
+            enterprise_issuers: Some(vec![issuer.clone()]),
+            ..AuthFileConfig::default()
+        };
+
+        let resolved = resolve_oauth_fixture(&cfg);
+        assert_eq!(resolved.machine_clients, vec![machine]);
+        assert_eq!(resolved.enterprise_issuers, vec![issuer]);
+    }
+
+    #[test]
+    fn resolve_auth_uses_curated_client_redirects_by_default() {
+        let cfg = AuthFileConfig {
+            mode: Some("oauth".to_string()),
+            public_url: Some("https://lab.example.com".to_string()),
+            google_client_id: Some("client-id".to_string()),
+            google_client_secret: Some("client-secret".to_string()),
+            admin_email: Some("admin@example.com".to_string()),
+            ..AuthFileConfig::default()
+        };
+
+        let resolved = resolve_oauth_fixture(&cfg);
+
+        assert_eq!(
+            resolved.allowed_client_redirect_uris,
+            vec![
+                "https://chatgpt.com/aip/plugin-callback".to_string(),
+                "https://chat.openai.com/aip/plugin-callback".to_string(),
+                "https://chatgpt.com/connector/oauth/*".to_string(),
+                "https://chatgpt.com/connector_platform_oauth_redirect".to_string(),
+                "https://claude.ai/api/mcp/auth_callback".to_string(),
+                "https://claude.com/api/mcp/auth_callback".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_auth_explicit_empty_redirects_disable_product_defaults() {
+        let cfg = AuthFileConfig {
+            mode: Some("oauth".to_string()),
+            public_url: Some("https://lab.example.com".to_string()),
+            google_client_id: Some("client-id".to_string()),
+            google_client_secret: Some("client-secret".to_string()),
+            admin_email: Some("admin@example.com".to_string()),
+            allowed_client_redirect_uris: Some(Vec::new()),
+            ..AuthFileConfig::default()
+        };
+
+        let resolved = resolve_oauth_fixture(&cfg);
+
+        assert_eq!(resolved.allowed_client_redirect_uris, Vec::<String>::new());
+    }
+
+    #[test]
+    fn resolve_auth_preserves_explicit_all_https_redirect_opt_in() {
+        let cfg = AuthFileConfig {
+            mode: Some("oauth".to_string()),
+            public_url: Some("https://lab.example.com".to_string()),
+            google_client_id: Some("client-id".to_string()),
+            google_client_secret: Some("client-secret".to_string()),
+            admin_email: Some("admin@example.com".to_string()),
+            allowed_client_redirect_uris: Some(vec!["https://*".to_string()]),
+            ..AuthFileConfig::default()
+        };
+
+        let resolved = resolve_oauth_fixture(&cfg);
+
+        assert_eq!(
+            resolved.allowed_client_redirect_uris,
+            vec!["https://*".to_string()]
+        );
+    }
+
+    #[test]
+    fn oauth_machine_config_deserializes() {
+        let cfg = toml::from_str::<LabConfig>(
+            r#"
+[oauth.machines.node-a]
+target_url = "http://100.64.0.10:38935/callback/node-a"
+description = "Node A Claude callback target"
+default_port = 38935
+"#,
+        )
+        .expect("oauth machine config should parse");
+
+        assert_eq!(
+            cfg.oauth.machines["node-a"].target_url,
+            "http://100.64.0.10:38935/callback/node-a"
+        );
+        assert_eq!(
+            cfg.oauth.machines["node-a"].description.as_deref(),
+            Some("Node A Claude callback target")
+        );
+        assert_eq!(cfg.oauth.machines["node-a"].default_port, Some(38935));
+    }
+
+    #[test]
+    fn oauth_machine_defaults_keep_partial_configs_valid() {
+        let cfg = toml::from_str::<LabConfig>(
+            r#"
+[web]
+assets_dir = "/tmp/labby"
+"#,
+        )
+        .expect("config without oauth section should still parse");
+
+        assert!(cfg.oauth.machines.is_empty());
+        assert_eq!(cfg.web.assets_dir, Some(PathBuf::from("/tmp/labby")));
+    }
+
+    #[test]
+    fn quarantined_virtual_servers_round_trip_through_toml() {
+        let raw = r#"
+[[quarantined_virtual_servers]]
+id = "missing-service"
+service = "missing-service"
+enabled = true
+
+[quarantined_virtual_servers.surfaces]
+mcp = true
+"#;
+        let cfg = toml::from_str::<LabConfig>(raw).expect("quarantine config should parse");
+        assert_eq!(cfg.quarantined_virtual_servers.len(), 1);
+        assert_eq!(cfg.quarantined_virtual_servers[0].id, "missing-service");
+        assert_eq!(
+            cfg.quarantined_virtual_servers[0].service,
+            "missing-service"
+        );
+        assert!(cfg.quarantined_virtual_servers[0].surfaces.mcp);
+
+        let serialized = toml::to_string(&cfg).expect("config should serialize");
+        let reparsed =
+            toml::from_str::<LabConfig>(&serialized).expect("serialized config should parse");
+        assert_eq!(reparsed.quarantined_virtual_servers.len(), 1);
+        assert_eq!(
+            reparsed.quarantined_virtual_servers[0].id,
+            "missing-service"
+        );
+    }
+
+    #[test]
+    fn workspace_root_defaults_under_labby_home() {
+        let cfg = toml::from_str::<LabConfig>("").expect("empty config should parse");
+        let home = Path::new("/tmp/lab-home");
+
+        assert_eq!(
+            workspace_root_for_home(&cfg, home),
+            home.join(".labby").join("workspace")
+        );
+    }
+
+    #[test]
+    fn file_stash_defaults_are_bounded_and_invalid_limits_fail_startup_validation() {
+        let mut config = LabConfig::default();
+        assert_eq!(config.file_stash.max_file_bytes, 104_857_600);
+        assert_eq!(config.file_stash.principal_quota_bytes, 1_073_741_824);
+        assert_eq!(config.file_stash.instance_quota_bytes, 10_737_418_240);
+        assert_eq!(config.file_stash.max_live_files_per_instance, 100_000);
+        assert_eq!(config.file_stash.queue_capacity, 64);
+        assert_eq!(config.file_stash.max_concurrent_uploads_per_principal, 2);
+        assert_eq!(config.file_stash.max_concurrent_uploads_per_instance, 8);
+        assert_eq!(config.file_stash.max_concurrent_downloads, 16);
+        assert_eq!(config.file_stash.download_idle_seconds, 30);
+        assert_eq!(config.file_stash.download_total_seconds, 600);
+        assert!(config.validate().is_ok());
+        config.file_stash.queue_capacity = 0;
+        assert!(config.validate().is_err());
+        let mut config = LabConfig::default();
+        config.file_stash.pending_ttl_seconds = config.file_stash.upload_total_seconds;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn file_stash_rejects_every_resource_limit_outside_its_boundary() {
+        macro_rules! invalid {
+            ($field:ident, $value:expr) => {{
+                let mut config = LabConfig::default();
+                config.file_stash.$field = $value;
+                assert!(
+                    config.validate().is_err(),
+                    "{} accepted an invalid boundary value",
+                    stringify!($field)
+                );
+            }};
+        }
+        invalid!(max_file_bytes, 0);
+        invalid!(principal_quota_bytes, 0);
+        invalid!(instance_quota_bytes, 0);
+        invalid!(max_live_files_per_principal, 0);
+        invalid!(max_live_files_per_instance, 1);
+        invalid!(page_size, 0);
+        invalid!(max_query_bytes, 0);
+        invalid!(max_header_bytes, 0);
+        invalid!(grant_recipients_page_size, 0);
+        invalid!(max_mcp_read_bytes, 0);
+        invalid!(queue_capacity, 0);
+        invalid!(database_deadline_ms, 0);
+        invalid!(max_concurrent_uploads_per_principal, 0);
+        invalid!(max_concurrent_uploads_per_instance, 0);
+        invalid!(max_concurrent_downloads, 0);
+        invalid!(max_concurrent_mcp_reads, 0);
+        invalid!(upload_idle_seconds, 0);
+        invalid!(upload_total_seconds, 0);
+        invalid!(download_idle_seconds, 0);
+        invalid!(download_total_seconds, 0);
+        invalid!(pending_ttl_seconds, 0);
+        invalid!(janitor_batch_size, 0);
+        invalid!(janitor_backoff_max_seconds, 0);
+        invalid!(janitor_interval_seconds, 0);
+
+        invalid!(max_file_bytes, 1_073_741_825);
+        invalid!(principal_quota_bytes, 107_374_182_401);
+        invalid!(instance_quota_bytes, 1_099_511_627_777);
+        invalid!(max_live_files_per_principal, 100_001);
+        invalid!(max_live_files_per_instance, 1_000_001);
+        invalid!(page_size, 201);
+        invalid!(max_query_bytes, 1_025);
+        invalid!(max_header_bytes, 65_537);
+        invalid!(grant_recipients_page_size, 201);
+        invalid!(max_mcp_read_bytes, 26_214_401);
+        invalid!(queue_capacity, 1_025);
+        invalid!(database_deadline_ms, 30_001);
+        invalid!(max_concurrent_uploads_per_principal, 3);
+        invalid!(max_concurrent_uploads_per_instance, 9);
+        invalid!(max_concurrent_downloads, 257);
+        invalid!(max_concurrent_mcp_reads, 5);
+        invalid!(upload_idle_seconds, 31);
+        invalid!(upload_total_seconds, 601);
+        invalid!(download_idle_seconds, 31);
+        invalid!(download_total_seconds, 601);
+        invalid!(pending_ttl_seconds, 1_801);
+        invalid!(janitor_batch_size, 101);
+        invalid!(janitor_backoff_max_seconds, 301);
+        invalid!(janitor_interval_seconds, 3_601);
+
+        let mut config = LabConfig::default();
+        config.file_stash.janitor_backoff_max_seconds = 1;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn workspace_root_reads_config_toml_value() {
+        let cfg = toml::from_str::<LabConfig>(
+            r#"
+[workspace]
+root = "/srv/labby-workspace"
+"#,
+        )
+        .expect("workspace config should parse");
+
+        assert_eq!(
+            workspace_root_for_home(&cfg, Path::new("/tmp/ignored")),
+            PathBuf::from("/srv/labby-workspace")
+        );
+    }
+
+    #[test]
+    fn web_ui_auth_disabled_env_prefers_canonical_alias() {
+        let setting = resolve_web_ui_auth_disabled_values(Some("true"), Some("false"))
+            .expect("env values should parse")
+            .expect("setting should resolve");
+
+        assert!(setting.disabled);
+        assert_eq!(setting.source, WEB_UI_AUTH_DISABLED_ENV);
+        assert!(!setting.legacy_alias);
+    }
+
+    #[test]
+    fn web_ui_auth_disabled_env_accepts_legacy_alias() {
+        let setting = resolve_web_ui_auth_disabled_values(None, Some("1"))
+            .expect("env values should parse")
+            .expect("setting should resolve");
+
+        assert!(setting.disabled);
+        assert_eq!(setting.source, WEB_UI_AUTH_DISABLED_LEGACY_ENV);
+        assert!(setting.legacy_alias);
+    }
+
+    #[test]
+    fn web_ui_auth_disabled_env_rejects_invalid_values() {
+        let error = resolve_web_ui_auth_disabled_values(Some("sometimes"), None)
+            .expect_err("invalid bool should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("invalid LABBY_WEB_UI_AUTH_DISABLED value")
+        );
+    }
+
+    #[test]
+    fn secret_debug_redacts() {
+        let s = Secret::new("hunter2".into());
+        assert_eq!(format!("{s:?}"), "[REDACTED]");
+        assert_eq!(format!("{s}"), "[REDACTED]");
+        assert_eq!(s.expose(), "hunter2");
+    }
+
+    #[test]
+    fn secret_serialize_emits_placeholder_not_plaintext() {
+        let s = Secret::new("super-secret-api-key".into());
+        let json = serde_json::to_string(&s).expect("serialize must not fail");
+        assert_eq!(
+            json, "\"***REDACTED***\"",
+            "Secret must serialize to placeholder"
+        );
+        assert!(
+            !json.contains("super-secret-api-key"),
+            "Secret must never emit plaintext through serde"
+        );
+    }
+
+    #[test]
+    fn suffix_collision_longest_wins() {
+        let env = [("S_NODE_API_KEY_URL", "http://example.com")];
+        let result = scan_instances_from("S", vars(&env));
+        let inst = result
+            .get("node_api_key")
+            .expect("should find instance node_api_key");
+        assert_eq!(
+            inst.get("URL").expect("should have URL").expose(),
+            "http://example.com"
+        );
+    }
+
+    #[test]
+    fn default_instance_parsed() {
+        let env = [
+            ("SVC_URL", "http://localhost"),
+            ("SVC_API_KEY", "secret123"),
+        ];
+        let result = scan_instances_from("SVC", vars(&env));
+        let def = result.get("default").expect("should find default");
+        assert_eq!(def.get("URL").expect("URL").expose(), "http://localhost");
+        assert_eq!(def.get("API_KEY").expect("API_KEY").expose(), "secret123");
+        assert!(format!("{:?}", def.get("API_KEY").unwrap()).contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn named_instance_parsed() {
+        let env = [
+            ("UNRAID_NODE2_URL", "http://node2"),
+            ("UNRAID_NODE2_TOKEN", "tok"),
+        ];
+        let result = scan_instances_from("UNRAID", vars(&env));
+        let inst = result.get("node2").expect("should find node2");
+        assert_eq!(inst.get("URL").expect("URL").expose(), "http://node2");
+        assert_eq!(inst.get("TOKEN").expect("TOKEN").expose(), "tok");
+        assert!(format!("{:?}", inst.get("TOKEN").unwrap()).contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn unrelated_vars_ignored() {
+        let env = [
+            ("SVC_URL", "http://localhost"),
+            ("OTHER_URL", "http://other"),
+        ];
+        let result = scan_instances_from("SVC", vars(&env));
+        assert_eq!(result.len(), 1);
+        assert!(result.contains_key("default"));
+    }
+
+    #[test]
+    fn username_is_plain_not_secret() {
+        let env = [("SVC_USERNAME", "admin")];
+        let result = scan_instances_from("SVC", vars(&env));
+        let def = result.get("default").expect("should find default");
+        assert!(!format!("{:?}", def.get("USERNAME").unwrap()).contains("[REDACTED]"));
+    }
+
+    // ─── write_service_creds tests ──────────────────────────────────────────
+
+    fn example_cred() -> EnvCredential {
+        EnvCredential {
+            service: "example".to_owned(),
+            url: Some("http://localhost:7878".to_owned()),
+            secret: Some("abc123".to_owned()),
+            env_field: "EXAMPLE_API_KEY".to_owned(),
+        }
+    }
+
+    #[test]
+    fn write_service_creds_adds_new_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        let outcome = write_service_creds(&path, &[example_cred()], false).unwrap();
+        assert!(outcome.skipped.is_empty());
+        assert_eq!(outcome.written, 2);
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("EXAMPLE_URL=http://localhost:7878"));
+        assert!(content.contains("EXAMPLE_API_KEY=abc123"));
+    }
+
+    #[test]
+    fn write_service_creds_preserves_comments_and_blanks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        std::fs::write(&path, "# my comment\nOTHER=val\n").unwrap();
+        write_service_creds(&path, &[example_cred()], false).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("# my comment"));
+        assert!(content.contains("OTHER=val"));
+    }
+
+    #[test]
+    fn write_service_creds_conflict_skip_without_force() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        std::fs::write(&path, "EXAMPLE_API_KEY=oldvalue\n").unwrap();
+        let outcome = write_service_creds(&path, &[example_cred()], false).unwrap();
+        assert!(!outcome.skipped.is_empty());
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("oldvalue"));
+        assert!(!content.contains("abc123"));
+    }
+
+    #[test]
+    fn write_service_creds_conflict_overwrite_with_force() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        std::fs::write(&path, "EXAMPLE_API_KEY=oldvalue\n").unwrap();
+        let outcome = write_service_creds(&path, &[example_cred()], true).unwrap();
+        assert!(outcome.skipped.is_empty());
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("abc123"));
+        assert!(!content.contains("oldvalue"));
+    }
+
+    #[test]
+    fn write_service_creds_is_idempotent_when_matching() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        write_service_creds(&path, &[example_cred()], false).unwrap();
+        // Re-running with the exact same creds must be a written=0 no-op --
+        // this is the signal crate::dispatch::gateway::config_store relies on
+        // to skip a service-client refresh cycle.
+        let outcome = write_service_creds(&path, &[example_cred()], false).unwrap();
+        assert_eq!(outcome.written, 0);
+        assert!(outcome.backup_path.is_none());
+    }
+
+    #[test]
+    fn write_service_creds_quotes_value_with_special_chars() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        let cred = EnvCredential {
+            service: "svc".to_owned(),
+            url: None,
+            secret: Some("has space".to_owned()),
+            env_field: "SVC_KEY".to_owned(),
+        };
+        write_service_creds(&path, &[cred], false).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("SVC_KEY=\"has space\""));
+    }
+
+    #[test]
+    fn upstream_oauth_pkce_parses() {
+        let cfg = toml::from_str::<LabConfig>(
+            r#"
+[[upstream]]
+name = "acme"
+url = "https://acme.example.com/mcp"
+
+[upstream.oauth]
+mode = "authorization_code_pkce"
+scopes = ["mcp"]
+
+[upstream.oauth.registration]
+strategy = "client_metadata_document"
+url = "https://acme.example.com/.well-known/oauth-client"
+"#,
+        )
+        .expect("pkce config should parse");
+
+        let upstream = &cfg.upstream[0];
+        let oauth = upstream.oauth.as_ref().expect("oauth present");
+        assert!(matches!(
+            oauth.mode,
+            UpstreamOauthMode::AuthorizationCodePkce
+        ));
+        assert_eq!(oauth.scopes.as_deref(), Some(&["mcp".to_string()][..]));
+        match &oauth.registration {
+            UpstreamOauthRegistration::ClientMetadataDocument { url } => {
+                assert_eq!(url, "https://acme.example.com/.well-known/oauth-client");
+            }
+            _ => panic!("expected client metadata document registration"),
+        }
+        upstream.validate().expect("validate ok");
+    }
+
+    #[test]
+    fn upstream_oauth_preregistered_parses() {
+        let cfg = toml::from_str::<LabConfig>(
+            r#"
+[[upstream]]
+name = "acme"
+url = "https://acme.example.com/mcp"
+
+[upstream.oauth]
+mode = "authorization_code_pkce"
+
+[upstream.oauth.registration]
+strategy = "preregistered"
+client_id = "my-client"
+"#,
+        )
+        .expect("preregistered config should parse");
+
+        let upstream = &cfg.upstream[0];
+        let oauth = upstream.oauth.as_ref().unwrap();
+        match &oauth.registration {
+            UpstreamOauthRegistration::Preregistered {
+                client_id,
+                client_secret_env,
+            } => {
+                assert_eq!(client_id, "my-client");
+                assert!(client_secret_env.is_none());
+            }
+            _ => panic!("expected preregistered OAuth client"),
+        }
+    }
+
+    #[test]
+    fn upstream_oauth_google_provider_credential_source_parses() {
+        let cfg = toml::from_str::<LabConfig>(
+            r#"
+[[upstream]]
+name = "google-calendar"
+url = "https://calendarmcp.googleapis.com/mcp/v1"
+
+[upstream.oauth]
+mode = "authorization_code_pkce"
+scopes = ["https://www.googleapis.com/auth/calendar.events.readonly"]
+
+[upstream.oauth.credential]
+source = "google_provider"
+account = "admin@example.com"
+
+[upstream.oauth.registration]
+strategy = "preregistered"
+client_id = "google-client"
+client_secret_env = "LABBY_GOOGLE_CLIENT_SECRET"
+"#,
+        )
+        .expect("google provider credential config should parse");
+
+        let oauth = cfg.upstream[0].oauth.as_ref().unwrap();
+        assert_eq!(
+            oauth.credential,
+            UpstreamOauthCredentialSource::GoogleProvider {
+                account: Some("admin@example.com".to_string()),
+            }
+        );
+        cfg.upstream[0]
+            .validate()
+            .expect("shared Google configuration should validate");
+    }
+
+    #[test]
+    fn upstream_oauth_credential_source_defaults_to_dedicated() {
+        let cfg = toml::from_str::<LabConfig>(
+            r#"
+[[upstream]]
+name = "acme"
+url = "https://acme.example.com/mcp"
+
+[upstream.oauth]
+mode = "authorization_code_pkce"
+
+[upstream.oauth.registration]
+strategy = "preregistered"
+client_id = "my-client"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.upstream[0].oauth.as_ref().unwrap().credential,
+            UpstreamOauthCredentialSource::Dedicated
+        );
+    }
+
+    #[test]
+    fn upstream_oauth_preregistered_with_secret_parses() {
+        let cfg = toml::from_str::<LabConfig>(
+            r#"
+[[upstream]]
+name = "acme"
+url = "https://acme.example.com/mcp"
+
+[upstream.oauth]
+mode = "authorization_code_pkce"
+
+[upstream.oauth.registration]
+strategy = "preregistered"
+client_id = "my-client"
+client_secret_env = "ACME_CLIENT_SECRET"
+"#,
+        )
+        .expect("preregistered+secret config should parse");
+
+        let upstream = &cfg.upstream[0];
+        let oauth = upstream.oauth.as_ref().unwrap();
+        match &oauth.registration {
+            UpstreamOauthRegistration::Preregistered {
+                client_id,
+                client_secret_env,
+            } => {
+                assert_eq!(client_id, "my-client");
+                assert_eq!(client_secret_env.as_deref(), Some("ACME_CLIENT_SECRET"));
+            }
+            _ => panic!("expected preregistered OAuth client with secret reference"),
+        }
+    }
+
+    #[test]
+    fn upstream_oauth_dynamic_parses() {
+        let cfg = toml::from_str::<LabConfig>(
+            r#"
+[[upstream]]
+name = "acme"
+url = "https://acme.example.com/mcp"
+
+[upstream.oauth]
+mode = "authorization_code_pkce"
+
+[upstream.oauth.registration]
+strategy = "dynamic"
+"#,
+        )
+        .expect("dynamic config should parse");
+
+        let upstream = &cfg.upstream[0];
+        let oauth = upstream.oauth.as_ref().unwrap();
+        assert!(matches!(
+            oauth.registration,
+            UpstreamOauthRegistration::Dynamic
+        ));
+    }
+
+    #[test]
+    fn upstream_oauth_conflicts_with_bearer_token_env() {
+        let cfg = toml::from_str::<LabConfig>(
+            r#"
+[[upstream]]
+name = "acme"
+url = "https://acme.example.com/mcp"
+bearer_token_env = "ACME_TOKEN"
+
+[upstream.oauth]
+mode = "authorization_code_pkce"
+
+[upstream.oauth.registration]
+strategy = "dynamic"
+"#,
+        )
+        .expect("config parses; validation is a separate step");
+
+        let err = cfg.upstream[0].validate().unwrap_err();
+        match err {
+            ConfigError::ConflictingAuth { name } => assert_eq!(name, "acme"),
+            _ => panic!("expected ConflictingAuth"),
+        }
+    }
+
+    #[test]
+    fn code_mode_is_root_level_config() {
+        let cfg = toml::from_str::<LabConfig>(
+            r#"
+[code_mode]
+enabled = true
+timeout_ms = 2500
+
+[[upstream]]
+name = "acme"
+url = "https://acme.example.com/mcp"
+"#,
+        )
+        .expect("root code_mode parses");
+
+        assert!(cfg.code_mode.enabled);
+        assert_eq!(cfg.code_mode.timeout_ms, 2500);
+        cfg.validate().expect("root code_mode validates");
+    }
+
+    #[test]
+    fn code_mode_is_root_level_config_with_default_limits() {
+        let default_cfg = LabConfig::default();
+        assert_eq!(default_cfg.code_mode.timeout_ms, 30_000);
+        assert_eq!(default_cfg.code_mode.max_source_bytes, 1024 * 1024);
+        assert_eq!(default_cfg.code_mode.max_response_bytes, 24 * 1024);
+        assert_eq!(default_cfg.code_mode.max_response_tokens, 6000);
+
+        let cfg = toml::from_str::<LabConfig>(
+            r"
+[code_mode]
+timeout_ms = 2500
+max_source_bytes = 65536
+max_response_bytes = 12000
+max_response_tokens = 3000
+",
+        )
+        .expect("root code_mode parses");
+
+        assert_eq!(cfg.code_mode.timeout_ms, 2500);
+        assert_eq!(cfg.code_mode.max_source_bytes, 65_536);
+        assert_eq!(cfg.code_mode.max_response_bytes, 12000);
+        assert_eq!(cfg.code_mode.max_response_tokens, 3000);
+    }
+
+    #[test]
+    fn upstream_request_timeout_is_root_level_config() {
+        let default_cfg = LabConfig::default();
+        assert_eq!(
+            default_cfg.upstream_request_timeout(),
+            Duration::from_secs(30)
+        );
+
+        let cfg = toml::from_str::<LabConfig>(
+            r"
+upstream_request_timeout_ms = 60000
+",
+        )
+        .expect("root upstream request timeout parses");
+
+        assert_eq!(cfg.upstream_request_timeout_ms, Some(60_000));
+        assert_eq!(cfg.upstream_request_timeout(), Duration::from_mins(1));
+        cfg.validate().expect("timeout validates");
+    }
+
+    /// The HTTP transport backstop must never fire before the upstream deadline
+    /// it wraps. A fixed 30s cap in the router used to override both settings:
+    /// a 60s `upstream_request_timeout_ms` still returned a bare 504 at 30s,
+    /// discarding a tool call that went on to succeed.
+    #[test]
+    fn http_request_timeout_never_undercuts_configured_upstream_deadlines() {
+        for toml_src in [
+            "",
+            "upstream_request_timeout_ms = 60000",
+            // Both knobs at the top of their validated ranges.
+            "upstream_request_timeout_ms = 300000\nupstream_relay_timeout_ms = 1800000",
+            // Relay left at its 5 minute default while the pooled path is raised.
+            "upstream_request_timeout_ms = 120000",
+            // Relay raised while the pooled path stays at its default.
+            "upstream_relay_timeout_ms = 900000",
+        ] {
+            let cfg = toml::from_str::<LabConfig>(toml_src).expect("config parses");
+            cfg.validate().expect("config validates");
+
+            let http = cfg.http_request_timeout();
+            assert!(
+                http > cfg.upstream_request_timeout(),
+                "http timeout {http:?} must exceed the pooled upstream deadline {:?} for {toml_src:?}",
+                cfg.upstream_request_timeout(),
+            );
+            assert!(
+                http > cfg.upstream_relay_timeout(),
+                "http timeout {http:?} must exceed the relay deadline {:?} for {toml_src:?}",
+                cfg.upstream_relay_timeout(),
+            );
+        }
+    }
+
+    /// A Code Mode run is carried by the HTTP request that started it, so the
+    /// transport backstop must also cover `code_mode.timeout_ms`; otherwise a
+    /// long run outlives its own response.
+    #[test]
+    fn http_request_timeout_never_undercuts_code_mode_timeout() {
+        let cfg = toml::from_str::<LabConfig>(
+            "upstream_request_timeout_ms = 60000\nupstream_relay_timeout_ms = 60000\n[code_mode]\ntimeout_ms = 180000\n",
+        )
+        .expect("config parses");
+        cfg.validate().expect("config validates");
+        let http = cfg.http_request_timeout();
+        assert!(
+            http > Duration::from_millis(cfg.code_mode.timeout_ms),
+            "http timeout {http:?} must exceed the Code Mode deadline {} ms",
+            cfg.code_mode.timeout_ms
+        );
+    }
+
+    /// A synchronous `agents.run` holds its HTTP request for the whole Agent
+    /// runtime bound, which is fixed product policy rather than configuration.
+    #[test]
+    fn http_request_timeout_covers_the_agent_runtime_bound() {
+        let cfg = toml::from_str::<LabConfig>(
+            "upstream_request_timeout_ms = 60000\nupstream_relay_timeout_ms = 60000\n",
+        )
+        .expect("config parses");
+        cfg.validate().expect("config validates");
+        let bound = Duration::from_millis(labby_runtime::agent_runtime::AGENT_MAX_RUNTIME_MILLIS);
+        assert!(
+            cfg.http_request_timeout() > bound,
+            "http timeout {:?} must exceed the Agent runtime bound {bound:?}",
+            cfg.http_request_timeout()
+        );
+    }
+
+    /// The 5 minute relay default is the binding constraint out of the box, so
+    /// a default deployment must not cap HTTP requests at the 30s pooled value.
+    #[test]
+    fn http_request_timeout_default_accommodates_the_relay_path() {
+        let cfg = LabConfig::default();
+        assert_eq!(
+            cfg.http_request_timeout(),
+            cfg.upstream_relay_timeout() + HTTP_REQUEST_TIMEOUT_MARGIN,
+        );
+        assert!(cfg.http_request_timeout() > Duration::from_secs(30));
+    }
+
+    #[test]
+    fn upstream_relay_timeout_defaults_to_five_minutes_and_is_configurable() {
+        // Unset → 5 minute default (NOT the 30s request-timeout default), so a
+        // relayed elicitation is not aborted while a human is answering.
+        let default_cfg = LabConfig::default();
+        assert_eq!(default_cfg.upstream_relay_timeout_ms, None);
+        assert_eq!(default_cfg.upstream_relay_timeout(), Duration::from_mins(5));
+
+        let cfg = toml::from_str::<LabConfig>(
+            r"
+upstream_relay_timeout_ms = 600000
+",
+        )
+        .expect("root upstream relay timeout parses");
+        assert_eq!(cfg.upstream_relay_timeout_ms, Some(600_000));
+        assert_eq!(cfg.upstream_relay_timeout(), Duration::from_mins(10));
+        cfg.validate().expect("relay timeout validates");
+    }
+
+    #[test]
+    fn upstream_relay_timeout_rejects_out_of_range() {
+        // Above the 30 min ceiling.
+        let too_big = LabConfig {
+            upstream_relay_timeout_ms: Some(1_800_001),
+            ..LabConfig::default()
+        };
+        assert!(matches!(
+            too_big.validate(),
+            Err(ConfigError::InvalidUpstreamRelayTimeout { value: 1_800_001 })
+        ));
+
+        // Zero is rejected just like the request timeout.
+        let zero = LabConfig {
+            upstream_relay_timeout_ms: Some(0),
+            ..LabConfig::default()
+        };
+        assert!(matches!(
+            zero.validate(),
+            Err(ConfigError::InvalidUpstreamRelayTimeout { value: 0 })
+        ));
+    }
+
+    #[test]
+    fn catalog_notification_timeout_defaults_to_five_seconds_and_is_configurable() {
+        let default_cfg = LabConfig::default();
+        assert_eq!(default_cfg.mcp.catalog_notification_timeout_ms, None);
+
+        let cfg = toml::from_str::<LabConfig>(
+            r"
+[mcp]
+catalog_notification_timeout_ms = 2500
+",
+        )
+        .expect("mcp catalog notification timeout parses");
+
+        assert_eq!(cfg.mcp.catalog_notification_timeout_ms, Some(2_500));
+        cfg.validate()
+            .expect("catalog notification timeout validates");
+    }
+
+    #[test]
+    fn catalog_notification_timeout_rejects_out_of_range() {
+        let too_big = LabConfig {
+            mcp: McpPreferences {
+                catalog_notification_timeout_ms: Some(60_001),
+                ..McpPreferences::default()
+            },
+            ..LabConfig::default()
+        };
+        assert!(matches!(
+            too_big.validate(),
+            Err(ConfigError::InvalidCatalogNotificationTimeout { value: 60_001 })
+        ));
+
+        let zero = LabConfig {
+            mcp: McpPreferences {
+                catalog_notification_timeout_ms: Some(0),
+                ..McpPreferences::default()
+            },
+            ..LabConfig::default()
+        };
+        assert!(matches!(
+            zero.validate(),
+            Err(ConfigError::InvalidCatalogNotificationTimeout { value: 0 })
+        ));
+    }
+
+    #[test]
+    fn code_mode_validation_rejects_unbounded_execution_settings() {
+        let cfg = toml::from_str::<LabConfig>(
+            r"
+[code_mode]
+timeout_ms = 0
+",
+        )
+        .expect("code_mode parses");
+        assert!(matches!(
+            cfg.validate(),
+            Err(ConfigError::InvalidCodeModeTimeout { value: 0 })
+        ));
+
+        let cfg = toml::from_str::<LabConfig>(
+            r"
+[code_mode]
+timeout_ms = 5000
+max_response_bytes = 100
+",
+        )
+        .expect("code_mode parses");
+        assert!(matches!(
+            cfg.validate(),
+            Err(ConfigError::InvalidCodeModeMaxResponseBytes { value: 100 })
+        ));
+
+        let cfg = toml::from_str::<LabConfig>(
+            r"
+[code_mode]
+timeout_ms = 5000
+max_response_tokens = 100
+",
+        )
+        .expect("code_mode parses");
+        assert!(matches!(
+            cfg.validate(),
+            Err(ConfigError::InvalidCodeModeMaxResponseTokens { value: 100 })
+        ));
+    }
+
+    #[test]
+    fn protected_route_legacy_backend_path_folds_into_backend_url() {
+        let mut cfg = toml::from_str::<LabConfig>(
+            r#"
+[[protected_mcp_routes]]
+name = "tools"
+enabled = true
+public_host = "mcp.example.com"
+public_path = "/tools"
+backend_url = "http://10.0.0.12:3100"
+backend_mcp_path = "/mcp"
+"#,
+        )
+        .expect("protected route parses");
+
+        cfg.normalize_protected_mcp_routes()
+            .expect("protected route normalizes");
+
+        assert_eq!(
+            cfg.protected_mcp_routes[0].backend_url,
+            "http://10.0.0.12:3100/mcp"
+        );
+        assert_eq!(cfg.protected_mcp_routes[0].backend_mcp_path, "/mcp");
+    }
+
+    #[test]
+    fn protected_route_named_upstream_allows_empty_backend_url() {
+        let mut cfg = toml::from_str::<LabConfig>(
+            r#"
+[[protected_mcp_routes]]
+name = "telemetry"
+enabled = true
+public_host = "mcp.example.com"
+public_path = "/telemetry"
+upstream = " telemetry "
+"#,
+        )
+        .expect("protected route parses");
+
+        cfg.normalize_protected_mcp_routes()
+            .expect("upstream route normalizes");
+
+        assert_eq!(
+            cfg.protected_mcp_routes[0].upstream.as_deref(),
+            Some("telemetry")
+        );
+        assert_eq!(cfg.protected_mcp_routes[0].backend_url, "");
+        assert_eq!(cfg.protected_mcp_routes[0].backend_mcp_path, "/mcp");
+    }
+
+    #[test]
+    fn protected_route_gateway_subset_target_parses() {
+        let toml = r#"
+[[protected_mcp_routes]]
+name = "ops"
+public_host = "mcp.example.com"
+public_path = "/ops"
+scopes = ["mcp:ops"]
+
+[protected_mcp_routes.target]
+kind = "gateway_subset"
+upstreams = ["gateway-alpha", "gateway-beta", " gateway-gamma "]
+services = ["gateway"]
+expose_code_mode = true
+"#;
+
+        let cfg = parse_normalized_config(toml);
+        let route = &cfg.protected_mcp_routes[0];
+
+        assert_eq!(route.name, "ops");
+        assert_eq!(route.backend_url, "");
+        assert_eq!(route.upstream, None);
+        assert!(route.is_gateway_subset());
+        let target = route.gateway_subset_target().expect("gateway subset");
+        assert_eq!(
+            target.upstreams,
+            vec!["gateway-alpha", "gateway-beta", "gateway-gamma"]
+        );
+        assert_eq!(target.services, vec!["gateway"]);
+        assert!(target.expose_code_mode);
+    }
+
+    #[test]
+    fn protected_route_legacy_backend_url_maps_to_proxy_target() {
+        let toml = r#"
+[[protected_mcp_routes]]
+name = "telemetry"
+public_host = "mcp.example.com"
+public_path = "/telemetry"
+backend_url = "http://10.0.0.2:3100/mcp"
+"#;
+
+        let cfg = parse_normalized_config(toml);
+        let route = &cfg.protected_mcp_routes[0];
+
+        assert!(matches!(
+            route.effective_target(),
+            ProtectedMcpRouteEffectiveTarget::BackendUrl { .. }
+        ));
+    }
+
+    #[test]
+    fn protected_route_rejects_target_with_legacy_backend() {
+        let toml = r#"
+[[protected_mcp_routes]]
+name = "bad"
+public_host = "mcp.example.com"
+public_path = "/bad"
+backend_url = "http://10.0.0.2:3100/mcp"
+
+[protected_mcp_routes.target]
+kind = "gateway_subset"
+upstreams = ["gateway-beta"]
+"#;
+
+        let mut cfg: LabConfig = toml::from_str(toml).expect("parse");
+        let err = cfg
+            .normalize_protected_mcp_routes()
+            .expect_err("target and backend_url must conflict");
+        assert!(err.to_string().contains(
+            "protected MCP route target cannot be combined with upstream or backend_url"
+        ));
+    }
+
+    #[test]
+    fn protected_route_rejects_empty_gateway_subset_entries() {
+        let toml = r#"
+[[protected_mcp_routes]]
+name = "bad"
+public_host = "mcp.example.com"
+public_path = "/bad"
+
+[protected_mcp_routes.target]
+kind = "gateway_subset"
+upstreams = ["gateway-alpha", " "]
+"#;
+
+        let mut cfg: LabConfig = toml::from_str(toml).expect("parse");
+        let err = cfg
+            .normalize_protected_mcp_routes()
+            .expect_err("empty upstream entry must fail");
+        assert!(err.to_string().contains("target.upstreams"));
+        assert!(
+            err.to_string()
+                .contains("gateway_subset target entries must not be empty")
+        );
+    }
+
+    #[test]
+    fn protected_route_allows_same_gateway_subset_path_on_different_hosts() {
+        let toml = r#"
+[[upstream]]
+name = "gateway-alpha"
+enabled = false
+url = "https://gateway-alpha.example.com/mcp"
+
+[[protected_mcp_routes]]
+name = "media-a"
+public_host = "mcp-a.example.com"
+public_path = "/ops"
+
+[protected_mcp_routes.target]
+kind = "gateway_subset"
+upstreams = ["gateway-alpha"]
+
+[[protected_mcp_routes]]
+name = "media-b"
+public_host = "mcp-b.example.com"
+public_path = "/ops"
+
+[protected_mcp_routes.target]
+kind = "gateway_subset"
+upstreams = ["gateway-alpha"]
+"#;
+
+        let mut cfg: LabConfig = toml::from_str(toml).expect("parse");
+        cfg.normalize_protected_mcp_routes()
+            .expect("host and path together identify a protected route");
+        cfg.validate()
+            .expect("same subset path on distinct hosts is valid");
+    }
+
+    #[test]
+    fn config_validation_rejects_reserved_protected_route_path() {
+        let toml = r#"
+[[protected_mcp_routes]]
+name = "bad"
+public_host = "mcp.example.com"
+public_path = "/v1"
+backend_url = "http://10.0.0.2:3100/mcp"
+"#;
+
+        let mut cfg: LabConfig = toml::from_str(toml).expect("parse");
+        cfg.normalize_protected_mcp_routes()
+            .expect("normalization should not hide validation failure");
+        let err = cfg
+            .validate()
+            .expect_err("reserved protected route path must fail validation");
+
+        assert!(err.to_string().contains("public_path"));
+        assert!(err.to_string().contains("reserved"));
+    }
+
+    #[test]
+    fn config_validation_rejects_public_callback_relay_protected_route_path() {
+        let toml = r#"
+[[protected_mcp_routes]]
+name = "bad"
+public_host = "mcp.example.com"
+public_path = "/callback/devhost"
+backend_url = "http://10.0.0.2:3100/mcp"
+"#;
+
+        let mut cfg: LabConfig = toml::from_str(toml).expect("parse");
+        cfg.normalize_protected_mcp_routes()
+            .expect("normalization should not hide validation failure");
+        let err = cfg
+            .validate()
+            .expect_err("callback relay protected route path must fail validation");
+
+        assert!(err.to_string().contains("public_path"));
+        assert!(err.to_string().contains("reserved"));
+    }
+
+    #[test]
+    fn config_validation_rejects_empty_gateway_subset_target() {
+        let toml = r#"
+[[protected_mcp_routes]]
+name = "empty"
+public_host = "mcp.example.com"
+public_path = "/empty"
+
+[protected_mcp_routes.target]
+kind = "gateway_subset"
+"#;
+
+        let mut cfg: LabConfig = toml::from_str(toml).expect("parse");
+        cfg.normalize_protected_mcp_routes()
+            .expect("normalization should not hide validation failure");
+        let err = cfg
+            .validate()
+            .expect_err("empty gateway_subset target must fail validation");
+
+        assert!(err.to_string().contains("gateway_subset target"));
+    }
+
+    #[test]
+    fn config_validation_accepts_gateway_subset_loadout_target() {
+        let toml = r#"
+[[upstream]]
+name = "gateway-alpha"
+enabled = false
+url = "https://gateway-alpha.example.com/mcp"
+
+[[loadouts]]
+name = "sd"
+upstreams = ["gateway-alpha"]
+
+[[protected_mcp_routes]]
+name = "sd"
+public_host = "sd.example.com"
+public_path = "/mcp"
+scopes = ["mcp:read"]
+
+[protected_mcp_routes.target]
+kind = "gateway_subset"
+loadout = " sd "
+"#;
+        let mut cfg: LabConfig = toml::from_str(toml).expect("parse");
+
+        cfg.normalize_protected_mcp_routes()
+            .expect("loadout route normalization succeeds");
+        cfg.validate().expect("known loadout route is valid");
+        let ProtectedMcpRouteTarget::GatewaySubset(target) = cfg.protected_mcp_routes[0]
+            .target
+            .as_ref()
+            .expect("gateway subset target");
+        assert_eq!(target.loadout.as_deref(), Some("sd"));
+    }
+
+    #[test]
+    fn config_validation_rejects_unknown_gateway_subset_targets() {
+        let toml = r#"
+[[upstream]]
+name = "gateway-alpha"
+url = "https://gateway_alpha.example.com/mcp"
+
+[[protected_mcp_routes]]
+name = "ops"
+public_host = "mcp.example.com"
+public_path = "/ops"
+
+[protected_mcp_routes.target]
+kind = "gateway_subset"
+upstreams = ["sonnar"]
+services = ["gateway", "nope"]
+"#;
+
+        let mut cfg: LabConfig = toml::from_str(toml).expect("parse");
+        cfg.normalize_protected_mcp_routes()
+            .expect("normalization should not hide validation failure");
+        let err = cfg
+            .validate()
+            .expect_err("unknown gateway_subset targets must fail validation");
+
+        assert!(
+            err.to_string().contains("sonnar") || err.to_string().contains("nope"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn config_validation_allows_stale_targets_on_disabled_gateway_subset_routes() {
+        let toml = r#"
+[[protected_mcp_routes]]
+name = "retired-ops"
+enabled = false
+public_host = "mcp.example.com"
+public_path = "/ops"
+
+[protected_mcp_routes.target]
+kind = "gateway_subset"
+upstreams = ["removed-upstream"]
+services = ["removed-service"]
+"#;
+
+        let mut cfg: LabConfig = toml::from_str(toml).expect("parse");
+        cfg.normalize_protected_mcp_routes()
+            .expect("disabled route remains structurally valid");
+        cfg.validate()
+            .expect("disabled routes must not block gateway startup");
+    }
+
+    // ── Code Mode: CodeModeConfig defaults ───────────────────────────────────
+
+    #[test]
+    fn code_mode_config_token_estimate_divisor_defaults_to_4() {
+        let config = CodeModeConfig::default();
+        // PRESENCE: default divisor is exactly 4
+        assert_eq!(
+            config.token_estimate_divisor, 4,
+            "token_estimate_divisor default must be 4"
+        );
+        // ABSENCE: it is not 0 or 1 (which would drastically change truncation)
+        assert_ne!(config.token_estimate_divisor, 0);
+        assert_ne!(config.token_estimate_divisor, 1);
+    }
+
+    #[test]
+    fn code_mode_config_defaults_are_sane() {
+        let config = CodeModeConfig::default();
+        // PRESENCE: timeout and output limits are positive
+        assert!(config.timeout_ms > 0);
+        assert!(config.max_response_bytes > 0);
+        assert!(config.max_response_tokens > 0);
+        // ABSENCE: not wildly large (sanity bounds)
+        assert!(config.timeout_ms <= 60_000);
+    }
+
+    // ── Process-wide atomic flags ─────────────────────────────────────────────
+
+    #[test]
+    fn process_code_mode_flag_round_trips() {
+        let _guard = process_code_mode_test_guard();
+
+        set_process_code_mode_enabled_for_test(true);
+        assert!(
+            process_code_mode_enabled(),
+            "code_mode must be true after set_process_code_mode_enabled(true)"
+        );
+
+        set_process_code_mode_enabled_for_test(false);
+        assert!(
+            !process_code_mode_enabled(),
+            "code_mode must be false after set_process_code_mode_enabled(false)"
+        );
+    }
+
+    // ── T3: secret file permission tests (S2) ────────────────────────────────
+
+    #[cfg(unix)]
+    fn file_mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)
+            .unwrap_or_else(|e| panic!("metadata {}: {e}", path.display()))
+            .permissions()
+            .mode()
+            & 0o777
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn write_service_creds_creates_file_with_mode_0o600() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let env_path = dir.path().join(".env");
+
+        let creds = [EnvCredential {
+            service: "myservice".to_string(),
+            url: None,
+            secret: Some("supersecret".to_string()),
+            env_field: "MYSERVICE_TOKEN".to_string(),
+        }];
+
+        write_service_creds(&env_path, &creds, false).expect("write_service_creds");
+
+        assert_eq!(
+            file_mode(&env_path),
+            0o600,
+            ".env must be 0o600 after write_service_creds"
+        );
+    }
+
+    // Backup-file 0o600 perms and retention pruning are covered directly by
+    // env_merge's own unix_perms_set_to_0600 / backup_pruning_keeps_last_ten
+    // tests -- write_service_creds delegates entirely to env_merge::merge for
+    // that behavior and adds no file-handling logic of its own.
+
+    #[test]
+    #[cfg(unix)]
+    fn heal_env_file_permissions_tightens_loose_env() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let env_path = dir.path().join(".env");
+        std::fs::write(&env_path, "TOKEN=secret\n").expect("write");
+        std::fs::set_permissions(&env_path, std::fs::Permissions::from_mode(0o644))
+            .expect("chmod 644");
+
+        heal_env_file_permissions(&env_path);
+
+        assert_eq!(
+            file_mode(&env_path),
+            0o600,
+            "heal must tighten .env to 0o600"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn heal_env_file_permissions_tightens_backup_files() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let env_path = dir.path().join(".env");
+        let bak_path = dir.path().join(".env.bak.1234567890");
+
+        std::fs::write(&env_path, "TOKEN=secret\n").expect("write env");
+        std::fs::write(&bak_path, "TOKEN=oldsecret\n").expect("write bak");
+
+        for p in [&env_path, &bak_path] {
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o644)).expect("chmod 644");
+        }
+
+        heal_env_file_permissions(&env_path);
+
+        assert_eq!(file_mode(&env_path), 0o600, ".env must be healed");
+        assert_eq!(file_mode(&bak_path), 0o600, ".env.bak.* must be healed");
+    }
+
+    // usage_telemetry_enabled() delegates to the pure resolve_usage_telemetry_enabled()
+    // so these tests never need to mutate process env (this crate forbids
+    // `unsafe`, and `std::env::set_var`/`remove_var` are `unsafe fn` as of
+    // Rust 2024) — same shape as the resolve_web_ui_auth_disabled_values
+    // tests above.
+    #[test]
+    fn usage_telemetry_enabled_defaults_true_when_unset() {
+        assert!(
+            resolve_usage_telemetry_enabled(None),
+            "usage telemetry must default to enabled when the env var is unset"
+        );
+    }
+
+    #[test]
+    fn usage_telemetry_enabled_false_when_set_to_1() {
+        assert!(
+            !resolve_usage_telemetry_enabled(Some("1")),
+            "usage telemetry must be disabled when the env var is \"1\""
+        );
+    }
+
+    #[test]
+    fn usage_telemetry_enabled_true_for_other_values() {
+        assert!(
+            resolve_usage_telemetry_enabled(Some("true")),
+            "only the exact value \"1\" should disable usage telemetry"
+        );
+        assert!(
+            resolve_usage_telemetry_enabled(Some("0")),
+            "\"0\" is not the disable sentinel; telemetry stays enabled"
+        );
+    }
+
+    #[test]
+    fn usage_db_path_is_under_dot_labby_home_dir() {
+        let path = usage_db_path().unwrap();
+        assert_eq!(path.file_name().and_then(|n| n.to_str()), Some("usage.db"));
+        assert_eq!(
+            path.parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str()),
+            Some(".labby")
+        );
+    }
+
+    /// Review finding on lab-eyeuv: the reserved-prefix guard was added to
+    /// `labby_runtime`'s copy of `normalize_protected_mcp_routes`, but
+    /// `load_toml` runs THIS copy — and the route scopes mounted by
+    /// `cli/serve.rs` are built from this config. The guard has to live on
+    /// both, and this test pins the serve-path copy specifically.
+    #[test]
+    fn serve_path_normalization_rejects_reserved_in_process_upstreams() {
+        let mut route: ProtectedMcpRouteConfig = toml::from_str(
+            "name=\"scoped\"\npublic_host=\"mcp.example.com\"\npublic_path=\"/svc\"\n",
+        )
+        .unwrap();
+        route.backend_url = String::new();
+        route.target = Some(ProtectedMcpRouteTarget::GatewaySubset(
+            ProtectedGatewaySubsetTarget {
+                project_id: None,
+                upstreams: vec![format!("{IN_PROCESS_UPSTREAM_PREFIX}setup")],
+                services: Vec::new(),
+                expose_code_mode: false,
+                loadout: None,
+            },
+        ));
+        let mut cfg = LabConfig {
+            protected_mcp_routes: vec![route],
+            ..LabConfig::default()
+        };
+
+        let error = cfg
+            .normalize_protected_mcp_routes()
+            .expect_err("the serve-path copy must reject the reserved prefix");
+        let rendered = error.to_string();
+        assert!(rendered.contains("__in_process__setup"), "{rendered}");
+    }
+
+    #[test]
+    fn serve_path_project_id_normalization_is_bounded_and_compatible() {
+        fn config(project_id: Option<String>) -> LabConfig {
+            let mut route: ProtectedMcpRouteConfig = toml::from_str(
+                "name=\"scoped\"\npublic_host=\"mcp.example.com\"\npublic_path=\"/svc\"\n",
+            )
+            .unwrap();
+            route.backend_url = String::new();
+            route.target = Some(ProtectedMcpRouteTarget::GatewaySubset(
+                ProtectedGatewaySubsetTarget {
+                    project_id,
+                    ..Default::default()
+                },
+            ));
+            LabConfig {
+                protected_mcp_routes: vec![route],
+                ..Default::default()
+            }
+        }
+
+        let mut omitted = config(None);
+        omitted
+            .normalize_protected_mcp_routes()
+            .expect("legacy None");
+        let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) =
+            omitted.protected_mcp_routes[0].target.as_ref()
+        else {
+            unreachable!()
+        };
+        assert_eq!(target.project_id, None);
+
+        let max = labby_runtime::gateway_config::MAX_PROJECT_ID_LEN;
+        let expected = "x".repeat(max);
+        let mut trimmed = config(Some(format!("  {expected}  ")));
+        trimmed.normalize_protected_mcp_routes().expect("128 bytes");
+        let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) =
+            trimmed.protected_mcp_routes[0].target.as_ref()
+        else {
+            unreachable!()
+        };
+        assert_eq!(target.project_id.as_deref(), Some(expected.as_str()));
+
+        for invalid in ["   ".to_string(), "x".repeat(max + 1)] {
+            assert!(
+                config(Some(invalid))
+                    .normalize_protected_mcp_routes()
+                    .is_err()
+            );
+        }
+    }
+}
