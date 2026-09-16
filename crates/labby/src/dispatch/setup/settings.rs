@@ -1023,6 +1023,18 @@ fn value_for_field(
     env_path: &std::path::Path,
 ) -> Result<(Value, SettingsValueSource), ToolError> {
     if field.backend == SettingsBackend::Env {
+        // A variable the service manager (or shell) set before `.env` loaded
+        // wins for the whole process: report that effective value and flag
+        // it, because an edit to `.env` could never take effect.
+        if let Some(process_value) = env_process_override(field) {
+            return Ok((
+                process_value,
+                SettingsValueSource {
+                    source: SettingsSourceKind::Env,
+                    overridden_by_env: Some(field.key.to_string()),
+                },
+            ));
+        }
         let value = env_current_value(env_path, field)?.unwrap_or(Value::Null);
         return Ok((
             value.clone(),
@@ -1131,6 +1143,16 @@ fn env_process_value(field: &SettingsFieldSpec) -> Value {
         Some(value) => json!(value),
         None => Value::Null,
     }
+}
+
+/// The effective value of an env-backed field when the process environment,
+/// not `.env`, supplies it. `None` when `.env` is authoritative for the key.
+fn env_process_override(field: &SettingsFieldSpec) -> Option<Value> {
+    if !crate::dispatch::helpers::env_set_outside_dotenv(field.key) {
+        return None;
+    }
+    let value = env_process_value(field);
+    (!value.is_null()).then_some(value)
 }
 
 fn env_current_value(
@@ -1442,6 +1464,16 @@ pub fn env_entries_from_updates(
             return Err(ToolError::InvalidParam {
                 message: format!(
                     "setting `{}` is not editable through settings.env.update",
+                    entry.key
+                ),
+                param: entry.key.clone(),
+            });
+        }
+        if env_process_override(field).is_some() {
+            return Err(ToolError::InvalidParam {
+                message: format!(
+                    "setting `{}` is set in the server's process environment, which takes \
+                     precedence over .env; change it where the process is started",
                     entry.key
                 ),
                 param: entry.key.clone(),
@@ -1801,6 +1833,60 @@ mod tests {
             entry.get("env_var").and_then(Value::as_str) != Some("LABBY_MCP_HTTP_HOST")
         });
         assert!(build_env_schema_from_json(&incomplete.to_string()).is_err());
+    }
+
+    /// Finding 5: the process environment takes precedence over `.env`, so a
+    /// variable set by the service manager makes a Settings save silently
+    /// ineffective. The state must report the effective value and flag the
+    /// override, and the shared env update must refuse the write.
+    #[test]
+    fn env_backed_field_reports_process_override_when_file_and_process_disagree() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = dir.path().join(".env");
+        std::fs::write(&env, "LABBY_AUTH_ADMIN_EMAIL=a@example.com\n").unwrap();
+        let fields = settings_fields_by_key();
+        let field = &fields[ADMIN_EMAILS_KEY];
+        let cfg = crate::config::LabConfig::default();
+        let explicit = BTreeSet::new();
+        let process_env = HashMap::from([(
+            ADMIN_EMAILS_KEY.to_string(),
+            "a@example.com,b@example.com".to_string(),
+        )]);
+        let update = || {
+            vec![SettingsUpdateEntry {
+                key: ADMIN_EMAILS_KEY.into(),
+                value: json!(["a@example.com"]),
+                previous: json!(["a@example.com", "b@example.com"]),
+                unset: false,
+                previous_present: true,
+            }]
+        };
+
+        // Set outside `.env` (present before dotenv loaded): the running
+        // server uses `a,b`, editing the file cannot change that.
+        crate::dispatch::helpers::with_env_override(process_env.clone(), || {
+            crate::dispatch::helpers::with_env_keys_set_outside_dotenv(
+                BTreeSet::from([ADMIN_EMAILS_KEY.to_string()]),
+                || {
+                    let (value, source) = value_for_field(&cfg, field, &explicit, &env).unwrap();
+                    assert_eq!(value, json!(["a@example.com", "b@example.com"]));
+                    assert_eq!(source.source, SettingsSourceKind::Env);
+                    assert_eq!(source.overridden_by_env.as_deref(), Some(ADMIN_EMAILS_KEY));
+                    let error = env_entries_from_updates(&update()).unwrap_err();
+                    assert_eq!(error.kind(), "invalid_param");
+                    assert!(error.to_string().contains("process environment"), "{error}");
+                },
+            )
+        });
+
+        // The same disagreement after a Settings save that is waiting for a
+        // restart is not an override: the file value stays editable.
+        crate::dispatch::helpers::with_env_override(process_env, || {
+            let (value, source) = value_for_field(&cfg, field, &explicit, &env).unwrap();
+            assert_eq!(value, json!(["a@example.com"]));
+            assert_eq!(source.overridden_by_env, None);
+            assert!(env_entries_from_updates(&update()).is_ok());
+        });
     }
 
     #[test]

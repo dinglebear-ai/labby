@@ -93,6 +93,24 @@ test('settings schema helpers exclude config fields shadowed by env overrides', 
   assert.deepEqual(partitioned.envEntries, [])
 })
 
+test('settings schema helpers exclude env fields the process environment overrides', () => {
+  const envField: SettingsFieldSpec = {
+    ...numberField,
+    key: 'LABBY_MCP_HTTP_PORT',
+    backend: 'env',
+    env_override: null,
+  }
+  const partitioned = buildDirtyEntriesByBackend(
+    [envField],
+    new Set(['LABBY_MCP_HTTP_PORT']),
+    { LABBY_MCP_HTTP_PORT: 8766 },
+    { LABBY_MCP_HTTP_PORT: 8765 },
+    { LABBY_MCP_HTTP_PORT: { source: 'env', overridden_by_env: 'LABBY_MCP_HTTP_PORT' } },
+  )
+  assert.deepEqual(partitioned.envEntries, [])
+  assert.deepEqual(partitioned.configEntries, [])
+})
+
 test('settings schema helpers do not stringify arrays as objects', () => {
   assert.equal(valueAsInputString(['a', 'b']), 'a\nb')
 })
