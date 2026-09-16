@@ -28,7 +28,7 @@ use labby_primitives::{
 use labby_runtime::{
     agent_runtime::{
         AgentExecutionOutput, AgentExecutionRequest, AgentResourceBounds, AgentRuntimeError,
-        Cancellation,
+        Cancellation, system_now_millis,
     },
     authority::AuthoritySafeBoundary,
     task_runtime::{ScheduledTask, TaskLedger, TaskRuntimeError, TaskScheduler, execute_task},
@@ -44,6 +44,8 @@ static TASK_SCHEDULER: LazyLock<TaskScheduler> =
     LazyLock::new(|| TaskScheduler::new(4).expect("valid fixed task quota"));
 static TASK_CANCELLATIONS: LazyLock<Mutex<HashMap<String, (u32, Cancellation)>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+const TASK_MAX_RUNTIME_MILLIS: u64 = 300_000;
+const TASK_ATTEMPT_LEASE_MILLIS: u64 = TASK_MAX_RUNTIME_MILLIS;
 
 const fn param(name: &'static str) -> ParamSpec {
     ParamSpec {
@@ -147,6 +149,18 @@ pub(crate) async fn dispatch(
             reject_server_assigned(&params)?;
             let owner = owner(&params)?;
             let task_id = required(&params, "task_id")?;
+            // Authorize before Agent lookup or raw-input materialization. The
+            // transactional create below re-authorizes at commit, but this
+            // preflight prevents denied callers from causing CAS writes.
+            authorize(
+                &context,
+                name,
+                &owner,
+                task_id.clone(),
+                Capability::ScopeCreate,
+                now,
+            )
+            .await?;
             let request = authority_request(
                 &context,
                 name,
@@ -299,19 +313,35 @@ pub(crate) async fn dispatch(
                 let owned_context = context.clone();
                 let owned_record = record.clone();
                 tokio::spawn(async move {
-                    let authority_lease = owned_context
-                        .store
-                        .authorize_and_transition_agent_task(
-                            request,
-                            task_id.clone(),
-                            owned_record.state,
-                            TaskState::Queued,
-                            owned_context.identity.safe_fingerprint(),
-                            owned_record.attempt,
-                            transition_now,
-                        )
-                        .await
-                        .map_err(map)?;
+                    let authority_lease = match owned_record.state {
+                        TaskState::Created => owned_context
+                            .store
+                            .authorize_and_transition_agent_task(
+                                request,
+                                task_id.clone(),
+                                TaskState::Created,
+                                TaskState::Queued,
+                                owned_context.identity.safe_fingerprint(),
+                                owned_record.attempt,
+                                transition_now,
+                            )
+                            .await
+                            .map_err(map)?,
+                        TaskState::Queued => {
+                            let lease = authorize_action(&owned_context.store, request)
+                                .await
+                                .map_err(map)?;
+                            // A queued row with an in-process owner is already
+                            // being handed to the scheduler. A queued row with
+                            // no owner is a crash/restart handoff gap and may be
+                            // safely resumed by this freshly authorized caller.
+                            if task_has_live_owner(&task_id) {
+                                return Ok::<(), ToolError>(());
+                            }
+                            lease
+                        }
+                        _ => return Err(denied()),
+                    };
                     let cancellation = Cancellation::new();
                     register_task_cancellation(task_id.clone(), attempt, cancellation.clone());
                     let execution_context = owned_context.clone();
@@ -351,7 +381,7 @@ pub(crate) async fn dispatch(
                                             TaskState::Expired,
                                             execution_context.identity.safe_fingerprint(),
                                             current.attempt,
-                                            transition_now,
+                                            i64::try_from(system_now_millis()).unwrap_or(i64::MAX),
                                         )
                                         .await,
                                 );
@@ -507,15 +537,21 @@ fn pinned_revision_matches(definition: &AgentDefinition, intent: &TaskIntent) ->
         && definition.revision.version == intent.agent_version
         && definition.revision.content_digest == intent.agent_revision_digest
 }
-/// An exact replay of an existing intent (same owner, idempotency key, Agent
-/// pin, and input) is the store's idempotent-create contract. Anything else
-/// that reuses the identifier is treated as taken.
+/// An exact replay of caller-controlled immutable intent fields may pass the
+/// early identifier check. The store performs the final full-intent comparison
+/// after authorization has replaced the placeholder creator with the resolved
+/// principal. Anything else that reuses the identifier is treated as taken.
 fn is_idempotent_replay(existing: &crate::access::TaskRecord, intent: &TaskIntent) -> bool {
-    existing.intent.owner == intent.owner
+    existing.intent.id == intent.id
         && existing.intent.idempotency_key == intent.idempotency_key
+        && existing.intent.owner == intent.owner
+        && existing.intent.project == intent.project
         && existing.intent.agent_id == intent.agent_id
+        && existing.intent.agent_version == intent.agent_version
         && existing.intent.agent_revision_digest == intent.agent_revision_digest
         && existing.intent.input_digest == intent.input_digest
+        && existing.intent.catalog_generation == intent.catalog_generation
+        && existing.intent.authority_fingerprint == intent.authority_fingerprint
 }
 
 fn register_task_cancellation(task_id: String, attempt: u32, cancellation: Cancellation) {
@@ -523,6 +559,13 @@ fn register_task_cancellation(task_id: String, attempt: u32, cancellation: Cance
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .insert(task_id, (attempt, cancellation));
+}
+
+fn task_has_live_owner(task_id: &str) -> bool {
+    TASK_CANCELLATIONS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains_key(task_id)
 }
 
 fn signal_task_cancellation(task_id: &str) -> bool {
@@ -581,7 +624,10 @@ async fn execute_queued(
         "{}:{attempt}:{now}",
         record.intent.id
     )));
-    let expires = now.saturating_add(30_000);
+    // Task runtime requires the durable fence to be bounded by the Agent
+    // runtime itself; a longer lease would leave a live fence after the
+    // executor has already been abandoned.
+    let expires = now.saturating_add(TASK_ATTEMPT_LEASE_MILLIS);
     let request = AgentExecutionRequest {
         definition: definition.clone(),
         session: AgentSessionBinding {
@@ -599,7 +645,7 @@ async fn execute_queued(
         },
         lease,
         bounds: AgentResourceBounds {
-            max_runtime_millis: 300_000,
+            max_runtime_millis: TASK_MAX_RUNTIME_MILLIS,
             max_output_bytes: 16 * 1024 * 1024,
             max_external_effects: 1_000,
         },
@@ -615,7 +661,6 @@ async fn execute_queued(
     let ledger = StoreLedger {
         store: context.store.clone(),
         actor: context.identity.safe_fingerprint(),
-        now,
     };
     let _ = ledger.recover_expired(now).await.map_err(|_| internal())?;
     let executor = configured_task_executor(&context.store, &record.intent.input_digest);
@@ -641,11 +686,14 @@ async fn execute_queued(
 struct StoreLedger {
     store: crate::access::AccessStore,
     actor: String,
-    now: u64,
 }
 impl TaskLedger for StoreLedger {
     async fn acquire(&self, task: &ScheduledTask) -> Result<(), TaskRuntimeError> {
-        let now = i64::try_from(self.now).map_err(|_| TaskRuntimeError::Unavailable)?;
+        let current = system_now_millis();
+        if task.lease_expires_at <= current {
+            return Err(TaskRuntimeError::InvalidLease);
+        }
+        let now = i64::try_from(current).map_err(|_| TaskRuntimeError::Unavailable)?;
         self.store
             .acquire_agent_task_lease(
                 task.task_id.clone(),
@@ -682,7 +730,17 @@ impl TaskLedger for StoreLedger {
         output: Option<&AgentExecutionOutput>,
         reason: Option<&str>,
     ) -> Result<(), TaskRuntimeError> {
-        let now = i64::try_from(self.now).map_err(|_| TaskRuntimeError::Unavailable)?;
+        let current = system_now_millis();
+        let now = i64::try_from(current).map_err(|_| TaskRuntimeError::Unavailable)?;
+        if task.lease_expires_at <= current {
+            // Expire the durable owner before refusing settlement. This makes
+            // lease expiry an actual fence rather than a recovery hint.
+            self.store
+                .recover_expired_agent_tasks(now)
+                .await
+                .map_err(|_| TaskRuntimeError::Unavailable)?;
+            return Err(TaskRuntimeError::FencedConflict);
+        }
         let from = if state == TaskState::Cancelled {
             TaskState::Cancelling
         } else {
@@ -812,20 +870,14 @@ fn map(error: AccessStoreError) -> ToolError {
 ///   typed `task_id` integrity violation (`access::task::map_task_insert_error`).
 /// A taken Task identifier must be indistinguishable from a denial, so an
 /// existing row never becomes an existence oracle for a caller who cannot see
-/// it. The store reports a raced insert either as a typed integrity violation
-/// or, when the collision surfaces from SQLite before the typed mapping, as an
-/// `Unavailable` carrying the constraint text; both collapse to one denial.
+/// it. The store maps raced SQLite uniqueness failures to typed integrity
+/// violations before they reach dispatch, so this layer never matches database
+/// error text.
 fn map_create(error: AccessStoreError) -> ToolError {
     match error {
         AccessStoreError::IntegrityViolation {
             check: "task_idempotency" | "task_id",
         } => denied(),
-        AccessStoreError::Unavailable(ref reason)
-            if reason.contains("agent_tasks.task_id")
-                || reason.contains("agent_tasks.idempotency_key") =>
-        {
-            denied()
-        }
         other => map(other),
     }
 }
@@ -1215,7 +1267,7 @@ mod tests {
                 "t-1",
                 &TaskRuntimeError::Agent(AgentRuntimeError::ExecutorFailed)
             ))["message"],
-            "Agent execution backend is not configured"
+            "Agent execution backend failed"
         );
     }
 
@@ -1269,6 +1321,33 @@ mod tests {
     }
 
     // B-I12(b): caller-supplied epochs are refused before anything is stored.
+    #[tokio::test]
+    async fn denied_raw_input_create_does_not_materialize_payload() {
+        let (_dir, store, owner) = fixture().await;
+        create_agent(&store, &owner, "agent-1").await;
+        let mut params = task_params("denied-raw", "agent-1");
+        params.as_object_mut().unwrap().remove("input_digest");
+        params["input"] = json!("caller-controlled raw input");
+        let stranger = task_context(&store, &browser("stranger-subject"));
+
+        let error = dispatch(stranger, "tasks.create", params)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.kind(), "forbidden");
+        assert!(
+            !store.storage_dir().join("agent-payloads").exists(),
+            "authorization must happen before content-addressed payload writes"
+        );
+        assert!(
+            store
+                .get_agent_task("denied-raw".into())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
     #[tokio::test]
     async fn create_refuses_caller_epochs_and_nothing_is_stored() {
         let (_dir, store, owner) = fixture().await;
@@ -1345,9 +1424,7 @@ mod tests {
             AccessStoreError::IntegrityViolation {
                 check: "task_idempotency",
             },
-            AccessStoreError::Unavailable(
-                "UNIQUE constraint failed: agent_tasks.task_id".to_owned(),
-            ),
+            AccessStoreError::IntegrityViolation { check: "task_id" },
         ] {
             assert_eq!(envelope(&map_create(raced)), envelope(&duplicate));
         }
@@ -1500,6 +1577,42 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(stored.state, TaskState::Created);
+    }
+
+    #[cfg(not(feature = "proxy-testkit"))]
+    #[tokio::test]
+    async fn queued_task_without_live_owner_can_be_resumed() {
+        let (_dir, store, owner) = fixture().await;
+        create_agent(&store, &owner, "agent-1").await;
+        let context = task_context(&store, &owner);
+        dispatch(
+            context.clone(),
+            "tasks.create",
+            task_params("orphaned-queue", "agent-1"),
+        )
+        .await
+        .unwrap();
+        let transition_now = i64::try_from(now().unwrap()).unwrap();
+        store
+            .transition_agent_task(
+                "orphaned-queue".into(),
+                TaskState::Created,
+                TaskState::Queued,
+                owner.safe_fingerprint(),
+                0,
+                transition_now,
+            )
+            .await
+            .unwrap();
+
+        let resumed = dispatch(context, "tasks.queue", json!({"task_id":"orphaned-queue"}))
+            .await
+            .unwrap();
+        assert_eq!(resumed["state"], "queued");
+        let stored = wait_for_task_terminal(&store, "orphaned-queue").await;
+        assert_eq!(stored.state, TaskState::Failed);
+        assert_eq!(stored.attempt, 1);
+        assert_eq!(stored.error_code.as_deref(), Some("execution_failed"));
     }
 
     // Release-profile guard: without `proxy-testkit` the deterministic branch

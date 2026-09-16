@@ -62,7 +62,22 @@ impl TaskStore {
             return Err(AccessStoreError::MalformedVocabulary);
         }
         let (kind, owner) = owner(&intent.owner);
-        if let Some((id,input,agent))=tx.query_row("SELECT task_id,input_digest,agent_revision_digest FROM agent_tasks WHERE owner_kind=?1 AND owner_id=?2 AND idempotency_key=?3",params![kind,owner,intent.idempotency_key],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional().map_err(super::store::map_sqlite_error)? { if input==intent.input_digest && agent==intent.agent_revision_digest{return Ok(id)} return Err(AccessStoreError::IntegrityViolation{check:"task_idempotency"}) }
+        if let Some(existing) = tx
+            .query_row(
+                "SELECT task_id,idempotency_key,owner_kind,owner_id,project_id,creator_principal_id,agent_id,agent_version,agent_revision_digest,input_digest,catalog_generation,authority_fingerprint,state,attempt,output_digest,error_code FROM agent_tasks WHERE owner_kind=?1 AND owner_id=?2 AND idempotency_key=?3",
+                params![kind, owner, intent.idempotency_key],
+                decode,
+            )
+            .optional()
+            .map_err(super::store::map_sqlite_error)?
+        {
+            if existing.intent == *intent {
+                return Ok(existing.intent.id);
+            }
+            return Err(AccessStoreError::IntegrityViolation {
+                check: "task_idempotency",
+            });
+        }
         tx.execute("INSERT INTO agent_tasks VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'created',0,NULL,NULL,NULL,NULL,?13,?13)",params![intent.id,intent.idempotency_key,kind,owner,intent.project.as_ref().map(|p|p.as_str()),intent.creator.as_str(),intent.agent_id,i64::try_from(intent.agent_version).map_err(|_|AccessStoreError::MalformedVocabulary)?,intent.agent_revision_digest,intent.input_digest,intent.catalog_generation,intent.authority_fingerprint,now]).map_err(map_task_insert_error)?;
         tx.execute(
             "INSERT INTO agent_task_audit VALUES(?1,?2,?3,NULL,'created',0,?4)",
@@ -303,6 +318,14 @@ mod tests {
         let mut s = TaskStore::open(&path).unwrap();
         assert_eq!(s.create(&intent(), 1).unwrap(), "task-1");
         assert_eq!(s.create(&intent(), 2).unwrap(), "task-1");
+        let mut changed = intent();
+        changed.catalog_generation = "catalog-2".into();
+        assert!(matches!(
+            s.create(&changed, 2),
+            Err(AccessStoreError::IntegrityViolation {
+                check: "task_idempotency"
+            })
+        ));
         assert_eq!(s.get("task-1").unwrap().unwrap().state, TaskState::Created);
         assert_eq!(s.list_page("", 100).unwrap().len(), 1);
         s.transition(
