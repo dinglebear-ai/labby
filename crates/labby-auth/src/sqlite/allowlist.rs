@@ -5,7 +5,7 @@ use super::rows::row_to_allowed_user;
 use super::{SqliteStore, sqlite_error};
 use crate::error::AuthError;
 use crate::types::AllowedUserRow;
-use crate::util::{fingerprint, now_unix};
+use crate::util::{fingerprint, normalize_email, now_unix};
 
 impl SqliteStore {
     /// Roles an allowlist entry may grant at first sign-in.
@@ -14,9 +14,9 @@ impl SqliteStore {
     /// Add an email address to the allowlist with the access it receives at
     /// first sign-in.
     ///
-    /// `email` is normalised to lowercase before storage. Returns
-    /// `AuthError::Validation` if the email is already present or `role` is
-    /// not one of [`Self::ALLOWED_USER_ROLES`].
+    /// `email` is stored through [`normalize_email`], the same fold every
+    /// lookup applies. Returns `AuthError::Validation` if the email is already
+    /// present or `role` is not one of [`Self::ALLOWED_USER_ROLES`].
     pub async fn add_allowed_user(
         &self,
         email: &str,
@@ -29,7 +29,7 @@ impl SqliteStore {
                 "allowlist role must be `member` or `admin`".into(),
             ));
         }
-        let email = email.to_lowercase();
+        let email = normalize_email(email);
         let fp = fingerprint(&email);
         let added_by = added_by.to_string();
         let role = role.to_string();
@@ -61,7 +61,7 @@ impl SqliteStore {
         &self,
         email: &str,
     ) -> Result<Option<AllowedUserRow>, AuthError> {
-        let email = email.to_string();
+        let email = normalize_email(email);
         self.with_conn(move |conn| {
             conn.query_row(
                 "SELECT email, added_by, created_at, role
@@ -84,7 +84,7 @@ impl SqliteStore {
         &self,
         email: &str,
     ) -> Result<(), AuthError> {
-        let email = email.to_lowercase();
+        let email = normalize_email(email);
         self.with_conn(move |conn| {
             conn.execute("DELETE FROM allowed_users WHERE email = ?1", params![email])
                 .map_err(sqlite_error)?;
@@ -105,7 +105,7 @@ impl SqliteStore {
         &self,
         email: &str,
     ) -> Result<crate::types::AllowedUserRevocation, AuthError> {
-        let email = email.to_lowercase();
+        let email = normalize_email(email);
         self.with_conn(move |conn| {
             let transaction = conn.transaction().map_err(sqlite_error)?;
             let subjects = {
@@ -213,7 +213,7 @@ impl SqliteStore {
 
     /// Indexed case-insensitive membership check for hot authorization paths.
     pub async fn is_allowed_user_email(&self, email: &str) -> Result<bool, AuthError> {
-        let email = email.to_string();
+        let email = normalize_email(email);
         self.with_conn(move |conn| {
             conn.query_row(
                 "SELECT EXISTS(SELECT 1 FROM allowed_users WHERE email = ?1 COLLATE NOCASE)",

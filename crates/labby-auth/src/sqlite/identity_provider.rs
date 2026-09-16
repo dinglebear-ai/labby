@@ -14,7 +14,7 @@ impl SqliteStore {
     ) -> Result<(), AuthError> {
         let issuer = issuer.to_string();
         let subject = subject.to_string();
-        let email = email.to_string();
+        let email = crate::util::normalize_email(email);
         self.with_conn(move |conn| {
             conn.execute(
                 "INSERT INTO inbound_verified_identities
@@ -38,7 +38,7 @@ impl SqliteStore {
         binding: crate::types::ProviderBinding,
     ) -> Result<(), AuthError> {
         let subject = subject.to_string();
-        let email = email.to_string();
+        let email = crate::util::normalize_email(email);
         self.with_conn(move |conn| {
             let count = conn
                 .execute(
@@ -91,14 +91,14 @@ impl SqliteStore {
     }
 
     /// Every subject whose provider-verified email under the active provider
-    /// generation is `email` (case-insensitive). This is the evidence
-    /// allowlist admission used, so it names every identity whose durable
-    /// grants an allowlist removal must revoke.
+    /// generation is `email` (through the shared email normalization). This
+    /// is the evidence allowlist admission used, so it names every identity
+    /// whose durable grants an allowlist removal must revoke.
     pub async fn verified_inbound_subjects_for_email(
         &self,
         email: &str,
     ) -> Result<Vec<String>, AuthError> {
-        let email = email.to_string();
+        let email = crate::util::normalize_email(email);
         self.with_conn(move |conn| {
             let mut statement = conn
                 .prepare(

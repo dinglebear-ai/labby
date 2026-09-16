@@ -2970,6 +2970,32 @@ async fn allowed_users_input_is_lowercased() {
     assert_eq!(rows[0].email, "alice@example.com");
 }
 
+/// Finding 7: every allowlist path must fold an address the same way. `add`
+/// used Unicode lowercasing while the lookups relied on SQLite's ASCII-only
+/// `NOCASE`, so a non-ASCII address was stored folded but never matched.
+#[tokio::test]
+async fn allowlist_lookup_folds_case_the_same_way_add_does() {
+    let store = temp_store().await;
+    store
+        .add_allowed_user(" Ünal@Example.com ", "admin", "member", now_unix())
+        .await
+        .unwrap();
+    let rows = store.list_allowed_users().await.unwrap();
+    assert_eq!(rows[0].email, "ünal@example.com");
+    for lookup in ["ÜNAL@example.com", "ünal@EXAMPLE.COM", " Ünal@Example.com"] {
+        assert!(
+            store.find_allowed_user(lookup).await.unwrap().is_some(),
+            "{lookup:?} must find the folded row"
+        );
+        assert!(
+            store.is_allowed_user_email(lookup).await.unwrap(),
+            "{lookup:?} must be an allowed email"
+        );
+    }
+    store.remove_allowed_user("ÜNAL@EXAMPLE.COM").await.unwrap();
+    assert!(store.list_allowed_users().await.unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn allowed_users_remove_nonexistent_is_idempotent() {
     let store = temp_store().await;

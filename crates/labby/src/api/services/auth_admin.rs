@@ -28,7 +28,7 @@ use crate::api::error::ApiError;
 use crate::api::oauth::AuthContext;
 use crate::api::state::AppState;
 use crate::dispatch::error::ToolError;
-use labby_auth::util::{fingerprint, now_unix};
+use labby_auth::util::{fingerprint, normalize_email, now_unix};
 
 // ── email validation ─────────────────────────────────────────────────────────
 
@@ -36,7 +36,8 @@ const MAX_EMAIL_LENGTH: usize = 320;
 
 /// Validate and normalize an email for storage.
 ///
-/// Order: trim → empty check → length check → whitespace check → `@` check → lowercase.
+/// Order: trim → empty check → length check → whitespace check → `@` check →
+/// the shared `labby_auth` email fold.
 fn validate_email(raw: &str) -> Result<String, ToolError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -66,7 +67,7 @@ fn validate_email(raw: &str) -> Result<String, ToolError> {
             message: "email must contain '@'".to_string(),
         });
     }
-    Ok(trimmed.to_ascii_lowercase())
+    Ok(normalize_email(trimmed))
 }
 
 // ── admin guard ───────────────────────────────────────────────────────────────
@@ -512,8 +513,8 @@ async fn delete_allowed_email(
         }
     };
 
-    // Normalize email from URL path.
-    let email = raw_email.trim().to_ascii_lowercase();
+    // Normalize email from URL path with the shared fold.
+    let email = normalize_email(&raw_email);
     let email_fp = fingerprint(&email);
 
     // Log intent before the mutating operation.
