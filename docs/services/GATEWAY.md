@@ -341,7 +341,7 @@ Use `codemode` for gateway Code Mode. Discovery happens inside the sandbox with
 
 Rules:
 
-- `code_mode.timeout_ms` is validated in the range `1..=60000`
+- `code_mode.timeout_ms` is validated in the range `1..=300000`
 - `code_mode.result_shape_policy` accepts `"off"` or `"truncate"`
 - `code_mode.max_response_bytes` is validated in the range `1024..=1048576`
 - `code_mode.max_response_tokens` is validated in the range `256..=256000`
