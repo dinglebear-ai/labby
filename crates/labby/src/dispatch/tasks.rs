@@ -9,8 +9,8 @@ use crate::{
         access_errors::map_store_error,
         agent_payloads::AgentPayloadStore,
         agents::{
-            LiveExecutionAuthority, configured_task_executor, map_agent_runtime_error,
-            reject_server_assigned,
+            LiveExecutionAuthority, configured_task_executor, execution_safe_boundaries,
+            map_agent_runtime_error, reject_server_assigned, request_safe_boundaries,
         },
         error::ToolError,
     },
@@ -491,10 +491,13 @@ fn authority_request(
     // The queue lease is carried into the fenced attempt and rechecked at its
     // safe boundaries, so it must cover the whole runtime bound.
     let spec = ActionAuthoritySpec::new(action.clone(), ResourceFamily::Task, capability);
-    let spec = if name == "tasks.queue" {
-        spec.with_lease_lifetime_millis(TASK_MAX_RUNTIME_MILLIS)
+    let (spec, safe_boundaries) = if name == "tasks.queue" {
+        (
+            spec.with_lease_lifetime_millis(TASK_MAX_RUNTIME_MILLIS),
+            execution_safe_boundaries(),
+        )
     } else {
-        spec
+        (spec, request_safe_boundaries())
     };
     Ok(AuthorityRequest::new(
         context.identity.clone(),
@@ -508,10 +511,7 @@ fn authority_request(
         context.ceiling.clone(),
         None,
         now,
-        vec![
-            AuthoritySafeBoundary::BeforeDispatch,
-            AuthoritySafeBoundary::BeforeCommit,
-        ],
+        safe_boundaries,
         vec![spec],
     ))
 }
@@ -1517,6 +1517,38 @@ mod tests {
             "a tasks.queue lease must cover the runtime bound, got {} ms",
             lease.expires_at_millis() - now
         );
+    }
+
+    #[tokio::test]
+    async fn queue_lease_declares_every_runtime_boundary() {
+        let (_dir, store, owner) = fixture().await;
+        let context = task_context(&store, &owner);
+        let now = now().unwrap();
+        let personal = OwnerScope::Personal(PrincipalId::new(BOOTSTRAP_PRINCIPAL).unwrap());
+        let request = authority_request(
+            &context,
+            "tasks.queue",
+            &personal,
+            "any-task".to_owned(),
+            Capability::ScopeOperate,
+            now,
+        )
+        .unwrap();
+        let lease = authorize_action(&store, request).await.unwrap();
+        let epochs = refresh_authority_epochs(&store, owner, personal, Capability::ScopeOperate)
+            .await
+            .unwrap();
+        for boundary in [
+            AuthoritySafeBoundary::BeforeDispatch,
+            AuthoritySafeBoundary::BeforeExternalEffect,
+            AuthoritySafeBoundary::BeforeCommit,
+        ] {
+            assert_eq!(
+                lease.validate_at(boundary, now, &epochs),
+                Ok(()),
+                "{boundary:?}"
+            );
+        }
     }
 
     #[tokio::test]

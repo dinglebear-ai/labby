@@ -668,10 +668,13 @@ fn authority_request(
     // issued for it must outlive the runtime bound; every other action keeps
     // the short request lease.
     let spec = ActionAuthoritySpec::new(action.clone(), ResourceFamily::Agent, capability);
-    let spec = if name == "agents.run" {
-        spec.with_lease_lifetime_millis(AGENT_MAX_RUNTIME_MILLIS)
+    let (spec, safe_boundaries) = if name == "agents.run" {
+        (
+            spec.with_lease_lifetime_millis(AGENT_MAX_RUNTIME_MILLIS),
+            execution_safe_boundaries(),
+        )
     } else {
-        spec
+        (spec, request_safe_boundaries())
     };
     Ok(AuthorityRequest::new(
         context.identity.clone(),
@@ -685,12 +688,26 @@ fn authority_request(
         context.ceiling.clone(),
         None,
         now,
-        vec![
-            AuthoritySafeBoundary::BeforeDispatch,
-            AuthoritySafeBoundary::BeforeCommit,
-        ],
+        safe_boundaries,
         vec![spec],
     ))
+}
+/// Boundaries a request-scoped action revalidates at.
+pub(crate) fn request_safe_boundaries() -> Vec<AuthoritySafeBoundary> {
+    vec![
+        AuthoritySafeBoundary::BeforeDispatch,
+        AuthoritySafeBoundary::BeforeCommit,
+    ]
+}
+/// Boundaries the Agent runtime and the LLM executor revalidate at: admission,
+/// every provider effect, and the final commit. A lease that omits one of
+/// them reads as revocation at that boundary.
+pub(crate) fn execution_safe_boundaries() -> Vec<AuthoritySafeBoundary> {
+    vec![
+        AuthoritySafeBoundary::BeforeDispatch,
+        AuthoritySafeBoundary::BeforeExternalEffect,
+        AuthoritySafeBoundary::BeforeCommit,
+    ]
 }
 fn materialize_llm_payload(
     store: &crate::access::AccessStore,
@@ -1289,6 +1306,40 @@ mod tests {
         .unwrap();
         let read_lease = authorize_action(&store, read).await.unwrap();
         assert!(read_lease.expires_at_millis() - now < AGENT_MAX_RUNTIME_MILLIS);
+    }
+
+    #[tokio::test]
+    async fn run_lease_declares_every_runtime_boundary() {
+        let (_dir, store, owner) = fixture().await;
+        let context = agent_context(&store, &owner);
+        let now = now().unwrap();
+        let personal = OwnerScope::Personal(PrincipalId::new(BOOTSTRAP_PRINCIPAL).unwrap());
+        let request = authority_request(
+            &context,
+            "agents.run",
+            &personal,
+            "any-agent",
+            Capability::ScopeOperate,
+            now,
+        )
+        .unwrap();
+        let lease = authorize_action(&store, request).await.unwrap();
+        let epochs = refresh_authority_epochs(&store, owner, personal, Capability::ScopeOperate)
+            .await
+            .unwrap();
+        // The runtime revalidates at admission, before every provider effect,
+        // and before commit; an undeclared boundary reads as revocation.
+        for boundary in [
+            AuthoritySafeBoundary::BeforeDispatch,
+            AuthoritySafeBoundary::BeforeExternalEffect,
+            AuthoritySafeBoundary::BeforeCommit,
+        ] {
+            assert_eq!(
+                lease.validate_at(boundary, now, &epochs),
+                Ok(()),
+                "{boundary:?}"
+            );
+        }
     }
 
     #[tokio::test]
