@@ -339,13 +339,9 @@ impl ImportCoordinator {
             },
             None => None,
         };
+        // The connection creates its staging directory only after its
+        // transport validates, so a rejected source leaves no directory.
         let source_root = staging_root.join(&source.id);
-        std::fs::create_dir_all(&source_root)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(&source_root, std::fs::Permissions::from_mode(0o700))?;
-        }
         let kind = match source.kind {
             crate::config::ArtifactSourceKind::Depot => {
                 labby_runtime::artifacts::provider::ExactArtifactSource::Depot
@@ -2195,6 +2191,38 @@ pinned_addresses = ["8.8.8.8"]
             ImportCoordinator::from_config_with_env(&config, root.path(), &no_env, &granted)
                 .unwrap();
         assert!(coordinator.depot.contains_key("public"));
+    }
+
+    /// A source that fails validation leaves nothing under the acquisition
+    /// root: a staging directory exists only for a connection that was built.
+    #[test]
+    fn rejected_source_leaves_no_staging_directory() {
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let root = tempfile::tempdir().unwrap();
+        let config: crate::config::LabConfig = toml::from_str(
+            r#"
+[[artifacts.sources]]
+id = "ungranted-pin"
+kind = "depot"
+endpoint = "https://depot.example.com/api/artifacts/exact"
+pinned_addresses = ["10.1.0.8"]
+[[artifacts.sources]]
+id = "plain-http"
+kind = "depot"
+endpoint = "http://depot.example.com/api/artifacts/exact"
+pinned_addresses = ["8.8.8.8"]
+"#,
+        )
+        .unwrap();
+        let imports =
+            ImportCoordinator::from_host_config_with_env(&config, root.path(), &|_| None).unwrap();
+        assert!(imports.depot_connection_ids().is_empty());
+        for id in ["ungranted-pin", "plain-http"] {
+            assert!(
+                !root.path().join(id).exists(),
+                "{id} was rejected and must not get a staging directory"
+            );
+        }
     }
 
     #[test]
