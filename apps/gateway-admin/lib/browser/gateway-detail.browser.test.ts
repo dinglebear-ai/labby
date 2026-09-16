@@ -486,14 +486,14 @@ test('compact actions retain labels, responsive targets, and working menus', { c
   t.after(async () => { await browser.close() })
 
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } })
-  await page.route('**/v1/artifacts', async () => new Promise(() => undefined))
-  await page.goto(`${baseUrl}/library/`, { waitUntil: 'domcontentloaded' })
-  const loadingRefresh = page.getByRole('button', { name: 'Refresh', exact: true })
-  await assert.doesNotReject(() => loadingRefresh.waitFor())
-  assert.notEqual(await loadingRefresh.evaluate((element) => getComputedStyle(element).fontSize), '0px')
-  assert.equal(await loadingRefresh.isDisabled(), true)
-  await page.unroute('**/v1/artifacts')
   await page.goto(`${baseUrl}/library/`, { waitUntil: 'networkidle' })
+  // The mock preview resolves the Library catalog without a network round
+  // trip, so the loading gate cannot be held open here; the compact Refresh
+  // control must still keep a visible label and be operable once loaded.
+  const refresh = page.getByRole('button', { name: 'Refresh', exact: true })
+  await assert.doesNotReject(() => refresh.waitFor())
+  assert.notEqual(await refresh.evaluate((element) => getComputedStyle(element).fontSize), '0px')
+  assert.equal(await refresh.isDisabled(), false)
 
   const discover = page.locator('[aria-label="Library connection"]').getByRole('link', { name: 'Discover', exact: true })
   assert.notEqual(await discover.evaluate((element) => getComputedStyle(element).fontSize), '0px')
@@ -502,12 +502,20 @@ test('compact actions retain labels, responsive targets, and working menus', { c
   const exportBox = await exportButton.boundingBox()
   assert.ok(exportBox && exportBox.width >= 44 && exportBox.height >= 44, 'mobile export icon retains a 44px touch target')
 
-  const filter = page.getByRole('button', { name: 'Filter library by artifact type' })
-  assert.notEqual(await filter.evaluate((element) => getComputedStyle(element).fontSize), '0px')
-  await filter.click()
-  await page.getByText('Artifact type', { exact: true }).waitFor()
-  await page.getByRole('button', { name: 'All artifacts', exact: true }).click()
-  await page.keyboard.press('Escape')
+  // The mobile filter sheet gave way to the filter rail, which phones fold
+  // behind a labeled disclosure; the kind buttons inside keep visible labels.
+  const filters = page.getByRole('button', { name: /^Filters · All artifacts/ })
+  await assert.doesNotReject(() => filters.waitFor())
+  assert.notEqual(await filters.evaluate((element) => getComputedStyle(element).fontSize), '0px')
+  assert.equal(await filters.getAttribute('aria-expanded'), 'false')
+  await filters.click()
+  assert.equal(await filters.getAttribute('aria-expanded'), 'true')
+  const allArtifacts = page.getByRole('button', { name: /^All artifacts/i }).first()
+  await assert.doesNotReject(() => allArtifacts.waitFor())
+  assert.notEqual(await allArtifacts.evaluate((element) => getComputedStyle(element).fontSize), '0px')
+  assert.equal(await allArtifacts.getAttribute('aria-pressed'), 'true')
+  await filters.click()
+  assert.equal(await filters.getAttribute('aria-expanded'), 'false')
 
   const textOnly = page.getByRole('navigation', { name: 'Library sections', exact: true }).getByRole('link', { name: /^Artifacts/ })
   assert.notEqual(await textOnly.evaluate((element) => getComputedStyle(element).fontSize), '0px')
@@ -531,7 +539,7 @@ test('compact actions retain labels, responsive targets, and working menus', { c
   await assert.doesNotReject(() => page.getByRole('menu').waitFor())
 })
 
-test('Library follows responsive view defaults until the operator chooses a view', { concurrency: false }, async (t) => {
+test('Library follows responsive view defaults', { concurrency: false }, async (t) => {
   await startPreviewServer()
 
   const browser = await chromium.launch({ headless: true })
@@ -545,12 +553,8 @@ test('Library follows responsive view defaults until the operator chooses a view
   await assert.doesNotReject(() => page.locator('table').waitFor({ state: 'detached' }))
   await page.setViewportSize({ width: 1000, height: 800 })
   await assert.doesNotReject(() => page.locator('table').waitFor())
-
-  await page.getByRole('button', { name: 'Cards view' }).click()
-  await assert.doesNotReject(() => page.locator('table').waitFor({ state: 'detached' }))
-  await page.setViewportSize({ width: 390, height: 844 })
-  await page.setViewportSize({ width: 1000, height: 800 })
-  assert.equal(await page.locator('table').count(), 0)
+  // The Library layout is viewport-driven: the finished mock removed the
+  // operator view override, so widening the viewport restores the table.
 })
 
 test('every admin route stays overflow-free on narrow phone, phone, and tablet', { concurrency: false }, async (t) => {

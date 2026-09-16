@@ -67,6 +67,14 @@ const SHARED_NON_SERVICES: &[&str] = &[
     // Skill Library import path so both reach one verdict per source. It
     // declares no actions and dispatches nothing.
     "artifact_sources",
+    // `agent_payloads`, `agent_llm` and `phoenix_openai` are the Agent
+    // execution substrate: the content-addressed payload store, the LLM
+    // executor and the OpenAI-compatible provider client. `agents`, `tasks`
+    // and the Phoenix assistant all consume them; none declares actions or
+    // dispatches anything itself.
+    "agent_payloads",
+    "agent_llm",
+    "phoenix_openai",
     "helpers",
     "redact",
     "path_safety",
