@@ -1851,6 +1851,7 @@ mod tests {
             PhoenixPreferences {
                 enabled: true,
                 provider: PhoenixProvider::OpenAiCompatible,
+                model: Some("chatgpt-browser-medium".into()),
                 ..PhoenixPreferences::default()
             },
             LOCAL_MCP_URL,
