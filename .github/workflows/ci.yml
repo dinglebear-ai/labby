@@ -1232,7 +1232,7 @@ jobs:
         if: matrix.lane == 'spec-oracles'
         run: python3 scripts/ci/mcp_spec_compliance.py run --gate oracles --spec-checkout target/mcp-spec-source
       - name: Preserve specification coverage gaps and execution receipts
-        if: always() && matrix.lane == 'spec-oracles'
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: mcp-spec-compliance
@@ -1244,7 +1244,7 @@ jobs:
           python3 -m unittest scripts/ci/test_mcp_conformance_script.py
           scripts/ci/mcp-conformance.sh
       - name: Upload conformance reports
-        if: always() && matrix.lane == 'dated-suites'
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: mcp-conformance
