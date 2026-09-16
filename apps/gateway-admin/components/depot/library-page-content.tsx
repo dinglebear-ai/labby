@@ -18,6 +18,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { depotPublishCapability, depotStatus, type DepotArtifact, type DepotPublishCapability, type DepotStatus } from '@/lib/api/depot-client'
 import { controlPlaneAction } from '@/lib/api/artifact-control-client'
 import { LibraryTabs } from '@/components/depot/depot-workspace-pages'
+import { shouldBypassBrowserSessionAuth } from '@/lib/auth/auth-mode'
 import { useProjectBoundSessionScope } from '@/lib/auth/session'
 import { getBrowserSessionEpoch } from '@/lib/auth/session-store'
 import { artifactDescription, artifactExportFilename, artifactId, artifactKind, artifactLabel, collectArtifactKinds, collectArtifactTags, filterLibraryArtifacts, sortLibraryArtifacts, serializeArtifact } from './library-model'
@@ -121,8 +122,10 @@ export function LibraryPageContent() {
   // project) remounts it whenever that context changes, which discards
   // retained data and lets every in-flight read see a stale epoch, while a
   // transport-only session refresh re-renders nothing.
+  // Mock data mode has no session and no server to refuse a read, so the
+  // preview keeps rendering the collection against the mock endpoints.
   const scope = useProjectBoundSessionScope()
-  if (scope) return <SessionLibraryPage key={scope} />
+  if (scope || shouldBypassBrowserSessionAuth()) return <SessionLibraryPage key={scope || 'mock-data'} />
   return (
     <LibraryShell pulse={{ color: 'var(--aurora-warn)', label: 'project required' }}>
       <ProjectWorkspaceRequired description="The Library is project-scoped. Select an eligible project workspace to continue." />

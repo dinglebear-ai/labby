@@ -19,11 +19,12 @@ import { cn } from '@/lib/utils'
  * the server refuses every `artifacts.*` action that arrives without
  * `x-labby-project-id`.
  *
- * Two states reach operators: mock data mode, where the session never loads,
- * and an authenticated session with no project, which is offered the projects
- * the server projected for this caller. `AuthBootstrap` owns the loading,
- * signed-out, and auth-error states in the admin layout, so those render
- * nothing here.
+ * Two states reach operators: mock data mode, where the session never loads
+ * (the Depot Library mounts its preview collection instead of rendering
+ * this), and an authenticated session with no project, which is offered the
+ * projects the server projected for this caller. `AuthBootstrap` owns the
+ * loading, signed-out, and auth-error states in the admin layout, so those
+ * render nothing here.
  *
  * Choosing a project goes through `selectSessionWorkspace`, the same switch
  * the sidebar uses, so `gatewayHeaders` and every page keyed on the session

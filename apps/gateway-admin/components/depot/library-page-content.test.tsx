@@ -430,6 +430,21 @@ test('switching projects through the shared workspace switch remounts the collec
   } finally { await view.unmount() }
 })
 
+test('mock data mode mounts the preview collection without a session', async () => {
+  const previous = process.env.NEXT_PUBLIC_MOCK_DATA
+  process.env.NEXT_PUBLIC_MOCK_DATA = 'true'
+  const { view, requested } = await renderLibrary(WRITE_DEPOT, { status: 'loading' })
+  try {
+    await waitFor(() => assert.ok(requested.some(request => request.path === '/v1/artifacts')))
+    assert.ok(view.container.querySelector('input[aria-label="Search library"]'), 'the collection renders against the mock endpoints')
+    assert.doesNotMatch(view.container.textContent ?? '', /Project required/)
+  } finally {
+    await view.unmount()
+    if (previous === undefined) delete process.env.NEXT_PUBLIC_MOCK_DATA
+    else process.env.NEXT_PUBLIC_MOCK_DATA = previous
+  }
+})
+
 test('a session that has not resolved issues no request and mounts once it is bound', async () => {
   const { view, element, requested } = await renderLibrary(WRITE_DEPOT, { status: 'loading' })
   try {
