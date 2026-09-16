@@ -818,6 +818,12 @@ fn finish_session_get(
     }
 }
 
+/// The long-lived operator bearer may cross the wire only over TLS or a
+/// loopback hop. A configured HTTPS public URL proves TLS at the proxy; without
+/// it the request must be a direct loopback connection, judged by the same
+/// rules as the local-session and bootstrap-proof routes: any forwarding
+/// header means a proxy rewrote `Host`, and loopback is decided by the shared
+/// host validator rather than a local parse.
 fn bearer_exchange_allowed(state: &AppState, headers: &HeaderMap) -> bool {
     if state
         .auth_config
@@ -827,21 +833,13 @@ fn bearer_exchange_allowed(state: &AppState, headers: &HeaderMap) -> bool {
     {
         return true;
     }
-    let Some(authority) = headers
+    if crate::api::host_validation::has_forwarding_headers(headers) {
+        return false;
+    }
+    headers
         .get(header::HOST)
         .and_then(|value| value.to_str().ok())
-    else {
-        return false;
-    };
-    let Ok(url) = url::Url::parse(&format!("http://{authority}")) else {
-        return false;
-    };
-    match url.host() {
-        Some(url::Host::Ipv4(value)) => value.is_loopback(),
-        Some(url::Host::Ipv6(value)) => value.is_loopback(),
-        Some(url::Host::Domain(value)) => value.eq_ignore_ascii_case("localhost"),
-        None => false,
-    }
+        .is_some_and(crate::api::host_validation::is_loopback_host_value)
 }
 
 fn bearer_exchange_error(status: StatusCode, message: &str) -> Response {
@@ -1571,6 +1569,69 @@ mod tests {
             .await
             .into_response();
         assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn bearer_exchange_refuses_forwarded_loopback_host() {
+        // Labby on 127.0.0.1 behind a same-host plaintext proxy sees a loopback
+        // Host header while the operator bearer crossed the LAN in clear text.
+        // Any forwarding header means a proxy is in the path; only a configured
+        // https public_url proves TLS, so the exchange must refuse, exactly as
+        // the sibling local-session and bootstrap-proof routes do.
+        let state = AppState::new()
+            .with_bearer_token(Some(std::sync::Arc::from("operator-token")))
+            .with_static_browser_session_state(
+                labby_auth::static_session::StaticBrowserSessionState::new(false),
+            );
+        let exchange = |host: &'static str, forwarded: Option<(&'static str, &'static str)>| {
+            let state = state.clone();
+            async move {
+                let mut headers = HeaderMap::new();
+                headers.insert(header::HOST, HeaderValue::from_static(host));
+                headers.insert(
+                    header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer operator-token"),
+                );
+                if let Some((name, value)) = forwarded {
+                    headers.insert(name, HeaderValue::from_static(value));
+                }
+                auth_bearer_session(State(state), headers)
+                    .await
+                    .into_response()
+            }
+        };
+        for (name, value) in [
+            ("forwarded", "for=192.168.1.20;proto=http"),
+            ("x-forwarded-for", "192.168.1.20"),
+            ("x-forwarded-host", "lan-name"),
+            ("x-forwarded-proto", "http"),
+            ("x-forwarded-proto", "https"),
+            ("x-real-ip", "192.168.1.20"),
+        ] {
+            let response = exchange("127.0.0.1:8765", Some((name, value))).await;
+            assert!(
+                response.status().is_client_error(),
+                "{name}: {}",
+                response.status()
+            );
+            assert!(
+                !response.headers().contains_key(header::SET_COOKIE),
+                "{name}"
+            );
+        }
+        // Parity with the shared loopback rule: bracketed IPv6 and
+        // case-insensitive localhost still mint a session without a proxy.
+        for host in ["[::1]:8765", "LOCALHOST:8765", "127.0.0.1"] {
+            let response = exchange(host, None).await;
+            assert_eq!(response.status(), StatusCode::OK, "{host}");
+            assert!(
+                response.headers().contains_key(header::SET_COOKIE),
+                "{host}"
+            );
+        }
+        let response = exchange("192.168.1.20:8765", None).await;
+        assert!(response.status().is_client_error());
+        assert!(!response.headers().contains_key(header::SET_COOKIE));
     }
 
     #[tokio::test]
