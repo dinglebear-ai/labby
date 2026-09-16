@@ -91,7 +91,7 @@ async fn handler_observed_scopes(
 #[tokio::test]
 async fn handler_observes_admin_scope_only_for_the_configured_admin_session() {
     let mut config = test_auth_config();
-    assert_eq!(config.admin_email, "user@example.com");
+    assert_eq!(config.admin_emails, vec!["user@example.com".to_owned()]);
     config.viewer_email_domains = vec!["lime-technology.com".into()];
     let state = Arc::new(test_auth_state_with_config(config).await);
     state
@@ -99,6 +99,7 @@ async fn handler_observes_admin_scope_only_for_the_configured_admin_session() {
         .add_allowed_user(
             "colleague@example.com",
             "user@example.com",
+            "member",
             crate::util::now_unix(),
         )
         .await
@@ -270,6 +271,7 @@ async fn explicitly_allowlisted_member_is_admitted_without_admin_scope() {
         .add_allowed_user(
             "existing-admin@lime-technology.com",
             "operator",
+            "member",
             crate::util::now_unix(),
         )
         .await

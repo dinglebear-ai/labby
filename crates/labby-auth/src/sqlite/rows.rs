@@ -11,6 +11,7 @@ pub(super) fn row_to_allowed_user(row: &rusqlite::Row<'_>) -> rusqlite::Result<A
         email: row.get(0)?,
         added_by: row.get(1)?,
         created_at: row.get(2)?,
+        role: row.get(3)?,
     })
 }
 

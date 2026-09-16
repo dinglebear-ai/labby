@@ -5,7 +5,12 @@ use crate::{
         AccessStoreError, ActionAuthoritySpec, AuthorityCeiling, AuthorityRequest,
         authorize_action, refresh_agent_authority_epochs, refresh_authority_epochs,
     },
-    dispatch::{access_errors::map_store_error, error::ToolError},
+    dispatch::{
+        access_errors::map_store_error,
+        agent_llm::{LlmAgentExecutor, current_harness_digest},
+        agent_payloads::{AgentPayloadStore, DEFAULT_MODEL},
+        error::ToolError,
+    },
 };
 use labby_auth::VerifiedIdentity;
 use labby_primitives::{
@@ -17,6 +22,7 @@ use labby_primitives::{
     agent::{
         AgentDefinition, AgentRevision, AgentSessionBinding, AgentState, RunningRevocationPolicy,
     },
+    digest::Sha256Digest,
 };
 use labby_runtime::{
     agent_runtime::{
@@ -66,12 +72,14 @@ pub const ACTIONS: &[ActionSpec] = &[
             param("agent_id"),
             param("owner_kind"),
             param("owner_id"),
-            param("content_digest"),
-            param("repository_digest"),
-            param("image_digest"),
-            param("harness_digest"),
-            param("loadout_digest"),
-            param("catalog_generation"),
+            optional_param("content_digest"),
+            optional_param("repository_digest"),
+            optional_param("image_digest"),
+            optional_param("harness_digest"),
+            optional_param("loadout_digest"),
+            optional_param("catalog_generation"),
+            optional_param("instructions"),
+            optional_param("model"),
         ],
     ),
     action(
@@ -94,7 +102,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     action(
         "agents.run",
         "Start a pinned Agent session",
-        &[param("agent_id")],
+        &[param("agent_id"), optional_param("input")],
     ),
     action(
         "agents.session.status",
@@ -142,6 +150,7 @@ pub(crate) async fn dispatch(
     match name {
         "agents.create" => {
             reject_server_assigned(&params)?;
+            let params = materialize_llm_payload(&context.store, params, None)?;
             let definition = definition(&params, None)?;
             let request = authority_request(
                 &context,
@@ -217,6 +226,7 @@ pub(crate) async fn dispatch(
         "agents.update" => {
             reject_server_assigned(&params)?;
             let prior = load(&context, &params).await?;
+            let params = materialize_llm_payload(&context.store, params, Some(&prior))?;
             let definition = definition(&params, Some(&prior))?;
             let request = authority_request(
                 &context,
@@ -281,6 +291,14 @@ pub(crate) async fn dispatch(
             if definition.state != AgentState::Active {
                 return Err(denied());
             }
+            let executor = configured_executor(
+                &context.store,
+                params
+                    .get("input")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+            )?;
             let lease = authorize(
                 &context,
                 name,
@@ -307,6 +325,7 @@ pub(crate) async fn dispatch(
             let run_context = context.clone();
             let run_definition = definition.clone();
             let run_session_id = session_id.clone();
+            let run_executor = executor;
             let owned = tokio::spawn(async move {
                 run_context
                     .store
@@ -358,7 +377,7 @@ pub(crate) async fn dispatch(
                         owner: run_definition.owner.clone(),
                         definition: run_definition.clone(),
                     },
-                    &DisabledExecutor,
+                    &run_executor,
                     request,
                     Cancellation::new(),
                     now,
@@ -387,6 +406,7 @@ pub(crate) async fn dispatch(
                         "session_id":run_session_id,
                         "status":next,
                         "output_digest":output.digest,
+                        "output":run_executor.output(&output.digest),
                         "authority_expires_at":lease_expires_at
                     })),
                     Err(error) => Err(map_agent_runtime_error(&error)),
@@ -460,9 +480,8 @@ impl AgentAuthority for LiveExecutionAuthority {
         })
     }
 }
-/// Placeholder executor shared by `agents.run` and `tasks.queue` until a real
-/// execution backend is wired. Product builds always fail with
-/// [`AgentRuntimeError::ExecutorFailed`].
+/// Deterministic executor retained only for the live end-to-end test harness.
+/// Product execution selects the shared OpenAI-compatible LLM executor instead.
 ///
 /// The deterministic branch is a **test-only hook**: it is compiled in only
 /// under the `proxy-testkit` cargo feature (test support, never a product
@@ -476,9 +495,7 @@ impl AgentExecutor for DisabledExecutor {
         _: AgentExecutionRequest,
         _: ExecutionGuard<'_>,
     ) -> Result<AgentExecutionOutput, AgentRuntimeError> {
-        if cfg!(feature = "proxy-testkit")
-            && std::env::var_os("LABBY_E2E_DETERMINISTIC_EXECUTORS").is_some()
-        {
+        if deterministic_executor_enabled() {
             Ok(AgentExecutionOutput {
                 digest: format!("sha256:{}", "0".repeat(64)),
                 bytes: 0,
@@ -488,6 +505,79 @@ impl AgentExecutor for DisabledExecutor {
             Err(AgentRuntimeError::ExecutorFailed)
         }
     }
+}
+
+pub(crate) enum ConfiguredExecutor {
+    Llm(LlmAgentExecutor),
+    Deterministic(DisabledExecutor),
+    Unavailable,
+}
+
+impl ConfiguredExecutor {
+    pub(crate) fn output(&self, digest: &str) -> Option<String> {
+        match self {
+            Self::Llm(executor) => executor.output(digest).ok(),
+            Self::Deterministic(_) | Self::Unavailable => None,
+        }
+    }
+}
+
+impl AgentExecutor for ConfiguredExecutor {
+    async fn execute(
+        &self,
+        request: AgentExecutionRequest,
+        guard: ExecutionGuard<'_>,
+    ) -> Result<AgentExecutionOutput, AgentRuntimeError> {
+        match self {
+            Self::Llm(executor) => executor.execute(request, guard).await,
+            Self::Deterministic(executor) => executor.execute(request, guard).await,
+            Self::Unavailable => Err(AgentRuntimeError::ExecutorFailed),
+        }
+    }
+}
+
+pub(crate) fn configured_executor(
+    store: &crate::access::AccessStore,
+    input: String,
+) -> Result<ConfiguredExecutor, ToolError> {
+    if deterministic_executor_enabled() {
+        return Ok(ConfiguredExecutor::Deterministic(DisabledExecutor));
+    }
+    match LlmAgentExecutor::new(store, input) {
+        Ok(executor) => Ok(ConfiguredExecutor::Llm(executor)),
+        Err(error) if error.kind() == "invalid_param" => Err(error),
+        Err(error) => {
+            tracing::warn!(
+                kind = error.kind(),
+                "Agent LLM backend unavailable at execution admission"
+            );
+            Ok(ConfiguredExecutor::Unavailable)
+        }
+    }
+}
+
+pub(crate) fn configured_task_executor(
+    store: &crate::access::AccessStore,
+    input_digest: &str,
+) -> ConfiguredExecutor {
+    if deterministic_executor_enabled() {
+        return ConfiguredExecutor::Deterministic(DisabledExecutor);
+    }
+    match LlmAgentExecutor::from_task(store, input_digest) {
+        Ok(executor) => ConfiguredExecutor::Llm(executor),
+        Err(error) => {
+            tracing::warn!(
+                kind = error.kind(),
+                "Agent Task LLM backend unavailable for queued attempt"
+            );
+            ConfiguredExecutor::Unavailable
+        }
+    }
+}
+
+fn deterministic_executor_enabled() -> bool {
+    cfg!(feature = "proxy-testkit")
+        && std::env::var_os("LABBY_E2E_DETERMINISTIC_EXECUTORS").is_some()
 }
 
 async fn load(
@@ -548,6 +638,75 @@ fn authority_request(
         )],
     ))
 }
+fn materialize_llm_payload(
+    store: &crate::access::AccessStore,
+    mut params: Value,
+    prior: Option<&AgentDefinition>,
+) -> Result<Value, ToolError> {
+    let explicit_instructions = params
+        .get("instructions")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let explicit_model = params
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    if explicit_instructions.is_none() && explicit_model.is_none() {
+        return Ok(params);
+    }
+
+    let payloads = AgentPayloadStore::for_access_store(store);
+    let inherited = prior.and_then(|definition| {
+        payloads
+            .load_agent(&definition.revision.content_digest)
+            .ok()
+    });
+    let instructions = explicit_instructions
+        .or_else(|| {
+            inherited
+                .as_ref()
+                .map(|payload| payload.instructions.clone())
+        })
+        .ok_or_else(|| invalid("instructions"))?;
+    let model = explicit_model
+        .or_else(|| inherited.as_ref().map(|payload| payload.model.clone()))
+        .unwrap_or_else(|| DEFAULT_MODEL.to_owned());
+    let expected_content_digest = params.get("content_digest").and_then(Value::as_str);
+    let content_digest =
+        payloads.store_agent(Some(&model), &instructions, expected_content_digest)?;
+    let harness_digest = current_harness_digest()?;
+    if params
+        .get("harness_digest")
+        .and_then(Value::as_str)
+        .is_some_and(|supplied| supplied != harness_digest)
+    {
+        return Err(invalid("harness_digest"));
+    }
+
+    let object = params.as_object_mut().ok_or_else(|| invalid("params"))?;
+    object.insert("content_digest".into(), Value::String(content_digest));
+    object.insert("harness_digest".into(), Value::String(harness_digest));
+    if prior.is_none() {
+        for (key, label) in [
+            ("repository_digest", "repository:none"),
+            ("image_digest", "image:none"),
+            ("loadout_digest", "loadout:none"),
+        ] {
+            object
+                .entry(key.to_owned())
+                .or_insert_with(|| Value::String(llm_default_digest(label)));
+        }
+        object
+            .entry("catalog_generation".to_owned())
+            .or_insert_with(|| Value::String("openai-compatible-v1".into()));
+    }
+    Ok(params)
+}
+
+fn llm_default_digest(label: &str) -> String {
+    Sha256Digest::of(format!("labby:llm-agent:{label}:v1").as_bytes()).to_string()
+}
+
 fn definition(
     params: &Value,
     prior: Option<&AgentDefinition>,
@@ -871,14 +1030,7 @@ mod tests {
             .iter()
             .find(|action| action.name == "agents.create")
             .unwrap();
-        for required in [
-            "content_digest",
-            "repository_digest",
-            "image_digest",
-            "harness_digest",
-            "loadout_digest",
-            "catalog_generation",
-        ] {
+        for required in ["agent_id", "owner_kind", "owner_id"] {
             assert!(
                 create
                     .params
@@ -886,6 +1038,32 @@ mod tests {
                     .any(|param| param.name == required && param.required)
             );
         }
+        for optional in [
+            "content_digest",
+            "repository_digest",
+            "image_digest",
+            "harness_digest",
+            "loadout_digest",
+            "catalog_generation",
+            "instructions",
+            "model",
+        ] {
+            assert!(
+                create
+                    .params
+                    .iter()
+                    .any(|param| param.name == optional && !param.required)
+            );
+        }
+        let run = ACTIONS
+            .iter()
+            .find(|action| action.name == "agents.run")
+            .unwrap();
+        assert!(
+            run.params
+                .iter()
+                .any(|param| param.name == "input" && !param.required)
+        );
         assert!(ACTIONS.iter().all(|a| a.name.starts_with("agents.")));
     }
     #[tokio::test]

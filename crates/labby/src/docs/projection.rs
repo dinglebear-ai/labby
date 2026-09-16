@@ -197,7 +197,7 @@ fn build_env_reference(services: &[ServiceDoc]) -> Vec<EnvDoc> {
         auth_env("LABBY_AUTHELIA_CLIENT_SECRET", false, true, "<labby_authelia_client_secret>", "Authelia confidential OIDC client secret"),
         auth_env("LABBY_AUTHELIA_TRUSTED_PRIVATE_ORIGIN", false, false, "https://auth.example.com", "Exact HTTPS private issuer origin explicitly trusted by the operator"),
         auth_env("LABBY_AUTHELIA_CA_CERT_PATH", false, false, "/etc/labby/authelia-ca.pem", "PEM CA certificate trusted only for the exact Authelia issuer origin"),
-        auth_env("LABBY_AUTH_ADMIN_EMAIL", true, false, "admin@example.com", "Bootstrap administrator email required in oauth mode"),
+        auth_env("LABBY_AUTH_ADMIN_EMAIL", true, false, "admin@example.com", "Administrator email, or comma-separated emails, required in oauth mode"),
         auth_env("LABBY_AUTH_ALLOWED_REDIRECT_URIS", false, false, "https://chatgpt.com/connector/oauth/*", "Comma-separated exact or wildcard OAuth redirect allowlist"),
         auth_env("LABBY_AUTH_ALLOWED_EMAIL_DOMAINS", false, false, "example.com", "Comma-separated Google Workspace hosted-domain allowlist"),
         auth_env("LABBY_AUTH_VIEWER_EMAIL_DOMAINS", false, false, "example.com", "Exact verified-email domains admitted as browser Viewers without administrative OAuth scopes"),

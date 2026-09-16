@@ -2558,6 +2558,41 @@ async fn browser_session_round_trip_succeeds() {
     assert_eq!(fetched.csrf_token, row.csrf_token);
 }
 
+#[tokio::test]
+async fn every_listed_admin_session_is_authorized_and_others_are_not() {
+    let store = temp_store().await;
+    for (id, email) in [
+        ("first", "first-admin@example.com"),
+        ("second", "Second-Admin@Example.com"),
+        ("stranger", "stranger@example.com"),
+    ] {
+        store
+            .upsert_browser_session(BrowserSessionRow {
+                session_id: format!("sess_{id}"),
+                subject: format!("sub_{id}"),
+                email: Some(email.into()),
+                csrf_token: format!("csrf_{id}"),
+                created_at: 1,
+                expires_at: now_unix() + 9_999,
+                project_binding: None,
+            })
+            .await
+            .unwrap();
+    }
+    let admins = vec![
+        "first-admin@example.com".to_owned(),
+        "second-admin@example.com".to_owned(),
+    ];
+    for (id, expected) in [("first", true), ("second", true), ("stranger", false)] {
+        let (_, authorized) = store
+            .find_authorized_bound_browser_session(&format!("sess_{id}"), &admins, &[])
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(authorized, expected, "{id}");
+    }
+}
+
 fn sample_upstream_credentials() -> UpstreamOauthCredentialRow {
     let now = now_unix();
     UpstreamOauthCredentialRow {
@@ -2896,7 +2931,7 @@ async fn revoking_browser_session_removes_it() {
 async fn allowed_users_add_and_list() {
     let store = temp_store().await;
     store
-        .add_allowed_user("alice@example.com", "admin", now_unix())
+        .add_allowed_user("alice@example.com", "admin", "member", now_unix())
         .await
         .unwrap();
     let rows = store.list_allowed_users().await.unwrap();
@@ -2910,11 +2945,11 @@ async fn allowed_users_duplicate_returns_validation_error() {
     let store = temp_store().await;
     let now = now_unix();
     store
-        .add_allowed_user("bob@example.com", "admin", now)
+        .add_allowed_user("bob@example.com", "admin", "member", now)
         .await
         .unwrap();
     let err = store
-        .add_allowed_user("bob@example.com", "admin2", now)
+        .add_allowed_user("bob@example.com", "admin2", "member", now)
         .await
         .unwrap_err();
     assert!(
@@ -2927,7 +2962,7 @@ async fn allowed_users_duplicate_returns_validation_error() {
 async fn allowed_users_input_is_lowercased() {
     let store = temp_store().await;
     store
-        .add_allowed_user("Alice@Example.COM", "admin", now_unix())
+        .add_allowed_user("Alice@Example.COM", "admin", "member", now_unix())
         .await
         .unwrap();
     let rows = store.list_allowed_users().await.unwrap();
@@ -2950,15 +2985,15 @@ async fn allowed_users_list_ordered_by_created_at_asc() {
     let store = temp_store().await;
     let base = now_unix();
     store
-        .add_allowed_user("third@example.com", "admin", base + 2)
+        .add_allowed_user("third@example.com", "admin", "member", base + 2)
         .await
         .unwrap();
     store
-        .add_allowed_user("first@example.com", "admin", base)
+        .add_allowed_user("first@example.com", "admin", "member", base)
         .await
         .unwrap();
     store
-        .add_allowed_user("second@example.com", "admin", base + 1)
+        .add_allowed_user("second@example.com", "admin", "member", base + 1)
         .await
         .unwrap();
     let rows = store.list_allowed_users().await.unwrap();
@@ -2971,6 +3006,29 @@ async fn allowed_users_list_ordered_by_created_at_asc() {
             "third@example.com"
         ]
     );
+}
+
+/// A store upgraded from before the `role` column has rows written without
+/// one. They must read back as `member`, never as a missing or null role.
+#[tokio::test]
+async fn legacy_allowlist_rows_without_role_read_back_as_member() {
+    let store = temp_store().await;
+    store
+        .execute_test_statement(
+            "INSERT INTO allowed_users (email, added_by, created_at)
+             VALUES ('legacy@example.com', 'owner-sub', 7)",
+        )
+        .await
+        .unwrap();
+    let row = store
+        .find_allowed_user("legacy@example.com")
+        .await
+        .unwrap()
+        .expect("legacy row is readable");
+    assert_eq!(row.role, "member");
+    let rows = store.list_allowed_users().await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].role, "member");
 }
 
 #[tokio::test]
@@ -3108,6 +3166,47 @@ async fn stale_provider_binding_cannot_install_native_result_after_switch() {
     );
 }
 
+#[tokio::test]
+async fn allowlist_rows_store_a_role_and_are_found_case_insensitively() {
+    let store = temp_store().await;
+    store
+        .add_allowed_user("Eli@Example.com", "owner-sub", "admin", 42)
+        .await
+        .unwrap();
+    store
+        .add_allowed_user("bob@example.com", "owner-sub", "member", 43)
+        .await
+        .unwrap();
+    let eli = store
+        .find_allowed_user("ELI@example.com")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(eli.email, "eli@example.com");
+    assert_eq!(eli.role, "admin");
+    assert!(
+        store
+            .find_allowed_user("nobody@example.com")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let listed = store.list_allowed_users().await.unwrap();
+    assert_eq!(
+        listed
+            .iter()
+            .map(|row| row.role.as_str())
+            .collect::<Vec<_>>(),
+        vec!["admin", "member"]
+    );
+    assert!(matches!(
+        store
+            .add_allowed_user("x@example.com", "owner-sub", "owner", 44)
+            .await,
+        Err(crate::error::AuthError::Validation(_))
+    ));
+}
+
 // Ensure AllowedUserRow is importable as the right type in tests.
 #[allow(dead_code)]
 fn _assert_allowed_user_row_type() -> AllowedUserRow {
@@ -3115,5 +3214,6 @@ fn _assert_allowed_user_row_type() -> AllowedUserRow {
         email: String::new(),
         added_by: String::new(),
         created_at: 0,
+        role: String::new(),
     }
 }

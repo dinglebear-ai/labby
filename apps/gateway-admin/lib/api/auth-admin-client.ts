@@ -1,10 +1,13 @@
 import { normalizeGatewayApiBase } from './gateway-config.ts'
 import { gatewayHeaders } from './gateway-request.ts'
 
+export type AllowedEmailRole = 'member' | 'admin'
+
 export interface AllowedEmailEntry {
   email: string
   added_by: string
   created_at: string
+  role: AllowedEmailRole
 }
 
 export class AuthAdminApiError extends Error {
@@ -59,13 +62,14 @@ export const authAdminApi = {
 
   async addAllowedEmail(
     email: string,
+    role: AllowedEmailRole,
     signal?: AbortSignal,
   ): Promise<AllowedEmailEntry> {
     const data = await apiFetch<{ entry: AllowedEmailEntry }>(
       '/auth/allowed-emails',
       {
         method: 'POST',
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email, role }),
         signal,
       },
     )

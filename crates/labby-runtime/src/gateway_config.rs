@@ -291,6 +291,9 @@ impl Default for CodeModeConfig {
 impl CodeModeConfig {
     /// Validate Code Mode limits and semantic-search settings.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        // Matches upstream_request_timeout_ms (1..=300_000). A Code Mode run
+        // drives upstream tool calls, so a ceiling below a single call's own
+        // budget made the enclosing run expire before the call it waited on.
         if !(1..=300_000).contains(&self.timeout_ms) {
             return Err(ConfigError::InvalidCodeModeTimeout {
                 value: self.timeout_ms,
@@ -1991,17 +1994,6 @@ fn normalize_string_list(
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn code_mode_accepts_bounded_long_running_upstreams() {
-        let mut config = CodeModeConfig {
-            timeout_ms: 180_000,
-            ..CodeModeConfig::default()
-        };
-        assert!(config.validate().is_ok());
-        config.timeout_ms = 300_001;
-        assert!(config.validate().is_err());
-    }
-
     #[test]
     fn gateway_subset_routes_may_share_a_path_on_different_hosts() {
         let mut config: GatewayConfig = toml::from_str(

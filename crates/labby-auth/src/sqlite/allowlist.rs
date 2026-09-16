@@ -1,3 +1,4 @@
+use rusqlite::OptionalExtension;
 use rusqlite::params;
 
 use super::rows::row_to_allowed_user;
@@ -7,25 +8,37 @@ use crate::types::AllowedUserRow;
 use crate::util::{fingerprint, now_unix};
 
 impl SqliteStore {
-    /// Add an email address to the allowlist.
+    /// Roles an allowlist entry may grant at first sign-in.
+    pub const ALLOWED_USER_ROLES: [&'static str; 2] = ["member", "admin"];
+
+    /// Add an email address to the allowlist with the access it receives at
+    /// first sign-in.
     ///
     /// `email` is normalised to lowercase before storage. Returns
-    /// `AuthError::Validation` if the email is already present.
+    /// `AuthError::Validation` if the email is already present or `role` is
+    /// not one of [`Self::ALLOWED_USER_ROLES`].
     pub async fn add_allowed_user(
         &self,
         email: &str,
         added_by: &str,
+        role: &str,
         created_at: i64,
     ) -> Result<(), AuthError> {
+        if !Self::ALLOWED_USER_ROLES.contains(&role) {
+            return Err(AuthError::Validation(
+                "allowlist role must be `member` or `admin`".into(),
+            ));
+        }
         let email = email.to_lowercase();
         let fp = fingerprint(&email);
         let added_by = added_by.to_string();
+        let role = role.to_string();
         self.with_conn(move |conn| {
             let changed = conn
                 .execute(
-                    "INSERT INTO allowed_users (email, added_by, created_at)
-                     VALUES (?1, ?2, ?3)",
-                    params![email, added_by, created_at],
+                    "INSERT INTO allowed_users (email, added_by, created_at, role)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![email, added_by, created_at, role],
                 )
                 .map_err(|error| match error {
                     rusqlite::Error::SqliteFailure(ref e, _)
@@ -39,6 +52,25 @@ impl SqliteStore {
                 })?;
             debug_assert_eq!(changed, 1);
             Ok(())
+        })
+        .await
+    }
+
+    /// Return the allowlist row for `email` (case-insensitive), if any.
+    pub async fn find_allowed_user(
+        &self,
+        email: &str,
+    ) -> Result<Option<AllowedUserRow>, AuthError> {
+        let email = email.to_string();
+        self.with_conn(move |conn| {
+            conn.query_row(
+                "SELECT email, added_by, created_at, role
+                   FROM allowed_users WHERE email = ?1 COLLATE NOCASE",
+                params![email],
+                row_to_allowed_user,
+            )
+            .optional()
+            .map_err(sqlite_error)
         })
         .await
     }
@@ -164,7 +196,7 @@ impl SqliteStore {
         self.with_conn(move |conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT email, added_by, created_at
+                    "SELECT email, added_by, created_at, role
                      FROM allowed_users
                      ORDER BY created_at ASC",
                 )

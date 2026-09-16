@@ -776,12 +776,10 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
     );
     for required in [
         "gateway-admin-browser",
-        "live-e2e-core",
         "codemode-runner-smoke",
         "mcp-regressions",
         "desktop-web",
         "desktop-rust",
-        "rust-coverage",
     ] {
         assert!(
             workflow.contains(&format!("- {required}"))
@@ -802,6 +800,19 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
             !gate.contains(&format!("- {advisory}"))
                 && !gate.contains(&format!("needs.{advisory}.result")),
             "ci-gate must not aggregate advisory job {advisory}"
+        );
+    }
+
+    for non_blocking in NON_BLOCKING_JOBS {
+        assert!(
+            workflow.contains(&format!("  {non_blocking}:")),
+            "CI must retain the non-blocking {non_blocking} job"
+        );
+        // Match the whole list entry: `- test` is a prefix of `- test-windows`.
+        assert!(
+            !gate.contains(&format!("- {non_blocking}\n"))
+                && !gate.contains(&format!("needs.{non_blocking}.result")),
+            "ci-gate must not aggregate non-blocking job {non_blocking}"
         );
     }
 
@@ -1043,6 +1054,13 @@ const RUNTIME_ONLY_CHANGE_OUTPUTS: &[&str] = &["gate_key_drift"];
 /// Jobs that stay visible on pull requests but must not block `ci-gate`.
 const ADVISORY_JOBS: &[&str] = &["desktop-windows", "verification-t1"];
 
+/// Heavy suites that report on every run but deliberately do not gate a merge.
+/// They each re-run the test suite in a different configuration and dominated
+/// CI wall clock; `ci-gate` no longer waits on them and they are
+/// `continue-on-error`, so a failure here cannot fail the CI run that
+/// release-please consumes to cut a release tag.
+const NON_BLOCKING_JOBS: &[&str] = &["test", "rust-coverage", "feature-slices", "live-e2e-core"];
+
 fn gated_changed_path_keys(workflow: &str) -> BTreeSet<String> {
     workflow
         .split("needs.changes.outputs.")
@@ -1164,7 +1182,10 @@ fn ci_gate_aggregates_every_non_advisory_job() {
         .join("\n");
 
     for name in &jobs {
-        if name == "ci-gate" || ADVISORY_JOBS.contains(&name.as_str()) {
+        if name == "ci-gate"
+            || ADVISORY_JOBS.contains(&name.as_str())
+            || NON_BLOCKING_JOBS.contains(&name.as_str())
+        {
             continue;
         }
         assert!(

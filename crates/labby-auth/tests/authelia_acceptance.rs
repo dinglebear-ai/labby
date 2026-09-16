@@ -135,7 +135,7 @@ async fn real_authelia_authorization_code_pkce_flow() {
         public_url: Some(Url::parse("https://labby.localhost").unwrap()),
         sqlite_path: data.path().join("auth.db"),
         key_path: data.path().join("auth-key.pem"),
-        admin_email: "tester@example.com".into(),
+        admin_emails: vec!["tester@example.com".into()],
         inbound_provider: Some(InboundProviderKind::Authelia),
         authelia: Some(config),
         token_encryption_key: Some(

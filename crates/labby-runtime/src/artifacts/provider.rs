@@ -171,60 +171,13 @@ pub struct ExactArtifactRequest {
     pub endpoint: Url,
     pub credential_origin: Option<Url>,
     pub pinned_addresses: BTreeSet<IpAddr>,
-}
-
-/// Host-constructed authority for one exact origin and its explicitly configured peers.
-/// Never deserialize this from an Artifact or an invocation parameter.
-#[derive(Clone, Debug, Default)]
-pub struct ArtifactNetworkAuthority {
-    origin: Option<url::Origin>,
-    private_peers: BTreeSet<IpAddr>,
-}
-
-impl ArtifactNetworkAuthority {
-    pub fn for_host_grant(endpoint: &Url, peers: BTreeSet<IpAddr>) -> Result<Self, ArtifactError> {
-        validate_remote_origin(endpoint)?;
-        if peers
-            .iter()
-            .any(|ip| !public_address(*ip) && !grantable_private_address(*ip))
-        {
-            return Err(ArtifactError::UnsafePath("provider_host_grant"));
-        }
-        Ok(Self {
-            origin: Some(endpoint.origin()),
-            private_peers: peers,
-        })
-    }
-
-    fn allows(&self, endpoint: &Url, peer: IpAddr) -> bool {
-        public_address(peer)
-            || (self.origin.as_ref() == Some(&endpoint.origin())
-                && self.private_peers.contains(&peer)
-                && grantable_private_address(peer))
-    }
-}
-
-fn grantable_private_address(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => ip.is_private(),
-        IpAddr::V6(ip) => {
-            ip.is_unique_local()
-                && ip.to_ipv4_mapped().is_none()
-                && ip.segments() != [0xfd00, 0xec2, 0, 0, 0, 0, 0, 0x254]
-                && ip.segments() != [0xfd20, 0xce, 0, 0, 0, 0, 0, 0x254]
-        }
-    }
+    /// Private addresses the host explicitly granted for this endpoint. A
+    /// private pinned address is admitted only when it appears here.
+    pub trusted_private_addresses: BTreeSet<IpAddr>,
 }
 
 impl ExactArtifactRequest {
     pub fn validate(&self) -> Result<(), ArtifactError> {
-        self.validate_with_authority(&ArtifactNetworkAuthority::default())
-    }
-
-    fn validate_with_authority(
-        &self,
-        authority: &ArtifactNetworkAuthority,
-    ) -> Result<(), ArtifactError> {
         validation::validate_id(&self.source_id, "source_id")?;
         validation::validate_id(&self.artifact_id, "artifact_id")?;
         validation::validate_reference_id(&self.revision_id, "revision_id")?;
@@ -234,7 +187,7 @@ impl ExactArtifactRequest {
             || self
                 .pinned_addresses
                 .iter()
-                .any(|address| !authority.allows(&self.endpoint, *address))
+                .any(|address| !admissible_address(*address, &self.trusted_private_addresses))
         {
             return Err(ArtifactError::UnsafePath("provider_dns_address"));
         }
@@ -403,49 +356,37 @@ pub fn acquisition_operation_for_path(path: &str) -> Option<&'static str> {
 
 /// Concrete guarded HTTP transport shared by Depot and repository acquisition.
 ///
-/// DNS is resolved by configuration, filtered to public addresses, and pinned into the HTTP
-/// client before any request. Redirect following is disabled. The exact endpoint returns bounded
-/// metadata only; component bodies are streamed incrementally through [`ArtifactTransferGate`].
+/// DNS is resolved by configuration, filtered to public addresses (or private addresses the host
+/// granted exactly), and pinned into the HTTP client before any request. Redirect following is
+/// disabled. The exact endpoint returns bounded metadata only; component bodies are streamed
+/// incrementally through [`ArtifactTransferGate`].
 #[derive(Clone)]
 pub struct GuardedHttpTransport {
-    authority: ArtifactNetworkAuthority,
     client: reqwest::Client,
     endpoint: Url,
     origin: url::Origin,
     pinned_addresses: BTreeSet<IpAddr>,
+    trusted_private_addresses: BTreeSet<IpAddr>,
     credential: Option<ArtifactSourceCredential>,
 }
 
 impl GuardedHttpTransport {
-    /// Build a transport for one server-selected connection and its pre-resolved public peers.
+    /// Build a transport for one server-selected connection and its
+    /// pre-resolved peers. Peers must be public unless the host granted the
+    /// exact private address in `trusted_private_addresses`.
     pub fn new(
         endpoint: Url,
         pinned_addresses: BTreeSet<IpAddr>,
+        trusted_private_addresses: BTreeSet<IpAddr>,
         credential: Option<ArtifactSourceCredential>,
         policy: &ArtifactFetchPolicy,
-    ) -> Result<Self, ArtifactError> {
-        Self::with_authority(
-            endpoint,
-            pinned_addresses,
-            credential,
-            policy,
-            ArtifactNetworkAuthority::default(),
-        )
-    }
-
-    fn with_authority(
-        endpoint: Url,
-        pinned_addresses: BTreeSet<IpAddr>,
-        credential: Option<ArtifactSourceCredential>,
-        policy: &ArtifactFetchPolicy,
-        authority: ArtifactNetworkAuthority,
     ) -> Result<Self, ArtifactError> {
         policy.validate()?;
         validate_remote_origin(&endpoint)?;
         if pinned_addresses.is_empty()
             || pinned_addresses
                 .iter()
-                .any(|ip| !authority.allows(&endpoint, *ip))
+                .any(|ip| !admissible_address(*ip, &trusted_private_addresses))
         {
             return Err(ArtifactError::UnsafePath("provider_dns_address"));
         }
@@ -466,11 +407,11 @@ impl GuardedHttpTransport {
             .map_err(|_| ArtifactError::Conflict("provider_client_configuration"))?;
         let origin = endpoint.origin();
         Ok(Self {
-            authority,
             client,
             endpoint,
             origin,
             pinned_addresses,
+            trusted_private_addresses,
             credential,
         })
     }
@@ -537,7 +478,9 @@ impl GuardedHttpTransport {
             .remote_addr()
             .ok_or(ArtifactError::Conflict("provider_peer_unavailable"))?
             .ip();
-        if !self.pinned_addresses.contains(&peer) || !self.authority.allows(&self.endpoint, peer) {
+        if !self.pinned_addresses.contains(&peer)
+            || !admissible_address(peer, &self.trusted_private_addresses)
+        {
             return Err(ArtifactError::Conflict("provider_dns_rebinding"));
         }
         Ok(())
@@ -555,6 +498,7 @@ impl ArtifactAcquisitionTransport for GuardedHttpTransport {
         Box::pin(async move {
             if request.endpoint != self.endpoint
                 || request.pinned_addresses != self.pinned_addresses
+                || request.trusted_private_addresses != self.trusted_private_addresses
             {
                 return Err(ArtifactError::Conflict("provider_connection_mismatch"));
             }
@@ -649,7 +593,6 @@ fn validate_component_locator(value: &str) -> Result<(), ArtifactError> {
 
 /// Bounded remote adapter. Successful return contains all bytes and has no live provider handle.
 pub struct ExactArtifactProvider<T> {
-    authority: ArtifactNetworkAuthority,
     transport: T,
     policy: ArtifactFetchPolicy,
     permits: Arc<Semaphore>,
@@ -660,35 +603,22 @@ pub struct ExactArtifactProvider<T> {
 pub type GuardedExactArtifactProvider = ExactArtifactProvider<GuardedHttpTransport>;
 
 impl ExactArtifactProvider<GuardedHttpTransport> {
-    pub fn configured_http_with_authority(
-        endpoint: Url,
-        pinned_addresses: BTreeSet<IpAddr>,
-        credential: Option<ArtifactSourceCredential>,
-        staging_root: impl Into<PathBuf>,
-        policy: ArtifactFetchPolicy,
-        authority: ArtifactNetworkAuthority,
-    ) -> Result<Self, ArtifactError> {
-        let transport = GuardedHttpTransport::with_authority(
-            endpoint,
-            pinned_addresses,
-            credential,
-            &policy,
-            authority.clone(),
-        )?;
-        let mut provider = Self::new(transport, staging_root, policy)?;
-        provider.authority = authority;
-        Ok(provider)
-    }
-
     /// Construct one non-generic configured provider for product startup wiring.
     pub fn configured_http(
         endpoint: Url,
         pinned_addresses: BTreeSet<IpAddr>,
+        trusted_private_addresses: BTreeSet<IpAddr>,
         credential: Option<ArtifactSourceCredential>,
         staging_root: impl Into<PathBuf>,
         policy: ArtifactFetchPolicy,
     ) -> Result<Self, ArtifactError> {
-        let transport = GuardedHttpTransport::new(endpoint, pinned_addresses, credential, &policy)?;
+        let transport = GuardedHttpTransport::new(
+            endpoint,
+            pinned_addresses,
+            trusted_private_addresses,
+            credential,
+            &policy,
+        )?;
         Self::new(transport, staging_root, policy)
     }
 }
@@ -706,7 +636,6 @@ where
         let staging_root = staging_root.into();
         validate_staging_root(&staging_root)?;
         Ok(Self {
-            authority: ArtifactNetworkAuthority::default(),
             transport,
             permits: Arc::new(Semaphore::new(policy.max_concurrency)),
             policy,
@@ -728,7 +657,7 @@ where
         request: &ExactArtifactRequest,
         headers: Option<&dyn ArtifactRequestHeaderProvider>,
     ) -> Result<ArtifactAcquisition, ArtifactError> {
-        request.validate_with_authority(&self.authority)?;
+        request.validate()?;
         let permit = tokio::time::timeout(
             self.policy.queue_deadline,
             Arc::clone(&self.permits).acquire_owned(),
@@ -737,7 +666,6 @@ where
         .map_err(|_| ArtifactError::Busy)?
         .map_err(|_| ArtifactError::Busy)?;
         let mut gate = ArtifactTransferGate::new(&self.staging_root, request).await?;
-        gate.authority = self.authority.clone();
         let deadlines = ArtifactTransportDeadlines {
             connect: self.policy.connect_deadline,
             read: self.policy.read_deadline,
@@ -786,10 +714,10 @@ struct StagedFile {
 
 /// Transport-facing SSRF gate and incremental private staging sink.
 pub struct ArtifactTransferGate {
-    authority: ArtifactNetworkAuthority,
     endpoint: Url,
     credential_origin: Option<Url>,
     pinned_addresses: BTreeSet<IpAddr>,
+    trusted_private_addresses: BTreeSet<IpAddr>,
     connected: bool,
     staging: tokio::sync::mpsc::Sender<StagingCommand>,
 }
@@ -851,10 +779,10 @@ impl ArtifactTransferGate {
             .await
             .map_err(|_| ArtifactError::Conflict("provider_staging_failed"))??;
         Ok(Self {
-            authority: ArtifactNetworkAuthority::default(),
             endpoint: request.endpoint.clone(),
             credential_origin: request.credential_origin.clone(),
             pinned_addresses: request.pinned_addresses.clone(),
+            trusted_private_addresses: request.trusted_private_addresses.clone(),
             connected: false,
             staging,
         })
@@ -862,7 +790,7 @@ impl ArtifactTransferGate {
 
     /// Pin the actual peer address. A later DNS answer cannot change this connection authority.
     pub fn observe_peer(&mut self, address: IpAddr) -> Result<(), ArtifactError> {
-        if !self.authority.allows(&self.endpoint, address)
+        if !admissible_address(address, &self.trusted_private_addresses)
             || !self.pinned_addresses.contains(&address)
         {
             return Err(ArtifactError::Conflict("provider_dns_rebinding"));
@@ -1155,6 +1083,27 @@ fn public_address(address: IpAddr) -> bool {
     check_ip_not_private(address, "artifact provider endpoint").is_ok()
 }
 
+/// A pinned peer is admissible when it is public, or when it is a private
+/// (RFC 1918 / unique-local) address the host explicitly granted. Loopback,
+/// link-local, IPv4-mapped and cloud-metadata addresses are never grantable.
+fn admissible_address(address: IpAddr, trusted_private: &BTreeSet<IpAddr>) -> bool {
+    public_address(address) || (grantable_private(address) && trusted_private.contains(&address))
+}
+
+fn grantable_private(address: IpAddr) -> bool {
+    match address {
+        IpAddr::V4(ip) => ip.is_private(),
+        IpAddr::V6(ip) => {
+            ip.to_ipv4_mapped().is_none()
+                && ip.is_unique_local()
+                && !matches!(
+                    ip.segments(),
+                    [0xfd00, 0xec2, 0, 0, 0, 0, 0, 0x254] | [0xfd20, 0xce, 0, 0, 0, 0, 0, 0x254]
+                )
+        }
+    }
+}
+
 /// Local-store implementation of the provider seam.
 #[derive(Debug, Clone)]
 pub struct LocalArtifactProvider {
@@ -1400,6 +1349,7 @@ mod tests {
             endpoint: Url::parse("https://depot.example/v1/exact").unwrap(),
             credential_origin: Some(Url::parse("https://depot.example/").unwrap()),
             pinned_addresses: BTreeSet::from([IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))]),
+            trusted_private_addresses: BTreeSet::new(),
         }
     }
 
@@ -1444,6 +1394,7 @@ mod tests {
             GuardedExactArtifactProvider::configured_http(
                 Url::parse("https://localhost/exact").unwrap(),
                 BTreeSet::from([IpAddr::V4(Ipv4Addr::LOCALHOST)]),
+                BTreeSet::new(),
                 None,
                 staging.path(),
                 policy.clone(),
@@ -1454,12 +1405,80 @@ mod tests {
             GuardedExactArtifactProvider::configured_http(
                 Url::parse("https://depot.example/exact").unwrap(),
                 BTreeSet::new(),
+                BTreeSet::new(),
                 None,
                 staging.path(),
                 policy,
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn private_pinned_addresses_require_an_exact_host_grant() {
+        let staging = private_staging();
+        let policy = ArtifactFetchPolicy::default();
+        let lan = IpAddr::V4(Ipv4Addr::new(10, 1, 0, 8));
+        let configure = |pinned: IpAddr, trusted: BTreeSet<IpAddr>| {
+            GuardedExactArtifactProvider::configured_http(
+                Url::parse("https://depot.example/api/artifacts/exact").unwrap(),
+                BTreeSet::from([pinned]),
+                trusted,
+                None,
+                staging.path(),
+                policy.clone(),
+            )
+        };
+
+        assert!(matches!(
+            configure(lan, BTreeSet::new()),
+            Err(ArtifactError::UnsafePath("provider_dns_address"))
+        ));
+        // Admission is the policy under test; building a real TLS client here
+        // would need a process-wide crypto provider. The labby import test
+        // covers the full granted construction.
+        assert!(!admissible_address(lan, &BTreeSet::new()));
+        assert!(admissible_address(lan, &BTreeSet::from([lan])));
+        assert!(admissible_address(
+            IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)),
+            &BTreeSet::new()
+        ));
+        // A grant for a different private address is not a grant for this one.
+        assert!(
+            configure(
+                lan,
+                BTreeSet::from([IpAddr::V4(Ipv4Addr::new(10, 1, 0, 9))])
+            )
+            .is_err()
+        );
+        // Loopback, link-local and cloud metadata are never grantable.
+        for never in [
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254)),
+            "fd00:ec2::254".parse().unwrap(),
+        ] {
+            assert!(
+                configure(never, BTreeSet::from([never])).is_err(),
+                "{never}"
+            );
+        }
+    }
+
+    #[test]
+    fn exact_requests_admit_only_granted_private_peers() {
+        let lan = IpAddr::V4(Ipv4Addr::new(10, 1, 0, 8));
+        let request = |trusted: BTreeSet<IpAddr>| ExactArtifactRequest {
+            source: ExactArtifactSource::Depot,
+            source_id: "public".to_owned(),
+            artifact_id: "artifact".to_owned(),
+            revision_id: format!("sha256:{}", "0".repeat(64)),
+            endpoint: Url::parse("https://depot.example/api/artifacts/exact").unwrap(),
+            credential_origin: None,
+            pinned_addresses: BTreeSet::from([lan]),
+            trusted_private_addresses: trusted,
+        };
+        assert!(request(BTreeSet::new()).validate().is_err());
+        assert!(request(BTreeSet::from([lan])).validate().is_ok());
     }
 
     #[tokio::test]
@@ -1647,72 +1666,5 @@ mod tests {
                 .is_err()
         );
         assert!(!removed_path.exists());
-    }
-    #[tokio::test]
-    async fn host_grant_allows_only_exact_origin_and_private_peer() {
-        let acquisition = remote_fixture().await;
-        let staging = private_staging();
-        let mut request = exact_request(&acquisition, ExactArtifactSource::Depot);
-        let peer: IpAddr = "10.1.0.8".parse().unwrap();
-        request.pinned_addresses = BTreeSet::from([peer]);
-        assert!(request.validate().is_err());
-        let authority =
-            ArtifactNetworkAuthority::for_host_grant(&request.endpoint, BTreeSet::from([peer]))
-                .unwrap();
-        for blocked in [
-            "127.0.0.1",
-            "169.254.169.254",
-            "::1",
-            "fd00:ec2::254",
-            "fd20:ce::254",
-            "::ffff:10.1.0.8",
-        ] {
-            assert!(
-                ArtifactNetworkAuthority::for_host_grant(
-                    &request.endpoint,
-                    BTreeSet::from([blocked.parse().unwrap()])
-                )
-                .is_err(),
-                "{blocked}"
-            );
-        }
-        let mut provider = ExactArtifactProvider::new(
-            MockRemote {
-                acquisition: acquisition.clone(),
-                behavior: MockBehavior::Good,
-            },
-            staging.path(),
-            ArtifactFetchPolicy::default(),
-        )
-        .unwrap();
-        provider.authority = authority.clone();
-        assert!(provider.acquire_exact(&request).await.is_ok());
-        request.pinned_addresses = BTreeSet::from(["10.1.0.9".parse().unwrap()]);
-        assert!(provider.acquire_exact(&request).await.is_err());
-        request.pinned_addresses = BTreeSet::from([peer]);
-        request
-            .endpoint
-            .set_host(Some("other.example.com"))
-            .unwrap();
-        assert!(provider.acquire_exact(&request).await.is_err());
-        for behavior in [
-            MockBehavior::Rebind,
-            MockBehavior::Redirect,
-            MockBehavior::ForwardCredentials,
-        ] {
-            let mut provider = ExactArtifactProvider::new(
-                MockRemote {
-                    acquisition: acquisition.clone(),
-                    behavior,
-                },
-                staging.path(),
-                ArtifactFetchPolicy::default(),
-            )
-            .unwrap();
-            provider.authority = authority.clone();
-            let mut request = exact_request(&acquisition, ExactArtifactSource::Depot);
-            request.pinned_addresses = BTreeSet::from([peer]);
-            assert!(provider.acquire_exact(&request).await.is_err());
-        }
     }
 }

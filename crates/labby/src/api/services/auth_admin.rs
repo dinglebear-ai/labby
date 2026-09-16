@@ -70,13 +70,13 @@ fn validate_email(raw: &str) -> Result<String, ToolError> {
 
 // ── admin guard ───────────────────────────────────────────────────────────────
 
-/// Verify the caller is a browser-session user whose email matches `admin_email`.
+/// Verify the caller is a browser-session user whose email is a configured admin.
 ///
 /// Returns `Err(forbidden)` for:
 /// - JWT bearer callers (`via_session == false`)
 /// - Browser-session callers with no email claim
-/// - Email that does not match `admin_email` (case-insensitive)
-fn require_admin(ctx: &AuthContext, admin_email: &str) -> Result<(), ToolError> {
+/// - Email that is not in `admin_emails` (case-insensitive)
+fn require_admin(ctx: &AuthContext, admin_emails: &[String]) -> Result<(), ToolError> {
     if !ctx.via_session {
         return Err(ToolError::Sdk {
             sdk_kind: "forbidden".to_string(),
@@ -89,7 +89,7 @@ fn require_admin(ctx: &AuthContext, admin_email: &str) -> Result<(), ToolError> 
             message: "session has no email — cannot verify admin access".to_string(),
         });
     };
-    if !email.eq_ignore_ascii_case(admin_email) {
+    if !labby_auth::config::is_listed_admin(admin_emails, email) {
         return Err(ToolError::Sdk {
             sdk_kind: "forbidden".to_string(),
             message: "caller is not the configured admin".to_string(),
@@ -111,14 +111,14 @@ fn require_oauth_state(state: &AppState) -> Result<&labby_auth::state::AuthState
     })
 }
 
-/// Extract `admin_email` from `auth_config`.
+/// Extract the configured admin emails from `auth_config`.
 ///
 /// Returns an `internal_error` ToolError if auth config is not mounted.
-fn require_admin_email(state: &AppState) -> Result<&str, ToolError> {
+fn require_admin_email(state: &AppState) -> Result<&[String], ToolError> {
     state
         .auth_config
         .as_ref()
-        .map(|cfg| cfg.admin_email.as_str())
+        .map(|cfg| cfg.admin_emails.as_slice())
         .ok_or_else(|| ToolError::internal_message("auth config not mounted"))
 }
 
@@ -254,12 +254,31 @@ async fn list_allowed_emails(
 #[derive(Deserialize)]
 struct AddEmailBody {
     email: String,
+    #[serde(default = "default_allowlist_role")]
+    role: String,
+}
+
+fn default_allowlist_role() -> String {
+    "member".to_string()
+}
+
+/// Validate a caller-supplied allowlist role against the store's accepted set.
+fn validate_role(raw: &str) -> Result<&str, ToolError> {
+    let role = raw.trim();
+    if labby_auth::sqlite::SqliteStore::ALLOWED_USER_ROLES.contains(&role) {
+        Ok(role)
+    } else {
+        Err(ToolError::Sdk {
+            sdk_kind: "validation_failed".to_string(),
+            message: "role must be `member` or `admin`".to_string(),
+        })
+    }
 }
 
 /// `POST /v1/auth/allowed-emails`
 ///
-/// Body: `{ "email": "alice@example.com" }`
-/// Returns `{ "entry": {email, added_by, created_at} }` (201).
+/// Body: `{ "email": ..., "role": "member" | "admin" }`
+/// Returns `{ "entry": {email, added_by, created_at, role} }` (201).
 async fn add_allowed_email(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -327,6 +346,20 @@ async fn add_allowed_email(
         }
     };
 
+    let role = match validate_role(&body.role) {
+        Ok(role) => role.to_owned(),
+        Err(err) => {
+            log_auth_dispatch(
+                action,
+                req_id.as_deref(),
+                start,
+                Some(err.kind()),
+                actor_key,
+            );
+            return no_store(ApiError::new(err).into_response());
+        }
+    };
+
     let email_fp = fingerprint(&email);
     let added_by = auth.sub.clone();
     let created_at = now_unix();
@@ -342,7 +375,7 @@ async fn add_allowed_email(
 
     match auth_state
         .store
-        .add_allowed_user(&email, &added_by, created_at)
+        .add_allowed_user(&email, &added_by, &role, created_at)
         .await
     {
         Ok(()) => {}
@@ -366,6 +399,7 @@ async fn add_allowed_email(
         email: email.clone(),
         added_by,
         created_at,
+        role,
     };
 
     tracing::info!(
@@ -452,7 +486,7 @@ async fn delete_allowed_email(
     // publication before committing the durable revocation. Holding this
     // write guard through the drain closes the DB-to-runtime reuse window.
     #[cfg(feature = "gateway")]
-    let gateway_manager = if email.eq_ignore_ascii_case(admin_email) {
+    let gateway_manager = if labby_auth::config::is_listed_admin(admin_email, &email) {
         None
     } else {
         match &state.gateway_manager {
@@ -478,7 +512,7 @@ async fn delete_allowed_email(
         None => None,
     };
 
-    let removal = if email.eq_ignore_ascii_case(admin_email) {
+    let removal = if labby_auth::config::is_listed_admin(admin_email, &email) {
         auth_state
             .store
             .remove_bootstrap_admin_allowlist_entry(&email)

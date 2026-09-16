@@ -58,7 +58,7 @@
     "env_var": "LABBY_AUTH_ADMIN_EMAIL",
     "required": true,
     "secret": false,
-    "description": "Bootstrap administrator email required in oauth mode",
+    "description": "Administrator email, or comma-separated emails, required in oauth mode",
     "example": "admin@example.com",
     "default_port": null
   },

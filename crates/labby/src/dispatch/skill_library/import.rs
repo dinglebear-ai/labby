@@ -302,7 +302,12 @@ impl ImportCoordinator {
         config: &crate::config::ArtifactPreferences,
         staging_root: &Path,
     ) -> Result<Self, ArtifactError> {
-        Self::from_config_with_env(config, staging_root, &|name| std::env::var_os(name))
+        Self::from_config_with_env(
+            config,
+            staging_root,
+            &|name| std::env::var_os(name),
+            &BTreeMap::new(),
+        )
     }
 
     #[cfg(test)]
@@ -310,8 +315,13 @@ impl ImportCoordinator {
         config: &crate::config::ArtifactPreferences,
         staging_root: &Path,
         env: &impl Fn(&str) -> Option<std::ffi::OsString>,
+        private_hosts: &BTreeMap<String, BTreeSet<std::net::IpAddr>>,
     ) -> Result<Self, ArtifactError> {
-        Self::from_config_with_policy(config, staging_root, env, &Default::default())
+        let policy = crate::dispatch::depot::network::NetworkPolicy {
+            private_hosts: private_hosts.clone(),
+            ..Default::default()
+        };
+        Self::from_config_with_policy(config, staging_root, env, &policy)
     }
 
     fn from_config_with_policy(
@@ -378,14 +388,11 @@ impl ImportCoordinator {
                     labby_runtime::artifacts::provider::ExactArtifactSource::Repository
                 }
             };
-            let host = endpoint
+            let trusted_private_addresses = endpoint
                 .host_str()
-                .ok_or(ArtifactError::UnsafePath("provider_origin"))?;
-            let granted = policy.private_hosts.get(host).cloned().unwrap_or_default();
-            let authority =
-                labby_runtime::artifacts::provider::ArtifactNetworkAuthority::for_host_grant(
-                    &endpoint, granted,
-                )?;
+                .and_then(|host| policy.private_hosts.get(host))
+                .cloned()
+                .unwrap_or_default();
             let connection = DepotConnection::configured(
                 kind,
                 source.id.clone(),
@@ -396,9 +403,9 @@ impl ImportCoordinator {
                     .iter()
                     .copied()
                     .collect::<BTreeSet<_>>(),
+                trusted_private_addresses,
                 source_root,
                 Default::default(),
-                authority,
             )?;
             match source.kind {
                 crate::config::ArtifactSourceKind::Depot => {
@@ -1019,6 +1026,7 @@ pinned_addresses = ["8.8.8.8"]
                             .expect("fixture URL"),
                         credential_origin: None,
                         pinned_addresses: BTreeSet::from([IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))]),
+                        trusted_private_addresses: BTreeSet::new(),
                     })
                     .await
             })
@@ -2144,6 +2152,49 @@ pinned_addresses = ["8.8.8.8"]
         .unwrap();
         assert!(coordinator.depot.contains_key("depot-primary"));
         assert!(coordinator.repository.contains_key("repository-primary"));
+    }
+
+    /// A source pinned to a LAN reverse proxy (e.g. SWAG terminating TLS for
+    /// the Depot hostname) configures only when `[depot.private_hosts]`
+    /// grants that exact address for that host.
+    #[test]
+    fn private_pinned_source_requires_a_depot_private_hosts_grant() {
+        use std::net::{IpAddr, Ipv4Addr};
+
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let root = tempfile::tempdir().unwrap();
+        let lan = IpAddr::V4(Ipv4Addr::new(10, 1, 0, 8));
+        let config = crate::config::ArtifactPreferences {
+            sources: vec![crate::config::ArtifactSourceConfig {
+                id: "public".to_owned(),
+                kind: crate::config::ArtifactSourceKind::Depot,
+                endpoint: "https://depot.example/api/artifacts/exact".to_owned(),
+                control_plane_url: None,
+                pinned_addresses: vec![lan],
+                bearer_token_env: None,
+            }],
+        };
+        let no_env = |_: &str| None;
+
+        assert!(matches!(
+            ImportCoordinator::from_config_with_env(
+                &config,
+                root.path(),
+                &no_env,
+                &BTreeMap::new()
+            ),
+            Err(ArtifactError::UnsafePath("provider_dns_address"))
+        ));
+        let other_host = BTreeMap::from([("elsewhere.example".to_owned(), BTreeSet::from([lan]))]);
+        assert!(
+            ImportCoordinator::from_config_with_env(&config, root.path(), &no_env, &other_host)
+                .is_err()
+        );
+        let granted = BTreeMap::from([("depot.example".to_owned(), BTreeSet::from([lan]))]);
+        let coordinator =
+            ImportCoordinator::from_config_with_env(&config, root.path(), &no_env, &granted)
+                .unwrap();
+        assert!(coordinator.depot.contains_key("public"));
     }
 
     #[test]

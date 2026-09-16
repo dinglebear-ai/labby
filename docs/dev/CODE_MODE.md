@@ -640,8 +640,15 @@ Tool errors reject with a JSON-encoded string that can be decoded in the sandbox
 try {
   await callTool("github::search_issues", {});
 } catch (e) {
-  const env = JSON.parse(String(e.message));
-  return env.kind;
+  let error;
+  try {
+    error = JSON.parse(String(e?.message ?? e));
+    if (!error || typeof error !== 'object' || Array.isArray(error)) throw e;
+  }
+  catch { error = { message: String(e?.message ?? e), side_effects: "unknown" }; }
+  // Inspect structured recovery guidance when present; otherwise investigate
+  // before retrying an operation whose side effects are unknown.
+  return { error };
 }
 ```
 

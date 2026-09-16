@@ -34,8 +34,8 @@ pub struct SetupCallerEvidence<'a> {
     pub operator_credential: bool,
     /// Email on the authenticated browser session, if the caller used one.
     pub session_email: Option<&'a str>,
-    /// The configured admin email, if authentication is configured.
-    pub configured_admin_email: Option<&'a str>,
+    /// The configured admin emails; empty when authentication is not configured.
+    pub configured_admin_emails: &'a [String],
 }
 
 impl SetupCaller {
@@ -43,13 +43,10 @@ impl SetupCaller {
     /// to be the operator is delegated.
     #[must_use]
     pub fn classify(evidence: SetupCallerEvidence<'_>) -> Self {
-        let configured_admin_session =
-            match (evidence.session_email, evidence.configured_admin_email) {
-                (Some(email), Some(admin)) => {
-                    !admin.is_empty() && email.eq_ignore_ascii_case(admin)
-                }
-                _ => false,
-            };
+        let configured_admin_session = labby_auth::is_configured_admin_email(
+            evidence.configured_admin_emails,
+            evidence.session_email,
+        );
         if evidence.local_capability || evidence.operator_credential || configured_admin_session {
             Self::Operator
         } else {
@@ -91,7 +88,12 @@ mod tests {
 
     #[test]
     fn only_operator_evidence_classifies_as_operator() {
-        let admin = Some("owner@example.com");
+        let admins = vec![
+            "first@example.com".to_owned(),
+            "owner@example.com".to_owned(),
+        ];
+        let admin = admins.as_slice();
+        let blank = vec![String::new()];
         for (evidence, expected) in [
             (SetupCallerEvidence::default(), SetupCaller::Delegated),
             (
@@ -111,7 +113,7 @@ mod tests {
             (
                 SetupCallerEvidence {
                     session_email: Some("OWNER@EXAMPLE.COM"),
-                    configured_admin_email: admin,
+                    configured_admin_emails: admin,
                     ..Default::default()
                 },
                 SetupCaller::Operator,
@@ -119,7 +121,7 @@ mod tests {
             (
                 SetupCallerEvidence {
                     session_email: Some("colleague@example.com"),
-                    configured_admin_email: admin,
+                    configured_admin_emails: admin,
                     ..Default::default()
                 },
                 SetupCaller::Delegated,
@@ -127,7 +129,7 @@ mod tests {
             (
                 SetupCallerEvidence {
                     session_email: Some(""),
-                    configured_admin_email: Some(""),
+                    configured_admin_emails: &blank,
                     ..Default::default()
                 },
                 SetupCaller::Delegated,
@@ -135,7 +137,7 @@ mod tests {
             (
                 SetupCallerEvidence {
                     session_email: Some("owner@example.com"),
-                    configured_admin_email: None,
+                    configured_admin_emails: &[],
                     ..Default::default()
                 },
                 SetupCaller::Delegated,

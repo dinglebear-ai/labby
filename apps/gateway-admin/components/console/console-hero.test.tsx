@@ -35,6 +35,18 @@ test('metric units stay separate from values and are omitted when not supplied',
   assert.match(markup, />Not reported<\/div>/)
 })
 
+test('long metric values stay on one line without hiding their full value', () => {
+  const value = 'lime-technology-team/skills-team'
+  const markup = renderToStaticMarkup(<ConsoleHero eyebrow="Depot" title="Administration" stats={[{ label: 'Tenant / team', value }]} />)
+  const metric = markup.match(/<div data-console-hero-stat-value="1"[^>]*>/)?.[0]
+  assert.ok(metric)
+  assert.match(metric, /title="lime-technology-team\/skills-team"/)
+  assert.match(metric, /min-width:0/)
+  assert.match(metric, /overflow:hidden/)
+  assert.match(metric, /text-overflow:ellipsis/)
+  assert.match(metric, /white-space:nowrap/)
+})
+
 test('default hero uses the measured full-screen description and stat strip geometry', () => {
   const markup = renderToStaticMarkup(<ConsoleHero eyebrow="Observe" title="Usage Explorer" description="Reference description" stats={[{ label: 'Matched', value: 3 }]} />)
   assert.match(markup, /margin-top:7px;max-width:560px/)

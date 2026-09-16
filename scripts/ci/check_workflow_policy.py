@@ -15,6 +15,11 @@ SHA = re.compile(r"^[0-9a-f]{40}$")
 DOWNLOAD_ARTIFACT_SHA = "d3f86a106a0bac45b974a628896c90dbdf5c8093"
 NEEDS_OUTPUT = re.compile(r"needs\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z_][A-Za-z0-9_-]*)")
 NEEDS_RESULT = re.compile(r"needs\.([A-Za-z0-9_-]+)\.result")
+# Jobs allowed on the organization's privileged self-hosted fleet, as
+# (workflow file, job id). Each one is additionally required to be
+# non-blocking and to refuse fork pull requests.
+FARM_ROUTED_JOBS = {("ci.yml", "test")}
+SAME_REPOSITORY_GUARD = "github.event.pull_request.head.repo.full_name == github.repository"
 
 
 def external_use_errors(path: pathlib.Path, use: str) -> list[str]:
@@ -68,9 +73,17 @@ def main() -> int:
             if "timeout-minutes" not in job:
                 errors.append(f"{path}:{name}: missing timeout-minutes")
             runner = str(job.get("runs-on", ""))
-            if "self-hosted" in runner or "ci-pool-" in runner:
+            farm_routed = "self-hosted" in runner or "ci-pool-" in runner
+            if farm_routed and (path.name, name) not in FARM_ROUTED_JOBS:
                 errors.append(f"{path}:{name}: self-hosted runner selector {runner}")
-            if is_release and ("self-hosted" in runner or "ci-pool-" in runner):
+            elif farm_routed:
+                # The farm is privileged (DinD on an Unraid host). A sanctioned
+                # job must neither gate a merge nor execute fork-PR code.
+                if job.get("continue-on-error") != "true":
+                    errors.append(f"{path}:{name}: farm-routed job must set continue-on-error")
+                if SAME_REPOSITORY_GUARD not in str(job.get("if", "")):
+                    errors.append(f"{path}:{name}: farm-routed job must refuse fork pull requests")
+            if is_release and farm_routed:
                 errors.append(f"{path}:{name}: heavy release job is farm-routed")
 
             if "always()" in str(job.get("if", "")) and NEEDS_RESULT.search(str(job)):
@@ -100,7 +113,11 @@ def main() -> int:
     if errors:
         print("\n".join(f"::error::{error}" for error in errors))
         return 1
-    print("All repository workflow jobs use GitHub-hosted runners.")
+    print(
+        "Workflow policy satisfied: every job is GitHub-hosted except the "
+        f"{len(FARM_ROUTED_JOBS)} sanctioned farm-routed job(s), which are "
+        "non-blocking and refuse fork pull requests."
+    )
     return 0
 
 
