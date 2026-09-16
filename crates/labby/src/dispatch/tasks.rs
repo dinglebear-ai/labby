@@ -771,19 +771,33 @@ async fn execute_queued(
     };
     let _ = ledger.recover_expired(now).await.map_err(|_| internal())?;
     let executor = configured_task_executor(&context.store, &record.intent.input_digest);
-    execute_task(
-        &TASK_SCHEDULER,
-        &ledger,
-        &LiveExecutionAuthority {
-            store: context.store.clone(),
-            identity: context.identity.clone(),
-            owner: record.intent.owner.clone(),
-            definition,
-        },
-        &executor,
-        task,
-        cancellation,
-        now,
+    let attribution = labby_runtime::usage_actor::UsageAttribution {
+        // Task telemetry is attributed by trusted agent/task/harness identities below.
+        // Do not derive a user pseudonym from the durable creator principal here.
+        inbound_actor: None,
+        actor_kind: Some("agent".into()),
+        surface: Some("task".into()),
+        agent_id: Some(definition.id.to_string()),
+        task_id: Some(record.intent.id.to_string()),
+        harness_id: Some(definition.revision.harness_digest.clone()),
+        ..Default::default()
+    };
+    labby_runtime::usage_actor::scope_attributed(
+        attribution,
+        execute_task(
+            &TASK_SCHEDULER,
+            &ledger,
+            &LiveExecutionAuthority {
+                store: context.store.clone(),
+                identity: context.identity.clone(),
+                owner: record.intent.owner.clone(),
+                definition,
+            },
+            &executor,
+            task,
+            cancellation,
+            now,
+        ),
     )
     .await
     .map(drop)

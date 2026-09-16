@@ -28,7 +28,7 @@ pub(super) fn record_usage_call(
 pub(super) fn record_usage_call_with_response(
     pool: &UpstreamPool,
     event: UpstreamRequestLog<'_>,
-    subject: Option<&str>,
+    _subject: Option<&str>,
     outcome: &'static str,
     elapsed_ms: u128,
     response_bytes: Option<usize>,
@@ -38,10 +38,11 @@ pub(super) fn record_usage_call_with_response(
     };
     let mut attribution = labby_runtime::usage_actor::attribution().unwrap_or_default();
     attribution.inbound_actor = labby_runtime::usage_actor::current();
-    attribution.upstream_subject_tag = subject.map(|subject| {
-        use sha2::{Digest, Sha256};
-        format!("oauth:{}", hex::encode(Sha256::digest(subject.as_bytes())))
-    });
+    // The upstream OAuth subject selects credential scope; it is not the inbound
+    // actor identity. Do not persist the raw subject or a deterministic digest of
+    // it: low-entropy provider identifiers would remain correlatable/guessable.
+    // `subject_scoped` retains the operational fact without retaining identity.
+    attribution.upstream_subject_tag = None;
     let record = UpstreamCallRecord {
         ts_unix: SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -81,7 +82,7 @@ pub(super) fn record_usage_call_with_response(
 mod tests {
     use super::*;
     #[tokio::test]
-    async fn inbound_actor_attributes_shared_calls_without_changing_credential_scope() {
+    async fn inbound_actor_attributes_shared_calls_without_persisting_upstream_subject() {
         let directory = tempfile::tempdir().unwrap();
         let store = std::sync::Arc::new(
             crate::usage::UsageStore::open(directory.path().join("usage.sqlite3"))
@@ -115,15 +116,20 @@ mod tests {
         );
         store.drain_pending_writes().await;
         let rows = store.with_conn(|connection| {
-            let mut statement = connection.prepare("SELECT upstream_name,actor,subject_scoped FROM upstream_calls ORDER BY upstream_name").map_err(crate::usage::store::sqlite_error)?;
-            statement.query_map([], |row| Ok((row.get::<_, String>(0)?,row.get::<_, String>(1)?,row.get::<_, bool>(2)?))).map_err(crate::usage::store::sqlite_error)?.collect::<Result<Vec<_>, _>>().map_err(crate::usage::store::sqlite_error)
+            let mut statement = connection.prepare("SELECT upstream_name,actor,subject_scoped,upstream_subject_tag FROM upstream_calls ORDER BY upstream_name").map_err(crate::usage::store::sqlite_error)?;
+            statement.query_map([], |row| Ok((row.get::<_, String>(0)?,row.get::<_, String>(1)?,row.get::<_, bool>(2)?,row.get::<_, Option<String>>(3)?))).map_err(crate::usage::store::sqlite_error)?.collect::<Result<Vec<_>, _>>().map_err(crate::usage::store::sqlite_error)
         }).await.unwrap();
         assert_eq!(
             rows,
             vec![
-                ("historical-shape".into(), "unattributed".into(), false),
-                ("oauth".into(), "sub:verified123".into(), true),
-                ("shared".into(), "sub:verified123".into(), false),
+                (
+                    "historical-shape".into(),
+                    "unattributed".into(),
+                    false,
+                    None
+                ),
+                ("oauth".into(), "sub:verified123".into(), true, None),
+                ("shared".into(), "sub:verified123".into(), false, None),
             ]
         );
     }

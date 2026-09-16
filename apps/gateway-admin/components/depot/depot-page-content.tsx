@@ -79,7 +79,6 @@ export function exactImportParams(
     idempotency_key: idempotencyKey,
   }
 }
-
 export function DepotPageContent() {
   const sessionEpoch = useSyncExternalStore(subscribeToBrowserSession, getBrowserSessionEpoch, () => 0)
   return <SessionDepotPage key={sessionEpoch} />
@@ -328,7 +327,7 @@ function SessionDepotPage() {
   return <>
     <AppHeader icon={<Compass className="size-3.5" />} breadcrumbs={[{label:'Discover'}]}/>
     <div className={`${AURORA_PAGE_SHELL} flex-1`}><div className={AURORA_PAGE_FRAME} style={{ gap: 14 }}>
-      <ConsoleHero variant="discover" icon={<Compass className="size-[22px]" />} eyebrow="Depot · Bazaar" title="Discover" description="Every artifact Depot can reach — registries, marketplaces, catalogs and crawls — searched semantically and installable in any target format through APM." pulse={USE_MOCK_DATA && !state.error ? { color: 'var(--aurora-success)', label: `${providers.filter(provider => provider.enabled).length} sources indexed` } : depotCoveragePulse(state.coverage,state.error)} actions={<Button data-visible-label asChild variant="outline" className="h-9 rounded-[10px] px-4 font-[650] text-aurora-accent-strong" style={{ borderColor: 'color-mix(in srgb, var(--aurora-accent-primary) 55%, var(--aurora-border-strong))', background: 'color-mix(in srgb, var(--aurora-accent-primary) 9%, var(--aurora-panel-strong))' }}><Link href="/create"><Plus aria-hidden="true" className="size-3.5" />Publish Artifact</Link></Button>}
+      <ConsoleHero variant="discover" icon={<Compass className="size-[22px]" />} eyebrow="Depot · Bazaar" title="Discover" description="Every artifact Depot can reach — registries, marketplaces, catalogs and crawls — searched semantically and installable in any target format through APM." pulse={USE_MOCK_DATA && !state.error ? { color: 'var(--aurora-success)', label: `${providers.filter(provider => provider.enabled).length} sources indexed` } : depotCoveragePulse(state.coverage,state.error)} actions={<Button asChild size="icon" variant="outline" className="size-9 rounded-[10px] text-aurora-accent-strong" style={{ borderColor: 'color-mix(in srgb, var(--aurora-accent-primary) 55%, var(--aurora-border-strong))', background: 'color-mix(in srgb, var(--aurora-accent-primary) 9%, var(--aurora-panel-strong))' }}><Link href="/create" aria-label="Publish artifact" title="Publish artifact"><Plus aria-hidden="true" className="size-[15px]" /></Link></Button>}
         stats={[
           { label: activeQuery ? 'Matches' : 'Indexed', value: discoveryCountLabel(resultCount, state.exact, Boolean(state.error) || state.total === undefined), suffix: activeQuery ? 'artifacts' : 'artifacts' },
           { label: 'Sources', value: providers.filter(provider => provider.enabled).length, suffix: 'registries + crawls' },

@@ -70,7 +70,7 @@ export interface PhoenixModel {
 }
 
 export interface PhoenixAttachment {
-  type: 'image' | 'audio'
+  type: 'image' | 'audio' | 'text'
   url: string
   name: string
 }
@@ -78,6 +78,8 @@ export interface PhoenixAttachment {
 export interface PhoenixEvent {
   method: string
   params: unknown
+  sequence?: number
+  received_at_ms?: number
 }
 
 export interface PhoenixDiagnostics {

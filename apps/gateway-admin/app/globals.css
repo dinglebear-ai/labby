@@ -1259,3 +1259,28 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
   border-color: var(--aurora-border-strong) !important;
   background: var(--aurora-hover-bg) !important;
 }
+
+/* Hero actions are deliberately glyph-only. Keep page titles and conversation/content hierarchy
+   dominant while retaining the full accessible label in the DOM and native title tooltips. */
+[data-console-hero-actions] :is(button, a) {
+  width: 36px !important;
+  min-width: 36px !important;
+  height: 36px !important;
+  min-height: 36px !important;
+  padding-inline: 0 !important;
+  gap: 0 !important;
+  justify-content: center !important;
+  font-size: 0 !important;
+  line-height: 0 !important;
+  border-radius: 10px !important;
+  transition: transform 140ms ease, border-color 140ms ease, background-color 140ms ease, box-shadow 140ms ease, color 140ms ease !important;
+}
+[data-console-hero-actions] :is(button, a):hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 7px 18px -13px currentColor;
+}
+[data-console-hero-actions] :is(button, a):active:not(:disabled) { transform: translateY(0) scale(.97); }
+[data-console-hero-actions] :is(button, a) svg { width: 15px !important; height: 15px !important; margin: 0 !important; flex: 0 0 auto; }
+@media (prefers-reduced-motion: reduce) {
+  [data-console-hero-actions] :is(button, a) { transition: none !important; }
+}

@@ -20,6 +20,7 @@ const TURN_TIMEOUT: Duration = Duration::from_mins(5);
 const MAX_INPUT_BYTES: usize = 32 * 1024;
 const MAX_ATTACHMENTS: usize = 4;
 const MAX_ATTACHMENT_BYTES: usize = 5 * 1024 * 1024;
+const MAX_TEXT_ATTACHMENT_BYTES: usize = 512 * 1024;
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 const MAX_MESSAGES: usize = 100;
 const MAX_EVENTS: usize = 500;
@@ -206,6 +207,7 @@ struct Session {
     active_turn_id: Option<String>,
     messages: Vec<Message>,
     events: Vec<Value>,
+    next_event_sequence: u64,
     model: Option<String>,
     effort: Option<String>,
     title: Option<String>,
@@ -382,9 +384,10 @@ impl PhoenixRuntime {
                     "server_requests": ["deterministic_decline", "audit_event"],
                     "preserved_events": [
                         "items", "agent_message", "reasoning", "plan", "diff",
+                        "tool_output", "hooks", "subagents", "model_events",
                         "token_usage", "mcp_status", "mcp_tool_progress", "warnings", "errors"
                     ],
-                    "inputs": ["text", "image_data_url", "audio_data_url"],
+                    "inputs": ["text", "image_data_url", "text_file_data_url", "audio_data_url"],
                     "unsupported": [
                         "approvals", "elicitation_response",
                         "realtime", "local_path_attachments", "account_mutation", "filesystem_mutation",
@@ -551,6 +554,7 @@ impl PhoenixRuntime {
                 active_turn_id: None,
                 messages: Vec::new(),
                 events: Vec::new(),
+                next_event_sequence: 0,
                 model: selected_model,
                 effort,
                 title: None,
@@ -590,6 +594,7 @@ impl PhoenixRuntime {
                 active_turn_id: None,
                 messages: Vec::new(),
                 events: Vec::new(),
+                next_event_sequence: 0,
                 model: Some(selected_model),
                 effort,
                 title: None,
@@ -713,8 +718,8 @@ impl PhoenixRuntime {
         attachments: Option<&Value>,
     ) -> Result<Value, ToolError> {
         self.require_available()?;
-        if input.trim().is_empty() || input.len() > MAX_INPUT_BYTES {
-            return Err(invalid("input", "input must contain 1-32768 bytes"));
+        if input.len() > MAX_INPUT_BYTES {
+            return Err(invalid("input", "input cannot exceed 32768 bytes"));
         }
         let session = self.session(owner, session_id).await?;
         let openai = matches!(session.lock().await.backend, SessionBackend::OpenAi { .. });
@@ -730,7 +735,7 @@ impl PhoenixRuntime {
             turn_inputs(input, attachments)?
         };
         let session_id = session_id.to_owned();
-        let input = input.to_owned();
+        let input = message_display_text(input, attachments);
         tokio::spawn(
             async move { Self::run_turn(session, session_id, input, protocol_inputs).await },
         )
@@ -937,9 +942,11 @@ impl PhoenixRuntime {
         input: &str,
         attachments: Option<&Value>,
     ) -> Result<Value, ToolError> {
-        if input.trim().is_empty() || input.len() > MAX_INPUT_BYTES {
-            return Err(invalid("input", "input must contain 1-32768 bytes"));
+        if input.len() > MAX_INPUT_BYTES {
+            return Err(invalid("input", "input cannot exceed 32768 bytes"));
         }
+        let display_input = message_display_text(input, attachments);
+        let submitted_at_ms = now_millis();
         let session = self.session(owner, session_id).await?;
         let (runtime, thread_id, turn_id) = {
             let state = session.lock().await;
@@ -965,6 +972,18 @@ impl PhoenixRuntime {
                 json!({"threadId":thread_id,"expectedTurnId":turn_id,"input":protocol_inputs}),
             )
             .await?;
+        {
+            let mut state = session.lock().await;
+            state.messages.push(Message {
+                role: "user",
+                text: display_input,
+                created_at_ms: submitted_at_ms,
+            });
+            if state.messages.len() > MAX_MESSAGES {
+                let excess = state.messages.len() - MAX_MESSAGES;
+                state.messages.drain(..excess);
+            }
+        }
         Ok(json!({"session_id":session_id,"status":"steered","turn":safe_value(&response)}))
     }
 
@@ -1404,9 +1423,41 @@ fn validate_selection(name: &str, value: Option<&str>) -> Result<(), ToolError> 
     Ok(())
 }
 
+fn attachment_name(attachment: &Value) -> Option<String> {
+    attachment
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| !name.is_empty() && name.len() <= 160 && !name.chars().any(char::is_control))
+        .map(str::to_owned)
+}
+
+fn message_display_text(input: &str, attachments: Option<&Value>) -> String {
+    if !input.trim().is_empty() {
+        return input.to_owned();
+    }
+    let names = attachments
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(attachment_name)
+        .take(MAX_ATTACHMENTS)
+        .collect::<Vec<_>>();
+    if names.is_empty() {
+        "Attachment".to_owned()
+    } else {
+        format!("Attached: {}", names.join(", "))
+    }
+}
+
 fn turn_inputs(input: &str, attachments: Option<&Value>) -> Result<Vec<Value>, ToolError> {
-    let mut values = vec![json!({"type":"text","text":input,"text_elements":[]})];
+    let mut values = Vec::new();
+    if !input.trim().is_empty() {
+        values.push(json!({"type":"text","text":input,"text_elements":[]}));
+    }
     let Some(attachments) = attachments else {
+        if values.is_empty() {
+            return Err(invalid("input", "provide text or at least one attachment"));
+        }
         return Ok(values);
     };
     let attachments = attachments
@@ -1424,41 +1475,91 @@ fn turn_inputs(input: &str, attachments: Option<&Value>) -> Result<Vec<Value>, T
             .get("url")
             .and_then(Value::as_str)
             .ok_or_else(|| invalid("attachments", "attachment data URL is required"))?;
-        let allowed = match kind {
-            "image" => [
-                "data:image/png;base64,",
-                "data:image/jpeg;base64,",
-                "data:image/webp;base64,",
-            ]
-            .iter()
-            .any(|prefix| url.starts_with(prefix)),
-            "audio" => [
-                "data:audio/mpeg;base64,",
-                "data:audio/wav;base64,",
-                "data:audio/mp4;base64,",
-                "data:audio/webm;base64,",
-            ]
-            .iter()
-            .any(|prefix| url.starts_with(prefix)),
-            _ => false,
-        };
         let payload = url.split_once(',').map(|(_, payload)| payload);
         let decoded = payload.and_then(|payload| {
             base64::engine::general_purpose::STANDARD
                 .decode(payload)
                 .ok()
         });
-        if !allowed
-            || decoded
-                .as_ref()
-                .is_none_or(|bytes| bytes.is_empty() || bytes.len() > MAX_ATTACHMENT_BYTES)
-        {
-            return Err(invalid(
-                "attachments",
-                "attachments must be bounded PNG, JPEG, WebP, MP3, WAV, M4A, or WebM data URLs",
-            ));
+        match kind {
+            "image" => {
+                let allowed = [
+                    "data:image/png;base64,",
+                    "data:image/jpeg;base64,",
+                    "data:image/webp;base64,",
+                ]
+                .iter()
+                .any(|prefix| url.starts_with(prefix));
+                if !allowed
+                    || decoded
+                        .as_ref()
+                        .is_none_or(|bytes| bytes.is_empty() || bytes.len() > MAX_ATTACHMENT_BYTES)
+                {
+                    return Err(invalid(
+                        "attachments",
+                        "images must be bounded PNG, JPEG, or WebP data URLs",
+                    ));
+                }
+                values.push(json!({"type":"image","url":url}));
+            }
+            "audio" => {
+                let allowed = [
+                    "data:audio/mpeg;base64,",
+                    "data:audio/wav;base64,",
+                    "data:audio/mp4;base64,",
+                    "data:audio/webm;base64,",
+                ]
+                .iter()
+                .any(|prefix| url.starts_with(prefix));
+                if !allowed
+                    || decoded
+                        .as_ref()
+                        .is_none_or(|bytes| bytes.is_empty() || bytes.len() > MAX_ATTACHMENT_BYTES)
+                {
+                    return Err(invalid(
+                        "attachments",
+                        "audio must be a bounded MP3, WAV, M4A, or WebM data URL",
+                    ));
+                }
+                // Kept for compatibility with deployed App Server builds that advertise audio input.
+                values.push(json!({"type":"audio","url":url}));
+            }
+            "text" => {
+                let allowed = url.starts_with("data:text/")
+                    || url.starts_with("data:application/json")
+                    || url.starts_with("data:application/javascript")
+                    || url.starts_with("data:application/xml")
+                    || url.starts_with("data:application/yaml")
+                    || url.starts_with("data:application/x-yaml");
+                let Some(bytes) = decoded
+                    .filter(|bytes| !bytes.is_empty() && bytes.len() <= MAX_TEXT_ATTACHMENT_BYTES)
+                else {
+                    return Err(invalid(
+                        "attachments",
+                        "text attachments must be valid UTF-8 data URLs no larger than 512 KiB",
+                    ));
+                };
+                if !allowed {
+                    return Err(invalid(
+                        "attachments",
+                        "unsupported text attachment media type",
+                    ));
+                }
+                let text = std::str::from_utf8(&bytes)
+                    .map_err(|_| invalid("attachments", "text attachments must be UTF-8"))?;
+                let name =
+                    attachment_name(attachment).unwrap_or_else(|| "attachment.txt".to_owned());
+                values.push(json!({
+                    "type":"text",
+                    "text":format!("Attached file {name}:\n\n{text}"),
+                    "text_elements":[]
+                }));
+            }
+            _ => return Err(invalid("attachments", "unsupported attachment type")),
         }
-        values.push(json!({"type":kind,"url":url}));
+    }
+    if values.is_empty() {
+        return Err(invalid("input", "provide text or at least one attachment"));
     }
     Ok(values)
 }
@@ -1472,7 +1573,7 @@ async fn collect_turn(
     session: &Arc<Mutex<Session>>,
 ) -> Result<TurnResult, ToolError> {
     let mut deltas = String::new();
-    let mut completed_text = String::new();
+    let mut completed_segments: Vec<String> = Vec::new();
     loop {
         let event = receiver
             .recv()
@@ -1489,8 +1590,11 @@ async fn collect_turn(
         if event_turn_id.is_some_and(|value| value != turn_id) {
             continue;
         }
-        if let Some(candidate) = sanitized_event(&event) {
+        if let Some(mut candidate) = sanitized_event(&event) {
             let mut state = session.lock().await;
+            state.next_event_sequence = state.next_event_sequence.saturating_add(1);
+            candidate["sequence"] = json!(state.next_event_sequence);
+            candidate["received_at_ms"] = json!(now_millis());
             state.events.push(candidate);
             if state.events.len() > MAX_EVENTS {
                 let excess = state.events.len() - MAX_EVENTS;
@@ -1510,7 +1614,10 @@ async fn collect_turn(
                     == Some("agentMessage")
                     && let Some(text) = event.pointer("/params/item/text").and_then(Value::as_str)
                 {
-                    completed_text = bounded(text);
+                    let segment = bounded(text);
+                    if !segment.is_empty() && completed_segments.last() != Some(&segment) {
+                        completed_segments.push(segment);
+                    }
                 }
             }
             Some("turn/completed") => {
@@ -1525,10 +1632,13 @@ async fn collect_turn(
                         .unwrap_or("Codex turn did not complete");
                     return Err(unavailable(message));
                 }
-                let output = if completed_text.is_empty() {
+                let output = if !deltas.is_empty() {
+                    // Deltas preserve the exact chronological text stream across multiple
+                    // agentMessage items. A single completed item is not necessarily the
+                    // whole response and previously caused the beginning of replies to vanish.
                     bounded(&deltas)
                 } else {
-                    completed_text
+                    bounded(&completed_segments.concat())
                 };
                 if output.is_empty() {
                     return Err(protocol_error());
@@ -1556,9 +1666,17 @@ fn sanitized_event(event: &Value) -> Option<Value> {
             | "item/started"
             | "item/completed"
             | "item/agentMessage/delta"
+            | "item/plan/delta"
             | "item/reasoning/summaryTextDelta"
             | "item/reasoning/summaryPartAdded"
+            | "item/reasoning/textDelta"
+            | "item/commandExecution/outputDelta"
             | "item/mcpToolCall/progress"
+            | "hook/started"
+            | "hook/completed"
+            | "model/rerouted"
+            | "model/safety/updated"
+            | "model/verification/updated"
             | "mcpServer/status/updated"
             | "account/rateLimits/updated"
             | "error"
@@ -1929,6 +2047,9 @@ while read turn; do
   printf '%s\n' '{{"method":"turn/plan/updated","params":{{"threadId":"thread-container","turnId":"turn-1","plan":[{{"step":"Inspect health","status":"completed"}}]}}}}'
   printf '%s\n' '{{"method":"thread/tokenUsage/updated","params":{{"threadId":"thread-container","tokenUsage":{{"total":{{"totalTokens":42}}}}}}}}'
   printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"threadId":"thread-container","turnId":"turn-1","itemId":"message-1","delta":"hello from container"}}}}'
+  printf '%s\n' '{{"method":"item/completed","params":{{"threadId":"thread-container","turnId":"turn-1","item":{{"id":"message-1","type":"agentMessage","text":"hello from container"}}}}}}'
+  printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"threadId":"thread-container","turnId":"turn-1","itemId":"message-2","delta":" and still here"}}}}'
+  printf '%s\n' '{{"method":"item/completed","params":{{"threadId":"thread-container","turnId":"turn-1","item":{{"id":"message-2","type":"agentMessage","text":" and still here"}}}}}}'
   printf '%s\n' '{{"method":"turn/completed","params":{{"threadId":"thread-container","turn":{{"id":"turn-1","status":"completed","items":[],"error":null}}}}}}'
 done
 "#,
@@ -1977,7 +2098,10 @@ done
             )
             .await
             .unwrap();
-        assert_eq!(completed["messages"][1]["text"], "hello from container");
+        assert_eq!(
+            completed["messages"][1]["text"],
+            "hello from container and still here"
+        );
         assert_eq!(completed["events"][0]["method"], "turn/plan/updated");
         assert_eq!(
             completed["events"][1]["method"],
@@ -1991,7 +2115,7 @@ done
         assert_eq!(completed_list["sessions"][0]["title"], "hello");
         assert_eq!(
             completed_list["sessions"][0]["preview"],
-            "hello from container"
+            "hello from container and still here"
         );
         assert_eq!(completed_list["sessions"][0]["message_count"], 2);
         let resumed = runtime
@@ -2002,7 +2126,10 @@ done
             )
             .await
             .unwrap();
-        assert_eq!(resumed["messages"][3]["text"], "hello from container");
+        assert_eq!(
+            resumed["messages"][3]["text"],
+            "hello from container and still here"
+        );
         let renamed = runtime
             .dispatch(
                 "principal-a",
@@ -2241,15 +2368,30 @@ done
     }
 
     #[test]
-    fn turn_inputs_accept_only_bounded_inline_media() {
+    fn turn_inputs_accept_bounded_media_text_files_and_attachment_only_turns() {
         let inputs = turn_inputs(
             "inspect",
             Some(&json!([{
-                "type":"image", "url":"data:image/png;base64,aGVsbG8="
+                "type":"image", "name":"screen.png", "url":"data:image/png;base64,aGVsbG8="
             }])),
         )
         .unwrap();
         assert_eq!(inputs[1]["type"], "image");
+        let text_only = turn_inputs(
+            "",
+            Some(&json!([{
+                "type":"text", "name":"notes.md", "url":"data:text/plain;base64,IyBOb3Rlcw=="
+            }])),
+        )
+        .unwrap();
+        assert_eq!(text_only.len(), 1);
+        assert_eq!(text_only[0]["type"], "text");
+        assert!(text_only[0]["text"].as_str().unwrap().contains("notes.md"));
+        assert_eq!(
+            message_display_text("", Some(&json!([{"name":"notes.md"}]))),
+            "Attached: notes.md"
+        );
+        assert!(turn_inputs("", None).is_err());
         assert!(
             turn_inputs(
                 "inspect",
@@ -2281,7 +2423,12 @@ done
         assert_eq!(status["mcp"]["scope"], "container_loopback");
         assert_eq!(
             status["capabilities"]["inputs"],
-            json!(["text", "image_data_url", "audio_data_url"])
+            json!([
+                "text",
+                "image_data_url",
+                "text_file_data_url",
+                "audio_data_url"
+            ])
         );
         assert_eq!(
             status["capabilities"]["turn_lifecycle"],
@@ -2302,6 +2449,16 @@ done
                 "params":{"authorization":"secret"}
             }))
             .is_none()
+        );
+        assert!(
+            sanitized_event(&json!({"method":"hook/started","params":{"turnId":"turn-1"}}))
+                .is_some()
+        );
+        assert!(
+            sanitized_event(
+                &json!({"method":"item/reasoning/textDelta","params":{"delta":"thinking"}})
+            )
+            .is_some()
         );
         let event = sanitized_event(&json!({
             "method":"item/completed",

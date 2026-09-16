@@ -2,9 +2,8 @@
 
 import { useEffect, useState } from 'react'
 import {
-  Archive, Bot, Box, CheckCircle2, CirclePlus,
-  FileCode2, FileText, Layers3,
-  Pause, Play, Search, ChevronDown,
+  Archive, Bot, Box, CheckCircle2, ChevronDown, CirclePlus,
+  FileCode2, Layers3, Pause, Play, Search, Wrench,
 } from 'lucide-react'
 
 import { AppHeader } from '@/components/app-header'
@@ -39,10 +38,10 @@ const demoArtifacts = [
 export type LibrarySection = 'artifacts' | 'loadouts' | 'snippets' | 'tools'
 
 const LIBRARY_TABS = [
-  ['artifacts', '/library', 'Artifacts', Box],
-  ['loadouts', '/loadouts', 'Loadouts', Archive],
-  ['snippets', '/snippets', 'Snippets', FileText],
-  ['tools', '/tools', 'Tools', Search],
+  ['artifacts', '/library', 'Artifacts', Box, 'var(--aurora-text-primary)'],
+  ['loadouts', '/loadouts', 'Loadouts', Archive, 'var(--aurora-accent-primary)'],
+  ['snippets', '/snippets', 'Snippets', FileCode2, 'var(--aurora-accent-strong)'],
+  ['tools', '/tools', 'Tools', Wrench, 'var(--aurora-warn)'],
 ] as const
 
 /**
@@ -57,14 +56,14 @@ function formatLibraryCount(value: number | undefined) {
 }
 
 export function LibraryTabs({ active, attached = false, counts = {} }: { active: LibrarySection; attached?: boolean; counts?: Partial<Record<LibrarySection, number>> }) {
-  if (attached) return <nav aria-label="Library sections" data-library-tabs="1" className="aurora-scrollbar flex max-w-full gap-0.5 overflow-x-auto rounded-b-aurora-3 border-t border-aurora-border-subtle bg-aurora-control-surface px-5">
-    {LIBRARY_TABS.map(([id, href, label]) => <a key={id} href={href} aria-current={active === id ? 'page' : undefined} className="inline-flex h-[38px] shrink-0 items-center gap-2 whitespace-nowrap border-b-2 border-transparent px-3.5 text-[12.5px] font-[650] text-aurora-text-muted transition-colors hover:text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary aria-[current=page]:border-aurora-accent-primary aria-[current=page]:text-aurora-text-primary">
-      {label}
-      <span title={counts[id] === undefined ? 'Count unavailable for the current authority' : undefined} className={`inline-flex h-[19px] min-w-5 items-center justify-center rounded-[5px] border px-[5px] text-[10.5px] font-bold tabular-nums ${active === id ? 'border-aurora-accent-primary bg-aurora-selected-bg text-aurora-accent-strong' : 'border-aurora-border-default bg-aurora-page-bg text-aurora-text-muted'}`}>{formatLibraryCount(counts[id])}</span>
+  if (attached) return <nav aria-label="Library sections" data-library-tabs="1" className="aurora-scrollbar flex max-w-full gap-0.5 overflow-x-auto rounded-b-aurora-3 border-t border-aurora-border-subtle bg-aurora-control-surface" style={{ height: 56, paddingInline: 28 }}>
+    {LIBRARY_TABS.map(([id, href, label, Icon, color]) => <a key={id} href={href} aria-current={active === id ? 'page' : undefined} className="inline-flex shrink-0 items-center whitespace-nowrap border-b-2 border-transparent font-[650] text-aurora-text-muted transition-colors hover:text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary aria-[current=page]:border-aurora-accent-primary aria-[current=page]:text-aurora-text-primary" style={{ height: 55, gap: 10, paddingInline: 18, fontSize: 16 }}>
+      <Icon aria-hidden="true" style={{ color, width: 16, height: 16 }} />{label}
+      <span title={counts[id] === undefined ? 'Count unavailable for the current authority' : undefined} className={`inline-flex items-center justify-center rounded-[5px] border font-bold tabular-nums ${active === id ? 'border-aurora-accent-primary bg-aurora-selected-bg text-aurora-accent-strong' : 'border-aurora-border-default bg-aurora-page-bg text-aurora-text-muted'}`} style={{ height: 24, minWidth: 31, paddingInline: 7, fontSize: 13 }}>{formatLibraryCount(counts[id])}</span>
     </a>)}
   </nav>
   return <nav aria-label="Library sections" className="flex max-w-full gap-5 overflow-x-auto border-b border-aurora-border-subtle px-1 sm:gap-6 sm:px-3">
-    {LIBRARY_TABS.map(([id, href, label]) => <a key={id} href={href} aria-current={active === id ? 'page' : undefined} className="shrink-0 border-b-2 border-transparent px-2 py-3 text-sm font-semibold text-aurora-text-muted transition-colors hover:text-aurora-text-primary aria-[current=page]:border-aurora-accent-primary aria-[current=page]:text-aurora-text-primary">{label}</a>)}
+    {LIBRARY_TABS.map(([id, href, label, Icon, color]) => <a key={id} href={href} aria-current={active === id ? 'page' : undefined} className="inline-flex shrink-0 items-center gap-2 border-b-2 border-transparent px-2 py-3 text-sm font-semibold text-aurora-text-muted transition-colors hover:text-aurora-text-primary aria-[current=page]:border-aurora-accent-primary aria-[current=page]:text-aurora-text-primary"><Icon aria-hidden="true" className="size-3.5" style={{ color }}/>{label}</a>)}
   </nav>
 }
 
@@ -75,7 +74,7 @@ function PageFrame({ children }: { children: React.ReactNode }) {
 export function LibraryPage() {
   return <><AppHeader breadcrumbs={[{ label: 'Labby' }, { label: 'Library' }]} /><PageFrame>
     <LibraryTabs active="artifacts" />
-    <ConsoleHero eyebrow="Labby · Library" title="Library" pulse={{ color: 'var(--aurora-warn)', label: 'preview layout' }} actions={<div className="flex gap-2"><Button variant="outline">Backup all</Button><Button><CirclePlus />New loadout</Button></div>} stats={[
+    <ConsoleHero eyebrow="Labby · Library" title="Library" pulse={{ color: 'var(--aurora-warn)', label: 'preview layout' }} actions={<div className="flex gap-2"><Button size="icon" variant="outline" aria-label="Backup all" title="Backup all"><Archive className="size-[15px]" /></Button><Button size="icon" aria-label="New loadout" title="New loadout"><CirclePlus className="size-[15px]" /></Button></div>} stats={[
       { label: 'Artifacts', value: '102,745', icon: <Box size={12}/> },
       { label: 'Loadouts', value: '4', icon: <Layers3 size={12}/> },
       { label: 'Snippets', value: '6', icon: <FileCode2 size={12}/> },

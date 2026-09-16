@@ -2,7 +2,7 @@
 
 import * as React from 'react'
 import {
-  Clipboard, Download, ShieldCheck, Upload,
+  Clipboard, Download, ShieldCheck, Upload, CirclePlus,
   MoreHorizontal, RotateCcw, Settings2, CircleHelp, PencilLine, X, Code2, Eye,
 } from 'lucide-react'
 
@@ -18,7 +18,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import {
-  composeArtifactSource, artifactPath,
+  composeArtifactSource, artifactPath, artifactFrontmatterFields, artifactFrontmatterValue,
   ARTIFACT_KINDS, type ArtifactKind, type ArtifactMetadata, validateArtifactDraft,
 } from '@/lib/editor/artifact-standards'
 import { cn } from '@/lib/utils'
@@ -160,7 +160,7 @@ export function ArtifactComposer() {
   const [documentView, setDocumentView] = React.useState<'source' | 'preview'>('source')
   const [frontmatterOpen, setFrontmatterOpen] = React.useState(false)
   const [renaming, setRenaming] = React.useState(false)
-  const [tipsOpen, setTipsOpen] = React.useState(true)
+  const [tipsOpen, setTipsOpen] = React.useState(false)
   const [workspaceMode, setWorkspaceMode] = React.useState<WorkspaceMode>('artifact')
   const [bundleEntries, setBundleEntries] = React.useState<Record<string, string>>({})
   const [draftStatus, setDraftStatus] = React.useState<DraftStatus>('draft')
@@ -413,7 +413,17 @@ export function ArtifactComposer() {
     return () => lifecycle.abort()
   }, [])
 
-  const updateMetadata = (field: Exclude<keyof ArtifactMetadata, 'tags'>) => (value: string) => { markDraftDirty(); setMetadata((current) => ({ ...current, [field]: value })) }
+  const updateMetadata = (field: Exclude<keyof ArtifactMetadata, 'tags' | 'frontmatter'>) => (value: string) => { markDraftDirty(); setMetadata((current) => ({ ...current, [field]: value })) }
+  const updateFrontmatter = (field: string) => (value: string) => {
+    markDraftDirty()
+    setMetadata((current) => ({
+      ...current,
+      ...(field === 'license' ? { license: value } : {}),
+      ...(field === 'compatibility' ? { compatibility: value } : {}),
+      ...(field === 'allowed-tools' ? { allowedTools: value } : {}),
+      frontmatter: { ...(current.frontmatter ?? {}), [field]: value },
+    }))
+  }
   const addTag = () => {
     const tag = tagInput.trim().replace(/^#/, '').toLowerCase()
     if (!tag) return
@@ -451,6 +461,16 @@ export function ArtifactComposer() {
       try { window.localStorage.removeItem(draftStorageKey) } catch { setDraftStatus('error') }
     }
   }
+  const newArtifact = () => {
+    const language = artifactLanguage(kind)
+    setMetadata({ name: `untitled-${kind.toLowerCase()}`, description: '', tags: [], license: '', compatibility: '', allowedTools: '', frontmatter: {} })
+    setContent(language === 'json' ? '{\n  \n}' : language === 'bash' ? '#!/usr/bin/env bash\nset -euo pipefail\n\n' : '## Instructions\n\n')
+    setTagInput('')
+    setFrontmatterOpen(false)
+    setDocumentView('source')
+    markDraftDirty()
+    requestAnimationFrame(() => contentRef.current?.focus())
+  }
 
   const draftStatusText = draftStatus === 'saved' ? 'Saved locally'
     : draftStatus === 'unsaved' ? 'Unsaved changes'
@@ -460,7 +480,8 @@ export function ArtifactComposer() {
             : 'Local draft'
 
   const headerActions = <div className="flex flex-wrap items-center gap-[7px]">
-        <Button asChild variant="outline" className="h-9 gap-[7px] rounded-[10px] px-[13px] text-[12.5px] font-[650]" data-visible-label="1"><a href="/administration/" title="Catalog operations — Administration"><ShieldCheck className="size-[13px]" />Catalog Operations</a></Button>
+        <Tooltip><TooltipTrigger asChild><Button type="button" size="icon" variant="outline" className="size-9 rounded-[10px]" aria-label="Create new artifact" onClick={newArtifact}><CirclePlus className="size-[15px]" /></Button></TooltipTrigger><TooltipContent sideOffset={7}>New artifact</TooltipContent></Tooltip>
+        <Tooltip><TooltipTrigger asChild><Button asChild size="icon" variant="outline" className="size-9 rounded-[10px]"><a href="/administration/" aria-label="Catalog operations" title="Catalog operations — Administration"><ShieldCheck className="size-[15px]" /></a></Button></TooltipTrigger><TooltipContent sideOffset={7}>Catalog operations</TooltipContent></Tooltip>
         <DropdownMenu>
           <Tooltip><TooltipTrigger asChild><DropdownMenuTrigger asChild><Button size="icon" variant="outline" className="size-9 rounded-[10px]" aria-label="More artifact actions"><MoreHorizontal className="size-[15px]" /></Button></DropdownMenuTrigger></TooltipTrigger><TooltipContent sideOffset={7}>More actions</TooltipContent></Tooltip>
           <DropdownMenuContent align="end" className="min-w-52 border-aurora-border-strong bg-aurora-panel-strong">
@@ -473,7 +494,7 @@ export function ArtifactComposer() {
             <DropdownMenuItem onSelect={reset}><RotateCcw />Restore starter</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-        <Button data-visible-label size="sm" aria-label="Publish skill" className="h-9 w-[100px] gap-[7px] rounded-[10px] border border-[color-mix(in_srgb,var(--aurora-accent-pink)_70%,#0b2233)] bg-aurora-accent-pink px-4 text-[13px] font-bold text-[#2a0f18] shadow-[0_0_0_1px_color-mix(in_srgb,var(--aurora-accent-pink)_30%,transparent),inset_0_1px_0_rgba(255,255,255,0.25)] hover:bg-[color-mix(in_srgb,#fff_8%,var(--aurora-accent-pink))] hover:text-[#2a0f18]" disabled={!canPublish || publishing} onClick={() => void publish()}><Upload className="size-[13px]" />{publishing ? 'Submitting…' : 'Publish'}</Button>
+        <Tooltip><TooltipTrigger asChild><Button size="icon" aria-label={publishing ? 'Publishing skill' : 'Publish skill'} className="size-9 rounded-[10px] border border-[color-mix(in_srgb,var(--aurora-accent-pink)_70%,#0b2233)] bg-aurora-accent-pink text-[#2a0f18] shadow-[0_0_0_1px_color-mix(in_srgb,var(--aurora-accent-pink)_30%,transparent),inset_0_1px_0_rgba(255,255,255,0.25)] hover:bg-[color-mix(in_srgb,#fff_8%,var(--aurora-accent-pink))] hover:text-[#2a0f18]" disabled={!canPublish || publishing} onClick={() => void publish()}><Upload className={cn('size-[15px]', publishing && 'animate-pulse')} /></Button></TooltipTrigger><TooltipContent sideOffset={7}>{publishing ? 'Publishing…' : 'Publish skill'}</TooltipContent></Tooltip>
       </div>
 
   const bundleGroups = ['Agent', 'Command', 'Skill', 'Hook', 'MCP', 'Prompt'] as const
@@ -525,10 +546,14 @@ export function ArtifactComposer() {
                 }} onBlur={addTag} placeholder="add tag…" className="h-[18px] min-w-[80px] flex-1 bg-transparent px-0 py-0.5 text-[11.5px] text-aurora-text-primary outline-none placeholder:text-aurora-text-muted" />
               </div>
             </div>
-            <fieldset className="mt-4 grid gap-3 rounded-lg border border-aurora-border-default bg-aurora-control-surface p-4 sm:grid-cols-3">
-              <legend className="px-1 text-xs font-semibold text-aurora-text-muted">Frontmatter fields</legend>
-              {(['license', 'compatibility', 'allowedTools'] as const).map(field => <label key={field} className="grid gap-1 text-xs text-aurora-text-muted">{field === 'allowedTools' ? 'Allowed tools' : field === 'license' ? 'License' : 'Compatibility'}<input value={metadata[field]} onChange={event => updateMetadata(field)(event.target.value)} className="h-8 rounded border border-aurora-border-default bg-aurora-page-bg px-2 text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary" /></label>)}
-            </fieldset>
+            {artifactFrontmatterFields(kind).length ? <fieldset className="mt-4 grid gap-3 rounded-lg border border-aurora-border-default bg-aurora-control-surface p-4 sm:grid-cols-2 xl:grid-cols-3">
+              <legend className="px-1 text-xs font-semibold text-aurora-text-muted">Official frontmatter fields</legend>
+              {artifactFrontmatterFields(kind).map(field => <label key={field.frontmatterKey} className="grid content-start gap-1.5 text-xs text-aurora-text-muted">
+                <span className="flex min-w-0 items-center gap-1.5"><span className="font-semibold text-aurora-text-primary">{field.label}</span><span className={cn('rounded-full border px-1.5 py-px text-[8.5px] font-bold uppercase tracking-[.08em]', field.ecosystem === 'Claude' ? 'border-aurora-accent-pink/35 text-aurora-accent-pink' : field.ecosystem === 'Codex' ? 'border-aurora-accent-primary/35 text-aurora-accent-primary' : 'border-aurora-success/35 text-aurora-success')}>{field.ecosystem}</span></span>
+                <input aria-label={field.label} title={field.description} placeholder={field.placeholder ?? field.frontmatterKey} value={artifactFrontmatterValue(metadata, field.frontmatterKey)} onChange={event => updateFrontmatter(field.frontmatterKey)(event.target.value)} className="h-8 min-w-0 rounded border border-aurora-border-default bg-aurora-page-bg px-2 font-mono text-[11px] text-aurora-text-primary placeholder:text-aurora-text-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary" />
+                <span className="line-clamp-2 text-[9.5px] leading-[1.35] text-aurora-text-muted">{field.description}</span>
+              </label>)}
+            </fieldset> : <div className="mt-4 rounded-lg border border-aurora-border-default bg-aurora-control-surface px-4 py-3 text-[11px] text-aurora-text-muted">{kind} is not a frontmatter-backed format. Its provider metadata lives in the artifact body.</div>}
             </div> : null}
             <div data-artifact-source="1" hidden={documentView !== 'source'} className="border-t border-aurora-border-subtle [&[hidden]]:hidden">
             {artifactLanguage(kind) === 'markdown' ? <ArtifactFormattingToolbar indicator={<ArtifactFieldIndicator field="content" issues={issues} className="mr-2" />} onSection={section => append(`## ${section}`)} onFormat={format => {

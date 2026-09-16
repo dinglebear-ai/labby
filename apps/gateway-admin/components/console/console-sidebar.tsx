@@ -59,6 +59,15 @@ const SIDEBAR_WIDTH_COLLAPSED = '58px'
 
 /** The sidebar's own tinted plate — the mock lifts it off the page background. */
 const SIDEBAR_BG = 'var(--console-chrome-bg)'
+
+function LabbyAvatarImage() {
+  // The app is a static export with image optimization disabled. This local,
+  // decorative asset gains nothing from next/image, while keeping a native img
+  // avoids coupling this shared console chrome to Next's image runtime.
+  // eslint-disable-next-line @next/next/no-img-element
+  return <img src="/labby-avatar.png" alt="" style={{ width: '100%', height: '100%', borderRadius: 'inherit', objectFit: 'cover' }} />
+}
+
 function readJson<T>(key: string, fallback: T): T {
   try {
     const raw = window.localStorage.getItem(key)
@@ -382,7 +391,7 @@ export function AccountMenu({ placement = 'sidebar' }: { placement?: 'sidebar' |
                 color: 'var(--aurora-accent-strong)',
               }}
             >
-              <img src="/labby-avatar.png" alt="" style={{ width: '100%', height: '100%', borderRadius: 999, objectFit: 'cover' }} />
+              <LabbyAvatarImage />
             </div>
             <div style={{ minWidth: 0, lineHeight: 1.3 }}>
               <div
@@ -532,7 +541,7 @@ export function AccountMenu({ placement = 'sidebar' }: { placement?: 'sidebar' |
             color: 'var(--aurora-accent-strong)',
           }}
         >
-          <img src="/labby-avatar.png" alt="" style={{ width: '100%', height: '100%', borderRadius: 999, objectFit: 'cover' }} />
+          <LabbyAvatarImage />
           <span
             style={{
               position: 'absolute',
@@ -1084,12 +1093,12 @@ export function ConsoleSidebar() {
             }}
           >
             <span style={{ width: 24, height: 24, borderRadius: 8, display: 'grid', placeItems: 'center', flexShrink: 0, overflow: 'hidden', border: '1px solid color-mix(in srgb,var(--aurora-accent-primary) 34%,transparent)', color: 'var(--aurora-accent-strong)', fontSize: 9, fontWeight: 700 }}>
-              {authority?.activeOwner.kind === 'team' ? authority.activeOwner.id.slice(0, 2).toUpperCase() : <img src="/labby-avatar.png" alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }}/>}
+              {authority?.activeOwner.kind === 'team' ? authority.activeOwner.id.slice(0, 2).toUpperCase() : <LabbyAvatarImage />}
             </span>
             {visuallyCollapsed ? null : <><span style={{ minWidth: 0, flex: 1, display: 'flex', flexDirection: 'column', gap: 1 }}><small style={{ fontSize: 9, fontWeight: 700, letterSpacing: '.12em', color: 'var(--console-workspace-label)' }}>WORKSPACE</small><strong style={{ fontSize: 12, fontWeight: 650, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingRight: 2 }}>{authority?.activeOwner.kind === 'personal' ? 'Personal' : authority?.projects.find(project => project.id === authority.activeOwner.id)?.name ?? authority?.activeOwner.id ?? 'No workspace'}</strong></span><ChevronsUpDown size={12} strokeWidth={1.8} color="var(--aurora-text-muted)"/></>}
           </button>
           {workspaceOpen && !visuallyCollapsed ? <div data-anim="menu" style={{ position: 'absolute', zIndex: 60, bottom: 'calc(100% + 4px)', left: 8, right: 8, minWidth: 210, padding: 5, borderRadius: 11, border: '1px solid var(--aurora-border-strong)', background: 'linear-gradient(180deg, var(--aurora-panel-strong-top), var(--aurora-panel-strong))', boxShadow: 'var(--aurora-shadow-strong), inset 0 1px 0 rgba(255,255,255,.05)' }}>
-            <button type="button" data-menurow="1" disabled={!authority} aria-disabled={!authority} title={authority ? undefined : 'Workspace selection is unavailable until the server projects your authority.'} onClick={() => { if (switchWorkspace({})) { setWorkspaceOpen(false); router.push('/') } }} style={{ width: '100%', display: 'grid', gridTemplateColumns: '30px 1fr 16px', alignItems: 'center', gap: 7, padding: '7px 8px', border: 0, borderRadius: 8, background: authority?.activeOwner.kind === 'personal' ? 'var(--aurora-selected-bg)' : 'transparent', color: 'var(--aurora-text-primary)', textAlign: 'left', cursor: authority ? 'pointer' : 'not-allowed', opacity: authority ? 1 : 0.55 }}><span style={{ width: 28, height: 28, borderRadius: 999, display: 'grid', placeItems: 'center', overflow: 'hidden' }}><img src="/labby-avatar.png" alt="" style={{ width: '100%', height: '100%', borderRadius: 999, objectFit: 'cover' }}/></span><span><strong style={{ display: 'block', fontSize: 12.5 }}>Personal</strong><small style={{ display: 'block', maxWidth: 125, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--aurora-text-muted)' }}>your private workspace</small></span>{authority?.activeOwner.kind === 'personal' ? <Check size={14} color="var(--aurora-accent-strong)"/> : null}</button>
+            <button type="button" data-menurow="1" disabled={!authority} aria-disabled={!authority} title={authority ? undefined : 'Workspace selection is unavailable until the server projects your authority.'} onClick={() => { if (switchWorkspace({})) { setWorkspaceOpen(false); router.push('/') } }} style={{ width: '100%', display: 'grid', gridTemplateColumns: '30px 1fr 16px', alignItems: 'center', gap: 7, padding: '7px 8px', border: 0, borderRadius: 8, background: authority?.activeOwner.kind === 'personal' ? 'var(--aurora-selected-bg)' : 'transparent', color: 'var(--aurora-text-primary)', textAlign: 'left', cursor: authority ? 'pointer' : 'not-allowed', opacity: authority ? 1 : 0.55 }}><span style={{ width: 28, height: 28, borderRadius: 999, display: 'grid', placeItems: 'center', overflow: 'hidden' }}><LabbyAvatarImage /></span><span><strong style={{ display: 'block', fontSize: 12.5 }}>Personal</strong><small style={{ display: 'block', maxWidth: 125, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--aurora-text-muted)' }}>your private workspace</small></span>{authority?.activeOwner.kind === 'personal' ? <Check size={14} color="var(--aurora-accent-strong)"/> : null}</button>
             {authority && authority.teams.length === 0 ? <p className="px-2 py-2 text-[11px] text-aurora-text-muted">You are not currently a member of a Team.</p> : null}
             {authority?.teams.map((team) => <button key={team.id} type="button" data-menurow="1" onClick={() => { if (switchWorkspace({ teamId: team.id })) { setWorkspaceOpen(false); router.push('/') } }} style={{ width: '100%', display: 'grid', gridTemplateColumns: '30px 1fr 16px', alignItems: 'center', gap: 7, padding: '7px 8px', border: 0, borderRadius: 8, background: authority.activeTeamId === team.id ? 'var(--aurora-selected-bg)' : 'transparent', color: 'var(--aurora-text-primary)', textAlign: 'left', cursor: 'pointer' }}><span style={{ width: 27, height: 27, borderRadius: 7, display: 'grid', placeItems: 'center', background: 'color-mix(in srgb,var(--aurora-success) 12%,transparent)', border: '1px solid color-mix(in srgb,var(--aurora-success) 30%,transparent)', color: 'var(--aurora-success)', fontSize: 10 }}>{team.id.slice(0,2).toUpperCase()}</span><span><strong style={{ display: 'block', fontSize: 12.5 }}>{team.id}</strong><small style={{ color: 'var(--aurora-text-muted)' }}>{team.role}</small></span>{authority.activeTeamId === team.id ? <Check size={14} color="var(--aurora-accent-strong)"/> : null}</button>)}
             {authority?.projects.map((project) => <button key={project.id} type="button" data-menurow="1" onClick={() => { if (switchWorkspace({ projectId: project.id })) { setWorkspaceOpen(false); router.push('/') } }} style={{ width: '100%', display: 'grid', gridTemplateColumns: '30px 1fr 16px', alignItems: 'center', gap: 7, padding: '7px 8px', border: 0, borderRadius: 8, background: authority.activeProjectId === project.id ? 'var(--aurora-selected-bg)' : 'transparent', color: 'var(--aurora-text-primary)', textAlign: 'left', cursor: 'pointer' }}><span style={{ width: 27, height: 27, borderRadius: 7, display: 'grid', placeItems: 'center', background: 'color-mix(in srgb,var(--aurora-accent-primary) 12%,transparent)', border: '1px solid color-mix(in srgb,var(--aurora-accent-primary) 30%,transparent)', color: 'var(--aurora-accent-primary)', fontSize: 10 }}>PR</span><span style={{ minWidth: 0 }}><strong style={{ display: 'block', fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{project.name ?? project.id}</strong><small style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--aurora-text-muted)' }}>{project.name ? `${project.id} · ` : ''}{project.role} · project</small></span>{authority.activeProjectId === project.id ? <Check size={14} color="var(--aurora-accent-strong)"/> : null}</button>)}

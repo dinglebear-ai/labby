@@ -226,7 +226,7 @@ export function StashPageContent() {
   const failure = error ? errorCopy(error) : undefined
   return <>
     <span className="sr-only" role="status" aria-live="polite">{announcement}</span>
-    <ConsoleHero eyebrow="Control Plane · Stash" title="Stash" description="A scratch drive for you and your agents. Drop a file here and it is addressable at stash:// from any session without leaving the console." actions={<Button data-visible-label="1" variant="outline" className="h-9 gap-[7px] rounded-[10px] px-4 text-[13px] font-[650] text-aurora-accent-strong" onClick={() => input.current?.click()}><Upload size={14}/>Upload</Button>} stats={[
+    <ConsoleHero eyebrow="Control Plane · Stash" title="Stash" description="A scratch drive for you and your agents. Drop a file here and it is addressable at stash:// from any session without leaving the console." actions={<Button variant="outline" size="icon" aria-label="Upload to Stash" title="Upload to Stash" className="size-9 rounded-[10px] text-aurora-accent-strong" onClick={() => input.current?.click()}><Upload size={15}/></Button>} stats={[
       { label: 'Files', value: loading || !statsLoaded.current ? '—' : stats.owned_file_count, suffix: 'owned files' },
       { label: 'Size', value: loading || !statsLoaded.current ? '—' : bytes(stats.owned_committed_bytes), suffix: 'committed' },
       { label: 'Agent Reads', value: '—', suffix: 'not reported', tone: 'var(--aurora-accent-pink)' },

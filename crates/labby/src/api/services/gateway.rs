@@ -373,8 +373,8 @@ async fn handle(
         .0
         .actor_key
         .as_deref()
-        .or_else(|| auth.as_ref().map(|value| value.0.sub.as_str()))
-        .map(crate::mcp::context::redact_subject_for_logging);
+        .map(crate::mcp::context::redact_actor_key_for_logging)
+        .filter(|value| !value.is_empty());
     let auth_for_dispatch = auth.clone();
     let gateway_authority_for_dispatch = gateway_authority.clone();
     let manager = state

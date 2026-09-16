@@ -14,7 +14,6 @@ use labby_auth::auth_context::AuthContext;
 use labby_runtime::caller_auth::{CALLER_AUTH_META_KEY, PropagatedCallerAuth};
 use rmcp::RoleServer;
 use rmcp::service::RequestContext;
-use sha2::{Digest, Sha256};
 
 #[cfg(feature = "gateway")]
 use crate::dispatch::gateway::code_mode::CodeModeSurface;
@@ -25,9 +24,17 @@ use crate::mcp::server::LabMcpServer;
 #[cfg(feature = "gateway")]
 pub(crate) use crate::dispatch::oauth_subject::oauth_upstream_subject_for_request;
 
-pub(crate) fn redact_subject_for_logging(subject: &str) -> String {
-    let digest = Sha256::digest(subject.as_bytes());
-    format!("sub:{}", hex::encode(digest))[..16].to_string()
+pub(crate) fn redact_actor_key_for_logging(actor_key: &str) -> String {
+    let suffix = actor_key
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+        .take(12)
+        .collect::<String>();
+    if suffix.is_empty() {
+        String::new()
+    } else {
+        format!("sub:{suffix}")
+    }
 }
 
 #[cfg(feature = "gateway")]
@@ -42,8 +49,8 @@ impl LabMcpServer {
     ) -> labby_runtime::usage_actor::UsageAttribution {
         let actor = self
             .request_actor_key(context)
-            .or_else(|| self.request_subject(context))
-            .map(redact_subject_for_logging);
+            .map(redact_actor_key_for_logging)
+            .filter(|value| !value.is_empty());
         let peer = context.peer.peer_info();
         let client = peer.as_ref().map(|info| {
             (
@@ -67,8 +74,8 @@ impl LabMcpServer {
     }
 
     pub(crate) fn request_subject_log_tag(&self, context: &RequestContext<RoleServer>) -> String {
-        self.request_subject(context)
-            .map(redact_subject_for_logging)
+        self.request_actor_key(context)
+            .map(redact_actor_key_for_logging)
             .unwrap_or_default()
     }
 

@@ -138,7 +138,7 @@ export function BrowserBridgePage() {
         title="Browser bridges"
         description="Paired extension identities and the WebMCP pages they observe. Discovery is metadata-only; execution stays disabled until you enable the exact active document."
         pulse={{ color: connected.length > 0 ? 'var(--aurora-success)' : 'var(--aurora-warn)', label: `${connected.length} connected` }}
-        actions={<Button data-visible-label variant="outline" size="sm" className="h-9 gap-[7px] rounded-[10px] px-3.5 text-[12.5px] font-[650] text-aurora-text-muted" onClick={() => void load(undefined, true)} disabled={refreshing}><RefreshCw className={cn('size-[13px]', refreshing && 'animate-spin')} />Refresh</Button>}
+        actions={<Button variant="outline" size="icon" aria-label="Refresh browser bridge" title="Refresh browser bridge" className="size-9 rounded-[10px] text-aurora-text-muted" onClick={() => void load(undefined, true)} disabled={refreshing}><RefreshCw className={cn('size-[15px]', refreshing && 'animate-spin')} /></Button>}
         stats={[
           { label: 'Paired', value: data.browsers.filter((browser) => !browser.revoked_at).length },
           { label: 'Pending', value: data.pairings.length, tone: data.pairings.length ? 'var(--aurora-warn)' : undefined },

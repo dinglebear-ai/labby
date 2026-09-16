@@ -5,7 +5,7 @@
 //! It never connects to a local Incus socket and never falls back to Incus's
 //! default project.
 
-use std::{collections::BTreeMap, future::Future, path::Path, pin::Pin, sync::Arc};
+use std::{collections::BTreeMap, future::Future, io::Read as _, path::Path, pin::Pin, sync::Arc};
 
 use futures::StreamExt as _;
 use labby_runtime::dev_container_image_runtime::{
@@ -24,6 +24,7 @@ const CLIENT_CERT_ENV: &str = "LABBY_DEV_CONTAINER_INCUS_CLIENT_CERT";
 const CLIENT_KEY_ENV: &str = "LABBY_DEV_CONTAINER_INCUS_CLIENT_KEY";
 const SERVER_CERT_ENV: &str = "LABBY_DEV_CONTAINER_INCUS_SERVER_CERT";
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
+const MAX_CREDENTIAL_FILE_BYTES: u64 = 64 * 1024;
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(75);
 
@@ -1245,9 +1246,11 @@ fn read_file(
         .map(Path::new)
         .filter(|path| path.is_absolute())
         .ok_or(DevContainerEngineError::InvalidConfiguration(field))?;
-    let metadata = std::fs::symlink_metadata(path)
+    let mut file = open_credential_file(path, field)?;
+    let metadata = file
+        .metadata()
         .map_err(|_| DevContainerEngineError::CredentialFile(field))?;
-    if !metadata.file_type().is_file() || metadata.len() > 64 * 1024 {
+    if !metadata.file_type().is_file() || metadata.len() > MAX_CREDENTIAL_FILE_BYTES {
         return Err(DevContainerEngineError::CredentialFile(field));
     }
     #[cfg(unix)]
@@ -1261,7 +1264,44 @@ fn read_file(
     match sensitivity {
         FileSensitivity::Public | FileSensitivity::Secret => {}
     }
-    std::fs::read(path).map_err(|_| DevContainerEngineError::CredentialFile(field))
+    let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or(0));
+    file.by_ref()
+        .take(MAX_CREDENTIAL_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| DevContainerEngineError::CredentialFile(field))?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_CREDENTIAL_FILE_BYTES {
+        return Err(DevContainerEngineError::CredentialFile(field));
+    }
+    Ok(bytes)
+}
+
+#[cfg(unix)]
+fn open_credential_file(
+    path: &Path,
+    field: &'static str,
+) -> Result<std::fs::File, DevContainerEngineError> {
+    use rustix::fs::{Mode, OFlags};
+
+    let fd = rustix::fs::open(
+        path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map_err(|_| DevContainerEngineError::CredentialFile(field))?;
+    Ok(std::fs::File::from(fd))
+}
+
+#[cfg(not(unix))]
+fn open_credential_file(
+    path: &Path,
+    field: &'static str,
+) -> Result<std::fs::File, DevContainerEngineError> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|_| DevContainerEngineError::CredentialFile(field))?;
+    if !metadata.file_type().is_file() {
+        return Err(DevContainerEngineError::CredentialFile(field));
+    }
+    std::fs::File::open(path).map_err(|_| DevContainerEngineError::CredentialFile(field))
 }
 
 #[cfg(test)]
@@ -1420,6 +1460,43 @@ mod tests {
         assert!(!valid_operation_path(
             "/1.0/operations/../instances/default"
         ));
+    }
+
+    #[test]
+    fn credential_files_are_bounded_and_reject_symlink_substitution() {
+        let directory = tempfile::tempdir().unwrap();
+        let key = directory.path().join("client.key");
+        std::fs::write(&key, b"private-key").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        assert_eq!(
+            read_file(key.to_str(), CLIENT_KEY_ENV, FileSensitivity::Secret).unwrap(),
+            b"private-key"
+        );
+
+        let oversized = directory.path().join("oversized.crt");
+        std::fs::write(
+            &oversized,
+            vec![0_u8; usize::try_from(MAX_CREDENTIAL_FILE_BYTES + 1).unwrap()],
+        )
+        .unwrap();
+        assert!(matches!(
+            read_file(oversized.to_str(), SERVER_CERT_ENV, FileSensitivity::Public),
+            Err(DevContainerEngineError::CredentialFile(SERVER_CERT_ENV))
+        ));
+
+        #[cfg(unix)]
+        {
+            let link = directory.path().join("client-link.key");
+            std::os::unix::fs::symlink(&key, &link).unwrap();
+            assert!(matches!(
+                read_file(link.to_str(), CLIENT_KEY_ENV, FileSensitivity::Secret),
+                Err(DevContainerEngineError::CredentialFile(CLIENT_KEY_ENV))
+            ));
+        }
     }
 
     #[tokio::test]

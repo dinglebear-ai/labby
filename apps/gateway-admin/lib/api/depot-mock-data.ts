@@ -83,6 +83,8 @@ function artifact(seed: Seed, index: number): FederatedArtifact {
     title: seed.name,
     publisherVerified: seed.verified ?? false,
     metrics: { stars: metric(seed.stars), installs: metric(seed.installs), forks: seed.forks },
+    upstreamBehind: seed.behind,
+    updatedLabel: seed.updated,
     description: seed.description,
     currentRevisionId: revision,
     createdAt: new Date(MOCK_NOW - ageMs(seed.updated) - 7 * 86400000).toISOString(),

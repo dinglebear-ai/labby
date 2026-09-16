@@ -475,8 +475,9 @@ fn connected_client_from_discovery(
     transport_label: &str,
     connected_at: String,
 ) -> labby_runtime::client_registry::ConnectedClient {
-    let subject_tag =
-        subject_from_extensions(extensions).map(crate::mcp::context::redact_subject_for_logging);
+    let subject_tag = actor_key_from_extensions(extensions)
+        .map(crate::mcp::context::redact_actor_key_for_logging)
+        .filter(|value| !value.is_empty());
     labby_runtime::client_registry::ConnectedClient {
         subject_tag,
         client_name: client_info.as_ref().map(|info| info.name.clone()),
@@ -1497,12 +1498,19 @@ mod tests {
         // above — an `http::request::Parts` carrying an `AuthContext`, wrapped in
         // `rmcp::model::Extensions`.
         fn extensions_with_subject(subject: &str) -> rmcp::model::Extensions {
+            let actor_key = crate::observability::activity::ActorKeyDeriver::from_secret(
+                "connected-client-test-secret",
+            )
+            .unwrap()
+            .derive_subject(subject)
+            .unwrap()
+            .into_arc();
             let (mut parts, _) = http::Request::new(()).into_parts();
             parts
                 .extensions
                 .insert(labby_auth::auth_context::AuthContext {
                     sub: subject.to_string(),
-                    actor_key: None,
+                    actor_key: Some(actor_key),
                     scopes: Vec::new(),
                     issuer: "https://lab.example.com".to_string(),
                     via_session: false,
@@ -1566,6 +1574,31 @@ mod tests {
             );
 
             assert_ne!(a.subject_tag, b.subject_tag);
+        }
+
+        #[test]
+        fn authenticated_subject_without_actor_key_yields_no_subject_tag() {
+            let (mut parts, _) = http::Request::new(()).into_parts();
+            parts
+                .extensions
+                .insert(labby_auth::auth_context::AuthContext {
+                    sub: "raw-subject-must-not-be-derived".to_string(),
+                    actor_key: None,
+                    scopes: Vec::new(),
+                    issuer: "https://lab.example.com".to_string(),
+                    via_session: false,
+                    csrf_token: None,
+                    email: None,
+                });
+            let mut extensions = rmcp::model::Extensions::new();
+            extensions.insert(parts);
+            let client = connected_client_from_discovery(
+                None,
+                &extensions,
+                "http",
+                "2026-01-01T00:00:00Z".to_string(),
+            );
+            assert_eq!(client.subject_tag, None);
         }
 
         #[test]

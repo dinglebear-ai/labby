@@ -104,6 +104,11 @@ fn observed_ticks(
 }
 
 #[cfg(target_os = "linux")]
+fn rss_total<'a>(entries: impl Iterator<Item = &'a Process>) -> u64 {
+    entries.fold(0u64, |total, entry| total.saturating_add(entry.rss))
+}
+
+#[cfg(target_os = "linux")]
 fn processes() -> Option<std::collections::BTreeMap<u32, Process>> {
     let mut all = std::collections::BTreeMap::new();
     let page_size = u64::try_from(rustix::param::page_size()).ok()?;
@@ -347,13 +352,14 @@ pub(super) async fn sample(data_path: &Path) -> HostMetrics {
                 });
             let memory_used = after_processes
                 .as_ref()
-                .map(|entries| entries.values().map(|entry| entry.rss).sum());
+                .map(|entries| rss_total(entries.values()));
             let children = after_processes.as_ref().map(|entries| {
-                entries
+                let descendants = entries
                     .iter()
-                    .filter(|(pid, _)| **pid != std::process::id())
-                    .map(|(_, entry)| entry.rss)
-                    .collect::<Vec<_>>()
+                    .filter(|(pid, _)| **pid != std::process::id());
+                let count = descendants.clone().count();
+                let rss = rss_total(descendants.map(|(_, entry)| entry));
+                (count, rss)
             });
             let (memory_total, memory_limit_is_cgroup) = memory_ceiling();
             let disk = rustix::fs::statvfs(&data_path).ok();
@@ -385,8 +391,8 @@ pub(super) async fn sample(data_path: &Path) -> HostMetrics {
                 disk_total_bytes: disk
                     .as_ref()
                     .and_then(|value| value.f_blocks.checked_mul(value.f_frsize)),
-                child_process_count: children.as_ref().map(Vec::len),
-                child_rss_bytes: children.map(|rss| rss.into_iter().sum()),
+                child_process_count: children.as_ref().map(|(count, _)| *count),
+                child_rss_bytes: children.map(|(_, rss)| rss),
                 network_rx_bytes_per_second: rates.map(|value| value.0),
                 network_tx_bytes_per_second: rates.map(|value| value.1),
                 sample_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
@@ -440,6 +446,24 @@ mod tests {
             descendants(&all, 10).keys().copied().collect::<Vec<_>>(),
             vec![10, 11, 12]
         );
+    }
+    #[test]
+    fn host_metrics_rss_totals_saturate_instead_of_wrapping() {
+        let entries = [
+            Process {
+                parent: 1,
+                started: 1,
+                ticks: 1,
+                rss: u64::MAX,
+            },
+            Process {
+                parent: 1,
+                started: 1,
+                ticks: 1,
+                rss: 1,
+            },
+        ];
+        assert_eq!(rss_total(entries.iter()), u64::MAX);
     }
     #[test]
     fn host_metrics_parsers_preserve_units_and_exclude_loopback() {

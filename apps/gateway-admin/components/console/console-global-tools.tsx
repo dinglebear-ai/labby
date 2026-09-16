@@ -3,7 +3,7 @@
 import { FormEvent, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Activity, ArrowUpRight, Bot, Brain, Clipboard, File, Folder, MessagesSquare, Paperclip, PanelRight, Pencil, RefreshCw, Send, Settings, Square, Terminal, X } from 'lucide-react'
+import { Activity, ArrowUpRight, Bot, Brain, File, Folder, MessagesSquare, Paperclip, PanelRight, Send, Settings, Square, Terminal, X } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Button } from '@/components/ui/button'
 import { useBrowserSession } from '@/lib/auth/session'
@@ -15,7 +15,8 @@ import { phoenixApi, phoenixSupports, type PhoenixAttachment, type PhoenixEvent,
 import { Textarea } from '@/components/ui/textarea'
 import type { BackendGatewayMcpRuntimeView } from '@/lib/server/gateway-adapter'
 import { deriveConsoleStatus } from './console-status-strip'
-import { PhoenixEventTimeline, PhoenixRuntimeSummary } from './phoenix-event-timeline'
+import { PhoenixRuntimeSummary, phoenixContextWindow, phoenixTotalTokens } from './phoenix-event-timeline'
+import { PhoenixConversation } from './phoenix-conversation'
 import { useOptionalConsoleShell } from './console-shell-context'
 
 const TRAY_DESTINATIONS = [
@@ -208,7 +209,11 @@ export function PhoenixAvailability() {
 
   useEffect(() => {
     if (!floatRect) return
-    window.localStorage.setItem('labby:phoenix-window', JSON.stringify(floatRect))
+    try {
+      window.localStorage.setItem('labby:phoenix-window', JSON.stringify(floatRect))
+    } catch {
+      // Window persistence is optional; Phoenix must remain usable when storage is unavailable.
+    }
   }, [floatRect])
 
   useEffect(() => {
@@ -250,12 +255,15 @@ export function PhoenixAvailability() {
 
   const sendTurn = async (draft: string, forceNewThread = false) => {
     const text = draft.trim()
-    if (!text || sending) return
+    const outgoingAttachments = attachments
+    if ((!text && outgoingAttachments.length === 0) || sending) return
+    const displayText = text || `Attached: ${outgoingAttachments.map((attachment) => attachment.name).join(', ')}`
     const requestGeneration = ++requestGenerationRef.current
     setSending(true)
     setError(undefined)
     setInput('')
-    setMessages((current) => [...current, { role: 'user', text }])
+    setAttachments([])
+    setMessages((current) => [...current, { role: 'user', text: displayText }])
     try {
       let activeSessionId = forceNewThread || newThreadOnSend ? undefined : sessionId
       if (!activeSessionId) {
@@ -263,18 +271,18 @@ export function PhoenixAvailability() {
         if (requestGeneration !== requestGenerationRef.current) return
         activeSessionId = started.session_id
         setSessionId(activeSessionId)
-        setThreadHistory((current) => current.some((thread) => thread.session_id === started.session_id) ? current : [{ session_id: started.session_id, title: text.slice(0, 54), preview: text, model: model || null, effort: effort || null, message_count: 1, turn_status: 'in_progress' }, ...current])
+        setThreadHistory((current) => current.some((thread) => thread.session_id === started.session_id) ? current : [{ session_id: started.session_id, title: displayText.slice(0, 54), preview: displayText, model: model || null, effort: effort || null, message_count: 1, turn_status: 'in_progress' }, ...current])
       }
-      const updated = await phoenixApi.send(activeSessionId, text, attachments)
+      const updated = await phoenixApi.send(activeSessionId, text, outgoingAttachments)
       if (requestGeneration !== requestGenerationRef.current) return
-      setAttachments([])
       setNewThreadOnSend(false)
       setMessages(updated.messages)
       setEvents(updated.events ?? [])
     } catch (reason) {
       if (requestGeneration !== requestGenerationRef.current) return
-      setInput(text)
-      setMessages((current) => current.filter((message, index) => index !== current.length - 1 || message.role !== 'user' || message.text !== text))
+      setInput((current) => current ? [text, current].filter(Boolean).join('\n') : text)
+      setAttachments((current) => [...outgoingAttachments, ...current].slice(0, 4))
+      setMessages((current) => current.filter((message, index) => index !== current.length - 1 || message.role !== 'user' || message.text !== displayText))
       setError(reason instanceof Error ? reason.message : 'Phoenix could not complete the turn')
     } finally {
       if (requestGeneration === requestGenerationRef.current) {
@@ -297,16 +305,23 @@ export function PhoenixAvailability() {
 
   const steerTurn = async () => {
     const text = input.trim()
-    if (!sessionId || !text || steering) return
+    const outgoingAttachments = attachments
+    if (!sessionId || (!text && outgoingAttachments.length === 0) || steering) return
+    const displayText = text || `Attached: ${outgoingAttachments.map((attachment) => attachment.name).join(', ')}`
     setSteering(true)
     setError(undefined)
     setInput('')
+    setAttachments([])
+    setMessages((current) => [...current, { role: 'user', text: displayText }])
     try {
-      const updated = await phoenixApi.steer(sessionId, text, attachments)
-      setAttachments([])
+      const updated = await phoenixApi.steer(sessionId, text, outgoingAttachments)
+      const refreshed = await phoenixApi.read(sessionId).catch(() => undefined)
+      if (refreshed) { setMessages(refreshed.messages); setEvents(refreshed.events ?? []) }
       setWorkflowNotice(updated.status === 'steered' ? 'Guidance added to the active turn' : undefined)
     } catch (reason) {
-      setInput(text)
+      setInput((current) => current ? [text, current].filter(Boolean).join('\n') : text)
+      setAttachments((current) => [...outgoingAttachments, ...current].slice(0, 4))
+      setMessages((current) => current.filter((message, index) => index !== current.length - 1 || message.role !== 'user' || message.text !== displayText))
       setError(reason instanceof Error ? reason.message : 'Phoenix could not steer the active turn')
     } finally {
       setSteering(false)
@@ -329,12 +344,23 @@ export function PhoenixAvailability() {
   }
 
   const addAttachments = async (files: FileList | null) => {
-    if (!files) return
-    const selected = Array.from(files).slice(0, 4 - attachments.length)
-    const accepted = selected.filter((file) => file.size <= 5 * 1024 * 1024 && /^(image\/(png|jpeg|webp)|audio\/(mpeg|wav|mp4|webm))$/.test(file.type))
-    const encoded = await Promise.all(accepted.map((file) => new Promise<PhoenixAttachment>((resolve, reject) => {
+    if (!files?.length) return
+    const selected = Array.from(files).slice(0, Math.max(0, 4 - attachments.length))
+    const textLike = (file: File) => file.type.startsWith('text/') || /^(application\/(json|javascript|xml|yaml|x-yaml))$/.test(file.type) || /\.(md|txt|json|jsonl|ya?ml|toml|csv|ts|tsx|js|jsx|mjs|cjs|rs|py|go|java|kt|kts|sh|bash|zsh|fish|html?|css|scss|xml|sql|graphql|gql|ini|conf|log)$/i.test(file.name)
+    const classify = (file: File): PhoenixAttachment['type'] | undefined => {
+      if (/^image\/(png|jpeg|webp)$/.test(file.type) && file.size <= 5 * 1024 * 1024) return 'image'
+      if (/^audio\/(mpeg|wav|mp4|webm)$/.test(file.type) && file.size <= 5 * 1024 * 1024) return 'audio'
+      if (textLike(file) && file.size <= 512 * 1024) return 'text'
+    }
+    const accepted = selected.map((file) => ({ file, type: classify(file) })).filter((entry): entry is { file: File; type: PhoenixAttachment['type'] } => Boolean(entry.type))
+    if (accepted.length !== selected.length) setError('Phoenix accepts PNG/JPEG/WebP images, supported audio, and UTF-8 text/code files up to 512 KiB. Binary files are not supported by Codex App Server input.')
+    const encoded = await Promise.all(accepted.map(({ file, type }) => new Promise<PhoenixAttachment>((resolve, reject) => {
       const reader = new FileReader()
-      reader.onload = () => resolve({ type: file.type.startsWith('image/') ? 'image' : 'audio', url: String(reader.result), name: file.name })
+      reader.onload = () => {
+        const raw = String(reader.result)
+        const url = type === 'text' ? 'data:text/plain;base64,' + (raw.split(',', 2)[1] ?? '') : raw
+        resolve({ type, url, name: file.name })
+      }
       reader.onerror = reject
       reader.readAsDataURL(file)
     })))
@@ -430,12 +456,10 @@ export function PhoenixAvailability() {
   const connecting = session.status === 'authenticated' && status === undefined && error === undefined
   const suggestions = ['Why is the reconcile sweep slow?', 'Fix the per-server backoff', 'Summarize today’s gateway errors']
   const selectedModel = models.find((entry) => entry.model === model)
-  const latestUsage = [...events].reverse().find((event) => event.method.toLowerCase().includes('usage'))
-  const usageParams = latestUsage?.params && typeof latestUsage.params === 'object' ? latestUsage.params as Record<string, unknown> : undefined
-  const tokenUsage = usageParams?.tokenUsage && typeof usageParams.tokenUsage === 'object' ? usageParams.tokenUsage as Record<string, unknown> : usageParams
-  const usageLast = tokenUsage?.last && typeof tokenUsage.last === 'object' ? tokenUsage.last as Record<string, unknown> : tokenUsage
-  const usedTokens = Number(usageLast?.inputTokens ?? usageLast?.input_tokens ?? 0) + Number(usageLast?.outputTokens ?? usageLast?.output_tokens ?? 0)
-  const contextUsage = selectedModel?.contextWindow && usedTokens > 0 ? Math.min(100, Math.max(1, Math.round(usedTokens / selectedModel.contextWindow * 100))) : undefined
+  const usedTokens = phoenixTotalTokens(events) ?? 0
+  const contextWindow = phoenixContextWindow(events) ?? selectedModel?.contextWindow
+  const contextUsage = contextWindow ? Math.min(100, Math.max(0, Math.round(usedTokens / contextWindow * 100))) : undefined
+  const contextLabel = contextUsage === undefined ? 'Context usage unavailable' : `Context usage ${contextUsage}% (${usedTokens.toLocaleString()} / ${contextWindow?.toLocaleString()} tokens)`
   const slashMatch = input.match(/(?:^|\s)\/[\w-]*$/)
   const mentionMatch = input.match(/(?:^|\s)@[\w./-]*$/)
   const completions = slashMatch ? [
@@ -460,8 +484,7 @@ export function PhoenixAvailability() {
       {connecting ? <div role="status" className="m-auto flex items-center gap-2 rounded-[11px] border border-aurora-accent-pink/30 bg-aurora-accent-pink/[.06] px-4 py-3 text-[11.5px] font-bold text-aurora-accent-pink"><span className="motion-safe:animate-pulse"><PhoenixMark/></span>Connecting to Codex App Server</div> : available ? <>
         <div ref={scrollRef} role="log" aria-live="polite" className="aurora-scrollbar flex flex-1 flex-col gap-3 overflow-y-auto px-4 py-4">
           {messages.length === 0 && <div className="flex shrink-0 flex-col gap-[9px] px-0.5 py-1.5"><p className="text-[12.5px] leading-[1.6] text-aurora-text-muted">Attached to the container-local session. Ask a question, or start with one of these.</p>{suggestions.map((suggestion) => <button key={suggestion} type="button" onClick={() => void sendTurn(suggestion)} className="w-full rounded-[10px] border border-aurora-border-default/45 bg-[var(--gw0-0_40)] px-[11px] py-[9px] text-left text-xs font-semibold text-aurora-text-primary transition-colors hover:border-aurora-accent-pink/50 hover:bg-aurora-accent-pink/[.07] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-pink">{suggestion}</button>)}</div>}
-          {messages.map((message, index) => message.role === 'user' ? <div data-phoenix-message="user" key={`${message.role}-${index}`} className="group flex shrink-0 flex-col items-end gap-[3px]"><div className="max-w-[84%] whitespace-pre-wrap rounded-[12px_12px_3px_12px] border border-aurora-accent-pink/30 bg-[color-mix(in_srgb,var(--aurora-accent-pink)_12%,var(--aurora-control-surface))] px-3 py-[9px] text-[12.5px] leading-[1.6] text-aurora-text-primary">{message.text}</div><div data-phoenix-reactions className="flex min-h-8 items-center gap-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">{message.created_at_ms ? <time dateTime={new Date(message.created_at_ms).toISOString()} className="mr-1 text-[10.5px] tabular-nums text-aurora-text-muted">{new Date(message.created_at_ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time> : null}<button type="button" onClick={() => { setInput(message.text); setMessages(messages.slice(0, index)); setNewThreadOnSend(true) }} aria-label="Edit message" title="Edit in a new thread" className="grid size-7 place-items-center rounded-lg text-aurora-text-muted hover:bg-aurora-hover-bg hover:text-aurora-text-primary"><Pencil size={13}/></button><button type="button" onClick={() => retryFrom(index)} aria-label="Retry from here" title="Retry from here" className="grid size-7 place-items-center rounded-lg text-aurora-text-muted hover:bg-aurora-hover-bg hover:text-aurora-accent-pink"><RefreshCw size={13}/></button><button type="button" onClick={() => void copyMessage(message.text, index)} aria-label="Copy message" title="Copy message" className="grid size-7 place-items-center rounded-lg text-aurora-text-muted hover:bg-aurora-hover-bg hover:text-aurora-text-primary">{copiedIndex === index ? <span aria-hidden>✓</span> : <Clipboard size={13}/>}</button></div></div> : <div data-phoenix-message="assistant" key={`${message.role}-${index}`} className="group flex min-w-0 shrink-0 gap-[9px]"><span className="grid size-[26px] shrink-0 place-items-center rounded-[9px] border border-aurora-accent-pink/40 bg-aurora-accent-pink/10 text-aurora-accent-pink"><PhoenixMark/></span><div className="min-w-0 flex-1"><div className="whitespace-pre-wrap text-[12.5px] font-semibold leading-[1.68] text-aurora-text-primary">{message.text}</div><div data-phoenix-reactions className="flex min-h-8 items-center gap-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">{message.created_at_ms ? <time dateTime={new Date(message.created_at_ms).toISOString()} className="mr-1 text-[10.5px] tabular-nums text-aurora-text-muted">{new Date(message.created_at_ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time> : null}<button type="button" onClick={() => retryFrom(index)} aria-label="Regenerate" title="Regenerate" className="grid size-7 place-items-center rounded-lg text-aurora-text-muted hover:bg-aurora-hover-bg hover:text-aurora-accent-pink"><RefreshCw size={13}/></button><button type="button" onClick={() => void copyMessage(message.text, index)} aria-label="Copy answer" title="Copy answer" className="grid size-7 place-items-center rounded-lg text-aurora-text-muted hover:bg-aurora-hover-bg hover:text-aurora-text-primary">{copiedIndex === index ? <span aria-hidden>✓</span> : <Clipboard size={13}/>}</button></div></div></div>)}
-          <PhoenixEventTimeline events={events}/>
+          <PhoenixConversation messages={messages} events={events} mark={<PhoenixMark/>} copiedIndex={copiedIndex} onRetry={retryFrom} onCopy={(text, index) => { void copyMessage(text, index) }} onEdit={(index, text) => { setInput(text); setMessages(messages.slice(0, index)); setNewThreadOnSend(true) }}/>
           {workflowNotice && <p role="status" className="shrink-0 rounded-[9px] border border-aurora-accent-primary/25 bg-aurora-accent-primary/[.06] px-2.5 py-2 text-[10.5px] font-semibold text-aurora-accent-strong">{workflowNotice}</p>}
           {sending && <div role="status" className="flex shrink-0 items-center gap-[9px] rounded-[11px] border border-aurora-accent-pink/30 bg-aurora-accent-pink/[.06] px-[11px] py-2"><span className="text-aurora-accent-pink motion-safe:animate-pulse"><PhoenixMark/></span><span className="text-[11.5px] font-bold text-aurora-accent-pink">Working</span><span className="flex gap-[3px]">{[0, 1, 2].map((dot) => <span key={dot} className="size-1 rounded-full bg-aurora-accent-pink motion-safe:animate-[phoenixDot_1.1s_ease-in-out_infinite]" style={{ animationDelay: `${dot * .18}s` }}/>)}</span></div>}
         </div>
@@ -469,8 +492,8 @@ export function PhoenixAvailability() {
           {error && <p role="alert" className="mb-2 text-xs text-aurora-status-error">{error}</p>}
           {completions.length > 0 && <div role="listbox" aria-label={slashMatch ? 'Phoenix commands' : 'Phoenix mentions'} className="absolute inset-x-3 bottom-[108px] z-30 max-h-[310px] overflow-y-auto rounded-xl border border-aurora-border-strong bg-aurora-panel-strong p-2 shadow-2xl"><div className="flex items-center justify-between px-2 py-1.5"><strong className="text-[10px] uppercase tracking-[.14em] text-aurora-text-muted">{slashMatch ? 'Commands' : 'Mentions'}</strong><span className="text-[10px] text-aurora-text-muted">↵ insert · esc dismiss</span></div>{completions.map(([value, detail, badge], index) => <button type="button" role="option" aria-selected={index === 0} key={value} onClick={() => insertCompletion(value)} className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left hover:bg-aurora-hover-bg aria-[selected=true]:bg-aurora-accent-primary/10"><span className="grid size-7 shrink-0 place-items-center rounded-lg border border-aurora-accent-primary/40 text-aurora-accent-strong">{slashMatch ? <Terminal size={14}/> : badge === 'FOLDER' ? <Folder size={14}/> : badge === 'FILE' ? <File size={14}/> : <Bot size={14}/>}</span><span className="min-w-0 flex-1"><strong className="block truncate text-[12.5px]">{value}</strong><small className="block truncate text-[11px] text-aurora-text-muted">{detail}</small></span><span className="rounded-md border border-aurora-border-default px-2 py-1 text-[9px] font-bold tracking-wide text-aurora-text-muted">{badge}</span></button>)}</div>}
           {attachments.length > 0 && <div aria-label="Phoenix attachments" className="mb-2 flex gap-1 overflow-x-auto">{attachments.map((attachment, index) => <button type="button" title="Remove attachment" key={`${attachment.name}-${index}`} onClick={() => setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))} className="max-w-[150px] truncate rounded-md border border-aurora-accent-pink/30 bg-aurora-accent-pink/[.07] px-2 py-1 text-[9.5px] text-aurora-text-primary">{attachment.name} ×</button>)}</div>}
-          <div className="relative mb-2 flex items-center gap-2"><div aria-label="Phoenix context usage" className="flex h-7 items-center gap-2 rounded-lg border border-aurora-border-default bg-aurora-control-surface px-2.5"><span className="h-1.5 w-12 overflow-hidden rounded-full bg-[var(--gw0-0_70)]"><span className="block h-full rounded-full bg-aurora-accent-primary transition-[width]" style={{ width: `${contextUsage ?? 0}%` }}/></span><strong className="text-[11px] tabular-nums text-aurora-text-muted">{contextUsage === undefined ? '—' : `${contextUsage}%`}</strong></div><span className="flex-1"/><span className="h-5 w-px bg-aurora-border-default"/>{models.length > 0 && <><button type="button" aria-label="Choose Phoenix model" title={selectedModel?.displayName ?? 'Choose model'} aria-expanded={modelMenuOpen} onClick={() => { setModelMenuOpen(!modelMenuOpen); setReasoningMenuOpen(false) }} className="grid size-8 place-items-center rounded-lg border border-aurora-border-default bg-aurora-control-surface text-[13px] font-extrabold text-aurora-text-primary hover:border-aurora-accent-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-strong disabled:opacity-60">AI</button><button type="button" aria-label="Choose Phoenix reasoning" title={effort || 'Choose reasoning'} aria-expanded={reasoningMenuOpen} onClick={() => { setReasoningMenuOpen(!reasoningMenuOpen); setModelMenuOpen(false) }} className="grid size-8 place-items-center rounded-lg border border-aurora-border-default bg-aurora-control-surface text-aurora-text-primary hover:border-aurora-accent-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-strong disabled:opacity-60"><Brain size={16}/></button></>}{modelMenuOpen && <div role="menu" aria-label="Phoenix models" className="absolute bottom-10 right-10 z-40 w-64 rounded-xl border border-aurora-border-strong bg-aurora-panel-strong p-1.5 shadow-2xl">{models.map((entry) => <button type="button" role="menuitemradio" aria-checked={entry.model === model} key={entry.id} onClick={() => { setModel(entry.model); setEffort(entry.defaultReasoningEffort); setNewThreadOnSend(Boolean(sessionId)); setModelMenuOpen(false) }} className="flex w-full gap-3 rounded-lg px-3 py-2 text-left hover:bg-aurora-hover-bg aria-[checked=true]:bg-aurora-accent-pink/10"><span className="pt-0.5 text-sm font-extrabold">AI</span><span><strong className={entry.model === model ? 'text-aurora-accent-pink' : 'text-aurora-text-primary'}>{entry.displayName}</strong><small className="block text-[11px] text-aurora-text-muted">{entry.description}</small></span></button>)}</div>}{reasoningMenuOpen && <div role="menu" aria-label="Phoenix reasoning efforts" className="absolute bottom-10 right-0 z-40 w-56 rounded-xl border border-aurora-border-strong bg-aurora-panel-strong p-1.5 shadow-2xl">{selectedModel?.supportedReasoningEfforts.map((option) => <button type="button" role="menuitemradio" aria-checked={option.reasoningEffort === effort} key={option.reasoningEffort} onClick={() => { setEffort(option.reasoningEffort); setNewThreadOnSend(Boolean(sessionId)); setReasoningMenuOpen(false) }} className="block w-full rounded-lg px-3 py-2 text-left hover:bg-aurora-hover-bg aria-[checked=true]:bg-aurora-accent-pink/10"><strong className={option.reasoningEffort === effort ? 'text-aurora-accent-pink' : 'text-aurora-text-primary'}>{option.reasoningEffort}</strong><small className="block text-[11px] text-aurora-text-muted">{option.description}</small></button>)}</div>}</div>
-          <div className="flex items-end gap-2"><div className="flex min-w-0 flex-1 items-end rounded-[13px] border border-aurora-border-strong bg-aurora-control-surface px-2 py-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,.04)] transition-shadow focus-within:border-aurora-accent-pink/70 focus-within:shadow-[0_0_0_1px_color-mix(in_srgb,var(--aurora-accent-pink)_45%,transparent)]"><label title="Attach image or audio" className="grid size-[34px] shrink-0 cursor-pointer place-items-center text-aurora-text-muted hover:text-aurora-accent-pink"><Paperclip size={15}/><input aria-label="Attach image or audio" type="file" accept="image/png,image/jpeg,image/webp,audio/mpeg,audio/wav,audio/mp4,audio/webm" multiple className="sr-only" onChange={(event) => { void addAttachments(event.target.files); event.currentTarget.value = '' }}/></label><Textarea aria-label="Message Phoenix" value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape' && completions.length) { event.preventDefault(); setInput((current) => current.replace(/(?:\/|@)[\w./-]*$/, '')) } else if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); if (completions[0]) insertCompletion(completions[0][0]); else event.currentTarget.form?.requestSubmit() } }} disabled={sending && !canSteer} placeholder={sending ? (canSteer ? 'Add guidance while Phoenix works…' : 'Working…') : 'Ask Phoenix anything'} className="min-h-[38px] max-h-[132px] resize-none border-0 bg-transparent px-1 py-2 text-[13px] font-medium leading-[1.5] shadow-none focus-visible:ring-0"/></div>{sending && canSteer && <Button type="submit" size="icon" aria-label="Steer Phoenix" disabled={!input.trim() || steering} className="size-[42px] min-w-[42px] rounded-[11px] border border-aurora-accent-primary/60 bg-aurora-control-surface text-aurora-accent-strong"><Send size={15}/></Button>}{sending && canInterrupt ? <Button type="button" size="icon" className="size-[42px] min-w-[42px] rounded-[11px] border border-aurora-accent-pink/70 bg-aurora-accent-pink text-[#2a0f18]" disabled={!sessionId || interrupting} aria-label={interrupting ? 'Stopping Phoenix' : 'Stop Phoenix'} onClick={() => void interruptTurn()}><Square size={13} fill="currentColor"/></Button> : <Button type="submit" size="icon" className="size-[42px] min-w-[42px] rounded-[11px] border border-aurora-accent-pink/70 bg-aurora-accent-pink text-[#2a0f18] shadow-[0_4px_14px_-4px_color-mix(in_srgb,var(--aurora-accent-pink)_55%,transparent)] disabled:border-aurora-border-strong/70 disabled:bg-aurora-control-surface disabled:text-aurora-text-muted disabled:shadow-none" disabled={sending || !input.trim()} aria-label="Send message"><Send size={15}/></Button>}</div>
+          <div className="relative mb-2 flex items-center gap-2"><div aria-label={contextLabel} title={contextLabel} className="flex h-7 items-center gap-2 rounded-lg border border-aurora-border-default bg-aurora-control-surface px-2.5"><span className="h-1.5 w-12 overflow-hidden rounded-full bg-[var(--gw0-0_70)]"><span className="block h-full rounded-full bg-aurora-accent-primary transition-[width]" style={{ width: `${contextUsage ?? 0}%` }}/></span><strong className="min-w-[2.4rem] text-right text-[11px] tabular-nums text-aurora-text-muted">{contextUsage === undefined ? '—' : `${contextUsage}%`}</strong></div><span className="flex-1"/><span className="h-5 w-px bg-aurora-border-default"/>{models.length > 0 && <><button type="button" aria-label="Choose Phoenix model" title={selectedModel?.displayName ?? 'Choose model'} aria-expanded={modelMenuOpen} onClick={() => { setModelMenuOpen(!modelMenuOpen); setReasoningMenuOpen(false) }} className="grid size-8 place-items-center rounded-lg border border-aurora-border-default bg-aurora-control-surface text-[13px] font-extrabold text-aurora-text-primary hover:border-aurora-accent-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-strong disabled:opacity-60">AI</button><button type="button" aria-label="Choose Phoenix reasoning" title={effort || 'Choose reasoning'} aria-expanded={reasoningMenuOpen} onClick={() => { setReasoningMenuOpen(!reasoningMenuOpen); setModelMenuOpen(false) }} className="grid size-8 place-items-center rounded-lg border border-aurora-border-default bg-aurora-control-surface text-aurora-text-primary hover:border-aurora-accent-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-strong disabled:opacity-60"><Brain size={16}/></button></>}{modelMenuOpen && <div role="menu" aria-label="Phoenix models" className="absolute bottom-10 right-10 z-40 w-64 rounded-xl border border-aurora-border-strong bg-aurora-panel-strong p-1.5 shadow-2xl">{models.map((entry) => <button type="button" role="menuitemradio" aria-checked={entry.model === model} key={entry.id} onClick={() => { setModel(entry.model); setEffort(entry.defaultReasoningEffort); setNewThreadOnSend(Boolean(sessionId)); setModelMenuOpen(false) }} className="flex w-full gap-3 rounded-lg px-3 py-2 text-left hover:bg-aurora-hover-bg aria-[checked=true]:bg-aurora-accent-pink/10"><span className="pt-0.5 text-sm font-extrabold">AI</span><span><strong className={entry.model === model ? 'text-aurora-accent-pink' : 'text-aurora-text-primary'}>{entry.displayName}</strong><small className="block text-[11px] text-aurora-text-muted">{entry.description}</small></span></button>)}</div>}{reasoningMenuOpen && <div role="menu" aria-label="Phoenix reasoning efforts" className="absolute bottom-10 right-0 z-40 w-56 rounded-xl border border-aurora-border-strong bg-aurora-panel-strong p-1.5 shadow-2xl">{selectedModel?.supportedReasoningEfforts.map((option) => <button type="button" role="menuitemradio" aria-checked={option.reasoningEffort === effort} key={option.reasoningEffort} onClick={() => { setEffort(option.reasoningEffort); setNewThreadOnSend(Boolean(sessionId)); setReasoningMenuOpen(false) }} className="block w-full rounded-lg px-3 py-2 text-left hover:bg-aurora-hover-bg aria-[checked=true]:bg-aurora-accent-pink/10"><strong className={option.reasoningEffort === effort ? 'text-aurora-accent-pink' : 'text-aurora-text-primary'}>{option.reasoningEffort}</strong><small className="block text-[11px] text-aurora-text-muted">{option.description}</small></button>)}</div>}</div>
+          <div className="flex items-end gap-2"><div className="flex min-w-0 flex-1 items-end rounded-[13px] border border-aurora-border-strong bg-aurora-control-surface px-2 py-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,.04)] transition-shadow focus-within:border-aurora-accent-pink/70 focus-within:shadow-[0_0_0_1px_color-mix(in_srgb,var(--aurora-accent-pink)_45%,transparent)]"><label title="Attach image or file" className="grid size-[34px] shrink-0 cursor-pointer place-items-center text-aurora-text-muted hover:text-aurora-accent-pink"><Paperclip size={15}/><input aria-label="Attach image or file" type="file" accept="image/png,image/jpeg,image/webp,audio/mpeg,audio/wav,audio/mp4,audio/webm,text/*,application/json,application/javascript,application/xml,application/yaml,.md,.jsonl,.toml,.yaml,.yml,.ts,.tsx,.js,.jsx,.rs,.py,.go,.java,.kt,.sh,.sql,.graphql" multiple className="sr-only" onChange={(event) => { void addAttachments(event.target.files); event.currentTarget.value = '' }}/></label><Textarea aria-label="Message Phoenix" value={input} onChange={(event) => setInput(event.target.value)} onPaste={(event) => { if (event.clipboardData.files.length) { event.preventDefault(); void addAttachments(event.clipboardData.files) } }} onKeyDown={(event) => { if (event.key === 'Escape' && completions.length) { event.preventDefault(); setInput((current) => current.replace(/(?:\/|@)[\w./-]*$/, '')) } else if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); if (completions[0]) insertCompletion(completions[0][0]); else event.currentTarget.form?.requestSubmit() } }} placeholder={sending ? 'Message Phoenix while it works…' : 'Ask Phoenix anything'} className="min-h-[38px] max-h-[132px] resize-none border-0 bg-transparent px-1 py-2 text-[13px] font-medium leading-[1.5] shadow-none focus-visible:ring-0"/></div>{sending && canSteer && <Button type="submit" size="icon" aria-label="Steer Phoenix" disabled={(!input.trim() && attachments.length === 0) || steering} className="size-[42px] min-w-[42px] rounded-[11px] border border-aurora-accent-primary/60 bg-aurora-control-surface text-aurora-accent-strong"><Send size={15}/></Button>}{sending && canInterrupt ? <Button type="button" size="icon" className="size-[42px] min-w-[42px] rounded-[11px] border border-aurora-accent-pink/70 bg-aurora-accent-pink text-[#2a0f18]" disabled={!sessionId || interrupting} aria-label={interrupting ? 'Stopping Phoenix' : 'Stop Phoenix'} onClick={() => void interruptTurn()}><Square size={13} fill="currentColor"/></Button> : <Button type="submit" size="icon" className="size-[42px] min-w-[42px] rounded-[11px] border border-aurora-accent-pink/70 bg-aurora-accent-pink text-[#2a0f18] shadow-[0_4px_14px_-4px_color-mix(in_srgb,var(--aurora-accent-pink)_55%,transparent)] disabled:border-aurora-border-strong/70 disabled:bg-aurora-control-surface disabled:text-aurora-text-muted disabled:shadow-none" disabled={sending || (!input.trim() && attachments.length === 0)} aria-label="Send message"><Send size={15}/></Button>}</div>
         </form>
       </> : <>
         <div className="flex flex-1 flex-col justify-center gap-3 px-6 py-8"><h3 className="font-display text-lg font-bold">Session execution is unavailable</h3><p className="text-[12.5px] leading-relaxed text-aurora-text-muted">{error ?? 'Phoenix needs the container-local Codex App Server and its isolated account to be configured by an operator.'}</p><Link href="/agents" onClick={() => setOpen(false)} className="inline-flex items-center gap-1 self-start rounded-md py-1 text-xs font-semibold text-aurora-accent-strong hover:underline focus-visible:ring-2 focus-visible:ring-aurora-accent-primary">View agents<ArrowUpRight size={13}/></Link></div>

@@ -63,9 +63,10 @@ function ConsoleShellFrame({ children }: { children: React.ReactNode }) {
             <div
               data-main-scroll="1"
               style={{
-                maxWidth: 1740,
-                margin: '0 auto',
-                padding: '20px 24px 40px',
+                width: '100%',
+                maxWidth: 'none',
+                margin: 0,
+                padding: '12px 22px 40px 11px',
                 display: 'flex',
                 flexDirection: 'column',
                 gap: 16,

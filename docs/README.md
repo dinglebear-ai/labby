@@ -14,6 +14,8 @@ Historical material that still has durable value lives under `docs/archive/` and
 - [Service model](./dev/SERVICES.md) — the current registered service inventory and onboarding rules.
 - [CLI](./surfaces/CLI.md), [MCP](./surfaces/MCP.md), [MCP conformance](./surfaces/MCP_CONFORMANCE.md), and [Transport](./surfaces/TRANSPORT.md) — public surface behavior and protocol contracts.
 - [Skills and Loadouts](./guides/SKILLS_AND_LOADOUTS.md) — Agent Skills trust/exposure and route Loadout projections.
+- [Claude and Codex Artifact authoring](./artifacts/provider-authoring-reference.md) — official provider formats/frontmatter, sidecars, manifests, validation rules, and Creator mapping.
+- [Phoenix Assistant](./services/PHOENIX_ASSISTANT.md) — App Server chronology, reasoning/tool event timeline, attachments, context usage, and verification oracles.
 - [Local access bootstrap](./guides/LOCAL_ACCESS_BOOTSTRAP.md) — offline proof preparation, direct-local consume, recovery, revocation, and cleanup.
 - [Access Control, Workspaces, and Artifact Distribution](./access-control/README.md) — active specification/contract for organizations, groups, projects, effective workspaces, scoped assets/capabilities, and Personal Labby Artifact sync/fork flows.
 - [Skills-over-MCP compatibility](./plans/skills-over-mcp-compat/README.md) — historical implementation plan and progress record; the current contract is [Skills extension](./contracts/skills-extension.md) and current product behavior is [Artifacts And Agent Skills](./services/SKILLS.md).

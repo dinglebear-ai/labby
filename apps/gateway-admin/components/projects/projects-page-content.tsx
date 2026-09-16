@@ -94,7 +94,7 @@ export function ProjectsPageContent() {
             title="Projects"
             description="Team-assigned Projects from Labby’s authority store."
             pulse={{ color: error ? 'var(--aurora-error)' : 'var(--aurora-success)' }}
-            actions={<Button variant="outline" onClick={() => void load()} disabled={loading}><RefreshCw />Refresh</Button>}
+            actions={<Button variant="outline" size="icon" aria-label="Refresh projects" title="Refresh projects" onClick={() => void load()} disabled={loading}><RefreshCw className="size-[15px]" /></Button>}
             stats={[{ label: 'Visible', value: loading ? '—' : rows.length, icon: <FolderKanban size={12} /> }]}
           />
           {error ? <div role="alert" className="rounded-aurora-2 border border-aurora-error/35 bg-aurora-error/5 p-4 text-sm text-aurora-error">{error}</div> : null}

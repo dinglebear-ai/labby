@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { getBrowserSessionEpoch, getBrowserSessionState, getSessionCsrfToken } from '../auth/session-store'
 import { gatewayRequestInit } from './gateway-request'
 import { refreshBrowserSession } from './service-action-client'
-import { mockDepotProviderOptions, mockGetArtifact, mockListArtifacts } from './depot-mock-data'
+import { mockDepotLibraryArtifactIds, mockDepotProviderOptions, mockGetArtifact, mockListArtifacts } from './depot-mock-data'
 
 const USE_MOCK_DATA = process.env.NEXT_PUBLIC_MOCK_DATA === 'true'
 
@@ -139,6 +139,13 @@ export type DepotArtifact = {
   currentRevisionId?: string
   contentDigest?: string
   revisionCount?: number
+  sourceOrigin?: string | null
+  publisherVerified?: boolean
+  metrics?: { stars?: number; installs?: number; forks?: number }
+  readme?: { state: 'available'; kind: 'readme' | 'skill'; path: 'README.md' | 'SKILL.md'; revisionId: string; content: string } | { state: 'unavailable'; reason: 'absent' | 'not_distributable' | 'too_large' | 'storage_unavailable' | 'invalid_text' }
+  provenance?: { originalFormat?: string | null; originalVersion?: string | null }
+  upstreamBehind?: number
+  updatedLabel?: string
   descriptor?: {
     id?: string
     kind?: string
@@ -152,22 +159,33 @@ export type DepotArtifact = {
     id?: string
     contentDigest?: string
     createdAt?: string
+    fileCount?: number
     components?: Array<{ id?: string; kind?: string; path?: string; mediaType?: string; size?: number }>
   }
   publication?: { state?: string; visibility?: string; distribution?: string }
-  license?: { redistribution?: string; reviewState?: string; takedownState?: string }
+  license?: { declared?: string | null; redistribution?: string; reviewState?: string; takedownState?: string }
   lineage?: { following?: boolean; upstreamArtifactId?: string; forkedFromArtifactId?: string | null }
 }
+
+const controlReadmeSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('available'), kind: z.enum(['readme', 'skill']), path: z.enum(['README.md', 'SKILL.md']), revisionId: bounded(512).min(1), content: z.string().max(65_536) }).passthrough(),
+  z.object({ state: z.literal('unavailable'), reason: z.enum(['absent', 'not_distributable', 'too_large', 'storage_unavailable', 'invalid_text']) }).passthrough(),
+])
 
 const artifactSchema: z.ZodType<DepotArtifact, z.ZodTypeDef, unknown> = z.object({
   id: z.string().optional(), kind: z.string().optional(), namespace: z.string().optional(),
   name: z.string().optional(), title: optionalCatalogText, description: optionalCatalogText,
   currentRevisionId: z.string().optional(), contentDigest: z.string().optional(),
   revisionCount: z.number().int().nonnegative().optional(),
+  sourceOrigin: optionalCatalogText, publisherVerified: z.boolean().optional(),
+  metrics: z.object({ stars: z.number().safe().int().nonnegative().optional(), installs: z.number().safe().int().nonnegative().optional(), forks: z.number().safe().int().nonnegative().optional() }).passthrough().optional(),
+  readme: controlReadmeSchema.optional(),
+  provenance: z.object({ originalFormat: optionalCatalogText, originalVersion: optionalCatalogText }).passthrough().optional(),
+  upstreamBehind: z.number().int().nonnegative().optional(), updatedLabel: optionalCatalogText,
   descriptor: z.object({ id: z.string().optional(), kind: z.string().optional(), namespace: z.string().optional(), name: z.string().optional(), title: optionalCatalogText, description: optionalCatalogText, tags: descriptorTags.optional() }).passthrough().optional(),
-  currentRevision: z.object({ id: z.string().optional(), contentDigest: z.string().optional(), createdAt: optionalCatalogText, components: z.array(z.object({ id: z.string().optional(), kind: z.string().optional(), path: z.string().optional(), mediaType: z.string().optional(), size: z.number().nonnegative().optional() }).passthrough()).optional() }).passthrough().optional(),
+  currentRevision: z.object({ id: z.string().optional(), contentDigest: z.string().optional(), createdAt: optionalCatalogText, fileCount: z.number().int().nonnegative().optional(), components: z.array(z.object({ id: z.string().optional(), kind: z.string().optional(), path: z.string().optional(), mediaType: z.string().optional(), size: z.number().nonnegative().optional() }).passthrough()).optional() }).passthrough().optional(),
   publication: z.object({ state: z.string().optional(), visibility: z.string().optional(), distribution: z.string().optional() }).passthrough().optional(),
-  license: z.object({ redistribution: z.string().optional(), reviewState: z.string().optional(), takedownState: z.string().optional() }).passthrough().optional(),
+  license: z.object({ declared: optionalCatalogText, redistribution: z.string().optional(), reviewState: z.string().optional(), takedownState: z.string().optional() }).passthrough().optional(),
   lineage: z.object({ following: z.boolean().optional(), upstreamArtifactId: optionalCatalogText, forkedFromArtifactId: optionalCatalogText.nullable() }).passthrough().optional(),
 }).passthrough().refine((artifact) => Boolean(artifact.id?.trim() || artifact.descriptor?.id?.trim()), { message: 'artifact identity is missing' })
 
@@ -246,7 +264,29 @@ export async function depotOperations(signal?: AbortSignal): Promise<DepotOperat
   return validate(operationsSchema, await parse(response), 'operation catalog response').operations
 }
 
+function mockControlArtifact(item: FederatedArtifact): DepotArtifact {
+  return {
+    id: item.id ?? item.artifactId, kind: item.kind, namespace: item.namespace, name: item.name, title: item.title, description: item.description,
+    currentRevisionId: item.currentRevisionId, contentDigest: item.contentDigest, revisionCount: item.revisionCount,
+    sourceOrigin: item.sourceOrigin, publisherVerified: item.publisherVerified, metrics: item.metrics, readme: item.readme, provenance: item.provenance,
+    upstreamBehind: item.upstreamBehind, updatedLabel: item.updatedLabel, descriptor: item.descriptor, publication: item.publication, license: item.license, lineage: item.lineage,
+    currentRevision: item.currentRevision ? { id: item.currentRevision.id, contentDigest: item.currentRevision.contentDigest, createdAt: item.updatedAt ?? item.currentRevision.authoredAt ?? undefined, fileCount: item.currentRevision.fileCount } : undefined,
+  }
+}
+
 export async function depotCall<T>(operation: string, params: Record<string, unknown>, signal?: AbortSignal, destructiveIntent?: { confirmed: true; idempotencyKey: string }): Promise<T> {
+  if (USE_MOCK_DATA && operation === 'depot.artifacts.list') {
+    const query = typeof params.query === 'string' ? params.query : undefined
+    const artifacts = mockListArtifacts({ query }).items.filter(item => mockDepotLibraryArtifactIds.has(item.artifactId)).map(mockControlArtifact)
+    return validate(listSchema, { schemaVersion: COMPATIBILITY_SCHEMA, result: { artifacts, total: artifacts.length } }, 'mock artifact list response') as T
+  }
+  if (USE_MOCK_DATA && operation === 'depot.artifacts.get') {
+    const artifactId = typeof params.artifactId === 'string' ? params.artifactId : ''
+    const found = mockListArtifacts().items.find(item => item.artifactId === artifactId && mockDepotLibraryArtifactIds.has(item.artifactId))
+    if (!found) throw new Error('Artifact not found')
+    const detail = mockGetArtifact(found.providerId, found.artifactId)
+    return validate(detailSchema, { schemaVersion: COMPATIBILITY_SCHEMA, result: { artifact: mockControlArtifact(detail.artifact) } }, 'mock artifact detail response') as T
+  }
   const init = gatewayRequestInit(operation, params, undefined, signal)
   init.body = JSON.stringify({ operation, params, ...(destructiveIntent ? { destructiveIntent } : {}) })
   const value = await parse(await fetch('/v1/depot/operations', init))
@@ -379,6 +419,7 @@ const federatedArtifactSchema = z.object({
   // Optional catalog display evidence, never an authorization or trust decision.
   publisherVerified: z.boolean().optional(),
   metrics: z.object({ stars: z.number().safe().int().nonnegative().optional(), installs: z.number().safe().int().nonnegative().optional(), forks: z.number().safe().int().nonnegative().optional() }).strict().optional(),
+  upstreamBehind: z.number().safe().int().nonnegative().optional(), updatedLabel: bounded(32).optional(),
   description: bounded(16384).optional(), currentRevisionId: bounded(512).optional(),
   contentDigest: bounded(512).optional(),
   createdAt: bounded(128).nullish(), updatedAt: bounded(128).nullish(),

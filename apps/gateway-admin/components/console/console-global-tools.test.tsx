@@ -92,7 +92,7 @@ test('Phoenix sends a real turn through the container-local service and renders 
     if (body.action === 'phoenix.models.list') return new Response(JSON.stringify({ models: [{ id: 'gpt', model: 'gpt', displayName: 'GPT', description: 'Fast model', isDefault: true, defaultReasoningEffort: 'medium', supportedReasoningEfforts: [{ reasoningEffort: 'medium', description: 'Balanced reasoning' }] }] }), { status: 200 })
     if (body.action === 'phoenix.session.list') return new Response(JSON.stringify({ sessions: [] }), { status: 200 })
     if (body.action === 'phoenix.session.start') return new Response(JSON.stringify({ session_id: 'phoenix-1', status: 'ready', messages: [] }), { status: 200 })
-    return new Response(JSON.stringify({ session_id: 'phoenix-1', status: 'ready', messages: [{ role: 'user', text: 'Is Labby healthy?' }, { role: 'assistant', text: 'The gateway is healthy.' }] }), { status: 200 })
+    return new Response(JSON.stringify({ session_id: 'phoenix-1', status: 'ready', messages: [{ role: 'user', text: 'Is Labby healthy?' }, { role: 'assistant', text: 'The gateway is healthy.' }], events: [{ method: 'thread/tokenUsage/updated', params: { tokenUsage: { total: { totalTokens: 4096 }, modelContextWindow: 200_000 } } }] }), { status: 200 })
   }) as typeof fetch
   const { PhoenixAvailability } = await import('./console-global-tools.tsx')
   const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
@@ -127,6 +127,7 @@ test('Phoenix sends a real turn through the container-local service and renders 
     assert.deepEqual(actions.filter((action) => action !== 'phoenix.session.list'), ['phoenix.status', 'phoenix.models.list', 'phoenix.session.start', 'phoenix.turn.send'])
     assert.match(panel.textContent ?? '', /The gateway is healthy/)
     assert.equal(panel.querySelectorAll('[data-phoenix-message]').length, 2)
+    assert.ok(panel.querySelector('[aria-label="Context usage 2% (4,096 / 200,000 tokens)"]'))
     assert.ok(panel.querySelector('button[aria-label="Edit message"]'))
     assert.ok(panel.querySelector('button[aria-label="Regenerate"]'))
     assert.ok(panel.querySelector('button[aria-label="Copy answer"]'))

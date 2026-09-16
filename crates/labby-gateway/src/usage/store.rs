@@ -226,6 +226,25 @@ fn open_connections(path: &Path, count: usize) -> Result<Vec<Connection>, ToolEr
 }
 
 #[cfg(unix)]
+fn prepare_usage_database_file(path: &Path) -> Result<(), ToolError> {
+    use rustix::fs::{Mode, OFlags};
+
+    let fd = rustix::fs::open(
+        path,
+        OFlags::RDWR | OFlags::CREATE | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::from_raw_mode(0o600),
+    )
+    .map_err(|error| storage_error(format!("open usage database `{}`: {error}", path.display())))?;
+    drop(fd);
+    ensure_restrictive_permissions(path)
+}
+
+#[cfg(not(unix))]
+fn prepare_usage_database_file(_path: &Path) -> Result<(), ToolError> {
+    Ok(())
+}
+
+#[cfg(unix)]
 fn ensure_restrictive_permissions(path: &Path) -> Result<(), ToolError> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -248,6 +267,7 @@ fn open_connection(path: &Path) -> Result<Connection, ToolError> {
             ))
         })?;
     }
+    prepare_usage_database_file(path)?;
     let conn = Connection::open(path).map_err(sqlite_error)?;
     let version: i64 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
@@ -687,8 +707,22 @@ impl UsageStore {
                     let count = query.bucket_count.clamp(1, super::query::MAX_METRICS_BUCKETS);
                     let span = until.saturating_sub(since);
                     if span > 0 {
-                        let width = (span + count as i64 - 1) / count as i64;
-                        let mut buckets = (0..count).map(|index| super::query::UsageTimeBucket { ts_unix: since + index as i64 * width, calls: 0, failed: 0, outcomes: Vec::new() }).collect::<Vec<_>>();
+                        let count_i64 = i64::try_from(count).unwrap_or(i64::MAX);
+                        let width = span
+                            .saturating_add(count_i64.saturating_sub(1))
+                            .div_euclid(count_i64);
+                        let mut buckets = (0..count)
+                            .map(|index| super::query::UsageTimeBucket {
+                                ts_unix: since.saturating_add(
+                                    i64::try_from(index)
+                                        .unwrap_or(i64::MAX)
+                                        .saturating_mul(width),
+                                ),
+                                calls: 0,
+                                failed: 0,
+                                outcomes: Vec::new(),
+                            })
+                            .collect::<Vec<_>>();
                         let mut bucket_bind = bind.clone();
                         bucket_bind.push(rusqlite::types::Value::Integer((count - 1) as i64)); let max_index_param = bucket_bind.len();
                         bucket_bind.push(rusqlite::types::Value::Integer(since)); let since_param = bucket_bind.len();
@@ -1095,6 +1129,27 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 2);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn usage_database_is_created_owner_only_and_rejects_symlink_paths() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("usage.db");
+        let store = UsageStore::open(path.clone()).await.unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        drop(store);
+
+        let target = dir.path().join("target.db");
+        std::fs::write(&target, b"not sqlite").unwrap();
+        let link = dir.path().join("usage-link.db");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(UsageStore::open(link).await.is_err());
     }
 
     #[tokio::test]
@@ -1532,6 +1587,33 @@ mod tests {
                 .sum::<i64>(),
             bucket.calls
         );
+    }
+
+    #[tokio::test]
+    async fn metrics_timeseries_handles_extreme_i64_windows_without_overflow() {
+        use super::super::query::{MAX_METRICS_BUCKETS, UsageMetricsQuery};
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = UsageStore::open(dir.path().join("usage.db")).await.unwrap();
+        let metrics = store
+            .metrics(UsageMetricsQuery {
+                since_unix: Some(i64::MIN),
+                until_unix: Some(i64::MAX),
+                bucket_count: MAX_METRICS_BUCKETS,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(metrics.timeseries.len(), MAX_METRICS_BUCKETS);
+        assert_eq!(metrics.timeseries.first().unwrap().ts_unix, i64::MIN);
+        assert!(
+            metrics
+                .timeseries
+                .windows(2)
+                .all(|pair| pair[0].ts_unix <= pair[1].ts_unix)
+        );
+        assert!(metrics.timeseries.last().unwrap().ts_unix <= i64::MAX);
     }
 
     #[tokio::test]
