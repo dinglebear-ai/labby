@@ -205,7 +205,7 @@ impl CodeModeQualification {
                 .map_err(|error| error.to_string())?;
             for resource in page.resources {
                 if !seen.insert(resource.uri.clone()) {
-                    return Err("duplicate resource URI".into());
+                    return Err(format!("duplicate resource URI: {}", resource.uri));
                 }
                 if resource.uri.contains("forge-status") {
                     return read_effects(peer, resource.uri, deadline)

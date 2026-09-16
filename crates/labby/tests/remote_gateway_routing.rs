@@ -241,6 +241,12 @@ enabled = true
 #[tokio::test]
 async fn local_stdio_discovery_fits_a_one_mebibyte_main_stack() {
     let home = tempfile::tempdir().unwrap();
+    // This test checks discovery of raw service tools, including gateway.
+    std::fs::write(
+        home.path().join("config.toml"),
+        "[code_mode]\nenabled = false\n",
+    )
+    .unwrap();
     assert_stdio_discovery(small_stack_command(home.path())).await;
 }
 
@@ -248,6 +254,12 @@ async fn local_stdio_discovery_fits_a_one_mebibyte_main_stack() {
 #[tokio::test]
 async fn local_stdio_discovery_retains_headroom_below_one_mebibyte() {
     let home = tempfile::tempdir().unwrap();
+    // This test checks discovery of raw service tools, including gateway.
+    std::fs::write(
+        home.path().join("config.toml"),
+        "[code_mode]\nenabled = false\n",
+    )
+    .unwrap();
     // The native Windows test remains authoritative for its ABI. This
     // stricter Unix budget catches growth before it consumes that headroom.
     let mut command = Command::new("sh");

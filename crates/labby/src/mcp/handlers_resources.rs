@@ -217,6 +217,12 @@ fn is_ui_resource_uri(uri: &str) -> bool {
     uri.get(..5)
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case("ui://"))
 }
+
+#[cfg(any(feature = "gateway", test))]
+fn is_lab_owned_ui_resource_uri(uri: &str) -> bool {
+    uri.get(..9)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("ui://lab/"))
+}
 /// In-band discovery for the Skills extension (SEP-2640).
 ///
 /// Published so a client that does not speak the extension can still discover
@@ -993,6 +999,9 @@ impl LabMcpServer {
                     )
                     .await
                 {
+                    if is_lab_owned_ui_resource_uri(&listed.native_uri) {
+                        continue;
+                    }
                     if !is_ui_resource_uri(&listed.native_uri) {
                         regular_resource_provenance.push(ResourceProvenance {
                             upstream: listed.upstream_name.clone(),
@@ -1015,11 +1024,12 @@ impl LabMcpServer {
                     .subject_scoped_resources(&configs, oauth_subject.as_ref())
                     .await;
                 scoped_resources.retain(|resource| {
-                    resource
-                        .uri
-                        .strip_prefix("lab://upstream/")
-                        .and_then(|rest| rest.split('/').next())
-                        .is_none_or(|upstream| self.route_scope.allows_upstream(upstream))
+                    !is_lab_owned_ui_resource_uri(&resource.uri)
+                        && resource
+                            .uri
+                            .strip_prefix("lab://upstream/")
+                            .and_then(|rest| rest.split('/').next())
+                            .is_none_or(|upstream| self.route_scope.allows_upstream(upstream))
                 });
                 for resource in scoped_resources {
                     resources.accept(resource);
@@ -3186,6 +3196,9 @@ mod tests {
         assert!(is_ui_resource_uri("ui://widget/app"));
         assert!(is_ui_resource_uri("UI://widget/app"));
         assert!(!is_ui_resource_uri("file:///widget"));
+        assert!(is_lab_owned_ui_resource_uri("ui://lab/server-logs/viewer"));
+        assert!(is_lab_owned_ui_resource_uri("UI://LAB/settings/editor"));
+        assert!(!is_lab_owned_ui_resource_uri("ui://vendor/widget"));
     }
 
     fn complete_resource(response: ReadResourceResponse) -> ReadResourceResult {
@@ -3242,7 +3255,7 @@ function makeElement(id) {{
   const listeners = new Map();
   const element = {{
     id, value: "", textContent: "", className: "", innerHTML: "", disabled: false,
-    scrollHeight: id === "shell" ? 700 : 600,
+    style: {{}}, hidden: false, scrollHeight: id === "shell" ? 700 : 600,
     getAttribute(name) {{ return attrs.has(name) ? attrs.get(name) : null; }},
     setAttribute(name, value) {{ attrs.set(name, String(value)); }},
     addEventListener(type, listener) {{
@@ -3260,7 +3273,7 @@ function makeElement(id) {{
   all.set(id, element);
   return element;
 }}
-for (const id of ["form","name","target","resources","prompts","status","test","create","cancel","close","shell","list","refresh","filter","connected","enabled","attention"]) makeElement(id);
+for (const id of ["form","name","target","resources","prompts","status","test","create","cancel","close","shell","list","refresh","filter","connected","enabled","attention","updated","toolbar","live","dialog"]) makeElement(id);
 all.get("resources").setAttribute("aria-checked", "true");
 all.get("prompts").setAttribute("aria-checked", "true");
 const dialog = makeElement("dialog");
@@ -3568,6 +3581,7 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
                 crate::config::LabConfig {
                     code_mode: crate::config::CodeModeConfig {
                         enabled: true,
+                        mcp_ui_enabled: false,
                         ..crate::config::CodeModeConfig::default()
                     },
                     upstream: vec![crate::config::UpstreamConfig {
@@ -3863,7 +3877,7 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
                 .tools
                 .iter()
                 .all(|tool| tool.name.as_ref() != CODE_MODE_UI_TOOL_NAME),
-            "Labby-owned Code Mode UI must stay opt-in by default"
+            "explicitly disabled Labby-owned Code Mode UI must remain hidden"
         );
         assert!(
             tools
@@ -4857,13 +4871,13 @@ if(rows!==32)throw new Error(`expected exhaustive 32 rows, got ${rows}`);
             .expect("Add Server HTML");
 
         for expected in [
-            "Add Server",
-            "Test connection",
-            "Create server",
+            "Add MCP Server",
+            "id=\"test\"",
+            "Add server",
             "host.callAction(\"add_server\",action",
             "proxy_resources",
             "proxy_prompts",
-            "@media (max-width:620px)",
+            "@media(max-width:500px)",
             "env(safe-area-inset-bottom)",
             "min-height:48px",
             "ui/notifications/request-teardown",
@@ -4915,6 +4929,24 @@ for (const [input, expected] of cases) {{
     }
 
     #[test]
+    fn add_server_recognizes_case_insensitive_http_scheme() {
+        let source = function_source(
+            ADD_SERVER_APP_FALLBACK_HTML,
+            "function isHttpTarget(target)",
+            "function suggestName()",
+        );
+        run_node(&format!(
+            r#"
+{source}
+for (const target of ['HTTPS://example.com/mcp', 'HtTp://example.com/mcp']) {{
+  if (!isHttpTarget(target)) throw new Error('HTTP endpoint treated as a command: ' + target);
+}}
+if (isHttpTarget('npx server')) throw new Error('local command treated as HTTP');
+"#,
+        ));
+    }
+
+    #[test]
     fn add_server_resize_and_teardown_are_stable() {
         let mut script = dom_harness(
             r#"sizes: [], teardowns: 0,
@@ -4935,6 +4967,7 @@ all.get('close').dispatch('click');
 exposeResources.dispatch('click');
 if (exposeResources.getAttribute('aria-checked') !== before) throw new Error('disposed switch handler remained active');
 if (host.teardowns !== 1) throw new Error(`expected one teardown, got ${host.teardowns}`);
+if (windowListeners.get('pagehide')?.size) throw new Error('disposed pagehide handler remained active');
 "#,
         );
         run_node(&script);
@@ -4949,7 +4982,7 @@ if (host.teardowns !== 1) throw new Error(`expected one teardown, got ${host.tea
         );
         run_node(&format!(
             r#"
-function nonEssentialCapabilityError() {{ return false; }}
+function nonEssential() {{ return false; }}
 {source}
 const probe = probeStatus({{connected:true,tool_count:0,resource_count:0,prompt_count:0,last_error:null}});
 if (!probe.connected || !probe.healthy || !probe.empty) {{
@@ -4972,18 +5005,18 @@ if (!probe.connected || !probe.healthy || !probe.empty) {{
         for expected in [
             "MCP Apps",
             "id:\"manager\"",
-            "Enable all",
-            "Disable all",
-            "role='switch'",
+            "All on",
+            "All off",
+            "role=\"switch\"",
             "aria-live=\"polite\"",
             "host.callAction(\"mcp_app\",\"status\"",
             "host.callAction(\"mcp_app\",enabled?\"enable\":\"disable\"",
-            "target===\"all\"",
+            "pending.has(\"all\")",
             "ResizeObserver",
             "observer.disconnect()",
             "document.documentElement.scrollHeight",
             "env(safe-area-inset-bottom)",
-            "@media(max-width:600px)",
+            "@media(max-width:440px)",
         ] {
             assert!(
                 html.contains(expected),
@@ -5040,7 +5073,7 @@ for (const value of [
             "observer.disconnect()",
             ".badge.disabled",
             "min-height:44px",
-            "visible ${plural",
+            "upstreams.length+\" upstream\"",
             "showing data from",
             "value.ok===false",
             "document.documentElement.scrollHeight",
@@ -5116,6 +5149,12 @@ callAction() { this.calls += 1; return new Promise(resolve => this.pending.push(
   flushFrames();
   if (host.sizes.some(size => 'width' in size)) throw new Error(`status app must not request width: ${JSON.stringify(host.sizes)}`);
   if (!host.sizes.some(size => size.height === 777)) throw new Error(`status height must include document: ${JSON.stringify(host.sizes)}`);
+  window.dispatch('pagehide');
+  for (const type of ['message', 'openai:set_globals', 'pagehide']) {
+    if (windowListeners.get(type)?.size) throw new Error(`disposed status listener remained active: ${type}`);
+  }
+  all.get('refresh').dispatch('click');
+  if (host.calls !== 1) throw new Error('disposed status refresh dispatched a request');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 "#,
         );
@@ -5127,7 +5166,7 @@ callAction() { this.calls += 1; return new Promise(resolve => this.pending.push(
         let source = function_source(
             GATEWAY_STATUS_APP_FALLBACK_HTML,
             "function normalize(value)",
-            "function text(value)",
+            "function esc(value)",
         );
         run_node(&format!(
             r#"
