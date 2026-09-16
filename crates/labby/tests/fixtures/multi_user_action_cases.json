@@ -840,9 +840,7 @@
     "fixture_params": {
       "fixture": "isolated_agents_workflow",
       "parameters": {
-        "agent_id": "$fixture.agent_id",
-        "idempotency_key": "$fixture.idempotency_key",
-        "input": "$fixture.input"
+        "agent_id": "$fixture.agent_id"
       }
     },
     "required": true,

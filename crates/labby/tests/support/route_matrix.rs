@@ -126,7 +126,7 @@ pub(crate) const SECURITY_INVARIANTS: &[SecurityInvariant] = &[
 // POST /auth/bearer-session exchange.
 pub(crate) const PINNED_ROUTE_COUNT: usize = 135;
 pub(crate) const PINNED_METHOD_PATH_SHA256: &str =
-    "a7ae3ecda4fc8846369d1fdd32fb8cc2ba1e4272af7a5c2a5cd5df26e2d3196b";
+    "888ddfa40770fb5a6f1fd625b10dcdd0d1a1442eac09c1cebcbb48be36fca261";
 
 impl SecurityInvariant {
     pub(crate) fn validate_descriptor(&self, route: &RouteDescriptor) -> Result<(), String> {
