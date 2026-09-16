@@ -158,7 +158,7 @@ fn code_mode_description_contains_protocol_contract() {
     let description = code_mode_description(&[]);
     assert!(description.contains("callTool<T = unknown>"));
     assert!(description.contains("Successful return: the upstream tool's structuredContent"));
-    assert!(description.contains("JSON.parse(String(e.message))"));
+    assert!(description.contains("JSON.parse(String(e?.message ?? e))"));
     assert!(description.contains("recovery.guidance"));
     assert!(description.contains("side_effects"));
     assert!(description.contains("origin: \"tool_execution\""));

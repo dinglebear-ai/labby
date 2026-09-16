@@ -55,16 +55,22 @@ pub(crate) fn check_installed_config() -> (Option<PathBuf>, Vec<ConfigProblem>) 
 /// Run the startup validations `labby serve` performs on an already-loaded config.
 pub(crate) fn validate_startup_config(config: &LabConfig) -> Vec<ConfigProblem> {
     let mut problems = Vec::new();
-    // Fatal at startup, in the order `labby serve` runs them.
-    if let Err(error) = fatal_depot_checks(config) {
+    // Fatal at startup, in the order `labby serve` runs them. Once a fatal
+    // validation fails the process exits before any degraded subsystem is
+    // constructed, so later non-fatal checks would only duplicate or invent
+    // diagnostics for startup work that never runs.
+    let fatal = if let Err(error) = fatal_depot_checks(config) {
         problems.push(ConfigProblem {
             fatal: true,
             message: error_chain(error.as_ref()),
         });
-    }
+        true
+    } else {
+        false
+    };
     // Non-fatal: failure starts serve with Artifact services unavailable.
     #[cfg(feature = "skills")]
-    if let Err(error) = skill_library_checks(config) {
+    if !fatal && let Err(error) = skill_library_checks(config) {
         problems.push(ConfigProblem {
             fatal: false,
             message: format!(

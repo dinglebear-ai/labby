@@ -60,6 +60,25 @@
       "timeout_seconds": 900
     },
     {
+      "id": "http-missing-protocol-version",
+      "requirement_ids": [
+        "MCP-2026-SPEC-BASIC-TRANSPORTS-STREAMABLE-HTTP-028"
+      ],
+      "expected": "After an otherwise-valid effectful control, omitting the MCP-Protocol-Version header from the same current-version request returns HTTP 400 without another admitted effect. This policy regression does not resolve the requirement's older-client antecedent.",
+      "evidence_level": "product_wire",
+      "scopes": [
+        {
+          "role": "server",
+          "transport": "http"
+        }
+      ],
+      "kind": "cargo_nextest",
+      "package": "labby",
+      "target": "test:mcp_spec_http_contracts",
+      "test": "mcp_spec_http_missing_protocol_version_is_bad_request",
+      "timeout_seconds": 900
+    },
+    {
       "id": "http-unknown-method",
       "requirement_ids": [
         "MCP-2026-SPEC-BASIC-TRANSPORTS-STREAMABLE-HTTP-026"
@@ -83,7 +102,7 @@
       "requirement_ids": [
         "MCP-2026-SPEC-BASIC-TRANSPORTS-STREAMABLE-HTTP-025"
       ],
-      "expected": "An otherwise-valid effectful literal request succeeds exactly once; replacing header and body versions with an unknown version returns 400 and JSON-RPC -32022 with requested and supported versions, without another admitted effect.",
+      "expected": "An otherwise-valid effectful literal request succeeds exactly once; replacing header and body versions with an unknown version or each SDK-known legacy version returns 400 and JSON-RPC -32022 naming the requested version and exactly [2026-07-28] as supported, without another admitted effect.",
       "evidence_level": "product_wire",
       "scopes": [
         {
@@ -95,6 +114,63 @@
       "package": "labby",
       "target": "test:mcp_spec_http_contracts",
       "test": "mcp_spec_http_unsupported_protocol_version_is_bad_request",
+      "timeout_seconds": 900
+    },
+    {
+      "id": "http-legacy-methods-rejected",
+      "requirement_ids": [
+        "MCP-2026-SPEC-BASIC-TRANSPORTS-STREAMABLE-HTTP-081"
+      ],
+      "expected": "Authenticated literal GET and DELETE requests to Labby's MCP endpoint each return 405. This policy regression does not resolve the requirement's current-only-server antecedent.",
+      "evidence_level": "product_wire",
+      "scopes": [
+        {
+          "role": "server",
+          "transport": "http"
+        }
+      ],
+      "kind": "cargo_nextest",
+      "package": "labby",
+      "target": "test:mcp_spec_http_contracts",
+      "test": "mcp_spec_http_get_and_delete_are_method_not_allowed",
+      "timeout_seconds": 900
+    },
+    {
+      "id": "http-legacy-session-header-ignored",
+      "requirement_ids": [
+        "MCP-2026-SPEC-BASIC-TRANSPORTS-STREAMABLE-HTTP-082"
+      ],
+      "expected": "Adding a legacy Mcp-Session-Id header to a current-version tools/list request leaves the successful JSON result unchanged and neither mints nor echoes a session ID. This policy regression does not resolve the requirement's current-only-server antecedent.",
+      "evidence_level": "product_wire",
+      "scopes": [
+        {
+          "role": "server",
+          "transport": "http"
+        }
+      ],
+      "kind": "cargo_nextest",
+      "package": "labby",
+      "target": "test:mcp_spec_http_contracts",
+      "test": "mcp_spec_http_ignores_legacy_session_header",
+      "timeout_seconds": 900
+    },
+    {
+      "id": "http-legacy-last-event-id-ignored",
+      "requirement_ids": [
+        "MCP-2026-SPEC-BASIC-TRANSPORTS-STREAMABLE-HTTP-083"
+      ],
+      "expected": "Current-version tools/list requests with and without Last-Event-ID return identical bounded JSON responses. Paired subscriptions/listen POSTs with and without the header each begin with the same fresh acknowledgement and no SSE id field. An authenticated GET carrying Last-Event-ID returns 405 with Allow: POST. Together these prove the header is ignored on every product response mode and neither POST nor GET exposes resumable streams.",
+      "evidence_level": "product_wire",
+      "scopes": [
+        {
+          "role": "server",
+          "transport": "http"
+        }
+      ],
+      "kind": "cargo_nextest",
+      "package": "labby",
+      "target": "test:mcp_spec_http_contracts",
+      "test": "mcp_spec_http_ignores_legacy_last_event_id_and_has_no_resume_endpoint",
       "timeout_seconds": 900
     }
   ]
