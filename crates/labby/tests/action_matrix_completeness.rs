@@ -285,6 +285,11 @@ fn every_catalog_action_has_one_well_formed_intent() {
             action.surfaces(),
             "{key}: committed surfaces drifted from canonical metadata"
         );
+        let declared = action
+            .params
+            .iter()
+            .map(|param| param.name.as_str())
+            .collect::<BTreeSet<_>>();
         let required = action
             .params
             .iter()
@@ -297,9 +302,15 @@ fn every_catalog_action_has_one_well_formed_intent() {
             .keys()
             .map(String::as_str)
             .collect::<BTreeSet<_>>();
-        assert_eq!(
-            recipe, required,
-            "{key}: fixture recipe must bind every required parameter exactly"
+        let missing_required = required.difference(&recipe).copied().collect::<Vec<_>>();
+        let unknown = recipe.difference(&declared).copied().collect::<Vec<_>>();
+        assert!(
+            missing_required.is_empty(),
+            "{key}: fixture recipe is missing required parameters: {missing_required:?}"
+        );
+        assert!(
+            unknown.is_empty(),
+            "{key}: fixture recipe binds undeclared parameters: {unknown:?}"
         );
         if action.builtin {
             assert_eq!(

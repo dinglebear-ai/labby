@@ -5,6 +5,8 @@ use super::*;
 use sha2::{Digest, Sha256};
 use std::os::unix::{fs::PermissionsExt, process::CommandExt};
 
+const AUTOMATIC_FEATURE_CHILD_TIMEOUT: Duration = Duration::from_mins(1);
+
 fn executable(path: &Path, body: &str) {
     fs::write(path, body).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
@@ -165,7 +167,7 @@ esac
             if let Some(status) = child.try_wait().unwrap() {
                 break status;
             }
-            if started.elapsed() > Duration::from_secs(20) {
+            if started.elapsed() > AUTOMATIC_FEATURE_CHILD_TIMEOUT {
                 drop(child.kill());
                 drop(child.wait());
                 panic!(
