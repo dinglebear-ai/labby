@@ -420,7 +420,7 @@ fn run_migrations_inner(conn: &Connection, fault: Option<&str>) -> Result<(), Au
 }
 
 /// v18: enforce the allowlist role vocabulary (`member`, `admin`) in the
-/// schema. The vocabulary is [`super::SqliteStore::ALLOWED_USER_ROLES`]; the
+/// schema. The vocabulary is [`crate::AllowedUserRole`]; the
 /// CHECK literal here and in the base schema must list the same values.
 ///
 /// An `allowed_users` table created before the constraint existed is rebuilt

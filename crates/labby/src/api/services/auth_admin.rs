@@ -638,7 +638,10 @@ async fn delete_allowed_email(
     no_store(StatusCode::NO_CONTENT.into_response())
 }
 
-#[cfg(test)]
+// The fixture drives the removal path through the gateway runtime, which
+// only exists with the `gateway` feature; the standalone slices compile the
+// service without it.
+#[cfg(all(test, feature = "gateway"))]
 mod tests {
     use std::sync::Arc;
 
