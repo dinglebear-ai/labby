@@ -3,12 +3,20 @@ import test from 'node:test'
 import { __setBrowserSessionStateForTests } from '../auth/session-store.ts'
 import { cancelDepotIngestJob, configureDepotSource, consumeOwnerLinkApproval, deleteDepotSource, depotCall, depotIngestJobs, depotOperations, depotSession, depotSources, depotStatus, depotPublishCapability, publishDepotSkill, refreshDepotSource, retryDepotIngestJob, startDepotRepoIngest, getArtifact, listArtifacts, listProviders, providerOperation, removeProvider, upsertProvider } from './depot-client.ts'
 
+const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status })
+const operationCatalog = () => json({ operations: [{ name: 'depot.test', title: 'Test', description: 'Test', inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false } }] })
+
 async function withFetch(response: Response, run: () => Promise<void>) {
   const original = globalThis.fetch
-  globalThis.fetch = (async () => response) as typeof fetch
+  const suppliedBody = await response.clone().json().catch(() => undefined)
+  const catalogUnderTest = typeof suppliedBody === 'object' && suppliedBody !== null && Object.prototype.hasOwnProperty.call(suppliedBody, 'operations')
+  globalThis.fetch = (async (input, init) => {
+    const method = (init?.method ?? 'GET').toUpperCase()
+    if (!catalogUnderTest && String(input) === '/v1/depot/operations' && method === 'GET') return operationCatalog()
+    return response.clone()
+  }) as typeof fetch
   try { await run() } finally { globalThis.fetch = original }
 }
-const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status })
 const artifact = { id: 'artifact-1', kind: 'skill', name: 'demo' }
 
 test('v1 descriptors retain bounded supplied tags without inventing missing metadata', async () => {
@@ -163,6 +171,59 @@ test('accepts the signed Depot control target identity without treating bootstra
   await withFetch(json({ ...session, backend: { ...session.backend, deploymentId: '' } }), async () => assert.rejects(depotSession(), /incompatible control session response/i))
 })
 
+test('generic operation dispatch establishes the actor catalog immediately before POST', async () => {
+  const original = globalThis.fetch
+  const sequence: string[] = []
+  globalThis.fetch = (async (url, init) => {
+    const method = (init?.method ?? 'GET').toUpperCase()
+    if (String(url) === '/v1/depot/operations' && method === 'GET') {
+      sequence.push('catalog')
+      return operationCatalog()
+    }
+    if (String(url) === '/v1/depot/operations' && method === 'POST') {
+      const body = JSON.parse(String(init?.body)) as { operation?: string }
+      sequence.push(body.operation ?? 'unknown')
+      return json({ schemaVersion: 'labby.depot-compatibility/v1', result: { ok: true } })
+    }
+    return json({ message: 'unexpected request' }, 500)
+  }) as typeof fetch
+  try {
+    await depotCall('depot.system.status', {})
+    assert.deepEqual(sequence, ['catalog', 'depot.system.status'])
+  } finally { globalThis.fetch = original }
+})
+
+test('concurrent operation dispatch shares one in-flight catalog preflight', async () => {
+  const original = globalThis.fetch
+  const sequence: string[] = []
+  let releaseCatalog!: () => void
+  const catalogGate = new Promise<void>(resolve => { releaseCatalog = resolve })
+  globalThis.fetch = (async (url, init) => {
+    const method = (init?.method ?? 'GET').toUpperCase()
+    if (String(url) === '/v1/depot/operations' && method === 'GET') {
+      sequence.push('catalog')
+      await catalogGate
+      return operationCatalog()
+    }
+    if (String(url) === '/v1/depot/operations' && method === 'POST') {
+      const body = JSON.parse(String(init?.body)) as { operation?: string }
+      sequence.push(body.operation ?? 'unknown')
+      return json({ schemaVersion: 'labby.depot-compatibility/v1', result: { ok: true } })
+    }
+    return json({ message: 'unexpected request' }, 500)
+  }) as typeof fetch
+  try {
+    const first = depotCall('depot.system.status', {})
+    const second = depotCall('depot.maintenance.gc', {})
+    await Promise.resolve()
+    assert.deepEqual(sequence, ['catalog'], 'concurrent callers do not duplicate an in-flight preflight or POST early')
+    releaseCatalog()
+    await Promise.all([first, second])
+    assert.equal(sequence.filter(item => item === 'catalog').length, 1)
+    assert.deepEqual(new Set(sequence.slice(1)), new Set(['depot.system.status', 'depot.maintenance.gc']))
+  } finally { globalThis.fetch = original }
+})
+
 test('accepts the canonical operation catalog and generic operation results', async () => {
   await withFetch(json({ operations: [{ name: 'depot.system.status', title: 'Depot status', description: 'Status', inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false } }] }), async () => assert.equal((await depotOperations())[0]?.name, 'depot.system.status'))
   await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v1', result: { ok: true } }), async () => assert.equal((await depotCall<{ result: { ok: boolean } }>('depot.system.status', {})).result.ok, true))
@@ -181,7 +242,8 @@ test('accepts Depot control-catalog authority and transport metadata', async () 
 test('repository source helpers use canonical Depot operations and preserve credential references only', async () => {
   const original = globalThis.fetch
   const bodies: Array<Record<string, unknown>> = []
-  globalThis.fetch = (async (_url, init) => {
+  globalThis.fetch = (async (url, init) => {
+    if (String(url) === '/v1/depot/operations' && (init?.method ?? 'GET').toUpperCase() === 'GET') return operationCatalog()
     const body = JSON.parse(String(init?.body))
     bodies.push(body)
     const operation = body.operation as string
@@ -220,7 +282,8 @@ test('accepts bounded output schema metadata without weakening operation input v
 test('sends destructive intent only when explicitly supplied', async () => {
   const original = globalThis.fetch
   const bodies: unknown[] = []
-  globalThis.fetch = (async (_url, init) => {
+  globalThis.fetch = (async (url, init) => {
+    if (String(url) === '/v1/depot/operations' && (init?.method ?? 'GET').toUpperCase() === 'GET') return operationCatalog()
     bodies.push(JSON.parse(String(init?.body)))
     return json({ schemaVersion: 'labby.depot-compatibility/v1', result: { ok: true } })
   }) as typeof fetch

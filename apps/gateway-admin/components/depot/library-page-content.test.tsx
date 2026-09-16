@@ -207,7 +207,7 @@ test('Library is a user-level hub and loads the generic Depot Artifact authority
     assert.ok(requested.some(request => request.operation === 'depot.artifacts.list'))
     const listIndex = requestSequence.indexOf('depot.artifacts.list')
     assert.ok(listIndex > 0, 'artifact listing was dispatched')
-    assert.equal(requestSequence[listIndex - 1], 'catalog', 'Library primes the actor-filtered Depot catalog before listing artifacts')
+    assert.ok(requestSequence.slice(0, listIndex).includes('catalog'), 'Library establishes the actor-filtered Depot catalog before listing artifacts')
     assert.ok(requested.filter(request => request.operation === 'depot.artifacts.list').every(request => request.projectId === null), 'Library browsing does not require a project header')
     for (const title of records.map(item => item.title)) assert.match(view.container.textContent ?? '', new RegExp(title))
     assert.ok(view.container.querySelector('a[href="/library"][aria-current="page"]'))
@@ -259,7 +259,7 @@ test('Library deep links open the shared mock-aligned inspection modal with icon
     assert.ok(requested.some(request => request.operation === 'depot.artifacts.get' && request.input.artifactId === 'rust-reviewer'))
     const getIndex = requestSequence.indexOf('depot.artifacts.get')
     assert.ok(getIndex > 0, 'artifact detail was dispatched')
-    assert.equal(requestSequence[getIndex - 1], 'catalog', 'Library refreshes the actor-filtered Depot catalog before artifact detail calls')
+    assert.ok(requestSequence.slice(0, getIndex).includes('catalog'), 'Library establishes the actor-filtered Depot catalog before artifact detail calls')
     for (const label of ['Open upstream and fork options', 'Copy Library link', 'Export artifact']) assert.ok(dialog.querySelector(`button[aria-label="${label}"]`), label)
     assert.doesNotMatch(dialog.textContent ?? '', /Open upstream and fork options|Copy Library link|Export artifact/)
   } finally { await view.unmount(); restore() }
