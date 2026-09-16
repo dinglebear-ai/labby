@@ -21,6 +21,12 @@ use super::helpers::merge_upstream_prompts;
 use super::logging::is_capability_unsupported;
 use super::tools::MAX_UPSTREAM_PROMPTS;
 
+/// Number of prompt serializations performed while bounding the merged
+/// envelope; tests assert each prompt is measured once.
+#[cfg(test)]
+pub(super) static MERGED_PROMPT_MEASUREMENTS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 /// One regular non-OAuth upstream Prompt with exact pre-namespace provenance.
 /// This is observational listing metadata, not prompt execution authority.
 #[derive(Clone, Debug, PartialEq)]
@@ -135,23 +141,6 @@ impl UpstreamPool {
                     };
                     prompt_policies.insert(name.clone(), policy);
                     upstream_prompts.push((name, prompts));
-                    // Bound only the merged envelope, after publishing this
-                    // server's complete independently validated snapshot.
-                    upstream_prompts.sort_by(|left, right| left.0.cmp(&right.0));
-                    let mut items_left = MAX_UPSTREAM_PROMPTS;
-                    let mut bytes_left = super::helpers::max_response_bytes();
-                    for (_, candidates) in &mut upstream_prompts {
-                        candidates.retain(|prompt| {
-                            let bytes = serde_json::to_vec(prompt)
-                                .map_or(usize::MAX, |body| body.len() + 1);
-                            if items_left == 0 || bytes > bytes_left {
-                                return false;
-                            }
-                            items_left -= 1;
-                            bytes_left -= bytes;
-                            true
-                        });
-                    }
                 }
                 Err(catalog_pagination::CatalogPaginationError::Service(e))
                     if is_capability_unsupported(&e) =>
@@ -225,6 +214,20 @@ impl UpstreamPool {
             }
         }
 
+        // Bound only the merged envelope, after every server's complete,
+        // independently validated snapshot has been published above. One
+        // pass in upstream-name order keeps the result independent of
+        // completion order and measures each prompt exactly once.
+        super::helpers::bound_merged_catalog(
+            &mut upstream_prompts,
+            MAX_UPSTREAM_PROMPTS,
+            super::helpers::max_response_bytes(),
+            |prompt| {
+                #[cfg(test)]
+                MERGED_PROMPT_MEASUREMENTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                serde_json::to_vec(prompt).map_or(usize::MAX, |body| body.len() + 1)
+            },
+        );
         let (mut prompts, owners) = merge_upstream_prompts(builtin_names, upstream_prompts);
         if prompts.len() > MAX_UPSTREAM_PROMPTS {
             prompts.truncate(MAX_UPSTREAM_PROMPTS);
@@ -484,6 +487,48 @@ mod tests {
             .await
             .expect("prompt connection identity");
         assert!(previous.is_none());
+    }
+
+    /// Every upstream publishes 600 prompts. Bounding the merged envelope
+    /// must measure each prompt once, not re-sort and re-serialize the whole
+    /// merged list every time one more upstream completes.
+    #[derive(Clone, Default)]
+    struct ManyPromptsServer;
+
+    impl ServerHandler for ManyPromptsServer {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_prompts().build())
+        }
+
+        async fn list_prompts(
+            &self,
+            _request: Option<PaginatedRequestParams>,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<ListPromptsResult, ErrorData> {
+            Ok(ListPromptsResult::with_all_items(
+                (0..600)
+                    .map(|index| Prompt::new(format!("p{index}"), None::<String>, None))
+                    .collect(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn merged_prompt_cap_serializes_each_prompt_once() {
+        let pool = catalog_pool_with_server("many-0", ManyPromptsServer).await;
+        for index in 1..5 {
+            attach_prompt_server(&pool, &format!("many-{index}"), ManyPromptsServer).await;
+        }
+        MERGED_PROMPT_MEASUREMENTS.store(0, Ordering::SeqCst);
+
+        let prompts = pool.list_upstream_prompts(&[]).await;
+
+        assert_eq!(prompts.len(), 3000.min(MAX_UPSTREAM_PROMPTS));
+        let measurements = MERGED_PROMPT_MEASUREMENTS.load(Ordering::SeqCst);
+        assert!(
+            measurements <= 3000,
+            "each prompt must be measured once while bounding the merged envelope; measured {measurements} times"
+        );
     }
 
     #[tokio::test]

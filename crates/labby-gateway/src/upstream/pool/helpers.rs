@@ -433,6 +433,33 @@ pub(super) fn bare_upstream_prompt_name<'a>(upstream_name: &str, prompt_name: &'
         .unwrap_or(prompt_name)
 }
 
+/// Bound a merged multi-upstream catalog to `max_items` entries and
+/// `max_bytes` of serialized payload in one pass. Groups are walked in
+/// upstream-name order so the result does not depend on which upstream
+/// answered first, and `measure` runs exactly once per item. An item that
+/// does not fit is dropped; later, smaller items may still be kept.
+pub(super) fn bound_merged_catalog<T>(
+    groups: &mut [(String, Vec<T>)],
+    max_items: usize,
+    max_bytes: usize,
+    mut measure: impl FnMut(&T) -> usize,
+) {
+    groups.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut items_left = max_items;
+    let mut bytes_left = max_bytes;
+    for (_, candidates) in groups.iter_mut() {
+        candidates.retain(|item| {
+            let bytes = measure(item);
+            if items_left == 0 || bytes > bytes_left {
+                return false;
+            }
+            items_left -= 1;
+            bytes_left -= bytes;
+            true
+        });
+    }
+}
+
 /// Merge upstream prompts deterministically and return the winning owner for each prompt.
 ///
 /// Every prompt is namespaced by its owning upstream (see
