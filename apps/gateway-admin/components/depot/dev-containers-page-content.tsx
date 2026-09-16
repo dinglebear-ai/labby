@@ -44,7 +44,22 @@ export function DevContainersPageContent() {
   const session = useBrowserSession()
   const authority = session.status === 'authenticated' ? session.authority : undefined
   const workspaceIdentity = authorityIdentity(authority)
-  const capabilities = new Set(authority?.capabilities ?? [])
+  return (
+    <DevContainersWorkspace
+      key={workspaceIdentity}
+      workspaceIdentity={workspaceIdentity}
+      ownerKind={authority?.activeOwner.kind}
+      capabilityList={authority?.capabilities ?? []}
+    />
+  )
+}
+
+function DevContainersWorkspace({ workspaceIdentity, ownerKind, capabilityList }: {
+  workspaceIdentity: string
+  ownerKind?: DevContainer['owner_kind']
+  capabilityList: readonly string[]
+}) {
+  const capabilities = new Set(capabilityList)
   const [instances, setInstances] = useState<DevContainer[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>()
@@ -75,7 +90,7 @@ export function DevContainersPageContent() {
   }
   const count = (state: string) => instances.filter(item => item.observed_state === state).length
   return <>
-    <ConsoleHero variant="authoring" iconTone="success" icon={<Container className="size-[22px] text-aurora-success" />} eyebrow={`Workspace · ${authority?.activeOwner.kind ?? 'unavailable'}`} title="Dev Containers" description="Containers created from administrator-approved templates. Manage their desired state and inspect the runtime state reported by this workspace." pulse={{ color: error ? 'var(--aurora-warn)' : loading ? 'var(--aurora-text-muted)' : 'var(--aurora-success)', label: loading ? 'loading' : error ? 'inventory unavailable' : `${count('running')} running` }} actions={<><Button size="icon-sm" variant="ghost" title="Refresh containers" aria-label="Refresh containers" onClick={() => void load()} disabled={loading}><RefreshCw /></Button><span title={capabilities.has('scope.create') ? undefined : 'This workspace does not grant container creation'}><Button size="icon" variant="outline" aria-label="New container" title="New container" disabled={!capabilities.has('scope.create')} onClick={() => setCreating(true)}><CirclePlus className="size-[15px]" /></Button></span></>} stats={[{ label: 'Containers', value: loading || error ? '—' : instances.length, suffix: 'visible' }, { label: 'Running', value: loading || error ? '—' : count('running'), tone: 'var(--aurora-success)' }, { label: 'Stopped', value: loading || error ? '—' : count('stopped') }, { label: 'Pending', value: loading || error ? '—' : count('pending'), tone: 'var(--aurora-accent-strong)' }]} />
+    <ConsoleHero variant="authoring" iconTone="success" icon={<Container className="size-[22px] text-aurora-success" />} eyebrow={`Workspace · ${ownerKind ?? 'unavailable'}`} title="Dev Containers" description="Containers created from administrator-approved templates. Manage their desired state and inspect the runtime state reported by this workspace." pulse={{ color: error ? 'var(--aurora-warn)' : loading ? 'var(--aurora-text-muted)' : 'var(--aurora-success)', label: loading ? 'loading' : error ? 'inventory unavailable' : `${count('running')} running` }} actions={<><Button size="icon-sm" variant="ghost" title="Refresh containers" aria-label="Refresh containers" onClick={() => void load()} disabled={loading}><RefreshCw /></Button><span title={capabilities.has('scope.create') ? undefined : 'This workspace does not grant container creation'}><Button size="icon" variant="outline" aria-label="New container" title="New container" disabled={!capabilities.has('scope.create')} onClick={() => setCreating(true)}><CirclePlus className="size-[15px]" /></Button></span></>} stats={[{ label: 'Containers', value: loading || error ? '—' : instances.length, suffix: 'visible' }, { label: 'Running', value: loading || error ? '—' : count('running'), tone: 'var(--aurora-success)' }, { label: 'Stopped', value: loading || error ? '—' : count('stopped') }, { label: 'Pending', value: loading || error ? '—' : count('pending'), tone: 'var(--aurora-accent-strong)' }]} />
     {error ? <div role="alert" className="rounded-aurora-2 border border-aurora-error/35 bg-aurora-error/5 p-3 text-xs text-aurora-error">{error}</div> : null}
     {loading ? <p role="status" className="py-10 text-center text-xs text-aurora-text-muted">Loading container inventory…</p> : !instances.length ? <div className="rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-strong px-5 py-10 text-center"><p className="font-display text-[15px] font-bold text-aurora-text-primary">{error ? 'Container inventory unavailable.' : 'No containers in this workspace.'}</p><p className="mt-1 text-xs text-aurora-text-muted">Create a container from an approved template to get started.</p></div> : <div className="grid items-start gap-3 [grid-template-columns:repeat(auto-fill,minmax(min(100%,310px),1fr))]">{instances.map(item => <ContainerCard key={item.instance_id} item={item} busy={busy === item.instance_id} canOperate={capabilities.has('scope.operate')} canDelete={capabilities.has('scope.delete')} onOperate={operation => void operate(item, operation)} onDestroy={() => setDestroyTarget(item)} />)}</div>}
     <Dialog open={creating} onOpenChange={setCreating}><DialogContent><DialogHeader><DialogTitle>New Container</DialogTitle><DialogDescription>Create from an administrator-approved template. Template discovery is not available on this server; enter its exact identifier.</DialogDescription></DialogHeader><label className="text-xs text-aurora-text-muted">Container ID<Input className="mt-1.5" value={instanceId} onChange={event => setInstanceId(event.target.value)} /></label><label className="text-xs text-aurora-text-muted">Approved template ID<Input className="mt-1.5" value={templateId} onChange={event => setTemplateId(event.target.value)} /></label>{error ? <p role="alert" className="text-xs text-aurora-error">{error}</p> : null}<Button onClick={() => void create()} disabled={busy === 'create' || !instanceId.trim() || !templateId.trim()}>Create container</Button></DialogContent></Dialog>

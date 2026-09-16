@@ -397,12 +397,14 @@ async fn create_instance(
     )
     .await
     .map_err(|error| ledger_error(&instance_id, &error))?;
+    let capability =
+        required_capability(action, created.instance.owner().kind()).ok_or_else(denied)?;
     persist_observation(
         context,
         store,
         &lease,
         created.instance.owner(),
-        required_capability(action, created.instance.owner().kind()).ok_or_else(denied)?,
+        capability,
         &instance_id,
         created.instance.lifecycle_nonce().as_str(),
         ObservedState::Starting,
@@ -416,21 +418,22 @@ async fn create_instance(
         store,
         context.identity.clone(),
         created.instance.owner().clone(),
-        required_capability(action, created.instance.owner().kind()).ok_or_else(denied)?,
+        capability,
     )
     .await
     .map_err(store_error)?;
-    create(
+    let handle = EngineHandle {
+        instance_id: created.instance.id().clone(),
+        lifecycle_nonce: created.instance.lifecycle_nonce().clone(),
+    };
+    let create_result = create(
         context.access_runtime.dev_container_runtime().as_ref(),
         &lease,
         &epochs,
         now_millis()?,
         &created.template,
         EngineCreateRequest {
-            handle: EngineHandle {
-                instance_id: created.instance.id().clone(),
-                lifecycle_nonce: created.instance.lifecycle_nonce().clone(),
-            },
+            handle: handle.clone(),
             image_digest: created.instance.image().as_str().into(),
             cpu_millis: created.resources.cpu_millis,
             memory_bytes: created.resources.memory_bytes,
@@ -442,18 +445,87 @@ async fn create_instance(
             environment: created.environment.clone(),
         },
     )
-    .await
-    .map_err(|error| runtime_error(&instance_id, error))?;
-    let handle = EngineHandle {
-        instance_id: created.instance.id().clone(),
-        lifecycle_nonce: created.instance.lifecycle_nonce().clone(),
-    };
+    .await;
+    if let Err(create_error) = create_result {
+        let recovery = reconcile(
+            context.access_runtime.dev_container_runtime().as_ref(),
+            &lease,
+            || async {
+                let epochs = crate::access::refresh_authority_epochs(
+                    store,
+                    context.identity.clone(),
+                    created.instance.owner().clone(),
+                    capability,
+                )
+                .await
+                .map_err(|error| {
+                    let mapped = store_error(error);
+                    if mapped.kind() == "forbidden" {
+                        RuntimeError::Authority(
+                            labby_runtime::authority::AuthorityLeaseError::AuthorityChanged,
+                        )
+                    } else {
+                        RuntimeError::AuthorityUnavailable
+                    }
+                })?;
+                let now = now_millis().map_err(|_| RuntimeError::AuthorityUnavailable)?;
+                Ok((epochs, now))
+            },
+            &handle,
+            DurableIntent::Running,
+        )
+        .await;
+        if recovery.is_ok() {
+            let engine_state = inspect_authorized(
+                context,
+                store,
+                &lease,
+                created.instance.owner(),
+                capability,
+                &instance_id,
+                &handle,
+            )
+            .await?;
+            let observed = if engine_state == EngineState::Running {
+                ObservedState::Running
+            } else {
+                ObservedState::Failed
+            };
+            persist_observation(
+                context,
+                store,
+                &lease,
+                created.instance.owner(),
+                capability,
+                &instance_id,
+                created.instance.lifecycle_nonce().as_str(),
+                observed,
+                "create-error-observed",
+            )
+            .await?;
+            if observed == ObservedState::Running {
+                return Ok(serde_json::json!({
+                    "instance_id": instance_id,
+                    "desired_state": "running",
+                    "observed_state": "running"
+                }));
+            }
+        } else if let Err(recovery_error) = recovery {
+            tracing::warn!(
+                service = SERVICE,
+                instance_id,
+                cause = %recovery_error,
+                "Dev Container create failed and postcondition recovery remained uncertain"
+            );
+        }
+        return Err(runtime_error(&instance_id, create_error));
+    }
     let engine_state = inspect_authorized(
         context,
         store,
         &lease,
         created.instance.owner(),
-        required_capability(action, created.instance.owner().kind()).ok_or_else(denied)?,
+        capability,
         &instance_id,
         &handle,
     )
@@ -468,7 +540,7 @@ async fn create_instance(
         store,
         &lease,
         created.instance.owner(),
-        required_capability(action, created.instance.owner().kind()).ok_or_else(denied)?,
+        capability,
         &instance_id,
         created.instance.lifecycle_nonce().as_str(),
         observed,
@@ -1344,6 +1416,7 @@ mod tests {
     struct FixedEngine {
         state: std::sync::Mutex<EngineState>,
         inspections: std::sync::atomic::AtomicUsize,
+        fail_create: bool,
     }
     impl ContainerRuntime for FixedEngine {
         type Error = DevContainerEngineError;
@@ -1351,7 +1424,13 @@ mod tests {
             &'a self,
             _: EngineCreateRequest,
         ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
-            Box::pin(async { Ok(()) })
+            Box::pin(async move {
+                if self.fail_create {
+                    Err(DevContainerEngineError::InvalidResponse("create"))
+                } else {
+                    Ok(())
+                }
+            })
         }
         fn inspect<'a>(
             &'a self,
@@ -1359,10 +1438,11 @@ mod tests {
         ) -> std::pin::Pin<Box<dyn Future<Output = Result<EngineState, Self::Error>> + Send + 'a>>
         {
             Box::pin(async move {
-                if self
-                    .inspections
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                    == 0
+                if !self.fail_create
+                    && self
+                        .inspections
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                        == 0
                 {
                     Ok(EngineState::Running)
                 } else {
@@ -1408,6 +1488,17 @@ mod tests {
         DevContainerDispatchContext,
         tokio::sync::OwnedMutexGuard<()>,
     ) {
+        engine_fixture_with_create_failure(state, false).await
+    }
+
+    async fn engine_fixture_with_create_failure(
+        state: EngineState,
+        fail_create: bool,
+    ) -> (
+        tempfile::TempDir,
+        DevContainerDispatchContext,
+        tokio::sync::OwnedMutexGuard<()>,
+    ) {
         let config_guard = crate::config::dev_container_config_test_guard().await;
         let (directory, context) = fixture().await;
         crate::config::install_resolved_preferences(&crate::config::LabConfig::default());
@@ -1441,6 +1532,7 @@ mod tests {
             .with_dev_container_runtime(Arc::new(FixedEngine {
                 state: std::sync::Mutex::new(state),
                 inspections: std::sync::atomic::AtomicUsize::new(0),
+                fail_create,
             }));
         (
             directory,
@@ -1479,6 +1571,52 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_engine_failure_settles_durable_observation() {
+        let (directory, context, _config_guard) =
+            engine_fixture_with_create_failure(EngineState::Missing, true).await;
+        let error = failure(
+            &context,
+            "dev_containers.create",
+            serde_json::json!({
+                "instance_id": "dc-create-failed",
+                "template_id": "tpl",
+                "owner_kind": "personal",
+                "owner_id": "bootstrap-owner",
+            }),
+        )
+        .await;
+        assert_eq!(error.kind(), "service_unavailable");
+        let (desired, observed, _) = ledger_states(&directory, "dc-create-failed");
+        assert_eq!(desired, "running");
+        assert_eq!(
+            observed, "failed",
+            "a failed external create must not leave a durable Starting zombie",
+        );
+    }
+
+    #[tokio::test]
+    async fn create_engine_error_with_verified_running_postcondition_succeeds() {
+        let (directory, context, _config_guard) =
+            engine_fixture_with_create_failure(EngineState::Running, true).await;
+        let created = dispatch(
+            context,
+            "dev_containers.create",
+            serde_json::json!({
+                "instance_id": "dc-create-running",
+                "template_id": "tpl",
+                "owner_kind": "personal",
+                "owner_id": "bootstrap-owner",
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(created["observed_state"], "running");
+        let (desired, observed, _) = ledger_states(&directory, "dc-create-running");
+        assert_eq!(desired, "running");
+        assert_eq!(observed, "running");
     }
 
     #[tokio::test]
