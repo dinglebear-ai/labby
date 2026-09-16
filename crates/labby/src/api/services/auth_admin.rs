@@ -801,25 +801,82 @@ mod tests {
         }
 
         async fn delete(&self, email: &str) -> StatusCode {
-            let request = Request::builder()
-                .method("DELETE")
-                .uri(format!("/v1/auth/allowed-emails/{email}"))
+            let (status, _) = self
+                .request(
+                    &self.admin,
+                    "DELETE",
+                    &format!("/v1/auth/allowed-emails/{email}"),
+                    None,
+                )
+                .await;
+            status
+        }
+
+        /// Seed a bound browser session for `subject` with the given display
+        /// email, as a completed sign-in would.
+        async fn session(
+            &self,
+            subject: &str,
+            email: &str,
+        ) -> labby_auth::types::BrowserSessionRow {
+            let session = labby_auth::types::BrowserSessionRow {
+                session_id: format!("sess-{subject}"),
+                subject: subject.into(),
+                email: Some(email.into()),
+                csrf_token: format!("csrf-{subject}"),
+                created_at: 1,
+                expires_at: i64::MAX,
+                project_binding: None,
+            };
+            self.auth_state
+                .store
+                .upsert_bound_browser_session(
+                    session.clone(),
+                    self.auth_state.inbound_provider_binding(),
+                )
+                .await
+                .unwrap();
+            session
+        }
+
+        async fn request(
+            &self,
+            session: &labby_auth::types::BrowserSessionRow,
+            method: &str,
+            uri: &str,
+            body: Option<serde_json::Value>,
+        ) -> (StatusCode, serde_json::Value) {
+            let mut request = Request::builder()
+                .method(method)
+                .uri(uri)
                 .header(header::HOST, "localhost")
                 .header(
                     header::COOKIE,
                     format!(
                         "{}={}",
                         labby_auth::session::BROWSER_SESSION_COOKIE_NAME,
-                        self.admin.session_id
+                        session.session_id
                     ),
                 )
                 .header(
                     labby_auth::session::BROWSER_CSRF_HEADER_NAME,
-                    &self.admin.csrf_token,
-                )
-                .body(Body::empty())
+                    &session.csrf_token,
+                );
+            if body.is_some() {
+                request = request.header(header::CONTENT_TYPE, "application/json");
+            }
+            let request = request
+                .body(body.map_or_else(Body::empty, |body| Body::from(body.to_string())))
                 .unwrap();
-            self.app.clone().oneshot(request).await.unwrap().status()
+            let response = self.app.clone().oneshot(request).await.unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+                .await
+                .unwrap();
+            (
+                status,
+                serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+            )
         }
 
         fn query_one<T: rusqlite::types::FromSql>(&self, sql: &str) -> T {
@@ -830,6 +887,66 @@ mod tests {
             .unwrap();
             connection.query_row(sql, [], |row| row.get(0)).unwrap()
         }
+    }
+
+    /// Finding 9: a session that holds `platform.manage` through allowlist
+    /// admission (or any grant) but is not a configured admin is refused on
+    /// every allowlist route, including adding another `admin`.
+    #[tokio::test]
+    async fn platform_admin_who_is_not_a_configured_admin_is_refused_on_every_allowlist_route() {
+        let fixture = Fixture::new().await;
+        let colleague = browser_identity("colleague-sub");
+        fixture
+            .allow_verified("colleague@example.com", "colleague-sub", "admin")
+            .await;
+        fixture
+            .runtime
+            .provision_allowlisted(colleague.clone(), || async {
+                Some((
+                    AllowlistRole::Admin,
+                    AllowlistAdmission::AllowlistEntry {
+                        added_by_fingerprint: "fp".into(),
+                    },
+                ))
+            })
+            .await
+            .unwrap();
+        let store = fixture.runtime.store().await.unwrap();
+        assert!(
+            store
+                .session_authority(colleague)
+                .await
+                .unwrap()
+                .platform_administrator,
+            "precondition: the colleague holds platform.manage"
+        );
+        let session = fixture
+            .session("colleague-sub", "colleague@example.com")
+            .await;
+        let before = fixture.auth_state.store.list_allowed_users().await.unwrap();
+
+        for (method, uri, body) in [
+            ("GET", "/v1/auth/allowed-emails", None),
+            (
+                "POST",
+                "/v1/auth/allowed-emails",
+                Some(serde_json::json!({"email": "mallory@example.com", "role": "admin"})),
+            ),
+            (
+                "DELETE",
+                "/v1/auth/allowed-emails/colleague@example.com",
+                None,
+            ),
+        ] {
+            let (status, response) = fixture.request(&session, method, uri, body).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {response}");
+            assert_eq!(response["kind"], "forbidden", "{method} {uri}: {response}");
+        }
+        assert_eq!(
+            fixture.auth_state.store.list_allowed_users().await.unwrap(),
+            before,
+            "no allowlist route mutated anything"
+        );
     }
 
     /// Finding 1: removing an allowlist entry must revoke the durable grants

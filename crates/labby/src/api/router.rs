@@ -6106,6 +6106,89 @@ mod tests {
         );
     }
 
+    /// Finding 9: `settings.env.update` through the real `/v1/setup` route.
+    /// The administrator list is an authentication key: a colleague elevated
+    /// by durable `platform.manage` is refused with the typed auth-key
+    /// denial and `.env` is untouched, while the configured admin's save
+    /// lands.
+    #[tokio::test]
+    async fn settings_env_update_route_refuses_elevated_colleague_and_admits_configured_admin() {
+        let (_home, lab_dir, _guard) = isolated_lab_home();
+        let env = lab_dir.join(".env");
+        fs::write(
+            &env,
+            format!("LABBY_AUTH_ADMIN_EMAIL={CONFIGURED_ADMIN_EMAIL}\n"),
+        )
+        .unwrap();
+        let env_before = fs::read(&env).unwrap();
+        let (_access_dir, runtime) = ready_access_runtime_with_colleague_principal().await;
+        runtime
+            .store()
+            .await
+            .unwrap()
+            .grant_platform_administrator(colleague_platform_admin())
+            .await
+            .unwrap();
+        let (auth_state, admin, colleague) = colleague_and_admin_auth_state().await;
+        let app = build_router(
+            AppState::new()
+                .with_auth_config(labby_auth::config::AuthConfig {
+                    admin_emails: vec![CONFIGURED_ADMIN_EMAIL.into()],
+                    ..Default::default()
+                })
+                .with_access_runtime(Arc::clone(&runtime)),
+            None,
+            Some(auth_state),
+            None,
+            &[],
+        );
+        let params = |value: &str| {
+            serde_json::json!({
+                "section": "authentication",
+                "entries": [{
+                    "key": "LABBY_AUTH_ADMIN_EMAIL",
+                    "value": [value],
+                    "previous": [CONFIGURED_ADMIN_EMAIL],
+                }],
+                "confirm": true,
+            })
+        };
+
+        let (status, body) = status_and_body(
+            &app,
+            session_action_request(
+                &colleague,
+                "/v1/setup",
+                "settings.env.update",
+                params("attacker@example.com"),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert!(
+            body.contains("\"forbidden\"") && body.contains("configures Labby authentication"),
+            "expected the typed auth-key refusal, got {body}"
+        );
+        assert_eq!(fs::read(&env).unwrap(), env_before, ".env changed");
+
+        let (status, body) = status_and_body(
+            &app,
+            session_action_request(
+                &admin,
+                "/v1/setup",
+                "settings.env.update",
+                params(CONFIGURED_ADMIN_EMAIL),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let saved = fs::read_to_string(&env).unwrap();
+        assert!(
+            saved.contains(&format!("LABBY_AUTH_ADMIN_EMAIL={CONFIGURED_ADMIN_EMAIL}")),
+            "{saved}"
+        );
+    }
+
     /// TST-H2: a non-owner principal granted `platform.manage` is elevated on
     /// the real `/v1` router and loses it on the very next request after
     /// revocation. Because the probe goes through `build_router`, this also

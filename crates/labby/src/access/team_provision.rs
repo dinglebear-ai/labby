@@ -873,6 +873,102 @@ mod tests {
         assert_eq!(audit_count(&store, "access.allowlist.revoke").await, 0);
     }
 
+    /// Two session reads racing the same first sign-in must produce one
+    /// Principal, one Initial Team membership, one platform grant, and one
+    /// audit row (the writer semaphore serializes callers in-process; this
+    /// covers two store handles, as two processes would open).
+    #[tokio::test]
+    async fn concurrent_allowlisted_admission_creates_one_membership_and_audit_record() {
+        let (directory, store) = fixture().await;
+        let second = AccessStore::open(directory.path().join("access.db"))
+            .await
+            .unwrap();
+        let eli = identity("concurrent-allowlisted");
+        let (first, second) = tokio::join!(
+            store.provision_allowlisted(eli.clone(), AllowlistRole::Admin, allowlist_entry()),
+            second.provision_allowlisted(eli.clone(), AllowlistRole::Admin, allowlist_entry()),
+        );
+        let outcomes = [first.unwrap(), second.unwrap()];
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| **outcome == TeamMemberProvisionOutcome::Created)
+                .count(),
+            1
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| **outcome == TeamMemberProvisionOutcome::AlreadyActive)
+                .count(),
+            1
+        );
+        let (teams, projects, admins) = membership_rows(&store).await;
+        assert_eq!(teams.len(), 1);
+        assert_eq!(projects.len(), 1);
+        assert_eq!(admins, 1);
+        assert_eq!(audit_count(&store, "access.allowlist.provision").await, 1);
+        let principals: i64 = store
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT count(*) FROM principals WHERE principal_id LIKE 'team-member-%'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(map_sqlite_error)
+            })
+            .await
+            .unwrap();
+        assert_eq!(principals, 1);
+    }
+
+    /// A `revoked` Initial Team membership — however it was revoked — blocks
+    /// re-admission through the allowlist, and a later `admin` entry cannot
+    /// use that path to reactivate the membership or grant platform
+    /// administration. The gate deliberately has no status filter.
+    #[tokio::test]
+    async fn revoked_initial_team_membership_blocks_allowlist_readmission() {
+        let (_directory, store) = fixture().await;
+        let eli = identity("eli-revoked-by-admin");
+        store
+            .provision_allowlisted(eli.clone(), AllowlistRole::Member, allowlist_entry())
+            .await
+            .unwrap();
+        store
+            .execute_test_statement(
+                "UPDATE team_memberships SET status='revoked',revoked_at=unixepoch()
+                 WHERE team_id='bootstrap-initial-team' AND principal_id LIKE 'team-member-%';",
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .provision_allowlisted(eli.clone(), AllowlistRole::Admin, allowlist_entry())
+                .await
+                .unwrap(),
+            TeamMemberProvisionOutcome::AlreadyActive
+        );
+        let status: String = store
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT status FROM team_memberships WHERE team_id='bootstrap-initial-team' AND principal_id LIKE 'team-member-%'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(map_sqlite_error)
+            })
+            .await
+            .unwrap();
+        assert_eq!(status, "revoked");
+        assert_eq!(membership_rows(&store).await.2, 0);
+        let snapshot = store.session_authority(eli).await.unwrap();
+        assert!(!snapshot.platform_administrator);
+        assert!(snapshot.teams.is_empty());
+        assert_eq!(audit_count(&store, "access.allowlist.provision").await, 1);
+    }
+
     /// An identity that already holds an Initial Team membership was admitted
     /// before: a later allowlist entry must not rewrite that role or grant
     /// platform administration. The default-Project membership is removed so
