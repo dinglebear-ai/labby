@@ -398,8 +398,8 @@ async fn execute_snippet_outcome(
             surface,
             config,
             scope,
-            // Snippet execution is a local trusted-CLI path with no durable-run
-            // execution id; `None` keeps `record_step` write-free here.
+            // Saved-snippet dispatch does not mint a durable execution id on
+            // this path; `None` keeps `record_step` write-free here.
             None,
         )
         .await
