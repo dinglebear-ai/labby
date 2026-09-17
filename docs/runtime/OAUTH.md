@@ -1242,8 +1242,9 @@ sets `readOnlyHint: true` without a contradictory `destructiveHint: true`.
 `codemode` and the optional `codemode_ui` require `lab` or `lab:admin` and retain
 full execution authority. On the root gateway, the always-available `mcp_app`
 control tool uses the same read/open scopes, while changing Labby-owned app
-visibility requires `lab:admin`. Its own manager UI is opt-in like every other
-Labby-owned app surface. The control tool is omitted from protected subset routes
+visibility requires `lab:admin`. Fresh installs expose its manager UI by default;
+an operator can disable that UI resource without removing the control tool. The
+control tool is omitted from protected subset routes
 so a subset-scoped token cannot mutate gateway-global UI visibility.
 
 Gateway management actions on a protected `gateway_subset` route are bounded
