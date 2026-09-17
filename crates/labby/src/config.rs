@@ -2146,10 +2146,10 @@ fn load_toml_from_paths(candidates: &[PathBuf]) -> Result<LabConfig> {
 }
 
 /// Labby-owned app-surface sections that `raw` (a `config.toml` document)
-/// does not declare and therefore inherits at their on-by-default posture:
-/// `code_mode` (Code Mode plus its inspector UI) and `mcp_apps` (every
-/// Labby-owned MCP App UI). Startup names these once so an install upgraded
-/// from a release where they defaulted off sees the change. Unparseable input
+/// does not declare and therefore inherits from code defaults. `code_mode`
+/// keeps text execution enabled while its inspector UI defaults off; `mcp_apps`
+/// keeps every Labby-owned MCP App UI opt-in. Startup names inherited sections
+/// once so operators can see which defaults were applied. Unparseable input
 /// yields nothing; the config loader owns that error.
 #[must_use]
 pub fn inherited_app_surface_sections(raw: &str) -> Vec<&'static str> {

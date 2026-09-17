@@ -1126,36 +1126,21 @@ impl ToolScope {
         namespaces: Vec<String>,
         tools: Vec<String>,
     ) -> Self {
-        fn clean_namespace_set(values: Vec<String>) -> BTreeSet<String> {
+        fn clean_set(values: Vec<String>) -> BTreeSet<String> {
             values
                 .into_iter()
-                .map(|value| value.trim().to_ascii_lowercase())
+                .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
                 .collect()
         }
-        fn clean_tool_set(values: Vec<String>) -> BTreeSet<String> {
-            values
-                .into_iter()
-                .map(|value| {
-                    let value = value.trim();
-                    value.split_once("::").map_or_else(
-                        || value.to_string(),
-                        |(namespace, tool)| {
-                            format!("{}::{tool}", namespace.trim().to_ascii_lowercase())
-                        },
-                    )
-                })
-                .filter(|value| !value.is_empty())
-                .collect()
-        }
-        let namespaces = clean_namespace_set(namespaces);
+        let namespaces = clean_set(namespaces);
         Self {
             namespaces: if namespaces.is_empty() {
                 scoped_default
             } else {
                 Some(namespaces)
             },
-            tools: clean_tool_set(tools),
+            tools: clean_set(tools),
             access: CodeModeToolAccess::Full,
         }
     }
@@ -1178,16 +1163,13 @@ impl ToolScope {
     /// Return whether a namespace/tool pair is included by the configured filters.
     #[must_use]
     pub fn allows(&self, namespace: &str, tool: &str) -> bool {
-        let normalized_namespace = namespace.trim().to_ascii_lowercase();
         (self
             .namespaces
             .as_ref()
-            .is_none_or(|namespaces| namespaces.contains(&normalized_namespace)))
+            .is_none_or(|namespaces| namespaces.contains(namespace)))
             && (self.tools.is_empty()
                 || self.tools.contains(tool)
-                || self
-                    .tools
-                    .contains(&namespaced_tool_id(&normalized_namespace, tool)))
+                || self.tools.contains(&namespaced_tool_id(namespace, tool)))
     }
 
     /// Return whether any namespace, tool, or read-only restriction is active.

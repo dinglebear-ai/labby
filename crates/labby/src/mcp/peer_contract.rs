@@ -547,7 +547,8 @@ impl PeerContract {
         let skill_library_allowed_actions: Option<Vec<String>> = None;
         let skill_library_mode = if self.audience.skill_library_management_visible {
             SkillLibraryDescriptorMode::Management {
-                app_visible: self.audience.skill_library_app_visible
+                app_visible: mcp_apps_config.skill_library
+                    && self.audience.skill_library_app_visible
                     && self.route_scope.exposes_resources(),
                 allowed_actions: skill_library_allowed_actions.as_deref(),
             }

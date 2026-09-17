@@ -858,6 +858,7 @@ impl LabMcpServer {
 
         #[cfg(feature = "skills")]
         if !resources.finished()
+            && mcp_apps_config.skill_library
             && self.route_scope.exposes_skills()
             && code_mode_read_scope_allowed(auth)
             && self.route_scope.allows_service("artifacts")
@@ -1599,6 +1600,9 @@ impl LabMcpServer {
 
         #[cfg(feature = "skills")]
         if uri.starts_with(SKILL_LIBRARY_APP_URI_PREFIX) {
+            if !self.mcp_apps_config().await.skill_library {
+                return Err(unknown_resource_error(&uri, true));
+            }
             return self
                 .read_skill_library_app_resource_impl(&uri, &subject, start, &context)
                 .await
@@ -3479,6 +3483,7 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
                     },
                     mcp_apps: crate::config::McpAppsConfig {
                         manager: true,
+                        skill_library: true,
                         add_server: true,
                         server_logs: true,
                         gateway_status: true,
