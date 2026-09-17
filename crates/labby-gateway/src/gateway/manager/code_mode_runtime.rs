@@ -513,6 +513,13 @@ impl GatewayManager {
         if pending.is_empty() {
             if !suppressed.is_empty() {
                 if cache_hits == 0 {
+                    tracing::warn!(
+                        surface = "dispatch",
+                        service = "gateway",
+                        action = "code_mode.catalog_cache",
+                        suppressed_upstreams = ?suppressed,
+                        "one-shot Code Mode catalog has no usable upstreams"
+                    );
                     return Err(ToolError::Sdk {
                         sdk_kind: "upstream_connect_error".to_string(),
                         message: format!(
@@ -719,6 +726,17 @@ impl GatewayManager {
                     not_attempted.join(", ")
                 ));
             }
+            tracing::warn!(
+                surface = "dispatch",
+                service = "gateway",
+                action = "code_mode.catalog_cache",
+                failed_upstreams = ?failed_upstream_names,
+                suppressed_upstreams = ?suppressed,
+                in_flight_upstreams = ?in_flight,
+                not_attempted_upstreams = ?not_attempted,
+                budget_ms = budget.as_millis(),
+                "one-shot Code Mode catalog has no usable upstreams"
+            );
             return Err(ToolError::Sdk {
                 sdk_kind: "upstream_connect_error".to_string(),
                 message: format!(

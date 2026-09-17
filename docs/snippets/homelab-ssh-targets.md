@@ -121,16 +121,18 @@ async (o = {}) => {
 		throw new Error("Selected Claude MCP controller is missing HOME or ssh");
 
 	const root = input.ssh_config || controller.home + "/.ssh/config",
+		configOpt = input.ssh_config ? "-F " + quote(root) + " " : "",
 		queue = [root],
 		seen = new Set(),
 		aliases = new Map(),
 		warnings = [];
-	const resolve = (p, from) =>
-		p.startsWith("~/")
-			? controller.home + p.slice(1)
-			: p.startsWith("/")
-				? p
-				: from.slice(0, Math.max(0, from.lastIndexOf("/")) + 1) + p;
+	const resolve = (p, from) => {
+		if (p.startsWith("~/")) return controller.home + p.slice(1);
+		if (p.startsWith("/")) return p;
+		const slash = from.lastIndexOf("/");
+		const dir = slash >= 0 ? from.slice(0, slash + 1) : "";
+		return dir + p;
+	};
 	while (queue.length && seen.size < 16) {
 		const path = queue.shift();
 		if (!path || seen.has(path)) continue;
@@ -201,7 +203,7 @@ async (o = {}) => {
 				};
 				for (const line of text(
 					await callTool(bashTool.id, {
-						command: "ssh -G -- " + quote(target.alias),
+						command: "ssh " + configOpt + "-G -- " + quote(target.alias),
 						timeout: input.command_timeout_ms,
 					}),
 				).split("\n")) {
@@ -267,7 +269,7 @@ async (o = {}) => {
 			for (const line of text(
 				await callTool(bashTool.id, {
 					command:
-						"ssh " + opts + " -- " + quote(target.alias) + " " + quote(probe),
+						"ssh " + configOpt + opts + " -- " + quote(target.alias) + " " + quote(probe),
 					timeout: Math.min(input.command_timeout_ms, 12000),
 				}),
 			).split("\n")) {

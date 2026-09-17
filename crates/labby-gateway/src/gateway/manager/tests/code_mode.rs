@@ -2667,13 +2667,16 @@ async fn one_shot_cli_catalog_errors_when_every_uncached_upstream_fails_fast() {
     )
     .await;
 
-    let error = tokio::time::timeout(
-        BUDGET_GUARD,
-        manager.code_mode_catalog_tools_cached(None, None),
-    )
-    .await
-    .expect("connection refused fails fast")
-    .expect_err("all-failed with an empty cache is an error");
+    let (error, logs) = with_captured_logs(|| {
+        tokio::time::timeout(
+            BUDGET_GUARD,
+            manager.code_mode_catalog_tools_cached(None, None),
+        )
+    })
+    .await;
+    let error = error
+        .expect("connection refused fails fast")
+        .expect_err("all-failed with an empty cache is an error");
     match error {
         ToolError::Sdk { sdk_kind, message } => {
             assert_eq!(sdk_kind, "upstream_connect_error");
@@ -2684,6 +2687,13 @@ async fn one_shot_cli_catalog_errors_when_every_uncached_upstream_fails_fast() {
         }
         other => panic!("expected upstream_connect_error, got {other:?}"),
     }
+    assert_eq!(
+        logs.matches("one-shot Code Mode catalog has no usable upstreams")
+            .count(),
+        1,
+        "an all-failed cold catalog must emit one aggregate actionable WARN: {logs}"
+    );
+    assert!(logs.contains("beta") && logs.contains("gamma"));
 }
 
 /// Concurrent probes settle out of order, yet the catalog must follow the
@@ -2980,6 +2990,13 @@ async fn a_failed_probe_is_suppressed_on_the_next_one_shot_run() {
         first_logs.contains("catalog is partial because upstream probes failed")
             && first_logs.contains("dead"),
         "partial one-shot catalog must emit one actionable failed-upstream warning: {first_logs}"
+    );
+    assert_eq!(
+        first_logs
+            .matches("one-shot Code Mode catalog is partial because upstream probes failed")
+            .count(),
+        1,
+        "one failed probe plus one healthy upstream must produce exactly one aggregate warning: {first_logs}"
     );
 
     // The failure is now on disk, and the healthy upstream is cached, so the

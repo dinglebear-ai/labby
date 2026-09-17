@@ -11,6 +11,10 @@ inputs:
   alias:
     type: string
     required: true
+  ssh_config:
+    type: string
+    default: ""
+    required: false
   connect_timeout_seconds:
     type: integer
     default: 4
@@ -49,6 +53,7 @@ Reusable one-host primitive. Host identity is resolved before Docker enumeration
 async (o = {}) => {
 	const i = {
 		alias: String(o.alias || "").trim(),
+		ssh_config: o.ssh_config ?? "",
 		connect_timeout_seconds: Math.max(
 			1,
 			Math.min(30, Number(o.connect_timeout_seconds ?? 4)),
@@ -109,9 +114,10 @@ async (o = {}) => {
 			"-o ConnectionAttempts=1",
 			"-o ConnectTimeout=" + i.connect_timeout_seconds,
 		].join(" "),
+		configOpt = i.ssh_config ? "-F " + q(i.ssh_config) + " " : "",
 		ssh = (r) =>
 			callTool(bash, {
-				command: "ssh " + opts + " -- " + q(i.alias) + " " + q(r),
+				command: "ssh " + configOpt + opts + " -- " + q(i.alias) + " " + q(r),
 				timeout: i.command_timeout_ms,
 			});
 	const hostProbe = [

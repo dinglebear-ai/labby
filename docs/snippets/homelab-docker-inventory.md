@@ -119,6 +119,7 @@ async (o = {}) => {
 			(d) => () =>
 				codemode.run("docker-host-inventory", {
 					alias: d.preferred_alias,
+					ssh_config: input.ssh_config,
 					connect_timeout_seconds: input.connect_timeout_seconds,
 					command_timeout_ms: input.command_timeout_ms,
 					log_lines: input.log_lines,
@@ -164,7 +165,7 @@ async (o = {}) => {
 		user: sourceController.user || null,
 		platform: sourceController.platform || null,
 		ssh_path: sourceController.ssh_path || null,
-		ssh_config_supplied: Boolean(sourceController.ssh_config),
+		ssh_config_supplied: Boolean(input.ssh_config),
 	};
 	const sanitizeEffective = (effective) =>
 		effective

@@ -604,19 +604,6 @@ globalThis.__labMainPromise = (async () => {{
     )
 }
 
-#[cfg(test)]
-mod wrapper_tests {
-    use super::*;
-
-    #[test]
-    fn generated_wrapper_uses_the_shared_composed_snippet_budget() {
-        let wrapped = wrap_code_mode("async () => ({ ok: true })", "");
-        assert!(wrapped.contains(&format!(
-            "globalThis.__labSnippetMaxBytes = {MAX_SNIPPET_RESOLVED_BYTES_PER_RUN};"
-        )));
-    }
-}
-
 enum JavyMainPromiseState {
     Pending,
     /// The async function returned. `result` is the JSON-serialized return value,
@@ -970,4 +957,17 @@ fn runner_read_input() -> Result<CodeModeRunnerInput, RunnerReadError> {
         }
         serde_json::from_str(&line).map_err(|err| RunnerReadError::Other(err.to_string()))
     })
+}
+
+#[cfg(test)]
+mod wrapper_tests {
+    use super::*;
+
+    #[test]
+    fn generated_wrapper_uses_the_shared_composed_snippet_budget() {
+        let wrapped = wrap_code_mode("async () => ({ ok: true })", "");
+        assert!(wrapped.contains(&format!(
+            "globalThis.__labSnippetMaxBytes = {MAX_SNIPPET_RESOLVED_BYTES_PER_RUN};"
+        )));
+    }
 }

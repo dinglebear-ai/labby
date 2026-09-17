@@ -1168,6 +1168,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn raw_tool_call_boundary_rejects_undeclared_and_out_of_route_tools() {
+        let host = FixtureHost::new(vec![
+            ToolDescriptor::tool("alpha", "tool1", "allowed", None, None),
+            ToolDescriptor::tool("alpha", "other_tool", "undeclared sibling", None, None),
+            ToolDescriptor::tool("beta", "tool2", "out of route", None, None),
+        ]);
+        let broker = CodeModeBroker::new(Some(&host));
+        let scope = ToolScope::scoped_namespaces(
+            vec!["alpha".to_string()],
+            vec!["alpha::tool1".to_string()],
+        );
+
+        for id in ["alpha::other_tool", "beta::tool2"] {
+            let error = broker
+                .call_tool_id(
+                    id,
+                    json!({}),
+                    CodeModeCaller::TrustedLocal,
+                    CodeModeSurface::Cli,
+                    &scope,
+                    ExecCtx::none(),
+                )
+                .await
+                .expect_err("raw callTool target outside the effective snippet scope must fail");
+            assert_eq!(error.kind(), "unknown_tool");
+            assert!(
+                error
+                    .to_string()
+                    .contains("outside this Code Mode execution capability set"),
+                "scope rejection must happen before host dispatch: {error:?}"
+            );
+        }
+
+        let allowed = broker
+            .call_tool_id(
+                "alpha::tool1",
+                json!({}),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &scope,
+                ExecCtx::none(),
+            )
+            .await
+            .expect_err("fixture host intentionally rejects real dispatch after scope admission");
+        assert!(
+            allowed
+                .to_string()
+                .contains("FixtureHost does not dispatch real tool calls"),
+            "the declared in-route tool must pass the scope boundary and reach the host"
+        );
+    }
+
+    #[tokio::test]
     async fn dispatch_internal_call_resource_discovery_round_trips_uri() {
         let host = FixtureHost::new(Vec::new());
         let broker = CodeModeBroker::new(Some(&host));

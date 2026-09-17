@@ -469,7 +469,12 @@ fn read_resolved(
     path: PathBuf,
 ) -> Result<ResolvedSnippet, ToolError> {
     let body = read_snippet_body(&path)?;
-    validate_snippet_body(name, &body)?;
+    // Resolution is a host-side lookup, not a second execution validator. Keep
+    // the file/frontmatter/size contract here, then let code_for_snippet() do
+    // the single authoritative Javy parse immediately before execution (or an
+    // explicit existing-snippet validation). This avoids compiling the same
+    // saved program twice per invocation.
+    validate_snippet_body_structure(name, &body)?;
     let (description, tags, inputs, tools) =
         snippet_metadata_fields(frontmatter(&body)?.filter(|m| m.name == name));
     Ok(ResolvedSnippet {
@@ -518,8 +523,7 @@ fn snippet_metadata_fields(
         .unwrap_or_default()
 }
 
-/// Validate snippet source size, syntax envelope, and frontmatter/name consistency.
-pub fn validate_snippet_body(name: &str, body: &str) -> Result<(), ToolError> {
+fn validate_snippet_body_structure(name: &str, body: &str) -> Result<(), ToolError> {
     if body.len() > MAX_SNIPPET_FILE_BYTES {
         return Err(ToolError::InvalidParam {
             message: format!("snippet file exceeds {MAX_SNIPPET_FILE_BYTES} bytes"),
@@ -548,6 +552,17 @@ pub fn validate_snippet_body(name: &str, body: &str) -> Result<(), ToolError> {
             param: "body".to_string(),
         });
     }
+    Ok(())
+}
+
+/// Validate snippet source size, syntax, and frontmatter/name consistency.
+pub fn validate_snippet_body(name: &str, body: &str) -> Result<(), ToolError> {
+    validate_snippet_body_structure(name, body)?;
+    let code = if has_frontmatter(body) || body.contains("```") {
+        extract_javascript_block(body)?
+    } else {
+        body.trim().to_string()
+    };
     validate_snippet_code(&code)
 }
 
@@ -581,7 +596,9 @@ pub fn validate_snippet_code(code: &str) -> Result<(), ToolError> {
         sdk_kind: "internal_error".to_string(),
         message: format!("unable to initialize JavaScript validator: {error}"),
     })?;
-    let source = format!("export default ({code});");
+    // Keep generated delimiters on their own lines. A valid snippet may end
+    // in a // comment, which must not consume the validator's closing `);`.
+    let source = format!("export default (\n{code}\n);");
     runtime
         .compile_to_bytecode("snippet-validation.js", &source)
         .map_err(|error| {
@@ -1058,6 +1075,15 @@ mod tests {
     }
 
     #[test]
+    fn validate_snippet_code_accepts_trailing_line_comment() {
+        let code = "async () => ({ ok: true }) // formatter note";
+        assert!(
+            validate_snippet_code(code).is_ok(),
+            "the validator's generated closing delimiter must not be swallowed by a trailing // comment"
+        );
+    }
+
+    #[test]
     fn validate_snippet_body_rejects_malformed_javascript_before_execution() {
         let body = "---\nname: demo\ndescription: Broken snippet\ntags: []\n---\n\n```js\nasync () => { const broken = ; return broken; }\n```\n";
         let error = validate_snippet_body("demo", body)
@@ -1219,14 +1245,29 @@ mod tests {
             assert!(code.contains("docker_path=%s"));
             assert!(code.contains("timeout_path=%s"));
         }
-        assert!(ssh.contains("ssh -G -- "));
+        assert!(
+            ssh.contains("-F "),
+            "custom SSH config must reach ssh -G and live probes"
+        );
+        assert!(ssh.contains(r#"const slash = from.lastIndexOf("/")"#));
+        assert!(ssh.contains(r#"slash >= 0 ? from.slice(0, slash + 1) : """#));
+        assert!(
+            !ssh.contains(r#"Math.max(0, from.lastIndexOf("/"))"#),
+            "bare config filenames must not prefix relative Includes with the first filename character"
+        );
         assert!(ssh.contains("config_file_limit_reached"));
         assert!(ssh.contains("config_truncated"));
+        assert!(docker.contains("ssh_config"));
+        assert!(
+            docker.contains("-F "),
+            "one-host inventory must reuse a supplied custom SSH config"
+        );
+        assert!(aggregate.contains("ssh_config: input.ssh_config"));
         assert!(aggregate.contains("delete artifactInput.ssh_config"));
         assert!(aggregate.contains("parsed_config_file_count"));
         assert!(aggregate.contains("identity_files_configured"));
         assert!(aggregate.contains("artifactTargets"));
-        assert!(aggregate.contains("ssh_config_supplied"));
+        assert!(aggregate.contains("ssh_config_supplied: Boolean(input.ssh_config)"));
     }
 
     #[test]
