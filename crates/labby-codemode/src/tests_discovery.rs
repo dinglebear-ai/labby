@@ -38,6 +38,17 @@ fn blank_query_browses_the_first_visible_tools() {
 }
 
 #[test]
+fn namespace_scope_case_does_not_hide_live_tools() {
+    let entries = vec![tool("Axon", "axon", "unified axon tool")];
+    let scope = ToolScope::scoped_namespaces(vec!["axon".into()], Vec::new());
+
+    let response = search_visible_tools(&entries, &scope, "axon", 50).unwrap();
+
+    assert_eq!(response.total, 1);
+    assert_eq!(response.results[0].namespace, "Axon");
+}
+
+#[test]
 fn hidden_and_random_describe_are_identical() {
     let entries = vec![
         tool("github", "issues", "issues"),

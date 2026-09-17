@@ -210,6 +210,19 @@ fn tool_scope_allows_only_selected_namespaces_and_tools() {
 }
 
 #[test]
+fn tool_scope_namespace_matching_is_ascii_case_insensitive() {
+    let lowercase = ToolScope::new(vec!["axon".to_string()], Vec::new());
+    let uppercase = ToolScope::new(vec!["Axon".to_string()], Vec::new());
+
+    assert!(lowercase.allows("Axon", "axon"));
+    assert!(uppercase.allows("axon", "axon"));
+    assert_eq!(lowercase.fingerprint(), uppercase.fingerprint());
+
+    let namespaced_tool = ToolScope::new(Vec::new(), vec!["axon::axon".to_string()]);
+    assert!(namespaced_tool.allows("Axon", "axon"));
+}
+
+#[test]
 fn capability_filter_fingerprint_is_structured_and_collision_resistant() {
     let first = ToolScope::new(
         vec!["a,b".to_string(), "c".to_string()],

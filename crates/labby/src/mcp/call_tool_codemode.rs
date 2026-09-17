@@ -520,9 +520,11 @@ fn route_scoped_capability_filter(
 ) -> Result<ToolScope, DispatchToolError> {
     let requested_upstreams = string_array_arg(args, "upstreams")?;
     if let Some(allowed) = route_allowed
-        && requested_upstreams
-            .iter()
-            .any(|name| !allowed.contains(name))
+        && requested_upstreams.iter().any(|name| {
+            !allowed
+                .iter()
+                .any(|allowed_name| allowed_name.eq_ignore_ascii_case(name))
+        })
     {
         return Err(DispatchToolError::Sdk {
             sdk_kind: "route_scope_denied".to_string(),

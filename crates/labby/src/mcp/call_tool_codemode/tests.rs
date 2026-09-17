@@ -140,6 +140,18 @@ fn scoped_capability_filter_rejects_disallowed_requested_upstreams() {
 }
 
 #[test]
+fn scoped_capability_filter_accepts_case_variant_of_allowed_upstream() {
+    let mut args = serde_json::Map::new();
+    args.insert("upstreams".to_string(), json!(["axon"]));
+    let allowed = std::collections::BTreeSet::from(["Axon".to_string()]);
+
+    let filter = route_scoped_capability_filter(&args, Some(&allowed))
+        .expect("namespace case must not change route authorization");
+
+    assert!(filter.allows("Axon", "axon"));
+}
+
+#[test]
 fn scoped_capability_filter_defaults_to_route_allowed_upstreams() {
     let args = serde_json::Map::new();
     let allowed = std::collections::BTreeSet::from(["alpha".to_string()]);
