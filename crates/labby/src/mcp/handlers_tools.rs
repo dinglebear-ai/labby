@@ -244,13 +244,17 @@ impl LabMcpServer {
             && self.route_scope.allows_service("setup")
             && self.service_visible_on_mcp("setup").await;
         let mut builtin_names = HashSet::new();
+        #[cfg(all(feature = "skills", feature = "gateway"))]
+        let skill_library_app_enabled = mcp_apps_config.skill_library;
+        #[cfg(all(feature = "skills", not(feature = "gateway")))]
+        let skill_library_app_enabled = false;
         #[cfg(feature = "skills")]
         let skill_library_allowed_actions = self.allowed_mcp_actions("artifacts").await;
         #[cfg(feature = "skills")]
         let skill_library_mode = if self.skill_library_http_management_visible(&context) {
             let skills_auth = auth_context_from_extensions(&context.extensions);
             SkillLibraryDescriptorMode::Management {
-                app_visible: mcp_apps_config.skill_library
+                app_visible: skill_library_app_enabled
                     && code_mode_read_scope_allowed(skills_auth)
                     && self.route_scope.exposes_resources(),
                 allowed_actions: skill_library_allowed_actions.as_deref(),

@@ -107,7 +107,7 @@ fn default_mcp_scopes() -> Vec<String> {
 /// control tool stays available when its manager UI is disabled. Code Mode keeps
 /// its existing `CodeModeConfig::mcp_ui_enabled` field for backward-compatible
 /// config.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct McpAppsConfig {
     /// Attach MCP App metadata to the always-available `mcp_app` control tool and advertise its UI resources.
     /// The control tool itself remains available when this is false. Fresh installs keep the UI opt-in.
@@ -133,19 +133,6 @@ pub struct McpAppsConfig {
     /// Fresh installs keep Labby-owned MCP App UIs opt-in.
     #[serde(default)]
     pub settings: bool,
-}
-
-impl Default for McpAppsConfig {
-    fn default() -> Self {
-        Self {
-            manager: false,
-            skill_library: false,
-            add_server: false,
-            server_logs: false,
-            gateway_status: false,
-            settings: false,
-        }
-    }
 }
 
 // ─── Code Mode ───────────────────────────────────────────────────────────────

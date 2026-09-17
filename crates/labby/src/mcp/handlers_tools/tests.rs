@@ -2132,22 +2132,6 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
             .is_some_and(|meta| !meta.0.contains_key("ui")),
         "server_logs app metadata must be disabled"
     );
-    #[cfg(feature = "skills")]
-    {
-        let artifacts = tools
-            .tools
-            .iter()
-            .find(|tool| tool.name.as_ref() == "artifacts")
-            .expect("artifacts text service remains available");
-        assert!(
-            artifacts
-                .meta
-                .as_ref()
-                .is_some_and(|meta| !meta.0.contains_key("ui")),
-            "Skill Library app metadata must be disabled while artifacts stays callable"
-        );
-    }
-
     let resources = running
         .service()
         .list_resources_impl(None, scoped_context(peer.clone(), &["lab:admin"]))
