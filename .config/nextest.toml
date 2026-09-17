@@ -20,21 +20,50 @@ platform = 'cfg(windows)'
 filter = 'package(labby-codemode) & test(git::provider::tests::)'
 threads-required = 'num-test-threads'
 
-# Shared lifecycle harness tests are compiled into several integration binaries.
-# They launch real daemons, process groups, listeners, and cleanup guardians. Running
-# copies concurrently exhausted unchanged readiness/cleanup budgets on Windows and,
-# after the hosted Linux shard fan-out, produced the same cross-test interference on
-# Linux/macOS. Reserve all runner test slots for these cases on every platform. Their
-# own multi-process scenarios still run concurrently inside the test.
+# Shared lifecycle harness tests are compiled into many integration binaries.
+# They launch real daemons, process groups, listeners, and cleanup guardians.
+# Windows first exposed concurrent copies exhausting readiness budgets; hosted
+# Linux shards and macOS reproduction showed the same interference class.
+# Reserve every nextest slot for each live_labby case on every platform while
+# preserving each case's intended internal multi-process concurrency.
 [[profile.ci.overrides]]
 filter = 'package(labby) & test(live_labby::)'
 threads-required = 'num-test-threads'
 
-# Proxy qualification cases intentionally build multi-hop live Labby topologies.
-# Keep each case isolated from unrelated live-daemon tests while preserving normal
-# parallelism for pure integration tests in the same shard.
+# Integration binaries that launch real Labby daemons, browser/process fixtures,
+# or the shared lifecycle harness must not overlap on one runner. Their product
+# deadlines are intentional oracles; runner contention must not consume them.
+# Reserve every nextest slot for each test in these binaries instead of inflating
+# deadlines. The target shards still execute on separate CI runners in parallel.
 [[profile.ci.overrides]]
-filter = 'package(labby) & binary(=proxy_qualification)'
+filter = '''package(labby) & (
+    binary(=browser_runtime_e2e)
+    | binary(=codemode_qualification)
+    | binary(=e2e_coverage_report)
+    | binary(=gateway_auto_reconnect)
+    | binary(=lifecycle_conformance)
+    | binary(=live_api_actions)
+    | binary(=live_browser_bridge)
+    | binary(=live_cli_actions)
+    | binary(=live_http_ipv6)
+    | binary(=live_http_observability)
+    | binary(=live_http_routes)
+    | binary(=live_integration_identity)
+    | binary(=live_mcp_actions)
+    | binary(=live_process_harness)
+    | binary(=live_protected_routes)
+    | binary(=live_restart_persistence)
+    | binary(=live_surface_parity)
+    | binary(=mcp_apps_host_qualification)
+    | binary(=mcp_primitives_qualification)
+    | binary(=mcp_spec_http_contracts)
+    | binary(=mcp_spec_wire_compliance)
+    | binary(=mcp_tools_transport_qualification)
+    | binary(=oauth_qualification)
+    | binary(=proxy_qualification)
+    | binary(=skills_mcp_e2e)
+    | binary(=webmcp_browser_qualification)
+)'''
 threads-required = 'num-test-threads'
 
 # These three process-inventory controls hit their unchanged 3s deadlines when

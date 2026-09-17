@@ -1219,6 +1219,74 @@ fn ci_gate_aggregates_every_non_advisory_job() {
     }
 }
 
+/// Process-owning integration fixtures are compiled into many test binaries.
+/// The CI profile must serialize both duplicated harness-unit cases and every
+/// integration binary that launches real process state.
+#[test]
+fn nextest_ci_isolates_process_harnesses_and_timing_oracles() {
+    let root = repo_root();
+    let nextest =
+        fs::read_to_string(root.join(".config/nextest.toml")).expect("read .config/nextest.toml");
+    let lifecycle_filter = "filter = 'package(labby) & test(live_labby::)'";
+    assert!(
+        nextest.contains(lifecycle_filter),
+        "CI must serialize every embedded live_labby harness copy"
+    );
+    let lifecycle = nextest
+        .split(lifecycle_filter)
+        .nth(1)
+        .and_then(|section| section.split("[[").next())
+        .expect("live_labby override");
+    assert!(
+        lifecycle.contains("threads-required = 'num-test-threads'"),
+        "live_labby override must reserve every nextest slot"
+    );
+    assert!(
+        !lifecycle.contains("platform ="),
+        "process-harness isolation must apply on Linux, macOS, and Windows"
+    );
+
+    let process_override = nextest
+        .split("filter = '''package(labby) & (")
+        .nth(1)
+        .and_then(|section| section.split("[[").next())
+        .expect("process-owning integration override");
+    assert!(
+        process_override.contains("threads-required = 'num-test-threads'"),
+        "process-owning integration tests must reserve every nextest slot"
+    );
+    let test_dir = root.join("crates/labby/tests");
+    let mut process_binaries = Vec::new();
+    for entry in fs::read_dir(&test_dir).expect("read integration test directory") {
+        let path = entry.expect("test entry").path();
+        if path.extension().and_then(|value| value.to_str()) != Some("rs") {
+            continue;
+        }
+        let source = fs::read_to_string(&path).expect("read integration test source");
+        let path_marker = ["support", "/live_labby.rs"].concat();
+        let type_marker = ["support::", "LiveLabby"].concat();
+        let module_marker = ["support::", "live_labby"].concat();
+        if source.contains(&path_marker)
+            || source.contains(&type_marker)
+            || source.contains(&module_marker)
+        {
+            process_binaries.push(
+                path.file_stem()
+                    .and_then(|value| value.to_str())
+                    .expect("UTF-8 test name")
+                    .to_owned(),
+            );
+        }
+    }
+    assert!(!process_binaries.is_empty());
+    for binary in process_binaries {
+        assert!(
+            process_override.contains(&format!("binary(={binary})")),
+            "process-owning integration binary {binary} must be isolated in nextest CI"
+        );
+    }
+}
+
 /// The merge gate must finish in about ten minutes. That budget is kept by
 /// fanning the long serial suites out across matrix shards, by moving the
 /// slow non-gating suites (coverage, the gateway-slice re-run, doctests) off
@@ -1270,6 +1338,7 @@ fn merge_gate_shards_heavy_suites_to_stay_under_ten_minutes() {
         "--partition \"hash:${index}/${unit_shards}\"",
         "for file in crates/labby/tests/*.rs",
         "cargo nextest run -p labby",
+        "not test(live_labby::) | binary(=live_process_harness)",
         "--exclude labby",
         "cargo test --doc --workspace --all-features --locked",
     ] {
