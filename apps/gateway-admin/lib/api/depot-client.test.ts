@@ -193,6 +193,34 @@ test('generic operation dispatch establishes the actor catalog immediately befor
   } finally { globalThis.fetch = original }
 })
 
+test('operation preflight is independent of the Administration renderer schema subset', async () => {
+  const original = globalThis.fetch
+  const sequence: string[] = []
+  globalThis.fetch = (async (url, init) => {
+    const method = (init?.method ?? 'GET').toUpperCase()
+    if (String(url) === '/v1/depot/operations' && method === 'GET') {
+      sequence.push('catalog')
+      return json({ operations: [{
+        name: 'depot.system.status',
+        title: 'Status',
+        description: 'Status',
+        annotations: { readOnlyHint: true, destructiveHint: false },
+        inputSchema: { type: 'object', additionalProperties: true },
+      }] })
+    }
+    if (String(url) === '/v1/depot/operations' && method === 'POST') {
+      sequence.push('post')
+      return json({ schemaVersion: 'labby.depot-compatibility/v1', result: { ok: true } })
+    }
+    return json({ message: 'unexpected request' }, 500)
+  }) as typeof fetch
+  try {
+    const result = await depotCall<{ result: { ok: boolean } }>('depot.system.status', {})
+    assert.equal(result.result.ok, true)
+    assert.deepEqual(sequence, ['catalog', 'post'])
+  } finally { globalThis.fetch = original }
+})
+
 test('already-aborted operation never starts a catalog preflight', async () => {
   const original = globalThis.fetch
   let requests = 0
@@ -205,6 +233,42 @@ test('already-aborted operation never starts a catalog preflight', async () => {
   try {
     await assert.rejects(depotCall('depot.system.status', {}, controller.signal), /aborted/i)
     assert.equal(requests, 0)
+  } finally { globalThis.fetch = original }
+})
+
+test('operation cancellation stops waiting without aborting the shared catalog preflight', async () => {
+  const original = globalThis.fetch
+  const sequence: string[] = []
+  let releaseCatalog!: () => void
+  const catalogGate = new Promise<void>(resolve => { releaseCatalog = resolve })
+  globalThis.fetch = (async (url, init) => {
+    const method = (init?.method ?? 'GET').toUpperCase()
+    if (String(url) === '/v1/depot/operations' && method === 'GET') {
+      sequence.push('catalog')
+      await catalogGate
+      return operationCatalog()
+    }
+    if (String(url) === '/v1/depot/operations' && method === 'POST') {
+      sequence.push('post')
+      return json({ schemaVersion: 'labby.depot-compatibility/v1', result: { ok: true } })
+    }
+    return json({ message: 'unexpected request' }, 500)
+  }) as typeof fetch
+  const controller = new AbortController()
+  try {
+    const cancelled = depotCall('depot.system.status', {}, controller.signal)
+    await Promise.resolve()
+    assert.deepEqual(sequence, ['catalog'])
+    controller.abort()
+    await assert.rejects(cancelled, /aborted/i)
+    assert.deepEqual(sequence, ['catalog'], 'cancelled caller never dispatches an operation')
+
+    const survivor = depotCall<{ result: { ok: boolean } }>('depot.system.status', {})
+    await Promise.resolve()
+    assert.deepEqual(sequence, ['catalog'], 'surviving caller reuses the still-running shared preflight')
+    releaseCatalog()
+    assert.equal((await survivor).result.ok, true)
+    assert.deepEqual(sequence, ['catalog', 'post'])
   } finally { globalThis.fetch = original }
 })
 
@@ -269,6 +333,56 @@ test('concurrent operation dispatch shares one in-flight catalog preflight', asy
     await Promise.all([first, second])
     assert.equal(sequence.filter(item => item === 'catalog').length, 1)
     assert.deepEqual(new Set(sequence.slice(1)), new Set(['depot.system.status', 'depot.maintenance.gc']))
+  } finally { globalThis.fetch = original }
+})
+
+test('invalid catalog between preflight and dispatch is re-primed and retried exactly once', async () => {
+  const original = globalThis.fetch
+  const sequence: string[] = []
+  const postedBodies: unknown[] = []
+  let posts = 0
+  globalThis.fetch = (async (url, init) => {
+    const method = (init?.method ?? 'GET').toUpperCase()
+    if (String(url) === '/v1/depot/operations' && method === 'GET') {
+      sequence.push('catalog')
+      return operationCatalog()
+    }
+    if (String(url) === '/v1/depot/operations' && method === 'POST') {
+      posts++
+      sequence.push(`post-${posts}`)
+      postedBodies.push(JSON.parse(String(init?.body)))
+      if (posts === 1) return json({ error: 'invalid_depot_catalog' }, 502)
+      return json({ schemaVersion: 'labby.depot-compatibility/v1', result: { ok: true } })
+    }
+    return json({ message: 'unexpected request' }, 500)
+  }) as typeof fetch
+  const intent = { confirmed: true as const, idempotencyKey: 'stable-intent' }
+  try {
+    const result = await depotCall<{ result: { ok: boolean } }>('depot.sources.delete', { sourceId: 'src-1' }, undefined, intent)
+    assert.equal(result.result.ok, true)
+    assert.deepEqual(sequence, ['catalog', 'post-1', 'catalog', 'post-2'])
+    assert.deepEqual(postedBodies, [
+      { operation: 'depot.sources.delete', params: { sourceId: 'src-1' }, destructiveIntent: intent },
+      { operation: 'depot.sources.delete', params: { sourceId: 'src-1' }, destructiveIntent: intent },
+    ])
+  } finally { globalThis.fetch = original }
+})
+
+test('non-catalog operation failures are never replayed automatically', async () => {
+  const original = globalThis.fetch
+  let posts = 0
+  globalThis.fetch = (async (url, init) => {
+    const method = (init?.method ?? 'GET').toUpperCase()
+    if (String(url) === '/v1/depot/operations' && method === 'GET') return operationCatalog()
+    if (String(url) === '/v1/depot/operations' && method === 'POST') {
+      posts++
+      return json({ error: 'depot_rejected' }, 502)
+    }
+    return json({ message: 'unexpected request' }, 500)
+  }) as typeof fetch
+  try {
+    await assert.rejects(depotCall('depot.sources.delete', { sourceId: 'src-1' }, undefined, { confirmed: true, idempotencyKey: 'do-not-replay' }), /depot_rejected/)
+    assert.equal(posts, 1)
   } finally { globalThis.fetch = original }
 })
 
