@@ -10,10 +10,10 @@ use labby_codemode::snippet::store::{
     builtin_snippet_dir, code_for_snippet, merge_snippet_input, resolve_snippet,
 };
 use labby_codemode::{
-    CodeModeCallError, CodeModeCaller, CodeModeConfig, CodeModeErrorOrigin, CodeModeHost,
-    CodeModeSideEffectRisk, CodeModeSurface, CodeModeToolSafetyHints, ResolvedSnippet, RunnerPool,
-    ToolCallOutcome, ToolScope, ToolsRender, UiLink, destructive_permitted,
-    discovery_entry_visible, discovery_render_params,
+    CatalogDescriptor, CodeModeCallError, CodeModeCaller, CodeModeCatalogKind, CodeModeConfig,
+    CodeModeErrorOrigin, CodeModeHost, CodeModeSideEffectRisk, CodeModeSurface,
+    CodeModeToolSafetyHints, ResolvedSnippet, RunnerPool, ToolCallOutcome, ToolScope, ToolsRender,
+    UiLink, destructive_permitted, discovery_entry_visible, discovery_render_params,
 };
 use std::sync::Arc;
 
@@ -116,6 +116,21 @@ fn stable_request_tag(parent_request_id: &str) -> String {
 
     let digest = Sha256::digest(parent_request_id.as_bytes());
     hex::encode(&digest[..6])
+}
+
+fn semantic_candidate_ids<'a>(
+    entries: &'a [CatalogDescriptor],
+    scope: &ToolScope,
+    kinds: &[CodeModeCatalogKind],
+) -> std::collections::BTreeSet<&'a str> {
+    entries
+        .iter()
+        .filter(|entry| {
+            discovery_entry_visible(entry, scope)
+                && (kinds.is_empty() || kinds.contains(&entry.kind))
+        })
+        .map(|entry| entry.id.as_str())
+        .collect()
 }
 
 impl CodeModeHost for GatewayManager {
@@ -474,6 +489,7 @@ impl CodeModeHost for GatewayManager {
         &self,
         query: String,
         top_k: usize,
+        kinds: &[CodeModeCatalogKind],
         caller: &CodeModeCaller,
         surface: CodeModeSurface,
         scope: &ToolScope,
@@ -534,12 +550,7 @@ impl CodeModeHost for GatewayManager {
         if vectors.is_empty() {
             return Ok(Vec::new());
         }
-        let allowed_ids: std::collections::BTreeSet<&str> = render
-            .entries
-            .iter()
-            .filter(|entry| discovery_entry_visible(entry, scope))
-            .map(|entry| entry.id.as_str())
-            .collect();
+        let allowed_ids = semantic_candidate_ids(&render.entries, scope, kinds);
         let scoped_vectors: Vec<(String, Vec<f32>)> = vectors
             .into_iter()
             .filter(|(id, _)| allowed_ids.contains(id.as_str()))
@@ -1485,6 +1496,32 @@ mod tests {
     use rmcp::model::{ContentBlock, ErrorCode, ErrorData, MetaObject};
     #[cfg(unix)]
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn semantic_candidates_are_source_neutral_and_kind_filterable() {
+        let tool = CatalogDescriptor::tool("alpha", "query", "Query data", None, None);
+        let mut skill =
+            CatalogDescriptor::tool("labby", "adversarial_review", "Review code", None, None);
+        skill.kind = CodeModeCatalogKind::Skill;
+        skill.id = "skill::labby::adversarial_review".to_string();
+
+        let entries = vec![tool, skill];
+        let scope = ToolScope::scoped_namespaces(vec!["alpha".to_string()], Vec::new());
+
+        let all = semantic_candidate_ids(&entries, &scope, &[]);
+        assert_eq!(all.len(), 2);
+        assert!(all.contains("alpha::query"));
+        assert!(all.contains("skill::labby::adversarial_review"));
+
+        let skills = semantic_candidate_ids(&entries, &scope, &[CodeModeCatalogKind::Skill]);
+        assert_eq!(
+            skills,
+            std::collections::BTreeSet::from(["skill::labby::adversarial_review"])
+        );
+
+        let tools = semantic_candidate_ids(&entries, &scope, &[CodeModeCatalogKind::Tool]);
+        assert_eq!(tools, std::collections::BTreeSet::from(["alpha::query"]));
+    }
 
     /// Build a `GatewayManager` wired to a fresh temp `StepJournalStore`. The
     /// tempdir is intentionally leaked so the DB file outlives the store's open

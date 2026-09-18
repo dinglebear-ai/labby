@@ -96,9 +96,12 @@ pub fn namespaced_tool_id(namespace: &str, tool: &str) -> String {
     format!("{namespace}::{tool}")
 }
 
-/// Search/describe catalog entry for a host tool or reusable snippet.
+/// Source-neutral search/describe entry in the Code Mode capability catalog.
+///
+/// A descriptor carries discovery metadata only. Its presence never grants
+/// execution or access; dispatch/load operations remain separately authorized.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct ToolDescriptor {
+pub struct CatalogDescriptor {
     /// Exact upstream-tool declaration for snippets; absent for normal tools
     /// and legacy snippets. An explicit empty declaration remains visible.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -107,9 +110,9 @@ pub struct ToolDescriptor {
     pub kind: CodeModeCatalogKind,
     /// Stable Code Mode identifier.
     pub id: String,
-    /// Unqualified tool or snippet name.
+    /// Unqualified catalog entry name.
     pub name: String,
-    /// Host namespace, or `snippet` for reusable snippets.
+    /// Source/provider namespace. Reusable snippets use `snippet`.
     pub namespace: String,
     /// Human-readable catalog description.
     pub description: String,
@@ -117,20 +120,20 @@ pub struct ToolDescriptor {
     /// remains authoritative; absence means unknown, never `false`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub safety: Option<CodeModeToolSafety>,
-    /// JSON Schema for the input payload when one is available.
+    /// JSON Schema for the input payload when this capability has one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schema: Option<Value>,
-    /// JSON Schema for the result payload when one is available.
+    /// JSON Schema for the result payload when this capability has one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<Value>,
-    /// Compact JavaScript/TypeScript call signature shown by discovery.
+    /// Compact invocation signature when the capability exposes one.
     pub signature: String,
-    /// TypeScript declaration text emitted by `describe`.
+    /// TypeScript declaration text for callable Tool descriptors.
     pub dts: String,
     /// Optional search/discovery tags.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
-    /// Declared snippet input entries. Empty for normal tools.
+    /// Snippet-specific declared input entries; empty for other kinds.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<CodeModeSnippetInputEntry>,
 }
@@ -166,6 +169,43 @@ pub enum CodeModeCatalogKind {
     Tool,
     /// Reusable Code Mode snippet.
     Snippet,
+    /// MCP or host-provided resource metadata.
+    Resource,
+    /// MCP or host-provided prompt metadata.
+    Prompt,
+    /// Agent Skill metadata.
+    Skill,
+    /// Agent profile metadata.
+    Agent,
+}
+
+impl CodeModeCatalogKind {
+    /// Stable wire/search spelling used by Code Mode catalog filters.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Tool => "tool",
+            Self::Snippet => "snippet",
+            Self::Resource => "resource",
+            Self::Prompt => "prompt",
+            Self::Skill => "skill",
+            Self::Agent => "agent",
+        }
+    }
+
+    /// Parse a catalog kind from its stable wire spelling.
+    #[must_use]
+    pub fn parse_filter(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "tool" => Some(Self::Tool),
+            "snippet" => Some(Self::Snippet),
+            "resource" => Some(Self::Resource),
+            "prompt" => Some(Self::Prompt),
+            "skill" => Some(Self::Skill),
+            "agent" => Some(Self::Agent),
+            _ => None,
+        }
+    }
 }
 
 /// Named snippet input plus its validation/default specification.
@@ -178,7 +218,7 @@ pub struct CodeModeSnippetInputEntry {
     pub spec: SnippetInputSpec,
 }
 
-impl ToolDescriptor {
+impl CatalogDescriptor {
     /// Build a tool descriptor for a host-provided tool (`<namespace>::<tool>`).
     ///
     /// The host passes already-sanitized JSON Schemas; this constructor only
@@ -224,6 +264,42 @@ impl ToolDescriptor {
             dts: types.dts,
             tags: Vec::new(),
             inputs: Vec::new(),
+        }
+    }
+
+    /// Stable source-neutral path used by search/describe. Existing tool and
+    /// snippet paths are preserved byte-for-byte; future metadata-only kinds
+    /// live under a kind-prefixed namespace and gain no execution behavior.
+    #[must_use]
+    pub fn discovery_path(&self) -> String {
+        match self.kind {
+            CodeModeCatalogKind::Tool => {
+                let namespace = super::preamble::namespace_segment(&self.namespace);
+                let name = super::preamble::tool_name_to_snake(&self.name);
+                format!("{namespace}.{name}")
+            }
+            CodeModeCatalogKind::Snippet => format!("snippet.{}", self.name),
+            kind => {
+                let kind = kind.as_str();
+                let namespace = super::preamble::namespace_segment(&self.namespace);
+                let name = super::preamble::tool_name_to_snake(&self.name);
+                if namespace == kind {
+                    format!("{kind}.{name}")
+                } else {
+                    format!("{kind}.{namespace}.{name}")
+                }
+            }
+        }
+    }
+
+    /// Discovery helper text. Metadata-only kinds deliberately point back to
+    /// `describe`; they do not acquire callable/load behavior in this slice.
+    #[must_use]
+    pub fn discovery_helper(&self) -> String {
+        match self.kind {
+            CodeModeCatalogKind::Tool => format!("codemode.{}", self.discovery_path()),
+            CodeModeCatalogKind::Snippet => format!("codemode.run({:?}, input)", self.name),
+            _ => format!("codemode.describe({:?})", self.discovery_path()),
         }
     }
 
@@ -334,21 +410,9 @@ pub(crate) struct CodeModeDiscoveryEntry {
 
 impl CodeModeDiscoveryEntry {
     #[must_use]
-    pub(crate) fn from_catalog(entry: &ToolDescriptor) -> Self {
-        let (path, helper) = match entry.kind {
-            CodeModeCatalogKind::Tool => {
-                let namespace = super::preamble::namespace_segment(&entry.namespace);
-                let name = super::preamble::tool_name_to_snake(&entry.name);
-                (
-                    format!("{namespace}.{name}"),
-                    format!("codemode.{namespace}.{name}"),
-                )
-            }
-            CodeModeCatalogKind::Snippet => (
-                format!("snippet.{}", entry.name),
-                format!("codemode.run({:?}, input)", entry.name),
-            ),
-        };
+    pub(crate) fn from_catalog(entry: &CatalogDescriptor) -> Self {
+        let path = entry.discovery_path();
+        let helper = entry.discovery_helper();
         Self {
             kind: entry.kind,
             tools: entry.tools.clone(),

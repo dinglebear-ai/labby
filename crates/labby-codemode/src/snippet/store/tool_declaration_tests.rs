@@ -27,10 +27,10 @@ fn declarations_preserve_omission_empty_and_exact_ids_through_store_surfaces() {
         let listed = list_snippets(root.path(), builtins.path()).unwrap();
         for value in [
             serde_json::to_value(crate::types::CodeModeDiscoveryEntry::from_catalog(
-                &crate::ToolDescriptor::snippet(&info),
+                &crate::CatalogDescriptor::snippet(&info),
             ))
             .unwrap(),
-            serde_json::to_value(crate::ToolDescriptor::snippet(&info)).unwrap(),
+            serde_json::to_value(crate::CatalogDescriptor::snippet(&info)).unwrap(),
             serde_json::to_value(info).unwrap(),
             serde_json::to_value(resolved).unwrap(),
             serde_json::to_value(&listed[0]).unwrap(),
