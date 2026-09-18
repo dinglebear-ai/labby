@@ -44,6 +44,23 @@ fn has_admin_scope(auth: Option<&Extension<AuthContext>>) -> bool {
     auth.is_some_and(|ctx| ctx.0.scopes.iter().any(|scope| scope == "lab:admin"))
 }
 
+fn execution_caller_for_api(
+    auth: Option<&Extension<AuthContext>>,
+) -> crate::dispatch::gateway::code_mode::CodeModeCaller {
+    auth.map_or(
+        crate::dispatch::gateway::code_mode::CodeModeCaller::TrustedLocal,
+        |value| crate::dispatch::gateway::code_mode::CodeModeCaller::Scoped {
+            capabilities: labby_codemode::CodeModeCallerCapabilities {
+                can_read: true,
+                can_execute: true,
+                can_use_snippets: true,
+                is_admin: true,
+            },
+            sub: Some(value.0.sub.clone()),
+        },
+    )
+}
+
 fn require_snippets_admin(
     action: &str,
     request_id: Option<&str>,
@@ -77,18 +94,7 @@ async fn handle(
     let request_id = headers.get("x-request-id").and_then(|v| v.to_str().ok());
     require_snippets_admin(&req.action, request_id, auth.as_ref())?;
     let manager = state.gateway_manager.clone();
-    let execution_caller = auth.as_ref().map_or(
-        crate::dispatch::gateway::code_mode::CodeModeCaller::TrustedLocal,
-        |value| crate::dispatch::gateway::code_mode::CodeModeCaller::Scoped {
-            capabilities: labby_codemode::CodeModeCallerCapabilities {
-                can_read: true,
-                can_execute: true,
-                can_use_snippets: true,
-                is_admin: true,
-            },
-            sub: Some(value.0.sub.clone()),
-        },
-    );
+    let execution_caller = execution_caller_for_api(auth.as_ref());
     let dispatch_context = crate::dispatch::snippets::dispatch::SnippetDispatchContext {
         actor_key: auth
             .as_ref()
@@ -169,6 +175,19 @@ mod tests {
             csrf_token: None,
             email: Some("admin@example.com".to_string()),
         }
+    }
+
+    #[test]
+    fn authenticated_api_snippet_caller_preserves_identity_instead_of_becoming_trusted_local() {
+        let auth = Extension(admin_auth_context());
+        let caller = super::execution_caller_for_api(Some(&auth));
+
+        assert!(!matches!(
+            caller,
+            crate::dispatch::gateway::code_mode::CodeModeCaller::TrustedLocal
+        ));
+        assert_eq!(caller.subject(), Some("admin-user"));
+        assert!(caller.is_admin());
     }
 
     fn app_with_auth(auth: AuthContext) -> Router {
