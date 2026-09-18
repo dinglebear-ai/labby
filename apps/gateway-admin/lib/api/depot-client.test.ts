@@ -136,15 +136,16 @@ test('rejects artifacts without identity in list and detail results', async () =
 })
 
 test('normalizes absent optional catalog metadata without accepting invalid identities or types', async () => {
-  const published = { ...artifact, title: null, description: null, descriptor: { id: artifact.id, title: null }, currentRevision: { id: 'revision-1', createdAt: null }, lineage: { following: false, upstreamArtifactId: null } }
+  const published = { ...artifact, title: null, description: null, descriptor: { id: artifact.id, title: null }, currentRevision: { id: 'revision-1', createdAt: null, components: [{ id: 'component-1', kind: 'file', path: 'helper.sh', mediaType: null, size: 123 }] }, lineage: { following: false, upstreamArtifactId: null } }
   await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v1', result: { artifacts: [published], total: 1 } }), async () => {
     const response = await depotCall<{ result: { artifacts: Array<{ id: string; title?: string }> } }>('depot.artifacts.list', {})
     assert.equal(response.result.artifacts[0]?.id, artifact.id)
     assert.equal(response.result.artifacts[0]?.title, undefined)
   })
   await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v1', result: { artifact: published } }), async () => {
-    const response = await depotCall<{ result: { artifact: { currentRevision: { createdAt?: string } } } }>('depot.artifacts.get', {})
+    const response = await depotCall<{ result: { artifact: { currentRevision: { createdAt?: string; components?: Array<{ mediaType?: string }> } } } }>('depot.artifacts.get', {})
     assert.equal(response.result.artifact.currentRevision.createdAt, undefined)
+    assert.equal(response.result.artifact.currentRevision.components?.[0]?.mediaType, undefined)
   })
   for (const invalid of [{ id: null }, { ...artifact, title: 42 }]) {
     await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v1', result: { artifacts: [invalid] } }), async () => assert.rejects(depotCall('depot.artifacts.list', {}), /incompatible artifact list response/))
