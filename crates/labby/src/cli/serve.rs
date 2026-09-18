@@ -1146,8 +1146,7 @@ fn resolve_trusted_host_verifier(
     peer_auth_enabled: bool,
 ) -> Result<Option<Arc<labby_auth::trusted_host::TrustedHostVerifier>>> {
     let enabled = std::env::var("LABBY_INTEGRATED_TRUSTED_HOST")
-        .ok()
-        .is_some_and(|value| matches!(value.trim(), "1" | "true" | "TRUE"));
+        .is_ok_and(|value| matches!(value.trim(), "1" | "true" | "TRUE"));
     if !enabled {
         return Ok(None);
     }

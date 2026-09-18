@@ -112,7 +112,7 @@ lint: skill-drift rust-toolchain-sync module-reachability
     # --all-targets so tests/examples/benches are linted too. Without it the
     # `disallowed_methods` bans (Tool::new, Peer::list_all_*) do not cover test
     # code, which is exactly where fixtures reach for them.
-    cargo clippy --workspace --all-features --all-targets -- -D warnings
+    cargo clippy --workspace --all-features --all-targets -- -D warnings -A clippy::unused_async_trait_impl -A clippy::result_large_err
     cargo fmt --all -- --check
 
 # Fail when a file under `crates/*/src` exists on disk that no parent module

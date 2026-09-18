@@ -585,11 +585,7 @@ impl TransportQualification {
             }
         }
 
-        if self
-            .effect_counts()
-            .ok()
-            .is_some_and(|(_, active)| active != 0)
-        {
+        if self.effect_counts().is_ok_and(|(_, active)| active != 0) {
             cleanup
                 .failures
                 .push("upstream effect remained active after cleanup".into());

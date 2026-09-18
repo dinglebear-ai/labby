@@ -238,10 +238,10 @@ export function StashPageContent() {
   return <>
     <span className="sr-only" role="status" aria-live="polite">{announcement}</span>
     <ConsoleHero eyebrow="Control Plane · Stash" title="Stash" description="A scratch drive for you and your agents. Drop a file here and it is addressable at stash:// from any session without leaving the console." pulse={{ color: failure ? 'var(--aurora-error)' : statsFailure ? 'var(--aurora-warn)' : 'var(--aurora-success)', label: failure ? 'attention needed' : statsFailure ? 'stats unavailable' : undefined }} actions={<Button variant="outline" size="icon" aria-label="Upload to Stash" title="Upload to Stash" className="size-9 rounded-[10px] text-aurora-accent-strong" onClick={() => input.current?.click()}><Upload size={15}/></Button>} stats={[
-      { label: 'Files', value: loading || statsFailure || !statsLoaded.current ? '—' : stats.owned_file_count, suffix: 'owned files' },
-      { label: 'Size', value: loading || statsFailure || !statsLoaded.current ? '—' : bytes(stats.owned_committed_bytes), suffix: 'committed' },
+      { label: 'Files', value: loading || statsFailure || !statsLoaded.current || !stats ? '—' : stats.owned_file_count, suffix: 'owned files' },
+      { label: 'Size', value: loading || statsFailure || !statsLoaded.current || !stats ? '—' : bytes(stats.owned_committed_bytes), suffix: 'committed' },
       { label: 'Agent Reads', value: '—', suffix: 'not reported', tone: 'var(--aurora-accent-pink)' },
-      { label: 'Shared', value: loading || statsFailure || !statsLoaded.current ? '—' : stats.owned_shared_file_count, suffix: 'reachable', tone: 'var(--aurora-success)' },
+      { label: 'Shared', value: loading || statsFailure || !statsLoaded.current || !stats ? '—' : stats.owned_shared_file_count, suffix: 'reachable', tone: 'var(--aurora-success)' },
     ]}/>
     <input ref={input} type="file" multiple className="sr-only" tabIndex={-1} aria-hidden="true" onChange={event => acceptFiles(event.target.files || [])}/>
     <button type="button" onClick={() => input.current?.click()} onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy' }} onDrop={event => { event.preventDefault(); acceptFiles(event.dataTransfer.files) }} className="group flex w-full flex-wrap items-center justify-center gap-2.5 rounded-aurora-2 border-[1.5px] border-dashed border-aurora-border-strong/50 bg-transparent p-[18px] text-aurora-text-muted transition-colors hover:border-aurora-accent-primary hover:bg-aurora-accent-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary">

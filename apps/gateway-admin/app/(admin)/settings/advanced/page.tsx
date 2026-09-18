@@ -35,7 +35,7 @@ export default function AdvancedPage(): React.ReactElement {
         setSchema(schemaResponse)
         setSettings(stateResponse)
         setEnvSchema(envResponse.entries)
-        setEnvWarning(envResponse.warning)
+        setEnvWarning('warning' in envResponse ? envResponse.warning : undefined)
       })
       .catch((err) => {
         if (!controller.signal.aborted) setError(err instanceof Error ? err.message : 'load failed')

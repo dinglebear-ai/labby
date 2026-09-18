@@ -1267,8 +1267,7 @@ fn validate_transfer_headers(headers: &HeaderMap) -> Result<(), ApiError> {
         if encodings.next().is_some()
             || !value
                 .to_str()
-                .ok()
-                .is_some_and(|value| value.trim().eq_ignore_ascii_case("identity"))
+                .is_ok_and(|value| value.trim().eq_ignore_ascii_case("identity"))
         {
             return Err(stable("invalid_param"));
         }

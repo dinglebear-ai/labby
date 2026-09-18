@@ -233,8 +233,7 @@ impl ScenarioTarget for CapabilityVisibilityModel {
                 state
                     .operator_detail
                     .get(code)
-                    .filter(|detail| !detail.trim().is_empty())
-                    .is_none()
+                    .is_none_or(|detail| detail.trim().is_empty())
                     .then(|| format!("{code:?} has no actionable operator detail"))
             }),
             "LABBY-CAP-004" => (state.phase == Phase::Running

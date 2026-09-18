@@ -587,7 +587,7 @@ export const gatewayApi = {
       signal,
       runtimeResult.rows.find((runtime) => runtime.name === id),
     )
-    if (runtimeResult.warning) {
+    if ('warning' in runtimeResult && runtimeResult.warning) {
       gateway.warnings.push({
         code: 'gateway_runtime_diagnostics_unavailable',
         message: runtimeResult.warning,
