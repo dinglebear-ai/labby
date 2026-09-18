@@ -1584,8 +1584,9 @@ impl LabMcpServer {
         // Branch 0: MCP Apps UI resources. This must precede all lab://
         // fallbacks so ui:// has its own exact lookup semantics.
         //
-        // The `mcp_app` control tool is always locally available, but its own
-        // Labby-owned UI is opt-in like every other Labby-owned MCP App.
+        // The `mcp_app` control tool is always locally available. Its UI follows
+        // `mcp_apps.manager`: fresh installs enable it, while an operator can
+        // disable the resource surface without removing the control tool.
         #[cfg(feature = "gateway")]
         if uri.starts_with(MCP_APPS_APP_URI) {
             if !self.mcp_apps_config().await.manager {

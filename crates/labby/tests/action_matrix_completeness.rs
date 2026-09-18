@@ -1,22 +1,26 @@
 #![allow(clippy::panic)]
 
-#[path = "support/lib.rs"]
-mod support;
+#[allow(dead_code)]
+#[path = "support/action_matrix.rs"]
+mod action_matrix;
+#[allow(dead_code)]
+#[path = "support/authority_matrix.rs"]
+mod authority_matrix;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use labby_primitives::access::{Capability, CapabilitySchemaVersion, RoleTemplate};
-use serde_json::Value;
-use support::action_matrix::{
+use action_matrix::{
     CatalogAction, EXPECTED_ACTIONS, EXPECTED_API_ACTIONS, EXPECTED_CLI_ACTIONS,
     EXPECTED_MCP_ACTIONS, EXPECTED_SHARED_CLI_MCP_API_ACTIONS, EXPECTED_WEB_ACTIONS, EvidenceLevel,
     PersistenceClass, ScenarioKind, ScenarioOwner, Surface, catalog_map, intent_map,
     intent_map_from, intents, validate_intent_shape,
 };
-use support::authority_matrix::{
+use authority_matrix::{
     DEPOT_OPERATIONS, OperationClass, OwnerKind, ResourceFamily, classify_labby,
     depot_fixture_operation_names, depot_snapshot_operation_names, duplicate_depot_operations,
 };
+use labby_primitives::access::{Capability, CapabilitySchemaVersion, RoleTemplate};
+use serde_json::Value;
 
 const ACTION_CATALOG: &str = include_str!("../../../docs/generated/action-catalog.json");
 const AUTHORITY_MATRIX: &str =
@@ -994,7 +998,7 @@ services = ["stash"]
 
 #[test]
 fn generated_outcomes_cannot_downgrade_required_intent() {
-    use support::action_matrix::{CaseOutcome, OutcomeStatus, outcome_satisfies};
+    use action_matrix::{CaseOutcome, OutcomeStatus, outcome_satisfies};
     let intent = intents().iter().find(|intent| intent.required).unwrap();
     let skipped = CaseOutcome {
         key: intent.key(),
