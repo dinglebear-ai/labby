@@ -189,7 +189,71 @@ pub(super) fn log_fallback(
 
 #[cfg(test)]
 mod tests {
+    use std::io;
+    use std::sync::{Arc, Mutex};
+
     use super::*;
+    use tracing_subscriber::fmt::MakeWriter;
+
+    #[derive(Clone, Default)]
+    struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+
+    impl<'a> MakeWriter<'a> for SharedBuf {
+        type Writer = SharedWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            SharedWriter(Arc::clone(&self.0))
+        }
+    }
+
+    struct SharedWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl io::Write for SharedWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn captured_logs(buf: &SharedBuf) -> String {
+        String::from_utf8(buf.0.lock().unwrap().clone()).unwrap()
+    }
+
+    #[test]
+    fn successful_lifecycle_fallback_is_informational_not_warning() {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::{EnvFilter, fmt};
+
+        let buf = SharedBuf::default();
+        let subscriber = tracing_subscriber::registry()
+            .with(EnvFilter::new("labby_gateway=info"))
+            .with(
+                fmt::layer()
+                    .json()
+                    .with_writer(buf.clone())
+                    .with_ansi(false)
+                    .without_time(),
+            );
+
+        {
+            let _guard = tracing::subscriber::set_default(subscriber);
+            log_fallback(
+                "legacy-http",
+                "http",
+                LifecycleAttempt::LegacyInitialize,
+                &anyhow::anyhow!("modern discovery rejected"),
+            );
+        }
+
+        let logs = captured_logs(&buf);
+        assert!(logs.contains("upstream.lifecycle.fallback"));
+        assert!(logs.contains("\"level\":\"INFO\""), "{logs}");
+        assert!(!logs.contains("\"level\":\"WARN\""), "{logs}");
+    }
 
     #[test]
     fn retries_when_an_unexpected_result_carries_discovery_server_info() {
