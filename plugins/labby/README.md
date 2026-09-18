@@ -1,68 +1,46 @@
-# labby — Claude Code plugin
+# labby Claude Code plugin
 
-Skills and MCP configuration for the Labby homelab control plane.
+This package is a **client integration** for a running Labby control plane. It
+ships the Labby skills plus an MCP connection definition. It does not configure,
+bootstrap, repair, or mutate the Labby server host.
 
-This plugin does **not** bundle the `labby` binary and does not auto-install
-or auto-repair anything. It ships:
+The plugin contains:
 
 - the `using-labby` skill,
 - the `creating-snippets` skill for Labby Code Mode snippet authoring,
-- an HTTP MCP server entry pointing at a running `labby serve`
-  (`${user_config.server_url}/mcp` — remote machines never need a local binary),
-- `userConfig` settings declared in `.claude-plugin/plugin.json`.
+- an HTTP MCP server entry targeting `${user_config.server_url}/mcp`,
+- client-only connection settings for `server_url` and an optional bearer
+  `api_token`.
 
-The plugin ships **no Claude Code hooks**. The former `hooks/hooks.json`
-(SessionStart / ConfigChange shims) was removed; run `labby setup` yourself
-after changing plugin settings.
+There are **no Claude Code lifecycle hooks**. The old SessionStart and
+ConfigChange setup shims, server-environment synchronization, per-service Claude
+plugin installation, and `labby setup plugin-hook` compatibility path are
+retired. Installing or reconfiguring this plugin must never mutate
+`~/.labby/.env` on the machine running Labby.
 
-## Installing labby (server host only)
+## Server configuration
 
-```bash
-version=vX.Y.Z
-base="https://github.com/dinglebear-ai/labby/releases/download/$version"
-curl -fSLO "$base/labby-install.sh"
-curl -fSLO "$base/labby-install.sh.sha256"
-gh attestation verify labby-install.sh \
-  --repo dinglebear-ai/labby \
-  --signer-workflow dinglebear-ai/labby/.github/workflows/release.yml \
-  --source-ref "refs/tags/$version" \
-  --deny-self-hosted-runners
-shasum -a 256 -c labby-install.sh.sha256
-LABBY_INSTALL_VERSION="$version" sh ./labby-install.sh
-labby setup
-```
+Configure the Labby server on the server host using Labby's own Settings UI,
+configuration file, environment, or CLI. Server concerns such as OAuth,
+public URLs, CORS, admin exposure, logging, and upstream credentials intentionally
+are not plugin `userConfig` fields.
 
-The separately downloaded installer and checksum come from an explicit release.
-`gh` verifies the installer's repository, release workflow, exact tag, and
-hosted-runner provenance before the installer verifies and activates the
-platform archive. Source fallback is disabled by default; opt in explicitly
-with `LABBY_ALLOW_SOURCE_FALLBACK=1`. Successful installs retain owner-only
-receipts and the prior verified artifact beneath
-`~/.local/bin/.labby-install/` for offline rollback. Everything after install —
-config, credentials, connectivity checks, repair — is owned by `labby setup`.
-Configure the plugin with the URL of the Labby server you intend to trust; the
-plugin never selects a shared hosted gateway for you.
+If a server-side setting disables or degrades a capability, Labby exposes that
+through capability health and Doctor instead of requiring the client plugin to
+repair server configuration.
 
-The plugin exports its configured `server_url` as
-`CLAUDE_PLUGIN_OPTION_SERVER_URL`. Plugin-launched Labby processes use that same
-authoritative base for MCP transport, gateway management, Code Mode, and stdio
-bridging, paired only with `CLAUDE_PLUGIN_OPTION_API_TOKEN`; they never inherit
-an ambient `LABBY_MCP_HTTP_TOKEN` for a different authority. If the configured server fails, Labby reports the failure instead of
-silently reading or executing against the invoking user's local/XDG config.
+## Client configuration
 
-## Configuration
+Set `server_url` to the Labby endpoint this Claude Code client should trust.
+The plugin appends `/mcp`. Supply `api_token` only when that endpoint uses
+bearer authentication.
 
-Plugin settings (server URL, auth mode, token, …) are declared in
-`.claude-plugin/plugin.json` `userConfig`. Sync them into `~/.labby/.env` by
-running `labby setup plugin-hook` manually after changing settings — this is no
-longer triggered automatically by a ConfigChange hook.
+The plugin does not fall back to a different Labby authority when the configured
+endpoint fails. Connection failures are reported by the MCP client rather than
+silently switching to local/XDG server configuration.
 
-The `server_url` setting is persisted as `LABBY_SERVER_URL`. Connectivity
-checks prefer the invocation-scoped plugin setting, then that persisted client
-target, and use Dookie's `http://localhost:40100` host proxy only when neither
-is configured. Production Labby remains container-local on port 8765.
+## Installing Labby on a server host
 
-When upstream OAuth is configured, set `public_url` to the explicit public base
-URL for the Labby server. Labby derives the upstream browser callback from that
-value and refuses to initialize the HTTP OAuth runtime when it is missing; the
-plugin does not provide a shared hosted callback.
+Install the Labby binary separately on the host that runs the control plane and
+then configure that host with Labby's own setup/settings surfaces. The Claude
+Code plugin is not an installer and is not part of the server bootstrap path.

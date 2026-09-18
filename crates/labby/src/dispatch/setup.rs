@@ -10,16 +10,15 @@ pub(crate) mod access_bootstrap;
 mod bootstrap;
 mod caller;
 mod catalog;
-pub(crate) mod claude_plugins;
 mod client;
 mod constrained_yaml;
 mod dispatch;
 mod draft;
 pub(crate) mod host_service;
 pub(crate) mod incus;
+mod local_setup;
 pub(crate) mod owner_link;
 mod params;
-mod plugin_hook;
 pub(crate) mod provision;
 pub(crate) mod proxy;
 mod secret_mask;
@@ -38,7 +37,7 @@ pub use bootstrap::{
     BootstrapOutcome, bootstrap, bootstrap_action, ensure_oauth_encryption_key_at, should_bootstrap,
 };
 pub use caller::{SetupCaller, SetupCallerEvidence};
-pub use catalog::{ACTIONS, LOCAL_ONLY_ACTIONS, PLUGIN_LIFECYCLE_ACTIONS};
+pub use catalog::{ACTIONS, LOCAL_ONLY_ACTIONS};
 pub use dispatch::{dispatch, dispatch_for_caller};
 pub use token::generate_mcp_token;
 pub use types::{

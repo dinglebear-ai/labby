@@ -632,34 +632,6 @@ fn cli_action_cases() -> std::collections::BTreeSet<CliActionCase> {
             &["setup", "draft", "discard", "--dry-run", "--json"],
         ),
         (
-            "setup:plugin.install",
-            &["setup", "install-plugin", MISSING, "--dry-run", "--json"],
-        ),
-        (
-            "setup:plugin.uninstall",
-            &["setup", "uninstall-plugin", MISSING, "--dry-run", "--json"],
-        ),
-        (
-            "setup:plugin_connectivity",
-            &[
-                "setup",
-                "plugin-connectivity",
-                "--server-url",
-                "http://127.0.0.1:9",
-                "--json",
-            ],
-        ),
-        ("setup:plugin_export", &["setup", "plugin-export", "--json"]),
-        (
-            "setup:plugin_hook",
-            &["setup", "plugin-hook", "--no-repair", "--json"],
-        ),
-        ("setup:plugin_sync", &["setup", "plugin-sync", "--json"]),
-        (
-            "setup:plugins.installed",
-            &["setup", "installed-plugins", "--json"],
-        ),
-        (
             "setup:proxy.configure",
             &[
                 "setup",
@@ -670,10 +642,6 @@ fn cli_action_cases() -> std::collections::BTreeSet<CliActionCase> {
             ],
         ),
         ("setup:repair", &["setup", "repair", "--json"]),
-        (
-            "setup:services.status",
-            &["setup", "services-status", "--json"],
-        ),
         ("setup:state", &["setup", "--json"]),
         (
             "snippets:snippets.create",
@@ -1113,37 +1081,6 @@ async fn stateful_cli_workflows_observe_mutations_and_always_roll_them_back() {
     })
     .await
     .expect("stateful workflows absolute deadline");
-}
-
-#[tokio::test]
-async fn legacy_cli_aliases_reach_the_same_dispatch_contract() {
-    let root = tempfile::tempdir().expect("alias root");
-    std::fs::create_dir_all(root.path().join("tmp")).unwrap();
-    for (command, canonical) in [
-        ("install-plugin", "plugin.install"),
-        ("uninstall-plugin", "plugin.uninstall"),
-    ] {
-        let output = action_scenarios::run_cli(
-            root.path(),
-            &["setup", command, "matrix-missing", "--dry-run", "--json"],
-        )
-        .await
-        .unwrap();
-        action_scenarios::assert_sanitized(&output.stdout, command);
-        action_scenarios::assert_sanitized(&output.stderr, command);
-        assert!(output.status.success(), "{command} alias dry-run failed");
-        let rendered = String::from_utf8_lossy(&output.stdout);
-        assert!(
-            rendered.contains(canonical),
-            "CLI alias did not resolve to {canonical}: {rendered}"
-        );
-    }
-    for command in ["installed-plugins", "services-status"] {
-        let output = action_scenarios::run_cli(root.path(), &["setup", command, "--help"])
-            .await
-            .unwrap();
-        action_scenarios::assert_json_or_help(&output, command);
-    }
 }
 
 #[tokio::test]

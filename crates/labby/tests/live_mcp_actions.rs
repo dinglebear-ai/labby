@@ -251,11 +251,6 @@ async fn assert_mcp_transition_readback(
             assert!(ok && !text.trim().is_empty(), "{key} readback: {text}");
             true
         }
-        "setup:plugin_hook" | "setup:plugin_sync" => {
-            let (ok, text) = read("setup", "plugin_export", serde_json::json!({})).await;
-            assert!(ok && !text.trim().is_empty(), "{key} readback: {text}");
-            true
-        }
         // A multi-user mutation is only proven when the owning surface can
         // read the new state back through its own authority, so each of these
         // reads the collection the mutation changed and asserts the change is
@@ -882,7 +877,14 @@ async fn read_only_non_admin_discovers_mixed_service_but_cannot_execute_admin_ac
     );
 
     let denied = runner
-        .call("setup", "services.status", serde_json::Map::new())
+        .call(
+            "setup",
+            "settings.state",
+            serde_json::Map::from_iter([(
+                "section".to_string(),
+                serde_json::Value::String("core".to_string()),
+            )]),
+        )
         .await
         .expect("scope denial is an MCP result");
     assert_eq!(denied.is_error, Some(true));

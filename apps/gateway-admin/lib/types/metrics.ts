@@ -114,6 +114,8 @@ export interface MetricsBucket {
 
 export interface DashboardMetrics {
   window: MetricsWindow
+  /** Non-fatal collection failures that make some dimensions unavailable. */
+  warnings?: string[]
   /** Window bounds, epoch ms. */
   since_ms: number
   until_ms: number

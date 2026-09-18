@@ -38,10 +38,9 @@ credentials, connectivity, repair) is owned by `labby setup`.
 Skills and MCP configuration only. Its `.mcp.json` connects over HTTP to a
 running `labby serve` (`${user_config.server_url}/mcp`), so machines that
 install the plugin remotely never need a local binary at all. The plugin ships
-**no Claude Code hooks** — the former `hooks/hooks.json` (SessionStart /
-ConfigChange shims) was removed. Run `labby setup plugin-hook` manually to sync
-settings, or `--no-repair` for a read-only audit. Nothing is auto-installed or
-auto-repaired at session start.
+**no Claude Code hooks**. The former SessionStart / ConfigChange setup shims,
+server-environment synchronization, and per-service Claude plugin lifecycle are
+retired. Plugin configuration is client-only and never mutates the Labby host.
 
 ## Marketplace distribution
 
@@ -53,20 +52,10 @@ and third-party entries.
 
 Install `labby` with `scripts/install.sh` (above). Plugin marketplace discovery and distribution now belong to Dendrite; Labby does not expose a `marketplace` dispatch service or marketplace web surface.
 
-Setup plugin lifecycle actions live in the `setup` dispatch service. The
-canonical names follow the dotted `<resource>.<verb>` convention; the legacy
-snake_case names remain as deprecated aliases:
-
-| Canonical | Deprecated alias |
-|-----------|------------------|
-| `setup.plugins.installed` | `setup.installed_plugins` |
-| `setup.plugin.install` | `setup.install_plugin` |
-| `setup.plugin.uninstall` | `setup.uninstall_plugin` |
-| `setup.services.status` | `setup.services_status` |
-
-These four actions are restricted to loopback-only HTTP; both the canonical and
-the alias forms are gated identically.
-
-`plugin.install` and `plugin.uninstall` validate the registered service slug, derive `lab-<service>@<org>`, require that org to match the compile-time `LABBY_PLUGIN_ORG` value (default `lab`), and call the configured Claude Code CLI. Set runtime `LABBY_CLAUDE_BIN` when the binary is not named `claude`.
+Labby does not inspect, install, or uninstall Claude Code plugins as part of the
+setup service. Host configuration belongs to Labby's Settings, setup CLI, and
+configuration surfaces. Capability-affecting host problems are exposed through
+Doctor and the global capability-health warning instead of being hidden behind
+client-plugin hooks or transport-specific guards.
 
 `labby help` and `lab://catalog` are env-aware by default: services with missing required env vars are hidden. Use `LABBY_SHOW_ALL=1` or `labby help --all` to show the full compiled catalog.

@@ -43,6 +43,7 @@ pub struct SpecEntry {
 #[derive(Clone, Default)]
 pub struct OpenApiRegistry {
     inner: Arc<HashMap<String, SpecEntry>>,
+    warnings: Arc<Vec<String>>,
 }
 
 impl OpenApiRegistry {
@@ -52,7 +53,12 @@ impl OpenApiRegistry {
     pub async fn load(cfg: OpenApiProviderConfig, per_spec_timeout: Duration) -> Self {
         let total = cfg.specs.len();
         let specs: Vec<_> = cfg.specs.into_iter().take(MAX_SPECS).collect();
+        let mut warnings = Vec::new();
         if total > MAX_SPECS {
+            let warning = format!(
+                "{total} OpenAPI specs are configured but only {MAX_SPECS} can be loaded; remove or consolidate the extra specs"
+            );
+            warnings.push(warning);
             tracing::warn!(
                 service = "openapi",
                 kept = MAX_SPECS,
@@ -63,26 +69,34 @@ impl OpenApiRegistry {
         let loads = specs.into_iter().map(|spec| async move {
             let label = spec.label.clone();
             match tokio::time::timeout(per_spec_timeout, load_one_spec(spec)).await {
-                Ok(Ok(entry)) => Some((label, entry)),
+                Ok(Ok((entry, warnings))) => (Some((label, entry)), warnings),
                 Ok(Err(e)) => {
+                    let warning = format!("OpenAPI spec `{label}` is unavailable: {e}");
                     tracing::warn!(service = "openapi", label = %label, kind = e.kind(),
                             "openapi spec omitted: load failed");
-                    None
+                    (None, vec![warning])
                 }
                 Err(_) => {
+                    let warning = format!(
+                        "OpenAPI spec `{label}` did not load within {}s; verify the spec source is reachable and responsive",
+                        per_spec_timeout.as_secs_f32()
+                    );
                     tracing::warn!(service = "openapi", label = %label, kind = "timeout",
                             "openapi spec omitted: load timed out");
-                    None
+                    (None, vec![warning])
                 }
             }
         });
-        let map: HashMap<_, _> = futures::future::join_all(loads)
-            .await
-            .into_iter()
-            .flatten()
-            .collect();
+        let mut map = HashMap::new();
+        for (entry, mut load_warnings) in futures::future::join_all(loads).await {
+            if let Some((label, spec)) = entry {
+                map.insert(label, spec);
+            }
+            warnings.append(&mut load_warnings);
+        }
         Self {
             inner: Arc::new(map),
+            warnings: Arc::new(warnings),
         }
     }
 
@@ -94,6 +108,7 @@ impl OpenApiRegistry {
     pub fn from_map_for_test(map: HashMap<String, SpecEntry>) -> Self {
         Self {
             inner: Arc::new(map),
+            warnings: Arc::new(Vec::new()),
         }
     }
 
@@ -103,6 +118,12 @@ impl OpenApiRegistry {
         let mut v: Vec<_> = self.inner.keys().cloned().collect();
         v.sort();
         v
+    }
+
+    /// Operator-facing, scrubbed reasons configured OpenAPI capability was reduced.
+    #[must_use]
+    pub fn warnings(&self) -> &[String] {
+        self.warnings.as_slice()
     }
 
     /// Whether no specs loaded.
@@ -134,7 +155,7 @@ impl OpenApiRegistry {
     }
 }
 
-async fn load_one_spec(spec: OpenApiSpecConfig) -> Result<SpecEntry, OpenApiError> {
+async fn load_one_spec(spec: OpenApiSpecConfig) -> Result<(SpecEntry, Vec<String>), OpenApiError> {
     let base_url = crate::ssrf::validate_base_url(&spec)?;
     let spec_json = fetch_spec_json(&spec.spec_source, &spec.label).await?;
     let descriptors =
@@ -153,7 +174,12 @@ async fn load_one_spec(spec: OpenApiSpecConfig) -> Result<SpecEntry, OpenApiErro
             },
         );
     }
+    let mut warnings = Vec::new();
     if converted > MAX_OPERATIONS_PER_SPEC {
+        warnings.push(format!(
+            "OpenAPI spec `{}` exposes {converted} allowed operations but only {MAX_OPERATIONS_PER_SPEC} can be loaded; narrow allowed_operations",
+            spec.label
+        ));
         tracing::warn!(
             service = "openapi",
             label = %spec.label,
@@ -167,6 +193,10 @@ async fn load_one_spec(spec: OpenApiSpecConfig) -> Result<SpecEntry, OpenApiErro
         // spec loads as present-but-empty: its JS shim is emitted yet every call
         // returns `unknown_action`. Surface it so a fat-fingered / forgotten
         // `allowed_operations` is diagnosable instead of silently rejecting.
+        warnings.push(format!(
+            "OpenAPI spec `{}` loaded but no operations matched allowed_operations; review the operation IDs in that allowlist",
+            spec.label
+        ));
         tracing::warn!(
             service = "openapi",
             label = %spec.label,
@@ -175,7 +205,7 @@ async fn load_one_spec(spec: OpenApiSpecConfig) -> Result<SpecEntry, OpenApiErro
             "openapi spec loaded but no operations matched the allowlist"
         );
     }
-    Ok(SpecEntry { operations })
+    Ok((SpecEntry { operations }, warnings))
 }
 
 /// Fetch a spec document, capped at `MAX_SPEC_BYTES` before parse. A remote
@@ -302,6 +332,11 @@ mod tests {
         assert!(reg.labels().contains(&"goodlabel".to_string()));
         assert!(!reg.labels().contains(&"badlabel".to_string()));
         assert!(
+            reg.warnings()
+                .iter()
+                .any(|warning| warning.contains("badlabel"))
+        );
+        assert!(
             started.elapsed() < Duration::from_secs(5),
             "concurrent + bounded"
         );
@@ -313,6 +348,7 @@ mod tests {
             specs: vec![good_fixture_spec("vendor")],
         };
         let reg = OpenApiRegistry::load(cfg, Duration::from_secs(2)).await;
+        assert!(reg.warnings().is_empty());
         let op = reg.operation("vendor", "getUser").expect("op present");
         assert_eq!(op.method, reqwest::Method::GET);
         assert_eq!(op.path_template, "/users/{id}");

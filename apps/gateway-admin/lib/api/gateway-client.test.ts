@@ -100,6 +100,34 @@ test('gatewayApi.create sends confirm=true with destructive gateway adds', async
   )
 })
 
+test('gateway discovery preserves usable capabilities when one catalog fails', async () => {
+  await withGatewayFetch(
+    {
+      'gateway.add': () => standardGatewayView,
+      'gateway.discovered_tools': () => ['tool.alpha'],
+      'gateway.discovered_resources': () => new Response(JSON.stringify({ message: 'resource catalog offline' }), {
+        status: 503,
+        headers: { 'content-type': 'application/json' },
+      }),
+      'gateway.discovered_prompts': () => ['prompt.alpha'],
+    },
+    async () => {
+      const gateway = await gatewayApi.create({
+        name: 'gateway-1',
+        transport: 'http',
+        config: { url: 'http://gateway.example' },
+      } as never)
+
+      assert.deepEqual(gateway.discovery.tools.map((tool) => tool.name), ['tool.alpha'])
+      assert.deepEqual(gateway.discovery.prompts.map((prompt) => prompt.name), ['prompt.alpha'])
+      assert.deepEqual(gateway.discovery.resources, [])
+      assert.equal(gateway.warnings.length, 1)
+      assert.equal(gateway.warnings[0]?.code, 'gateway_discovery_resources_unavailable')
+      assert.match(gateway.warnings[0]?.message ?? '', /resource catalog offline/)
+    },
+  )
+})
+
 test('gatewayApi discovery and import actions use gateway dispatch payloads', async () => {
   await withGatewayFetch(
     {
@@ -1093,6 +1121,35 @@ test('gatewayApi.get applies virtual-server MCP policy to in-process tool exposu
           'gateway.virtual_server.get_mcp_policy',
         ],
       )
+    },
+  )
+})
+
+test('gatewayApi.get keeps gateway detail usable when runtime diagnostics fail', async () => {
+  await withGatewayFetch(
+    {
+      'gateway.server.get': () => ({ id: 'Asana', name: 'Asana', source: 'custom_gateway' }),
+      'gateway.get': () => ({
+        config: { name: 'Asana', url: 'https://mcp.asana.com/v2/mcp', enabled: true },
+        runtime: {
+          tool_count: 0, resource_count: 0, prompt_count: 0,
+          exposed_tool_count: 0, exposed_resource_count: 0, exposed_prompt_count: 0,
+        },
+      }),
+      'gateway.discovered_tools': () => [],
+      'gateway.discovered_resources': () => [],
+      'gateway.discovered_prompts': () => [],
+      'gateway.mcp.list': () => new Response(JSON.stringify({ message: 'runtime snapshot offline' }), {
+        status: 503,
+        headers: { 'content-type': 'application/json' },
+      }),
+    },
+    async () => {
+      const gateway = await gatewayApi.get('Asana')
+      assert.equal(gateway.name, 'Asana')
+      assert.equal(gateway.discovery.tools.length, 0)
+      assert.equal(gateway.warnings.some((warning) => warning.code === 'gateway_runtime_diagnostics_unavailable'), true)
+      assert.match(gateway.warnings.find((warning) => warning.code === 'gateway_runtime_diagnostics_unavailable')?.message ?? '', /runtime snapshot offline/)
     },
   )
 })

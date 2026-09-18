@@ -19,7 +19,6 @@ type UploadState = { id: string; file: globalThis.File; status: 'pending' | 'upl
 const MAX_QUEUED_UPLOADS = 8
 const UPLOAD_WORKERS = 2
 
-const EMPTY_STATS: StashStats = { owned_file_count: 0, owned_shared_file_count: 0, owned_committed_bytes: 0, owned_reserved_bytes: 0 }
 
 function bytes(value: number): string {
   if (value < 1024) return `${value} B`
@@ -65,9 +64,10 @@ function fileIcon(name: string) {
 
 export function StashPageContent() {
   const [files, setFiles] = useState<StashFile[]>([])
-  const [stats, setStats] = useState(EMPTY_STATS)
+  const [stats, setStats] = useState<StashStats>()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<unknown>()
+  const [statsError, setStatsError] = useState<unknown>()
   const [query, setQuery] = useState('')
   const [nextCursor, setNextCursor] = useState<string | null>(null)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -106,12 +106,22 @@ export function StashPageContent() {
     loadAbort.current = controller
     try {
       const pageRequest = api.listFiles(cursor, controller.signal, search || undefined)
-      const statsRequest = refreshStats || !statsLoaded.current ? api.getStats(controller.signal) : undefined
-      const [page, nextStats] = await Promise.all([pageRequest, statsRequest])
+      const shouldLoadStats = refreshStats || !statsLoaded.current
+      if (shouldLoadStats) setStatsError(undefined)
+      const statsRequest = shouldLoadStats ? api.getStats(controller.signal) : Promise.resolve(undefined)
+      const [pageResult, statsResult] = await Promise.allSettled([pageRequest, statsRequest])
       if (acceptGeneration(generation.current, current)) {
-        setFiles(previous => mergeFiles(previous, page.files, Boolean(cursor)))
-        setNextCursor(page.next_cursor)
-        if (nextStats) { setStats(nextStats); statsLoaded.current = true }
+        if (pageResult.status === 'fulfilled') {
+          setFiles(previous => mergeFiles(previous, pageResult.value.files, Boolean(cursor)))
+          setNextCursor(pageResult.value.next_cursor)
+        } else if (!(pageResult.reason instanceof DOMException && pageResult.reason.name === 'AbortError')) {
+          setError(pageResult.reason)
+        }
+        if (statsResult.status === 'fulfilled') {
+          if (statsResult.value) { setStats(statsResult.value); statsLoaded.current = true }
+        } else if (!(statsResult.reason instanceof DOMException && statsResult.reason.name === 'AbortError')) {
+          setStatsError(statsResult.reason)
+        }
       }
     } catch (reason) {
       if (acceptGeneration(generation.current, current) && !(reason instanceof DOMException && reason.name === 'AbortError')) setError(reason)
@@ -224,13 +234,14 @@ export function StashPageContent() {
   }
 
   const failure = error ? errorCopy(error) : undefined
+  const statsFailure = statsError ? errorCopy(statsError) : undefined
   return <>
     <span className="sr-only" role="status" aria-live="polite">{announcement}</span>
-    <ConsoleHero eyebrow="Control Plane · Stash" title="Stash" description="A scratch drive for you and your agents. Drop a file here and it is addressable at stash:// from any session without leaving the console." actions={<Button variant="outline" size="icon" aria-label="Upload to Stash" title="Upload to Stash" className="size-9 rounded-[10px] text-aurora-accent-strong" onClick={() => input.current?.click()}><Upload size={15}/></Button>} stats={[
-      { label: 'Files', value: loading || !statsLoaded.current ? '—' : stats.owned_file_count, suffix: 'owned files' },
-      { label: 'Size', value: loading || !statsLoaded.current ? '—' : bytes(stats.owned_committed_bytes), suffix: 'committed' },
+    <ConsoleHero eyebrow="Control Plane · Stash" title="Stash" description="A scratch drive for you and your agents. Drop a file here and it is addressable at stash:// from any session without leaving the console." pulse={{ color: failure ? 'var(--aurora-error)' : statsFailure ? 'var(--aurora-warn)' : 'var(--aurora-success)', label: failure ? 'attention needed' : statsFailure ? 'stats unavailable' : undefined }} actions={<Button variant="outline" size="icon" aria-label="Upload to Stash" title="Upload to Stash" className="size-9 rounded-[10px] text-aurora-accent-strong" onClick={() => input.current?.click()}><Upload size={15}/></Button>} stats={[
+      { label: 'Files', value: loading || statsFailure || !statsLoaded.current ? '—' : stats.owned_file_count, suffix: 'owned files' },
+      { label: 'Size', value: loading || statsFailure || !statsLoaded.current ? '—' : bytes(stats.owned_committed_bytes), suffix: 'committed' },
       { label: 'Agent Reads', value: '—', suffix: 'not reported', tone: 'var(--aurora-accent-pink)' },
-      { label: 'Shared', value: loading || !statsLoaded.current ? '—' : stats.owned_shared_file_count, suffix: 'reachable', tone: 'var(--aurora-success)' },
+      { label: 'Shared', value: loading || statsFailure || !statsLoaded.current ? '—' : stats.owned_shared_file_count, suffix: 'reachable', tone: 'var(--aurora-success)' },
     ]}/>
     <input ref={input} type="file" multiple className="sr-only" tabIndex={-1} aria-hidden="true" onChange={event => acceptFiles(event.target.files || [])}/>
     <button type="button" onClick={() => input.current?.click()} onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy' }} onDrop={event => { event.preventDefault(); acceptFiles(event.dataTransfer.files) }} className="group flex w-full flex-wrap items-center justify-center gap-2.5 rounded-aurora-2 border-[1.5px] border-dashed border-aurora-border-strong/50 bg-transparent p-[18px] text-aurora-text-muted transition-colors hover:border-aurora-accent-primary hover:bg-aurora-accent-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary">
@@ -238,6 +249,7 @@ export function StashPageContent() {
     </button>
     {uploads.length ? <div aria-label="Upload queue" className="space-y-2 rounded-aurora-2 border border-aurora-accent-primary/30 bg-aurora-panel-low p-3">{uploads.map(item => <div key={item.id} className="flex items-center justify-between gap-3 text-sm"><span className="min-w-0 truncate text-aurora-text-primary">{item.file.name} — {item.status}{item.detail ? `: ${item.detail}` : ''}</span>{item.status === 'uploading' ? <Button variant="ghost" size="sm" onClick={() => item.abort?.abort()}><X/>Cancel</Button> : item.status === 'pending' ? <Button variant="ghost" size="sm" onClick={() => setUploads(current => current.map(value => value.id === item.id ? { ...value, status: 'canceled', detail: 'Canceled' } : value))}><X/>Cancel</Button> : item.status === 'failed' || item.status === 'canceled' ? <Button variant="outline" size="sm" onClick={() => setUploads(current => current.map(value => value.id === item.id ? { ...value, status: 'pending', detail: undefined } : value))}><RefreshCw/>Retry upload</Button> : null}</div>)}</div> : null}
     {failure ? <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-aurora-2 border border-aurora-error/35 bg-aurora-error/5 p-4"><div><strong className="text-sm text-aurora-error">{failure.title}</strong><p className="mt-1 text-xs text-aurora-text-muted">{failure.detail}</p></div><Button variant="outline" onClick={() => void load(query.trim())}><RefreshCw/>Retry</Button></div> : null}
+    {statsFailure ? <div role="status" className="flex flex-wrap items-center justify-between gap-3 rounded-aurora-2 border border-aurora-warn/35 bg-aurora-warn/5 p-4"><div><strong className="text-sm text-aurora-warn">Storage statistics unavailable</strong><p className="mt-1 text-xs text-aurora-text-muted">Your files remain usable. {statsFailure.detail}</p></div><Button variant="outline" onClick={() => void load(query.trim(), undefined, true)}><RefreshCw/>Retry stats</Button></div> : null}
     <DashboardPanel title="Files" headerStyle={{ padding: '10px 15px', background: 'var(--gw0-0_38)' }} bodyStyle={{ padding: 0 }} action={<div className="flex flex-wrap items-center gap-2">
       <div className="flex flex-wrap gap-1" role="group" aria-label="Filter loaded files by kind">{(['All', 'Doc', 'Data', 'Code', 'Image', 'Archive'] as const).map((value) => <button key={value} type="button" aria-pressed={kind === value} title="Filter loaded files by filename extension" onClick={() => setKind(value)} className="h-[25px] rounded-full border border-aurora-border-strong px-[11px] text-[11px] font-[650] text-aurora-text-muted hover:bg-aurora-hover-bg aria-pressed:border-aurora-accent-primary aria-pressed:bg-aurora-accent-primary aria-pressed:text-aurora-page-bg">{value}</button>)}</div>
       <label className="relative hidden sm:block"><span className="sr-only">Search current files</span><Search className="absolute left-[11px] top-1/2 size-[13px] -translate-y-1/2 text-aurora-text-muted"/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search files…" className="h-7 w-[190px] rounded-full border border-aurora-border-strong bg-aurora-control-surface pl-8 pr-2 text-xs text-aurora-text-primary"/></label><ViewToggle value={view} onChange={setView}/></div>}>

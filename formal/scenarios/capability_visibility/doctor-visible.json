@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "project": "labby",
+  "model": "capability_visibility",
+  "invariant": "LABBY-CAP-001",
+  "origin": {
+    "kind": "manual",
+    "reference": "remote bind guard degradation"
+  },
+  "initial": {},
+  "steps": [
+    {
+      "action": "bind_remote"
+    },
+    {
+      "action": "start"
+    }
+  ],
+  "expect": "invariant_holds",
+  "status": "active"
+}

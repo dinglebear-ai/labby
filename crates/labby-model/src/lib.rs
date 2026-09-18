@@ -4,15 +4,24 @@
 //! and later model-checker adapters.
 
 mod browser_request;
+mod capability_visibility;
 
 /// Descriptive alias for the request-lifecycle scenario step type.
 pub use browser_request::Step as BrowserRequestStep;
 pub use browser_request::{
     BrowserRequestModel, BrowserRequestState, RequestPhase, Step, TerminalOutcome,
 };
+pub use capability_visibility::{
+    CapabilityCode, CapabilityVisibilityModel, CapabilityVisibilityState, Phase as CapabilityPhase,
+    RuntimeCapability, Step as CapabilityVisibilityStep,
+};
 
-/// Target registry key used by the invariant catalog and scenario corpus.
+/// Browser request target registry key retained for existing incident tooling.
 pub const MODEL: &str = "browser_request";
+/// Capability-honesty target used for startup guard and degradation visibility.
+pub const CAPABILITY_VISIBILITY_MODEL: &str = "capability_visibility";
+/// All project-owned deterministic verification targets.
+pub const MODELS: &[&str] = &[MODEL, CAPABILITY_VISIBILITY_MODEL];
 
 /// The request-lifecycle invariant catalog compiled into verification hosts.
 pub const CATALOG_TOML: &str = include_str!("../../../formal/invariants.toml");

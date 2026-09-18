@@ -98,18 +98,38 @@ export async function gatewayAction<T>(
 }
 
 async function fetchDiscovery(name: string, signal?: AbortSignal): Promise<GatewayDiscoverySnapshot> {
-  const [tools, resources, prompts] = await Promise.all([
+  const [toolsResult, resourcesResult, promptsResult] = await Promise.allSettled([
     gatewayAction<BackendGatewayToolRow[]>('gateway.discovered_tools', { name }, signal),
     gatewayAction<string[]>('gateway.discovered_resources', { name }, signal),
     gatewayAction<string[]>('gateway.discovered_prompts', { name }, signal),
   ])
+  if (signal?.aborted) signal.throwIfAborted()
+
+  const warning = (
+    kind: 'tools' | 'resources' | 'prompts',
+    result: PromiseSettledResult<unknown>,
+  ) => result.status === 'rejected'
+    ? {
+        code: `gateway_discovery_${kind}_unavailable`,
+        message: `${kind[0].toUpperCase()}${kind.slice(1)} discovery is unavailable for ${name}: ${result.reason instanceof Error ? result.reason.message : 'request failed'}. Other discovered capabilities remain usable.`,
+        timestamp: new Date().toISOString(),
+      }
+    : undefined
+
+  const warnings = [
+    warning('tools', toolsResult),
+    warning('resources', resourcesResult),
+    warning('prompts', promptsResult),
+  ].filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
+  const resources = resourcesResult.status === 'fulfilled' ? resourcesResult.value : []
 
   return {
-    tools,
+    tools: toolsResult.status === 'fulfilled' ? toolsResult.value : [],
     resources: resources.map((resource) =>
       resource.includes('://') ? resource : `lab://upstream/${name}/${resource}`,
     ),
-    prompts,
+    prompts: promptsResult.status === 'fulfilled' ? promptsResult.value : [],
+    warnings,
   }
 }
 
@@ -552,16 +572,29 @@ export const gatewayApi = {
       return normalizeLabServiceServer(serverView, signal)
     }
 
-    const [view, runtimeRows] = await Promise.all([
+    const [view, runtimeResult] = await Promise.all([
       gatewayAction<BackendGatewayView>('gateway.get', { name: id }, signal),
-      gatewayAction<BackendGatewayMcpRuntimeView[]>('gateway.mcp.list', { name: id }, signal),
+      gatewayAction<BackendGatewayMcpRuntimeView[]>('gateway.mcp.list', { name: id }, signal)
+        .then((rows) => ({ rows }))
+        .catch((error: unknown) => ({
+          rows: [] as BackendGatewayMcpRuntimeView[],
+          warning: `Runtime diagnostics unavailable: ${error instanceof Error ? error.message : 'request failed'}. Gateway configuration and discovery remain usable.`,
+        })),
     ])
-    return normalizeGatewaySnapshotView(
+    const gateway = await normalizeGatewaySnapshotView(
       view,
       true,
       signal,
-      runtimeRows.find((runtime) => runtime.name === id),
+      runtimeResult.rows.find((runtime) => runtime.name === id),
     )
+    if (runtimeResult.warning) {
+      gateway.warnings.push({
+        code: 'gateway_runtime_diagnostics_unavailable',
+        message: runtimeResult.warning,
+        timestamp: new Date().toISOString(),
+      })
+    }
+    return gateway
   },
 
   async create(input: CreateGatewayInput, signal?: AbortSignal): Promise<Gateway> {

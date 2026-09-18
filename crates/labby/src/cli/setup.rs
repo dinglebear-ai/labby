@@ -191,31 +191,6 @@ pub enum SetupCommand {
     OwnerLinkPrepare(OwnerLinkPrepareArgs),
     /// Manage the systemd Labby gateway service.
     HostService(HostServiceArgs),
-    /// List installed Claude Code lab plugins.
-    InstalledPlugins {
-        /// Bypass the short in-process cache.
-        #[arg(long)]
-        force: bool,
-    },
-    /// Join service configuration, draft, and Claude plugin state.
-    ServicesStatus,
-    /// Run binary-owned local setup checks for Claude plugin hooks.
-    PluginHook {
-        /// Check only; do not create missing local setup files.
-        #[arg(long)]
-        no_repair: bool,
-    },
-    /// Sync CLAUDE_PLUGIN_OPTION_* env vars into ~/.labby/.env as LABBY_* vars.
-    PluginSync(PluginSyncArgs),
-    /// Read ~/.labby/.env and print current values keyed by userConfig field name.
-    PluginExport,
-    /// Validate connectivity to the lab MCP server.
-    PluginConnectivity {
-        /// Requested server URL; it must match the active plugin, persisted, or
-        /// http://localhost:40100 host-proxy target.
-        #[arg(long)]
-        server_url: Option<String>,
-    },
     /// Check local setup prerequisites without mutating the filesystem.
     Check,
     /// Repair missing local setup prerequisites without contacting external services.
@@ -229,10 +204,6 @@ pub enum SetupCommand {
     IncusSsh(IncusSshArgs),
     /// Copy the labby binary into ~/.local/bin so it is callable in your own terminal.
     Install,
-    /// Install the Claude Code plugin for a configured service.
-    InstallPlugin(PluginMutationArgs),
-    /// Uninstall the Claude Code plugin for a service.
-    UninstallPlugin(PluginMutationArgs),
 }
 
 #[derive(Debug, Args)]
@@ -374,28 +345,6 @@ pub enum DraftCommand {
 #[derive(Debug, Args)]
 pub struct DraftDiscardArgs {
     /// Confirm discard without prompting.
-    #[arg(short = 'y', long, alias = "no-confirm")]
-    pub yes: bool,
-    /// Print what would be dispatched without executing.
-    #[arg(long)]
-    pub dry_run: bool,
-}
-
-#[derive(Debug, Args)]
-pub struct PluginSyncArgs {
-    /// Skip confirmation for this destructive action.
-    #[arg(short = 'y', long, alias = "no-confirm")]
-    pub yes: bool,
-    /// Print what would be dispatched without executing.
-    #[arg(long)]
-    pub dry_run: bool,
-}
-
-#[derive(Debug, Args)]
-pub struct PluginMutationArgs {
-    /// Service name, for example `unifi` or `apprise`.
-    pub service: String,
-    /// Skip confirmation for destructive actions.
     #[arg(short = 'y', long, alias = "no-confirm")]
     pub yes: bool,
     /// Print what would be dispatched without executing.
@@ -810,69 +759,6 @@ async fn run_command(command: SetupCommand, format: OutputFormat) -> Result<Exit
         SetupCommand::HostService(args) => {
             run_host_service_command(args, format).await?;
         }
-        SetupCommand::InstalledPlugins { force } => {
-            let value =
-                crate::dispatch::setup::dispatch("plugins.installed", json!({ "force": force }))
-                    .await?;
-            print(&value, format)?;
-        }
-        SetupCommand::ServicesStatus => {
-            let value = crate::dispatch::setup::dispatch("services.status", json!({})).await?;
-            print(&value, format)?;
-        }
-        SetupCommand::PluginHook { no_repair } => {
-            // Keep the user's terminal copy in ~/.local/bin fresh each session.
-            // Best-effort: a stale or unwritable copy must not block the hook.
-            if let Err(err) = install_self() {
-                tracing::debug!(?err, "failed to refresh ~/.local/bin copy of labby");
-            }
-            let value = crate::dispatch::setup::dispatch_for_caller(
-                crate::dispatch::setup::SetupCaller::Operator,
-                "plugin_hook",
-                json!({ "repair": !no_repair }),
-            )
-            .await?;
-            print(&value, format)?;
-        }
-        SetupCommand::PluginSync(args) => {
-            let params = json!({ "confirm": true });
-            if args.dry_run {
-                crate::cli::helpers::print_dry_run("setup", "plugin_sync", &params, format);
-                return Ok(ExitCode::SUCCESS);
-            }
-            // Route through the shared destructive-action helper so TTY users
-            // get the interactive confirm prompt and non-TTY callers get a
-            // structured refusal — matches the cli/CLAUDE.md contract.
-            return crate::cli::helpers::run_confirmable_action_command(
-                "setup",
-                crate::dispatch::setup::ACTIONS,
-                "plugin_sync".to_string(),
-                params,
-                args.yes,
-                format,
-                |action, params| async move {
-                    crate::dispatch::setup::dispatch_for_caller(
-                        crate::dispatch::setup::SetupCaller::Operator,
-                        &action,
-                        params,
-                    )
-                    .await
-                },
-            )
-            .await;
-        }
-        SetupCommand::PluginExport => {
-            let value = crate::dispatch::setup::dispatch("plugin_export", json!({})).await?;
-            print(&value, format)?;
-        }
-        SetupCommand::PluginConnectivity { server_url } => {
-            let params = match server_url {
-                Some(url) => json!({ "server_url": url }),
-                None => json!({}),
-            };
-            let value = crate::dispatch::setup::dispatch("plugin_connectivity", params).await?;
-            print(&value, format)?;
-        }
         SetupCommand::Check => {
             let value = crate::dispatch::setup::dispatch("check", json!({})).await?;
             print(&value, format)?;
@@ -893,12 +779,6 @@ async fn run_command(command: SetupCommand, format: OutputFormat) -> Result<Exit
         SetupCommand::Install => {
             let dest = install_self()?;
             println!("installed -> {}", dest.display());
-        }
-        SetupCommand::InstallPlugin(args) => {
-            run_plugin_mutation("plugin.install", args, format).await?;
-        }
-        SetupCommand::UninstallPlugin(args) => {
-            run_plugin_mutation("plugin.uninstall", args, format).await?;
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -1539,27 +1419,6 @@ async fn run_draft_command(args: DraftArgs, format: OutputFormat) -> Result<()> 
     Ok(())
 }
 
-async fn run_plugin_mutation(
-    action: &'static str,
-    args: PluginMutationArgs,
-    format: OutputFormat,
-) -> Result<()> {
-    let params = json!({
-        "service": args.service,
-        "confirm": true,
-    });
-    if args.dry_run {
-        crate::cli::helpers::print_dry_run("setup", action, &params, format);
-        return Ok(());
-    }
-    if !args.yes {
-        anyhow::bail!("setup {action} is destructive; pass -y/--yes to confirm");
-    }
-    let value = crate::dispatch::setup::dispatch(action, params).await?;
-    print(&value, format)?;
-    Ok(())
-}
-
 #[cfg(test)]
 #[allow(clippy::panic)]
 mod tests {
@@ -1649,53 +1508,6 @@ mod tests {
 
         assert!(matches!(args.mode, SetupModeArg::Plugin));
         assert!(args.smoke);
-    }
-
-    #[test]
-    fn parses_plugin_hook_no_repair_subcommand() {
-        let cli = crate::cli::Cli::try_parse_from(["labby", "setup", "plugin-hook", "--no-repair"])
-            .unwrap();
-        let crate::cli::Command::Setup(args) = cli.command else {
-            panic!("expected setup command");
-        };
-        let Some(SetupCommand::PluginHook { no_repair }) = args.command else {
-            panic!("expected plugin-hook subcommand");
-        };
-        assert!(no_repair);
-    }
-
-    #[test]
-    fn parses_plugin_sync_export_connectivity_subcommands() {
-        let cli = crate::cli::Cli::try_parse_from(["labby", "setup", "plugin-sync"]).unwrap();
-        let crate::cli::Command::Setup(args) = cli.command else {
-            panic!("expected setup");
-        };
-        assert!(matches!(args.command, Some(SetupCommand::PluginSync(_))));
-
-        let cli = crate::cli::Cli::try_parse_from(["labby", "setup", "plugin-export"]).unwrap();
-        let crate::cli::Command::Setup(args) = cli.command else {
-            panic!("expected setup");
-        };
-        assert!(matches!(args.command, Some(SetupCommand::PluginExport)));
-
-        let cli = crate::cli::Cli::try_parse_from([
-            "labby",
-            "setup",
-            "plugin-connectivity",
-            "--server-url",
-            "http://node-a:8765",
-        ])
-        .unwrap();
-        let crate::cli::Command::Setup(args) = cli.command else {
-            panic!("expected setup");
-        };
-        let Some(SetupCommand::PluginConnectivity {
-            server_url: Some(url),
-        }) = args.command
-        else {
-            panic!("expected plugin-connectivity with url");
-        };
-        assert_eq!(url, "http://node-a:8765");
     }
 
     #[test]

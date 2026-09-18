@@ -52,6 +52,15 @@ const FOLDED_KEY = 'labby-nav-folded'
 const ORDER_KEY = 'labby-nav-order-v2'
 const SECTION_ORDER_KEY = 'labby-nav-sections-v4'
 const SECTION_IDS = consoleNavSections.map(section => section.id)
+let preferenceStorageWarningShown = false
+
+function warnPreferenceStorageUnavailable() {
+  if (preferenceStorageWarningShown) return
+  preferenceStorageWarningShown = true
+  toast.warning('Navigation preferences cannot be saved in this browser session.', {
+    description: 'Browser storage is unavailable. Pinning, folding, and ordering may reset when you reload.',
+  })
+}
 
 // Measured off the rendered mock (`Gateway Console.dc.html`), not inferred.
 const SIDEBAR_WIDTH_EXPANDED = '224px'
@@ -74,6 +83,7 @@ function readJson<T>(key: string, fallback: T): T {
     if (!raw) return fallback
     return JSON.parse(raw) as T
   } catch {
+    warnPreferenceStorageUnavailable()
     return fallback
   }
 }
@@ -82,7 +92,7 @@ function writeJson(key: string, value: unknown) {
   try {
     window.localStorage.setItem(key, JSON.stringify(value))
   } catch {
-    /* storage unavailable — the preference is simply not persisted */
+    warnPreferenceStorageUnavailable()
   }
 }
 

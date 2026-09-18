@@ -174,11 +174,14 @@ directory synchronization guarantee through the portable filesystem API.
 | Bootstrap and repair | `bootstrap`, `check`, `repair`, `finalize` |
 | Draft configuration | `draft.get`, `draft.set`, `draft.commit`, `draft.discard` |
 | Settings | `settings.state`, `settings.schema`, `settings.env_schema`, `settings.update`, `settings.env.update`, `settings.config.update` |
-| Plugin lifecycle | `plugin.install`, `plugin.uninstall`, `plugins.installed`, `plugin_hook`, `plugin_sync`, `plugin_export` |
 | Proxy | `proxy.configure` |
-| Service inspection | `services.status`, `state` |
+| Setup state | `state` |
 
-Legacy snake-case plugin action aliases remain in the action catalog for compatibility; new integrations should use the dotted canonical action names.
+Claude Code plugin lifecycle and plugin-hook compatibility actions are retired.
+The checked-in Claude plugin is a client connection package only; it does not
+configure or repair the Labby server host. Capability-affecting configuration
+problems are surfaced through `doctor capabilities.status`, Doctor, and the
+global admin warning surface.
 
 ## CLI
 
