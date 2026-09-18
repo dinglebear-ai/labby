@@ -33,6 +33,7 @@ export function ConsoleHero({
   title,
   description,
   actions,
+  actionPresentation = 'icons',
   stats,
   children,
   footer,
@@ -52,6 +53,8 @@ export function ConsoleHero({
   title: string
   description?: React.ReactNode
   actions?: React.ReactNode
+  /** Hero actions are glyph-only by default; use mixed when a labeled primary action must remain visible. */
+  actionPresentation?: 'icons' | 'mixed'
   stats?: ConsoleHeroStat[]
   /** Custom strip content, when `stats` is not expressive enough; see `variant` for placement. */
   children?: React.ReactNode
@@ -139,7 +142,7 @@ export function ConsoleHero({
         </div>
 
         {actions ? (
-          <div data-console-hero-actions="1" className="hero-icon-actions" style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6, ...(icon ? { alignSelf: 'flex-start' } : {}) }}>
+          <div {...(actionPresentation === 'mixed' ? { 'data-console-hero-actions-mixed': '1' } : { 'data-console-hero-actions': '1' })} className={actionPresentation === 'mixed' ? undefined : 'hero-icon-actions'} style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6, ...(icon ? { alignSelf: 'flex-start' } : {}) }}>
             {actions}
           </div>
         ) : null}

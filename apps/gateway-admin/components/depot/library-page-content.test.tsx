@@ -209,6 +209,8 @@ test('Library is a user-level hub and loads the generic Depot Artifact authority
     assert.equal(heroMain?.style.padding, '22px 24px 18px', 'Library uses the same default hero scale as the rest of the console')
     assert.equal(heroTitle?.style.fontSize, '30px')
     assert.equal(heroStats?.style.padding, '11px 12px 12px')
+    assert.ok(view.container.querySelector('[data-console-hero-actions-mixed="1"]'), 'Library keeps its labeled New Loadout action visible without restoring the oversized hero')
+    assert.equal(view.container.querySelector('[data-console-hero-actions="1"]'), null)
     assert.match(view.container.querySelector('button[aria-label="Export loaded library metadata"]')?.className ?? '', /size-9/)
     assert.match(view.container.querySelector('button[aria-label="New loadout"]')?.className ?? '', /h-9/)
     assert.doesNotMatch(view.container.textContent ?? '', /Project required|Select an eligible project workspace/)
