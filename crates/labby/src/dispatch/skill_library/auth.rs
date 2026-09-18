@@ -9,7 +9,10 @@ use labby_runtime::artifacts::{
     LibraryTenantId, SkillVisibility,
 };
 
-use crate::access::{AccessRuntime, AccessStoreError, Permission, ProjectRole};
+use crate::access::{
+    AccessRuntime, AccessStoreError, ArtifactDistributionAuthoritySnapshot,
+    ArtifactDistributionGrants, Permission, ProjectRole,
+};
 
 use super::audit::{
     CanonicalArtifactId, SkillLibraryAuditEvent, SkillLibraryAuditOutcome, SkillLibraryAuditStage,
@@ -34,10 +37,15 @@ pub(crate) enum SkillLibraryAction {
     Import,
     ImportBatch,
     Refresh,
+    TransferOptions,
+    Pin,
+    Follow,
+    FollowUpdate,
+    ForkPersonal,
 }
 
 impl SkillLibraryAction {
-    const ALL: [Self; 15] = [
+    const ALL: [Self; 20] = [
         Self::List,
         Self::Search,
         Self::Get,
@@ -53,6 +61,11 @@ impl SkillLibraryAction {
         Self::Import,
         Self::ImportBatch,
         Self::Refresh,
+        Self::TransferOptions,
+        Self::Pin,
+        Self::Follow,
+        Self::FollowUpdate,
+        Self::ForkPersonal,
     ];
 
     pub(crate) const fn as_str(self) -> &'static str {
@@ -72,6 +85,11 @@ impl SkillLibraryAction {
             Self::Import => "artifacts.import",
             Self::ImportBatch => "artifacts.import_batch",
             Self::Refresh => "artifacts.refresh",
+            Self::TransferOptions => "artifacts.transfer_options",
+            Self::Pin => "artifacts.pin",
+            Self::Follow => "artifacts.follow_managed",
+            Self::FollowUpdate => "artifacts.follow_update",
+            Self::ForkPersonal => "artifacts.fork_personal",
         }
     }
 
@@ -87,7 +105,37 @@ impl SkillLibraryAction {
                 | Self::Import
                 | Self::ImportBatch
                 | Self::Refresh
+                | Self::Pin
+                | Self::Follow
+                | Self::FollowUpdate
+                | Self::ForkPersonal
         )
+    }
+
+    pub(crate) const fn is_distribution(self) -> bool {
+        matches!(
+            self,
+            Self::TransferOptions
+                | Self::Pin
+                | Self::Follow
+                | Self::FollowUpdate
+                | Self::ForkPersonal
+        )
+    }
+}
+
+fn distribution_action_allowed(
+    action: SkillLibraryAction,
+    grants: ArtifactDistributionGrants,
+) -> bool {
+    match action {
+        SkillLibraryAction::TransferOptions => true,
+        SkillLibraryAction::Pin => grants.sync,
+        SkillLibraryAction::Follow | SkillLibraryAction::FollowUpdate => {
+            grants.sync && grants.follow
+        }
+        SkillLibraryAction::ForkPersonal => grants.fork,
+        _ => false,
     }
 }
 
@@ -416,6 +464,126 @@ pub(crate) enum SkillLibraryAuthorizationError {
     Unavailable,
 }
 
+/// One current remote-source distribution decision plus its redacted audit base.
+pub(crate) struct ArtifactDistributionAuthorizationDecision {
+    pub(crate) authority: ArtifactDistributionAuthoritySnapshot,
+    pub(crate) audit: SkillLibraryAuditEvent,
+}
+
+/// Authorize a remote-source Artifact distribution action against one coherent AccessStore snapshot.
+///
+/// Distribution actions deliberately bypass local Skill Library ownership resolution: the target is
+/// a remote exact Artifact revision, while durable Project authority is expressed by the
+/// Artifact-specific permission set in AccessStore. Transport validation and the audit sink remain
+/// shared with every other Artifact surface.
+pub(crate) async fn authorize_distribution_at_boundary(
+    runtime: &AccessRuntime,
+    caller: &SkillLibraryCaller,
+    project_id: &str,
+    action: SkillLibraryAction,
+    target_id: &CanonicalArtifactId,
+    correlation_id: &SkillLibraryCorrelationId,
+) -> Result<ArtifactDistributionAuthorizationDecision, SkillLibraryAuthorizationError> {
+    if !action.is_distribution() {
+        return Err(SkillLibraryAuthorizationError::Unavailable);
+    }
+    let surface = caller.transport.surface;
+    let audit_sink = skill_library_audit_sink();
+    validate_transport(caller, action).inspect_err(|_| {
+        audit_sink.record(SkillLibraryAuditEvent::new(
+            correlation_id.clone(),
+            target_id,
+            action,
+            surface,
+            SkillLibraryAuditOutcome::Deny,
+            SkillLibraryAuditStage::Transport,
+        ));
+    })?;
+
+    let store = runtime.store().await.map_err(|_| {
+        audit_sink.record(SkillLibraryAuditEvent::new(
+            correlation_id.clone(),
+            target_id,
+            action,
+            surface,
+            SkillLibraryAuditOutcome::Unavailable,
+            SkillLibraryAuditStage::AccessSnapshot,
+        ));
+        SkillLibraryAuthorizationError::Unavailable
+    })?;
+    let snapshot = store
+        .artifact_distribution_authority(
+            caller.identity().clone(),
+            project_id.to_owned(),
+            caller.selected_team_id().map(str::to_owned),
+        )
+        .await
+        .map_err(|error| {
+            let (outcome, mapped) = match error {
+                AccessStoreError::IdentityUnavailable
+                | AccessStoreError::ProjectAccessUnavailable
+                | AccessStoreError::NotAuthorized => (
+                    SkillLibraryAuditOutcome::Deny,
+                    SkillLibraryAuthorizationError::Denied,
+                ),
+                _ => {
+                    tracing::error!(
+                        surface = ?surface,
+                        project_id,
+                        action = ?action,
+                        error = %error,
+                        "Artifact distribution authorization unavailable"
+                    );
+                    (
+                        SkillLibraryAuditOutcome::Unavailable,
+                        SkillLibraryAuthorizationError::Unavailable,
+                    )
+                }
+            };
+            audit_sink.record(SkillLibraryAuditEvent::new(
+                correlation_id.clone(),
+                target_id,
+                action,
+                surface,
+                outcome,
+                SkillLibraryAuditStage::AccessSnapshot,
+            ));
+            mapped
+        })?;
+
+    let action_allowed = distribution_action_allowed(action, snapshot.grants);
+    if !action_allowed {
+        audit_sink.record(SkillLibraryAuditEvent::new(
+            correlation_id.clone(),
+            target_id,
+            action,
+            surface,
+            SkillLibraryAuditOutcome::Deny,
+            SkillLibraryAuditStage::AccessSnapshot,
+        ));
+        return Err(SkillLibraryAuthorizationError::Denied);
+    }
+
+    let tenant_id = LibraryTenantId::from_canonical_projection(snapshot.organization_id.clone())
+        .map_err(|_| SkillLibraryAuthorizationError::Unavailable)?;
+    let actor_id = LibraryActorId::from_canonical_projection(snapshot.principal_id.clone())
+        .map_err(|_| SkillLibraryAuthorizationError::Unavailable)?;
+    let audit = SkillLibraryAuditEvent::new(
+        correlation_id.clone(),
+        target_id,
+        action,
+        surface,
+        SkillLibraryAuditOutcome::Allow,
+        SkillLibraryAuditStage::AccessSnapshot,
+    )
+    .with_canonical_actor(tenant_id, actor_id, snapshot.global_revision);
+    audit_sink.record(audit.clone());
+    Ok(ArtifactDistributionAuthorizationDecision {
+        authority: snapshot,
+        audit,
+    })
+}
+
 /// Resolve exactly one uncached membership snapshot and authorize this operation.
 ///
 /// Mutation dispatchers must call this immediately before `mutate_library`; validation-time
@@ -432,6 +600,13 @@ pub(crate) async fn authorize_at_boundary(
 ) -> Result<SkillLibraryAuthorizationDecision, SkillLibraryAuthorizationError> {
     debug_assert!(SkillLibraryAction::ALL.contains(&action));
     debug_assert!(SkillLibrarySurface::ALL.contains(&caller.transport.surface));
+    if action.is_distribution() {
+        tracing::error!(
+            action = ?action,
+            "distribution action routed through local Skill Library authorization"
+        );
+        return Err(SkillLibraryAuthorizationError::Unavailable);
+    }
     let target = if action == SkillLibraryAction::Create {
         SkillLibraryTarget::CreateForCaller
     } else {
@@ -1097,6 +1272,68 @@ mod tests {
             LibraryTenantId::from_canonical_projection("bootstrap-local").unwrap(),
             LibraryActorId::from_canonical_projection(owner).unwrap(),
         )
+    }
+
+    #[test]
+    fn transfer_options_is_discovery_only_while_distribution_mutations_keep_exact_grants() {
+        let no_grants = ArtifactDistributionGrants::default();
+        assert!(distribution_action_allowed(
+            SkillLibraryAction::TransferOptions,
+            no_grants
+        ));
+        assert!(!distribution_action_allowed(
+            SkillLibraryAction::Pin,
+            no_grants
+        ));
+        assert!(!distribution_action_allowed(
+            SkillLibraryAction::Follow,
+            no_grants
+        ));
+        assert!(!distribution_action_allowed(
+            SkillLibraryAction::ForkPersonal,
+            no_grants
+        ));
+
+        let sync_only = ArtifactDistributionGrants {
+            sync: true,
+            ..ArtifactDistributionGrants::default()
+        };
+        assert!(distribution_action_allowed(
+            SkillLibraryAction::Pin,
+            sync_only
+        ));
+        assert!(!distribution_action_allowed(
+            SkillLibraryAction::Follow,
+            sync_only
+        ));
+
+        let follow = ArtifactDistributionGrants {
+            sync: true,
+            follow: true,
+            ..ArtifactDistributionGrants::default()
+        };
+        assert!(distribution_action_allowed(
+            SkillLibraryAction::Follow,
+            follow
+        ));
+        assert!(distribution_action_allowed(
+            SkillLibraryAction::FollowUpdate,
+            follow
+        ));
+        assert!(!distribution_action_allowed(
+            SkillLibraryAction::ForkPersonal,
+            follow
+        ));
+
+        let fork = ArtifactDistributionGrants {
+            fork: true,
+            ..ArtifactDistributionGrants::default()
+        };
+        assert!(distribution_action_allowed(
+            SkillLibraryAction::ForkPersonal,
+            fork
+        ));
+        assert!(!distribution_action_allowed(SkillLibraryAction::Pin, fork));
     }
 
     #[test]
@@ -1910,7 +2147,10 @@ mod tests {
             LibraryTenantId::from_canonical_projection("company-b").unwrap(),
             actor.clone(),
         );
-        for action in SkillLibraryAction::ALL {
+        for action in SkillLibraryAction::ALL
+            .into_iter()
+            .filter(|action| !action.is_distribution())
+        {
             for role in [
                 ProjectRole::Owner,
                 ProjectRole::Admin,
@@ -1984,7 +2224,11 @@ mod tests {
     #[tokio::test]
     async fn protected_loadout_and_revoked_membership_fail_closed_for_all_actions() {
         let (_directory, runtime, owner) = fixture().await;
-        for (index, action) in SkillLibraryAction::ALL.into_iter().enumerate() {
+        for (index, action) in SkillLibraryAction::ALL
+            .into_iter()
+            .filter(|action| !action.is_distribution())
+            .enumerate()
+        {
             let target = ownership("bootstrap-owner");
             let kind = if action.is_mutation() {
                 SkillLibraryTarget::Mutation(&target)
@@ -2030,6 +2274,32 @@ mod tests {
             denied,
             Err(SkillLibraryAuthorizationError::Denied)
         ));
+    }
+
+    #[tokio::test]
+    async fn distribution_actions_misrouted_through_local_authorization_fail_closed() {
+        let (_directory, runtime, owner) = fixture().await;
+        for (index, action) in SkillLibraryAction::ALL
+            .into_iter()
+            .filter(|action| action.is_distribution())
+            .enumerate()
+        {
+            let target = ownership("bootstrap-owner");
+            let misrouted = decide(
+                &runtime,
+                browser_caller(owner.clone(), true),
+                "bootstrap-default",
+                action,
+                &format!("misrouted-{index}"),
+                SkillLibraryTarget::Personal(&target),
+                &format!("request-misrouted-{index}"),
+            )
+            .await;
+            assert!(
+                matches!(misrouted, Err(SkillLibraryAuthorizationError::Unavailable)),
+                "{action:?}"
+            );
+        }
     }
 
     #[test]

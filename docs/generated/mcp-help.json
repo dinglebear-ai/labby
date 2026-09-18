@@ -4656,6 +4656,152 @@
           "returns": "ArtifactImportBatchReceipt"
         },
         {
+          "name": "artifacts.transfer_options",
+          "description": "Evaluate current remote-use and distribution options for one exact source revision without mutating local state",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "source",
+              "ty": "object",
+              "required": true,
+              "description": "Server connection id plus exact immutable source, Artifact, and revision selector; never bytes, paths, endpoints, or credentials"
+            },
+            {
+              "name": "assignment_id",
+              "ty": "string",
+              "required": false,
+              "description": "Exact source Assignment/share whose distribution ceiling should be evaluated"
+            }
+          ],
+          "returns": "ArtifactTransferOptions"
+        },
+        {
+          "name": "artifacts.pin",
+          "description": "Materialize one exact revision as a managed local mirror without following future revisions",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "source",
+              "ty": "object",
+              "required": true,
+              "description": "Server connection id plus exact immutable source, Artifact, and revision selector; never bytes, paths, endpoints, or credentials"
+            },
+            {
+              "name": "assignment_id",
+              "ty": "string",
+              "required": true,
+              "description": "Exact active source Assignment/share authorizing managed byte materialization"
+            },
+            {
+              "name": "idempotency_key",
+              "ty": "string",
+              "required": true,
+              "description": "Bounded request idempotency key (maximum 256 bytes)"
+            }
+          ],
+          "returns": "ManagedArtifactReceipt"
+        },
+        {
+          "name": "artifacts.follow_managed",
+          "description": "Materialize one exact revision as a managed local mirror and create an explicit update subscription",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "source",
+              "ty": "object",
+              "required": true,
+              "description": "Server connection id plus exact immutable source, Artifact, and revision selector; never bytes, paths, endpoints, or credentials"
+            },
+            {
+              "name": "assignment_id",
+              "ty": "string",
+              "required": true,
+              "description": "Exact active source Assignment/share authorizing managed byte materialization"
+            },
+            {
+              "name": "idempotency_key",
+              "ty": "string",
+              "required": true,
+              "description": "Bounded request idempotency key (maximum 256 bytes)"
+            },
+            {
+              "name": "update_policy",
+              "ty": "string",
+              "required": true,
+              "description": "Follow policy: notify, auto_approved, or pinned"
+            }
+          ],
+          "returns": "ManagedArtifactReceipt"
+        },
+        {
+          "name": "artifacts.follow_update",
+          "description": "Apply one exact currently-authorized source revision to an existing followed managed mirror",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "source",
+              "ty": "object",
+              "required": true,
+              "description": "Server connection id plus exact immutable source, Artifact, and revision selector; never bytes, paths, endpoints, or credentials"
+            },
+            {
+              "name": "idempotency_key",
+              "ty": "string",
+              "required": true,
+              "description": "Bounded request idempotency key (maximum 256 bytes)"
+            }
+          ],
+          "returns": "ManagedArtifactReceipt"
+        },
+        {
+          "name": "artifacts.fork_personal",
+          "description": "Fork one exact permitted source revision into a new caller-owned Personal Artifact",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "source",
+              "ty": "object",
+              "required": true,
+              "description": "Server connection id plus exact immutable source, Artifact, and revision selector; never bytes, paths, endpoints, or credentials"
+            },
+            {
+              "name": "assignment_id",
+              "ty": "string",
+              "required": true,
+              "description": "Exact active source Assignment/share authorizing managed byte materialization"
+            },
+            {
+              "name": "name",
+              "ty": "string",
+              "required": true,
+              "description": "Name for the new caller-owned Personal Artifact"
+            },
+            {
+              "name": "title",
+              "ty": "string",
+              "required": false,
+              "description": "Optional title for the new Personal Artifact"
+            },
+            {
+              "name": "idempotency_key",
+              "ty": "string",
+              "required": true,
+              "description": "Bounded request idempotency key (maximum 256 bytes)"
+            }
+          ],
+          "returns": "PersonalArtifactForkReceipt"
+        },
+        {
           "name": "artifacts.refresh",
           "description": "Explicitly rebuild and reconcile the committed active generation",
           "destructive": false,

@@ -5819,6 +5819,11 @@
               "artifacts.rollback",
               "artifacts.import",
               "artifacts.import_batch",
+              "artifacts.transfer_options",
+              "artifacts.pin",
+              "artifacts.follow_managed",
+              "artifacts.follow_update",
+              "artifacts.fork_personal",
               "artifacts.refresh",
               "artifacts.list_connections",
               "artifacts.search_remote",
@@ -5968,6 +5973,44 @@
           }
         }
       },
+      "ArtifactsArtifactsFollow_managedParams": {
+        "type": "object",
+        "required": [
+          "source",
+          "assignment_id",
+          "idempotency_key",
+          "update_policy"
+        ],
+        "properties": {
+          "assignment_id": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "source": {
+            "type": "object"
+          },
+          "update_policy": {
+            "type": "string"
+          }
+        }
+      },
+      "ArtifactsArtifactsFollow_updateParams": {
+        "type": "object",
+        "required": [
+          "source",
+          "idempotency_key"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "source": {
+            "type": "object"
+          }
+        }
+      },
       "ArtifactsArtifactsForkParams": {
         "type": "object",
         "required": [
@@ -5992,6 +6035,32 @@
             "type": "string"
           },
           "source_artifact_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ArtifactsArtifactsFork_personalParams": {
+        "type": "object",
+        "required": [
+          "source",
+          "assignment_id",
+          "name",
+          "idempotency_key"
+        ],
+        "properties": {
+          "assignment_id": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "source": {
+            "type": "object"
+          },
+          "title": {
             "type": "string"
           }
         }
@@ -6175,6 +6244,25 @@
           },
           "query": {
             "type": "string"
+          }
+        }
+      },
+      "ArtifactsArtifactsPinParams": {
+        "type": "object",
+        "required": [
+          "source",
+          "assignment_id",
+          "idempotency_key"
+        ],
+        "properties": {
+          "assignment_id": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "source": {
+            "type": "object"
           }
         }
       },
@@ -6465,6 +6553,20 @@
               "unlisted",
               "public"
             ]
+          }
+        }
+      },
+      "ArtifactsArtifactsTransfer_optionsParams": {
+        "type": "object",
+        "required": [
+          "source"
+        ],
+        "properties": {
+          "assignment_id": {
+            "type": "string"
+          },
+          "source": {
+            "type": "object"
           }
         }
       },

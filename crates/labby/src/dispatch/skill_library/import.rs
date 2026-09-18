@@ -614,6 +614,29 @@ impl ImportCoordinator {
             .map_err(ImportAdapterError::Dispatch)
     }
 
+    pub(crate) async fn acquire_selected_for_distribution(
+        &self,
+        runtime: &AccessRuntime,
+        caller: &SkillLibraryCaller,
+        project_id: &str,
+        source: SourceSelector,
+    ) -> Result<ArtifactAcquisition, ImportAdapterError> {
+        let source = self.resolve_selector(source)?;
+        self.ensure_source_configured(&source)?;
+        if let (Some(catalog_project), ImportSource::Depot { connection_id, .. }) =
+            (&self.catalog_project, &source)
+            && connection_id == "public"
+            && catalog_project != project_id
+        {
+            return Err(SkillLibraryDispatchError::Authorization(
+                super::auth::SkillLibraryAuthorizationError::Denied,
+            )
+            .into());
+        }
+        let headers = delegated_read_headers(runtime, caller, project_id, &source).await?;
+        self.acquire(source, headers).await
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn import_selected<G: Send + Sync + 'static>(
         &self,

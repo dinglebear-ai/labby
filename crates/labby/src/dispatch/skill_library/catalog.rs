@@ -17,6 +17,11 @@ pub(crate) const LOCAL_ACTION_NAMES: &[&str] = &[
     "artifacts.rollback",
     "artifacts.import",
     "artifacts.import_batch",
+    "artifacts.transfer_options",
+    "artifacts.pin",
+    "artifacts.follow_managed",
+    "artifacts.follow_update",
+    "artifacts.fork_personal",
     "artifacts.refresh",
 ];
 
@@ -92,8 +97,44 @@ const SOURCES: ParamSpec = ParamSpec {
     required: true,
     description: "One to 100 exact immutable source selectors; each acquisition is committed before the next begins",
 };
+const ASSIGNMENT_OPTIONAL: ParamSpec = ParamSpec {
+    name: "assignment_id",
+    ty: "string",
+    required: false,
+    description: "Exact source Assignment/share whose distribution ceiling should be evaluated",
+};
+const ASSIGNMENT_REQUIRED: ParamSpec = ParamSpec {
+    name: "assignment_id",
+    ty: "string",
+    required: true,
+    description: "Exact active source Assignment/share authorizing managed byte materialization",
+};
+const UPDATE_POLICY: ParamSpec = ParamSpec {
+    name: "update_policy",
+    ty: "string",
+    required: true,
+    description: "Follow policy: notify, auto_approved, or pinned",
+};
 const IMPORT_PARAMS: &[ParamSpec] = &[SOURCE, VERSION, IDEM];
 const IMPORT_BATCH_PARAMS: &[ParamSpec] = &[SOURCES, VERSION, IDEM];
+const TRANSFER_OPTIONS_PARAMS: &[ParamSpec] = &[SOURCE, ASSIGNMENT_OPTIONAL];
+const PIN_PARAMS: &[ParamSpec] = &[SOURCE, ASSIGNMENT_REQUIRED, IDEM];
+const FOLLOW_PARAMS: &[ParamSpec] = &[SOURCE, ASSIGNMENT_REQUIRED, IDEM, UPDATE_POLICY];
+const FORK_NAME: ParamSpec = ParamSpec {
+    name: "name",
+    ty: "string",
+    required: true,
+    description: "Name for the new caller-owned Personal Artifact",
+};
+const FORK_TITLE: ParamSpec = ParamSpec {
+    name: "title",
+    ty: "string",
+    required: false,
+    description: "Optional title for the new Personal Artifact",
+};
+const FOLLOW_UPDATE_PARAMS: &[ParamSpec] = &[SOURCE, IDEM];
+const FORK_PERSONAL_PARAMS: &[ParamSpec] =
+    &[SOURCE, ASSIGNMENT_REQUIRED, FORK_NAME, FORK_TITLE, IDEM];
 const HISTORY_PARAMS: &[ParamSpec] = &[
     ARTIFACT,
     ParamSpec {
@@ -110,7 +151,7 @@ const HISTORY_PARAMS: &[ParamSpec] = &[
     },
 ];
 
-pub(crate) const LOCAL_ACTIONS: [ActionSpec; 15] = [
+pub(crate) const LOCAL_ACTIONS: [ActionSpec; 20] = [
     spec(
         "artifacts.search",
         "Search caller-visible stored Artifacts by indexed identity, description, tags, and provenance metadata",
@@ -255,6 +296,46 @@ pub(crate) const LOCAL_ACTIONS: [ActionSpec; 15] = [
         false,
         "ArtifactImportBatchReceipt",
         IMPORT_BATCH_PARAMS,
+    ),
+    spec(
+        "artifacts.transfer_options",
+        "Evaluate current remote-use and distribution options for one exact source revision without mutating local state",
+        false,
+        false,
+        "ArtifactTransferOptions",
+        TRANSFER_OPTIONS_PARAMS,
+    ),
+    spec(
+        "artifacts.pin",
+        "Materialize one exact revision as a managed local mirror without following future revisions",
+        false,
+        false,
+        "ManagedArtifactReceipt",
+        PIN_PARAMS,
+    ),
+    spec(
+        "artifacts.follow_managed",
+        "Materialize one exact revision as a managed local mirror and create an explicit update subscription",
+        false,
+        false,
+        "ManagedArtifactReceipt",
+        FOLLOW_PARAMS,
+    ),
+    spec(
+        "artifacts.follow_update",
+        "Apply one exact currently-authorized source revision to an existing followed managed mirror",
+        false,
+        false,
+        "ManagedArtifactReceipt",
+        FOLLOW_UPDATE_PARAMS,
+    ),
+    spec(
+        "artifacts.fork_personal",
+        "Fork one exact permitted source revision into a new caller-owned Personal Artifact",
+        false,
+        false,
+        "PersonalArtifactForkReceipt",
+        FORK_PERSONAL_PARAMS,
     ),
     spec(
         "artifacts.refresh",
