@@ -1089,22 +1089,22 @@ jobs:
       # example, and bench harnesses without a second large normal target in
       # flight, while Cargo/native build concurrency remains unchanged.
       - name: Warm Labby Clippy targets
-        run: cargo clippy -p labby --all-features --lib --bins --locked -- -D warnings -A clippy::unused_async_trait_impl -A clippy::result_large_err
+        run: cargo clippy -p labby --all-features --lib --bins --locked -- -D warnings
       - name: Lint extracted workspace targets
         run: >-
           cargo clippy --workspace --exclude labby --all-features
-          --all-targets --locked -- -D warnings -A clippy::unused_async_trait_impl -A clippy::result_large_err
+          --all-targets --locked -- -D warnings
       - name: Warm Labby Clippy test dependency graph
         # Selecting one integration test enables the same dev-dependency
         # feature graph as the all-target pass while keeping that large normal
         # library compile isolated from the remaining test targets.
         run: >-
           cargo clippy -p labby --all-features
-          --test architecture_boundaries --locked -- -D warnings -A clippy::unused_async_trait_impl -A clippy::result_large_err
+          --test architecture_boundaries --locked -- -D warnings
       - name: Lint all Labby targets
         run: >-
           cargo clippy -p labby --all-features --all-targets --locked
-          -- -D warnings -A clippy::unused_async_trait_impl -A clippy::result_large_err
+          -- -D warnings
 
   mcp-regressions:
     name: MCP focused regressions (${{ matrix.shard }})

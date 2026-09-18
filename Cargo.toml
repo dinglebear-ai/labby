@@ -181,13 +181,6 @@ multiple_crate_versions = "allow"
 # TODO(stubs): re-enable once every service's real impl calls self.http — these
 # fire on stub method bodies that will become async the moment the HTTP call lands.
 unused_async = "allow"
-# Rust 1.98 added stricter diagnostics for async trait fixtures and rich Err
-# contracts. Both patterns are deliberate here: trait implementations retain
-# async signatures for interchangeable hosts, and operator-facing errors carry
-# structured recovery/evidence. Keep the exceptions explicit while every other
-# Clippy warning remains merge-blocking.
-unused_async_trait_impl = "allow"
-result_large_err = "allow"
 
 # TODO(lint-pass): pre-existing warnings promoted to errors by RUSTFLAGS=-D warnings
 # in CI. Allow for now; fix incrementally in follow-up PRs.

@@ -1,3 +1,7 @@
+// HTTP auth middleware intentionally returns complete Axum responses on denial,
+// which keeps the rejection contract centralized at the cost of a larger Err.
+#![allow(clippy::result_large_err)]
+
 //! Authentication, authorization, OAuth, session, and token support for Labby services.
 
 pub mod at_rest;
