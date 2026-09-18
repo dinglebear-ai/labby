@@ -150,6 +150,10 @@ test('Library hub matches the four primary mock tabs with stable icon/count geom
 })
 const DEPOT_SCHEMA = 'labby.depot-compatibility/v1'
 const envelope = (result: unknown) => Response.json({ schemaVersion: DEPOT_SCHEMA, result })
+const operationCatalog = () => Response.json({ operations: [
+  { name: 'depot.artifacts.list', title: 'List artifacts', description: 'List artifacts', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true, destructiveHint: false } },
+  { name: 'depot.artifacts.get', title: 'Get artifact', description: 'Get artifact', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true, destructiveHint: false } },
+] })
 const flush = () => act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
 
 function artifact(id: string, kind: string, title = id) {
@@ -165,11 +169,20 @@ type DepotRequest = { operation: string; input: Record<string, unknown>; project
 
 async function renderLibrary(search = new URLSearchParams(), records = [artifact('skill-one', 'skill', 'Skill One')]) {
   const requested: DepotRequest[] = []
+  const requestSequence: string[] = []
   const originalFetch = globalThis.fetch
-  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const method = (init?.method ?? 'GET').toUpperCase()
+    if (String(input) === '/v1/depot/operations' && method === 'GET') {
+      requestSequence.push('catalog')
+      return operationCatalog()
+    }
     const headers = new Headers(init?.headers)
     const body = JSON.parse(String(init?.body ?? '{}')) as { operation?: string; params?: Record<string, unknown> }
-    if (body.operation) requested.push({ operation: body.operation, input: body.params ?? {}, projectId: headers.get('x-labby-project-id') })
+    if (body.operation) {
+      requestSequence.push(body.operation)
+      requested.push({ operation: body.operation, input: body.params ?? {}, projectId: headers.get('x-labby-project-id') })
+    }
     if (body.operation === 'depot.artifacts.get') {
       const id = String(body.params?.artifactId ?? '')
       return envelope({ artifact: records.find(item => item.id === id) ?? artifact(id, 'skill', 'Deep linked artifact') })
@@ -179,7 +192,7 @@ async function renderLibrary(search = new URLSearchParams(), records = [artifact
   }) as typeof globalThis.fetch
   document.body.replaceChildren()
   const view = await renderClient(<SearchParamsContext.Provider value={search as never}><LibraryPageContent /></SearchParamsContext.Provider>)
-  return { view, requested, restore: () => { globalThis.fetch = originalFetch } }
+  return { view, requested, requestSequence, restore: () => { globalThis.fetch = originalFetch } }
 }
 
 test('Library is a user-level hub and loads the generic Depot Artifact authority without a project gate', async () => {
@@ -187,16 +200,38 @@ test('Library is a user-level hub and loads the generic Depot Artifact authority
     artifact('prompt-one', 'prompt', 'Prompt One'), artifact('resource-one', 'resource', 'Resource One'), artifact('app-one', 'app', 'App One'),
     artifact('skill-one', 'skill', 'Skill One'), artifact('plugin-one', 'plugin', 'Plugin One'), artifact('market-one', 'marketplace', 'Marketplace One'),
   ]
-  const { view, requested, restore } = await renderLibrary(new URLSearchParams(), records)
+  const { view, requested, requestSequence, restore } = await renderLibrary(new URLSearchParams(), records)
   try {
     await flush()
     assert.doesNotMatch(view.container.textContent ?? '', /Project required|Select an eligible project workspace/)
     assert.ok(requested.some(request => request.operation === 'depot.artifacts.list'))
+    const listIndex = requestSequence.indexOf('depot.artifacts.list')
+    assert.ok(listIndex > 0, 'artifact listing was dispatched')
+    assert.ok(requestSequence.slice(0, listIndex).includes('catalog'), 'Library establishes the actor-filtered Depot catalog before listing artifacts')
     assert.ok(requested.filter(request => request.operation === 'depot.artifacts.list').every(request => request.projectId === null), 'Library browsing does not require a project header')
     for (const title of records.map(item => item.title)) assert.match(view.container.textContent ?? '', new RegExp(title))
     assert.ok(view.container.querySelector('a[href="/library"][aria-current="page"]'))
     for (const href of ['/loadouts', '/snippets', '/tools']) assert.ok(view.container.querySelector(`a[href="${href}"]`))
   } finally { await view.unmount(); restore() }
+})
+
+test('Library fails closed when the actor-filtered Depot catalog cannot be established', async () => {
+  const originalFetch = globalThis.fetch
+  let operationPosts = 0
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === '/v1/depot/operations' && (init?.method ?? 'GET').toUpperCase() === 'GET') {
+      return new Response('<html>bad gateway</html>', { status: 502, headers: { 'content-type': 'text/html' } })
+    }
+    if (String(input) === '/v1/depot/operations' && (init?.method ?? 'GET').toUpperCase() === 'POST') operationPosts++
+    return envelope({ artifacts: [], total: 0 })
+  }) as typeof globalThis.fetch
+  document.body.replaceChildren()
+  const view = await renderClient(<SearchParamsContext.Provider value={new URLSearchParams() as never}><LibraryPageContent /></SearchParamsContext.Provider>)
+  try {
+    await flush()
+    assert.equal(operationPosts, 0, 'Library never dispatches an operation without a current catalog')
+    assert.match(view.container.textContent ?? '', /Library unavailable/i)
+  } finally { await view.unmount(); globalThis.fetch = originalFetch }
 })
 
 test('Library kind routes use one hub surface and activate the requested family', async () => {
@@ -215,13 +250,16 @@ test('Library deep links open the shared mock-aligned inspection modal with icon
   const params = new URLSearchParams({ artifact: 'rust-reviewer' })
   const record = artifact('rust-reviewer', 'agent', 'rust-reviewer')
   record.descriptor.tags = ['rust', 'review']
-  const { view, requested, restore } = await renderLibrary(params, [record])
+  const { view, requested, requestSequence, restore } = await renderLibrary(params, [record])
   try {
     await flush()
     const dialog = document.querySelector('[role="dialog"]')
     assert.ok(dialog)
     assert.match(dialog.textContent ?? '', /rust-reviewer/)
     assert.ok(requested.some(request => request.operation === 'depot.artifacts.get' && request.input.artifactId === 'rust-reviewer'))
+    const getIndex = requestSequence.indexOf('depot.artifacts.get')
+    assert.ok(getIndex > 0, 'artifact detail was dispatched')
+    assert.ok(requestSequence.slice(0, getIndex).includes('catalog'), 'Library establishes the actor-filtered Depot catalog before artifact detail calls')
     for (const label of ['Open upstream and fork options', 'Copy Library link', 'Export artifact']) assert.ok(dialog.querySelector(`button[aria-label="${label}"]`), label)
     assert.doesNotMatch(dialog.textContent ?? '', /Open upstream and fork options|Copy Library link|Export artifact/)
   } finally { await view.unmount(); restore() }
@@ -246,7 +284,8 @@ test('Library search sends supported semantic queries but still filters loaded r
 test('a stale detail response cannot overwrite a newer artifact selection', async () => {
   const originalFetch = globalThis.fetch
   const pending = new Map<string, { resolve: (value: Response) => void; promise: Promise<Response> }>()
-  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === '/v1/depot/operations' && (init?.method ?? 'GET').toUpperCase() === 'GET') return operationCatalog()
     const body = JSON.parse(String(init?.body ?? '{}')) as { operation?: string; params?: Record<string, unknown> }
     if (body.operation === 'depot.artifacts.list') return envelope({ artifacts: [artifact('alpha', 'skill', 'Alpha'), artifact('bravo', 'agent', 'Bravo')], total: 2 })
     if (body.operation === 'depot.artifacts.get') {

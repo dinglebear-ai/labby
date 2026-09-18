@@ -2,7 +2,7 @@ import { DISCOVERY_KINDS } from '../depot/provider-model.ts'
 import { z } from 'zod'
 
 import { getBrowserSessionEpoch, getBrowserSessionState, getSessionCsrfToken } from '../auth/session-store'
-import { gatewayRequestInit } from './gateway-request'
+import { assertGatewayAuthorityCurrent, gatewayRequestInit } from './gateway-request'
 import { refreshBrowserSession } from './service-action-client'
 import { mockDepotLibraryArtifactIds, mockDepotProviderOptions, mockGetArtifact, mockListArtifacts } from './depot-mock-data'
 
@@ -195,12 +195,14 @@ const detailSchema = contractSchema.extend({ result: z.object({ artifact: artifa
 export type DepotStatus = z.infer<typeof depotStatusSchema>
 
 async function parse(response: Response): Promise<unknown> {
+  const requestId = response.headers.get('x-request-id') ?? undefined
   let body: unknown
-  try { body = await response.json() } catch { throw new Error(`Labby catalog returned invalid JSON (${response.status})`) }
+  try { body = await response.json() } catch { throw new DepotClientError(response.status, 'invalid_response', `Labby catalog returned invalid JSON (${response.status})`, undefined, requestId) }
   if (!response.ok) {
     const error = body && typeof body === 'object' ? body as Record<string, unknown> : {}
     const summary = typeof error.error === 'string' ? error.error : typeof error.message === 'string' ? error.message : `Labby catalog request failed (${response.status})`
-    throw new Error(safeDepotError(summary, response.status))
+    const kind = typeof error.error === 'string' && /^[a-z][a-z0-9_]{0,127}$/.test(error.error) ? error.error : 'request_failed'
+    throw new DepotClientError(response.status, kind, safeDepotError(summary, response.status), undefined, requestId)
   }
   return body
 }
@@ -264,6 +266,48 @@ export async function depotOperations(signal?: AbortSignal): Promise<DepotOperat
   return validate(operationsSchema, await parse(response), 'operation catalog response').operations
 }
 
+const operationPreflightSchema = z.object({
+  operations: z.array(z.object({ name: bounded(256).min(1) }).passthrough()).max(1000),
+}).passthrough()
+
+async function primeDepotOperationCatalog(): Promise<void> {
+  const response = await fetch('/v1/depot/operations', { credentials: 'same-origin', cache: 'no-store' })
+  validate(operationPreflightSchema, await parse(response), 'operation catalog preflight response')
+}
+
+function waitForSharedPreflight(promise: Promise<void>, signal?: AbortSignal): Promise<void> {
+  if (!signal) return promise
+  signal.throwIfAborted()
+  return new Promise<void>((resolve, reject) => {
+    const aborted = () => reject(signal.reason ?? new DOMException('The operation was aborted.', 'AbortError'))
+    signal.addEventListener('abort', aborted, { once: true })
+    promise.then(
+      () => { signal.removeEventListener('abort', aborted); resolve() },
+      (error) => { signal.removeEventListener('abort', aborted); reject(error) },
+    )
+  })
+}
+
+let depotCatalogPreflight: { epoch: number; promise: Promise<void> } | undefined
+
+async function ensureDepotOperationCatalog(epoch: number, signal?: AbortSignal): Promise<void> {
+  let preflight = depotCatalogPreflight
+  if (!preflight || preflight.epoch !== epoch) {
+    const promise = (async () => {
+      // The shared fetch is independent of any one caller's AbortSignal. Individual
+      // callers stop waiting when cancelled without aborting catalog establishment
+      // for another concurrent operation.
+      await primeDepotOperationCatalog()
+      assertGatewayAuthorityCurrent(epoch)
+    })()
+    preflight = { epoch, promise }
+    depotCatalogPreflight = preflight
+    const clear = () => { if (depotCatalogPreflight?.promise === promise) depotCatalogPreflight = undefined }
+    void promise.then(clear, clear)
+  }
+  await waitForSharedPreflight(preflight.promise, signal)
+}
+
 function mockControlArtifact(item: FederatedArtifact): DepotArtifact {
   return {
     id: item.id ?? item.artifactId, kind: item.kind, namespace: item.namespace, name: item.name, title: item.title, description: item.description,
@@ -273,6 +317,15 @@ function mockControlArtifact(item: FederatedArtifact): DepotArtifact {
     lineage: item.lineage ? { following: item.lineage.following, upstreamArtifactId: item.lineage.upstreamArtifactId ?? undefined, forkedFromArtifactId: item.lineage.forkedFromArtifactId } : undefined,
     currentRevision: item.currentRevision ? { id: item.currentRevision.id, contentDigest: item.currentRevision.contentDigest, createdAt: item.updatedAt ?? item.currentRevision.authoredAt ?? undefined, fileCount: item.currentRevision.fileCount } : undefined,
   }
+}
+
+async function dispatchDepotOperation<T>(operation: string, params: Record<string, unknown>, signal?: AbortSignal, destructiveIntent?: { confirmed: true; idempotencyKey: string }): Promise<T> {
+  const init = gatewayRequestInit(operation, params, undefined, signal)
+  init.body = JSON.stringify({ operation, params, ...(destructiveIntent ? { destructiveIntent } : {}) })
+  const value = await parse(await fetch('/v1/depot/operations', init))
+  if (operation === 'depot.artifacts.list') return validate(listSchema, value, 'artifact list response') as T
+  if (operation === 'depot.artifacts.get') return validate(detailSchema, value, 'artifact detail response') as T
+  return validate(genericResultSchema, value, 'operation response') as T
 }
 
 export async function depotCall<T>(operation: string, params: Record<string, unknown>, signal?: AbortSignal, destructiveIntent?: { confirmed: true; idempotencyKey: string }): Promise<T> {
@@ -288,12 +341,32 @@ export async function depotCall<T>(operation: string, params: Record<string, unk
     const detail = mockGetArtifact(found.providerId, found.artifactId)
     return validate(detailSchema, { schemaVersion: COMPATIBILITY_SCHEMA, result: { artifact: mockControlArtifact(detail.artifact) } }, 'mock artifact detail response') as T
   }
-  const init = gatewayRequestInit(operation, params, undefined, signal)
-  init.body = JSON.stringify({ operation, params, ...(destructiveIntent ? { destructiveIntent } : {}) })
-  const value = await parse(await fetch('/v1/depot/operations', init))
-  if (operation === 'depot.artifacts.list') return validate(listSchema, value, 'artifact list response') as T
-  if (operation === 'depot.artifacts.get') return validate(detailSchema, value, 'artifact detail response') as T
-  return validate(genericResultSchema, value, 'operation response') as T
+  // Labby's dispatcher intentionally fails closed unless this actor has loaded a
+  // current operation catalog. Establish one immediately before every real
+  // operation; concurrent callers share only the in-flight preflight, never a
+  // long-lived client cache that could survive a backend restart.
+  signal?.throwIfAborted()
+  const operationEpoch = getBrowserSessionEpoch()
+  const preflight = async () => {
+    await ensureDepotOperationCatalog(operationEpoch, signal)
+    signal?.throwIfAborted()
+    // The shared preflight may resolve before this caller resumes. Re-check at the
+    // dispatch boundary so a session/project transition cannot reuse another
+    // actor's catalog and recreate the cold-session 502.
+    assertGatewayAuthorityCurrent(operationEpoch)
+  }
+  await preflight()
+  try {
+    return await dispatchDepotOperation<T>(operation, params, signal, destructiveIntent)
+  } catch (error) {
+    // InvalidCatalog is raised before Labby dispatches anything to Depot. A
+    // restart or cache eviction between the GET preflight and POST is therefore
+    // the one operation failure that is safe to re-prime and retry exactly once,
+    // including for destructive operations whose intent key remains unchanged.
+    if (!(error instanceof DepotClientError && error.status === 502 && error.kind === 'invalid_depot_catalog')) throw error
+    await preflight()
+    return dispatchDepotOperation<T>(operation, params, signal, destructiveIntent)
+  }
 }
 
 const sourceArgsSchema = z.record(z.string(), z.unknown())

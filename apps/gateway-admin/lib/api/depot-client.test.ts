@@ -3,12 +3,20 @@ import test from 'node:test'
 import { __setBrowserSessionStateForTests } from '../auth/session-store.ts'
 import { cancelDepotIngestJob, configureDepotSource, consumeOwnerLinkApproval, deleteDepotSource, depotCall, depotIngestJobs, depotOperations, depotSession, depotSources, depotStatus, depotPublishCapability, publishDepotSkill, refreshDepotSource, retryDepotIngestJob, startDepotRepoIngest, getArtifact, listArtifacts, listProviders, providerOperation, removeProvider, upsertProvider } from './depot-client.ts'
 
+const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status })
+const operationCatalog = () => json({ operations: [{ name: 'depot.test', title: 'Test', description: 'Test', inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false } }] })
+
 async function withFetch(response: Response, run: () => Promise<void>) {
   const original = globalThis.fetch
-  globalThis.fetch = (async () => response) as typeof fetch
+  const suppliedBody = await response.clone().json().catch(() => undefined)
+  const catalogUnderTest = typeof suppliedBody === 'object' && suppliedBody !== null && Object.prototype.hasOwnProperty.call(suppliedBody, 'operations')
+  globalThis.fetch = (async (input, init) => {
+    const method = (init?.method ?? 'GET').toUpperCase()
+    if (!catalogUnderTest && String(input) === '/v1/depot/operations' && method === 'GET') return operationCatalog()
+    return response.clone()
+  }) as typeof fetch
   try { await run() } finally { globalThis.fetch = original }
 }
-const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status })
 const artifact = { id: 'artifact-1', kind: 'skill', name: 'demo' }
 
 test('v1 descriptors retain bounded supplied tags without inventing missing metadata', async () => {
@@ -163,6 +171,221 @@ test('accepts the signed Depot control target identity without treating bootstra
   await withFetch(json({ ...session, backend: { ...session.backend, deploymentId: '' } }), async () => assert.rejects(depotSession(), /incompatible control session response/i))
 })
 
+test('generic operation dispatch establishes the actor catalog immediately before POST', async () => {
+  const original = globalThis.fetch
+  const sequence: string[] = []
+  globalThis.fetch = (async (url, init) => {
+    const method = (init?.method ?? 'GET').toUpperCase()
+    if (String(url) === '/v1/depot/operations' && method === 'GET') {
+      sequence.push('catalog')
+      return operationCatalog()
+    }
+    if (String(url) === '/v1/depot/operations' && method === 'POST') {
+      const body = JSON.parse(String(init?.body)) as { operation?: string }
+      sequence.push(body.operation ?? 'unknown')
+      return json({ schemaVersion: 'labby.depot-compatibility/v1', result: { ok: true } })
+    }
+    return json({ message: 'unexpected request' }, 500)
+  }) as typeof fetch
+  try {
+    await depotCall('depot.system.status', {})
+    assert.deepEqual(sequence, ['catalog', 'depot.system.status'])
+  } finally { globalThis.fetch = original }
+})
+
+test('operation preflight is independent of the Administration renderer schema subset', async () => {
+  const original = globalThis.fetch
+  const sequence: string[] = []
+  globalThis.fetch = (async (url, init) => {
+    const method = (init?.method ?? 'GET').toUpperCase()
+    if (String(url) === '/v1/depot/operations' && method === 'GET') {
+      sequence.push('catalog')
+      return json({ operations: [{
+        name: 'depot.system.status',
+        title: 'Status',
+        description: 'Status',
+        annotations: { readOnlyHint: true, destructiveHint: false },
+        inputSchema: { type: 'object', additionalProperties: true },
+      }] })
+    }
+    if (String(url) === '/v1/depot/operations' && method === 'POST') {
+      sequence.push('post')
+      return json({ schemaVersion: 'labby.depot-compatibility/v1', result: { ok: true } })
+    }
+    return json({ message: 'unexpected request' }, 500)
+  }) as typeof fetch
+  try {
+    const result = await depotCall<{ result: { ok: boolean } }>('depot.system.status', {})
+    assert.equal(result.result.ok, true)
+    assert.deepEqual(sequence, ['catalog', 'post'])
+  } finally { globalThis.fetch = original }
+})
+
+test('already-aborted operation never starts a catalog preflight', async () => {
+  const original = globalThis.fetch
+  let requests = 0
+  globalThis.fetch = (async () => {
+    requests++
+    return operationCatalog()
+  }) as typeof fetch
+  const controller = new AbortController()
+  controller.abort()
+  try {
+    await assert.rejects(depotCall('depot.system.status', {}, controller.signal), /aborted/i)
+    assert.equal(requests, 0)
+  } finally { globalThis.fetch = original }
+})
+
+test('operation cancellation stops waiting without aborting the shared catalog preflight', async () => {
+  const original = globalThis.fetch
+  const sequence: string[] = []
+  let releaseCatalog!: () => void
+  const catalogGate = new Promise<void>(resolve => { releaseCatalog = resolve })
+  globalThis.fetch = (async (url, init) => {
+    const method = (init?.method ?? 'GET').toUpperCase()
+    if (String(url) === '/v1/depot/operations' && method === 'GET') {
+      sequence.push('catalog')
+      await catalogGate
+      return operationCatalog()
+    }
+    if (String(url) === '/v1/depot/operations' && method === 'POST') {
+      sequence.push('post')
+      return json({ schemaVersion: 'labby.depot-compatibility/v1', result: { ok: true } })
+    }
+    return json({ message: 'unexpected request' }, 500)
+  }) as typeof fetch
+  const controller = new AbortController()
+  try {
+    const cancelled = depotCall('depot.system.status', {}, controller.signal)
+    await Promise.resolve()
+    assert.deepEqual(sequence, ['catalog'])
+    controller.abort()
+    await assert.rejects(cancelled, /aborted/i)
+    assert.deepEqual(sequence, ['catalog'], 'cancelled caller never dispatches an operation')
+
+    const survivor = depotCall<{ result: { ok: boolean } }>('depot.system.status', {})
+    await Promise.resolve()
+    assert.deepEqual(sequence, ['catalog'], 'surviving caller reuses the still-running shared preflight')
+    releaseCatalog()
+    assert.equal((await survivor).result.ok, true)
+    assert.deepEqual(sequence, ['catalog', 'post'])
+  } finally { globalThis.fetch = original }
+})
+
+test('session transition during catalog preflight prevents operation dispatch', async () => {
+  const original = globalThis.fetch
+  const sequence: string[] = []
+  let releaseCatalog!: () => void
+  const catalogGate = new Promise<void>(resolve => { releaseCatalog = resolve })
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'catalog-actor-one' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf-one' })
+  globalThis.fetch = (async (url, init) => {
+    const method = (init?.method ?? 'GET').toUpperCase()
+    if (String(url) === '/v1/depot/operations' && method === 'GET') {
+      sequence.push('catalog')
+      await catalogGate
+      return operationCatalog()
+    }
+    if (String(url) === '/v1/depot/operations' && method === 'POST') {
+      sequence.push('post')
+      return json({ schemaVersion: 'labby.depot-compatibility/v1', result: { ok: true } })
+    }
+    return json({ message: 'unexpected request' }, 500)
+  }) as typeof fetch
+  try {
+    const pending = depotCall('depot.system.status', {})
+    await Promise.resolve()
+    assert.deepEqual(sequence, ['catalog'])
+    __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'catalog-actor-two' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf-two' })
+    releaseCatalog()
+    await assert.rejects(pending, /Authority or project context changed/)
+    assert.deepEqual(sequence, ['catalog'], 'operation POST is blocked after the actor changes')
+  } finally {
+    globalThis.fetch = original
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  }
+})
+
+test('concurrent operation dispatch shares one in-flight catalog preflight', async () => {
+  const original = globalThis.fetch
+  const sequence: string[] = []
+  let releaseCatalog!: () => void
+  const catalogGate = new Promise<void>(resolve => { releaseCatalog = resolve })
+  globalThis.fetch = (async (url, init) => {
+    const method = (init?.method ?? 'GET').toUpperCase()
+    if (String(url) === '/v1/depot/operations' && method === 'GET') {
+      sequence.push('catalog')
+      await catalogGate
+      return operationCatalog()
+    }
+    if (String(url) === '/v1/depot/operations' && method === 'POST') {
+      const body = JSON.parse(String(init?.body)) as { operation?: string }
+      sequence.push(body.operation ?? 'unknown')
+      return json({ schemaVersion: 'labby.depot-compatibility/v1', result: { ok: true } })
+    }
+    return json({ message: 'unexpected request' }, 500)
+  }) as typeof fetch
+  try {
+    const first = depotCall('depot.system.status', {})
+    const second = depotCall('depot.maintenance.gc', {})
+    await Promise.resolve()
+    assert.deepEqual(sequence, ['catalog'], 'concurrent callers do not duplicate an in-flight preflight or POST early')
+    releaseCatalog()
+    await Promise.all([first, second])
+    assert.equal(sequence.filter(item => item === 'catalog').length, 1)
+    assert.deepEqual(new Set(sequence.slice(1)), new Set(['depot.system.status', 'depot.maintenance.gc']))
+  } finally { globalThis.fetch = original }
+})
+
+test('invalid catalog between preflight and dispatch is re-primed and retried exactly once', async () => {
+  const original = globalThis.fetch
+  const sequence: string[] = []
+  const postedBodies: unknown[] = []
+  let posts = 0
+  globalThis.fetch = (async (url, init) => {
+    const method = (init?.method ?? 'GET').toUpperCase()
+    if (String(url) === '/v1/depot/operations' && method === 'GET') {
+      sequence.push('catalog')
+      return operationCatalog()
+    }
+    if (String(url) === '/v1/depot/operations' && method === 'POST') {
+      posts++
+      sequence.push(`post-${posts}`)
+      postedBodies.push(JSON.parse(String(init?.body)))
+      if (posts === 1) return json({ error: 'invalid_depot_catalog' }, 502)
+      return json({ schemaVersion: 'labby.depot-compatibility/v1', result: { ok: true } })
+    }
+    return json({ message: 'unexpected request' }, 500)
+  }) as typeof fetch
+  const intent = { confirmed: true as const, idempotencyKey: 'stable-intent' }
+  try {
+    const result = await depotCall<{ result: { ok: boolean } }>('depot.sources.delete', { sourceId: 'src-1' }, undefined, intent)
+    assert.equal(result.result.ok, true)
+    assert.deepEqual(sequence, ['catalog', 'post-1', 'catalog', 'post-2'])
+    assert.deepEqual(postedBodies, [
+      { operation: 'depot.sources.delete', params: { sourceId: 'src-1' }, destructiveIntent: intent },
+      { operation: 'depot.sources.delete', params: { sourceId: 'src-1' }, destructiveIntent: intent },
+    ])
+  } finally { globalThis.fetch = original }
+})
+
+test('non-catalog operation failures are never replayed automatically', async () => {
+  const original = globalThis.fetch
+  let posts = 0
+  globalThis.fetch = (async (url, init) => {
+    const method = (init?.method ?? 'GET').toUpperCase()
+    if (String(url) === '/v1/depot/operations' && method === 'GET') return operationCatalog()
+    if (String(url) === '/v1/depot/operations' && method === 'POST') {
+      posts++
+      return json({ error: 'depot_rejected' }, 502)
+    }
+    return json({ message: 'unexpected request' }, 500)
+  }) as typeof fetch
+  try {
+    await assert.rejects(depotCall('depot.sources.delete', { sourceId: 'src-1' }, undefined, { confirmed: true, idempotencyKey: 'do-not-replay' }), /depot_rejected/)
+    assert.equal(posts, 1)
+  } finally { globalThis.fetch = original }
+})
+
 test('accepts the canonical operation catalog and generic operation results', async () => {
   await withFetch(json({ operations: [{ name: 'depot.system.status', title: 'Depot status', description: 'Status', inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false } }] }), async () => assert.equal((await depotOperations())[0]?.name, 'depot.system.status'))
   await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v1', result: { ok: true } }), async () => assert.equal((await depotCall<{ result: { ok: boolean } }>('depot.system.status', {})).result.ok, true))
@@ -181,7 +404,8 @@ test('accepts Depot control-catalog authority and transport metadata', async () 
 test('repository source helpers use canonical Depot operations and preserve credential references only', async () => {
   const original = globalThis.fetch
   const bodies: Array<Record<string, unknown>> = []
-  globalThis.fetch = (async (_url, init) => {
+  globalThis.fetch = (async (url, init) => {
+    if (String(url) === '/v1/depot/operations' && (init?.method ?? 'GET').toUpperCase() === 'GET') return operationCatalog()
     const body = JSON.parse(String(init?.body))
     bodies.push(body)
     const operation = body.operation as string
@@ -220,7 +444,8 @@ test('accepts bounded output schema metadata without weakening operation input v
 test('sends destructive intent only when explicitly supplied', async () => {
   const original = globalThis.fetch
   const bodies: unknown[] = []
-  globalThis.fetch = (async (_url, init) => {
+  globalThis.fetch = (async (url, init) => {
+    if (String(url) === '/v1/depot/operations' && (init?.method ?? 'GET').toUpperCase() === 'GET') return operationCatalog()
     bodies.push(JSON.parse(String(init?.body)))
     return json({ schemaVersion: 'labby.depot-compatibility/v1', result: { ok: true } })
   }) as typeof fetch
