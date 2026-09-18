@@ -355,16 +355,16 @@ Milestone 0A implementation evidence: `labby-auth` now emits one transport-indep
 
 ### Phase 9: Local Artifact distribution semantics
 
-- [ ] TransferOptions intersection: caller + owner publisher ceiling + Assignment ceiling + Artifact state + destination.
-- [ ] managed mirror preserves source authority and never acquires ownership.
-- [ ] managed pin.
-- [ ] follow/subscription state.
-- [ ] auto-approved update reauthorization.
-- [ ] personal fork.
-- [ ] detached export authorization.
-- [ ] reshare authorization.
-- [ ] license/publication/takedown intersection.
-- [ ] revocation states.
+- [x] TransferOptions intersection: caller + owner publisher ceiling + Assignment ceiling + Artifact state + destination.
+- [x] managed mirror preserves source authority and never acquires ownership.
+- [x] managed pin.
+- [x] follow/subscription state.
+- [ ] auto-approved update reauthorization. The exact-revision coordinator path reauthorizes and is tested, but the follow-observation driver that invokes it automatically is not implemented yet.
+- [x] personal fork.
+- [ ] detached export authorization. The existing secret-safe exact-acquisition export primitive is tested, but no distribution-authorized product action invokes it yet.
+- [ ] reshare authorization. Policy evaluation exists, but no reshare operation is wired.
+- [x] license/publication/takedown intersection.
+- [ ] revocation states. State transitions, subscription pausing, managed-byte purge, and tests exist; automatic revocation/source-withdrawal reconciliation is not wired yet.
 
 ### Phase 10: Personal Labby pairing/remote transfer
 

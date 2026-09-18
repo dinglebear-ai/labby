@@ -1159,6 +1159,10 @@ fn blocked_reason(error: &AccessStoreError) -> AccessBlockedReason {
         | AccessStoreError::NotAuthorized
         | AccessStoreError::InvalidProjectLoadoutInput
         | AccessStoreError::ProjectLoadoutConflict
+        | AccessStoreError::InvalidArtifactDistributionInput
+        | AccessStoreError::ArtifactDistributionConflict
+        | AccessStoreError::ArtifactMirrorUnavailable
+        | AccessStoreError::ArtifactMirrorStateConflict
         | AccessStoreError::Unavailable(_) => AccessBlockedReason::Unavailable,
     }
 }
