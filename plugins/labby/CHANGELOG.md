@@ -27,6 +27,9 @@
   static bearer can coexist with OAuth as a break-glass credential.
 - Existing `--oauth google|authelia` server setup remains backwards
   compatible and resolves to OAuth + bearer when `--auth` is omitted.
+- Switching server setup back to bearer-only authentication now clears stale
+  OAuth provider, bootstrap-admin, and provider client credential fields from
+  the protected environment.
 - Plugin installation guidance now points to the verified release installer
   and `$install-labby` rather than the retired raw-branch curl pipeline.
 

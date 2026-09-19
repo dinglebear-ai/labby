@@ -1309,7 +1309,16 @@ fn configure_server_env(path: &Path, plan: &SetupPlan) -> Result<Option<String>>
         entries.push(EnvEntry::new("LABBY_PUBLIC_URL", public_url).force());
     }
     match plan.oauth.as_ref() {
-        None => entries.push(EnvEntry::new("LABBY_AUTH_MODE", "bearer").force()),
+        None => entries.extend([
+            EnvEntry::new("LABBY_AUTH_MODE", "bearer").force(),
+            EnvEntry::new("LABBY_AUTH_PROVIDER", "").force(),
+            EnvEntry::new("LABBY_AUTH_ADMIN_EMAIL", "").force(),
+            EnvEntry::new("LABBY_GOOGLE_CLIENT_ID", "").force(),
+            EnvEntry::new("LABBY_GOOGLE_CLIENT_SECRET", "").force(),
+            EnvEntry::new("LABBY_AUTHELIA_ISSUER_URL", "").force(),
+            EnvEntry::new("LABBY_AUTHELIA_CLIENT_ID", "").force(),
+            EnvEntry::new("LABBY_AUTHELIA_CLIENT_SECRET", "").force(),
+        ]),
         Some(OAuthConfig::Google {
             client_id,
             client_secret,
@@ -1916,6 +1925,63 @@ mod tests {
             read_env(&root.join(".env"), "LABBY_AUTH_MODE").as_deref(),
             Some("oauth")
         );
+    }
+
+    #[test]
+    fn switching_server_from_oauth_to_bearer_clears_provider_credentials() {
+        for (provider, oauth) in [
+            (
+                "google",
+                OAuthConfig::Google {
+                    client_id: "google-client-id".into(),
+                    client_secret: "google-client-secret".into(),
+                    admin_email: "google-admin@example.com".into(),
+                },
+            ),
+            (
+                "authelia",
+                OAuthConfig::Authelia {
+                    issuer_url: "https://auth.example.com".into(),
+                    client_id: "authelia-client-id".into(),
+                    client_secret: "authelia-client-secret".into(),
+                    admin_email: "authelia-admin@example.com".into(),
+                },
+            ),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path().canonicalize().unwrap();
+            let env = root.join(".env");
+            let mut oauth_plan = server_plan(root.clone());
+            oauth_plan.server_auth = Some(SetupAuthArg::OAuth);
+            oauth_plan.public_url = Some("https://labby.example.com".into());
+            oauth_plan.oauth = Some(oauth);
+            configure_server_env(&env, &oauth_plan).unwrap();
+            assert_eq!(
+                read_env(&env, "LABBY_AUTH_PROVIDER").as_deref(),
+                Some(provider)
+            );
+
+            let token = configure_server_env(&env, &server_plan(root.clone()))
+                .unwrap()
+                .expect("bearer token");
+            assert_eq!(token.len(), 64);
+            assert_eq!(read_env(&env, "LABBY_AUTH_MODE").as_deref(), Some("bearer"));
+            for key in [
+                "LABBY_AUTH_PROVIDER",
+                "LABBY_AUTH_ADMIN_EMAIL",
+                "LABBY_GOOGLE_CLIENT_ID",
+                "LABBY_GOOGLE_CLIENT_SECRET",
+                "LABBY_AUTHELIA_ISSUER_URL",
+                "LABBY_AUTHELIA_CLIENT_ID",
+                "LABBY_AUTHELIA_CLIENT_SECRET",
+            ] {
+                assert_eq!(
+                    read_env(&env, key).as_deref(),
+                    Some(""),
+                    "{key} must be cleared when OAuth is disabled"
+                );
+            }
+        }
     }
 
     #[test]
