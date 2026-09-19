@@ -1,7 +1,7 @@
 //! Host-side Code Mode discovery catalog construction.
 //!
 //! Projects the gateway's live `UpstreamTool` set (plus snippet metadata) into
-//! the crate-neutral `ToolDescriptor` catalog and serves it through the
+//! the crate-neutral `CatalogDescriptor` catalog and serves it through the
 //! manager-level render cache. Called from `code_mode_host.rs`'s
 //! `CodeModeHost::list_tools` impl.
 
@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use labby_codemode::snippet::store::{SnippetInfo, builtin_snippet_dir, list_snippets};
-use labby_codemode::{CodeModeToolSafety, ToolDescriptor, ToolScope, ToolsRender};
+use labby_codemode::{CatalogDescriptor, CodeModeToolSafety, ToolScope, ToolsRender};
 use sha2::{Digest, Sha256};
 
 use crate::gateway::manager::GatewayManager;
@@ -81,7 +81,7 @@ fn embedding_corpus_fingerprint(tools: &[UpstreamTool]) -> String {
         .collect()
 }
 
-fn rendered_embedding_corpus_fingerprint(entries: &[ToolDescriptor]) -> String {
+fn rendered_embedding_corpus_fingerprint(entries: &[CatalogDescriptor]) -> String {
     let mut corpus = entries
         .iter()
         .map(|entry| format!("{}\0{}", entry.id, entry.description))
@@ -101,7 +101,7 @@ fn rendered_embedding_corpus_fingerprint(entries: &[ToolDescriptor]) -> String {
 
 fn render_from_cached_catalog(
     fingerprint: String,
-    entries: std::sync::Arc<[ToolDescriptor]>,
+    entries: std::sync::Arc<[CatalogDescriptor]>,
     catalog_json: std::sync::Arc<str>,
     serialized_size: usize,
 ) -> ToolsRender {
@@ -250,7 +250,7 @@ pub(super) async fn catalog_from_tools(
                 .as_ref()
                 .map(|description| description.to_string())
                 .unwrap_or_default();
-            ToolDescriptor::tool_with_safety(
+            CatalogDescriptor::tool_with_safety(
                 &upstream,
                 &name,
                 &sanitize_tool_text(&description, 2048),
@@ -263,7 +263,7 @@ pub(super) async fn catalog_from_tools(
 
     if include_snippets {
         let snippets = snippet_metadata_for_catalog(manager, &snippet_fingerprint).await?;
-        entries.extend(snippets.iter().map(ToolDescriptor::snippet));
+        entries.extend(snippets.iter().map(CatalogDescriptor::snippet));
     }
 
     entries.sort_by(|a, b| {
@@ -286,7 +286,7 @@ pub(super) async fn catalog_from_tools(
     // returned render, and any later `describe_types` re-fetch of this same
     // fingerprint) shares this allocation via a cheap Arc clone instead of a
     // deep copy of the whole catalog.
-    let entries: std::sync::Arc<[ToolDescriptor]> = std::sync::Arc::from(entries);
+    let entries: std::sync::Arc<[CatalogDescriptor]> = std::sync::Arc::from(entries);
     let catalog_json: std::sync::Arc<str> = std::sync::Arc::from(catalog_json);
 
     let cache = super::CatalogRenderCache {
@@ -532,8 +532,8 @@ mod tests {
     fn snippet_membership_changes_rendered_embedding_identity() {
         use labby_codemode::snippet::store::{SnippetInfo, SnippetSource};
 
-        let tool = ToolDescriptor::tool("fixture", "query", "Query data", None, None);
-        let snippet = ToolDescriptor::snippet(&SnippetInfo {
+        let tool = CatalogDescriptor::tool("fixture", "query", "Query data", None, None);
+        let snippet = CatalogDescriptor::snippet(&SnippetInfo {
             tools: None,
             name: "summarize".to_string(),
             description: Some("Summarize results".to_string()),
@@ -547,6 +547,19 @@ mod tests {
         assert_ne!(
             rendered_embedding_corpus_fingerprint(std::slice::from_ref(&tool)),
             rendered_embedding_corpus_fingerprint(&[tool, snippet])
+        );
+    }
+
+    #[test]
+    fn future_catalog_kinds_participate_in_embedding_identity() {
+        let tool = CatalogDescriptor::tool("fixture", "query", "Shared text", None, None);
+        let mut skill = CatalogDescriptor::tool("labby", "review", "Shared text", None, None);
+        skill.kind = labby_codemode::CodeModeCatalogKind::Skill;
+        skill.id = "skill::labby::review".to_string();
+
+        assert_ne!(
+            rendered_embedding_corpus_fingerprint(std::slice::from_ref(&tool)),
+            rendered_embedding_corpus_fingerprint(&[tool, skill])
         );
     }
 
@@ -651,7 +664,7 @@ mod tests {
 
     // ── Issue #210 (lab-41e7m.3): catalog output-shape coverage ─────────────
     //
-    // These pin the sanitize → ToolDescriptor::tool path that the cache-miss
+    // These pin the sanitize → CatalogDescriptor::tool path that the cache-miss
     // branch of `catalog_from_tools` runs per upstream tool.
 
     /// An upstream `output_schema` reaches the descriptor and renders a real
@@ -664,7 +677,7 @@ mod tests {
             "required": ["ok"]
         });
 
-        let descriptor = ToolDescriptor::tool(
+        let descriptor = CatalogDescriptor::tool(
             "fixture",
             "query",
             &sanitize_tool_text("Query data", 2048),
@@ -694,7 +707,7 @@ mod tests {
     /// fabricated type.
     #[test]
     fn missing_output_schema_renders_unknown_not_a_fabricated_type() {
-        let descriptor = ToolDescriptor::tool(
+        let descriptor = CatalogDescriptor::tool(
             "fixture",
             "query",
             "Query data",
@@ -723,7 +736,7 @@ mod tests {
             "type": "object",
             "description": "x".repeat(600_000)
         });
-        let descriptor = ToolDescriptor::tool(
+        let descriptor = CatalogDescriptor::tool(
             "fixture",
             "query",
             "Query data",
@@ -747,7 +760,7 @@ mod tests {
             "properties": "not-an-object",
             "items": { "$ref": "#/definitions/missing" }
         });
-        let descriptor = ToolDescriptor::tool(
+        let descriptor = CatalogDescriptor::tool(
             "fixture",
             "query",
             "Query data",

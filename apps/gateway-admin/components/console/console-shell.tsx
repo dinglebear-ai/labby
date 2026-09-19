@@ -18,15 +18,27 @@ const ConsoleGlobalTools = dynamic(
  * only vertical scroll container. Screens render inside the scroll body and are
  * centred on the mock's 1740px measure.
  */
-export function ConsoleShell({ children }: { children: React.ReactNode }) {
+export function ConsoleShell({
+  children,
+  publicSetup = false,
+}: {
+  children: React.ReactNode
+  publicSetup?: boolean
+}) {
   return (
     <ConsoleShellProvider>
-      <ConsoleShellFrame>{children}</ConsoleShellFrame>
+      <ConsoleShellFrame publicSetup={publicSetup}>{children}</ConsoleShellFrame>
     </ConsoleShellProvider>
   )
 }
 
-function ConsoleShellFrame({ children }: { children: React.ReactNode }) {
+function ConsoleShellFrame({
+  children,
+  publicSetup = false,
+}: {
+  children: React.ReactNode
+  publicSetup?: boolean
+}) {
   const { phoenixDocked } = useConsoleShell()
 
   return (
@@ -43,7 +55,7 @@ function ConsoleShellFrame({ children }: { children: React.ReactNode }) {
           fontSize: 14,
         }}
       >
-        <ConsoleSidebar />
+        <ConsoleSidebar publicSetup={publicSetup} />
 
         <div
           data-console-main-column="1"
@@ -57,7 +69,7 @@ function ConsoleShellFrame({ children }: { children: React.ReactNode }) {
               'radial-gradient(circle at 12% -4%, rgba(41,182,246,0.09), transparent 30%), radial-gradient(circle at 88% -6%, rgba(103,203,250,0.06), transparent 24%), var(--aurora-page-bg)',
           }}
         >
-          <ConsoleTopbar />
+          <ConsoleTopbar publicSetup={publicSetup} />
 
           <main style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', minHeight: 0 }}>
             <div

@@ -1,7 +1,7 @@
 ---
 title: "Code Mode"
 created: "2026-07-30"
-updated: "2026-08-08"
+updated: "2026-09-18"
 ---
 
 # Code Mode
@@ -67,10 +67,12 @@ no final Tool description can exceed the host-facing limit.
 Inside the sandbox:
 
 - `await codemode.search("GitHub pull requests")` searches the reduced
-  in-execution catalog and includes compact intrinsic safety facts when the
-  live descriptor supplies an unambiguous fact.
+  in-execution capability catalog and includes compact intrinsic safety facts
+  when the live descriptor supplies an unambiguous fact.
+- `await codemode.search({ query: "review", kinds: ["tool", "snippet"] })`
+  restricts lexical and semantic search to the requested catalog kinds.
 - `await codemode.describe("github.list_pull_requests")` returns compact docs
-  for an exact tool or snippet target.
+  for an exact catalog target.
 - `await codemode.run("gateway-summary", input)` resolves and runs a snippet
   inside the same sandbox runtime.
 - `await codemode.github.list_pull_requests(params)` calls the generated helper.
@@ -79,6 +81,32 @@ Inside the sandbox:
   MCP resources as `{ resources: [...] }`, including each exact read-ready `uri`.
 - `await codemode.readResource("lab://upstream/<name>/<uri>")` reads an
   upstream MCP resource and returns its normal `ReadResourceResult` object.
+
+### Capability catalog
+
+Code Mode discovery is represented by a source-neutral `CatalogDescriptor`,
+not a tool-specific descriptor. The catalog vocabulary is intentionally broader
+than the capabilities populated today:
+
+- `tool`
+- `snippet`
+- `resource`
+- `prompt`
+- `skill`
+- `agent`
+
+This slice only populates the existing `tool` and `snippet` sources. The
+other kinds reserve stable discovery/filter vocabulary for later adapters; they
+do **not** add resource, prompt, Skill, or agent loading/execution behavior.
+Synthetic/future metadata kinds are describable without inheriting Tool
+dispatch or TypeScript-schema fetch behavior.
+
+Catalog membership is discovery metadata, not authorization. Tool execution is
+still checked against the current `ToolScope` at dispatch time, and a
+`kinds` search filter only narrows results. It never grants a capability.
+Semantic embeddings are built over the rendered catalog generically, and
+semantic ranking applies the same visibility and kind filters as lexical
+search.
 
 Resource reads use the same route and caller scoping as Code Mode tool calls.
 Native `ui://` widget resources are also supported when the owning upstream is

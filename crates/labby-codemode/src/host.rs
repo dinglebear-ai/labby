@@ -4,9 +4,9 @@
 //!
 //! The trait vocabulary is deliberately neutral. A tool is an opaque string
 //! `id` (`<namespace>::<tool>`) plus JSON params; a tool descriptor is the
-//! neutral [`ToolDescriptor`]; the visibility filter is the neutral
+//! neutral [`CatalogDescriptor`]; the visibility filter is the neutral
 //! [`ToolScope`]. Each host converts its own tool representation into a
-//! `ToolDescriptor` inside its `CodeModeHost` impl, so the kernel never learns
+//! `CatalogDescriptor` inside its `CodeModeHost` impl, so the kernel never learns
 //! what backs the namespace.
 
 use std::sync::Arc;
@@ -16,7 +16,7 @@ use serde_json::Value;
 use crate::CodeModeCallError;
 use crate::error::ToolError;
 use crate::pool::RunnerPool;
-use crate::types::{CodeModeCaller, CodeModeSurface, ToolDescriptor, ToolScope, UiLink};
+use crate::types::{CatalogDescriptor, CodeModeCaller, CodeModeSurface, ToolScope, UiLink};
 use labby_runtime::CodeModeConfig;
 
 /// A rendered Code Mode discovery catalog: the descriptors the sandbox's
@@ -47,7 +47,7 @@ pub struct ToolsRender {
     /// to do so behind an `Arc` is `Arc::get_mut`/`Arc::make_mut`, and no
     /// caller does), so there is no reason to carry `Vec`'s spare-capacity
     /// bookkeeping — this mirrors `catalog_json: Arc<str>` below.
-    pub entries: Arc<[ToolDescriptor]>,
+    pub entries: Arc<[CatalogDescriptor]>,
     /// `serde_json::to_string(&entries)` — the `const tools = ...` payload.
     pub catalog_json: Arc<str>,
     /// Serialized catalog size in bytes (for tracing).
@@ -302,6 +302,7 @@ pub trait CodeModeHost: Send + Sync {
         &self,
         query: String,
         top_k: usize,
+        kinds: &[crate::CodeModeCatalogKind],
         caller: &CodeModeCaller,
         surface: CodeModeSurface,
         scope: &ToolScope,
@@ -391,6 +392,7 @@ impl CodeModeHost for NoopHost {
         &self,
         _query: String,
         _top_k: usize,
+        _kinds: &[crate::CodeModeCatalogKind],
         _caller: &CodeModeCaller,
         _surface: CodeModeSurface,
         _scope: &ToolScope,

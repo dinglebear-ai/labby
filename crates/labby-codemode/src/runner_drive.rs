@@ -1529,12 +1529,13 @@ mod tests {
             &self,
             query: String,
             top_k: usize,
+            kinds: &[crate::CodeModeCatalogKind],
             caller: &CodeModeCaller,
             surface: CodeModeSurface,
             scope: &ToolScope,
         ) -> Result<Vec<(String, f32)>, ToolError> {
             self.inner
-                .semantic_rank(query, top_k, caller, surface, scope)
+                .semantic_rank(query, top_k, kinds, caller, surface, scope)
                 .await
         }
 
@@ -1903,6 +1904,7 @@ sleep 3600
                 &self,
                 _query: String,
                 _top_k: usize,
+                _kinds: &[crate::CodeModeCatalogKind],
                 _caller: &CodeModeCaller,
                 _surface: CodeModeSurface,
                 _scope: &ToolScope,
@@ -2182,6 +2184,7 @@ sleep 3600
                 &self,
                 _query: String,
                 _top_k: usize,
+                _kinds: &[crate::CodeModeCatalogKind],
                 _caller: &CodeModeCaller,
                 _surface: CodeModeSurface,
                 _scope: &ToolScope,
