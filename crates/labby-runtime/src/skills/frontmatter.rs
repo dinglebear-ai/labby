@@ -133,13 +133,28 @@ pub fn validate_frontmatter(
     }
 
     if let Some(allowed_tools) = frontmatter.get("allowed-tools") {
-        let allowed_tools = allowed_tools.as_str().ok_or_else(|| {
-            invalid("frontmatter `allowed-tools` must be a space-separated string")
-        })?;
-        if allowed_tools.trim().is_empty() {
-            return Err(invalid(
-                "frontmatter `allowed-tools` must not be empty when present",
-            ));
+        match allowed_tools {
+            Value::String(value) if !value.trim().is_empty() => {}
+            Value::String(_) => {
+                return Err(invalid(
+                    "frontmatter `allowed-tools` must not be empty when present",
+                ));
+            }
+            Value::Array(values)
+                if !values.is_empty()
+                    && values.iter().all(|value| {
+                        value.as_str().is_some_and(|value| !value.trim().is_empty())
+                    }) => {}
+            Value::Array(_) => {
+                return Err(invalid(
+                    "frontmatter `allowed-tools` array entries must be non-empty strings",
+                ));
+            }
+            _ => {
+                return Err(invalid(
+                    "frontmatter `allowed-tools` must be a non-empty string or array of non-empty strings",
+                ));
+            }
         }
     }
 
@@ -368,23 +383,30 @@ mod tests {
     }
 
     #[test]
-    fn rejects_nonstandard_allowed_tools_lists() {
-        let fm = object(json!({
-            "name": "x",
-            "description": "d",
-            "allowed-tools": ["Bash", "Read", "Grep"]
-        }));
-        assert!(validate_frontmatter(&fm, None).is_err());
+    fn allowed_tools_accepts_standard_and_compatibility_forms() {
+        for value in [
+            json!("Bash(git:*) Read"),
+            json!("Read, Bash"),
+            json!(["Bash", "Read", "Grep"]),
+        ] {
+            validate_frontmatter(
+                &object(json!({"name": "x", "description": "d", "allowed-tools": value})),
+                None,
+            )
+            .expect("supported allowed-tools form");
+        }
     }
 
     #[test]
-    fn allowed_tools_must_be_a_nonempty_space_separated_string() {
-        validate_frontmatter(
-            &object(json!({"name": "x", "description": "d", "allowed-tools": "Bash(git:*) Read"})),
-            None,
-        )
-        .expect("Agent Skills string form is accepted");
-        for value in [json!(""), json!("   "), json!(["Read"])] {
+    fn allowed_tools_rejects_empty_or_malformed_values() {
+        for value in [
+            json!(""),
+            json!("   "),
+            json!([]),
+            json!(["Read", ""]),
+            json!(["Read", 2]),
+            json!(5),
+        ] {
             assert!(
                 validate_frontmatter(
                     &object(json!({"name": "x", "description": "d", "allowed-tools": value})),
@@ -425,6 +447,23 @@ mod tests {
             parsed.get("description"),
             Some(&json!("Follow conventions"))
         );
+    }
+
+    #[test]
+    fn parses_and_preserves_allowed_tools_array_compatibility_form() {
+        let content = "---
+name: review
+description: Review changes
+allowed-tools:
+  - Bash
+  - Read
+---
+
+# Review
+";
+        let parsed = parse_skill_md_frontmatter(content).expect("parsed");
+        assert_eq!(parsed.get("allowed-tools"), Some(&json!(["Bash", "Read"])));
+        validate_frontmatter(&parsed, Some("review")).expect("compatibility form accepted");
     }
 
     #[test]
