@@ -1394,6 +1394,7 @@ pub struct AuthFileConfig {
 }
 
 const DEFAULT_CLIENT_REDIRECT_URI_PATTERNS: &[&str] = &[
+    "https://antigravity.google/oauth-callback",
     "https://chatgpt.com/aip/plugin-callback",
     "https://chat.openai.com/aip/plugin-callback",
     "https://chatgpt.com/connector/oauth/*",
@@ -3960,6 +3961,7 @@ future = "keep"
         assert_eq!(
             resolved.allowed_client_redirect_uris,
             vec![
+                "https://antigravity.google/oauth-callback".to_string(),
                 "https://chatgpt.com/aip/plugin-callback".to_string(),
                 "https://chat.openai.com/aip/plugin-callback".to_string(),
                 "https://chatgpt.com/connector/oauth/*".to_string(),
