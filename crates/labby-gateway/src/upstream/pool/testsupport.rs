@@ -105,6 +105,86 @@ pub(super) fn test_upstream_tools(
 }
 
 #[derive(Clone, Default)]
+pub(super) struct ToolOnlyServer {
+    pub(super) list_resources_count: Arc<AtomicUsize>,
+    pub(super) read_resource_count: Arc<AtomicUsize>,
+    pub(super) list_prompts_count: Arc<AtomicUsize>,
+    pub(super) get_prompt_count: Arc<AtomicUsize>,
+}
+
+impl ServerHandler for ToolOnlyServer {
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    }
+
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, ErrorData> {
+        Ok(ListToolsResult::with_all_items(vec![
+            rmcp::model::Tool::new(
+                "tool_only",
+                "tool-only fixture",
+                Arc::new(serde_json::Map::new()),
+            ),
+        ]))
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, ErrorData> {
+        self.list_resources_count.fetch_add(1, Ordering::SeqCst);
+        Err(ErrorData::new(
+            ErrorCode::METHOD_NOT_FOUND,
+            "resources/list not supported",
+            None,
+        ))
+    }
+
+    async fn read_resource(
+        &self,
+        _request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResponse, ErrorData> {
+        self.read_resource_count.fetch_add(1, Ordering::SeqCst);
+        Err(ErrorData::new(
+            ErrorCode::METHOD_NOT_FOUND,
+            "resources/read not supported",
+            None,
+        ))
+    }
+
+    async fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, ErrorData> {
+        self.list_prompts_count.fetch_add(1, Ordering::SeqCst);
+        Err(ErrorData::new(
+            ErrorCode::METHOD_NOT_FOUND,
+            "prompts/list not supported",
+            None,
+        ))
+    }
+
+    async fn get_prompt(
+        &self,
+        _request: GetPromptRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<GetPromptResponse, ErrorData> {
+        self.get_prompt_count.fetch_add(1, Ordering::SeqCst);
+        Err(ErrorData::new(
+            ErrorCode::METHOD_NOT_FOUND,
+            "prompts/get not supported",
+            None,
+        ))
+    }
+}
+
+#[derive(Clone, Default)]
 pub(super) struct StaticCatalogServer {
     pub(super) list_prompts_count: Arc<AtomicUsize>,
     pub(super) get_prompt_count: Arc<AtomicUsize>,

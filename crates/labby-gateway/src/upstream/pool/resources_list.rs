@@ -29,12 +29,12 @@ use super::entries::{
     resolve_request_resource_exposure_policy, resource_exposed,
 };
 use super::helpers::{
-    bare_upstream_resource_uri, classify_upstream_error, max_response_bytes, rewrite_resource_uri,
-    upstream_discovery_timeout, upstream_transport,
+    bare_upstream_resource_uri, classify_upstream_error, max_response_bytes,
+    peer_declares_resources, rewrite_resource_uri, upstream_discovery_timeout, upstream_transport,
 };
 use super::logging::{
-    UpstreamRequestLog, is_capability_unsupported, log_upstream_request_error,
-    log_upstream_request_finish, log_upstream_request_start,
+    UpstreamRequestLog, is_capability_unsupported, log_upstream_capability_skipped,
+    log_upstream_request_error, log_upstream_request_finish, log_upstream_request_start,
 };
 use super::tools::MAX_UPSTREAM_RESOURCES;
 
@@ -733,6 +733,18 @@ impl UpstreamPool {
                         return (config.name, policy, Err(error));
                     }
                 };
+                if !peer_declares_resources(&peer) {
+                    log_upstream_capability_skipped(event);
+                    pool.record_subject_optional_catalog(
+                        &config.name,
+                        &subject,
+                        &peer,
+                        Some(Vec::new()),
+                        None,
+                    )
+                    .await;
+                    return (config.name, policy, Ok(Vec::new()));
+                }
                 let timeout_ms = request_timeout.as_millis();
                 let result = timed_capability_call_with_timeout(
                     &pool,
@@ -922,8 +934,8 @@ mod tests {
 
     use rmcp::model::{
         ErrorData, ListResourceTemplatesResult, ListResourcesResult, ListToolsResult,
-        PaginatedRequestParams, ReadResourceResult, ResourceContents, ResourceTemplate,
-        ServerCapabilities, ServerInfo, Tool,
+        PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResult, ResourceContents,
+        ResourceTemplate, ServerCapabilities, ServerInfo, Tool,
     };
     use rmcp::service::RequestContext;
     use rmcp::{RoleServer, ServerHandler};
@@ -936,7 +948,9 @@ mod tests {
     use super::super::SubjectScopedConnection;
     use super::super::entries::healthy_in_process_entry;
     use super::super::helpers::normalize_resource_result_uri;
-    use super::super::testsupport::{StaticCatalogServer, catalog_pool_with_server};
+    use super::super::testsupport::{
+        StaticCatalogServer, ToolOnlyServer, catalog_pool_with_server,
+    };
     use super::*;
 
     #[test]
@@ -1875,6 +1889,65 @@ mod tests {
                 "lab://upstream/google-drive/lab://upstream/old-name/file:///tmp/upstream-two",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn subject_scoped_resources_skip_tools_only_upstream_without_failure() {
+        let server = ToolOnlyServer::default();
+        let list_resources_count = Arc::clone(&server.list_resources_count);
+        let read_resource_count = Arc::clone(&server.read_resource_count);
+        let pool = catalog_pool_with_server("tools-only", server).await;
+        let peer = pool
+            .connections
+            .read()
+            .await
+            .get("tools-only")
+            .expect("fixture connection")
+            .peer
+            .clone();
+        let connection = pool
+            .connections
+            .write()
+            .await
+            .remove("tools-only")
+            .expect("move fixture connection into subject cache");
+        pool.subject_connections.write().await.insert(
+            ("tools-only".to_string(), "alice".to_string()),
+            SubjectScopedConnection {
+                optional_catalogs: Default::default(),
+                _connection: connection,
+                peer,
+                tools: Vec::new(),
+                last_used: Instant::now(),
+            },
+        );
+        let mut config = oauth_schema_config("tools-only");
+        config.proxy_resources = true;
+
+        assert!(
+            pool.subject_scoped_resources(std::slice::from_ref(&config), "alice")
+                .await
+                .is_empty()
+        );
+        assert_eq!(list_resources_count.load(Ordering::SeqCst), 0);
+        assert!(
+            pool.resource_last_error_for_tests("tools-only")
+                .await
+                .is_none()
+        );
+
+        let error = pool
+            .subject_scoped_read_resource_request(
+                &config,
+                "alice",
+                ReadResourceRequestParams::new(
+                    "lab://upstream/tools-only/file:///missing".to_string(),
+                ),
+            )
+            .await
+            .expect_err("tools-only upstream must reject resource read before RPC");
+        assert!(error.contains("does not advertise the MCP resources capability"));
+        assert_eq!(read_resource_count.load(Ordering::SeqCst), 0);
     }
 
     /// Ceiling for the "did the caller give up on its own budget?" assertions

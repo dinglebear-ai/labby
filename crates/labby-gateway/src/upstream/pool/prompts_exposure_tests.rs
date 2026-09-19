@@ -223,6 +223,40 @@ async fn expose_prompts_filters_the_subject_scoped_listing() {
     assert_eq!(names, vec![namespaced("static", EXPOSED_PROMPT)]);
 }
 
+#[tokio::test]
+async fn subject_scoped_prompts_skip_tools_only_upstream_without_rpc() {
+    let server = ToolOnlyServer::default();
+    let list_prompts_count = Arc::clone(&server.list_prompts_count);
+    let get_prompt_count = Arc::clone(&server.get_prompt_count);
+    let pool = catalog_pool_with_server("tools-only", server).await;
+    seed_subject_connection(&pool, "tools-only", "alice").await;
+    let config = oauth_upstream_config("tools-only", None);
+
+    assert!(
+        pool.subject_scoped_prompts(std::slice::from_ref(&config), "alice", &[])
+            .await
+            .is_empty()
+    );
+    assert_eq!(
+        list_prompts_count.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+
+    let error = pool
+        .subject_scoped_get_prompt(
+            &config,
+            "alice",
+            GetPromptRequestParams::new(namespaced("tools-only", "missing")),
+        )
+        .await
+        .expect_err("tools-only upstream must reject prompt fetch before RPC");
+    assert!(error.contains("does not advertise the MCP prompts capability"));
+    assert_eq!(
+        get_prompt_count.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+}
+
 /// …and the subject-scoped fetch is gated too, so the filtered list is not
 /// merely cosmetic.
 #[tokio::test]
