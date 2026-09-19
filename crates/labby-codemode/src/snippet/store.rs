@@ -1049,7 +1049,7 @@ mod tests {
             .expect("resolve builtin snippet");
         let code = code_for_snippet(&resolved).expect("extract executable code");
 
-        assert!(code.contains("github::search_issues"));
+        assert!(code.contains("github::search_pull_requests"));
         assert!(!code.contains("github::list_workflow_runs"));
     }
 
