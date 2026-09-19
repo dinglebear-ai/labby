@@ -20,15 +20,19 @@ use crate::{MCP_RELAY_CANCELLATION_REQUEST_METHOD, MCP_RELAY_CANCELLATION_TOKEN_
 
 use super::super::auth::configured_bearer_token;
 use super::super::http_client;
-use super::connect::configured_custom_headers;
 #[cfg(unix)]
-use super::connect::unix_socket_connect_path;
+use super::super::transport::unix_socket::LabbyUnixSocketHttpClient;
+use super::connect::configured_custom_headers;
 use super::helpers::{DEFAULT_REQUEST_TIMEOUT, max_response_bytes};
 
 #[derive(Clone)]
 enum HttpCancellationClient {
-    Plain(http_client::BodyCappedHttpClient),
-    Oauth(AuthClient<http_client::BodyCappedHttpClient>),
+    HttpPlain(http_client::BodyCappedHttpClient),
+    HttpOauth(AuthClient<http_client::BodyCappedHttpClient>),
+    #[cfg(unix)]
+    UnixPlain(LabbyUnixSocketHttpClient),
+    #[cfg(unix)]
+    UnixOauth(AuthClient<LabbyUnixSocketHttpClient>),
 }
 
 /// Sends explicit cancellation messages for HTTP and Unix-socket transports.
@@ -101,22 +105,36 @@ impl HttpCancellationSender {
     ) -> anyhow::Result<StreamableHttpPostResponse> {
         let custom_headers = cancellation_headers_for_message(&self.custom_headers, &message)?;
         let result = match &self.client {
-            HttpCancellationClient::Plain(client) => {
-                client
-                    .post_message(
-                        Arc::clone(&self.uri),
-                        message,
-                        None,
-                        self.auth_token.clone(),
-                        custom_headers,
-                    )
-                    .await
-            }
-            HttpCancellationClient::Oauth(client) => {
-                client
-                    .post_message(Arc::clone(&self.uri), message, None, None, custom_headers)
-                    .await
-            }
+            HttpCancellationClient::HttpPlain(client) => client
+                .post_message(
+                    Arc::clone(&self.uri),
+                    message,
+                    None,
+                    self.auth_token.clone(),
+                    custom_headers,
+                )
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string())),
+            HttpCancellationClient::HttpOauth(client) => client
+                .post_message(Arc::clone(&self.uri), message, None, None, custom_headers)
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string())),
+            #[cfg(unix)]
+            HttpCancellationClient::UnixPlain(client) => client
+                .post_message(
+                    Arc::clone(&self.uri),
+                    message,
+                    None,
+                    self.auth_token.clone(),
+                    custom_headers,
+                )
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string())),
+            #[cfg(unix)]
+            HttpCancellationClient::UnixOauth(client) => client
+                .post_message(Arc::clone(&self.uri), message, None, None, custom_headers)
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string())),
         };
         result.map_err(|error| anyhow::anyhow!("explicit HTTP cancellation failed: {error}"))
     }
@@ -192,42 +210,7 @@ pub(super) async fn build_http_cancellation_sender(
         HeaderValue::from_str(&ProtocolVersion::V_2026_07_28.to_string())?,
     );
 
-    let base_client = match transport {
-        Some(UpstreamTransport::Http) => match shared_client {
-            Some(client) => client.clone(),
-            None => {
-                drop(rustls::crypto::ring::default_provider().install_default());
-                reqwest::Client::builder()
-                    .timeout(DEFAULT_REQUEST_TIMEOUT)
-                    .build()?
-            }
-        },
-        Some(UpstreamTransport::UnixSocket) => {
-            #[cfg(unix)]
-            {
-                let socket_path = config.socket_path.as_deref().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "upstream {} Unix socket cancellation sender has no socket_path",
-                        config.name
-                    )
-                })?;
-                drop(rustls::crypto::ring::default_provider().install_default());
-                reqwest::Client::builder()
-                    .timeout(DEFAULT_REQUEST_TIMEOUT)
-                    .http1_only()
-                    .unix_socket(unix_socket_connect_path(socket_path))
-                    .build()?
-            }
-            #[cfg(not(unix))]
-            {
-                return Ok(None);
-            }
-        }
-        _ => return Ok(None),
-    };
-    let capped = http_client::BodyCappedHttpClient::new(base_client, max_response_bytes());
-
-    let (client, auth_token) = if config.oauth.is_some() {
+    let oauth = if config.oauth.is_some() {
         let subject = subject.ok_or_else(|| {
             anyhow::anyhow!(
                 "upstream {} requires an authenticated subject for cancellation",
@@ -240,21 +223,77 @@ pub(super) async fn build_http_cancellation_sender(
                 config.name
             )
         })?;
-        let auth_client = cache
-            .get_or_build_capped(config, subject, capped)
-            .await
-            .map_err(|error| anyhow::anyhow!("oauth_required: {error}"))?;
-        (HttpCancellationClient::Oauth(auth_client), None)
+        Some((subject, cache))
     } else {
-        let auth_token = config
+        None
+    };
+    let auth_token = if oauth.is_none() {
+        config
             .bearer_token_env
             .as_deref()
-            .and_then(configured_bearer_token);
-        (HttpCancellationClient::Plain(capped), auth_token)
+            .and_then(configured_bearer_token)
+    } else {
+        None
+    };
+
+    let (client, request_uri) = match transport {
+        Some(UpstreamTransport::Http) => {
+            let base_client = match shared_client {
+                Some(client) => client.clone(),
+                None => {
+                    drop(rustls::crypto::ring::default_provider().install_default());
+                    reqwest::Client::builder()
+                        .timeout(DEFAULT_REQUEST_TIMEOUT)
+                        .build()?
+                }
+            };
+            let capped = http_client::BodyCappedHttpClient::new(base_client, max_response_bytes());
+            let client = if let Some((subject, cache)) = oauth {
+                let auth_client = cache
+                    .get_or_build_capped(config, subject, capped)
+                    .await
+                    .map_err(|error| anyhow::anyhow!("oauth_required: {error}"))?;
+                HttpCancellationClient::HttpOauth(auth_client)
+            } else {
+                HttpCancellationClient::HttpPlain(capped)
+            };
+            (client, url.to_string())
+        }
+        Some(UpstreamTransport::UnixSocket) => {
+            #[cfg(unix)]
+            {
+                let socket_path = config.socket_path.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "upstream {} Unix socket cancellation sender has no socket_path",
+                        config.name
+                    )
+                })?;
+                let socket_client =
+                    LabbyUnixSocketHttpClient::new(socket_path, url, max_response_bytes());
+                let client = if let Some((subject, cache)) = oauth {
+                    let auth_client = cache
+                        .get_or_build_capped(config, subject, socket_client)
+                        .await
+                        .map_err(|error| anyhow::anyhow!("oauth_required: {error}"))?;
+                    HttpCancellationClient::UnixOauth(auth_client)
+                } else {
+                    HttpCancellationClient::UnixPlain(socket_client)
+                };
+                (
+                    client,
+                    super::super::transport::unix_socket::request_uri(url)?,
+                )
+            }
+            #[cfg(not(unix))]
+            {
+                return Ok(None);
+            }
+        }
+        _ => return Ok(None),
     };
 
     Ok(Some(HttpCancellationSender {
-        uri: Arc::from(url),
+        uri: Arc::from(request_uri),
         client,
         auth_token,
         custom_headers,
