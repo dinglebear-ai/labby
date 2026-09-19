@@ -1190,9 +1190,9 @@ mod tests {
     #[tokio::test]
     async fn raw_tool_call_boundary_rejects_undeclared_and_out_of_route_tools() {
         let host = FixtureHost::new(vec![
-            ToolDescriptor::tool("alpha", "tool1", "allowed", None, None),
-            ToolDescriptor::tool("alpha", "other_tool", "undeclared sibling", None, None),
-            ToolDescriptor::tool("beta", "tool2", "out of route", None, None),
+            CatalogDescriptor::tool("alpha", "tool1", "allowed", None, None),
+            CatalogDescriptor::tool("alpha", "other_tool", "undeclared sibling", None, None),
+            CatalogDescriptor::tool("beta", "tool2", "out of route", None, None),
         ]);
         let broker = CodeModeBroker::new(Some(&host));
         let scope = ToolScope::scoped_namespaces(
