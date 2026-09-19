@@ -1,7 +1,7 @@
 ---
 title: "Gateway Management"
 created: "2026-07-30"
-updated: "2026-09-15"
+updated: "2026-09-18"
 ---
 
 # Gateway Management
@@ -336,16 +336,21 @@ disabled, but the text-only control tool remains available on the root gateway.
 The Code Mode Inspector keeps its compatibility switch at
 `code_mode.mcp_ui_enabled`. The other visibility switches are
 `mcp_apps.manager`, `mcp_apps.gateway_status`, `mcp_apps.server_logs`,
-`mcp_apps.add_server`, and `mcp_apps.settings`. Every Labby-owned app surface
-defaults to `true`, as does `code_mode.enabled`, so a fresh install exposes the
-complete Labby app surface. Existing installs whose `config.toml` has no
-`[code_mode]` or `[mcp_apps]` section inherit those defaults on upgrade; Labby
-logs one startup line naming the defaults in force so the change is visible.
-Set the individual switches to `false` to opt out. The `mcp_app` control tool
-remains available without UI metadata so an administrator can inspect or restore
-any app, including its own manager UI. App-only mutations persist without
-rebuilding the upstream pool and publish both tool and resource list-changed
-notifications. Upstream MCP Apps are not governed by these switches. Their app
+`mcp_apps.add_server`, and `mcp_apps.settings`. Text Code Mode
+(`code_mode.enabled`) defaults to `true`; every Labby-owned MCP App UI defaults
+to `false`. Each app UI is opt-in and must be enabled explicitly. Existing installs whose
+`config.toml` omits `[code_mode]` or `[mcp_apps]` inherit those defaults, and
+Labby logs one startup line naming the inherited sections and effective values.
+
+The text-only `mcp_app` control tool remains available when its manager UI is
+disabled so administrators and models can inspect state or further disable
+surfaces. A disabled manager is also the MCP-side enable lock: while
+`mcp_apps.manager = false`, enable requests originating from `mcp_app` fail
+closed. Re-enable the manager from an operator-controlled configuration or
+control-plane surface before the switchboard may enable apps again. This keeps
+`disable all` durable against a model client later deciding to restore an app.
+App-only mutations persist without rebuilding the upstream pool and publish both
+tool and resource list-changed notifications. Upstream MCP Apps are not governed by these switches. Their app
 tools/callbacks pass through only when an allowed upstream exposes a real
 resource-backed app owner, `proxy_resources` is enabled, and the bound `ui://`
 URI passes `expose_resources`. Callback markers without such an owner and

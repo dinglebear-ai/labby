@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 
 use crate::gateway::config::load_gateway_config;
 use crate::gateway::config_mutation::read_env_values;
+use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::{VirtualServerConfig, VirtualServerSurfacesConfig};
 
 use super::*;
@@ -956,6 +957,31 @@ async fn mcp_app_visibility_setting_persists_notifies_and_skips_pool_rebuild() {
     assert!(!persisted.mcp_apps.add_server);
     assert!(!persisted.mcp_apps.settings);
 
+    let error = manager
+        .set_mcp_app_visibility(
+            "codemode",
+            true,
+            Some(labby_runtime::catalog_notify::SOURCE_MCP_CALL_MCP_APP),
+        )
+        .await
+        .expect_err("MCP clients must not resurrect apps after the manager is disabled");
+    assert!(matches!(error, ToolError::Forbidden { .. }), "{error:?}");
+    assert!(
+        !manager.current_config().await.code_mode.mcp_ui_enabled,
+        "rejected MCP enable must not mutate runtime state"
+    );
+    assert!(
+        !load_gateway_config(&path)
+            .expect("reload rejected MCP mutation")
+            .code_mode
+            .mcp_ui_enabled,
+        "rejected MCP enable must not mutate durable state"
+    );
+    assert!(
+        notify_rx.try_recv().is_err(),
+        "rejected MCP enable must not emit a catalog notification"
+    );
+
     let restarted = GatewayManager::new(path, GatewayRuntimeHandle::default());
     restarted.seed_config_unchecked_for_tests(persisted).await;
     assert!(!restarted.code_mode_app_state().is_enabled());
@@ -965,6 +991,23 @@ async fn mcp_app_visibility_setting_persists_notifies_and_skips_pool_rebuild() {
     assert!(!restarted_apps.server_logs);
     assert!(!restarted_apps.add_server);
     assert!(!restarted_apps.settings);
+
+    let operator_enabled = manager
+        .set_mcp_app_visibility("manager", true, None)
+        .await
+        .expect("operator can enable manager");
+    assert!(operator_enabled.mcp_apps.manager);
+
+    let mcp_enabled = manager
+        .set_mcp_app_visibility(
+            "codemode",
+            true,
+            Some(labby_runtime::catalog_notify::SOURCE_MCP_CALL_MCP_APP),
+        )
+        .await
+        .expect("MCP enable works after operator enables manager");
+    assert!(mcp_enabled.code_mode.mcp_ui_enabled);
+    assert!(manager.code_mode_app_state().is_enabled());
 }
 
 #[tokio::test]

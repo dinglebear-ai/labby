@@ -692,7 +692,7 @@ impl LabMcpServer {
 #[cfg(feature = "gateway")]
 pub(crate) fn code_mode_app_text_note() -> String {
     format!(
-        "This entry point has no static Labby UI, but nested upstream MCP Apps attach dynamically when a called tool returns `_meta.ui`. When advertised, use `{CODE_MODE_UI_TOOL_NAME}` for the visual trace inspector; `{MCP_APP_TOOL_NAME}` can inspect or restore that Labby-owned app surface."
+        "This entry point has no static Labby UI, but nested upstream MCP Apps attach dynamically when a called tool returns `_meta.ui`. When advertised, use `{CODE_MODE_UI_TOOL_NAME}` for the visual trace inspector; `{MCP_APP_TOOL_NAME}` can inspect or disable Labby-owned app surfaces, and can enable them only while the manager UI is operator-enabled."
     )
 }
 
@@ -710,7 +710,7 @@ pub(crate) fn code_mode_ui_description(upstreams: &[CodeModeUpstreamDescription]
 /// Description for the always-available `mcp_app` control tool.
 #[cfg(feature = "gateway")]
 pub(crate) const fn mcp_app_tool_description() -> &'static str {
-    "Enable, disable, and inspect Labby-owned MCP App surfaces. The control tool remains available even when its own manager UI is disabled. Targets include the manager UI, Code Mode inspector, gateway status, server logs, Add Server, Settings, or all managed apps."
+    "Inspect and disable Labby-owned MCP App surfaces. When the manager UI is enabled, the switchboard may also enable managed surfaces. Disabling the manager (including target=all) locks MCP-side enable requests until an operator re-enables mcp_apps.manager outside MCP. Targets include the manager UI, Code Mode inspector, gateway status, server logs, Add Server, Settings, or all managed apps."
 }
 
 #[cfg(feature = "gateway")]
@@ -723,7 +723,7 @@ pub(crate) fn mcp_app_tool_schema() -> Arc<serde_json::Map<String, Value>> {
                     "type": "string",
                     "enum": ["status", "enable", "disable"],
                     "default": "status",
-                    "description": "Inspect or change whether one or more Labby-owned MCP Apps are advertised."
+                    "description": "Inspect or change Labby-owned MCP App advertisement. Enable requests fail while mcp_apps.manager is disabled; an operator must re-enable the manager outside MCP first."
                 },
                 "target": {
                     "type": "string",

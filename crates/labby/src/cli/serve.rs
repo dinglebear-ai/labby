@@ -991,11 +991,9 @@ fn resolve_web_ui_auth_disabled(
 }
 
 /// Name the Labby-owned app surfaces whose `config.toml` section is absent
-/// and which therefore run at their on-by-default posture. One INFO line at
-/// startup, only when something is inherited, so an install upgraded from a
-/// release where Code Mode and the MCP App UIs defaulted off can see why they
-/// appeared. A missing file inherits everything; an unreadable one is the
-/// loader's error to report.
+/// and which therefore inherit built-in defaults. One INFO line is emitted at
+/// startup only when something is inherited. A missing file inherits everything;
+/// an unreadable one is the loader's error to report.
 fn log_inherited_app_surface_defaults(config_path: &Path, config: &LabConfig) {
     let raw = match std::fs::read_to_string(config_path) {
         Ok(raw) => raw,
@@ -1017,9 +1015,8 @@ fn log_inherited_app_surface_defaults(config_path: &Path, config: &LabConfig) {
         mcp_apps_server_logs = config.mcp_apps.server_logs,
         mcp_apps_gateway_status = config.mcp_apps.gateway_status,
         mcp_apps_settings = config.mcp_apps.settings,
-        "config.toml declares no [code_mode] or [mcp_apps] section; Code Mode and \
-         the Labby-owned MCP App UIs default to enabled — set the switches to \
-         false to opt out"
+        "config.toml omits [code_mode] and/or [mcp_apps]; inherited Code Mode and \
+         MCP App defaults are in effect (text Code Mode on; Labby-owned app UIs off)"
     );
 }
 

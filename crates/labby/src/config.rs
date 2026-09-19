@@ -2146,11 +2146,11 @@ fn load_toml_from_paths(candidates: &[PathBuf]) -> Result<LabConfig> {
 }
 
 /// Labby-owned app-surface sections that `raw` (a `config.toml` document)
-/// does not declare and therefore inherits at their on-by-default posture:
-/// `code_mode` (Code Mode plus its inspector UI) and `mcp_apps` (every
-/// Labby-owned MCP App UI). Startup names these once so an install upgraded
-/// from a release where they defaulted off sees the change. Unparseable input
-/// yields nothing; the config loader owns that error.
+/// does not declare and therefore inherits from built-in defaults: `code_mode`
+/// and `mcp_apps`. Text Code Mode defaults on, while the Code Mode inspector
+/// and every Labby-owned MCP App UI default off. Startup names inherited
+/// sections once so operators can distinguish explicit configuration from
+/// defaults. Unparseable input yields nothing; the config loader owns that error.
 #[must_use]
 pub fn inherited_app_surface_sections(raw: &str) -> Vec<&'static str> {
     let Ok(table) = raw.parse::<toml::Table>() else {
@@ -2992,8 +2992,8 @@ mod tests {
 
     #[test]
     fn inherited_app_surface_sections_name_only_the_absent_tables() {
-        // An existing config.toml written before Code Mode and the Labby MCP
-        // Apps defaulted on inherits those defaults silently unless startup
+        // An existing config.toml that omits Code Mode or Labby MCP App
+        // sections inherits current built-in defaults silently unless startup
         // names them. Only genuinely absent sections are reported.
         assert_eq!(
             inherited_app_surface_sections(""),

@@ -79,8 +79,11 @@ For normal services, `dispatch/<service>/dispatch.rs` owns action routing, catal
   is the always-available root-gateway control tool for the manager UI,
   inspector, Gateway Status, Server Logs, Add Server, and Settings surfaces; it
   supports per-app and `all` `status|enable|disable` operations. Its own manager
-  UI is enabled by default and may be disabled, but the text-only control tool remains
-  available. App mutations require `lab:admin`, are gateway-scoped, and schedule
+  UI and the other Labby-owned app UIs are opt-in and default disabled; the
+  text-only control tool remains available. While the manager is disabled,
+  MCP-originated enable requests fail closed until an operator re-enables
+  `mcp_apps.manager` outside MCP. App mutations require `lab:admin`, are
+  gateway-scoped, and schedule
   coalesced
   `tools/list_changed` plus `resources/list_changed` notifications after the
   open tool turn drains. `server_logs` keeps its text/service capability when
@@ -220,11 +223,13 @@ Resources are read-only. Do not use them for mutations.
 - `ui://lab/code-mode/*` — Lab's own Code Mode app resources, served locally
   from bundled HTML (`read_code_mode_app_resource_impl`). The app descriptors
   bind only to `codemode_ui`; disabling the app hides that tool and these
-  resources, and direct reads fail as unknown. All Labby-owned app UIs are
-  enabled by default; a disabled surface must not remain reachable through a cached URI.
-- `ui://lab/mcp-apps/manager` — the default-enabled UI for the always-available `mcp_app`
+  resources, and direct reads fail as unknown. Labby-owned app UIs are opt-in;
+  a disabled surface must not remain reachable through a cached URI.
+- `ui://lab/mcp-apps/manager` — the opt-in UI for the always-available `mcp_app`
   control tool. Disabling this manager UI strips its tool metadata and resource
-  but does not remove the text-only control tool needed to restore app surfaces.
+  but does not remove the text-only status/disable control path. While the manager
+  is disabled, MCP-originated enable requests fail closed; an operator must
+  re-enable `mcp_apps.manager` outside MCP first.
 - `ui://lab/gateway/add-server` — the admin-only Add Server app bound to the
   synthetic `add_server` tool. Its `test` and `create` callbacks delegate to
   `gateway.test` and `gateway.add`; do not duplicate gateway persistence logic.

@@ -2021,7 +2021,7 @@ async fn mcp_app_manager_is_hidden_and_denied_on_protected_routes() {
 }
 
 #[tokio::test]
-async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
+async fn mcp_app_bulk_disable_locks_mcp_side_reenable() {
     let manager = code_mode_manager(true).await;
     let shared_state = manager.code_mode_app_state();
     let mut server = test_server(
@@ -2169,16 +2169,19 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
             scoped_context(peer, &["lab:admin"]),
         )
         .await
-        .expect("bulk enable result");
-    assert!(!enable.is_error.unwrap_or(false));
+        .expect("bulk enable denial");
+    assert!(enable.is_error.unwrap_or(false));
+    let text = enable.content[0].as_text().expect("text").text.as_str();
+    assert!(text.contains("mcp_apps.manager is disabled"), "{text}");
+
     let cfg = manager.current_config().await;
-    assert!(cfg.mcp_apps.manager);
-    assert!(cfg.code_mode.mcp_ui_enabled);
-    assert!(cfg.mcp_apps.gateway_status);
-    assert!(cfg.mcp_apps.server_logs);
-    assert!(cfg.mcp_apps.add_server);
-    assert!(cfg.mcp_apps.settings);
-    assert!(running.service().code_mode_app_state.is_enabled());
+    assert!(!cfg.mcp_apps.manager);
+    assert!(!cfg.code_mode.mcp_ui_enabled);
+    assert!(!cfg.mcp_apps.gateway_status);
+    assert!(!cfg.mcp_apps.server_logs);
+    assert!(!cfg.mcp_apps.add_server);
+    assert!(!cfg.mcp_apps.settings);
+    assert!(!running.service().code_mode_app_state.is_enabled());
 }
 
 #[tokio::test]

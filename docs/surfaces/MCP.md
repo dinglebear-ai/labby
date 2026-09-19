@@ -1,7 +1,7 @@
 ---
 title: "MCP Surface"
 created: "2026-07-30"
-updated: "2026-08-17"
+updated: "2026-09-18"
 ---
 
 # MCP Surface
@@ -108,21 +108,24 @@ inspect the current route-scoped tool catalog.
 
 ### Labby MCP App manager
 
-The root gateway always advertises the `mcp_app` control tool, but its own MCP
-App UI is enabled by default. The tool manages `manager`, `codemode`, `gateway_status`,
-`server_logs`, `add_server`, `settings`, or `all`. Every Labby-owned app surface
-defaults on; the text-only control tool remains available so an
-administrator can disable or restore individual surfaces, including the manager UI
-itself. The default target remains `codemode` for backward compatibility with the
-original inspector-only control contract.
+The root gateway always advertises the text-only `mcp_app` control tool, while
+its own manager UI and every other Labby-owned MCP App UI are opt-in and default
+to disabled. The tool manages `manager`, `codemode`, `gateway_status`,
+`server_logs`, `add_server`, `settings`, or `all`. The default target remains
+`codemode` for backward compatibility with the original inspector-only control
+contract.
 
 Reading status or opening the manager requires `lab` or `lab:admin`; changing
 visibility requires `lab:admin`. The `mcp_app` control tool is intentionally
 unavailable on protected subset routes because these switches mutate
-gateway-global state, and the control tool itself cannot be disabled. Its UI metadata and `ui://` resource
-can be disabled independently like the other Labby-owned app surfaces. Changes
-are persisted and publish both `tools/list_changed` and
-`resources/list_changed` without rebuilding the upstream pool.
+gateway-global state, and the text-only control tool itself cannot be disabled.
+Its UI metadata and `ui://` resource can be disabled independently like the other
+Labby-owned app surfaces. While `mcp_apps.manager = false`, MCP-originated
+`enable` requests fail closed; an operator must re-enable the manager through an
+operator-controlled configuration or control-plane surface before `mcp_app` may
+enable managed UIs again. Changes are persisted and publish both
+`tools/list_changed` and `resources/list_changed` without rebuilding the
+upstream pool.
 
 Disabling a surface removes its app tool/metadata and owned `ui://` resources,
 and direct reads of a disabled owned resource fail as unknown. It does not tear

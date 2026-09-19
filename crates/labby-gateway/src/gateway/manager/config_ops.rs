@@ -528,6 +528,13 @@ impl GatewayManager {
     ) -> Result<GatewayConfig, ToolError> {
         let _mutation_guard = self.acquire_config_mutation().await?;
         let durable_previous = self.load_config_for_mutation().await?;
+        if enabled && origin == Some(SOURCE_MCP_CALL_MCP_APP) && !durable_previous.mcp_apps.manager
+        {
+            return Err(ToolError::Forbidden {
+                message: "MCP-side app enable is locked while mcp_apps.manager is disabled; re-enable the manager from an operator-controlled surface before enabling apps through mcp_app".to_string(),
+                required_scopes: Vec::new(),
+            });
+        }
         let mut cfg = durable_previous.clone();
         match target {
             "manager" => cfg.mcp_apps.manager = enabled,

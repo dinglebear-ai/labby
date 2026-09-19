@@ -183,7 +183,7 @@
 # Preferences for the gateway `codemode` sandbox.
 # These are product knobs, not secrets/URLs/runtime-discovery values, so keep
 # them here rather than in .env.
-# enabled = false                         # default: false; advertises `codemode`
+# enabled = true                          # default: true; advertises text-only `codemode`
 # mcp_ui_enabled = false                  # default: false; opt in to `codemode_ui` and its app resources
 # trace_params = true                     # default: true; stores only redacted/capped call params in traces/history
 # `codemode` runs a JS async arrow function in the Javy/QuickJS sandbox with

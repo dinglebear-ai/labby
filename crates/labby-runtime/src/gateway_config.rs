@@ -111,35 +111,32 @@ fn default_mcp_scopes() -> Vec<String> {
 pub struct McpAppsConfig {
     /// Attach MCP App metadata to the always-available `mcp_app` control tool and advertise its UI resources.
     /// The control tool itself remains available when this is false.
-    /// Fresh installs expose the manager UI by default.
-    #[serde(default = "default_true")]
+    /// Labby-owned app UIs are opt-in so model clients cannot acquire new UI
+    /// surfaces merely because an operator omitted this section.
+    #[serde(default)]
     pub manager: bool,
     /// Advertise the synthetic Add Server app tool and its UI resources.
-    /// Fresh installs expose the complete Labby app surface by default.
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub add_server: bool,
     /// Attach the Server Logs app metadata and advertise its UI resources.
-    /// Fresh installs expose the complete Labby app surface by default.
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub server_logs: bool,
     /// Advertise the synthetic Gateway Status app tool and its UI resources.
-    /// Fresh installs expose the complete Labby app surface by default.
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub gateway_status: bool,
     /// Advertise the schema-backed Settings app tool and its UI resources.
-    /// Fresh installs expose the complete Labby app surface by default.
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub settings: bool,
 }
 
 impl Default for McpAppsConfig {
     fn default() -> Self {
         Self {
-            manager: true,
-            add_server: true,
-            server_logs: true,
-            gateway_status: true,
-            settings: true,
+            manager: false,
+            add_server: false,
+            server_logs: false,
+            gateway_status: false,
+            settings: false,
         }
     }
 }
@@ -216,8 +213,8 @@ pub struct CodeModeConfig {
     pub trusted_read_only_tools: Vec<String>,
     /// Whether the explicit `codemode_ui` MCP App tool and resources are advertised.
     /// The text-only `codemode` executor remains available when this is false.
-    /// The inspector is enabled by default so Code Mode has a useful first-run UI.
-    #[serde(default = "default_true")]
+    /// The inspector is opt-in; enabling Code Mode must not implicitly publish an app UI.
+    #[serde(default)]
     pub mcp_ui_enabled: bool,
     /// Whether Code Mode call traces include redacted/capped tool params.
     #[serde(default = "default_code_mode_trace_params")]
@@ -287,7 +284,7 @@ impl Default for CodeModeConfig {
         Self {
             enabled: true,
             trusted_read_only_tools: Vec::new(),
-            mcp_ui_enabled: true,
+            mcp_ui_enabled: false,
             trace_params: default_code_mode_trace_params(),
             result_shape_policy: CodeModeResultShapePolicy::Off,
             timeout_ms: default_code_mode_timeout_ms(),
@@ -2397,7 +2394,7 @@ client_secret_env = "SECRET"
         assert_eq!(cfg, expected);
         assert!(cfg.enabled);
         assert!(cfg.trusted_read_only_tools.is_empty());
-        assert!(cfg.mcp_ui_enabled);
+        assert!(!cfg.mcp_ui_enabled);
         assert!(cfg.trace_params);
         assert_eq!(cfg.timeout_ms, 30_000);
         assert_eq!(cfg.token_estimate_divisor, 4);
@@ -2458,41 +2455,37 @@ client_secret_env = "SECRET"
     }
 
     #[test]
-    fn mcp_apps_config_defaults_all_managed_apps_enabled() {
+    fn mcp_apps_config_defaults_all_managed_apps_disabled() {
         let cfg: McpAppsConfig = toml::from_str("").unwrap();
         assert_eq!(cfg, McpAppsConfig::default());
-        assert!(cfg.manager);
-        assert!(cfg.add_server);
-        assert!(cfg.server_logs);
-        assert!(cfg.gateway_status);
-        assert!(cfg.settings);
+        assert!(!cfg.manager);
+        assert!(!cfg.add_server);
+        assert!(!cfg.server_logs);
+        assert!(!cfg.gateway_status);
+        assert!(!cfg.settings);
     }
 
     #[test]
     fn documented_labby_app_defaults_match_code() {
         // GATEWAY.md is the operator-facing statement of the Labby-owned app
-        // surface defaults. Code Mode and every managed MCP App now default
-        // on, so the doc must not still promise an off-by-default posture.
+        // surface defaults. Text Code Mode stays available, while every Labby-owned
+        // MCP App UI is opt-in.
         let doc = include_str!("../../../docs/services/GATEWAY.md");
         assert!(CodeModeConfig::default().enabled);
-        assert!(CodeModeConfig::default().mcp_ui_enabled);
+        assert!(!CodeModeConfig::default().mcp_ui_enabled);
         assert_eq!(
             McpAppsConfig::default(),
             McpAppsConfig {
-                manager: true,
-                add_server: true,
-                server_logs: true,
-                gateway_status: true,
-                settings: true,
+                manager: false,
+                add_server: false,
+                server_logs: false,
+                gateway_status: false,
+                settings: false,
             }
         );
         assert!(
-            !doc.contains("defaults to `false` and must be explicitly enabled"),
-            "docs/services/GATEWAY.md still documents the retired off-by-default app posture"
-        );
-        assert!(
-            doc.contains("defaults to `true`") || doc.contains("enabled by default"),
-            "docs/services/GATEWAY.md must state that Labby-owned app surfaces default on"
+            doc.contains("default to `false`") || doc.contains("opt-in"),
+            "docs/services/GATEWAY.md must state that Labby-owned app UIs are opt-in"
         );
     }
 
