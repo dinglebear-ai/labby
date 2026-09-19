@@ -27,7 +27,7 @@ use super::capability_call::{
 use super::entries::{resolve_request_resource_exposure_policy, resource_exposed};
 use super::helpers::{
     estimate_resource_response_size, max_response_bytes, normalize_resource_result_uri,
-    redact_resource_uri_for_logging, upstream_transport,
+    peer_declares_resources, redact_resource_uri_for_logging, upstream_transport,
 };
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -53,7 +53,10 @@ pub(crate) struct PreparedExactResourceRead {
     gateway_uri: String,
     outcome: RawCallOutcome<ReadResourceResult>,
 }
-use super::logging::{UpstreamRequestLog, log_upstream_request_error, log_upstream_request_start};
+use super::logging::{
+    UpstreamRequestLog, log_upstream_capability_skipped, log_upstream_request_error,
+    log_upstream_request_start,
+};
 use super::tools::mcp_tool_owns_mcp_app_resource;
 
 impl UpstreamPool {
@@ -594,6 +597,15 @@ impl UpstreamPool {
                 });
             }
         };
+        if !peer_declares_resources(&peer) {
+            log_upstream_capability_skipped(event);
+            return Err(CapabilityCallError::Other {
+                message: format!(
+                    "upstream {} does not advertise the MCP resources capability",
+                    config.name
+                ),
+            });
+        }
         let timeout_ms = self.request_timeout.as_millis();
 
         timed_capability_call(

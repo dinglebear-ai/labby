@@ -15,6 +15,7 @@ use rmcp::model::{
     CallToolResponse, CallToolResult, GetPromptResponse, GetPromptResult, Prompt,
     ReadResourceResult, Resource, ResourceContents,
 };
+use rmcp::{Peer, RoleClient};
 use serde_json::Value;
 
 use labby_runtime::gateway_config::{UpstreamConfig, UpstreamTransport};
@@ -76,6 +77,21 @@ pub(super) const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// overrides it from `upstream_relay_timeout_ms`. See `pool/relay.rs`.
 pub(super) const DEFAULT_RELAY_TIMEOUT: Duration = Duration::from_mins(5);
 pub(super) const STDIO_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// True when the upstream advertised the standard MCP resources capability in
+/// its initialize result. Optional capability discovery must be negotiated
+/// from the handshake rather than inferred from proxy configuration.
+pub(super) fn peer_declares_resources(peer: &Peer<RoleClient>) -> bool {
+    peer.peer_info()
+        .is_some_and(|info| info.capabilities.resources.is_some())
+}
+
+/// True when the upstream advertised the standard MCP prompts capability in
+/// its initialize result. Optional catalog RPCs must respect this handshake.
+pub(super) fn peer_declares_prompts(peer: &Peer<RoleClient>) -> bool {
+    peer.peer_info()
+        .is_some_and(|info| info.capabilities.prompts.is_some())
+}
 /// Idle TTL for per-`(upstream, subject)` cached connections.
 ///
 /// A connection that has not been used for this long will be evicted from
