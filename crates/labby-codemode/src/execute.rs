@@ -494,6 +494,69 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                 host.read_resource(uri.to_string(), caller, surface, scope)
                     .await
             }
+            "get_prompt" => {
+                let prompt = params
+                    .get("prompt")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| ToolError::MissingParam {
+                        message: "get_prompt requires a non-empty `prompt`".to_string(),
+                        param: "prompt".to_string(),
+                    })?;
+                let arguments = params
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or_else(|| Value::Object(Default::default()));
+                if !arguments.is_object() {
+                    return Err(ToolError::InvalidParam {
+                        message: "get_prompt `arguments` must be an object".to_string(),
+                        param: "arguments".to_string(),
+                    });
+                }
+                host.get_prompt(prompt.to_string(), arguments, caller, surface, scope)
+                    .await
+            }
+            "list_skills" => host.list_skills(caller, surface, scope).await,
+            "get_skill" => {
+                let uri = params
+                    .get("uri")
+                    .and_then(Value::as_str)
+                    .filter(|uri| !uri.trim().is_empty())
+                    .ok_or_else(|| ToolError::MissingParam {
+                        message: "get_skill requires a non-empty `uri`".to_string(),
+                        param: "uri".to_string(),
+                    })?;
+                if uri.len() > MAX_RESOURCE_URI_BYTES {
+                    return Err(ToolError::Sdk {
+                        sdk_kind: "invalid_param".to_string(),
+                        message: format!(
+                            "Skill URI exceeds max length {MAX_RESOURCE_URI_BYTES} bytes"
+                        ),
+                    });
+                }
+                host.get_skill(uri.to_string(), caller, surface, scope)
+                    .await
+            }
+            "read_skill" => {
+                let uri = params
+                    .get("uri")
+                    .and_then(Value::as_str)
+                    .filter(|uri| !uri.trim().is_empty())
+                    .ok_or_else(|| ToolError::MissingParam {
+                        message: "read_skill requires a non-empty `uri`".to_string(),
+                        param: "uri".to_string(),
+                    })?;
+                if uri.len() > MAX_RESOURCE_URI_BYTES {
+                    return Err(ToolError::Sdk {
+                        sdk_kind: "invalid_param".to_string(),
+                        message: format!(
+                            "Skill URI exceeds max length {MAX_RESOURCE_URI_BYTES} bytes"
+                        ),
+                    });
+                }
+                host.read_skill(uri.to_string(), caller, surface, scope)
+                    .await
+            }
             "semantic_rank" => {
                 let query = clamp_semantic_query(
                     params

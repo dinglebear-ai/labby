@@ -114,6 +114,10 @@ async fn build_manager_with_upstream_oauth_runtime(
         },
         runtime,
     )?;
+    #[cfg(feature = "skills")]
+    let manager = manager.with_code_mode_skill_provider(Arc::new(
+        crate::skills::code_mode::CanonicalCodeModeSkillProvider,
+    ));
     let manager = Arc::new(manager);
     // Persisted config can fail gateway validation (for example a stdio
     // `command` outside the spawn allowlist). Propagate the typed `ToolError`

@@ -137,16 +137,14 @@ fn javy_search_filters_lexical_and_semantic_results_by_kind() {
 
 #[test]
 fn javy_describe_keeps_future_catalog_kinds_metadata_only() {
-    let mut skill = CatalogDescriptor::tool(
+    let mut skill = CatalogDescriptor::metadata(
+        CodeModeCatalogKind::Skill,
         "labby",
+        "skill::skill://labby/adversarial-review",
         "adversarial_review",
         "Review code adversarially",
-        None,
-        None,
+        vec!["uri:skill://labby/adversarial-review".to_string()],
     );
-    skill.kind = CodeModeCatalogKind::Skill;
-    skill.id = "skill::labby::adversarial_review".into();
-    skill.signature.clear();
     skill.dts = "this must never be fetched for metadata-only kinds".into();
 
     let entry = CodeModeDiscoveryEntry::from_catalog(&skill);
@@ -181,7 +179,15 @@ fn javy_describe_keeps_future_catalog_kinds_metadata_only() {
     assert_eq!(value["description"]["kind"], "skill");
     assert_eq!(
         value["description"]["id"],
-        "skill::labby::adversarial_review"
+        "skill::skill://labby/adversarial-review"
+    );
+    assert_eq!(
+        value["description"]["helper"],
+        r#"codemode.getSkill("skill://labby/adversarial-review")"#
+    );
+    assert_eq!(
+        value["description"]["tags"],
+        serde_json::json!(["uri:skill://labby/adversarial-review"])
     );
     assert_eq!(value["describeTypeCalls"], 0);
     let markdown = value["description"]["markdown"].as_str().unwrap();

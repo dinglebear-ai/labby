@@ -15,6 +15,7 @@ use labby_codemode::{
     CodeModeToolSafetyHints, ResolvedSnippet, RunnerPool, ToolCallOutcome, ToolScope, ToolsRender,
     UiLink, destructive_permitted, discovery_entry_visible, discovery_render_params,
 };
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rmcp::model::{CallToolRequestParams, CallToolResult};
@@ -133,6 +134,178 @@ fn semantic_candidate_ids<'a>(
         .collect()
 }
 
+impl GatewayManager {
+    pub(crate) async fn code_mode_metadata_entries(
+        &self,
+        caller: &CodeModeCaller,
+        _surface: CodeModeSurface,
+        scope: &ToolScope,
+    ) -> Vec<CatalogDescriptor> {
+        let mut entries = BTreeMap::<String, CatalogDescriptor>::new();
+
+        if matches!(
+            caller,
+            CodeModeCaller::TrustedLocal | CodeModeCaller::ScopedSkills { .. }
+        ) && let Some(provider) = self.code_mode_skill_provider.as_ref()
+        {
+            match provider.list(caller, scope).await {
+                Ok(skills) => {
+                    for skill in skills {
+                        let namespace = skill
+                            .uri
+                            .strip_prefix("skill://")
+                            .and_then(|rest| rest.split('/').next())
+                            .filter(|value| !value.is_empty())
+                            .unwrap_or("skills");
+                        let mut tags = skill.tags;
+                        tags.push(format!("uri:{}", skill.uri));
+                        let descriptor = CatalogDescriptor::metadata(
+                            CodeModeCatalogKind::Skill,
+                            namespace,
+                            &format!("skill::{}", skill.uri),
+                            &skill.name,
+                            skill.description.as_deref().unwrap_or("Agent Skill"),
+                            tags,
+                        );
+                        entries.insert(descriptor.id.clone(), descriptor);
+                    }
+                }
+                Err(error) => tracing::warn!(
+                    surface = "dispatch",
+                    service = "code_mode",
+                    action = "catalog.skills",
+                    error = %error,
+                    "Code Mode Skill catalog projection failed open"
+                ),
+            }
+        }
+
+        let Some(pool) = self.current_pool().await else {
+            return entries.into_values().collect();
+        };
+        let allowed = scope.allowed_namespaces();
+
+        for listed in pool
+            .list_upstream_resources_with_provenance_allowed(allowed)
+            .await
+        {
+            let resource = listed.resource;
+            let mut tags = vec![format!("uri:{}", resource.uri)];
+            if let Some(mime) = resource.mime_type.as_deref() {
+                tags.push(format!("mime:{mime}"));
+            }
+            let display_name = resource.title.as_deref().unwrap_or(&resource.name);
+            let descriptor = CatalogDescriptor::metadata(
+                CodeModeCatalogKind::Resource,
+                &listed.upstream_name,
+                &format!("resource::{}::{}", listed.upstream_name, listed.native_uri),
+                display_name,
+                resource.description.as_deref().unwrap_or("MCP Resource"),
+                tags,
+            );
+            entries.insert(descriptor.id.clone(), descriptor);
+        }
+
+        for prompt in pool.list_upstream_prompts_allowed(&[], allowed).await {
+            let Some((upstream, native_name)) = prompt.name.split_once('/') else {
+                continue;
+            };
+            let mut tags = prompt
+                .arguments
+                .as_ref()
+                .into_iter()
+                .flatten()
+                .map(|argument| format!("arg:{}", argument.name))
+                .collect::<Vec<_>>();
+            tags.push(format!("prompt:{}", prompt.name));
+            let display_name = prompt.title.as_deref().unwrap_or(native_name);
+            let descriptor = CatalogDescriptor::metadata(
+                CodeModeCatalogKind::Prompt,
+                upstream,
+                &format!("prompt::{upstream}::{native_name}"),
+                display_name,
+                prompt.description.as_deref().unwrap_or("MCP Prompt"),
+                tags,
+            );
+            entries.insert(descriptor.id.clone(), descriptor);
+        }
+
+        let config = self.current_config().await;
+        let oauth_configs = config
+            .upstream
+            .into_iter()
+            .filter(|config| {
+                config.enabled
+                    && config.oauth.is_some()
+                    && allowed.is_none_or(|allowed| allowed.contains(&config.name))
+            })
+            .collect::<Vec<_>>();
+
+        if !oauth_configs.is_empty()
+            && let Some(subject) = oauth_subject(caller)
+            && !subject.is_empty()
+        {
+            for resource in pool.subject_scoped_resources(&oauth_configs, subject).await {
+                let Some(upstream) = resource
+                    .uri
+                    .strip_prefix("lab://upstream/")
+                    .and_then(|rest| rest.split('/').next())
+                    .filter(|value| !value.is_empty())
+                else {
+                    continue;
+                };
+                let mut tags = vec![format!("uri:{}", resource.uri)];
+                if let Some(mime) = resource.mime_type.as_deref() {
+                    tags.push(format!("mime:{mime}"));
+                }
+                let display_name = resource.title.as_deref().unwrap_or(&resource.name);
+                let native_uri = resource
+                    .uri
+                    .strip_prefix(&format!("lab://upstream/{upstream}/"))
+                    .unwrap_or(&resource.uri);
+                let descriptor = CatalogDescriptor::metadata(
+                    CodeModeCatalogKind::Resource,
+                    upstream,
+                    &format!("resource::{upstream}::{native_uri}"),
+                    display_name,
+                    resource.description.as_deref().unwrap_or("MCP Resource"),
+                    tags,
+                );
+                entries.insert(descriptor.id.clone(), descriptor);
+            }
+
+            for prompt in pool
+                .subject_scoped_prompts(&oauth_configs, subject, &[])
+                .await
+            {
+                let Some((upstream, native_name)) = prompt.name.split_once('/') else {
+                    continue;
+                };
+                let mut tags = prompt
+                    .arguments
+                    .as_ref()
+                    .into_iter()
+                    .flatten()
+                    .map(|argument| format!("arg:{}", argument.name))
+                    .collect::<Vec<_>>();
+                tags.push(format!("prompt:{}", prompt.name));
+                let display_name = prompt.title.as_deref().unwrap_or(native_name);
+                let descriptor = CatalogDescriptor::metadata(
+                    CodeModeCatalogKind::Prompt,
+                    upstream,
+                    &format!("prompt::{upstream}::{native_name}"),
+                    display_name,
+                    prompt.description.as_deref().unwrap_or("MCP Prompt"),
+                    tags,
+                );
+                entries.insert(descriptor.id.clone(), descriptor);
+            }
+        }
+
+        entries.into_values().collect()
+    }
+}
+
 impl CodeModeHost for GatewayManager {
     async fn list_tools(
         &self,
@@ -160,6 +333,8 @@ impl CodeModeHost for GatewayManager {
             scope,
             include_snippets,
             use_cache,
+            caller,
+            surface,
         )
         .await?;
 
@@ -400,6 +575,152 @@ impl CodeModeHost for GatewayManager {
         })
     }
 
+    async fn get_prompt(
+        &self,
+        prompt: String,
+        arguments: Value,
+        caller: &CodeModeCaller,
+        surface: CodeModeSurface,
+        scope: &ToolScope,
+    ) -> Result<Value, ToolError> {
+        let (upstream, native_name) = if let Some(rest) = prompt.strip_prefix("prompt::") {
+            rest.split_once("::")
+        } else {
+            prompt.split_once('/')
+        }
+        .filter(|(upstream, name)| !upstream.is_empty() && !name.is_empty())
+        .ok_or_else(|| ToolError::InvalidParam {
+            message: "prompt must be `prompt::<upstream>::<name>` or `<upstream>/<name>`"
+                .to_string(),
+            param: "prompt".to_string(),
+        })?;
+
+        if scope
+            .allowed_namespaces()
+            .is_some_and(|allowed| !allowed.contains(upstream))
+        {
+            return Err(ToolError::Sdk {
+                sdk_kind: "forbidden".to_string(),
+                message: format!("prompt upstream `{upstream}` is outside this Code Mode scope"),
+            });
+        }
+
+        let config = self
+            .upstream_config(upstream)
+            .await
+            .ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "not_found".to_string(),
+                message: format!("prompt upstream `{upstream}` is not configured"),
+            })?;
+        if !config.enabled {
+            return Err(ToolError::Sdk {
+                sdk_kind: "not_found".to_string(),
+                message: format!("prompt upstream `{upstream}` is disabled"),
+            });
+        }
+
+        let Some(pool) = self.current_pool().await else {
+            return Err(ToolError::Sdk {
+                sdk_kind: "provider_unavailable".to_string(),
+                message: "gateway upstream pool is unavailable".to_string(),
+            });
+        };
+
+        let arguments = arguments
+            .as_object()
+            .cloned()
+            .ok_or_else(|| ToolError::InvalidParam {
+                message: "prompt arguments must be an object".to_string(),
+                param: "arguments".to_string(),
+            })?;
+        let params = rmcp::model::GetPromptRequestParams::new(format!("{upstream}/{native_name}"))
+            .with_arguments(arguments);
+
+        let result = if config.oauth.is_some() {
+            let subject = oauth_subject(caller)
+                .filter(|subject| !subject.is_empty())
+                .ok_or_else(|| ToolError::Sdk {
+                    sdk_kind: "forbidden".to_string(),
+                    message: format!(
+                        "prompt upstream `{upstream}` requires a caller OAuth subject"
+                    ),
+                })?;
+            pool.subject_scoped_get_prompt(&config, subject, params)
+                .await
+                .map_err(|message| ToolError::Sdk {
+                    sdk_kind: "upstream_error".to_string(),
+                    message,
+                })?
+        } else {
+            let owner = runtime_owner(caller, surface);
+            self.ensure_upstream_tool_runtime_ready(upstream, Some(&owner), None)
+                .await?;
+            pool.get_prompt(upstream, params)
+                .await
+                .ok_or_else(|| ToolError::Sdk {
+                    sdk_kind: "not_found".to_string(),
+                    message: format!("prompt `{prompt}` was not found"),
+                })?
+                .map_err(|message| ToolError::Sdk {
+                    sdk_kind: "upstream_error".to_string(),
+                    message,
+                })?
+        };
+
+        serde_json::to_value(result).map_err(|error| {
+            ToolError::internal_message(format!("failed to serialize prompt result: {error}"))
+        })
+    }
+
+    async fn list_skills(
+        &self,
+        caller: &CodeModeCaller,
+        _surface: CodeModeSurface,
+        scope: &ToolScope,
+    ) -> Result<Value, ToolError> {
+        let Some(provider) = self.code_mode_skill_provider.as_ref() else {
+            return Ok(serde_json::json!({ "skills": [] }));
+        };
+        let skills = provider.list(caller, scope).await?;
+        serde_json::to_value(serde_json::json!({ "skills": skills })).map_err(|error| {
+            ToolError::internal_message(format!("failed to serialize Code Mode Skills: {error}"))
+        })
+    }
+
+    async fn get_skill(
+        &self,
+        uri: String,
+        caller: &CodeModeCaller,
+        _surface: CodeModeSurface,
+        scope: &ToolScope,
+    ) -> Result<Value, ToolError> {
+        let provider = self
+            .code_mode_skill_provider
+            .as_ref()
+            .ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "not_found".to_string(),
+                message: "Code Mode Skill provider is unavailable".to_string(),
+            })?;
+        provider.get(&uri, caller, scope).await
+    }
+
+    async fn read_skill(
+        &self,
+        uri: String,
+        caller: &CodeModeCaller,
+        _surface: CodeModeSurface,
+        scope: &ToolScope,
+    ) -> Result<Value, ToolError> {
+        let provider = self
+            .code_mode_skill_provider
+            .as_ref()
+            .ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "not_found".to_string(),
+                message: "Code Mode Skill provider is unavailable".to_string(),
+            })?;
+        provider.read(&uri, caller, scope).await
+    }
+
     /// Buffer one `codemode.step` boundary for the run's `execution_id`.
     ///
     /// FAIL-OPEN + write-free on the runner drive loop: this only pushes a row
@@ -525,6 +846,8 @@ impl CodeModeHost for GatewayManager {
             scope,
             include_snippets,
             use_cache,
+            caller,
+            surface,
         )
         .await
         {
@@ -1453,7 +1776,10 @@ pub(crate) fn propagated_caller_auth(caller: &CodeModeCaller) -> PropagatedCalle
             PropagatedCallerAuth::scoped(scopes, sub.clone())
                 .with_private_context_token(context_token.clone())
         }
-        CodeModeCaller::ScopedHostProvider {
+        CodeModeCaller::ScopedSkills {
+            capabilities, sub, ..
+        }
+        | CodeModeCaller::ScopedHostProvider {
             capabilities, sub, ..
         } => {
             let mut scopes = Vec::new();
@@ -1490,6 +1816,8 @@ fn caller_meta(
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 mod tests {
+    use std::future::Future;
+
     use super::*;
     use crate::gateway::runtime::GatewayRuntimeHandle;
     use labby_codemode::ExecCtx;
@@ -1521,6 +1849,96 @@ mod tests {
 
         let tools = semantic_candidate_ids(&entries, &scope, &[CodeModeCatalogKind::Tool]);
         assert_eq!(tools, std::collections::BTreeSet::from(["alpha::query"]));
+    }
+
+    struct FixtureSkillProvider;
+
+    impl crate::gateway::code_mode::skills::CodeModeSkillProvider for FixtureSkillProvider {
+        fn list<'a>(
+            &'a self,
+            _caller: &'a CodeModeCaller,
+            _scope: &'a ToolScope,
+        ) -> std::pin::Pin<
+            Box<
+                dyn Future<
+                        Output = Result<
+                            Vec<crate::gateway::code_mode::skills::CodeModeSkillSummary>,
+                            ToolError,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async {
+                Ok(vec![
+                    crate::gateway::code_mode::skills::CodeModeSkillSummary {
+                        uri: "skill://labby/adversarial-review".to_string(),
+                        name: "adversarial-review".to_string(),
+                        description: Some("Review code adversarially".to_string()),
+                        tags: vec!["review".to_string(), "code".to_string()],
+                    },
+                ])
+            })
+        }
+
+        fn get<'a>(
+            &'a self,
+            _uri: &'a str,
+            _caller: &'a CodeModeCaller,
+            _scope: &'a ToolScope,
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'a>> {
+            Box::pin(async {
+                Err(ToolError::Sdk {
+                    sdk_kind: "not_found".to_string(),
+                    message: "fixture does not implement get".to_string(),
+                })
+            })
+        }
+
+        fn read<'a>(
+            &'a self,
+            _uri: &'a str,
+            _caller: &'a CodeModeCaller,
+            _scope: &'a ToolScope,
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'a>> {
+            Box::pin(async {
+                Err(ToolError::Sdk {
+                    sdk_kind: "not_found".to_string(),
+                    message: "fixture does not implement read".to_string(),
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn canonical_skill_provider_projects_into_source_neutral_catalog() {
+        let cfg_dir = tempfile::tempdir().unwrap();
+        let manager = GatewayManager::new(
+            cfg_dir.path().join("config.toml"),
+            GatewayRuntimeHandle::default(),
+        )
+        .with_code_mode_skill_provider(Arc::new(FixtureSkillProvider));
+
+        let entries = manager
+            .code_mode_metadata_entries(
+                &CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Mcp,
+                &ToolScope::new(Vec::new(), Vec::new()),
+            )
+            .await;
+
+        assert_eq!(entries.len(), 1);
+        let skill = &entries[0];
+        assert_eq!(skill.kind, CodeModeCatalogKind::Skill);
+        assert_eq!(skill.namespace, "labby");
+        assert_eq!(skill.name, "adversarial-review");
+        assert_eq!(skill.id, "skill::skill://labby/adversarial-review");
+        assert!(skill.tags.contains(&"review".to_string()));
+        assert!(
+            skill
+                .tags
+                .contains(&"uri:skill://labby/adversarial-review".to_string())
+        );
     }
 
     /// Build a `GatewayManager` wired to a fresh temp `StepJournalStore`. The
@@ -1650,6 +2068,31 @@ mod tests {
         .expect("scope decodes");
         assert_eq!(decoded_auth, auth);
         assert_eq!(decoded_scope, scope);
+    }
+
+    #[test]
+    fn scoped_skills_token_is_never_propagated_to_upstream_auth() {
+        let caller = CodeModeCaller::ScopedSkills {
+            capabilities: labby_codemode::CodeModeCallerCapabilities {
+                can_read: true,
+                can_execute: true,
+                can_use_snippets: true,
+                is_admin: false,
+            },
+            sub: Some("alice".to_string()),
+            skill_context_token: "skillctx_super_secret".to_string(),
+        };
+
+        let auth = propagated_caller_auth(&caller);
+
+        assert_eq!(auth.sub.as_deref(), Some("alice"));
+        assert_eq!(auth.scopes, vec!["lab".to_string(), "lab:read".to_string()]);
+        assert_eq!(auth.private_context_token, None);
+        let serialized = serde_json::to_string(&auth).expect("auth serializes");
+        assert!(
+            !serialized.contains("skillctx_super_secret"),
+            "host-local Skill context token must never cross the upstream auth boundary"
+        );
     }
 
     #[test]

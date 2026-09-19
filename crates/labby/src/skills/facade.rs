@@ -5,7 +5,7 @@
 //! compatibility service, CLI, and API all consume this facade.
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use base64::Engine as _;
 use labby_runtime::artifacts::{LibraryActorId, LibraryTenantId, SkillVisibility};
@@ -33,6 +33,43 @@ use super::registry::{FirstPartyGeneration, first_party_generation_manager};
 
 const NATIVE_SKILLS_LIST_PAGE_SIZE: usize = 128;
 const FIRST_PARTY_SKILLS_LIST_TTL_MS: u64 = 30_000;
+
+static CODE_MODE_SKILL_CONTEXTS: LazyLock<dashmap::DashMap<String, Arc<SkillRegistryContext>>> =
+    LazyLock::new(dashmap::DashMap::new);
+
+/// Keeps one request-bound canonical Skills context alive for a Code Mode run.
+pub(crate) struct CodeModeSkillContextGuard {
+    token: String,
+}
+
+impl CodeModeSkillContextGuard {
+    #[must_use]
+    pub(crate) fn token(&self) -> &str {
+        &self.token
+    }
+}
+
+impl Drop for CodeModeSkillContextGuard {
+    fn drop(&mut self) {
+        CODE_MODE_SKILL_CONTEXTS.remove(&self.token);
+    }
+}
+
+#[must_use]
+pub(crate) fn register_code_mode_skill_context(
+    context: SkillRegistryContext,
+) -> CodeModeSkillContextGuard {
+    let token = format!("skillctx_{}", ulid::Ulid::new());
+    CODE_MODE_SKILL_CONTEXTS.insert(token.clone(), Arc::new(context));
+    CodeModeSkillContextGuard { token }
+}
+
+#[must_use]
+pub(crate) fn code_mode_skill_context(token: &str) -> Option<Arc<SkillRegistryContext>> {
+    CODE_MODE_SKILL_CONTEXTS
+        .get(token)
+        .map(|entry| entry.value().clone())
+}
 
 /// Caller-dependent inputs that affect which skills may be observed.
 ///
