@@ -33,11 +33,11 @@ export function ConsoleHero({
   title,
   description,
   actions,
+  actionPresentation = 'icons',
   stats,
   children,
   footer,
   variant = 'default',
-  measure = 'default',
 }: {
   /**
    * `default` renders `children` inside the stats strip. `discover` and `authoring`
@@ -45,7 +45,6 @@ export function ConsoleHero({
    * `footer` comes last.
    */
   variant?: 'default' | 'discover' | 'authoring'
-  measure?: 'default' | 'library'
   eyebrow: string
   /** Optional page identity beside the heading; omitted on existing heroes. */
   icon?: React.ReactNode
@@ -54,6 +53,8 @@ export function ConsoleHero({
   title: string
   description?: React.ReactNode
   actions?: React.ReactNode
+  /** Hero actions are glyph-only by default; use mixed when a labeled primary action must remain visible. */
+  actionPresentation?: 'icons' | 'mixed'
   stats?: ConsoleHeroStat[]
   /** Custom strip content, when `stats` is not expressive enough; see `variant` for placement. */
   children?: React.ReactNode
@@ -61,7 +62,6 @@ export function ConsoleHero({
   footer?: React.ReactNode
 }) {
   const compact = variant !== 'default'
-  const libraryMeasure = measure === 'library'
   return (
     <div
       data-console-hero-variant={variant}
@@ -81,8 +81,7 @@ export function ConsoleHero({
           alignItems: 'flex-end',
           justifyContent: 'space-between',
           gap: 16,
-          padding: libraryMeasure ? '30px 34px 26px' : variant === 'authoring' ? '20px 24px 14px' : compact ? '14px 24px 0' : '22px 24px 18px',
-          minHeight: libraryMeasure ? 138 : undefined,
+          padding: variant === 'authoring' ? '20px 24px 14px' : compact ? '14px 24px 0' : '22px 24px 18px',
           flexWrap: 'wrap',
         }}
       >
@@ -125,8 +124,8 @@ export function ConsoleHero({
             style={{
               margin: compact ? '5px 0 0' : '8px 0 0',
               fontFamily: 'var(--font-display)',
-              fontSize: libraryMeasure ? 38 : 30,
-              lineHeight: libraryMeasure ? 1.02 : compact ? 1.02 : 1.04,
+              fontSize: 30,
+              lineHeight: compact ? 1.02 : 1.04,
               fontWeight: 800,
               color: 'var(--aurora-text-primary)',
               whiteSpace: 'nowrap',
@@ -143,7 +142,7 @@ export function ConsoleHero({
         </div>
 
         {actions ? (
-          <div {...(libraryMeasure ? { 'data-console-hero-actions-mixed': '1' } : { 'data-console-hero-actions': '1' })} className={libraryMeasure ? undefined : 'hero-icon-actions'} style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6, ...(icon ? { alignSelf: 'flex-start' } : {}) }}>
+          <div {...(actionPresentation === 'mixed' ? { 'data-console-hero-actions-mixed': '1' } : { 'data-console-hero-actions': '1' })} className={actionPresentation === 'mixed' ? undefined : 'hero-icon-actions'} style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6, ...(icon ? { alignSelf: 'flex-start' } : {}) }}>
             {actions}
           </div>
         ) : null}
@@ -153,8 +152,7 @@ export function ConsoleHero({
         <div
           data-console-hero-stats="1"
           style={{
-            padding: libraryMeasure ? '18px 12px 17px' : '11px 12px 12px',
-            minHeight: libraryMeasure ? 98 : undefined,
+            padding: '11px 12px 12px',
             marginTop: compact ? 14 : undefined,
             borderTop:
               '1px solid color-mix(in srgb, var(--aurora-border-default) 55%, var(--aurora-page-bg))',
@@ -180,9 +178,9 @@ export function ConsoleHero({
                     minWidth: 0,
                     display: 'flex',
                     flexDirection: 'column',
-                    gap: libraryMeasure ? 8 : 6,
+                    gap: 6,
                     lineHeight: 'normal',
-                    padding: libraryMeasure ? '5px 26px' : '2px 12px',
+                    padding: '2px 12px',
                     borderRight:
                       index === stats.length - 1
                         ? undefined
@@ -225,7 +223,7 @@ export function ConsoleHero({
                       textOverflow: 'ellipsis',
                       whiteSpace: 'nowrap',
                       fontFamily: 'var(--font-display)',
-                      fontSize: libraryMeasure ? 27 : 21,
+                      fontSize: 21,
                       lineHeight: 1,
                       fontWeight: 800,
                       letterSpacing: '-0.01em',
@@ -234,7 +232,7 @@ export function ConsoleHero({
                     }}
                   >
                     {stat.value}
-                    {stat.suffix ? <span data-console-hero-stat-unit="1" className="font-sans font-normal text-aurora-text-muted" style={{ marginLeft: libraryMeasure ? 6 : 4, fontSize: libraryMeasure ? 13 : 10 }}>{stat.suffix}</span> : null}
+                    {stat.suffix ? <span data-console-hero-stat-unit="1" className="font-sans font-normal text-aurora-text-muted" style={{ marginLeft: 4, fontSize: 10 }}>{stat.suffix}</span> : null}
                   </div>
                 </div>
               ))}
