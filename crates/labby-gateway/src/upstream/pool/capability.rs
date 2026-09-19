@@ -8,7 +8,9 @@ use rmcp::RoleClient;
 
 use super::super::types::UpstreamHealth;
 use super::helpers::{DISCOVERY_TIMEOUT, peer_declares_prompts, peer_declares_resources};
-use super::logging::is_capability_unsupported;
+use super::logging::{
+    UpstreamRequestLog, is_capability_unsupported, log_upstream_capability_skipped,
+};
 
 pub(super) async fn discover_capability_counts(
     name: &str,
@@ -52,12 +54,7 @@ pub(super) async fn discover_capability_counts(
         }
     } else {
         if proxy_resources {
-            tracing::debug!(
-                upstream = %name,
-                capability = "resources",
-                kind = "capability_not_advertised",
-                "skipping upstream capability discovery"
-            );
+            log_upstream_capability_skipped(UpstreamRequestLog::resources_list(name, false));
         }
         (0, None, UpstreamHealth::Healthy)
     };
@@ -91,12 +88,7 @@ pub(super) async fn discover_capability_counts(
         }
     } else {
         if proxy_prompts {
-            tracing::debug!(
-                upstream = %name,
-                capability = "prompts",
-                kind = "capability_not_advertised",
-                "skipping upstream capability discovery"
-            );
+            log_upstream_capability_skipped(UpstreamRequestLog::prompts_list(name, false));
         }
         (0, None, UpstreamHealth::Healthy)
     };

@@ -17,8 +17,10 @@ use rmcp::model::Prompt;
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
 use super::catalog_pagination;
-use super::helpers::merge_upstream_prompts;
-use super::logging::is_capability_unsupported;
+use super::helpers::{merge_upstream_prompts, peer_declares_prompts};
+use super::logging::{
+    UpstreamRequestLog, is_capability_unsupported, log_upstream_capability_skipped,
+};
 use super::tools::MAX_UPSTREAM_PROMPTS;
 
 /// One regular non-OAuth upstream Prompt with exact pre-namespace provenance.
@@ -81,6 +83,13 @@ impl UpstreamPool {
             .map(|observed| {
                 let peer = observed.peer.clone();
                 async move {
+                    if !peer_declares_prompts(&peer) {
+                        log_upstream_capability_skipped(UpstreamRequestLog::prompts_list(
+                            observed.upstream(),
+                            false,
+                        ));
+                        return (observed, Ok(Vec::new()));
+                    }
                     let remaining =
                         deadline_at.saturating_duration_since(tokio::time::Instant::now());
                     if remaining.is_zero() {

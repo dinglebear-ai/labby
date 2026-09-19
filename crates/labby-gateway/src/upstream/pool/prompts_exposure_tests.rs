@@ -229,6 +229,12 @@ async fn subject_scoped_prompts_skip_tools_only_upstream_without_rpc() {
     let list_prompts_count = Arc::clone(&server.list_prompts_count);
     let get_prompt_count = Arc::clone(&server.get_prompt_count);
     let pool = catalog_pool_with_server("tools-only", server).await;
+    assert!(pool.list_upstream_prompts(&[]).await.is_empty());
+    assert_eq!(
+        list_prompts_count.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+
     seed_subject_connection(&pool, "tools-only", "alice").await;
     let config = oauth_upstream_config("tools-only", None);
 

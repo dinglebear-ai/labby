@@ -378,8 +378,12 @@ impl UpstreamPool {
                 let peer = observed.peer.clone();
                 let request_timeout = catalog_listing_timeout(self.request_timeout);
                 async move {
-                    let started = Instant::now();
                     let event = UpstreamRequestLog::resources_list(&name, false);
+                    if !peer_declares_resources(&peer) {
+                        log_upstream_capability_skipped(event);
+                        return (observed, Ok(Vec::new()));
+                    }
+                    let started = Instant::now();
                     log_upstream_request_start(event);
                     let result = match catalog_pagination::list_resources(
                         &peer,
@@ -1897,6 +1901,13 @@ mod tests {
         let list_resources_count = Arc::clone(&server.list_resources_count);
         let read_resource_count = Arc::clone(&server.read_resource_count);
         let pool = catalog_pool_with_server("tools-only", server).await;
+        pool.resource_upstreams
+            .write()
+            .await
+            .push("tools-only".to_string());
+        assert!(pool.list_upstream_resources().await.is_empty());
+        assert_eq!(list_resources_count.load(Ordering::SeqCst), 0);
+
         let peer = pool
             .connections
             .read()
