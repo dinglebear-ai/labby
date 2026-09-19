@@ -247,6 +247,17 @@ fn inspect_connection(connection: &Connection) -> AccessHealth {
     if version != super::migrations::SCHEMA_VERSION {
         return AccessHealth::new(AccessHealthStatus::Corrupt, "repair_access_store");
     }
+    // A superseded-v8 store matches the current version but not the current
+    // shape. `integrity::validate` would reject its fingerprint and the store
+    // would be reported corrupt, which points operators at data loss on a
+    // store whose rows are intact and leaves the reconciliation path
+    // unreachable. Route it to migration, as any other migratable store is.
+    if super::migrations::is_superseded_v8(connection) {
+        return AccessHealth::new(
+            AccessHealthStatus::Uninitialized,
+            "initialize_or_migrate_access_store",
+        );
+    }
     match super::integrity::validate(connection) {
         Ok(()) => {
             let generation = connection.query_row(
@@ -457,6 +468,84 @@ mod tests {
                 "temporary".to_string()
             )),
             AccessHealth::new(AccessHealthStatus::Unavailable, "check_access_store")
+        );
+    }
+
+    #[test]
+    fn superseded_v8_store_is_routed_to_migration_rather_than_reported_corrupt() {
+        use super::super::migrations;
+
+        let connection = migrations::canonical_legacy_v8_schema().unwrap();
+        connection
+            .execute(
+                "INSERT INTO access_metadata VALUES(1,8,?1,4,100,0,NULL)",
+                [migrations::V8_LEGACY_SCHEMA_FINGERPRINT],
+            )
+            .unwrap();
+        connection
+            .pragma_update(None, "application_id", migrations::APPLICATION_ID)
+            .unwrap();
+        connection
+            .pragma_update(None, "user_version", migrations::SCHEMA_VERSION)
+            .unwrap();
+
+        // The store is at the current version with intact rows; only its shape
+        // is superseded. Reporting corruption here would send an operator
+        // after data loss and strand the store with no upgrade path.
+        assert_eq!(
+            inspect_connection(&connection),
+            AccessHealth::new(
+                AccessHealthStatus::Uninitialized,
+                "initialize_or_migrate_access_store",
+            )
+        );
+    }
+
+    #[test]
+    fn legacy_v8_fingerprint_without_exact_legacy_shape_is_corrupt() {
+        use super::super::migrations;
+
+        let connection = migrations::canonical_current_schema().unwrap();
+        connection
+            .execute(
+                "INSERT INTO access_metadata VALUES(1,8,?1,4,100,0,NULL)",
+                [migrations::V8_LEGACY_SCHEMA_FINGERPRINT],
+            )
+            .unwrap();
+        connection
+            .pragma_update(None, "application_id", migrations::APPLICATION_ID)
+            .unwrap();
+        connection
+            .pragma_update(None, "user_version", migrations::SCHEMA_VERSION)
+            .unwrap();
+
+        assert_eq!(
+            inspect_connection(&connection),
+            AccessHealth::new(AccessHealthStatus::Corrupt, "repair_access_store")
+        );
+    }
+
+    #[test]
+    fn unknown_current_v8_fingerprint_is_corrupt() {
+        use super::super::migrations;
+
+        let connection = migrations::canonical_current_schema().unwrap();
+        connection
+            .execute(
+                "INSERT INTO access_metadata VALUES(1,8,'labby-access-v8-unknown',4,100,0,NULL)",
+                [],
+            )
+            .unwrap();
+        connection
+            .pragma_update(None, "application_id", migrations::APPLICATION_ID)
+            .unwrap();
+        connection
+            .pragma_update(None, "user_version", migrations::SCHEMA_VERSION)
+            .unwrap();
+
+        assert_eq!(
+            inspect_connection(&connection),
+            AccessHealth::new(AccessHealthStatus::Corrupt, "repair_access_store")
         );
     }
 
