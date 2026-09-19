@@ -1014,7 +1014,7 @@ impl LabMcpServer {
     }
 }
 
-fn code_mode_capabilities_for_scopes(scopes: &[String]) -> CodeModeCallerCapabilities {
+pub(crate) fn code_mode_capabilities_for_scopes(scopes: &[String]) -> CodeModeCallerCapabilities {
     let is_admin = scopes.iter().any(|scope| scope == "lab:admin");
     CodeModeCallerCapabilities {
         can_read: scopes

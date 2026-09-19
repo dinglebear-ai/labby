@@ -135,7 +135,7 @@ pub(crate) async fn build_tools_render(
 ) -> Result<ToolsRender, ToolError> {
     let raw_tools = if use_cache {
         manager
-            .code_mode_catalog_tools_cached(Some(owner), oauth_subject)
+            .code_mode_catalog_tools_cached_allowed(Some(owner), oauth_subject, allowed_upstreams)
             .await?
     } else {
         manager
@@ -160,12 +160,13 @@ pub(crate) async fn build_tools_render(
 }
 
 fn filter_tools_for_access(tools: Vec<UpstreamTool>, scope: &ToolScope) -> Vec<UpstreamTool> {
-    if !scope.is_read_only() {
-        return tools;
-    }
     tools
         .into_iter()
-        .filter(super::code_mode_host::tool_is_explicitly_read_only)
+        .filter(|tool| {
+            scope.allows(tool.upstream_name.as_ref(), tool.tool.name.as_ref())
+                && (!scope.is_read_only()
+                    || super::code_mode_host::tool_is_explicitly_read_only(tool))
+        })
         .collect()
 }
 
@@ -836,6 +837,31 @@ mod tests {
             "malformed type/properties must degrade to a defensive open record, never a fabricated type: {}",
             descriptor.dts
         );
+    }
+
+    #[test]
+    fn exact_tool_scope_filters_model_facing_catalog_within_allowed_upstream() {
+        let named = Arc::<str>::from("fixture");
+        let make = |name: &str| UpstreamTool {
+            tool: rmcp::model::Tool::new(
+                name.to_string(),
+                "fixture",
+                Arc::new(serde_json::Map::new()),
+            ),
+            input_schema: None,
+            output_schema: None,
+            upstream_name: Arc::clone(&named),
+            destructive: false,
+        };
+        let scope = ToolScope::scoped_namespaces(
+            vec!["fixture".to_string()],
+            vec!["fixture::query".to_string()],
+        );
+
+        let filtered = filter_tools_for_access(vec![make("query"), make("mutate")], &scope);
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].tool.name.as_ref(), "query");
     }
 
     #[test]

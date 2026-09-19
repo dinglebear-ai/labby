@@ -450,7 +450,7 @@ pub(super) async fn connect_upstream_with_handler_and_notifications<H: ClientHan
             elapsed_ms = started.elapsed().as_millis(),
             "upstream connection acquire finish"
         ),
-        Err(error) => tracing::warn!(
+        Err(error) => tracing::info!(
             surface = "dispatch",
             service = "upstream.pool",
             action = "upstream.connect",

@@ -270,7 +270,10 @@ impl UpstreamPool {
         started: Instant,
     ) -> Heartbeat {
         let Some(observed) = self.observe_connection_catalog_entry(&config.name).await else {
-            tracing::warn!(
+            // Cold one-shot catalog construction legitimately reprobes before a
+            // connection exists, then immediately falls through to reconnect.
+            // That is expected control flow, not an operator-actionable failure.
+            tracing::info!(
                 surface = "dispatch",
                 service = "upstream.pool",
                 action = "upstream.reprobe",
@@ -280,7 +283,7 @@ impl UpstreamPool {
                 transport = upstream_transport(config),
                 elapsed_ms = started.elapsed().as_millis(),
                 kind = "upstream_not_connected",
-                "upstream reprobe found no existing connection"
+                "upstream reprobe found no existing connection; reconnecting"
             );
             return Heartbeat::Reconnect { previous: None };
         };
