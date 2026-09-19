@@ -20,15 +20,19 @@ use crate::{MCP_RELAY_CANCELLATION_REQUEST_METHOD, MCP_RELAY_CANCELLATION_TOKEN_
 
 use super::super::auth::configured_bearer_token;
 use super::super::http_client;
-use super::connect::configured_custom_headers;
 #[cfg(unix)]
-use super::connect::unix_socket_connect_path;
+use super::super::transport::unix_socket::LabbyUnixSocketHttpClient;
+use super::connect::configured_custom_headers;
 use super::helpers::{DEFAULT_REQUEST_TIMEOUT, max_response_bytes};
 
 #[derive(Clone)]
 enum HttpCancellationClient {
-    Plain(http_client::BodyCappedHttpClient),
-    Oauth(AuthClient<http_client::BodyCappedHttpClient>),
+    HttpPlain(http_client::BodyCappedHttpClient),
+    HttpOauth(AuthClient<http_client::BodyCappedHttpClient>),
+    #[cfg(unix)]
+    UnixPlain(LabbyUnixSocketHttpClient),
+    #[cfg(unix)]
+    UnixOauth(AuthClient<LabbyUnixSocketHttpClient>),
 }
 
 /// Sends explicit cancellation messages for HTTP and Unix-socket transports.
@@ -101,22 +105,36 @@ impl HttpCancellationSender {
     ) -> anyhow::Result<StreamableHttpPostResponse> {
         let custom_headers = cancellation_headers_for_message(&self.custom_headers, &message)?;
         let result = match &self.client {
-            HttpCancellationClient::Plain(client) => {
-                client
-                    .post_message(
-                        Arc::clone(&self.uri),
-                        message,
-                        None,
-                        self.auth_token.clone(),
-                        custom_headers,
-                    )
-                    .await
-            }
-            HttpCancellationClient::Oauth(client) => {
-                client
-                    .post_message(Arc::clone(&self.uri), message, None, None, custom_headers)
-                    .await
-            }
+            HttpCancellationClient::HttpPlain(client) => client
+                .post_message(
+                    Arc::clone(&self.uri),
+                    message,
+                    None,
+                    self.auth_token.clone(),
+                    custom_headers,
+                )
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string())),
+            HttpCancellationClient::HttpOauth(client) => client
+                .post_message(Arc::clone(&self.uri), message, None, None, custom_headers)
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string())),
+            #[cfg(unix)]
+            HttpCancellationClient::UnixPlain(client) => client
+                .post_message(
+                    Arc::clone(&self.uri),
+                    message,
+                    None,
+                    self.auth_token.clone(),
+                    custom_headers,
+                )
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string())),
+            #[cfg(unix)]
+            HttpCancellationClient::UnixOauth(client) => client
+                .post_message(Arc::clone(&self.uri), message, None, None, custom_headers)
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string())),
         };
         result.map_err(|error| anyhow::anyhow!("explicit HTTP cancellation failed: {error}"))
     }
@@ -192,42 +210,7 @@ pub(super) async fn build_http_cancellation_sender(
         HeaderValue::from_str(&ProtocolVersion::V_2026_07_28.to_string())?,
     );
 
-    let base_client = match transport {
-        Some(UpstreamTransport::Http) => match shared_client {
-            Some(client) => client.clone(),
-            None => {
-                drop(rustls::crypto::ring::default_provider().install_default());
-                reqwest::Client::builder()
-                    .timeout(DEFAULT_REQUEST_TIMEOUT)
-                    .build()?
-            }
-        },
-        Some(UpstreamTransport::UnixSocket) => {
-            #[cfg(unix)]
-            {
-                let socket_path = config.socket_path.as_deref().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "upstream {} Unix socket cancellation sender has no socket_path",
-                        config.name
-                    )
-                })?;
-                drop(rustls::crypto::ring::default_provider().install_default());
-                reqwest::Client::builder()
-                    .timeout(DEFAULT_REQUEST_TIMEOUT)
-                    .http1_only()
-                    .unix_socket(unix_socket_connect_path(socket_path))
-                    .build()?
-            }
-            #[cfg(not(unix))]
-            {
-                return Ok(None);
-            }
-        }
-        _ => return Ok(None),
-    };
-    let capped = http_client::BodyCappedHttpClient::new(base_client, max_response_bytes());
-
-    let (client, auth_token) = if config.oauth.is_some() {
+    let oauth = if config.oauth.is_some() {
         let subject = subject.ok_or_else(|| {
             anyhow::anyhow!(
                 "upstream {} requires an authenticated subject for cancellation",
@@ -240,21 +223,77 @@ pub(super) async fn build_http_cancellation_sender(
                 config.name
             )
         })?;
-        let auth_client = cache
-            .get_or_build_capped(config, subject, capped)
-            .await
-            .map_err(|error| anyhow::anyhow!("oauth_required: {error}"))?;
-        (HttpCancellationClient::Oauth(auth_client), None)
+        Some((subject, cache))
     } else {
-        let auth_token = config
+        None
+    };
+    let auth_token = if oauth.is_none() {
+        config
             .bearer_token_env
             .as_deref()
-            .and_then(configured_bearer_token);
-        (HttpCancellationClient::Plain(capped), auth_token)
+            .and_then(configured_bearer_token)
+    } else {
+        None
+    };
+
+    let (client, request_uri) = match transport {
+        Some(UpstreamTransport::Http) => {
+            let base_client = match shared_client {
+                Some(client) => client.clone(),
+                None => {
+                    drop(rustls::crypto::ring::default_provider().install_default());
+                    reqwest::Client::builder()
+                        .timeout(DEFAULT_REQUEST_TIMEOUT)
+                        .build()?
+                }
+            };
+            let capped = http_client::BodyCappedHttpClient::new(base_client, max_response_bytes());
+            let client = if let Some((subject, cache)) = oauth {
+                let auth_client = cache
+                    .get_or_build_capped(config, subject, capped)
+                    .await
+                    .map_err(|error| anyhow::anyhow!("oauth_required: {error}"))?;
+                HttpCancellationClient::HttpOauth(auth_client)
+            } else {
+                HttpCancellationClient::HttpPlain(capped)
+            };
+            (client, url.to_string())
+        }
+        Some(UpstreamTransport::UnixSocket) => {
+            #[cfg(unix)]
+            {
+                let socket_path = config.socket_path.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "upstream {} Unix socket cancellation sender has no socket_path",
+                        config.name
+                    )
+                })?;
+                let socket_client =
+                    LabbyUnixSocketHttpClient::new(socket_path, url, max_response_bytes());
+                let client = if let Some((subject, cache)) = oauth {
+                    let auth_client = cache
+                        .get_or_build_capped(config, subject, socket_client)
+                        .await
+                        .map_err(|error| anyhow::anyhow!("oauth_required: {error}"))?;
+                    HttpCancellationClient::UnixOauth(auth_client)
+                } else {
+                    HttpCancellationClient::UnixPlain(socket_client)
+                };
+                (
+                    client,
+                    super::super::transport::unix_socket::request_uri(url)?,
+                )
+            }
+            #[cfg(not(unix))]
+            {
+                return Ok(None);
+            }
+        }
+        _ => return Ok(None),
     };
 
     Ok(Some(HttpCancellationSender {
-        uri: Arc::from(url),
+        uri: Arc::from(request_uri),
         client,
         auth_token,
         custom_headers,
@@ -323,6 +362,127 @@ mod tests {
             Some(ProtocolVersion::V_2026_07_28.as_str())
         );
         assert!(wire.get("id").is_some());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unix_socket_relay_cancellation_round_trips_over_rmcp_transport() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        use tokio::net::UnixListener;
+
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let socket_path = tempdir.path().join("cancel.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind Unix socket");
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener
+                .accept()
+                .await
+                .expect("accept cancellation request");
+            let mut buffer = Vec::new();
+            let mut scratch = [0_u8; 4096];
+            let headers_end = loop {
+                if let Some(index) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+                    break index;
+                }
+                let read = stream.read(&mut scratch).await.expect("read headers");
+                assert!(read > 0, "connection closed before headers");
+                buffer.extend_from_slice(&scratch[..read]);
+            };
+            let body_start = headers_end + 4;
+            let headers = std::str::from_utf8(&buffer[..headers_end])
+                .expect("UTF-8 headers")
+                .to_owned();
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            while buffer.len() < body_start + content_length {
+                let read = stream.read(&mut scratch).await.expect("read body");
+                assert!(read > 0, "connection closed before body");
+                buffer.extend_from_slice(&scratch[..read]);
+            }
+
+            assert_eq!(
+                headers.lines().next(),
+                Some("POST /mcp?tenant=infra HTTP/1.1")
+            );
+            assert!(
+                headers.lines().any(|line| {
+                    line.split_once(':').is_some_and(|(name, value)| {
+                        name.eq_ignore_ascii_case("mcp-method")
+                            && value.trim() == MCP_RELAY_CANCELLATION_REQUEST_METHOD
+                    })
+                }),
+                "Mcp-Method header should identify the relay cancellation request"
+            );
+            assert!(
+                headers.lines().any(|line| {
+                    line.split_once(':').is_some_and(|(name, value)| {
+                        name.eq_ignore_ascii_case("mcp-protocol-version")
+                            && value.trim() == ProtocolVersion::V_2026_07_28.as_str()
+                    })
+                }),
+                "protocol version header should be preserved"
+            );
+
+            let request: serde_json::Value =
+                serde_json::from_slice(&buffer[body_start..body_start + content_length])
+                    .expect("JSON request");
+            assert_eq!(
+                request.get("method").and_then(serde_json::Value::as_str),
+                Some(MCP_RELAY_CANCELLATION_REQUEST_METHOD)
+            );
+            assert_eq!(
+                request
+                    .pointer("/params/token")
+                    .and_then(serde_json::Value::as_str),
+                Some("wire-cancel-token")
+            );
+            let id = request.get("id").cloned().expect("request id");
+            let response = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {"cancelled": true}
+            });
+            let body = serde_json::to_vec(&response).expect("serialize response");
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream
+                .write_all(head.as_bytes())
+                .await
+                .expect("write response headers");
+            stream.write_all(&body).await.expect("write response body");
+            stream.flush().await.expect("flush response");
+        });
+
+        let mut config = super::super::testsupport::test_upstream_config();
+        config.name = "unix-cancel".to_string();
+        config.transport = Some(UpstreamTransport::UnixSocket);
+        config.socket_path = Some(socket_path.to_string_lossy().into_owned());
+        config.url = Some("http://cancel.internal/mcp?tenant=infra".to_string());
+        config.validate().expect("valid Unix cancellation config");
+
+        let sender = build_http_cancellation_sender(&config, None, None, None)
+            .await
+            .expect("build Unix cancellation sender")
+            .expect("Unix cancellation sender");
+        assert!(
+            sender
+                .send_relay_token("downstream request cancelled", "wire-cancel-token")
+                .await
+                .expect("send relay cancellation"),
+            "server acknowledgement should be honored"
+        );
+
+        server.await.expect("Unix cancellation server task");
     }
 
     #[test]

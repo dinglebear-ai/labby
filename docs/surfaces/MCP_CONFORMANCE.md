@@ -32,7 +32,7 @@ An assertion about one role is not accepted as evidence for another role.
 | Component | Pin |
 |---|---|
 | MCP protocol | `2026-07-28` |
-| Labby rmcp dependency | fork `3.3.0`, Git revision `0e1184b47645d5eb64d1df3bb84067b1d4a53340` |
+| Labby rmcp dependency | fork `3.3.0`, Git revision `b19cfc03025047153fa283c0064c651b6e2f623e` |
 | rmcp conformance fixture | stock upstream `3.3.0` |
 | rmcp fixture tag commit | `3e636cab26c013eca5131103c03d20237f12c4df` |
 | MCP conformance package | `0.2.0-alpha.10` |
@@ -110,7 +110,8 @@ unroutable.
 |---|---|---|
 | Protocol lifecycle | Modern clients use stateless `server/discover`; legacy `initialize` is adapted only at the transport edge | discovery tests, bridge tests, and the multi-hop driver |
 | Stateless HTTP | No `Mcp-Session-Id`; `NeverSessionManager`; JSON responses | HTTP lifecycle tests and rmcp dated suite |
-| SEP-2243 headers | rmcp validates method/name headers before dispatch | HTTP method/name header tests |
+| Unix-socket upstreams | rmcp native Unix Streamable HTTP client; origin-form request targets; bounded JSON/SSE responses; HTTP-equivalent auth, lifecycle, cancellation, and graceful degradation | rmcp Unix transport suite plus Labby adapter/connect/cancellation regressions |
+| SEP-2243 headers | rmcp validates method/name headers before dispatch; Labby's HTTP and Unix adapters defensively replace stale method/name mirrors at the wire boundary | HTTP method/name header tests plus Unix adapter/wire tests |
 | Request envelopes | Metadata, input responses, request state, cancellation, and progress association survive proxy routes | request-envelope tests and relay module |
 | Cache hints | Dynamic Labby lists/reads emit `ttlMs: 0` with private scope | tool, prompt, resource, and server serialization tests |
 | MRTR | Tool, prompt, and resource intermediate results remain first-class | relay tests and multi-hop driver |

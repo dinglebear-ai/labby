@@ -3,11 +3,13 @@
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::Path;
+use std::sync::OnceLock;
 #[cfg(feature = "http-axum")]
 use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use hmac::{Hmac, KeyInit as _, Mac as _};
 use sha2::{Digest, Sha256};
 
 use crate::error::AuthError;
@@ -249,9 +251,43 @@ pub(crate) fn random_token(bytes: usize) -> Result<String, AuthError> {
     Ok(URL_SAFE_NO_PAD.encode(buf))
 }
 
+/// Stable, non-secret identifier for configuration and public metadata.
+///
+/// Do not use this for credentials, authorization codes, refresh tokens,
+/// OAuth state, passwords, or other secret material. Secret-bearing diagnostic
+/// identifiers must use `secret_diagnostic_id` so the logged value cannot be
+/// verified offline against guessed credentials.
 pub fn fingerprint(value: &str) -> String {
     let digest = Sha256::digest(value.as_bytes());
     truncated_fingerprint(&digest)
+}
+
+/// Process-local, domain-separated diagnostic identifier for secret material.
+///
+/// The HMAC key is generated once per process and is never persisted or logged.
+/// This intentionally makes the identifier unsuitable for durable storage while
+/// still allowing correlation within one process lifetime. If secure randomness
+/// is unavailable, diagnostics degrade to a constant marker rather than falling
+/// back to an offline-verifiable unkeyed hash.
+pub(crate) fn secret_diagnostic_id(label: &str, value: &str) -> String {
+    static KEY: OnceLock<Option<[u8; 32]>> = OnceLock::new();
+    let Some(key) = KEY
+        .get_or_init(|| {
+            let mut key = [0_u8; 32];
+            getrandom::fill(&mut key).ok().map(|()| key)
+        })
+        .as_ref()
+    else {
+        return "unavailable".to_string();
+    };
+
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts 32-byte keys");
+    mac.update(b"labby-auth-secret-diagnostic-v1\0");
+    mac.update(&(label.len() as u64).to_be_bytes());
+    mac.update(label.as_bytes());
+    mac.update(&(value.len() as u64).to_be_bytes());
+    mac.update(value.as_bytes());
+    truncated_fingerprint(&mac.finalize().into_bytes())
 }
 
 /// The one email normalization every allowlist, administrator, and verified
@@ -263,16 +299,13 @@ pub fn normalize_email(raw: &str) -> String {
     raw.trim().to_lowercase()
 }
 
-/// Stable correlation identifier for provider OAuth state in diagnostics.
+/// Process-local correlation identifier for provider OAuth state in diagnostics.
 ///
 /// Authelia's public OIDC nonce is derived from the same provider state. Keep
 /// this diagnostic namespace distinct so a redacted log identifier can never
 /// reproduce that raw protocol value.
 pub(crate) fn oauth_state_diagnostic_id(state: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(b"labby-oauth-state-diagnostic-v1\0");
-    hasher.update(state.as_bytes());
-    truncated_fingerprint(&hasher.finalize())
+    secret_diagnostic_id("oauth.state.v1", state)
 }
 
 #[cfg(any(feature = "http-axum", test))]
@@ -291,7 +324,7 @@ fn truncated_fingerprint(digest: &[u8]) -> String {
 #[cfg(test)]
 mod oauth_diagnostic_tests {
     #[test]
-    fn provider_nonce_and_log_identifier_are_stable_but_domain_separated() {
+    fn provider_nonce_and_log_identifier_are_process_stable_but_domain_separated() {
         let state = "provider-state";
         let nonce = super::oauth_provider_nonce(state);
         let diagnostic = super::oauth_state_diagnostic_id(state);
@@ -300,9 +333,15 @@ mod oauth_diagnostic_tests {
         assert_eq!(diagnostic, super::oauth_state_diagnostic_id(state));
         assert_ne!(diagnostic, state);
         assert_ne!(diagnostic, nonce);
+        assert_ne!(diagnostic, super::fingerprint(state));
         assert_ne!(
             diagnostic,
             super::oauth_state_diagnostic_id("different-provider-state")
+        );
+        assert_ne!(
+            super::secret_diagnostic_id("oauth.code.v1", state),
+            super::secret_diagnostic_id("oauth.refresh_token.v1", state),
+            "secret diagnostics must be domain separated"
         );
     }
 }
