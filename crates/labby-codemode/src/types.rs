@@ -267,9 +267,45 @@ impl CatalogDescriptor {
         }
     }
 
+    /// Build a metadata-only capability descriptor.
+    ///
+    /// Metadata descriptors participate in search/describe but deliberately
+    /// carry no callable signature or TypeScript declaration. The gateway is
+    /// responsible for enforcing authorization again when the capability is
+    /// retrieved or invoked through its native surface.
+    #[must_use]
+    pub fn metadata(
+        kind: CodeModeCatalogKind,
+        namespace: &str,
+        id: &str,
+        name: &str,
+        description: &str,
+        tags: Vec<String>,
+    ) -> Self {
+        debug_assert!(!matches!(
+            kind,
+            CodeModeCatalogKind::Tool | CodeModeCatalogKind::Snippet
+        ));
+        Self {
+            kind,
+            tools: None,
+            id: id.to_string(),
+            name: name.to_string(),
+            namespace: namespace.to_string(),
+            description: description.to_string(),
+            safety: None,
+            schema: None,
+            output_schema: None,
+            signature: String::new(),
+            dts: String::new(),
+            tags,
+            inputs: Vec::new(),
+        }
+    }
+
     /// Stable source-neutral path used by search/describe. Existing tool and
-    /// snippet paths are preserved byte-for-byte; future metadata-only kinds
-    /// live under a kind-prefixed namespace and gain no execution behavior.
+    /// snippet paths are preserved byte-for-byte; metadata-only kinds live
+    /// under a kind-prefixed namespace and gain no execution behavior.
     #[must_use]
     pub fn discovery_path(&self) -> String {
         match self.kind {
@@ -292,14 +328,32 @@ impl CatalogDescriptor {
         }
     }
 
-    /// Discovery helper text. Metadata-only kinds deliberately point back to
-    /// `describe`; they do not acquire callable/load behavior in this slice.
+    /// Discovery helper text. Metadata entries remain non-callable, but kinds
+    /// with explicit progressive-disclosure APIs point at the safe retrieval
+    /// operation rather than dead-ending at `describe()`.
     #[must_use]
     pub fn discovery_helper(&self) -> String {
+        let tagged_uri = || {
+            self.tags
+                .iter()
+                .find_map(|tag| tag.strip_prefix("uri:"))
+                .map(str::to_string)
+        };
         match self.kind {
             CodeModeCatalogKind::Tool => format!("codemode.{}", self.discovery_path()),
             CodeModeCatalogKind::Snippet => format!("codemode.run({:?}, input)", self.name),
-            _ => format!("codemode.describe({:?})", self.discovery_path()),
+            CodeModeCatalogKind::Resource => tagged_uri().map_or_else(
+                || format!("codemode.describe({:?})", self.discovery_path()),
+                |uri| format!("codemode.readResource({uri:?})"),
+            ),
+            CodeModeCatalogKind::Prompt => format!("codemode.getPrompt({:?}, args)", self.id),
+            CodeModeCatalogKind::Skill => tagged_uri().map_or_else(
+                || format!("codemode.describe({:?})", self.discovery_path()),
+                |uri| format!("codemode.getSkill({uri:?})"),
+            ),
+            CodeModeCatalogKind::Agent => {
+                format!("codemode.describe({:?})", self.discovery_path())
+            }
         }
     }
 
@@ -978,6 +1032,14 @@ pub enum CodeModeCaller {
         sub: Option<String>,
         context_token: String,
     },
+    /// Scoped caller carrying an opaque request-bound canonical Skills context.
+    /// Unlike `ScopedPrivate`, this token is strictly host-local and MUST NOT
+    /// be propagated to upstream MCP servers.
+    ScopedSkills {
+        capabilities: CodeModeCallerCapabilities,
+        sub: Option<String>,
+        skill_context_token: String,
+    },
     /// Scoped caller carrying a credential for one host-owned external
     /// provider. The kernel never interprets or propagates this credential.
     ScopedHostProvider {
@@ -985,6 +1047,17 @@ pub enum CodeModeCaller {
         sub: Option<String>,
         provider_token: String,
         provider_request_id: String,
+    },
+    /// Scoped caller carrying both a host-provider credential and an opaque
+    /// request-bound canonical Skills context. The provider credential is only
+    /// available to the host-provider adapter; the Skill token is host-local
+    /// and MUST NOT be propagated to upstream MCP servers.
+    ScopedHostProviderSkills {
+        capabilities: CodeModeCallerCapabilities,
+        sub: Option<String>,
+        provider_token: String,
+        provider_request_id: String,
+        skill_context_token: String,
     },
 }
 
@@ -1005,6 +1078,14 @@ impl fmt::Debug for CodeModeCaller {
                 .field("sub", sub)
                 .field("context_token", &"[REDACTED]")
                 .finish(),
+            Self::ScopedSkills {
+                capabilities, sub, ..
+            } => formatter
+                .debug_struct("ScopedSkills")
+                .field("capabilities", capabilities)
+                .field("sub", sub)
+                .field("skill_context_token", &"[REDACTED]")
+                .finish(),
             Self::ScopedHostProvider {
                 capabilities,
                 sub,
@@ -1016,6 +1097,19 @@ impl fmt::Debug for CodeModeCaller {
                 .field("sub", sub)
                 .field("provider_token", &"[REDACTED]")
                 .field("provider_request_id", provider_request_id)
+                .finish(),
+            Self::ScopedHostProviderSkills {
+                capabilities,
+                sub,
+                provider_request_id,
+                ..
+            } => formatter
+                .debug_struct("ScopedHostProviderSkills")
+                .field("capabilities", capabilities)
+                .field("sub", sub)
+                .field("provider_token", &"[REDACTED]")
+                .field("provider_request_id", provider_request_id)
+                .field("skill_context_token", &"[REDACTED]")
                 .finish(),
         }
     }
@@ -1081,7 +1175,9 @@ impl CodeModeCaller {
             Self::TrustedLocal => true,
             Self::Scoped { capabilities, .. }
             | Self::ScopedPrivate { capabilities, .. }
-            | Self::ScopedHostProvider { capabilities, .. } => capabilities.can_use_snippets,
+            | Self::ScopedSkills { capabilities, .. }
+            | Self::ScopedHostProvider { capabilities, .. }
+            | Self::ScopedHostProviderSkills { capabilities, .. } => capabilities.can_use_snippets,
         }
     }
 
@@ -1092,7 +1188,9 @@ impl CodeModeCaller {
             Self::TrustedLocal => true,
             Self::Scoped { capabilities, .. }
             | Self::ScopedPrivate { capabilities, .. }
-            | Self::ScopedHostProvider { capabilities, .. } => capabilities.can_execute,
+            | Self::ScopedSkills { capabilities, .. }
+            | Self::ScopedHostProvider { capabilities, .. }
+            | Self::ScopedHostProviderSkills { capabilities, .. } => capabilities.can_execute,
         }
     }
 
@@ -1103,7 +1201,9 @@ impl CodeModeCaller {
             Self::TrustedLocal => true,
             Self::Scoped { capabilities, .. }
             | Self::ScopedPrivate { capabilities, .. }
-            | Self::ScopedHostProvider { capabilities, .. } => capabilities.can_read,
+            | Self::ScopedSkills { capabilities, .. }
+            | Self::ScopedHostProvider { capabilities, .. }
+            | Self::ScopedHostProviderSkills { capabilities, .. } => capabilities.can_read,
         }
     }
 
@@ -1116,7 +1216,9 @@ impl CodeModeCaller {
             Self::TrustedLocal => true,
             Self::Scoped { capabilities, .. }
             | Self::ScopedPrivate { capabilities, .. }
-            | Self::ScopedHostProvider { capabilities, .. } => capabilities.is_admin,
+            | Self::ScopedSkills { capabilities, .. }
+            | Self::ScopedHostProvider { capabilities, .. }
+            | Self::ScopedHostProviderSkills { capabilities, .. } => capabilities.is_admin,
         }
     }
 
@@ -1127,7 +1229,9 @@ impl CodeModeCaller {
             Self::TrustedLocal => None,
             Self::Scoped { sub, .. }
             | Self::ScopedPrivate { sub, .. }
-            | Self::ScopedHostProvider { sub, .. } => sub.as_deref(),
+            | Self::ScopedSkills { sub, .. }
+            | Self::ScopedHostProvider { sub, .. }
+            | Self::ScopedHostProviderSkills { sub, .. } => sub.as_deref(),
         }
     }
 
@@ -1136,7 +1240,8 @@ impl CodeModeCaller {
     #[must_use]
     pub fn host_provider_token(&self) -> Option<&str> {
         match self {
-            Self::ScopedHostProvider { provider_token, .. } => Some(provider_token),
+            Self::ScopedHostProvider { provider_token, .. }
+            | Self::ScopedHostProviderSkills { provider_token, .. } => Some(provider_token),
             _ => None,
         }
     }
@@ -1146,6 +1251,10 @@ impl CodeModeCaller {
     pub fn host_provider_request_id(&self) -> Option<&str> {
         match self {
             Self::ScopedHostProvider {
+                provider_request_id,
+                ..
+            }
+            | Self::ScopedHostProviderSkills {
                 provider_request_id,
                 ..
             } => Some(provider_request_id),

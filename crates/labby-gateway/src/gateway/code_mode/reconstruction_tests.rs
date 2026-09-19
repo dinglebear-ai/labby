@@ -132,9 +132,14 @@ async fn cold_manager_reconstruction_preserves_only_explicitly_flushed_state() {
         .await;
     manager_a.record_code_mode_source(source("durable")).await;
 
-    let render_a = catalog_from_tools(&manager_a, vec![tool("before_restart", true)], false)
-        .await
-        .expect("render manager A catalog");
+    let render_a = catalog_from_tools(
+        &manager_a,
+        vec![tool("before_restart", true)],
+        false,
+        Vec::new(),
+    )
+    .await
+    .expect("render manager A catalog");
     assert_eq!(render_a.entries[0].name, "before_restart");
     assert_eq!(manager_a.code_mode_history_snapshot().await.len(), 1);
     assert!(
@@ -187,9 +192,14 @@ async fn cold_manager_reconstruction_preserves_only_explicitly_flushed_state() {
 
     // A changed live descriptor is rendered from Manager B's current input;
     // Manager A's descriptor and normalized safety facts are not reused.
-    let render_b = catalog_from_tools(&manager_b, vec![tool("after_restart", false)], false)
-        .await
-        .expect("render manager B catalog");
+    let render_b = catalog_from_tools(
+        &manager_b,
+        vec![tool("after_restart", false)],
+        false,
+        Vec::new(),
+    )
+    .await
+    .expect("render manager B catalog");
     assert_eq!(render_b.entries.len(), 1);
     assert_eq!(render_b.entries[0].name, "after_restart");
     assert!(!render_b.catalog_json.contains("before_restart"));

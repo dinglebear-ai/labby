@@ -22,6 +22,7 @@ use labby_runtime::gateway_config::UpstreamConfig;
 use super::super::types::UpstreamCapability;
 use super::PromptCatalogGeneration;
 use super::UpstreamPool;
+use super::capability::peer_declares_prompts;
 use super::capability_call::{CapabilityCallError, timed_capability_call};
 use super::capability_call::{
     RawCallOutcome, classify_timeout_result, service_error_affects_connection_health,
@@ -295,6 +296,16 @@ impl UpstreamPool {
                     continue;
                 }
             };
+            if !peer_declares_prompts(&peer) {
+                self.record_subject_optional_catalog(&name, subject, &peer, None, Some(Vec::new()))
+                    .await;
+                tracing::debug!(
+                    upstream = %name,
+                    phase = "oauth_initialize",
+                    "initialize did not advertise prompts; skipping subject-scoped prompts/list"
+                );
+                continue;
+            }
             let remaining = deadline_at.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
                 tracing::warn!(
@@ -340,6 +351,23 @@ impl UpstreamPool {
                         true,
                     );
                     upstream_prompts.push((name, exposed));
+                }
+                Err(catalog_pagination::CatalogPaginationError::Service(error))
+                    if super::logging::is_capability_unsupported(&error) =>
+                {
+                    self.record_subject_optional_catalog(
+                        &name,
+                        subject,
+                        &peer,
+                        None,
+                        Some(Vec::new()),
+                    )
+                    .await;
+                    tracing::debug!(
+                        upstream = %name,
+                        phase = "oauth_pagination",
+                        "subject-scoped upstream does not implement prompts/list — capability absent"
+                    );
                 }
                 Err(error) => {
                     tracing::warn!(
@@ -397,6 +425,15 @@ impl UpstreamPool {
             let Ok(peer) = result else {
                 continue;
             };
+            if !peer_declares_prompts(&peer) {
+                self.record_subject_optional_catalog(&name, subject, &peer, None, Some(Vec::new()))
+                    .await;
+                tracing::debug!(
+                    upstream = %name,
+                    "initialize did not advertise prompts; skipping prompt ownership discovery"
+                );
+                continue;
+            }
             match catalog_pagination::list_prompts(
                 &peer,
                 self.request_timeout,

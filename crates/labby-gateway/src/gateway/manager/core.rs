@@ -253,6 +253,7 @@ impl GatewayManager {
             )),
             execution_capability_publication: Arc::new(std::sync::RwLock::new(())),
             execution_capability_provider: None,
+            code_mode_skill_provider: None,
             agent_executions: Arc::new(agent_executions),
             agent_execution_cancellations: Arc::new(dashmap::DashMap::new()),
             code_mode_app_state: CodeModeAppState::default(),
@@ -333,6 +334,17 @@ impl GatewayManager {
             .as_ref()
             .ok_or(crate::core_provider::CoreProviderError::Configuration)?;
         provider.health().await
+    }
+
+    /// Attach the product-host provider for canonical Agent Skills used by
+    /// Code Mode discovery and explicit Skill reads.
+    #[must_use]
+    pub fn with_code_mode_skill_provider(
+        mut self,
+        provider: Arc<dyn crate::gateway::code_mode::skills::CodeModeSkillProvider>,
+    ) -> Self {
+        self.code_mode_skill_provider = Some(provider);
+        self
     }
 
     /// Override the subprocess used for Code Mode runner execution.

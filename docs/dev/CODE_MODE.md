@@ -1,7 +1,7 @@
 ---
 title: "Code Mode"
 created: "2026-07-30"
-updated: "2026-09-18"
+updated: "2026-09-19"
 ---
 
 # Code Mode
@@ -81,12 +81,19 @@ Inside the sandbox:
   MCP resources as `{ resources: [...] }`, including each exact read-ready `uri`.
 - `await codemode.readResource("lab://upstream/<name>/<uri>")` reads an
   upstream MCP resource and returns its normal `ReadResourceResult` object.
+- `await codemode.getPrompt("prompt::<upstream>::<name>", args)` resolves an
+  exposed MCP Prompt through the same exposure and OAuth-subject policy as the
+  native prompt surface.
+- `await codemode.listSkills()` lists caller-visible Agent Skills from the
+  canonical Skills registry.
+- `await codemode.getSkill("skill://...")` fetches one authorized Skill
+  entry, and `await codemode.readSkill("skill://...")` reads its verified
+  manifest-bound content.
 
 ### Capability catalog
 
 Code Mode discovery is represented by a source-neutral `CatalogDescriptor`,
-not a tool-specific descriptor. The catalog vocabulary is intentionally broader
-than the capabilities populated today:
+not a tool-specific descriptor. The stable catalog vocabulary is:
 
 - `tool`
 - `snippet`
@@ -95,11 +102,17 @@ than the capabilities populated today:
 - `skill`
 - `agent`
 
-This slice only populates the existing `tool` and `snippet` sources. The
-other kinds reserve stable discovery/filter vocabulary for later adapters; they
-do **not** add resource, prompt, Skill, or agent loading/execution behavior.
-Synthetic/future metadata kinds are describable without inheriting Tool
-dispatch or TypeScript-schema fetch behavior.
+The live catalog currently projects Tools, Snippets, exposed MCP Resources,
+exposed MCP Prompts, and caller-visible Agent Skills. Agent entries remain
+reserved for a later adapter.
+
+Resource, Prompt, and Skill descriptors are metadata-only catalog entries: they
+never become callable Tools and do not acquire Tool schemas. Progressive
+disclosure uses explicit retrieval APIs instead. Resource helpers point to
+`codemode.readResource(uri)`, Prompt helpers to
+`codemode.getPrompt(id, args)`, and Skill helpers to
+`codemode.getSkill(uri)`. `codemode.describe(...)` stays metadata-only
+and returns the namespace/name/helper/tags needed to continue without guessing.
 
 Catalog membership is discovery metadata, not authorization. Tool execution is
 still checked against the current `ToolScope` at dispatch time, and a
@@ -126,7 +139,9 @@ Use the configured upstream name, not its sanitized JavaScript namespace.
 the selected upstream lazily and uses the caller's scope, resource exposure
 policy, and OAuth subject. It does not connect unrelated upstreams. Listing
 uses the native MCP listing bounds and failure behavior; an empty list is not
-proof of provider health. Resource reads still enforce access at call time.
+proof of provider health. Resource reads still enforce access at call time. For
+OAuth upstreams, discovery and reads require a non-empty caller OAuth subject;
+a missing subject fails closed before opening a subject-scoped connection.
 
 ### Local State And Git Providers
 

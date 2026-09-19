@@ -2070,6 +2070,10 @@ async fn build_gateway_runtime(
         },
         gateway_runtime,
     )?;
+    #[cfg(feature = "skills")]
+    let gateway_manager = gateway_manager.with_code_mode_skill_provider(Arc::new(
+        crate::skills::code_mode::CanonicalCodeModeSkillProvider,
+    ));
 
     // Code Mode `openapi` provider: config-parse errors DO fail boot (bad TOML),
     // but spec-LOAD failures never do — `OpenApiRegistry::load` degrades + WARNs

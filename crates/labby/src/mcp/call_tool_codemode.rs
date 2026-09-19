@@ -715,6 +715,27 @@ impl LabMcpServer {
             "gateway codemode start"
         );
 
+        #[cfg(feature = "skills")]
+        let code_mode_skill_context_guard = if self.route_scope.exposes_skills() {
+            match self.skill_registry_context(context).await {
+                Ok(skill_context) => Some(crate::skills::facade::register_code_mode_skill_context(
+                    skill_context,
+                )),
+                Err(error) => {
+                    tracing::warn!(
+                        surface = "mcp",
+                        service = CODE_MODE_SERVICE,
+                        action = "skills.context",
+                        error = %error,
+                        "Code Mode will omit request-bound Skills because the canonical context could not be captured"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let caller = match auth {
             None => CodeModeCaller::TrustedLocal,
             Some(auth) => {
@@ -729,14 +750,47 @@ impl LabMcpServer {
                     self.request_host_provider_token(context),
                     self.request_host_provider_request_id(context),
                 ) {
-                    CodeModeCaller::ScopedHostProvider {
-                        capabilities,
-                        sub,
-                        provider_token: provider_token.to_string(),
-                        provider_request_id: provider_request_id.to_string(),
+                    #[cfg(feature = "skills")]
+                    if let Some(context_guard) = code_mode_skill_context_guard.as_ref() {
+                        CodeModeCaller::ScopedHostProviderSkills {
+                            capabilities,
+                            sub,
+                            provider_token: provider_token.to_string(),
+                            provider_request_id: provider_request_id.to_string(),
+                            skill_context_token: context_guard.token().to_string(),
+                        }
+                    } else {
+                        CodeModeCaller::ScopedHostProvider {
+                            capabilities,
+                            sub,
+                            provider_token: provider_token.to_string(),
+                            provider_request_id: provider_request_id.to_string(),
+                        }
+                    }
+                    #[cfg(not(feature = "skills"))]
+                    {
+                        CodeModeCaller::ScopedHostProvider {
+                            capabilities,
+                            sub,
+                            provider_token: provider_token.to_string(),
+                            provider_request_id: provider_request_id.to_string(),
+                        }
                     }
                 } else {
-                    CodeModeCaller::Scoped { capabilities, sub }
+                    #[cfg(feature = "skills")]
+                    if let Some(context_guard) = code_mode_skill_context_guard.as_ref() {
+                        CodeModeCaller::ScopedSkills {
+                            capabilities,
+                            sub,
+                            skill_context_token: context_guard.token().to_string(),
+                        }
+                    } else {
+                        CodeModeCaller::Scoped { capabilities, sub }
+                    }
+                    #[cfg(not(feature = "skills"))]
+                    {
+                        CodeModeCaller::Scoped { capabilities, sub }
+                    }
                 }
             }
         };
