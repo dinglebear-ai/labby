@@ -1,9 +1,10 @@
 /**
  * Shared Aurora design-system class-string constants.
  *
- * Source of truth for token naming:
- *   - CSS vars:    app/globals.css
- *   - Semantics:   docs/design/design-system-contract.md
+ * Labby consumer mapping for Aurora token naming:
+ *   - Cross-product canon: dinglebear-ai/aurora DESIGN.md + registry
+ *   - Local CSS values:    app/globals.css
+ *   - Local usage rules:   docs/design/design-system-contract.md
  *
  * One-way dependency rule:
  *   components/aurora/** must NOT import from components/ui/**
