@@ -968,6 +968,34 @@ mod tests {
     use labby_runtime::artifacts::LibraryOwnership;
     use labby_runtime::skills::wire::SkillResource;
 
+    #[test]
+    fn code_mode_skill_context_guard_is_unique_and_removes_context_on_drop() {
+        let guard = register_code_mode_skill_context(SkillRegistryContext::first_party_only());
+        let token = guard.token().to_string();
+        let second = register_code_mode_skill_context(SkillRegistryContext::first_party_only());
+
+        assert_ne!(
+            token,
+            second.token(),
+            "request context tokens must be unique"
+        );
+        assert!(
+            code_mode_skill_context(&token).is_some(),
+            "registered context must be resolvable while its guard is alive"
+        );
+
+        drop(guard);
+
+        assert!(
+            code_mode_skill_context(&token).is_none(),
+            "dropping the request guard must make the authorization context unusable"
+        );
+        assert!(
+            code_mode_skill_context(second.token()).is_some(),
+            "dropping one guard must not affect another request context"
+        );
+    }
+
     #[cfg(feature = "gateway")]
     #[test]
     fn unavailable_pool_marks_every_configured_upstream_incomplete() {

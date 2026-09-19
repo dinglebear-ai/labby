@@ -547,13 +547,17 @@ impl CodeModeHost for GatewayManager {
             if let Some(config) = self.upstream_config(upstream).await
                 && config.oauth.is_some()
             {
+                let subject = oauth_subject(caller)
+                    .filter(|subject| !subject.is_empty())
+                    .ok_or_else(|| ToolError::Sdk {
+                        sdk_kind: "forbidden".to_string(),
+                        message: format!(
+                            "resource upstream `{upstream}` requires a caller OAuth subject"
+                        ),
+                    })?;
                 Some(
-                    pool.subject_scoped_read_resource(
-                        &config,
-                        oauth_subject(caller).unwrap_or(""),
-                        &uri,
-                    )
-                    .await,
+                    pool.subject_scoped_read_resource(&config, subject, &uri)
+                        .await,
                 )
             } else {
                 pool.read_upstream_resource_allowed(&uri, allowed).await

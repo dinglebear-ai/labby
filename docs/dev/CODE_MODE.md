@@ -1,7 +1,7 @@
 ---
 title: "Code Mode"
 created: "2026-07-30"
-updated: "2026-09-18"
+updated: "2026-09-19"
 ---
 
 # Code Mode
@@ -121,32 +121,6 @@ Semantic embeddings are built over the rendered catalog generically, and
 semantic ranking applies the same visibility and kind filters as lexical
 search.
 
-### Capability catalog
-
-Code Mode discovery is represented by a source-neutral `CatalogDescriptor`,
-not a tool-specific descriptor. The catalog vocabulary is intentionally broader
-than the capabilities populated today:
-
-- `tool`
-- `snippet`
-- `resource`
-- `prompt`
-- `skill`
-- `agent`
-
-This slice only populates the existing `tool` and `snippet` sources. The
-other kinds reserve stable discovery/filter vocabulary for later adapters; they
-do **not** add resource, prompt, Skill, or agent loading/execution behavior.
-Synthetic/future metadata kinds are describable without inheriting Tool
-dispatch or TypeScript-schema fetch behavior.
-
-Catalog membership is discovery metadata, not authorization. Tool execution is
-still checked against the current `ToolScope` at dispatch time, and a
-`kinds` search filter only narrows results. It never grants a capability.
-Semantic embeddings are built over the rendered catalog generically, and
-semantic ranking applies the same visibility and kind filters as lexical
-search.
-
 Resource reads use the same route and caller scoping as Code Mode tool calls.
 Native `ui://` widget resources are also supported when the owning upstream is
 visible to the current run.
@@ -165,7 +139,9 @@ Use the configured upstream name, not its sanitized JavaScript namespace.
 the selected upstream lazily and uses the caller's scope, resource exposure
 policy, and OAuth subject. It does not connect unrelated upstreams. Listing
 uses the native MCP listing bounds and failure behavior; an empty list is not
-proof of provider health. Resource reads still enforce access at call time.
+proof of provider health. Resource reads still enforce access at call time. For
+OAuth upstreams, discovery and reads require a non-empty caller OAuth subject;
+a missing subject fails closed before opening a subject-scoped connection.
 
 ### Local State And Git Providers
 

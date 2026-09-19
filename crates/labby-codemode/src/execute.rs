@@ -1210,6 +1210,66 @@ mod tests {
             Ok(json!({ "contents": [{ "uri": uri }] }))
         }
 
+        async fn get_prompt(
+            &self,
+            prompt: String,
+            arguments: Value,
+            _caller: &CodeModeCaller,
+            _surface: CodeModeSurface,
+            _scope: &ToolScope,
+        ) -> Result<Value, ToolError> {
+            Ok(json!({
+                "prompt": prompt,
+                "arguments": arguments,
+                "messages": [{ "role": "user", "content": "fixture prompt" }],
+            }))
+        }
+
+        async fn list_skills(
+            &self,
+            _caller: &CodeModeCaller,
+            _surface: CodeModeSurface,
+            _scope: &ToolScope,
+        ) -> Result<Value, ToolError> {
+            Ok(json!({
+                "skills": [{
+                    "uri": "skill://labby/fixture",
+                    "name": "fixture",
+                    "description": "fixture skill",
+                }],
+            }))
+        }
+
+        async fn get_skill(
+            &self,
+            uri: String,
+            _caller: &CodeModeCaller,
+            _surface: CodeModeSurface,
+            _scope: &ToolScope,
+        ) -> Result<Value, ToolError> {
+            Ok(json!({
+                "skill": {
+                    "uri": uri,
+                    "name": "fixture",
+                },
+            }))
+        }
+
+        async fn read_skill(
+            &self,
+            uri: String,
+            _caller: &CodeModeCaller,
+            _surface: CodeModeSurface,
+            _scope: &ToolScope,
+        ) -> Result<Value, ToolError> {
+            Ok(json!({
+                "contents": [{
+                    "uri": uri,
+                    "text": "fixture body",
+                }],
+            }))
+        }
+
         async fn resolve_snippet(
             &self,
             _name: &str,
@@ -1374,6 +1434,104 @@ mod tests {
             result["contents"][0]["uri"],
             "lab://upstream/qa-vm-service/qa-vm-service://skill"
         );
+    }
+
+    #[tokio::test]
+    async fn dispatch_internal_prompt_and_skill_calls_round_trip_validated_inputs() {
+        let host = FixtureHost::new(Vec::new());
+        let broker = CodeModeBroker::new(Some(&host));
+        let scope = ToolScope::default();
+
+        let prompt = broker
+            .call_tool_id(
+                "__lab_internal::get_prompt",
+                json!({
+                    "prompt": "prompt::alpha::review",
+                    "arguments": { "tone": "strict", "max_items": 3 },
+                }),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &scope,
+                ExecCtx::none(),
+            )
+            .await
+            .expect("get_prompt must reach the host with validated arguments");
+        assert_eq!(prompt["prompt"], "prompt::alpha::review");
+        assert_eq!(
+            prompt["arguments"],
+            json!({ "tone": "strict", "max_items": 3 })
+        );
+        assert_eq!(prompt["messages"][0]["content"], "fixture prompt");
+
+        let skills = broker
+            .call_tool_id(
+                "__lab_internal::list_skills",
+                json!({}),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &scope,
+                ExecCtx::none(),
+            )
+            .await
+            .expect("list_skills must reach the host");
+        let uri = skills["skills"][0]["uri"]
+            .as_str()
+            .expect("fixture Skill URI")
+            .to_string();
+        assert_eq!(uri, "skill://labby/fixture");
+
+        let skill = broker
+            .call_tool_id(
+                "__lab_internal::get_skill",
+                json!({ "uri": uri }),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &scope,
+                ExecCtx::none(),
+            )
+            .await
+            .expect("get_skill must reach the host with the discovered URI");
+        assert_eq!(skill["skill"]["uri"], "skill://labby/fixture");
+
+        let read = broker
+            .call_tool_id(
+                "__lab_internal::read_skill",
+                json!({ "uri": "skill://labby/fixture/SKILL.md" }),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &scope,
+                ExecCtx::none(),
+            )
+            .await
+            .expect("read_skill must reach the host with the requested file URI");
+        assert_eq!(read["contents"][0]["uri"], "skill://labby/fixture/SKILL.md");
+        assert_eq!(read["contents"][0]["text"], "fixture body");
+
+        let invalid_prompt = broker
+            .call_tool_id(
+                "__lab_internal::get_prompt",
+                json!({ "prompt": "prompt::alpha::review", "arguments": [] }),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &scope,
+                ExecCtx::none(),
+            )
+            .await
+            .expect_err("non-object prompt arguments must fail before host dispatch");
+        assert_eq!(invalid_prompt.kind(), "invalid_param");
+
+        let missing_skill_uri = broker
+            .call_tool_id(
+                "__lab_internal::get_skill",
+                json!({ "uri": "   " }),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &scope,
+                ExecCtx::none(),
+            )
+            .await
+            .expect_err("blank Skill URI must fail before host dispatch");
+        assert_eq!(missing_skill_uri.kind(), "missing_param");
     }
 
     #[tokio::test]
