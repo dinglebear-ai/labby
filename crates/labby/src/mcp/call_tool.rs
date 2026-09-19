@@ -1784,11 +1784,14 @@ impl LabMcpServer {
                 unreachable!("Depot publishing is gateway-only")
             } else if cfg!(feature = "gateway")
                 && service == "snippets"
-                && action == "snippets.promote"
+                && matches!(
+                    action.as_str(),
+                    "snippets.exec" | "snippets.test" | "snippets.promote"
+                )
             {
                 #[cfg(feature = "gateway")]
                 return self
-                    .call_snippets_promote_impl(
+                    .call_snippets_contextual_impl(
                         &action, params, &args, start, &subject, actor_key, &context,
                     )
                     .await

@@ -57,7 +57,7 @@ fn default_code_mode_timeout_ms() -> u64 {
 }
 
 fn default_code_mode_max_source_bytes() -> usize {
-    128 * 1024
+    1024 * 1024
 }
 
 fn default_code_mode_max_response_bytes() -> usize {

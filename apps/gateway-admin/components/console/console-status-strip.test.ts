@@ -1,9 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import React from 'react'
 
 import { GatewayApiError } from '@/lib/api/gateway-client'
 import { Window } from 'happy-dom'
-import { classifyStatusFailure, deriveConsoleStatus, upstreamMetricColor } from './console-status-strip'
+import { installTestDom, renderClient } from '@/lib/testing/dom-test-utils'
+import { classifyStatusFailure, deriveConsoleStatus, upstreamMetricColor, useConsoleStatus } from './console-status-strip'
 
 test('console status derives connected upstream, session, and exposed-tool counts', () => {
   const snapshot = deriveConsoleStatus(
@@ -43,6 +45,30 @@ test('the up metric is healthy only when every enabled upstream is connected', (
   assert.equal(upstreamMetricColor({ connected: 3, total: 3 }), 'var(--aurora-success)')
   assert.equal(upstreamMetricColor({ connected: 2, total: 3 }), 'var(--aurora-warn)')
   assert.equal(upstreamMetricColor({ connected: 0, total: 0 }), 'var(--aurora-text-muted)')
+})
+
+test('disabled console status never polls protected gateway APIs', async () => {
+  installTestDom()
+  const originalFetch = globalThis.fetch
+  let fetchCount = 0
+  globalThis.fetch = (async () => {
+    fetchCount += 1
+    return new Response('{}', { status: 200 })
+  }) as typeof fetch
+
+  function Probe() {
+    const state = useConsoleStatus(false)
+    return React.createElement('span', { 'data-kind': state.kind }, state.kind)
+  }
+
+  const view = await renderClient(React.createElement(Probe))
+  try {
+    assert.equal(view.container.querySelector('[data-kind]')?.getAttribute('data-kind'), 'unauthorized')
+    assert.equal(fetchCount, 0)
+  } finally {
+    await view.unmount()
+    globalThis.fetch = originalFetch
+  }
 })
 
 test('missing admin scope hides the strip while other failures are surfaced with their reason', () => {

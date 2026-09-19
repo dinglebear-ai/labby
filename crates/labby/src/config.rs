@@ -1394,6 +1394,7 @@ pub struct AuthFileConfig {
 }
 
 const DEFAULT_CLIENT_REDIRECT_URI_PATTERNS: &[&str] = &[
+    "https://antigravity.google/oauth-callback",
     "https://chatgpt.com/aip/plugin-callback",
     "https://chat.openai.com/aip/plugin-callback",
     "https://chatgpt.com/connector/oauth/*",
@@ -3960,6 +3961,7 @@ future = "keep"
         assert_eq!(
             resolved.allowed_client_redirect_uris,
             vec![
+                "https://antigravity.google/oauth-callback".to_string(),
                 "https://chatgpt.com/aip/plugin-callback".to_string(),
                 "https://chat.openai.com/aip/plugin-callback".to_string(),
                 "https://chatgpt.com/connector/oauth/*".to_string(),
@@ -4623,7 +4625,7 @@ url = "https://acme.example.com/mcp"
     fn code_mode_is_root_level_config_with_default_limits() {
         let default_cfg = LabConfig::default();
         assert_eq!(default_cfg.code_mode.timeout_ms, 30_000);
-        assert_eq!(default_cfg.code_mode.max_source_bytes, 128 * 1024);
+        assert_eq!(default_cfg.code_mode.max_source_bytes, 1024 * 1024);
         assert_eq!(default_cfg.code_mode.max_response_bytes, 24 * 1024);
         assert_eq!(default_cfg.code_mode.max_response_tokens, 6000);
 

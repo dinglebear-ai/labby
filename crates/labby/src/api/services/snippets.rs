@@ -77,7 +77,19 @@ async fn handle(
     let request_id = headers.get("x-request-id").and_then(|v| v.to_str().ok());
     require_snippets_admin(&req.action, request_id, auth.as_ref())?;
     let manager = state.gateway_manager.clone();
-    let promotion_context = crate::dispatch::snippets::dispatch::SnippetPromotionContext {
+    let execution_caller = auth.as_ref().map_or(
+        crate::dispatch::gateway::code_mode::CodeModeCaller::TrustedLocal,
+        |value| crate::dispatch::gateway::code_mode::CodeModeCaller::Scoped {
+            capabilities: labby_codemode::CodeModeCallerCapabilities {
+                can_read: true,
+                can_execute: true,
+                can_use_snippets: true,
+                is_admin: true,
+            },
+            sub: Some(value.0.sub.clone()),
+        },
+    );
+    let dispatch_context = crate::dispatch::snippets::dispatch::SnippetDispatchContext {
         actor_key: auth
             .as_ref()
             .and_then(|value| value.0.actor_key.as_deref())
@@ -86,6 +98,9 @@ async fn handle(
         route_scope: "root".to_string(),
         capability_filter_fingerprint: crate::dispatch::gateway::code_mode::ToolScope::default()
             .fingerprint(),
+        execution_scope: crate::dispatch::gateway::code_mode::ToolScope::default(),
+        execution_caller,
+        execution_surface: crate::dispatch::gateway::code_mode::CodeModeSurface::Api,
     };
 
     handle_action_with_meta(
@@ -106,13 +121,11 @@ async fn handle(
                 let manager = manager
                     .as_ref()
                     .ok_or_else(|| ToolError::internal_message("gateway manager not wired"))?;
-                let promotion_context =
-                    (action == "snippets.promote").then(|| promotion_context.clone());
                 return crate::dispatch::snippets::dispatch::dispatch_with_manager_and_context(
                     manager,
                     &action,
                     params,
-                    promotion_context,
+                    Some(dispatch_context.clone()),
                 )
                 .await;
             }
