@@ -3296,7 +3296,7 @@ dependencies = [
 [[package]]
 name = "rmcp"
 version = "3.3.0"
-source = "git+https://github.com/dinglebear-ai/rust-sdk.git?rev=0e1184b47645d5eb64d1df3bb84067b1d4a53340#0e1184b47645d5eb64d1df3bb84067b1d4a53340"
+source = "git+https://github.com/dinglebear-ai/rust-sdk.git?rev=b19cfc03025047153fa283c0064c651b6e2f623e#b19cfc03025047153fa283c0064c651b6e2f623e"
 dependencies = [
  "async-trait",
  "base64 0.23.0",
@@ -3306,6 +3306,8 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
+ "hyper",
+ "hyper-util",
  "indexmap",
  "oauth2",
  "pastey",
@@ -3331,7 +3333,7 @@ dependencies = [
 [[package]]
 name = "rmcp-macros"
 version = "3.3.0"
-source = "git+https://github.com/dinglebear-ai/rust-sdk.git?rev=0e1184b47645d5eb64d1df3bb84067b1d4a53340#0e1184b47645d5eb64d1df3bb84067b1d4a53340"
+source = "git+https://github.com/dinglebear-ai/rust-sdk.git?rev=b19cfc03025047153fa283c0064c651b6e2f623e#b19cfc03025047153fa283c0064c651b6e2f623e"
 dependencies = [
  "darling",
  "proc-macro2",

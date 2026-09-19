@@ -125,6 +125,12 @@ peer_uid = 1000
   combined with bearer or OAuth, and is interpreted in the listener's user
   namespace. A Unix listener with none of the three is refused at startup.
 
+This section describes Labby **serving** MCP over a Unix socket. Gateway
+**upstreams** that Labby connects to over Unix sockets use rmcp's native
+`UnixSocketHttpClient` and the same bounded discovery, auth, cancellation,
+response-limit, health, and reprobe policies as other gateway transports. See
+[UPSTREAM.md — Unix-Socket Upstream](../services/UPSTREAM.md#unix-socket-upstream).
+
 ## Authentication
 
 - Operator/admin routes use the configured bearer or OAuth mode.

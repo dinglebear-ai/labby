@@ -7,13 +7,7 @@
 //! call them across the module boundary.
 
 use std::collections::HashMap;
-#[cfg(target_os = "linux")]
-use std::ffi::OsString;
 use std::future::Future;
-#[cfg(target_os = "linux")]
-use std::os::unix::ffi::OsStringExt as _;
-#[cfg(unix)]
-use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{
     Arc,
@@ -29,7 +23,7 @@ use rmcp::model::{
 };
 use rmcp::service::{ClientServiceExt, RawRxJsonRpcMessage, RxJsonRpcMessage, TxJsonRpcMessage};
 use rmcp::transport::streamable_http_client::{
-    StreamableHttpClientTransportConfig, StreamableHttpClientWorker,
+    StreamableHttpClientTransport, StreamableHttpClientTransportConfig, StreamableHttpClientWorker,
 };
 use rmcp::transport::{Transport, TransportAdapterIdentity, WorkerTransport};
 use rmcp::{ClientHandler, RoleClient};
@@ -39,6 +33,8 @@ use labby_runtime::gateway_config::{UpstreamConfig, UpstreamLifecycle, UpstreamT
 
 use super::super::auth::{configured_bearer_token, websocket_authorization_header};
 use super::super::http_client;
+#[cfg(unix)]
+use super::super::transport::unix_socket::{LabbyUnixSocketHttpClient, request_uri};
 use super::super::transport::websocket::{
     WebSocketTransportConfig, connect as connect_websocket_transport, parse_ws_url,
 };
@@ -488,22 +484,6 @@ pub(super) async fn connect_upstream(
 }
 
 #[cfg(unix)]
-pub(super) fn unix_socket_connect_path(path: &str) -> PathBuf {
-    #[cfg(target_os = "linux")]
-    if let Some(name) = path
-        .as_bytes()
-        .strip_prefix(b"@")
-        .filter(|name| !name.is_empty())
-    {
-        let mut address = Vec::with_capacity(name.len() + 1);
-        address.push(0);
-        address.extend_from_slice(name);
-        return PathBuf::from(OsString::from_vec(address));
-    }
-    PathBuf::from(path)
-}
-
-#[cfg(unix)]
 async fn connect_unix_socket_upstream<H: ClientHandler + Clone>(
     url: &str,
     config: &UpstreamConfig,
@@ -519,33 +499,175 @@ async fn connect_unix_socket_upstream<H: ClientHandler + Clone>(
         )
     })?;
 
-    // Keep the existing BodyCappedHttpClient and rmcp worker path intact. The
-    // only change is reqwest's connector, so OAuth, bearer headers, lifecycle
-    // fallback, JSON body limits, and per-event SSE limits stay identical to
-    // HTTP/TCP upstreams.
-    drop(rustls::crypto::ring::default_provider().install_default());
-    let client = reqwest::Client::builder()
-        .connect_timeout(DEFAULT_REQUEST_TIMEOUT)
-        .http1_only()
-        .unix_socket(unix_socket_connect_path(socket_path))
-        .build()
-        .map_err(|error| {
-            anyhow::anyhow!(
-                "failed to build Unix socket client for upstream {}: {error}",
-                config.name
-            )
-        })?;
+    if config.lifecycle == Some(UpstreamLifecycle::Initialize) {
+        return connect_unix_socket_upstream_once(
+            url,
+            socket_path,
+            config,
+            subject,
+            oauth_client_cache,
+            handler,
+            LifecycleAttempt::LegacyInitialize,
+            notification_interceptor,
+        )
+        .await;
+    }
 
-    connect_http_upstream_with_notifications(
+    match connect_unix_socket_upstream_once(
         url,
+        socket_path,
         config,
         subject,
         oauth_client_cache,
-        Some(&client),
-        handler,
-        notification_interceptor,
+        handler.clone(),
+        LifecycleAttempt::Modern,
+        notification_interceptor.clone(),
     )
     .await
+    {
+        Ok(connection) => Ok(connection),
+        Err(error) => {
+            let Some(attempt) = compatibility_retry(&error, LifecycleTransport::Network) else {
+                return Err(error);
+            };
+            log_fallback(&config.name, "unix_socket", attempt, &error);
+            connect_unix_socket_upstream_once(
+                url,
+                socket_path,
+                config,
+                subject,
+                oauth_client_cache,
+                handler,
+                attempt,
+                notification_interceptor,
+            )
+            .await
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn connect_unix_socket_upstream_once<H: ClientHandler>(
+    url: &str,
+    socket_path: &str,
+    config: &UpstreamConfig,
+    subject: Option<&str>,
+    oauth_client_cache: Option<&OauthClientCache>,
+    handler: H,
+    lifecycle: LifecycleAttempt,
+    notification_interceptor: Option<RelayNotificationInterceptor>,
+) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
+    tracing::info!(
+        surface = "dispatch", service = "upstream.pool",
+        upstream = %config.name, transport = "unix_socket",
+        action = "upstream.connect.start", target = %upstream_target_redacted(config),
+        "upstream connect start",
+    );
+
+    let request_uri = request_uri(url).map_err(|error| {
+        anyhow::anyhow!(
+            "invalid Unix socket upstream URL for {}: {error}",
+            config.name
+        )
+    })?;
+    let mut transport_config = StreamableHttpClientTransportConfig::with_uri(request_uri);
+    transport_config.custom_headers = configured_custom_headers(config)?;
+    let socket_client =
+        LabbyUnixSocketHttpClient::new(socket_path, url, max_transport_response_bytes());
+
+    let service = if config.oauth.is_some() {
+        let subject = subject.ok_or_else(|| {
+            anyhow::anyhow!(
+                "upstream {} requires an authenticated subject; discovery must be request-scoped",
+                config.name
+            )
+        })?;
+        let cache = oauth_client_cache.ok_or_else(|| {
+            anyhow::anyhow!(
+                "upstream {} requires OAuth but no auth client cache is registered",
+                config.name
+            )
+        })?;
+        let auth_client = cache
+            .get_or_build_capped(config, subject, socket_client)
+            .await
+            .map_err(|error| anyhow::anyhow!("oauth_required: {error}"))?;
+        let transport = StreamableHttpClientTransport::with_client(auth_client, transport_config);
+        let transport =
+            OrderedRelayNotificationTransport::new(transport, notification_interceptor.clone());
+        match lifecycle {
+            LifecycleAttempt::Modern => UpstreamClientService::Direct(
+                handler
+                    .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(
+                        transport,
+                        lifecycle.mode(),
+                    )
+                    .await?,
+            ),
+            LifecycleAttempt::LegacyInitialize => UpstreamClientService::Versioned(
+                VersionedClientHandler::new(handler, legacy_protocol_version())
+                    .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(
+                        transport,
+                        lifecycle.mode(),
+                    )
+                    .await?,
+            ),
+        }
+    } else {
+        if let Some(ref env_name) = config.bearer_token_env {
+            if let Some(token) = configured_bearer_token(env_name) {
+                transport_config.auth_header = Some(token);
+            } else {
+                tracing::warn!(
+                    upstream = %config.name,
+                    env_var = %env_name,
+                    "bearer_token_env configured but env var not set"
+                );
+            }
+        }
+        let transport = StreamableHttpClientTransport::with_client(socket_client, transport_config);
+        let transport = OrderedRelayNotificationTransport::new(transport, notification_interceptor);
+        match lifecycle {
+            LifecycleAttempt::Modern => UpstreamClientService::Direct(
+                handler
+                    .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(
+                        transport,
+                        lifecycle.mode(),
+                    )
+                    .await?,
+            ),
+            LifecycleAttempt::LegacyInitialize => UpstreamClientService::Versioned(
+                VersionedClientHandler::new(handler, legacy_protocol_version())
+                    .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(
+                        transport,
+                        lifecycle.mode(),
+                    )
+                    .await?,
+            ),
+        }
+    };
+
+    let peer = service.peer().clone();
+    let tools = catalog_pagination::list_tools(&peer, DISCOVERY_TIMEOUT, MAX_UPSTREAM_TOOLS)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.bounded_text()))?;
+    tracing::info!(
+        surface = "dispatch", service = "upstream.pool",
+        upstream = %config.name, transport = "unix_socket",
+        action = "upstream.connect.finish", tool_count = tools.len(),
+        "upstream connect finish",
+    );
+
+    Ok((
+        UpstreamConnection {
+            _client_service: service,
+            _server_task: None,
+            peer,
+            runtime: UpstreamRuntimeMetadata::default(),
+            incarnation: None,
+        },
+        tools,
+    ))
 }
 
 #[cfg(not(unix))]

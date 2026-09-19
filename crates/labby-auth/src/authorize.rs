@@ -32,7 +32,10 @@ use crate::types::{
     NativeAuthorizationResultRow, NativeAuthorizationStartResponse, NativeCallbackQuery,
     NativePollQuery, NativePollResponse,
 };
-use crate::util::{expires_at, fingerprint, now_unix, oauth_state_diagnostic_id, random_token};
+use crate::util::{
+    expires_at, fingerprint, now_unix, oauth_state_diagnostic_id, random_token,
+    secret_diagnostic_id,
+};
 
 /// Peer address used by OAuth callback and native-poll admission control.
 pub struct RemoteAddr(pub SocketAddr);
@@ -88,7 +91,7 @@ pub async fn authorize(
 ) -> Result<Response, AuthError> {
     state.check_authorize_rate_limit(remote_ip(addr)).await?;
     state.ensure_pending_oauth_state_capacity().await?;
-    let client_state_id = fingerprint(&query.state);
+    let client_state_id = secret_diagnostic_id("authorize.client_state.v1", &query.state);
     let client = crate::cimd::resolve_client(&state, &query.client_id)
         .await?
         .ok_or_else(|| {
@@ -474,7 +477,7 @@ pub async fn callback(
         client_id = %fingerprint(&request.client_id),
         redirect_uri_id = %fingerprint(&request.redirect_uri),
         oauth_state_id = %oauth_state_id,
-        client_state_id = %fingerprint(&request.client_state),
+        client_state_id = %secret_diagnostic_id("authorize.client_state.v1", &request.client_state),
         resource_id = %fingerprint(&request.resource),
         scope_id = %fingerprint(&request.scope),
         "oauth callback state redeemed"
@@ -859,7 +862,7 @@ async fn finish_local_authorization(
             provider_binding.clone(),
         )
         .await?;
-    let auth_code_id = fingerprint(&auth_code);
+    let auth_code_id = secret_diagnostic_id("authorize.auth_code.v1", &auth_code);
     info!(
         auth_code_id = %auth_code_id,
         oauth_state_id = %oauth_state_id,

@@ -19,7 +19,7 @@ Dependency direction:
 | `upstream.rs` | Module entrypoint. |
 | `pool.rs` | Coordinator (~160 LOC): `UpstreamPool` / `UpstreamConnection` struct defs, `InProcessConnector`/`InProcessRegistration` types, builders (`new`/`with_*`/`Default`), `mod` declarations, and `pub`/`pub(crate)` re-exports. **No business logic** — all method bodies live in the `pool/` child modules as additional `impl UpstreamPool` blocks. |
 | `types.rs` | `UpstreamEntry`, `UpstreamTool`, `UpstreamHealth` types and the `CIRCUIT_BREAKER_THRESHOLD` / `REPROBE_INTERVAL` constants. |
-| `auth.rs`, `http_client.rs`, `process_guard.rs`, `transport.rs` | Bearer/websocket auth, body-capped HTTP client, process-group guard, websocket transport. |
+| `auth.rs`, `http_client.rs`, `process_guard.rs`, `transport.rs` | Bearer/websocket auth, body-capped HTTP client, process-group guard, and transport modules. `transport/websocket.rs` owns WebSocket I/O; `transport/unix_socket.rs` wraps rmcp's native Unix Streamable HTTP client with Labby's established header/response-budget policy only. |
 
 ### `pool/` child modules
 
@@ -113,6 +113,7 @@ follow-up splits. All new files added to `pool/` must stay under 500 LOC.
   no further PATH resolution is performed at spawn time. See
   `src/security/spawn_guard.rs` for the canonical comment.
 - Do not import API-specific types (router, state) from `api/`.
+- **Unix upstream socket I/O belongs to rmcp.** `transport/unix_socket.rs` must remain a thin policy adapter around rmcp's `UnixSocketHttpClient`; do not add a second `reqwest::ClientBuilder::unix_socket(...)`, duplicate abstract-socket/path conversion, or custom HTTP framing in Labby. Normal upstream RPCs and the relay-cancellation side channel must use the same adapter so Host/request-target handling, response caps, SSE limits, auth, and SEP-2243 header behavior cannot drift apart.
 - The pool is constructed in `cli/serve.rs` and injected into `AppState` and `LabMcpServer`.
 - Circuit breaker state is internal to the pool. Surfaces call `record_failure()` and `record_success()`. Open circuits use exponential quarantine, and every failed reprobe resets the quarantine clock.
 - A caller-attributed tool call must carry the downstream cancellation token. `timed_capability_call_with_timeout` takes `cancel: Option<&CancellationToken>` and abandons both the bulkhead wait and the RPC when it fires, letting the RPC's own guard tell the upstream to stop. `None` is correct only for fan-out/discovery passes, which have no downstream request to withdraw from. Do not add a parallel `*_cancellable` method — thread the token through the existing signature.

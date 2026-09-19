@@ -137,7 +137,9 @@ Two classifiers look at raw upstream transport failures, on purpose:
 - `classify_upstream_error`
   (`crates/labby-gateway/src/upstream/pool/helpers.rs`) feeds the circuit
   breaker, backoff, and operator logs with `auth_failed` / `auth_required` /
-  `timeout` / `dns_error` / `connection_refused` / `connection_error`.
+  `timeout` / `response_too_large` / `dns_error` / `connection_refused` /
+  `connection_error`. The response-limit kind is transport-neutral: HTTP/TCP
+  and rmcp Unix-socket clients must preserve the same stable classification.
 - `upstream_failure_kind` (`crates/labby/src/mcp/call_tool_upstream.rs`) runs
   on the live MCP call path and emits the model-facing kind.
   `oauth_needs_reauth` is a **deliberate refinement of `auth_failed`** there:
