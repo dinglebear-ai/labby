@@ -958,7 +958,7 @@ impl GatewayManager {
     pub(crate) async fn ensure_embeddings_for_fingerprint(
         &self,
         fingerprint: &str,
-        entries: &[crate::gateway::code_mode::ToolDescriptor],
+        entries: &[crate::gateway::code_mode::CatalogDescriptor],
     ) -> Vec<(String, Vec<f32>)> {
         let config = self.code_mode_config().await.semantic_search;
         if !config.is_configured() || entries.is_empty() {
@@ -1068,7 +1068,7 @@ impl GatewayManager {
         &self,
         fingerprint: &str,
     ) -> Option<(
-        Arc<[crate::gateway::code_mode::ToolDescriptor]>,
+        Arc<[crate::gateway::code_mode::CatalogDescriptor]>,
         Arc<str>,
         usize,
     )> {

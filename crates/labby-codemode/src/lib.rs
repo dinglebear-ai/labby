@@ -10,7 +10,7 @@
 //!
 //! Vocabulary is deliberately host-source-neutral: a tool is an opaque `id`
 //! (`<namespace>::<tool>`) plus JSON params; a tool descriptor is the neutral
-//! [`ToolDescriptor`]; the visibility filter is the neutral [`ToolScope`].
+//! [`CatalogDescriptor`]; the visibility filter is the neutral [`ToolScope`].
 //! The only exception is the runner-reserved local `state`/`git` provider set:
 //! those namespaces are not host upstream tools and are injected only for
 //! unscoped admin/trusted-local callers. Scoped runs must not discover or
@@ -73,7 +73,8 @@ pub use discovery::{
     CodeModeDescribeResponse, CodeModeSearchHit, CodeModeSearchResponse,
     DESCRIBE_RESPONSE_MAX_BYTES, DESCRIPTION_MAX_BYTES, DTS_MAX_BYTES, QUERY_MAX_BYTES,
     SEARCH_RESPONSE_MAX_BYTES, SIGNATURE_MAX_BYTES, TAG_MAX_BYTES, TAGS_MAX, TARGET_MAX_BYTES,
-    describe_visible_tool, search_visible_tools,
+    describe_visible_catalog, describe_visible_tool, search_visible_catalog,
+    search_visible_catalog_with_kinds, search_visible_tools,
 };
 /// Single source of truth for the discovery-catalog scope formulas. Hosts
 /// recomputing the sandbox's scope-filtered entry set (e.g. a gateway's
@@ -99,10 +100,11 @@ pub use schema::validate_code_mode_params_against_schema;
 pub use shape::CodeModeResultShapeMetadata;
 pub use trace::{code_mode_execute_trace, redact_trace_value};
 pub use types::{
-    CodeModeCaller, CodeModeCallerCapabilities, CodeModeCatalogKind, CodeModeExecutedCall,
-    CodeModeExecutionError, CodeModeExecutionResponse, CodeModeExecutionSource, CodeModeHistory,
-    CodeModeHistoryEntry, CodeModeHistoryKind, CodeModeSnippetInputEntry, CodeModeSourceLookup,
-    CodeModeSourceStore, CodeModeSurface, CodeModeToolAccess, CodeModeToolSafety, ToolDescriptor,
-    ToolScope, UiLink, destructive_permitted, namespaced_tool_id, split_namespaced_id,
+    CatalogDescriptor, CodeModeCaller, CodeModeCallerCapabilities, CodeModeCatalogKind,
+    CodeModeExecutedCall, CodeModeExecutionError, CodeModeExecutionResponse,
+    CodeModeExecutionSource, CodeModeHistory, CodeModeHistoryEntry, CodeModeHistoryKind,
+    CodeModeSnippetInputEntry, CodeModeSourceLookup, CodeModeSourceStore, CodeModeSurface,
+    CodeModeToolAccess, CodeModeToolSafety, ToolScope, UiLink, destructive_permitted,
+    namespaced_tool_id, split_namespaced_id,
 };
 pub use util::serialized_catalog_size;
