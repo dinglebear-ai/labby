@@ -213,8 +213,20 @@ fn apply_custom_headers(
     Ok(builder)
 }
 
-fn parse_json_rpc_error(body: &[u8]) -> Option<ServerJsonRpcMessage> {
-    match serde_json::from_slice::<ServerJsonRpcMessage>(body) {
+fn jsonrpc_message_id(message: &impl serde::Serialize) -> Option<serde_json::Value> {
+    serde_json::to_value(message).ok()?.get("id").cloned()
+}
+
+fn parse_json_rpc_error(
+    body: &[u8],
+    expected_id: Option<&serde_json::Value>,
+) -> Option<ServerJsonRpcMessage> {
+    let value = serde_json::from_slice::<serde_json::Value>(body).ok()?;
+    if value.get("id") != expected_id {
+        return None;
+    }
+
+    match serde_json::from_value::<ServerJsonRpcMessage>(value) {
         Ok(message @ JsonRpcMessage::Error(_)) => Some(message),
         _ => None,
     }
@@ -692,6 +704,7 @@ impl StreamableHttpClient for BodyCappedHttpClient {
         auth_token: Option<String>,
         mut custom_headers: HashMap<HeaderName, HeaderValue>,
     ) -> Result<StreamableHttpPostResponse, StreamableHttpError<Self::Error>> {
+        let expected_response_id = jsonrpc_message_id(&message);
         let mut request = self
             .inner
             .post(uri.as_ref())
@@ -789,7 +802,8 @@ impl StreamableHttpClient for BodyCappedHttpClient {
             if content_type
                 .as_deref()
                 .is_some_and(|ct| ct.as_bytes().starts_with(JSON_MIME_TYPE.as_bytes()))
-                && let Some(message) = parse_json_rpc_error(&body_bytes)
+                && let Some(message) =
+                    parse_json_rpc_error(&body_bytes, expected_response_id.as_ref())
             {
                 return Ok(StreamableHttpPostResponse::Json(
                     message,
@@ -1309,6 +1323,93 @@ mod tests {
             .post_message(uri, jsonrpc_request(), None, None, HashMap::new())
             .await;
         assert!(result.is_ok(), "small response should succeed: {result:?}");
+    }
+
+    #[tokio::test]
+    async fn non_success_jsonrpc_error_with_matching_id_is_delivered() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/mcp"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "error": {"code": -32603, "message": "upstream failed"}
+            })))
+            .mount(&server)
+            .await;
+
+        let result = build(1024)
+            .post_message(
+                format!("{}/mcp", server.uri()).into(),
+                jsonrpc_request(),
+                None,
+                None,
+                HashMap::new(),
+            )
+            .await;
+
+        assert!(
+            matches!(result, Ok(StreamableHttpPostResponse::Json(_, _))),
+            "matching JSON-RPC error must resolve the pending request: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_success_jsonrpc_error_with_mismatched_id_is_terminal_transport_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/mcp"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 99,
+                "error": {"code": -32603, "message": "wrong request"}
+            })))
+            .mount(&server)
+            .await;
+
+        let error = build(1024)
+            .post_message(
+                format!("{}/mcp", server.uri()).into(),
+                jsonrpc_request(),
+                None,
+                None,
+                HashMap::new(),
+            )
+            .await
+            .expect_err("mismatched JSON-RPC errors must fail the send immediately");
+
+        assert!(error.to_string().contains("HTTP 500"), "got: {error}");
+    }
+
+    #[tokio::test]
+    async fn non_success_jsonrpc_error_with_null_id_is_terminal_transport_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/mcp"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": null,
+                "error": {
+                    "code": -32603,
+                    "message": "Internal error",
+                    "data": {"reason": "response_too_large", "limit": 64_000_000}
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let error = build(1024)
+            .post_message(
+                format!("{}/mcp", server.uri()).into(),
+                jsonrpc_request(),
+                None,
+                None,
+                HashMap::new(),
+            )
+            .await
+            .expect_err("uncorrelated JSON-RPC errors must fail the send immediately");
+
+        assert!(error.to_string().contains("HTTP 500"), "got: {error}");
     }
 
     #[tokio::test]
