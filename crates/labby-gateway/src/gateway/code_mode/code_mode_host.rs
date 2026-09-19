@@ -145,7 +145,9 @@ impl GatewayManager {
 
         if matches!(
             caller,
-            CodeModeCaller::TrustedLocal | CodeModeCaller::ScopedSkills { .. }
+            CodeModeCaller::TrustedLocal
+                | CodeModeCaller::ScopedSkills { .. }
+                | CodeModeCaller::ScopedHostProviderSkills { .. }
         ) && let Some(provider) = self.code_mode_skill_provider.as_ref()
         {
             match provider.list(caller, scope).await {
@@ -1781,6 +1783,9 @@ pub(crate) fn propagated_caller_auth(caller: &CodeModeCaller) -> PropagatedCalle
         }
         | CodeModeCaller::ScopedHostProvider {
             capabilities, sub, ..
+        }
+        | CodeModeCaller::ScopedHostProviderSkills {
+            capabilities, sub, ..
         } => {
             let mut scopes = Vec::new();
             if capabilities.is_admin {
@@ -2093,6 +2098,37 @@ mod tests {
             !serialized.contains("skillctx_super_secret"),
             "host-local Skill context token must never cross the upstream auth boundary"
         );
+    }
+
+    #[test]
+    fn combined_host_provider_and_skills_preserves_provider_but_not_skill_token() {
+        let caller = CodeModeCaller::ScopedHostProviderSkills {
+            capabilities: labby_codemode::CodeModeCallerCapabilities {
+                can_read: true,
+                can_execute: true,
+                can_use_snippets: true,
+                is_admin: false,
+            },
+            sub: Some("alice".to_string()),
+            provider_token: "provider_super_secret".to_string(),
+            provider_request_id: "req-123".to_string(),
+            skill_context_token: "skillctx_super_secret".to_string(),
+        };
+
+        assert_eq!(caller.host_provider_token(), Some("provider_super_secret"));
+        assert_eq!(caller.host_provider_request_id(), Some("req-123"));
+
+        let auth = propagated_caller_auth(&caller);
+        assert_eq!(auth.sub.as_deref(), Some("alice"));
+        assert_eq!(auth.private_context_token, None);
+        let serialized = serde_json::to_string(&auth).expect("auth serializes");
+        assert!(!serialized.contains("skillctx_super_secret"));
+        assert!(!serialized.contains("provider_super_secret"));
+
+        let debug = format!("{caller:?}");
+        assert!(!debug.contains("skillctx_super_secret"));
+        assert!(!debug.contains("provider_super_secret"));
+        assert!(debug.contains("req-123"));
     }
 
     #[test]

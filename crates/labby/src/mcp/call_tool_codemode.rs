@@ -701,11 +701,31 @@ impl LabMcpServer {
                     self.request_host_provider_token(context),
                     self.request_host_provider_request_id(context),
                 ) {
-                    CodeModeCaller::ScopedHostProvider {
-                        capabilities,
-                        sub,
-                        provider_token: provider_token.to_string(),
-                        provider_request_id: provider_request_id.to_string(),
+                    #[cfg(feature = "skills")]
+                    if let Some(context_guard) = code_mode_skill_context_guard.as_ref() {
+                        CodeModeCaller::ScopedHostProviderSkills {
+                            capabilities,
+                            sub,
+                            provider_token: provider_token.to_string(),
+                            provider_request_id: provider_request_id.to_string(),
+                            skill_context_token: context_guard.token().to_string(),
+                        }
+                    } else {
+                        CodeModeCaller::ScopedHostProvider {
+                            capabilities,
+                            sub,
+                            provider_token: provider_token.to_string(),
+                            provider_request_id: provider_request_id.to_string(),
+                        }
+                    }
+                    #[cfg(not(feature = "skills"))]
+                    {
+                        CodeModeCaller::ScopedHostProvider {
+                            capabilities,
+                            sub,
+                            provider_token: provider_token.to_string(),
+                            provider_request_id: provider_request_id.to_string(),
+                        }
                     }
                 } else {
                     #[cfg(feature = "skills")]

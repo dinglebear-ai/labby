@@ -19,6 +19,10 @@ fn context_for(caller: &CodeModeCaller) -> Result<Arc<SkillRegistryContext>, Too
         CodeModeCaller::ScopedSkills {
             skill_context_token,
             ..
+        }
+        | CodeModeCaller::ScopedHostProviderSkills {
+            skill_context_token,
+            ..
         } => code_mode_skill_context(skill_context_token).ok_or_else(|| ToolError::Sdk {
             sdk_kind: "forbidden".to_string(),
             message: "request-bound Skill context is unavailable or expired".to_string(),

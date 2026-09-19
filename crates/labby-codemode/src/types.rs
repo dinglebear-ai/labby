@@ -1048,6 +1048,17 @@ pub enum CodeModeCaller {
         provider_token: String,
         provider_request_id: String,
     },
+    /// Scoped caller carrying both a host-provider credential and an opaque
+    /// request-bound canonical Skills context. The provider credential is only
+    /// available to the host-provider adapter; the Skill token is host-local
+    /// and MUST NOT be propagated to upstream MCP servers.
+    ScopedHostProviderSkills {
+        capabilities: CodeModeCallerCapabilities,
+        sub: Option<String>,
+        provider_token: String,
+        provider_request_id: String,
+        skill_context_token: String,
+    },
 }
 
 impl fmt::Debug for CodeModeCaller {
@@ -1086,6 +1097,19 @@ impl fmt::Debug for CodeModeCaller {
                 .field("sub", sub)
                 .field("provider_token", &"[REDACTED]")
                 .field("provider_request_id", provider_request_id)
+                .finish(),
+            Self::ScopedHostProviderSkills {
+                capabilities,
+                sub,
+                provider_request_id,
+                ..
+            } => formatter
+                .debug_struct("ScopedHostProviderSkills")
+                .field("capabilities", capabilities)
+                .field("sub", sub)
+                .field("provider_token", &"[REDACTED]")
+                .field("provider_request_id", provider_request_id)
+                .field("skill_context_token", &"[REDACTED]")
                 .finish(),
         }
     }
@@ -1152,7 +1176,8 @@ impl CodeModeCaller {
             Self::Scoped { capabilities, .. }
             | Self::ScopedPrivate { capabilities, .. }
             | Self::ScopedSkills { capabilities, .. }
-            | Self::ScopedHostProvider { capabilities, .. } => capabilities.can_use_snippets,
+            | Self::ScopedHostProvider { capabilities, .. }
+            | Self::ScopedHostProviderSkills { capabilities, .. } => capabilities.can_use_snippets,
         }
     }
 
@@ -1164,7 +1189,8 @@ impl CodeModeCaller {
             Self::Scoped { capabilities, .. }
             | Self::ScopedPrivate { capabilities, .. }
             | Self::ScopedSkills { capabilities, .. }
-            | Self::ScopedHostProvider { capabilities, .. } => capabilities.can_execute,
+            | Self::ScopedHostProvider { capabilities, .. }
+            | Self::ScopedHostProviderSkills { capabilities, .. } => capabilities.can_execute,
         }
     }
 
@@ -1176,7 +1202,8 @@ impl CodeModeCaller {
             Self::Scoped { capabilities, .. }
             | Self::ScopedPrivate { capabilities, .. }
             | Self::ScopedSkills { capabilities, .. }
-            | Self::ScopedHostProvider { capabilities, .. } => capabilities.can_read,
+            | Self::ScopedHostProvider { capabilities, .. }
+            | Self::ScopedHostProviderSkills { capabilities, .. } => capabilities.can_read,
         }
     }
 
@@ -1190,7 +1217,8 @@ impl CodeModeCaller {
             Self::Scoped { capabilities, .. }
             | Self::ScopedPrivate { capabilities, .. }
             | Self::ScopedSkills { capabilities, .. }
-            | Self::ScopedHostProvider { capabilities, .. } => capabilities.is_admin,
+            | Self::ScopedHostProvider { capabilities, .. }
+            | Self::ScopedHostProviderSkills { capabilities, .. } => capabilities.is_admin,
         }
     }
 
@@ -1202,7 +1230,8 @@ impl CodeModeCaller {
             Self::Scoped { sub, .. }
             | Self::ScopedPrivate { sub, .. }
             | Self::ScopedSkills { sub, .. }
-            | Self::ScopedHostProvider { sub, .. } => sub.as_deref(),
+            | Self::ScopedHostProvider { sub, .. }
+            | Self::ScopedHostProviderSkills { sub, .. } => sub.as_deref(),
         }
     }
 
@@ -1211,7 +1240,8 @@ impl CodeModeCaller {
     #[must_use]
     pub fn host_provider_token(&self) -> Option<&str> {
         match self {
-            Self::ScopedHostProvider { provider_token, .. } => Some(provider_token),
+            Self::ScopedHostProvider { provider_token, .. }
+            | Self::ScopedHostProviderSkills { provider_token, .. } => Some(provider_token),
             _ => None,
         }
     }
@@ -1221,6 +1251,10 @@ impl CodeModeCaller {
     pub fn host_provider_request_id(&self) -> Option<&str> {
         match self {
             Self::ScopedHostProvider {
+                provider_request_id,
+                ..
+            }
+            | Self::ScopedHostProviderSkills {
                 provider_request_id,
                 ..
             } => Some(provider_request_id),
