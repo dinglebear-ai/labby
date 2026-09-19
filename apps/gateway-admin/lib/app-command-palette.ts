@@ -1,4 +1,5 @@
 import { parseStdioCommandLine } from '@/lib/stdio-command'
+import { describeGatewayOperationalState } from '@/lib/gateway-operational-state'
 import type { CreateGatewayInput } from '@/lib/types/gateway'
 
 export type AppCommandKind = 'destination' | 'action'
@@ -381,7 +382,7 @@ export function buildPaletteFooterLabel(input: PaletteCountsInput): string {
 
 // ── Gateway connection status (mock parity: the per-service detail header) ────
 
-export type PaletteTone = 'success' | 'warn' | 'error' | 'muted'
+export type PaletteTone = 'success' | 'info' | 'warn' | 'error' | 'muted'
 
 export type GatewayConnection = {
   /** Lowercase status word, matching the mock's `healthy` / `needs auth` copy. */
@@ -392,7 +393,7 @@ export type GatewayConnection = {
 /** Minimal structural shape needed to describe a gateway's connection state. */
 export type GatewayConnectionInput = {
   enabled?: boolean
-  status: { healthy: boolean; connected: boolean; last_error?: string }
+  status: { healthy: boolean; connected: boolean; last_error?: string; catalog_warming?: boolean; likely_stale_count?: number }
   warnings?: ReadonlyArray<{ code: string; message: string }>
 }
 
@@ -407,22 +408,25 @@ function mentionsAuth(gateway: GatewayConnectionInput): boolean {
 }
 
 /**
- * Map a gateway to the mock's connection vocabulary.
+ * Map a gateway to the palette's compact operational vocabulary.
  * The mock distinguishes `token expired` from `needs auth`; this console has no
  * token-expiry field, so an auth-flavoured failure collapses to `needs auth`.
  */
 export function describeGatewayConnection(gateway: GatewayConnectionInput): GatewayConnection {
-  if (gateway.enabled === false) return { label: 'disabled', tone: 'muted' }
-  if (!gateway.status.connected) {
+  const operational = describeGatewayOperationalState(gateway)
+
+  if (operational.kind === 'disabled') return { label: 'disabled', tone: 'muted' }
+  if (operational.kind === 'disconnected') {
     return mentionsAuth(gateway)
       ? { label: 'needs auth', tone: 'warn' }
       : { label: 'disconnected', tone: 'error' }
   }
-  if (!gateway.status.healthy) {
+  if (operational.kind === 'degraded') {
     return mentionsAuth(gateway)
       ? { label: 'needs auth', tone: 'warn' }
-      : { label: 'degraded', tone: 'warn' }
+      : { label: 'needs attention', tone: 'warn' }
   }
+  if (operational.kind === 'discovering') return { label: 'discovering', tone: 'info' }
   return { label: 'healthy', tone: 'success' }
 }
 
@@ -464,7 +468,7 @@ function matchesStatusFilter(
     case 'healthy':
       return describeGatewayConnection(gateway).tone === 'success'
     case 'disconnected':
-      return !gateway.status.connected
+      return describeGatewayOperationalState(gateway).kind === 'disconnected'
     case 'enabled':
       return gateway.enabled !== false
     case 'disabled':
@@ -627,9 +631,9 @@ export type PaletteAlert = {
 }
 
 /**
- * Derive the "Needs Attention" rows from live gateway state.
- * Only enabled gateways that are not healthy produce an alert; the mock caps
- * the section at three rows.
+ * Derive the "Needs Attention" rows from shared gateway operational state.
+ * Disabled and transient discovery states are excluded; disconnected, degraded,
+ * warning, and stale-runtime states are eligible. The section is capped at three rows.
  */
 export function buildGatewayAlerts(
   gateways: ReadonlyArray<GatewayConnectionInput & { id: string; name: string }>,
