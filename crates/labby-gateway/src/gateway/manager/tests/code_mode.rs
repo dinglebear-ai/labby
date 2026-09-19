@@ -920,16 +920,29 @@ async fn code_mode_host_list_tools_for_mcp_cold_connects_with_a_finite_budget() 
 
     let mut hanging = fixture_http_upstream("alpha");
     hanging.url = Some(format!("http://{addr}/mcp"));
-    let (manager, pool) =
-        code_mode_manager_with_upstreams(vec![hanging, fixture_http_upstream("beta")]).await;
+    let beta_config = fixture_http_upstream("beta");
+    let upstreams = vec![hanging, beta_config];
+    let (manager, pool) = code_mode_manager_with_upstreams(upstreams.clone()).await;
+    manager
+        .seed_config_unchecked_for_tests(GatewayConfig {
+            code_mode: CodeModeConfig {
+                enabled: true,
+                timeout_ms: 2_000,
+                ..CodeModeConfig::default()
+            },
+            upstream: upstreams,
+            ..GatewayConfig::default()
+        })
+        .await;
     let mut beta = healthy_entry_with_tool("beta", "ping");
     let ping = beta.tools.get_mut("ping").expect("fixture tool");
     ping.destructive = false;
     ping.tool.annotations = Some(rmcp::model::ToolAnnotations::new().read_only(true));
     pool.insert_entry_for_tests("beta", beta).await;
 
+    let started = std::time::Instant::now();
     let render = tokio::time::timeout(
-        Duration::from_secs(20),
+        Duration::from_secs(3),
         CodeModeHost::list_tools(
             &manager,
             &CodeModeCaller::Scoped {
@@ -950,6 +963,10 @@ async fn code_mode_host_list_tools_for_mcp_cold_connects_with_a_finite_budget() 
     .await
     .expect("MCP proxy cold-connect budget must be finite")
     .expect("MCP Code Mode proxy generation should retain healthy tools");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "MCP catalog refresh must leave sandbox time instead of waiting for the hanging upstream"
+    );
 
     let ids = render
         .entries
@@ -957,6 +974,69 @@ async fn code_mode_host_list_tools_for_mcp_cold_connects_with_a_finite_budget() 
         .map(|entry| entry.id.as_str())
         .collect::<Vec<_>>();
     assert_eq!(ids, vec!["beta::ping"]);
+}
+
+#[tokio::test]
+async fn code_mode_host_mcp_refresh_budget_fails_closed_without_a_real_upstream() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind hanging upstream fixture");
+    let addr = listener.local_addr().expect("listener addr");
+    tokio::spawn(async move {
+        while let Ok((socket, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let _socket = socket;
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            });
+        }
+    });
+
+    let mut hanging = fixture_http_upstream("alpha");
+    hanging.url = Some(format!("http://{addr}/mcp"));
+    let upstreams = vec![hanging];
+    let (manager, _pool) = code_mode_manager_with_upstreams(upstreams.clone()).await;
+    manager
+        .seed_config_unchecked_for_tests(GatewayConfig {
+            code_mode: CodeModeConfig {
+                enabled: true,
+                timeout_ms: 2_000,
+                ..CodeModeConfig::default()
+            },
+            upstream: upstreams,
+            ..GatewayConfig::default()
+        })
+        .await;
+
+    let started = std::time::Instant::now();
+    let error = CodeModeHost::list_tools(
+        &manager,
+        &CodeModeCaller::Scoped {
+            capabilities: labby_codemode::CodeModeCallerCapabilities {
+                can_read: true,
+                can_execute: false,
+                can_use_snippets: false,
+                is_admin: false,
+            },
+            sub: Some("user-1".to_string()),
+        },
+        CodeModeSurface::Mcp,
+        &ToolScope::default().read_only(),
+        false,
+        false,
+    )
+    .await
+    .expect_err("builtin-only catalog after refresh timeout must fail closed");
+
+    assert_eq!(error.kind(), "upstream_connect_error");
+    assert!(
+        error
+            .to_string()
+            .contains("timed out before any real upstream was usable")
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "fail-closed timeout must still leave the broker execution budget bounded"
+    );
 }
 
 #[tokio::test]

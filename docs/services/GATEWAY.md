@@ -1,7 +1,7 @@
 ---
 title: "Gateway Management"
 created: "2026-07-30"
-updated: "2026-09-15"
+updated: "2026-09-19"
 ---
 
 # Gateway Management
@@ -546,7 +546,11 @@ daemon and shares its manager directly. Explicit targets remain authoritative
 through dispatch, response decoding, Code Mode, and stdio MCP initialization;
 failures are returned and local fallback is suppressed. Only bounded
 opportunistic discovery may fall back to local `config.toml`, which keeps
-bootstrap flows working standalone.
+bootstrap flows working standalone. Opportunistic discovery always probes the
+loopback daemon first, even when the config advertises a non-loopback bind
+address such as a Tailscale IP; configured and public addresses remain fallback
+candidates. This keeps same-host CLI traffic on a Host header accepted by the
+daemon's DNS-rebinding protections without weakening those protections.
 
 Running the CLI from a different machine than the daemon should use
 `LABBY_MCP_HTTP_TOKEN` and `LABBY_SERVER_URL`; see `docs/runtime/ENV.md` §
@@ -573,6 +577,13 @@ nothing was served from cache and nothing connected, the run fails with
 executing against an empty proxy. Tool calls still resolve the target upstream
 live, so a stale cache can only change which `codemode.*` helpers are offered,
 never what a call executes.
+
+The long-lived MCP Code Mode catalog refresh uses the same half-timeout
+wall-clock budget. If that budget expires, already healthy real upstreams remain
+available and unfinished upstreams are omitted for that run with a warning. If
+no real upstream is usable when the budget expires, proxy generation fails
+closed with `upstream_connect_error` instead of spending the sandbox's entire
+deadline or silently serving only builtin helpers.
 
 The local `GatewayManager` these CLI commands fall back to is built lazily --
 only if remote detection genuinely fails -- so a successful remote dispatch
