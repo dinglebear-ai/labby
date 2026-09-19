@@ -1,18 +1,18 @@
 ---
 title: "RMCP"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-09-16"
 ---
 
 # RMCP
 
-This document defines the integration contract between `lab` and the official Rust Model Context Protocol SDK, `rmcp`.
+This document defines the integration contract between Labby and the official Rust Model Context Protocol SDK, `rmcp`.
 
 It is the source of truth for:
 
-- which `rmcp` features `lab` relies on
-- how `lab` structures its MCP server around `rmcp`
-- which RMCP capabilities `lab` exposes
+- which `rmcp` features Labby relies on
+- how Labby structures its MCP server around `rmcp`
+- which RMCP capabilities Labby exposes
 - where auth, transport, schema, and handler ownership live
 - what patterns are allowed or disallowed when adding RMCP-related code
 
@@ -24,24 +24,24 @@ documented in [MCP_CONFORMANCE.md](./MCP_CONFORMANCE.md).
 
 ## Scope
 
-`lab` has one MCP server product surface.
+Labby has one MCP server product surface.
 
 That surface may be exposed through multiple transports and may filter which services are visible at runtime, but it is still one server with one shared catalog, one shared dispatch model, and one shared contract.
 
 Rules:
 
-- do not model `lab` as many unrelated mini-servers
+- do not model Labby as many unrelated mini-servers
 - do not let stdio and hosted Streamable HTTP drift in behavior
 - do not let transport choice change catalog, schemas, envelopes, or destructive-op policy
 - do not let RMCP-specific code become a second business-logic layer
 
 ## Server Shape
 
-`lab` uses `rmcp` as a transport and protocol adapter over the shared dispatch/catalog layer.
+Labby uses `rmcp` as a transport and protocol adapter over the shared dispatch/catalog layer.
 
 The intended shape is:
 
-1. shared dispatch/catalog ownership remains in `lab`
+1. shared dispatch/catalog ownership remains in Labby
 2. a reusable MCP server module adapts that shared layer into `rmcp::ServerHandler`
 3. stdio, HTTP/TCP, and HTTP/Unix transports wrap the same server core
 4. CLI, MCP, and HTTP API continue to share the same service/action model
@@ -55,7 +55,7 @@ Rules:
 
 ## Required RMCP Posture
 
-`lab` is a server-first RMCP application.
+Labby is a server-first RMCP application.
 
 The baseline posture is:
 
@@ -67,20 +67,20 @@ The baseline posture is:
 | `transport-streamable-http-server` | required | HTTP MCP transport |
 | `elicitation` | required | destructive confirmation and future interactive flows |
 | `schemars` | required in practice | all RMCP-facing input types should have schema support |
-| `client` | required in practice | `lab` must be able to act as an outbound MCP client and gateway |
+| `client` | required in practice | Labby must be able to act as an outbound MCP client and gateway |
 | `auth` | required | needed for outbound OAuth MCP clients and protected HTTP MCP deployments |
 | `transport-streamable-http-client` | required in practice | required for outbound MCP gateway/client work over HTTP |
 | per-request logging | not advertised | 2026-07-28 removes `logging/setLevel`; Labby relies on server-side tracing |
 
 Notes:
 
-- the `server` feature already pulls in `schemars` support upstream, but `lab` should still treat JSON Schema generation as a hard requirement for RMCP-facing types
-- `lab` deliberately uses both server and client RMCP surfaces, so outbound features are part of the intended product shape rather than speculative extras
-- server-side OAuth for `lab`'s HTTP MCP endpoint is still enforced by Axum middleware and surrounding HTTP infrastructure even when RMCP `auth` support is enabled
+- the `server` feature already pulls in `schemars` support upstream, but Labby should still treat JSON Schema generation as a hard requirement for RMCP-facing types
+- Labby deliberately uses both server and client RMCP surfaces, so outbound features are part of the intended product shape rather than speculative extras
+- server-side OAuth for Labby's HTTP MCP endpoint is still enforced by Axum middleware and surrounding HTTP infrastructure even when RMCP `auth` support is enabled
 
 ## Transport Contract
 
-`lab` supports three MCP transports:
+Labby supports three MCP transports:
 
 - `stdio`
 - streamable HTTP over TCP
@@ -114,7 +114,7 @@ Axum route-boundary rules:
 
 ## Capability Contract
 
-`lab` intends to expose these RMCP capability families:
+Labby intends to expose these RMCP capability families:
 
 - tools
 - prompts
@@ -130,11 +130,11 @@ Rules:
 - resources are for stable discovery and read-oriented contextual data, not for mirroring every tool call as a fake resource
 - elicitation is used when the server must explicitly ask the client for confirmation or input
 
-`lab` does not change its one-tool-per-service design because RMCP can support finer-grained tools.
+Labby does not change its one-tool-per-service design because RMCP can support finer-grained tools.
 
 Rules:
 
-- keep one MCP tool per service plus the top-level `lab` meta-tool
+- keep the compact one-tool-per-service model plus the explicit gateway and control-plane tools owned by the root MCP surface
 - continue to dispatch service operations through `action` + `params`
 - do not explode the tool list into one tool per endpoint or one tool per action
 - prompts and resources may be richer than tools, but they must still derive from the same shared catalog and dispatch ownership model
@@ -148,19 +148,19 @@ dispatch:
 
 ## Handler and Macro Contract
 
-`lab` uses explicit `ServerHandler` implementations.
+Labby uses explicit `ServerHandler` implementations.
 
 Rules:
 
 - prefer explicit `impl ServerHandler for ...`
 - use `#[tool_handler]`, `#[prompt_handler]`, and `#[task_handler]` as glue on that explicit handler impl when those capabilities are present
-- do not rely on `#[tool_router(server_handler)]` for the main `lab` server
+- do not rely on `#[tool_router(server_handler)]` for the main Labby server
 - reserve `#[tool_router(server_handler)]` for tools-only examples or very small standalone servers
 
 Rationale:
 
-- `lab` is one mixed-capability server, not a tools-only demo
-- `lab` needs control over `get_info()`, capability composition, metadata, and shared ownership boundaries
+- Labby is one mixed-capability server, not a tools-only demo
+- Labby needs control over `get_info()`, capability composition, metadata, and shared ownership boundaries
 - explicit handler impls make it easier to keep prompts, resources, and future capabilities aligned
 
 Allowed RMCP macro usage:
@@ -198,25 +198,25 @@ Guidance:
 
 Auth ownership is split deliberately.
 
-### Protecting `lab` as an MCP server
+### Protecting Labby as an MCP server
 
-This is owned by `lab`'s HTTP surface and middleware stack, with RMCP auth support used where needed for protocol-compatible protected-resource behavior.
+This is owned by Labby's HTTP surface and middleware stack, with RMCP auth support used where needed for protocol-compatible protected-resource behavior.
 
 Rules:
 
 - HTTP MCP auth happens before requests reach the RMCP Tower service
 - bearer token validation, OAuth enforcement, and request scoping belong in Axum middleware and app state
-- RMCP `auth` support is part of the server contract when `lab` exposes OAuth-protected HTTP MCP, but it does not replace the surrounding HTTP auth boundary
+- RMCP `auth` support is part of the server contract when Labby exposes OAuth-protected HTTP MCP, but it does not replace the surrounding HTTP auth boundary
 - RMCP handlers may read authenticated request context from injected HTTP request parts or extensions, but they do not own auth enforcement
 
-### Using `lab` as an MCP client
+### Using Labby as an MCP client
 
-This is also a required part of `lab`'s target architecture.
+This is also a required part of Labby's target architecture.
 
 Rules:
 
-- outbound RMCP client and auth support are first-class capabilities because `lab` must connect to and proxy other MCP servers
-- if outbound MCP clients are added, their credentials and token lifecycle must still follow `lab`'s own config and secret-handling rules
+- outbound RMCP client and auth support are first-class capabilities because Labby must connect to and proxy other MCP servers
+- if outbound MCP clients are added, their credentials and token lifecycle must still follow Labby's own config and secret-handling rules
 
 ## Logging Contract
 
@@ -233,7 +233,7 @@ Current implementation notes:
 
 ## Resource and Prompt Ownership
 
-Prompts and resources must stay aligned with the rest of `lab`'s model.
+Prompts and resources must stay aligned with the rest of Labby's model.
 
 Rules:
 
@@ -260,7 +260,7 @@ Rules:
 
 The preferred HTTP MCP integration model is:
 
-1. build the reusable `lab` RMCP server core
+1. build the reusable Labby RMCP server core
 2. create RMCP's streamable HTTP Tower service from that core
 3. mount it under Axum with `nest_service("/mcp", ...)`
 4. place auth, request ID, tracing, timeout, and CORS in the surrounding Axum/Tower stack
@@ -273,7 +273,7 @@ Rules:
 
 ## Relationship to `rmcp-openapi`
 
-[`rmcp-openapi`](https://gitlab.com/lx-industries/rmcp-openapi) is useful as a reference project, not as `lab`'s architectural template.
+[`rmcp-openapi`](https://gitlab.com/lx-industries/rmcp-openapi) is useful as a reference project, not as Labby's architectural template.
 
 What is useful:
 
@@ -282,19 +282,19 @@ What is useful:
 - auth passthrough and proxy-boundary thinking
 - response transformation ideas for LLM-facing payload shaping
 
-What does not fit `lab`:
+What does not fit Labby:
 
 - one-tool-per-endpoint generation
 - treating the MCP layer as a generic REST proxy
 - expanding the tool surface to mirror every upstream API operation directly
 
-`lab` already has a typed client layer and a one-tool-per-service product model.
+Labby already has a typed client layer and a one-tool-per-service product model.
 
 Rules:
 
 - borrow ideas from `rmcp-openapi`, not its product shape
-- do not replace `lab`'s typed service clients with OpenAPI-generated MCP proxy behavior
-- do not let OpenAPI-style tool explosion undo the compact `lab` catalog
+- do not replace Labby's typed service clients with OpenAPI-generated MCP proxy behavior
+- do not let OpenAPI-style tool explosion undo the compact Labby catalog
 
 ## Review Checklist
 

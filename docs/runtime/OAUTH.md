@@ -160,11 +160,12 @@ Explicit alternatives are available for deployment policy and older servers:
 labby login --server https://lab.example --dynamic-registration
 labby login --server https://lab.example --client-metadata-url https://client.example/labby.json
 labby login --server https://lab.example --client-id registered-native-client
-labby login --server https://lab.example --client-id registered-client --client-secret-env LABBY_CLI_CLIENT_SECRET
+labby login --server https://lab.example --client-id registered-client --client-secret-env CLI_CLIENT_SECRET
 ```
 
 Only the environment variable name is stored for a preregistered secret; the
-secret value remains in its configured source. The metadata document contains
+secret value remains in its configured source. `CLI_CLIENT_SECRET` above is an
+operator-chosen example name, not a built-in Labby environment variable. The metadata document contains
 public client identity and loopback redirects only. It cannot authorize an
 account or grant access to the gateway.
 
@@ -1118,7 +1119,6 @@ bypass for the OAuth/MCP paths used by MCP clients:
 
 - `/.well-known/oauth-protected-resource*`
 - `/.well-known/oauth-authorization-server*`
-- `/.well-known/openid-configuration`
 - `/register`
 - `/authorize`
 - `/token`
@@ -1410,7 +1410,7 @@ An invalid configured key aborts the restart rather than replacing it.
 
 Provider cutover is a stop-the-world maintenance operation. Stop every Labby
 process that can write the shared auth database, run `labby doctor auth --live`
-with the proposed Authelia configuration, and take a SQLite backup before the
+with the target Authelia configuration, and take a SQLite backup before the
 first new binary starts. Provider discovery completes before the v15 migration,
 but once v15 commits, older writers must remain stopped. Verify the durable state
 after startup with:
@@ -1473,7 +1473,7 @@ There is currently no supported online key-rotation command. Never rotate by
 editing only `LABBY_TOKEN_ENCRYPTION_KEY`; that makes existing ciphertext
 undecryptable and OAuth startup/use will fail closed.
 
-Current verification is owned by Labby's built-in health/doctor surfaces and focused integration tests; there is no checked-in `scripts/check-oauth.sh` product contract.
+Current verification is owned by Labby's built-in health/doctor surfaces and focused integration tests. The repository retains `plugins/scripts/check-oauth.sh` as a compatibility probe, but there is no top-level `scripts/check-oauth.sh` product contract and deployment guidance must use the built-in doctor surfaces as the source of truth.
 
 ### Pre-flight — `labby doctor auth`
 

@@ -2,7 +2,7 @@
 title: "Multi-user ownership migration and recovery"
 created: "2026-09-05"
 updated: "2026-09-16"
-status: "design"
+status: "implemented-runbook"
 ---
 
 # Multi-user ownership migration and recovery

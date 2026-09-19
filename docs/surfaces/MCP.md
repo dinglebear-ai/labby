@@ -1,7 +1,7 @@
 ---
 title: "MCP Surface"
 created: "2026-07-30"
-updated: "2026-08-17"
+updated: "2026-09-16"
 ---
 
 # MCP Surface
@@ -156,7 +156,7 @@ inside the sandbox before return.
 ## Authentication And Routes
 
 The root administrative MCP endpoint uses the configured bearer or OAuth mode.
-Public protected routes validate route-scoped Lab OAuth JWTs and their configured
+Public protected routes validate route-scoped Labby OAuth JWTs and their configured
 resource/scope contract. A static operator bearer token is not a public resource
 credential.
 

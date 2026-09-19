@@ -24,9 +24,11 @@ Use this reference when operating Labby from the shell. Generated help in
 | `labby update` | Update the installed release. |
 | `labby completions` | Generate shell completions. |
 
-Use `labby --help` and `labby <command> --help` before scripting against a
-subcommand. This table is deliberately selective; generated help is the full
-inventory. Prefer global `--json` for machine-readable output.
+Use `docs/generated/cli-help.md` and `labby <command> --help` before scripting
+against a subcommand. Root `labby --help` / `labby help` intentionally show the
+service/action catalog rather than the Clap command inventory. This table is
+deliberately selective; generated CLI help is the full shell-command inventory.
+Prefer global `--json` for machine-readable output.
 
 For disaster recovery, read `docs/runtime/DISASTER_RECOVERY.md` before using
 `labby state export`, `verify`, or `restore`.

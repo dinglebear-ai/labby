@@ -557,6 +557,41 @@ test('Library follows responsive view defaults', { concurrency: false }, async (
   // operator view override, so widening the viewport restores the table.
 })
 
+test('Docs labels historical records and preserves current-document status', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+
+  const browser = await chromium.launch({ headless: true })
+  t.after(async () => { await browser.close() })
+
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } })
+  await page.goto(`${baseUrl}/docs/?doc=access-control%2FIMPLEMENTATION_PLAN.md`, { waitUntil: 'networkidle' })
+  await page.waitForTimeout(1_000)
+  const historicalBody = await page.locator('body').innerText()
+  assert.match(historicalBody, /Documentation/, historicalBody.slice(0, 4_000))
+  assert.match(historicalBody, /Historical implementation record/, historicalBody.slice(0, 4_000))
+  assert.match(historicalBody, /historical-plan/)
+
+  const historicalOverflow = await page.evaluate(() => ({
+    document: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    body: document.body.scrollWidth - document.body.clientWidth,
+  }))
+  assert.ok(
+    historicalOverflow.document <= 1 && historicalOverflow.body <= 1,
+    `docs historical view overflowed horizontally: ${JSON.stringify(historicalOverflow)}`,
+  )
+
+  const migration = page.getByRole('button').filter({ hasText: 'Multi-user ownership migration and recovery' })
+  await migration.click()
+  await page.waitForURL(/doc=access-control%2FMIGRATION.md/)
+  await assert.doesNotReject(() => page.getByText('implemented-runbook', { exact: true }).first().waitFor())
+  assert.equal(await page.getByText('Historical implementation record', { exact: true }).count(), 0)
+
+  await page.goto(`${baseUrl}/docs/?doc=runtime%2FCONFIG.md`, { waitUntil: 'networkidle' })
+  const configExampleLink = page.locator('a[href="https://github.com/dinglebear-ai/labby/blob/main/config/config.example.toml"]')
+  await assert.doesNotReject(() => configExampleLink.first().waitFor())
+  assert.ok(await configExampleLink.count() >= 1)
+})
+
 test('every admin route stays overflow-free on narrow phone, phone, and tablet', { concurrency: false }, async (t) => {
   await startPreviewServer()
 

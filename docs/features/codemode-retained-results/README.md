@@ -1,7 +1,7 @@
 # Code Mode Retained Results
 
-**Status:** Proposed, not implemented on current main as of 2026-08-18.
-**Tracking issue:** #274, "Retain and page oversized Code Mode results by handle."
+**Status:** Proposed, not implemented on current main as verified 2026-09-16.
+**Tracking issue:** #274, "Retain and page oversized Code Mode results by handle" (still open as verified 2026-09-16).
 
 ## Purpose
 
