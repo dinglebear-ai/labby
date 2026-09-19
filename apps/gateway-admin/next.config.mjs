@@ -35,6 +35,7 @@ export function resolveBuildId({
 }
 
 const buildId = resolveBuildId()
+const assetPrefix = process.env.LABBY_ASSET_PREFIX?.trim() || undefined
 
 if (process.env.LAB_ALLOWED_DEV_ORIGINS) {
   for (const origin of process.env.LAB_ALLOWED_DEV_ORIGINS.split(',')) {
@@ -47,6 +48,7 @@ if (process.env.LAB_ALLOWED_DEV_ORIGINS) {
 
 const nextConfig = {
   output: 'export',
+  assetPrefix,
   generateBuildId: async () => buildId,
   turbopack: {
     root: dirname,
