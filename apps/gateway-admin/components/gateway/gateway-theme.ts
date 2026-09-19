@@ -1,4 +1,5 @@
 import { cn } from '@/lib/utils'
+import type { GatewayOperationalKind } from '@/lib/gateway-operational-state'
 import {
   AURORA_CONTROL_SURFACE,
   AURORA_DISPLAY_NUMBER,
@@ -50,12 +51,52 @@ export function gatewayActionTone(variant: 'default' | 'accent' = 'default') {
   return cn('border', AURORA_CONTROL_SURFACE, controlTone(variant))
 }
 
-export function gatewayStatusTone(healthy: boolean, connected: boolean) {
-  if (healthy && connected) {
+export function gatewayStatusTone(kind: GatewayOperationalKind) {
+  if (kind === 'healthy') {
     return {
       dot: 'bg-aurora-accent-strong shadow-[0_0_0_4px_rgba(103,203,250,0.08)]',
       text: 'text-aurora-accent-strong',
       label: 'Healthy',
+    }
+  }
+
+  if (kind === 'disconnected') {
+    return {
+      dot: 'bg-aurora-error shadow-[0_0_0_4px_rgba(199,132,144,0.08)]',
+      text: 'text-aurora-error',
+      label: 'Disconnected',
+    }
+  }
+
+  if (kind === 'disabled') {
+    return {
+      dot: 'bg-aurora-text-muted',
+      text: 'text-aurora-text-muted',
+      label: 'Disabled',
+    }
+  }
+
+  if (kind === 'discovering') {
+    return {
+      dot: 'bg-aurora-accent-primary shadow-[0_0_0_4px_rgba(103,203,250,0.06)]',
+      text: 'text-aurora-accent-strong',
+      label: 'Discovering',
+    }
+  }
+
+  return {
+    dot: 'bg-aurora-warn shadow-[0_0_0_4px_rgba(198,163,107,0.08)]',
+    text: 'text-aurora-warn',
+    label: 'Needs attention',
+  }
+}
+
+export function gatewayConnectionTone(enabled: boolean, connected: boolean) {
+  if (!enabled) {
+    return {
+      dot: 'bg-aurora-text-muted',
+      text: 'text-aurora-text-muted',
+      label: 'Disabled',
     }
   }
 
@@ -68,8 +109,8 @@ export function gatewayStatusTone(healthy: boolean, connected: boolean) {
   }
 
   return {
-    dot: 'bg-aurora-warn shadow-[0_0_0_4px_rgba(198,163,107,0.08)]',
-    text: 'text-aurora-warn',
-    label: 'Needs attention',
+    dot: 'bg-aurora-success shadow-[0_0_0_4px_color-mix(in_srgb,var(--aurora-success)_10%,transparent)]',
+    text: 'text-aurora-success',
+    label: 'Connected',
   }
 }
