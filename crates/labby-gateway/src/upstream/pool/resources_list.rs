@@ -742,13 +742,25 @@ impl UpstreamPool {
                     event,
                     started,
                     async {
-                        catalog_pagination::list_resources(
+                        match catalog_pagination::list_resources(
                             &peer,
                             request_timeout,
                             MAX_UPSTREAM_RESOURCES,
                         )
                         .await
-                        .map_err(|error| error.into_service_error(&config.name))
+                        {
+                            Ok(resources) => Ok(resources),
+                            Err(catalog_pagination::CatalogPaginationError::Service(error))
+                                if is_capability_unsupported(&error) =>
+                            {
+                                tracing::debug!(
+                                    upstream = %config.name,
+                                    "subject-scoped upstream does not implement resources/list — capability absent"
+                                );
+                                Ok(Vec::new())
+                            }
+                            Err(error) => Err(error.into_service_error(&config.name)),
+                        }
                     },
                     |resources| serde_json::to_vec(resources).map_or(usize::MAX, |body| body.len()),
                     Some(&subject),
@@ -1874,6 +1886,55 @@ mod tests {
                 "lab://upstream/google-drive/file:///tmp/upstream-one",
                 "lab://upstream/google-drive/lab://upstream/old-name/file:///tmp/upstream-two",
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn subject_scoped_resources_treat_method_not_found_as_absent_capability() {
+        let pool = catalog_pool_with_server(
+            "tools-only",
+            SchemaToolServer {
+                tool_name: "example",
+            },
+        )
+        .await;
+        let peer = pool
+            .connections
+            .read()
+            .await
+            .get("tools-only")
+            .expect("fixture connection")
+            .peer
+            .clone();
+        let connection = pool
+            .connections
+            .write()
+            .await
+            .remove("tools-only")
+            .expect("move fixture connection into subject cache");
+        pool.subject_connections.write().await.insert(
+            ("tools-only".to_string(), "alice".to_string()),
+            SubjectScopedConnection {
+                optional_catalogs: Default::default(),
+                _connection: connection,
+                peer,
+                tools: Vec::new(),
+                last_used: Instant::now(),
+            },
+        );
+        let mut config = oauth_schema_config("tools-only");
+        config.proxy_resources = true;
+
+        let resources = pool.subject_scoped_resources(&[config], "alice").await;
+
+        assert!(resources.is_empty());
+        let connections = pool.subject_connections.read().await;
+        let subject = connections
+            .get(&("tools-only".to_string(), "alice".to_string()))
+            .expect("subject connection remains cached");
+        assert_eq!(
+            subject.optional_catalogs.resources.clone(),
+            Some(Vec::<String>::new())
         );
     }
 

@@ -341,6 +341,23 @@ impl UpstreamPool {
                     );
                     upstream_prompts.push((name, exposed));
                 }
+                Err(catalog_pagination::CatalogPaginationError::Service(error))
+                    if super::logging::is_capability_unsupported(&error) =>
+                {
+                    self.record_subject_optional_catalog(
+                        &name,
+                        subject,
+                        &peer,
+                        None,
+                        Some(Vec::new()),
+                    )
+                    .await;
+                    tracing::debug!(
+                        upstream = %name,
+                        phase = "oauth_pagination",
+                        "subject-scoped upstream does not implement prompts/list — capability absent"
+                    );
+                }
                 Err(error) => {
                     tracing::warn!(
                         upstream = %name,
