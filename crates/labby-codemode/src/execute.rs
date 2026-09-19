@@ -12,6 +12,7 @@ use crate::host::{CodeModeHost, ExecCtx, ToolCallOutcome, ToolsRender};
 use labby_runtime::{CodeModeConfig, CodeModeResultShapePolicy};
 
 use super::CodeModeBroker;
+use super::config::MAX_SOURCE_BYTES;
 use super::normalize_user_code;
 use super::shape::shape_final_result;
 use super::truncate::{response_within_budget, truncate_execution_response};
@@ -101,11 +102,20 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             }
             .into());
         }
+        let max_source_bytes = config.max_source_bytes.min(MAX_SOURCE_BYTES);
+        if code.len() > max_source_bytes {
+            return Err(ToolError::InvalidParam {
+                message: format!("code exceeds max length {max_source_bytes} bytes"),
+                param: "code".to_string(),
+            }
+            .into());
+        }
         let started = std::time::Instant::now();
         let mut response = self
             .execute_sandboxed(
                 code,
                 execution_timeout(config.timeout_ms),
+                max_source_bytes,
                 caller,
                 surface,
                 config.max_log_entries,
@@ -258,6 +268,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         &self,
         code: &str,
         timeout: Duration,
+        snippet_max_bytes: usize,
         caller: CodeModeCaller,
         surface: CodeModeSurface,
         max_log_entries: usize,
@@ -325,6 +336,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             max_log_bytes,
             trace_params,
             scope,
+            snippet_max_bytes,
             execution_id,
         )
         .await
@@ -940,6 +952,31 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn broker_enforces_configured_source_limit_before_runner_start() {
+        let host = NoopHost::default();
+        let broker = CodeModeBroker::new(Some(&host));
+        let config = CodeModeConfig {
+            max_source_bytes: 1024,
+            ..CodeModeConfig::default()
+        };
+        let code = format!("async () => \"{}\"", "x".repeat(2048));
+
+        let error = broker
+            .execute_with_raw_response(
+                &code,
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                config,
+                ToolScope::default(),
+                None,
+            )
+            .await
+            .expect_err("configured lower source limit must reject before runner start");
+
+        assert!(format!("{error}").contains("code exceeds max length 1024 bytes"));
+    }
+
     #[test]
     fn execution_timeout_reserves_response_delivery_margin() {
         assert_eq!(execution_timeout(30_000), Duration::from_millis(29_500));
@@ -1211,6 +1248,59 @@ mod tests {
         fn openapi_http_client(&self) -> reqwest::Client {
             labby_openapi::http::build_dispatch_client().expect("test dispatch client")
         }
+    }
+
+    #[tokio::test]
+    async fn raw_tool_call_boundary_rejects_undeclared_and_out_of_route_tools() {
+        let host = FixtureHost::new(vec![
+            CatalogDescriptor::tool("alpha", "tool1", "allowed", None, None),
+            CatalogDescriptor::tool("alpha", "other_tool", "undeclared sibling", None, None),
+            CatalogDescriptor::tool("beta", "tool2", "out of route", None, None),
+        ]);
+        let broker = CodeModeBroker::new(Some(&host));
+        let scope = ToolScope::scoped_namespaces(
+            vec!["alpha".to_string()],
+            vec!["alpha::tool1".to_string()],
+        );
+
+        for id in ["alpha::other_tool", "beta::tool2"] {
+            let error = broker
+                .call_tool_id(
+                    id,
+                    json!({}),
+                    CodeModeCaller::TrustedLocal,
+                    CodeModeSurface::Cli,
+                    &scope,
+                    ExecCtx::none(),
+                )
+                .await
+                .expect_err("raw callTool target outside the effective snippet scope must fail");
+            assert_eq!(error.kind(), "unknown_tool");
+            assert!(
+                error
+                    .to_string()
+                    .contains("outside this Code Mode execution capability set"),
+                "scope rejection must happen before host dispatch: {error:?}"
+            );
+        }
+
+        let allowed = broker
+            .call_tool_id(
+                "alpha::tool1",
+                json!({}),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &scope,
+                ExecCtx::none(),
+            )
+            .await
+            .expect_err("fixture host intentionally rejects real dispatch after scope admission");
+        assert!(
+            allowed
+                .to_string()
+                .contains("FixtureHost does not dispatch real tool calls"),
+            "the declared in-route tool must pass the scope boundary and reach the host"
+        );
     }
 
     #[tokio::test]

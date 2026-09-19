@@ -8,6 +8,7 @@ use serde_json::Value;
 
 use crate::CodeModeCallError;
 
+use super::config::MAX_SNIPPET_RESOLVED_BYTES_PER_RUN;
 use super::protocol::CODE_MODE_STACK_SIZE_LIMIT;
 use super::protocol::{
     CodeModeRunnerInput, CodeModeRunnerOutput, CodeModeRunnerResult, CodeModeRunnerState,
@@ -444,7 +445,7 @@ globalThis.__labSnippetResolveCount = 0;
 globalThis.__labSnippetResolvedBytes = 0;
 globalThis.__labSnippetMaxDepth = 8;
 globalThis.__labSnippetMaxResolves = 32;
-globalThis.__labSnippetMaxBytes = 262144;
+globalThis.__labSnippetMaxBytes = {snippet_max_bytes};
 {codec}
 globalThis.callTool = (id, params = {{}}) => {{
   if (typeof id !== "string" || id.trim() === "") {{
@@ -599,6 +600,7 @@ globalThis.__labMainPromise = (async () => {{
         codec = CODE_MODE_VALUE_CODEC_JS,
         invoker = invoker,
         proxy = proxy,
+        snippet_max_bytes = MAX_SNIPPET_RESOLVED_BYTES_PER_RUN,
     )
 }
 
@@ -955,4 +957,17 @@ fn runner_read_input() -> Result<CodeModeRunnerInput, RunnerReadError> {
         }
         serde_json::from_str(&line).map_err(|err| RunnerReadError::Other(err.to_string()))
     })
+}
+
+#[cfg(test)]
+mod wrapper_tests {
+    use super::*;
+
+    #[test]
+    fn generated_wrapper_uses_the_shared_composed_snippet_budget() {
+        let wrapped = wrap_code_mode("async () => ({ ok: true })", "");
+        assert!(wrapped.contains(&format!(
+            "globalThis.__labSnippetMaxBytes = {MAX_SNIPPET_RESOLVED_BYTES_PER_RUN};"
+        )));
+    }
 }
