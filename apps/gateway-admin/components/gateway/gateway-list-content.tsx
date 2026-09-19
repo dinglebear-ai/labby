@@ -54,6 +54,7 @@ import { gatewayActionTone } from './gateway-theme'
 import { CodeModeHeaderToggle } from './code-mode-toggle'
 import { gatewayBatchActions } from './gateway-batch-actions'
 import { gatewayDisplayName } from '@/lib/gateway-display-name'
+import { describeGatewayOperationalState } from '@/lib/gateway-operational-state'
 
 const DEFAULT_GATEWAY_LENS: GatewayPrimaryLens = 'enabled'
 const DEFAULT_DENSITY: 'comfortable' | 'condensed' = 'comfortable'
@@ -206,28 +207,20 @@ export function GatewayListContent() {
 
   const summary = useMemo(() => {
     const enabled = items.filter((gateway) => gateway.enabled ?? true).length
-    const healthy = items.filter((gateway) => (gateway.enabled ?? true) && gateway.status.healthy && gateway.status.connected).length
-    const disconnected = items.filter((gateway) => (gateway.enabled ?? true) && !gateway.status.connected).length
+    const operationalStates = items.map((gateway) => describeGatewayOperationalState(gateway))
+    const healthy = operationalStates.filter((state) => state.kind === 'healthy').length
+    const disconnected = operationalStates.filter((state) => state.kind === 'disconnected').length
     const sum = (pick: (gateway: Gateway) => number) =>
       items.reduce((total, gateway) => total + pick(gateway), 0)
     const tools = sum((gateway) => gateway.status.discovered_tool_count)
 
     const serverStates = items.map((gateway) => {
       const base = { id: gateway.id, name: gatewayDisplayName(gateway.name) }
-      if (gateway.enabled === false) return { ...base, color: 'var(--aurora-text-muted)', state: 'disabled' }
-      if (!gateway.status.connected) {
-        return { ...base, color: 'var(--aurora-error)', state: 'disconnected' }
-      }
-      if (!gateway.status.healthy) {
-        return { ...base, color: 'var(--aurora-warn)', state: 'unhealthy' }
-      }
-      if (gateway.warnings.length > 0) {
-        return {
-          ...base,
-          color: 'var(--aurora-warn)',
-          state: `${gateway.warnings.length} warning(s)`,
-        }
-      }
+      const operational = describeGatewayOperationalState(gateway)
+      if (operational.kind === 'disabled') return { ...base, color: 'var(--aurora-text-muted)', state: 'disabled' }
+      if (operational.kind === 'disconnected') return { ...base, color: 'var(--aurora-error)', state: 'disconnected' }
+      if (operational.kind === 'degraded') return { ...base, color: 'var(--aurora-warn)', state: 'needs attention' }
+      if (operational.kind === 'discovering') return { ...base, color: 'var(--aurora-accent-primary)', state: 'discovering' }
       return { ...base, color: 'var(--aurora-success)', state: 'healthy' }
     })
 

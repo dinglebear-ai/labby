@@ -3,6 +3,7 @@
 import * as React from 'react'
 import Link from 'next/link'
 import { useGatewayNotifications } from '@/lib/notification-acknowledgements'
+import { describeGatewayOperationalState } from '@/lib/gateway-operational-state'
 import {
   Activity,
   AlertTriangle,
@@ -136,16 +137,11 @@ function heartbeatPoints(buckets: { calls: number }[]): string {
 }
 
 function gatewayTone(gateway: Gateway): { color: string; state: string } {
-  if (!gateway.enabled) return { color: 'var(--aurora-text-muted)', state: 'disabled' }
-  if (!gateway.status.connected) {
-    return { color: 'var(--aurora-error)', state: 'disconnected' }
-  }
-  if (!gateway.status.healthy) {
-    return { color: 'var(--aurora-warn)', state: 'unhealthy' }
-  }
-  if (gateway.warnings.length > 0) {
-    return { color: 'var(--aurora-warn)', state: `${gateway.warnings.length} warning(s)` }
-  }
+  const operational = describeGatewayOperationalState(gateway)
+  if (operational.kind === 'disabled') return { color: 'var(--aurora-text-muted)', state: 'disabled' }
+  if (operational.kind === 'disconnected') return { color: 'var(--aurora-error)', state: 'disconnected' }
+  if (operational.kind === 'degraded') return { color: 'var(--aurora-warn)', state: 'needs attention' }
+  if (operational.kind === 'discovering') return { color: 'var(--aurora-accent-strong)', state: 'discovering' }
   return { color: 'var(--aurora-success)', state: 'healthy' }
 }
 
@@ -198,25 +194,46 @@ export function OverviewHero({
   const secondsSinceLoad = useSecondsSince(loadedAt)
 
   const { isDismissed } = useGatewayNotifications()
-  const unhealthy = gateways.filter(gateway => gateway.enabled !== false && (!gateway.status.connected || !gateway.status.healthy || gateway.warnings.length > 0))
-  const troubled = unhealthy.filter(
-    (gateway) =>
-      gateway.enabled !== false && (
-        ((!gateway.status.connected || !gateway.status.healthy) && !isDismissed(`gateway:${gateway.name}:disconnected`)) ||
-        gateway.warnings.some(warning => !isDismissed(`gateway:${gateway.name}:warning:${warning.code}`))
-      ),
-  )
-  const allHealthy = unhealthy.length === 0 && gateways.some(gateway => gateway.enabled !== false)
-  const pulseColor = allHealthy
-    ? 'var(--aurora-success)'
-    : unhealthy.length > 0
-      ? 'var(--aurora-warn)'
-      : 'var(--aurora-text-muted)'
+  const activeGatewayStates = gateways
+    .filter((gateway) => gateway.enabled !== false)
+    .map((gateway) => ({ gateway, operational: describeGatewayOperationalState(gateway) }))
+  const attention = activeGatewayStates.filter(({ operational }) => operational.needsAttention)
+  const discovering = activeGatewayStates.filter(({ operational }) => operational.kind === 'discovering')
+  const troubled = attention
+    .filter(({ gateway, operational }) => {
+      const prefix = `gateway:${gateway.name}:`
+      const staleCount = gateway.status.likely_stale_count ?? 0
+      const hasConcreteIncident =
+        operational.kind === 'disconnected' || gateway.warnings.length > 0 || staleCount > 0
+
+      if (!hasConcreteIncident) return true
+
+      return (operational.kind === 'disconnected' && !isDismissed(`${prefix}disconnected`))
+        || gateway.warnings.some((warning) => !isDismissed(`${prefix}warning:${warning.code}`))
+        || (staleCount > 0 && !isDismissed(`${prefix}stale`))
+    })
+    .map(({ gateway }) => gateway)
+  const allHealthy =
+    activeGatewayStates.length > 0
+    && activeGatewayStates.every(({ operational }) => operational.kind === 'healthy')
+  const pulseColor = attention.length > 0
+    ? 'var(--aurora-warn)'
+    : discovering.length > 0
+      ? 'var(--aurora-accent-strong)'
+      : allHealthy
+        ? 'var(--aurora-success)'
+        : 'var(--aurora-text-muted)'
   const pulseLabel = gateways.length === 0
     ? 'no servers'
-    : allHealthy
-      ? 'all systems nominal'
-      : troubled.length === 0 ? 'no unacknowledged alerts' : `${troubled.length} need${troubled.length === 1 ? 's' : ''} attention`
+    : activeGatewayStates.length === 0
+      ? 'no active servers'
+      : attention.length > 0
+        ? troubled.length === 0
+          ? 'no unacknowledged alerts'
+          : `${troubled.length} need${troubled.length === 1 ? 's' : ''} attention`
+        : discovering.length > 0
+          ? `${discovering.length} discovering`
+          : 'all systems nominal'
 
   const exposedPrompts = gateways.filter((gateway) => gateway.enabled !== false).reduce(
     (sum, gateway) => sum + gateway.status.exposed_prompt_count,
@@ -584,7 +601,7 @@ export function OverviewHero({
               whiteSpace: 'nowrap',
             }}
           >
-            {gateways.filter(gateway => gateway.enabled !== false && gateway.status.connected && gateway.status.healthy).length}/{live.totalServers} healthy
+            {activeGatewayStates.filter(({ operational }) => operational.kind === 'healthy').length}/{live.totalServers} healthy
           </span>
         </Link>
       </div>

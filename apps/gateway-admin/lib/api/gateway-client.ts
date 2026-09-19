@@ -259,7 +259,13 @@ function applyRuntimeRow(gateway: Gateway, runtime: BackendGatewayMcpRuntimeView
     status: {
       ...gateway.status,
       connected,
-      healthy: Boolean(enabled && connected && !gateway.status.last_error),
+      healthy: Boolean(
+        enabled
+        && connected
+        && !gateway.status.catalog_warming
+        && !gateway.status.last_error
+        && gateway.warnings.length === 0
+      ),
       discovered_tool_count: discoveredToolCount,
       exposed_tool_count: exposedToolCount,
       discovered_resource_count: discoveredResourceCount,
