@@ -24,9 +24,9 @@ function isMacOS() {
  * fill the breadcrumb and action regions through `<AppHeader />`, which portals
  * into the slots registered here.
  */
-export function ConsoleTopbar() {
+export function ConsoleTopbar({ publicSetup = false }: { publicSetup?: boolean } = {}) {
   const { setCrumbSlot, setActionSlot, mobileNavOpen, toggleMobileNav } = useConsoleShell()
-  const status = useConsoleStatus()
+  const status = useConsoleStatus(!publicSetup)
   const [searchHovered, setSearchHovered] = React.useState(false)
   const [modKey, setModKey] = React.useState('⌘')
 

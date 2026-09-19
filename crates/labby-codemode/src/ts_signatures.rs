@@ -9,7 +9,7 @@
 //!   in-browser Monaco editor can use for auto-complete and type checking.
 //!
 //! This module is the **live** TypeScript generator called from `types.rs` via
-//! `ToolDescriptor::tool`. It is NOT backward-compat shims.
+//! `CatalogDescriptor::tool`. It is NOT backward-compat shims.
 
 use std::collections::{BTreeSet, HashSet};
 

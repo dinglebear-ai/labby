@@ -11,7 +11,7 @@
 //! machinery from commit 780c67d3). Surfacing types/schemas via `search` is a
 //! separate follow-up; this module only restores the executable proxy.
 
-use super::types::{CodeModeCatalogKind, CodeModeDiscoveryEntry, ToolDescriptor};
+use super::types::{CatalogDescriptor, CodeModeCatalogKind, CodeModeDiscoveryEntry};
 
 // ────────────────────────────────────────────────────────────────────────────
 // Tool name conversion (snake_case — Cloudflare Code Mode parity)
@@ -201,6 +201,12 @@ codemode.search = async function(input) {{
   var limit = typeof input === "object" && input !== null && Number.isFinite(Number(input.limit))
     ? Math.max(1, Math.min(50, Number(input.limit)))
     : 50;
+  var requestedKinds = typeof input === "object" && input !== null && Array.isArray(input.kinds)
+    ? input.kinds.map(function(kind) {{ return String(kind).trim().toLowerCase(); }})
+    : [];
+  var kindFilter = Object.create(null);
+  for (var k = 0; k < requestedKinds.length; k++) kindFilter[requestedKinds[k]] = true;
+  var hasKindFilter = requestedKinds.length > 0;
   var tokens = __codemodeTokens(query);
   var __codemodeNoMatchHint = "No matches. Broaden the query or try synonyms.";
   if (!tokens.length) return {{ results: [], total: 0, truncated: false, hint: __codemodeNoMatchHint }};
@@ -210,6 +216,7 @@ codemode.search = async function(input) {{
   var scored = [];
   for (var i = 0; i < __codemodeDiscovery.length; i++) {{
     var entry = __codemodeDiscovery[i];
+    if (hasKindFilter && !kindFilter[String(entry.kind)]) continue;
     var fields = [
       [__codemodeNormalize(entry.path), 12],
       [__codemodeNormalize(entry.name), 10],
@@ -257,7 +264,7 @@ codemode.search = async function(input) {{
   // an exception that could break search().
   var ranked = [];
   try {{
-    var response = await callTool("__lab_internal::semantic_rank", {{ query: query, limit: limit }});
+    var response = await callTool("__lab_internal::semantic_rank", {{ query: query, limit: limit, kinds: requestedKinds }});
     ranked = (response && response.ranked) || [];
   }} catch (e) {{
     ranked = [];
@@ -302,6 +309,7 @@ codemode.search = async function(input) {{
       for (var d = 0; d < __codemodeDiscovery.length; d++) {{
         if (__codemodeDiscovery[d].id === rid) {{
           var de = __codemodeDiscovery[d];
+          if (hasKindFilter && !kindFilter[String(de.kind)]) break;
           var record2 = {{
             path: de.path, id: de.id, kind: de.kind, namespace: de.namespace,
             name: de.name, description: de.description, signature: de.signature,
@@ -394,7 +402,7 @@ codemode.describe = async function(target) {{
     var toolDeclaration = entry.tools === undefined ? "omitted (caller policy unchanged)" : (entry.tools.length ? entry.tools.join(", ") : "[] (intended deny-all)");
     markdown = "# " + entry.name + "\n\nKind: snippet\n\nName: `" + entry.name + "`\n\nDescription: " + entry.description + "\n\nRun: `codemode.run(" + JSON.stringify(entry.name) + ", input)`\n" + (inputLines ? "\nInputs:\n" + inputLines + "\n" : "\nInputs: none\n");
     markdown += "\nDeclared upstream tools: " + toolDeclaration + "\nMetadata only: declarations do not currently restrict execution.\n";
-  }} else {{
+  }} else if (entry.kind === "tool") {{
     markdown = "# " + entry.path + "\n\n" + entry.description + "\n\n- kind: `tool`\n- id: `" + entry.id + "`\n- helper: `" + entry.helper + "`\n- signature: `" + entry.signature + "`\n";
     // Fetched from the host on demand rather than embedded in the sandbox
     // preamble up front — the host already has this cached from the same
@@ -415,6 +423,11 @@ codemode.describe = async function(target) {{
     if (typeBody) {{
       markdown += "\nParameters (TypeScript):\n\n```typescript\n" + typeBody + "```\n";
     }}
+  }} else {{
+    markdown = "# " + entry.path + "\n\n" + entry.description
+      + "\n\n- kind: `" + entry.kind + "`\n- id: `" + entry.id
+      + "`\n- helper: `" + entry.helper + "`\n";
+    if (entry.signature) markdown += "- signature: `" + entry.signature + "`\n";
   }}
   return {{
     path: entry.path,
@@ -545,11 +558,13 @@ globalThis.openapi = {
 /// concatenated in front of a trailing IIFE the IIFE's promise remains the
 /// `eval` completion value.
 ///
-pub(crate) fn generate_js_proxy_from_catalog(tools: &[&ToolDescriptor]) -> Result<String, String> {
+pub(crate) fn generate_js_proxy_from_catalog(
+    tools: &[&CatalogDescriptor],
+) -> Result<String, String> {
     use std::collections::BTreeMap;
     use std::fmt::Write as _;
 
-    let mut by_namespace: BTreeMap<&str, Vec<&ToolDescriptor>> = BTreeMap::new();
+    let mut by_namespace: BTreeMap<&str, Vec<&CatalogDescriptor>> = BTreeMap::new();
     for tool in tools {
         if tool.kind != CodeModeCatalogKind::Tool {
             continue;
@@ -627,7 +642,7 @@ mod snippet_declaration_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ToolDescriptor;
+    use crate::types::CatalogDescriptor;
 
     fn discovery_entry(namespace: &str, name: &str, description: &str) -> CodeModeDiscoveryEntry {
         let path = format!("{namespace}.{name}");
@@ -649,9 +664,9 @@ mod tests {
         }
     }
 
-    /// Build a `ToolDescriptor` for the proxy-generation tests.
-    fn descriptor(namespace: &str, tool: &str) -> ToolDescriptor {
-        ToolDescriptor::tool(namespace, tool, "", None, None)
+    /// Build a `CatalogDescriptor` for the proxy-generation tests.
+    fn descriptor(namespace: &str, tool: &str) -> CatalogDescriptor {
+        CatalogDescriptor::tool(namespace, tool, "", None, None)
     }
 
     #[test]
@@ -663,8 +678,8 @@ mod tests {
     }
 
     /// Generate the runtime proxy from owned descriptors.
-    fn proxy(tools: &[ToolDescriptor]) -> Result<String, String> {
-        let refs: Vec<&ToolDescriptor> = tools.iter().collect();
+    fn proxy(tools: &[CatalogDescriptor]) -> Result<String, String> {
+        let refs: Vec<&CatalogDescriptor> = tools.iter().collect();
         generate_js_proxy_from_catalog(&refs)
     }
 

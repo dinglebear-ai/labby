@@ -597,12 +597,12 @@ export function AccountMenu({ placement = 'sidebar' }: { placement?: 'sidebar' |
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 
-export function ConsoleSidebar() {
+export function ConsoleSidebar({ publicSetup = false }: { publicSetup?: boolean } = {}) {
   const pathname = usePathname()
   const router = useRouter()
   const session = useBrowserSession()
   const authority = session.status === 'authenticated' ? session.authority : undefined
-  const status = useConsoleStatus()
+  const status = useConsoleStatus(!publicSetup)
   const [stashSupported, setStashSupported] = React.useState(true)
   React.useEffect(() => {
     const controller = new AbortController()
@@ -616,8 +616,10 @@ export function ConsoleSidebar() {
   }, [authority])
 
   const navSections = React.useMemo(
-    () => capabilityAwareNavSections(authority?.capabilities ?? [], stashSupported),
-    [authority?.capabilities, stashSupported],
+    () => publicSetup
+      ? consoleNavSections
+      : capabilityAwareNavSections(authority?.capabilities ?? [], stashSupported),
+    [authority?.capabilities, publicSetup, stashSupported],
   )
   const { collapsed, toggleCollapsed, mobileNavOpen, setMobileNavOpen } = useConsoleShell()
   const [isMobile, setIsMobile] = React.useState(false)
