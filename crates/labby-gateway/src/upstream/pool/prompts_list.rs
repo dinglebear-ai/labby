@@ -21,12 +21,6 @@ use super::helpers::merge_upstream_prompts;
 use super::logging::is_capability_unsupported;
 use super::tools::MAX_UPSTREAM_PROMPTS;
 
-/// Number of prompt serializations performed while bounding the merged
-/// envelope; tests assert each prompt is measured once.
-#[cfg(test)]
-pub(super) static MERGED_PROMPT_MEASUREMENTS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-
 /// One regular non-OAuth upstream Prompt with exact pre-namespace provenance.
 /// This is observational listing metadata, not prompt execution authority.
 #[derive(Clone, Debug, PartialEq)]
@@ -224,7 +218,8 @@ impl UpstreamPool {
             super::helpers::max_response_bytes(),
             |prompt| {
                 #[cfg(test)]
-                MERGED_PROMPT_MEASUREMENTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.merged_prompt_measurements
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 serde_json::to_vec(prompt).map_or(usize::MAX, |body| body.len() + 1)
             },
         );
@@ -519,12 +514,12 @@ mod tests {
         for index in 1..5 {
             attach_prompt_server(&pool, &format!("many-{index}"), ManyPromptsServer).await;
         }
-        MERGED_PROMPT_MEASUREMENTS.store(0, Ordering::SeqCst);
+        pool.merged_prompt_measurements.store(0, Ordering::SeqCst);
 
         let prompts = pool.list_upstream_prompts(&[]).await;
 
         assert_eq!(prompts.len(), 3000.min(MAX_UPSTREAM_PROMPTS));
-        let measurements = MERGED_PROMPT_MEASUREMENTS.load(Ordering::SeqCst);
+        let measurements = pool.merged_prompt_measurements.load(Ordering::SeqCst);
         assert!(
             measurements <= 3000,
             "each prompt must be measured once while bounding the merged envelope; measured {measurements} times"

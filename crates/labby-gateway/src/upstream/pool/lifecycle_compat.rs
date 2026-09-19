@@ -173,7 +173,7 @@ pub(super) fn log_fallback(
     attempt: LifecycleAttempt,
     error: &anyhow::Error,
 ) {
-    tracing::warn!(
+    tracing::info!(
         surface = "dispatch",
         service = "upstream.pool",
         action = "upstream.lifecycle.fallback",

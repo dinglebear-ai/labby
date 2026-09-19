@@ -4624,7 +4624,7 @@ url = "https://acme.example.com/mcp"
     fn code_mode_is_root_level_config_with_default_limits() {
         let default_cfg = LabConfig::default();
         assert_eq!(default_cfg.code_mode.timeout_ms, 30_000);
-        assert_eq!(default_cfg.code_mode.max_source_bytes, 128 * 1024);
+        assert_eq!(default_cfg.code_mode.max_source_bytes, 1024 * 1024);
         assert_eq!(default_cfg.code_mode.max_response_bytes, 24 * 1024);
         assert_eq!(default_cfg.code_mode.max_response_tokens, 6000);
 
