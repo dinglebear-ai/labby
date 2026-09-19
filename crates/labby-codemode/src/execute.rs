@@ -43,8 +43,8 @@ const LAB_INTERNAL_NAMESPACE: &str = "__lab_internal";
 /// pattern (FAIL-OPEN invariant).
 const MAX_SEMANTIC_QUERY_BYTES: usize = 8 * 1024;
 
-/// Maximum URI size accepted by the reserved resource-read bridge.
-const MAX_RESOURCE_URI_BYTES: usize = 8 * 1024;
+/// Maximum identifier/URI size accepted by progressive-disclosure bridges.
+const MAX_CAPABILITY_IDENTIFIER_BYTES: usize = 8 * 1024;
 
 /// Reserve time for the host to serialize and return the final MCP result.
 ///
@@ -477,7 +477,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                         message: "list_resources requires a non-empty `upstream`".to_string(),
                         param: "upstream".to_string(),
                     })?;
-                if upstream.len() > MAX_RESOURCE_URI_BYTES {
+                if upstream.len() > MAX_CAPABILITY_IDENTIFIER_BYTES {
                     return Err(ToolError::Sdk {
                         sdk_kind: "invalid_param".to_string(),
                         message: "resource upstream name is too long".to_string(),
@@ -495,11 +495,11 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                         message: "read_resource requires a non-empty `uri`".to_string(),
                         param: "uri".to_string(),
                     })?;
-                if uri.len() > MAX_RESOURCE_URI_BYTES {
+                if uri.len() > MAX_CAPABILITY_IDENTIFIER_BYTES {
                     return Err(ToolError::Sdk {
                         sdk_kind: "invalid_param".to_string(),
                         message: format!(
-                            "resource URI exceeds max length {MAX_RESOURCE_URI_BYTES} bytes"
+                            "resource URI exceeds max length {MAX_CAPABILITY_IDENTIFIER_BYTES} bytes"
                         ),
                     });
                 }
@@ -515,6 +515,14 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                         message: "get_prompt requires a non-empty `prompt`".to_string(),
                         param: "prompt".to_string(),
                     })?;
+                if prompt.len() > MAX_CAPABILITY_IDENTIFIER_BYTES {
+                    return Err(ToolError::InvalidParam {
+                        message: format!(
+                            "prompt identifier exceeds max length {MAX_CAPABILITY_IDENTIFIER_BYTES} bytes"
+                        ),
+                        param: "prompt".to_string(),
+                    });
+                }
                 let arguments = params
                     .get("arguments")
                     .cloned()
@@ -538,11 +546,11 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                         message: "get_skill requires a non-empty `uri`".to_string(),
                         param: "uri".to_string(),
                     })?;
-                if uri.len() > MAX_RESOURCE_URI_BYTES {
+                if uri.len() > MAX_CAPABILITY_IDENTIFIER_BYTES {
                     return Err(ToolError::Sdk {
                         sdk_kind: "invalid_param".to_string(),
                         message: format!(
-                            "Skill URI exceeds max length {MAX_RESOURCE_URI_BYTES} bytes"
+                            "Skill URI exceeds max length {MAX_CAPABILITY_IDENTIFIER_BYTES} bytes"
                         ),
                     });
                 }
@@ -558,11 +566,11 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                         message: "read_skill requires a non-empty `uri`".to_string(),
                         param: "uri".to_string(),
                     })?;
-                if uri.len() > MAX_RESOURCE_URI_BYTES {
+                if uri.len() > MAX_CAPABILITY_IDENTIFIER_BYTES {
                     return Err(ToolError::Sdk {
                         sdk_kind: "invalid_param".to_string(),
                         message: format!(
-                            "Skill URI exceeds max length {MAX_RESOURCE_URI_BYTES} bytes"
+                            "Skill URI exceeds max length {MAX_CAPABILITY_IDENTIFIER_BYTES} bytes"
                         ),
                     });
                 }
@@ -1395,7 +1403,7 @@ mod tests {
             json!({}),
             json!({"upstream": 42}),
             json!({"upstream": ""}),
-            json!({"upstream": "x".repeat(MAX_RESOURCE_URI_BYTES + 1)}),
+            json!({"upstream": "x".repeat(MAX_CAPABILITY_IDENTIFIER_BYTES + 1)}),
         ] {
             assert!(
                 broker
@@ -1519,6 +1527,27 @@ mod tests {
             .await
             .expect_err("non-object prompt arguments must fail before host dispatch");
         assert_eq!(invalid_prompt.kind(), "invalid_param");
+
+        let oversized_prompt = broker
+            .call_tool_id(
+                "__lab_internal::get_prompt",
+                json!({
+                    "prompt": "x".repeat(MAX_CAPABILITY_IDENTIFIER_BYTES + 1),
+                    "arguments": {},
+                }),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &scope,
+                ExecCtx::none(),
+            )
+            .await
+            .expect_err("oversized prompt identifier must fail before host dispatch");
+        assert_eq!(oversized_prompt.kind(), "invalid_param");
+        assert!(
+            oversized_prompt
+                .to_string()
+                .contains("prompt identifier exceeds max length")
+        );
 
         let missing_skill_uri = broker
             .call_tool_id(
