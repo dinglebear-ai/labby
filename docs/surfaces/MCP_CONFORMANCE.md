@@ -110,7 +110,8 @@ unroutable.
 |---|---|---|
 | Protocol lifecycle | Modern clients use stateless `server/discover`; legacy `initialize` is adapted only at the transport edge | discovery tests, bridge tests, and the multi-hop driver |
 | Stateless HTTP | No `Mcp-Session-Id`; `NeverSessionManager`; JSON responses | HTTP lifecycle tests and rmcp dated suite |
-| SEP-2243 headers | rmcp validates method/name headers before dispatch | HTTP method/name header tests |
+| Unix-socket upstreams | rmcp native Unix Streamable HTTP client; origin-form request targets; bounded JSON/SSE responses; HTTP-equivalent auth, lifecycle, cancellation, and graceful degradation | rmcp Unix transport suite plus Labby adapter/connect/cancellation regressions |
+| SEP-2243 headers | rmcp validates method/name headers before dispatch; Labby's HTTP and Unix adapters defensively replace stale method/name mirrors at the wire boundary | HTTP method/name header tests plus Unix adapter/wire tests |
 | Request envelopes | Metadata, input responses, request state, cancellation, and progress association survive proxy routes | request-envelope tests and relay module |
 | Cache hints | Dynamic Labby lists/reads emit `ttlMs: 0` with private scope | tool, prompt, resource, and server serialization tests |
 | MRTR | Tool, prompt, and resource intermediate results remain first-class | relay tests and multi-hop driver |

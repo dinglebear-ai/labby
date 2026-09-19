@@ -431,7 +431,7 @@ omitted and remove it only when `--clear-project-id` is explicit.
 
 ## Gateway Upstreams
 
-An upstream is HTTP, stdio, or a Unix-domain socket. HTTP credentials reference
+An upstream is HTTP, WebSocket, stdio, or a Unix-domain socket. HTTP credentials reference
 environment variable names; secret values never belong in TOML. Stdio commands
 pass through the spawn guard unless the operator explicitly extends or disables
 it. A Unix-socket upstream requires `transport = "unix_socket"`, a `socket_path`
@@ -451,8 +451,11 @@ auto_reconnect = true
 ```
 
 Labby probes each enabled non-OAuth upstream every 30 seconds, backs off after
-failures, and replaces stale stdio or HTTP transports when they recover. The
-default is `false`; ephemeral connection tests never start recovery tasks.
+failures, and replaces stale stdio, HTTP, WebSocket, or Unix-socket transports
+when they recover. Failed upstreams remain visible through gateway status as
+unhealthy/degraded entries with sanitized `last_error`; they do not remove tools
+from healthy peers. The default is `false`; ephemeral connection tests never
+start recovery tasks.
 
 ### Upstream OAuth (authorization_code + PKCE)
 

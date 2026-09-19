@@ -364,6 +364,127 @@ mod tests {
         assert!(wire.get("id").is_some());
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unix_socket_relay_cancellation_round_trips_over_rmcp_transport() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        use tokio::net::UnixListener;
+
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let socket_path = tempdir.path().join("cancel.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind Unix socket");
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener
+                .accept()
+                .await
+                .expect("accept cancellation request");
+            let mut buffer = Vec::new();
+            let mut scratch = [0_u8; 4096];
+            let headers_end = loop {
+                if let Some(index) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+                    break index;
+                }
+                let read = stream.read(&mut scratch).await.expect("read headers");
+                assert!(read > 0, "connection closed before headers");
+                buffer.extend_from_slice(&scratch[..read]);
+            };
+            let body_start = headers_end + 4;
+            let headers = std::str::from_utf8(&buffer[..headers_end])
+                .expect("UTF-8 headers")
+                .to_owned();
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            while buffer.len() < body_start + content_length {
+                let read = stream.read(&mut scratch).await.expect("read body");
+                assert!(read > 0, "connection closed before body");
+                buffer.extend_from_slice(&scratch[..read]);
+            }
+
+            assert_eq!(
+                headers.lines().next(),
+                Some("POST /mcp?tenant=infra HTTP/1.1")
+            );
+            assert!(
+                headers.lines().any(|line| {
+                    line.split_once(':').is_some_and(|(name, value)| {
+                        name.eq_ignore_ascii_case("mcp-method")
+                            && value.trim() == MCP_RELAY_CANCELLATION_REQUEST_METHOD
+                    })
+                }),
+                "Mcp-Method header should identify the relay cancellation request"
+            );
+            assert!(
+                headers.lines().any(|line| {
+                    line.split_once(':').is_some_and(|(name, value)| {
+                        name.eq_ignore_ascii_case("mcp-protocol-version")
+                            && value.trim() == ProtocolVersion::V_2026_07_28.as_str()
+                    })
+                }),
+                "protocol version header should be preserved"
+            );
+
+            let request: serde_json::Value =
+                serde_json::from_slice(&buffer[body_start..body_start + content_length])
+                    .expect("JSON request");
+            assert_eq!(
+                request.get("method").and_then(serde_json::Value::as_str),
+                Some(MCP_RELAY_CANCELLATION_REQUEST_METHOD)
+            );
+            assert_eq!(
+                request
+                    .pointer("/params/token")
+                    .and_then(serde_json::Value::as_str),
+                Some("wire-cancel-token")
+            );
+            let id = request.get("id").cloned().expect("request id");
+            let response = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {"cancelled": true}
+            });
+            let body = serde_json::to_vec(&response).expect("serialize response");
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream
+                .write_all(head.as_bytes())
+                .await
+                .expect("write response headers");
+            stream.write_all(&body).await.expect("write response body");
+            stream.flush().await.expect("flush response");
+        });
+
+        let mut config = super::super::testsupport::test_upstream_config();
+        config.name = "unix-cancel".to_string();
+        config.transport = Some(UpstreamTransport::UnixSocket);
+        config.socket_path = Some(socket_path.to_string_lossy().into_owned());
+        config.url = Some("http://cancel.internal/mcp?tenant=infra".to_string());
+        config.validate().expect("valid Unix cancellation config");
+
+        let sender = build_http_cancellation_sender(&config, None, None, None)
+            .await
+            .expect("build Unix cancellation sender")
+            .expect("Unix cancellation sender");
+        assert!(
+            sender
+                .send_relay_token("downstream request cancelled", "wire-cancel-token")
+                .await
+                .expect("send relay cancellation"),
+            "server acknowledgement should be honored"
+        );
+
+        server.await.expect("Unix cancellation server task");
+    }
+
     #[test]
     fn cancellation_token_survives_json_round_trip() {
         let token = "test-cancellation-token";

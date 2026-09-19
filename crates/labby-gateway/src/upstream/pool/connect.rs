@@ -651,6 +651,12 @@ async fn connect_unix_socket_upstream_once<H: ClientHandler>(
     let tools = catalog_pagination::list_tools(&peer, DISCOVERY_TIMEOUT, MAX_UPSTREAM_TOOLS)
         .await
         .map_err(|error| anyhow::anyhow!(error.bounded_text()))?;
+    tracing::info!(
+        surface = "dispatch", service = "upstream.pool",
+        upstream = %config.name, transport = "unix_socket",
+        action = "upstream.connect.finish", tool_count = tools.len(),
+        "upstream connect finish",
+    );
 
     Ok((
         UpstreamConnection {

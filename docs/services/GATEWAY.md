@@ -75,6 +75,16 @@ counts, and `last_error`, never another caller's. A subject connection that
 fails stays visible as that view's `last_error` (sanitized, never token
 material) until a connect for the same subject succeeds.
 
+Unix-socket upstreams use the same runtime health projection. If a local socket
+is absent, refuses a connection, times out, or exceeds the configured response
+budget, that upstream becomes degraded/unhealthy without suppressing healthy
+peers. `gateway.get`, `gateway.list`, `gateway.mcp.list`, and the Gateway Status
+MCP App surface the resulting connection state and sanitized `last_error`.
+Structured gateway logs identify `transport = "unix_socket"` and a classified
+failure `kind` while redacting the filesystem socket path from the target.
+When `auto_reconnect` is enabled, normal reprobe scheduling/backoff performs the
+recovery; there is no socket-specific recovery loop.
+
 Configuration mutations wait at most two minutes for the shared mutation lease
 and then fail with `service_unavailable`; retry once the running change
 finishes.

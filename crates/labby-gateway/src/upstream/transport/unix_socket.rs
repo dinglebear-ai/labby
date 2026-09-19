@@ -157,3 +157,127 @@ impl StreamableHttpClient for LabbyUnixSocketHttpClient {
             .await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_uri_preserves_path_and_query_without_authority() {
+        assert_eq!(
+            request_uri("http://cortex.internal/mcp?tenant=infra").expect("valid URL"),
+            "/mcp?tenant=infra"
+        );
+        assert_eq!(
+            request_uri("http://cortex.internal").expect("valid URL"),
+            "/"
+        );
+    }
+
+    #[test]
+    fn defensive_headers_replace_stale_method_and_name_values() {
+        let message: ClientJsonRpcMessage = serde_json::from_value(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": {
+                "name": "unix_echo",
+                "arguments": {}
+            }
+        }))
+        .expect("valid MCP request");
+        let headers = HashMap::from([
+            (
+                HeaderName::from_static("mcp-method"),
+                HeaderValue::from_static("wrong/method"),
+            ),
+            (
+                HeaderName::from_static("mcp-name"),
+                HeaderValue::from_static("wrong-name"),
+            ),
+            (
+                HeaderName::from_static("x-labby-test"),
+                HeaderValue::from_static("present"),
+            ),
+        ]);
+
+        let headers = LabbyUnixSocketHttpClient::enrich_headers(&message, headers);
+
+        assert_eq!(
+            headers
+                .get(&HeaderName::from_static("mcp-method"))
+                .and_then(|value| value.to_str().ok()),
+            Some("tools/call")
+        );
+        assert_eq!(
+            headers
+                .get(&HeaderName::from_static("mcp-name"))
+                .and_then(|value| value.to_str().ok()),
+            Some("unix_echo")
+        );
+        assert_eq!(
+            headers
+                .get(&HeaderName::from_static("x-labby-test"))
+                .and_then(|value| value.to_str().ok()),
+            Some("present")
+        );
+    }
+
+    #[test]
+    fn unix_socket_adapter_preserves_raw_responses() {
+        assert!(LabbyUnixSocketHttpClient::preserves_raw_responses());
+    }
+
+    #[tokio::test]
+    async fn unix_socket_adapter_forwards_response_body_cap() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        use tokio::net::UnixListener;
+
+        let tempdir = tempfile::Builder::new()
+            .prefix("lb-uds-cap-")
+            .tempdir_in("/tmp")
+            .expect("short temporary directory");
+        let socket_path = tempdir.path().join("mcp.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind Unix socket");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept request");
+            let mut request = [0_u8; 4096];
+            let read = stream.read(&mut request).await.expect("read request");
+            assert!(read > 0, "client must send an HTTP request");
+            let body = vec![b'x'; 1024];
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream
+                .write_all(head.as_bytes())
+                .await
+                .expect("write headers");
+            stream.write_all(&body).await.expect("write body");
+            stream.flush().await.expect("flush response");
+        });
+
+        let message: ClientJsonRpcMessage = serde_json::from_value(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "server/discover",
+            "params": {}
+        }))
+        .expect("valid request");
+        let client = LabbyUnixSocketHttpClient::new(
+            socket_path.to_string_lossy().as_ref(),
+            "http://cap.internal/mcp",
+            128,
+        );
+        let error = client
+            .post_message(Arc::from("/mcp"), message, None, None, HashMap::new())
+            .await
+            .expect_err("oversized response must fail before JSON decoding");
+        assert!(
+            error.to_string().contains("response_too_large"),
+            "unexpected error: {error}"
+        );
+
+        server.await.expect("Unix response-cap server task");
+    }
+}
