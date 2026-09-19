@@ -252,6 +252,15 @@ Preferred runner:
 - use `cargo test` only when nextest is unavailable or you need a narrow one-off command that nextest does not cover cleanly
 - for this repo, `cargo nextest run --manifest-path crates/labby/Cargo.toml --all-features` is the standard full-crate verification command
 
+CI splits `crates/labby/tests/*.rs` across `labby-int-*` target shards. Many of
+those binaries embed the same `live_labby` process-supervision harness. Shards
+de-duplicate those internal support tests and execute them once through the
+`live_process_harness` target. The CI nextest profile also reserves all local
+test slots for process-owning integration binaries, so separate daemon/browser
+fixtures cannot consume one another's readiness, cleanup, or timeout budgets.
+This preserves the product deadlines the tests prove without trading flakiness
+for inflated timeouts.
+
 If tests were not run, say so explicitly.
 
 ## Command Guidance

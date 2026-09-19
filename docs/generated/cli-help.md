@@ -581,8 +581,13 @@ Options:
       --public-url <PUBLIC_URL>
           Public browser/OAuth URL for the server
 
+      --auth <AUTH>
+          Server authentication topology. Existing server invocations that pass --oauth google|authelia without --auth keep their historical OAuth + bearer break-glass behavior
+
+          [possible values: bearer, oauth, both]
+
       --oauth <OAUTH>
-          Authentication provider to configure during setup. Bearer remains available as break-glass auth
+          OAuth identity provider to configure during setup. Selects exactly one inbound provider
 
           [possible values: none, google, authelia]
 
@@ -1295,7 +1300,7 @@ Options:
           Emit JSON instead of human-readable tables
 
       --server-url <SERVER_URL>
-          Requested server URL; it must match the active plugin, persisted, or http://localhost:40100 host-proxy target
+          Requested server URL; it must match the active plugin, persisted, or standard http://127.0.0.1:8765 loopback target
 
       --color <COLOR>
           Control human-readable CLI styling

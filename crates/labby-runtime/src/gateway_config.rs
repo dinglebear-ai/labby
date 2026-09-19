@@ -111,6 +111,7 @@ fn default_mcp_scopes() -> Vec<String> {
 pub struct McpAppsConfig {
     /// Attach MCP App metadata to the always-available `mcp_app` control tool and advertise its UI resources.
     /// The control tool itself remains available when this is false.
+    /// Fresh installs expose the manager UI by default.
     #[serde(default = "default_true")]
     pub manager: bool,
     /// Advertise the synthetic Add Server app tool and its UI resources.

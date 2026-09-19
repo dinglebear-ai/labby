@@ -121,20 +121,37 @@ function listen() {
 		server.listen(0, "127.0.0.1", () => ok(server.address().port));
 	});
 }
-async function wait(p, s) {
+async function waitManagerSwitch(p, checked) {
+	const expected = String(checked);
 	try {
 		await p
-			.locator("#status")
-			.filter({ hasText: s })
+			.locator(
+				`button[data-target=manager][aria-checked="${expected}"]:not([disabled])`,
+			)
 			.waitFor({ timeout: 5000 });
 	} catch (e) {
+		const button = p.locator("button[data-target=manager]");
 		throw new Error(
-			`${e.message}; actual status=${await p
+			`${e.message}; actual checked=${await button
+				.getAttribute("aria-checked")
+				.catch(() => "missing")}; summary=${await p
+				.locator("#summary")
+				.textContent()
+				.catch(() => "missing")}; status=${await p
 				.locator("#status")
 				.textContent()
 				.catch(() => "missing")}`,
 		);
 	}
+}
+async function setManager(enabled) {
+	await call({
+		name: "mcp_app",
+		arguments: {
+			action: enabled ? "enable" : "disable",
+			params: { target: "manager" },
+		},
+	});
 }
 async function csp(p, port) {
 	const got = await p.evaluate(async (port) => {
@@ -176,16 +193,10 @@ async function csp(p, port) {
 	return got;
 }
 async function exercise(host, p, port) {
-	await wait(p, "up to date");
-	const policy = await csp(p, port),
-		on = await p
-			.locator("button[data-target=manager]")
-			.getAttribute("aria-checked");
+	await waitManagerSwitch(p, true);
+	const policy = await csp(p, port);
 	await p.locator("button[data-target=manager]").click();
-	await wait(
-		p,
-		on === "true" ? "Disabled MCP Apps Manager" : "Enabled MCP Apps Manager",
-	);
+	await waitManagerSwitch(p, false);
 	const auth = await p.evaluate(() =>
 		invalidMcpCall({
 			name: "mcp_app",
@@ -214,6 +225,7 @@ try {
 	await ctx.exposeFunction("invalidMcpCall", (x) =>
 		call(x, "invalid-q4-token"),
 	);
+	await setManager(true);
 	const o = await ctx.newPage();
 	await o.addInitScript(
 		() =>
@@ -242,6 +254,7 @@ try {
 		message: "injected OpenAI transport failure",
 	});
 	events.find((event) => event.host === "openai-emulator").type_error_calls = 1;
+	await setManager(true);
 	const h = await ctx.newPage();
 	await h.goto(`http://127.0.0.1:${port}/anthropic`);
 	await h.waitForTimeout(250);

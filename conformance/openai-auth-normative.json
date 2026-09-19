@@ -1,7 +1,7 @@
 {
   "source_url": "https://developers.openai.com/plugins/build/auth.md",
-  "source_sha256": "8ac6a2420c13e0ee8ca9dfc86ea058d06d61ce902127003e3ded848a944506d7",
-  "captured_at": "2026-09-08",
+  "source_sha256": "30906090c8e55b0e2f6dc88ef16552054a8dc297ea547e4eb963fba848368042",
+  "captured_at": "2026-09-18",
   "requirements": [
     {"id":"OAI-CLAUSE-001","source_excerpt":"anything that exposes customer-specific data or write actions should\nauthenticate users.","strength":"recommended","applicability":"applicable","status":"pass","verification_ids":["OAI-AUTH-011"],"disposition":"The generated HTTP route inventory and registered MCP service/action catalogs are the executable denominator. Every mounted customer-specific or write HTTP route is probed behind shared authentication, runtime-conditional routes are explicitly classified, every MCP descriptor declares the Labby OAuth scope, and ActionSpec drives per-action admin scope enforcement before dispatch."},
     {"id":"OAI-CLAUSE-002","source_excerpt":"expected to implement an OAuth 2.1 flow that conforms to the [MCP authorization spec]","strength":"required","applicability":"applicable","status":"pass","verification_ids":["MCP-2026-AUTH-INDEX-001"],"disposition":"The complete actor-bound MCP 2026-07-28 denominator, rather than an OAuth-metadata subset, is the executable dependency for this claim."},
