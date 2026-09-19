@@ -112,7 +112,9 @@ specification](https://agentskills.io/specification).
 | `license` | no | string |
 | `compatibility` | no | 1–500 chars when present |
 | `metadata` | no | object, string values only |
-| `allowed-tools` | no | space-separated **string** (not a list); experimental |
+| `allowed-tools` | no | normative Agent Skills form is a space-separated **string**; experimental |
+
+For federation compatibility, Labby also accepts comma-delimited strings and YAML arrays of non-empty strings because deployed Agent Skills clients and validators emit those forms. Labby preserves the original frontmatter shape verbatim for SEP cross-verification and normalizes only the derived, non-authorizing tool hints.
 
 Unknown keys pass through unchanged — the listing carries frontmatter "verbatim
 as a JSON object — every field the author wrote, not a curated subset". Keys

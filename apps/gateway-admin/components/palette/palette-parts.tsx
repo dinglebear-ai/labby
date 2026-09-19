@@ -15,6 +15,8 @@ export function paletteToneVar(tone: PaletteTone): string {
   switch (tone) {
     case 'success':
       return 'var(--aurora-success)'
+    case 'info':
+      return 'var(--aurora-accent-strong)'
     case 'warn':
       return 'var(--aurora-warn)'
     case 'error':

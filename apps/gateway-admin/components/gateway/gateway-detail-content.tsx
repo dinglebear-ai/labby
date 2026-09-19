@@ -81,6 +81,7 @@ import { GatewayCompactCatalog } from './gateway-compact-catalog'
 import { GatewayActivityPanels } from './gateway-activity-panels'
 import { gatewayDetailStatus } from './gateway-detail-status'
 import { gatewayDisplayName } from '@/lib/gateway-display-name'
+import { describeGatewayOperationalState } from '@/lib/gateway-operational-state'
 import {
   DETAIL_NO_DATA,
   DETAIL_PANEL_GRID_STYLE,
@@ -768,6 +769,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
   const updatedAtLabel = formatGatewayTimestamp(gateway.updated_at)
   const isEnabled = gateway.enabled ?? true
   const detailStatus = gatewayDetailStatus({ enabled: isEnabled, connected: gateway.status.connected, healthy: gateway.status.healthy })
+  const operationalStatus = describeGatewayOperationalState(gateway)
   const statusLabel = detailStatus.label
   const displayName = gateway.display_name?.trim() ? gatewayLabel(gateway) : gatewayDisplayName(gateway.name)
   const statusDotColor = detailStatus.tone === 'connected'
@@ -1090,15 +1092,23 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                       </DetailWarnPill>
                     </>
                   ) : null}
-                  {gateway.warnings.length > 0 || (gateway.status.likely_stale_count ?? 0) > 0 ? (
+                  {operationalStatus.kind === 'degraded' || operationalStatus.kind === 'discovering' ? (
                     <>
                       <HeaderMetaDot />
                       <span
-                        className="inline-grid size-[18px] place-items-center rounded-[5px] text-aurora-warn"
-                        title={gateway.warnings[0]?.message ?? `${gateway.status.likely_stale_count} likely stale processes`}
-                        aria-label="Server needs attention"
+                        className={cn(
+                          'inline-flex h-[22px] items-center gap-1.5 rounded-[7px] border px-2 text-[10px] font-semibold',
+                          operationalStatus.kind === 'discovering'
+                            ? 'border-aurora-accent-primary/30 text-aurora-accent-strong'
+                            : 'border-aurora-warn/30 text-aurora-warn',
+                        )}
+                        title={operationalStatus.reason}
+                        aria-label={`Server status: ${operationalStatus.label}`}
                       >
-                        <AlertTriangle size={13} />
+                        {operationalStatus.kind === 'discovering'
+                          ? <Loader2 size={11} className="animate-spin" />
+                          : <AlertTriangle size={11} />}
+                        {operationalStatus.label}
                       </span>
                     </>
                   ) : null}
