@@ -16,6 +16,7 @@ use rmcp::model::Prompt;
 
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
+use super::capability::peer_declares_prompts;
 use super::catalog_pagination;
 use super::helpers::merge_upstream_prompts;
 use super::logging::is_capability_unsupported;
@@ -91,9 +92,16 @@ impl UpstreamPool {
                             }),
                         );
                     }
-                    let result =
+                    let result = if peer_declares_prompts(&peer) {
                         catalog_pagination::list_prompts(&peer, remaining, MAX_UPSTREAM_PROMPTS)
-                            .await;
+                            .await
+                    } else {
+                        tracing::debug!(
+                            upstream = %observed.upstream(),
+                            "initialize did not advertise prompts; skipping prompts/list"
+                        );
+                        Ok(Vec::new())
+                    };
                     (observed, result)
                 }
             })
