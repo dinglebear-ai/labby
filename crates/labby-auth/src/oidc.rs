@@ -11,7 +11,7 @@ use tracing::{debug, info, warn};
 use crate::error::AuthError;
 use crate::oauth_provider::ProviderExchange;
 use crate::provider_http::{RequestErrors, RequestTrace, read_json_response};
-use crate::util::fingerprint;
+use crate::util::{fingerprint, secret_diagnostic_id};
 
 /// Which RFC 6749 §2.3.1 client-authentication method to use on the token
 /// endpoint (`exchange_code`/`refresh`).
@@ -204,7 +204,7 @@ impl OidcVerifier {
         let trace = RequestTrace::start(self.provider_id, "code_exchange", "POST", token_endpoint);
         info!(
             provider = self.provider_id,
-            oauth_code_id = %fingerprint(code),
+            oauth_code_id = %secret_diagnostic_id("oidc.oauth_code.v1", code),
             redirect_uri_id = %fingerprint(redirect_uri.as_str()),
             "oauth upstream code exchange started"
         );
