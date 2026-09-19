@@ -67,7 +67,9 @@ pub(crate) fn enabled_versions(
         add("server-logs", &SERVER_LOGS_APP_VERSION);
     }
     #[cfg(feature = "skills")]
-    add("skill-library", &SKILL_LIBRARY_APP_VERSION);
+    if config.skill_library {
+        add("skill-library", &SKILL_LIBRARY_APP_VERSION);
+    }
     #[cfg(feature = "gateway")]
     {
         if config.add_server {
@@ -84,4 +86,32 @@ pub(crate) fn enabled_versions(
         }
     }
     rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_visibility_publishes_no_labby_app_revisions() {
+        assert!(enabled_versions(false, McpAppsConfig::default()).is_empty());
+    }
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn skill_library_revision_follows_visibility_switch() {
+        let mut config = McpAppsConfig::default();
+        assert!(
+            enabled_versions(false, config)
+                .iter()
+                .all(|(id, _)| id != "skill-library")
+        );
+
+        config.skill_library = true;
+        assert!(
+            enabled_versions(false, config)
+                .iter()
+                .any(|(id, _)| id == "skill-library")
+        );
+    }
 }

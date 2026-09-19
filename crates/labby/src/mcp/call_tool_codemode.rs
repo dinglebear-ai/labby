@@ -514,11 +514,53 @@ pub(crate) fn code_arg(
     Ok(code)
 }
 
+fn canonicalize_upstream_filter(
+    requested: &str,
+    available: &BTreeSet<String>,
+) -> Result<String, DispatchToolError> {
+    let requested = requested.trim();
+    if requested.is_empty() || available.contains(requested) {
+        return Ok(requested.to_string());
+    }
+
+    let mut matches = available
+        .iter()
+        .filter(|candidate| candidate.eq_ignore_ascii_case(requested));
+    let Some(first) = matches.next() else {
+        return Ok(requested.to_string());
+    };
+    if matches.next().is_some() {
+        return Err(DispatchToolError::Sdk {
+            sdk_kind: "invalid_param".to_string(),
+            message: format!(
+                "Code Mode upstream `{requested}` is ambiguous by case; use the exact configured casing"
+            ),
+        });
+    }
+    Ok(first.clone())
+}
+
+fn canonicalize_tool_filter(
+    requested: &str,
+    available: &BTreeSet<String>,
+) -> Result<String, DispatchToolError> {
+    let requested = requested.trim();
+    let Some((namespace, tool)) = requested.split_once("::") else {
+        return Ok(requested.to_string());
+    };
+    let namespace = canonicalize_upstream_filter(namespace, available)?;
+    Ok(format!("{namespace}::{tool}"))
+}
+
 fn route_scoped_capability_filter(
     args: &JsonObject,
     route_allowed: Option<&BTreeSet<String>>,
+    available_upstreams: &BTreeSet<String>,
 ) -> Result<ToolScope, DispatchToolError> {
-    let requested_upstreams = string_array_arg(args, "upstreams")?;
+    let requested_upstreams = string_array_arg(args, "upstreams")?
+        .into_iter()
+        .map(|name| canonicalize_upstream_filter(&name, available_upstreams))
+        .collect::<Result<Vec<_>, _>>()?;
     if let Some(allowed) = route_allowed
         && requested_upstreams
             .iter()
@@ -531,7 +573,10 @@ fn route_scoped_capability_filter(
         });
     }
 
-    let tools = string_array_arg(args, "tools")?;
+    let tools = string_array_arg(args, "tools")?
+        .into_iter()
+        .map(|name| canonicalize_tool_filter(&name, available_upstreams))
+        .collect::<Result<Vec<_>, _>>()?;
     let Some(allowed) = route_allowed else {
         return Ok(ToolScope::new(requested_upstreams, tools));
     };
@@ -628,14 +673,18 @@ impl LabMcpServer {
                 return Ok(error_result_from_envelope(env));
             }
         };
-        let capability_filter =
-            match route_scoped_capability_filter(args, self.route_scope.allowed_upstreams()) {
-                Ok(filter) => filter,
-                Err(err) => {
-                    let env = tool_error_envelope(service, "call_tool", &err);
-                    return Ok(error_result_from_envelope(env));
-                }
-            };
+        let available_upstreams = manager.upstream_names().await;
+        let capability_filter = match route_scoped_capability_filter(
+            args,
+            self.route_scope.allowed_upstreams(),
+            &available_upstreams,
+        ) {
+            Ok(filter) => filter,
+            Err(err) => {
+                let env = tool_error_envelope(service, "call_tool", &err);
+                return Ok(error_result_from_envelope(env));
+            }
+        };
         let capability_filter = if read_only {
             capability_filter.read_only()
         } else {
