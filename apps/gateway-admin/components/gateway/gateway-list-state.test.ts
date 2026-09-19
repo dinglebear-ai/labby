@@ -183,10 +183,22 @@ test('tool rows sort alphabetically by tool name', () => {
   assert.deepEqual(rows.map((row) => row.toolName), ['gateway', 'search', 'unifi'])
 })
 
-test('attention lens includes enabled unhealthy and warning servers but excludes disabled servers', () => {
+test('attention lens includes enabled unhealthy, warning, and stale-runtime servers but excludes disabled and warming servers', () => {
   const healthy = buildGateway({ id: 'healthy' })
   const unhealthy = buildGateway({ id: 'unhealthy', status: { ...healthy.status, healthy: false } })
-  const warning = buildGateway({ id: 'warning', warnings: [{ code: 'stale', message: 'Stale', timestamp: '2026-09-13T00:00:00Z' }] })
+  const warning = buildGateway({ id: 'warning', warnings: [{ code: 'prompts_unavailable', message: 'Prompt discovery failed', timestamp: '2026-09-13T00:00:00Z' }] })
+  const staleRuntime = buildGateway({ id: 'stale-runtime', status: { ...healthy.status, likely_stale_count: 1 } })
+  const warming = buildGateway({ id: 'warming', status: { ...healthy.status, healthy: false, catalog_warming: true } })
   const disabled = buildGateway({ ...unhealthy, id: 'disabled', enabled: false })
-  assert.deepEqual(filterGateways([healthy, unhealthy, warning, disabled], { primaryLens: 'attention', search: '', status: [], source: [], transport: [] }).map((gateway) => gateway.id), ['unhealthy', 'warning'])
+
+  assert.deepEqual(
+    filterGateways(
+      [healthy, unhealthy, warning, staleRuntime, warming, disabled],
+      { primaryLens: 'attention', search: '', status: [], source: [], transport: [] },
+    ).map((gateway) => gateway.id),
+    ['unhealthy', 'warning', 'stale-runtime'],
+  )
+  assert.equal(matchesGatewayStatusFacet(warning, ['healthy']), false)
+  assert.equal(matchesGatewayStatusFacet(staleRuntime, ['healthy']), false)
+  assert.equal(matchesGatewayStatusFacet(warming, ['healthy']), false)
 })

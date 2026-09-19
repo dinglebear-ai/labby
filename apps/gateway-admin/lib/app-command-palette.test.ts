@@ -123,7 +123,19 @@ test('describeGatewayConnection maps live status to the mock vocabulary', () => 
       status: { healthy: false, connected: true },
       warnings: [{ code: 'DISCOVERY_FAILED', message: 'tools/list timed out' }],
     }),
-    { label: 'degraded', tone: 'warn' },
+    { label: 'needs attention', tone: 'warn' },
+  )
+  assert.deepEqual(
+    describeGatewayConnection({
+      status: { healthy: false, connected: true, catalog_warming: true },
+    }),
+    { label: 'discovering', tone: 'info' },
+  )
+  assert.deepEqual(
+    describeGatewayConnection({
+      status: { healthy: true, connected: true, likely_stale_count: 1 },
+    }),
+    { label: 'needs attention', tone: 'warn' },
   )
 })
 
@@ -137,11 +149,22 @@ test('buildGatewayAlerts surfaces only unhealthy enabled gateways, capped', () =
       name: 'unRAID',
       status: { healthy: false, connected: false, last_error: '401 unauthorized' },
     },
+    {
+      id: 'e',
+      name: 'warming',
+      status: { healthy: false, connected: true, catalog_warming: true },
+    },
+    {
+      id: 'f',
+      name: 'stale',
+      status: { healthy: true, connected: true, likely_stale_count: 1 },
+    },
   ])
 
   assert.deepEqual(alerts, [
     { id: 'alert-b', gatewayId: 'b', label: 'mcp.sh disconnected', tone: 'error' },
     { id: 'alert-d', gatewayId: 'd', label: 'unRAID needs auth', tone: 'warn' },
+    { id: 'alert-f', gatewayId: 'f', label: 'stale needs attention', tone: 'warn' },
   ])
 
   const capped = buildGatewayAlerts(
@@ -272,6 +295,11 @@ test('palette server filters combine OR within a group and AND across groups', (
       gatewayMatchesPaletteFilters(g, { status: ['disconnected'], transport: ['stdio'] }),
     ).length,
     1,
+  )
+  assert.equal(
+    gatewayMatchesPaletteFilters(gateways[2], { status: ['disconnected'], transport: [] }),
+    false,
+    'disabled servers stay distinct from disconnected servers',
   )
   assert.equal(
     gateways.filter((g) =>
