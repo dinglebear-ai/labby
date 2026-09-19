@@ -1,68 +1,130 @@
-# labby — Claude Code plugin
+# Labby plugin and Agent Skills
 
-Skills and MCP configuration for the Labby homelab control plane.
+First-party Agent Skills and MCP configuration for the Labby control plane.
 
-This plugin does **not** bundle the `labby` binary and does not auto-install
-or auto-repair anything. It ships:
+The recommended first-run path is the `install-labby` skill. Install only that
+skill with the Skills CLI, then ask your agent to run it:
 
-- the `using-labby` skill,
-- the `creating-snippets` skill for Labby Code Mode snippet authoring,
-- an HTTP MCP server entry pointing at a running `labby serve`
-  (`${user_config.server_url}/mcp` — remote machines never need a local binary),
-- `userConfig` settings declared in `.claude-plugin/plugin.json`.
+```bash
+npx skills add https://github.com/dinglebear-ai/labby --skill install-labby
+```
 
-The plugin ships **no Claude Code hooks**. The former `hooks/hooks.json`
-(SessionStart / ConfigChange shims) was removed; run `labby setup` yourself
-after changing plugin settings.
+Then, in a skill-aware agent such as Codex:
 
-## Installing labby (server host only)
+```text
+$install-labby
+```
+
+The skill is the guided operator layer. It inspects the target machine, explains
+security and deployment choices, drives the verified release installer and
+`labby setup`, configures the supported persistence/exposure path, verifies the
+live MCP transport, and helps wire installed agents to the resulting Labby
+server. The Labby binary remains the authority for durable configuration,
+credentials, service installation, repair, gateway state, and validation.
+
+## What this package ships
+
+- `install-labby` for first-run installation and end-to-end onboarding.
+- `using-labby` for day-to-day CLI, MCP, HTTP API, gateway, and operator work.
+- `creating-snippets` for Code Mode snippet authoring.
+- an HTTP MCP server entry pointing at `${user_config.server_url}/mcp`.
+- Claude plugin `userConfig` metadata in `.claude-plugin/plugin.json`.
+
+The package does **not** bundle the `labby` binary and ships no automatic
+Claude Code install/repair hooks. The former SessionStart / ConfigChange hooks
+were removed. Installation is explicit and verification-gated.
+
+## Manual verified install
+
+Use this when a skill-aware agent is unavailable or when you intentionally want
+to perform the release bootstrap by hand:
 
 ```bash
 version=vX.Y.Z
 base="https://github.com/dinglebear-ai/labby/releases/download/$version"
+
 curl -fSLO "$base/labby-install.sh"
 curl -fSLO "$base/labby-install.sh.sha256"
+
 gh attestation verify labby-install.sh \
   --repo dinglebear-ai/labby \
   --signer-workflow dinglebear-ai/labby/.github/workflows/release.yml \
   --source-ref "refs/tags/$version" \
   --deny-self-hosted-runners
+
 shasum -a 256 -c labby-install.sh.sha256
 LABBY_INSTALL_VERSION="$version" sh ./labby-install.sh
-labby setup
 ```
 
-The separately downloaded installer and checksum come from an explicit release.
-`gh` verifies the installer's repository, release workflow, exact tag, and
-hosted-runner provenance before the installer verifies and activates the
-platform archive. Source fallback is disabled by default; opt in explicitly
-with `LABBY_ALLOW_SOURCE_FALLBACK=1`. Successful installs retain owner-only
-receipts and the prior verified artifact beneath
-`~/.local/bin/.labby-install/` for offline rollback. Everything after install —
-config, credentials, connectivity checks, repair — is owned by `labby setup`.
-Configure the plugin with the URL of the Labby server you intend to trust; the
-plugin never selects a shared hosted gateway for you.
+On Linux, `sha256sum -c` is also valid.
 
-The plugin exports its configured `server_url` as
-`CLAUDE_PLUGIN_OPTION_SERVER_URL`. Plugin-launched Labby processes use that same
-authoritative base for MCP transport, gateway management, Code Mode, and stdio
-bridging, paired only with `CLAUDE_PLUGIN_OPTION_API_TOKEN`; they never inherit
-an ambient `LABBY_MCP_HTTP_TOKEN` for a different authority. If the configured server fails, Labby reports the failure instead of
-silently reading or executing against the invoking user's local/XDG config.
+The installer verifies and atomically activates the immutable release binary,
+then enters the same `labby setup` flow used by `$install-labby`. Source
+fallback is disabled unless `LABBY_ALLOW_SOURCE_FALLBACK=1` is explicitly set.
+Successful installs retain owner-only receipts and the previous verified
+artifact under `~/.local/bin/.labby-install/` for offline rollback.
 
-## Configuration
+## Setup ownership
 
-Plugin settings (server URL, auth mode, token, …) are declared in
-`.claude-plugin/plugin.json` `userConfig`. Sync them into `~/.labby/.env` by
-running `labby setup plugin-hook` manually after changing settings — this is no
-longer triggered automatically by a ConfigChange hook.
+Labby keeps security-sensitive responsibilities in the binary rather than in
+skill prose:
 
-The `server_url` setting is persisted as `LABBY_SERVER_URL`. Connectivity
-checks prefer the invocation-scoped plugin setting, then that persisted client
-target, and use Dookie's `http://localhost:40100` host proxy only when neither
-is configured. Production Labby remains container-local on port 8765.
+- `.env` contains secrets and is written through the atomic, backup-backed,
+  owner-only environment merge path.
+- `config.toml` contains non-secret product preferences.
+- `labby setup` owns first-run server/client configuration.
+- `setup.settings.*` owns schema-driven settings mutation.
+- `labby gateway ...` owns gateway discovery/import and Code Mode state.
+- `labby doctor` is the primary configuration/runtime audit.
 
-When upstream OAuth is configured, set `public_url` to the explicit public base
-URL for the Labby server. Labby derives the upstream browser callback from that
-value and refuses to initialize the HTTP OAuth runtime when it is missing; the
-plugin does not provide a shared hosted callback.
+The install skill deliberately calls those surfaces instead of hand-writing
+Labby-owned state when a first-party mutation path exists.
+
+## Authentication
+
+The server supports three installation topologies:
+
+| Topology | Setup selector | Notes |
+| --- | --- | --- |
+| Bearer only | `--auth bearer --oauth none` | Generated static bearer credential |
+| OAuth only | `--auth oauth --oauth google|authelia` | No static bearer break-glass credential |
+| OAuth + bearer | `--auth both --oauth google|authelia` | OAuth plus generated static bearer |
+
+OAuth mode selects exactly **one** inbound provider per Labby instance:
+Google or Authelia. The runtime does not currently activate both providers
+simultaneously.
+
+The plugin's `auth_mode` setting maps to the lower-level runtime mode
+(`bearer` or `oauth`). In OAuth + bearer deployments it remains `oauth`,
+while `api_token` carries the optional static break-glass credential.
+
+## Plugin MCP configuration
+
+`.mcp.json` connects the plugin's compatibility server key `lab` to:
+
+```text
+${user_config.server_url}/mcp
+```
+
+The default server URL is `http://127.0.0.1:8765`, Labby's normal local
+listener. Remote users must explicitly select the Labby authority they intend
+to trust.
+
+The bundled MCP definition includes a static bearer `Authorization` header and is therefore a **bearer transport convenience**, not a universal OAuth client definition. Current Claude Code does not fall back to OAuth after an explicitly configured Authorization header is rejected. `$install-labby` configures OAuth-oriented Claude clients through a higher-precedence native client registration without the static header, then uses Claude's current OAuth login flow. OAuth + bearer deployments can deliberately choose either client credential path.
+
+The plugin exports its configured server URL as
+`CLAUDE_PLUGIN_OPTION_SERVER_URL`. Plugin-launched Labby processes use that
+authority with the plugin-scoped API token and do not silently fall back to an
+unrelated local credential.
+
+After changing plugin settings, use the explicit setup/plugin synchronization
+surface. Nothing is auto-repaired at session start.
+
+## Development
+
+Package-local instructions live in `CLAUDE.md`. `AGENTS.md` and `GEMINI.md`
+are symlinks to that canonical file so Codex, Claude Code, and Gemini consume
+the same package rules without documentation drift.
+
+For the installation architecture decision, see
+`docs/adr/0001-install-labby-first-class-install-orchestrator.md`.

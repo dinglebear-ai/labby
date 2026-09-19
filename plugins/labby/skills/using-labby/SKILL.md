@@ -1,9 +1,11 @@
 ---
 name: using-labby
-description: "Use when operating Labby through its CLI, MCP, HTTP API, or web UI; installing or updating Labby; configuring LABBY_HOME; bootstrapping, repairing, or rolling back an Incus gateway or host service; exporting, verifying, or restoring durable state; checking health or logs; managing gateway upstreams, OAuth, or protected routes; or discovering and executing upstream MCP tools with Code Mode."
+description: "Use when operating an already installed Labby through its CLI, MCP, HTTP API, or web UI; updating Labby; configuring LABBY_HOME; repairing or rolling back an Incus gateway or host service; exporting, verifying, or restoring durable state; checking health or logs; managing gateway upstreams, OAuth, or protected routes; or discovering and executing upstream MCP tools with Code Mode. For a new installation or first-run onboarding, use $install-labby instead."
 ---
 
 # Using the `labby` CLI
+
+For a new installation or first-run onboarding, use `$install-labby`. This skill is the day-to-day operator reference once Labby is installed.
 
 `labby` is the Labby binary. Treat generated help and `docs/` as source of truth when this skill and the repo disagree.
 

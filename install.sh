@@ -28,6 +28,7 @@
 #   LABBY_SETUP_HOST / LABBY_SETUP_PORT server listen address / port
 #   LABBY_SETUP_SERVER_URL client server URL
 #   LABBY_SETUP_PUBLIC_URL public browser/OAuth URL
+#   LABBY_SETUP_AUTH      bearer|oauth|both
 #   LABBY_SETUP_OAUTH     none|google|authelia
 #   LABBY_SETUP_DESKTOP   1 install desktop, 0 skip it
 #   LABBY_SETUP_NO_BROWSER 1 avoid opening a browser
@@ -49,6 +50,7 @@ SETUP_HOST="${LABBY_SETUP_HOST:-}"
 SETUP_PORT="${LABBY_SETUP_PORT:-}"
 SETUP_SERVER_URL="${LABBY_SETUP_SERVER_URL:-}"
 SETUP_PUBLIC_URL="${LABBY_SETUP_PUBLIC_URL:-}"
+SETUP_AUTH="${LABBY_SETUP_AUTH:-}"
 SETUP_OAUTH="${LABBY_SETUP_OAUTH:-}"
 SETUP_DESKTOP="${LABBY_SETUP_DESKTOP:-}"
 SETUP_NO_BROWSER="${LABBY_SETUP_NO_BROWSER:-0}"
@@ -482,6 +484,7 @@ run_first_run_setup() {
         [ -z "$SETUP_PORT" ] || set -- "$@" --port "$SETUP_PORT"
         [ -z "$SETUP_SERVER_URL" ] || set -- "$@" --server-url "$SETUP_SERVER_URL"
         [ -z "$SETUP_PUBLIC_URL" ] || set -- "$@" --public-url "$SETUP_PUBLIC_URL"
+        [ -z "$SETUP_AUTH" ] || set -- "$@" --auth "$SETUP_AUTH"
         [ -z "$SETUP_OAUTH" ] || set -- "$@" --oauth "$SETUP_OAUTH"
         case "$SETUP_DESKTOP" in
             1|true|yes) set -- "$@" --desktop ;;

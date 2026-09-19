@@ -114,7 +114,7 @@ async fn run_setup_mutations(root: &Path) {
     let sync = execute(
         &sync_home,
         &["setup", "plugin-sync", "--yes", "--json"],
-        &[("CLAUDE_PLUGIN_OPTION_SERVER_URL", "http://localhost:40100")],
+        &[("CLAUDE_PLUGIN_OPTION_SERVER_URL", "http://127.0.0.1:8765")],
     )
     .await;
     let synced_env = sync_home.join(".labby/.env");
