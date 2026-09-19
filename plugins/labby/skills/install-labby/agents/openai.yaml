@@ -1,0 +1,4 @@
+interface:
+  display_name: "Install Labby"
+  short_description: "Install and fully configure a verified Labby deployment."
+  default_prompt: "Use $install-labby to install or finish configuring Labby on this machine, walk me through security and exposure choices, and verify a live MCP connection."
