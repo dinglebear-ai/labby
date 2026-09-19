@@ -4,10 +4,11 @@ import Link from 'next/link'
 import { ArrowRight, Server } from 'lucide-react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { gatewayDetailHref } from '@/lib/api/gateway-config'
+import { describeGatewayOperationalState } from '@/lib/gateway-operational-state'
 import type { Gateway } from '@/lib/types/gateway'
 
-export type RecentServer = Pick<Gateway, 'id' | 'name' | 'transport' | 'enabled'> & {
-  status: Pick<Gateway['status'], 'healthy' | 'connected' | 'exposed_tool_count'>
+export type RecentServer = Pick<Gateway, 'id' | 'name' | 'transport' | 'enabled' | 'warnings'> & {
+  status: Pick<Gateway['status'], 'healthy' | 'connected' | 'exposed_tool_count' | 'catalog_warming' | 'last_error' | 'likely_stale_count'>
 }
 
 export function RecentServers({ gateways, loading = false, error = false }: { gateways: RecentServer[]; loading?: boolean; error?: boolean }) {
@@ -23,10 +24,18 @@ export function RecentServers({ gateways, loading = false, error = false }: { ga
       : error ? <p role="status" className="px-[14px] py-3 text-xs text-aurora-text-muted">Recent servers are unavailable.</p>
       : gateways.length === 0 ? <div className="px-[14px] py-3 text-xs text-aurora-text-muted"><p>No servers configured.</p><Link href="/gateways" className="mt-2 inline-block text-aurora-accent-strong underline">Add server</Link></div>
       : <ul>{gateways.slice(0, 5).map(gateway => {
-        const status = gateway.enabled === false ? 'Disabled' : !gateway.status.connected ? 'Disconnected' : gateway.status.healthy ? 'Healthy' : 'Needs Attention'
-        const color = gateway.enabled === false ? 'bg-aurora-text-muted' : !gateway.status.connected ? 'bg-aurora-error' : gateway.status.healthy ? 'bg-aurora-success' : 'bg-aurora-warn'
+        const operational = describeGatewayOperationalState(gateway)
+        const color = operational.kind === 'disabled'
+          ? 'bg-aurora-text-muted'
+          : operational.kind === 'disconnected'
+            ? 'bg-aurora-error'
+            : operational.kind === 'degraded'
+              ? 'bg-aurora-warn'
+              : operational.kind === 'discovering'
+                ? 'bg-aurora-accent-primary'
+                : 'bg-aurora-success'
         return <li key={gateway.id} className="border-t border-aurora-border-subtle/70 first:border-t-0"><Link href={gatewayDetailHref(gateway.id)} className="flex min-w-0 items-center gap-[9px] px-[14px] py-2 hover:bg-aurora-hover-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-aurora-accent-primary">
-          <span title={status} aria-label={status} className={`size-1.5 shrink-0 rounded-full ${color}`}/>
+          <span title={operational.reason} aria-label={operational.label} className={`size-1.5 shrink-0 rounded-full ${color}`}/>
           <span className="min-w-0 flex-1 truncate font-display text-[12.5px] font-bold text-aurora-text-primary">{gateway.name}</span>
           <span className="shrink-0 text-[9.5px] font-semibold uppercase tracking-[.1em] text-aurora-text-muted">{gateway.transport === 'in_process' ? 'Lab' : gateway.transport}</span>
           <span title="Exposed downstream tools" aria-label={`${gateway.status.exposed_tool_count} exposed downstream tools`} className="w-[30px] shrink-0 text-right text-[11.5px] font-semibold tabular-nums text-aurora-text-primary">{gateway.status.exposed_tool_count}</span>

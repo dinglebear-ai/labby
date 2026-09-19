@@ -66,6 +66,9 @@ test('gateway table uses aurora lifted surfaces and muted operational pills', ()
   assert.match(markup, /data-mobile-metric="runtime"/)
   assert.match(markup, />14</)
   assert.match(markup, /prompts/)
+  assert.match(markup, /Needs attention/)
+  assert.match(markup, />Connected<\/span>/)
+  assert.match(markup, /Tool exposure differs from the last successful sync/)
   assert.doesNotMatch(markup, /Reload required to apply policy changes/)
 })
 
@@ -87,6 +90,7 @@ test('gateway table sorts servers by name and shows full stdio command line', ()
       exposed_resource_count: 0,
       discovered_prompt_count: 0,
       exposed_prompt_count: 0,
+      age_seconds: 125,
     },
     warnings: [],
   }
@@ -118,14 +122,15 @@ test('gateway table sorts servers by name and shows full stdio command line', ()
   assert.ok(markup.indexOf('Neo4j Memory') < markup.indexOf('Zed Search'))
   assert.match(markup, /uvx neo4j-memory-mcp/)
   assert.match(markup, /Sort by server/)
-  assert.match(markup, /Sort by clients[\s\S]*Sort by exposed[\s\S]*Sort by endpoint[\s\S]*Sort by uptime/)
-  assert.match(markup, /Sort by uptime/)
-  assert.match(markup, /aria-sort="none"[^>]*><span>Uptime<\/span>/)
+  assert.match(markup, /Sort by connection[\s\S]*Sort by exposed[\s\S]*Sort by endpoint[\s\S]*Sort by runtime/)
+  assert.match(markup, /Sort by runtime/)
+  assert.match(markup, /aria-sort="none"[^>]*><span>Runtime<\/span>/)
   assert.doesNotMatch(markup, /data-gateway-column="clients"/)
   assert.match(markup, /data-gateway-column="exposed"/)
   assert.match(markup, /data-gateway-column="endpoint"/)
   assert.match(markup, /data-gateway-column="uptime"/)
-  assert.match(markup, /Client count is not reported by the gateway API/)
+  assert.match(markup, />Connected<\/span>/)
+  assert.match(markup, />2m<\/span>/)
   assert.match(markup, /max-w-full justify-self-center px-2\.5 text-center/)
   assert.match(markup, /Reorder exposed column/)
   assert.match(markup, /Reorder endpoint column/)
@@ -137,6 +142,8 @@ test('gateway table presents a readable label while preserving the configured id
     ...gateway,
     id: 'agent-os_windows-mcp',
     name: 'agent-os_windows-mcp',
+    status: { ...gateway.status, last_error: undefined },
+    warnings: [],
   }
   const markup = renderToStaticMarkup(
     <GatewayTable gateways={[configured]} density="comfortable" onEdit={() => {}} onTest={() => {}} onReload={() => {}} onCleanup={() => {}} onClearCleanupHistory={() => {}} onToggleEnabled={() => {}} onDelete={() => {}} />,
@@ -144,7 +151,7 @@ test('gateway table presents a readable label while preserving the configured id
 
   assert.match(markup, />Agent OS Windows MCP<\/a>/)
   assert.match(markup, /href="\/gateway\?id=agent-os_windows-mcp"/)
-  assert.match(markup, /title="agent-os_windows-mcp · Healthy"/)
+  assert.match(markup, /title="agent-os_windows-mcp · Healthy · Connected and healthy\."/)
 })
 
 
@@ -193,11 +200,68 @@ test('gateway table exposes stale service removal for unknown in-process service
   assert.doesNotMatch(markup, /Remove gateway/)
 })
 
+test('catalog warming stays connected and renders as discovering rather than needs attention', () => {
+  const warming = {
+    ...gateway,
+    id: 'warming',
+    name: 'warming',
+    status: {
+      ...gateway.status,
+      healthy: false,
+      connected: true,
+      catalog_warming: true,
+      last_error: undefined,
+    },
+    warnings: [],
+  }
+  const markup = renderToStaticMarkup(
+    <GatewayTable gateways={[warming]} density="comfortable" onEdit={() => {}} onTest={() => {}} onReload={() => {}} onCleanup={() => {}} onClearCleanupHistory={() => {}} onToggleEnabled={() => {}} onDelete={() => {}} />,
+  )
+
+  assert.match(markup, />Discovering<\/span>/)
+  assert.match(markup, />Connected<\/span>/)
+  assert.doesNotMatch(markup, />Needs attention<\/span>/)
+  assert.doesNotMatch(markup, /Dismiss current notifications/)
+})
+
+test('connected health failure without a dismissible incident still appears in the attention banner', () => {
+  const unhealthy = {
+    ...gateway,
+    id: 'unhealthy',
+    name: 'unhealthy',
+    status: {
+      ...gateway.status,
+      healthy: false,
+      connected: true,
+      last_error: undefined,
+      likely_stale_count: 0,
+    },
+    warnings: [],
+  }
+
+  const markup = renderToStaticMarkup(
+    <GatewayTable gateways={[unhealthy]} density="comfortable" onEdit={() => {}} onTest={() => {}} onReload={() => {}} onCleanup={() => {}} onClearCleanupHistory={() => {}} onToggleEnabled={() => {}} onDelete={() => {}} />,
+  )
+
+  assert.match(markup, />1 server<\/span>/)
+  assert.match(markup, />Needs attention<\/span>/)
+  assert.doesNotMatch(markup, /Dismiss current notifications/)
+})
+
+test('dismissible gateway incidents keep the notification dismissal control', () => {
+  const markup = renderToStaticMarkup(
+    <GatewayTable gateways={[gateway]} density="comfortable" onEdit={() => {}} onTest={() => {}} onReload={() => {}} onCleanup={() => {}} onClearCleanupHistory={() => {}} onToggleEnabled={() => {}} onDelete={() => {}} />,
+  )
+
+  assert.match(markup, /Dismiss current notifications/)
+})
+
 test('disabled servers have a separate group and never claim a connected or disconnected status', () => {
   const markup = renderToStaticMarkup(<GatewayTable gateways={[{ ...gateway, enabled: false, name: 'disabled-upstream' }]} density="comfortable" onEdit={() => {}} onTest={() => {}} onReload={() => {}} onCleanup={() => {}} onClearCleanupHistory={() => {}} onToggleEnabled={() => {}} onDelete={() => {}} />)
-  assert.match(markup, /title="Disabled"/)
+  assert.match(markup, /title="Disabled\. Server is disabled\."/)
   assert.doesNotMatch(markup, />Healthy<\/span>/)
-  assert.doesNotMatch(markup, /title="Disconnected"/)
-  assert.match(markup, /Sort by clients/)
+  assert.doesNotMatch(markup, />Connected<\/span>/)
+  assert.doesNotMatch(markup, />Disconnected<\/span>/)
+  assert.match(markup, /Sort by connection/)
   assert.doesNotMatch(markup, /Reorder clients column/)
 })

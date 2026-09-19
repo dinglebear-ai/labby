@@ -48,6 +48,7 @@ import { gatewayLabel } from '@/lib/gateway-label'
 import { gatewayDetailHref } from '@/lib/api/gateway-config'
 import { buildGatewayEndpointPreview } from '@/lib/api/gateway-mobile'
 import { gatewayDisplayName } from '@/lib/gateway-display-name'
+import { describeGatewayOperationalState, gatewayNeedsAttention } from '@/lib/gateway-operational-state'
 import {
   GATEWAY_COLUMN_ORDER_KEY,
   GATEWAY_COLUMN_WIDTH,
@@ -59,13 +60,14 @@ import {
 import {
   AURORA_GATEWAY_DISABLED_ROW,
   gatewayActionTone,
+  gatewayConnectionTone,
   gatewayStatusTone,
 } from './gateway-theme'
 
 
-type SortKey = 'name' | 'clients' | 'endpoint' | 'exposed' | 'uptime'
+type SortKey = 'name' | 'connection' | 'endpoint' | 'exposed' | 'uptime'
 type SortDirection = 'asc' | 'desc'
-type StatusGroupId = 'attention' | 'healthy' | 'disabled'
+type StatusGroupId = 'attention' | 'discovering' | 'healthy' | 'disabled'
 
 const GATEWAY_TABLE_BADGE =
   'inline-flex h-6 items-center rounded-full px-2 text-[10px] font-semibold uppercase tracking-[0.12em]'
@@ -120,12 +122,6 @@ function exposureTone(exposed: number, discovered: number): string {
   if (discovered === 0) return GW_EMPTY_TONE
   if (exposed < discovered) return 'text-aurora-accent-pink'
   return 'text-aurora-text-primary'
-}
-
-/** A server is "needs attention" when it is enabled but not cleanly connected. */
-function needsAttention(gateway: Gateway): boolean {
-  if (!(gateway.enabled ?? true)) return false
-  return !gateway.status.connected || !gateway.status.healthy || gateway.warnings.length > 0 || (gateway.status.likely_stale_count ?? 0) > 0
 }
 
 function isStaleVirtualServer(gateway: Gateway): boolean {
@@ -198,7 +194,7 @@ export function GatewayTable({
 
   const visibleColumns = visibleGatewayColumns(columnOrder, viewportWidth)
   const gridStyle = {
-    gridTemplateColumns: `minmax(0,1fr) 80px ${visibleColumns.map((column) => GATEWAY_COLUMN_WIDTH[column]).join(' ')} 18px`,
+    gridTemplateColumns: `minmax(0,1fr) 112px ${visibleColumns.map((column) => GATEWAY_COLUMN_WIDTH[column]).join(' ')} 18px`,
   } as CSSProperties
   const moveColumn = (source: GatewayColumn, target: GatewayColumn) => {
     const next = moveGatewayColumn(columnOrder, source, target)
@@ -308,12 +304,14 @@ export function GatewayTable({
         case 'name':
           result = left.name.localeCompare(right.name, undefined, { sensitivity: 'base' })
           break
-        case 'clients':
-          // The public client registry is gateway-wide today, not attributed
-          // to individual upstreams. Keep the mock's sortable column chrome
-          // without inventing per-server usage.
-          result = 0
+        case 'connection': {
+          const leftState = describeGatewayOperationalState(left)
+          const rightState = describeGatewayOperationalState(right)
+          const connectionRank = (state: ReturnType<typeof describeGatewayOperationalState>) =>
+            state.connectionLabel === 'Connected' ? 0 : state.connectionLabel === 'Disconnected' ? 1 : 2
+          result = connectionRank(leftState) - connectionRank(rightState)
           break
+        }
         case 'endpoint':
           result = buildGatewayEndpointPreview(left).localeCompare(
             buildGatewayEndpointPreview(right),
@@ -333,7 +331,7 @@ export function GatewayTable({
           break
       }
 
-      if (result === 0 && sortKey !== 'clients') {
+      if (result === 0) {
         result = left.name.localeCompare(right.name)
       }
 
@@ -344,24 +342,47 @@ export function GatewayTable({
   }, [gateways, sortDirection, sortKey])
 
   const statusGroups = useMemo(() => {
-    const attention = sortedGateways.filter(needsAttention)
-    const healthy = sortedGateways.filter((gateway) => (gateway.enabled ?? true) && !needsAttention(gateway))
+    const attention = sortedGateways.filter(gatewayNeedsAttention)
+    const discovering = sortedGateways.filter(
+      (gateway) => describeGatewayOperationalState(gateway).kind === 'discovering',
+    )
+    const healthy = sortedGateways.filter(
+      (gateway) => describeGatewayOperationalState(gateway).kind === 'healthy',
+    )
     const disabled = sortedGateways.filter((gateway) => gateway.enabled === false)
 
     return [
-      { id: 'attention' as const, label: 'Needs attention', tone: 'text-aurora-error', rows: attention },
+      { id: 'attention' as const, label: 'Needs attention', tone: 'text-aurora-warn', rows: attention },
+      { id: 'discovering' as const, label: 'Discovering', tone: 'text-aurora-accent-strong', rows: discovering },
       { id: 'healthy' as const, label: 'Healthy', tone: 'text-aurora-success', rows: healthy },
       { id: 'disabled' as const, label: 'Disabled', tone: 'text-aurora-text-muted', rows: disabled },
     ].filter((group) => group.rows.length > 0)
   }, [sortedGateways])
 
-  const attentionCount = sortedGateways.filter(gateway => {
-    if (!needsAttention(gateway)) return false
+  const hasUndismissedIncident = (gateway: Gateway) => {
     const prefix = `gateway:${gateway.name}:`
+    const staleCount = gateway.status.likely_stale_count ?? 0
     return (!gateway.status.connected && !isDismissed(`${prefix}disconnected`))
       || gateway.warnings.some(warning => !isDismissed(`${prefix}warning:${warning.code}`))
-      || ((gateway.status.likely_stale_count ?? 0) > 0 && !isDismissed(`${prefix}stale`))
+      || (staleCount > 0 && !isDismissed(`${prefix}stale`))
+  }
+
+  const attentionCount = sortedGateways.filter(gateway => {
+    const operational = describeGatewayOperationalState(gateway)
+    if (!operational.needsAttention) return false
+
+    const staleCount = gateway.status.likely_stale_count ?? 0
+    const hasConcreteIncident =
+      operational.kind === 'disconnected' || gateway.warnings.length > 0 || staleCount > 0
+
+    // A connected health failure without a warning/stale incident has no
+    // acknowledgement key. Keep it visible until the health state recovers.
+    return hasConcreteIncident ? hasUndismissedIncident(gateway) : true
   }).length
+
+  const hasDismissibleAttention = sortedGateways.some((gateway) =>
+    gatewayNeedsAttention(gateway) && hasUndismissedIncident(gateway),
+  )
 
   const exposureTotals = useMemo(
     () =>
@@ -429,15 +450,12 @@ export function GatewayTable({
     </button>
   )
 
-  /** Clients have no field on `Gateway`, so that header remains static. */
-
-
   const formatRuntimeAge = (ageSeconds?: number) => {
-    if (!ageSeconds || ageSeconds < 0) return null
-    if (ageSeconds < 60) return `${ageSeconds}s old`
-    if (ageSeconds < 3600) return `${Math.floor(ageSeconds / 60)}m old`
-    if (ageSeconds < 86400) return `${Math.floor(ageSeconds / 3600)}h old`
-    return `${Math.floor(ageSeconds / 86400)}d old`
+    if (ageSeconds === undefined || ageSeconds < 0) return null
+    if (ageSeconds < 60) return `${Math.floor(ageSeconds)}s`
+    if (ageSeconds < 3600) return `${Math.floor(ageSeconds / 60)}m`
+    if (ageSeconds < 86400) return `${Math.floor(ageSeconds / 3600)}h`
+    return `${Math.floor(ageSeconds / 86400)}d`
   }
 
   const runtimeAgeLabel = (gateway: Gateway) => formatRuntimeAge(gateway.status.age_seconds)
@@ -458,9 +476,11 @@ export function GatewayTable({
   }
 
   const statusRailClass = (gateway: Gateway) => {
-    if (!(gateway.enabled ?? true)) return GW_EMPTY_RAIL
-    if (gateway.status.healthy && gateway.status.connected && gateway.warnings.length === 0) return 'bg-aurora-accent-strong'
-    if (!gateway.status.connected) return 'bg-aurora-error'
+    const state = describeGatewayOperationalState(gateway)
+    if (state.kind === 'disabled') return GW_EMPTY_RAIL
+    if (state.kind === 'healthy') return 'bg-aurora-accent-strong'
+    if (state.kind === 'discovering') return 'bg-aurora-accent-primary'
+    if (state.kind === 'disconnected') return 'bg-aurora-error'
     return 'bg-aurora-warn'
   }
 
@@ -471,7 +491,9 @@ export function GatewayTable({
     const endpointPreview = buildGatewayEndpointPreview(gateway)
     const showsCommandLine = gateway.transport === 'stdio'
     const isDisabled = !(gateway.enabled ?? true)
-    const statusTone = gateway.enabled === false ? { label: 'Disabled', dot: 'bg-aurora-text-muted', text: 'text-aurora-text-muted' } : gatewayStatusTone(gateway.status.healthy, gateway.status.connected)
+    const operational = describeGatewayOperationalState(gateway)
+    const statusTone = gatewayStatusTone(operational.kind)
+    const connectionTone = gatewayConnectionTone(!isDisabled, gateway.status.connected)
     const cleanupSummary = cleanupSummaryByGatewayId[gateway.id]
     const cleanupBadge = cleanupBadgeLabel(cleanupSummary?.cleanup, 'cleaned')
     const previewBadge = cleanupBadgeLabel(cleanupSummary?.preview, 'preview')
@@ -536,11 +558,14 @@ export function GatewayTable({
         </div>),
       uptime: (<div data-gateway-cell="uptime" className="min-w-0 justify-self-center">
           <span
-            className={cn('text-[10.5px] [font-weight:650] tabular-nums', GW_EMPTY_TONE)}
-            title="Uptime is not reported by the gateway API"
+            className={cn(
+              'text-[10.5px] [font-weight:650] tabular-nums',
+              runtimeAgeLabel(gateway) ? 'text-aurora-text-primary' : GW_EMPTY_TONE,
+            )}
+            title={runtimeAgeLabel(gateway) ? 'Runtime process age' : 'Runtime process age is not reported for this server'}
           >
-            <span className="sr-only">Uptime:</span>
-            {EM_DASH}
+            <span className="sr-only">Runtime age:</span>
+            {runtimeAgeLabel(gateway) ?? EM_DASH}
           </span>
         </div>),
     }
@@ -585,7 +610,7 @@ export function GatewayTable({
             </button>
             <Link
               href={gatewayDetailHref(gateway.id)}
-              title={gateway.display_name?.trim() ? `${statusTone.label} · ID: ${gateway.name}` : `${gateway.name} · ${statusTone.label}`}
+              title={gateway.display_name?.trim() ? `${statusTone.label} · ${operational.reason} · ID: ${gateway.name}` : `${gateway.name} · ${statusTone.label} · ${operational.reason}`}
               className="min-w-0 max-w-full break-words font-display text-[13.5px] leading-[1.16] [font-weight:760] text-aurora-text-primary underline-offset-4 hover:text-aurora-accent-strong hover:underline"
             >
               {displayName}
@@ -740,12 +765,17 @@ export function GatewayTable({
           </div>
         </div>
 
-        <div
-          className={cn('min-w-0 justify-self-center text-[10.5px] [font-weight:650]', GW_EMPTY_TONE)}
-          title="Client count is not reported by the gateway API"
-        >
-          <span className="sr-only">Clients:</span>
-          {EM_DASH}
+        <div className="min-w-0 justify-self-center">
+          <span
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-full border border-aurora-border-subtle px-2 py-1 text-[10px] font-semibold',
+              connectionTone.text,
+            )}
+            title={`${connectionTone.label}. ${operational.reason}`}
+          >
+            <span className={cn('size-1.5 shrink-0 rounded-full', connectionTone.dot)} aria-hidden="true" />
+            {connectionTone.label}
+          </span>
         </div>
         {visibleColumns.map((column) => (
           <Fragment key={column}>{columnCells[column]}</Fragment>
@@ -766,7 +796,7 @@ export function GatewayTable({
             </div>
             <div className="mt-4 flex items-center justify-between gap-3 border-t border-aurora-border-subtle pt-3">
               <p className="text-[10px] text-aurora-text-muted">
-                CPU, memory, client history, and uptime are not reported by the gateway API.
+                CPU, memory, and per-server client history are not reported by the gateway API. Runtime process age is shown when available.
               </p>
               <Button asChild variant="outline" size="sm" className="h-8 shrink-0">
                 <Link href={gatewayDetailHref(gateway.id)}>Open server page</Link>
@@ -790,13 +820,14 @@ export function GatewayTable({
           const supportsProbeControls = gateway.source !== 'in_process'
           const canRemoveGatewayRow = canRemoveGateway(gateway)
           const isDisabled = !(gateway.enabled ?? true)
-          const statusTone = gateway.enabled === false ? { label: 'Disabled', dot: 'bg-aurora-text-muted', text: 'text-aurora-text-muted' } : gatewayStatusTone(gateway.status.healthy, gateway.status.connected)
+          const operational = describeGatewayOperationalState(gateway)
+          const statusTone = gatewayStatusTone(operational.kind)
           const endpointPreview = buildGatewayEndpointPreview(gateway)
           const showsCommandLine = gateway.transport === 'stdio'
           const isExpanded = expandedMobileGatewayId === gateway.id
           const displayName = gateway.display_name?.trim() ? gatewayLabel(gateway) : gatewayDisplayName(gateway.name)
           const envCount = Object.keys(gateway.config.env ?? {}).length
-          const runtimeLabel = runtimeAgeLabel(gateway) ?? 'live'
+          const runtimeLabel = runtimeAgeLabel(gateway) ?? EM_DASH
           const cleanupSummary = cleanupSummaryByGatewayId[gateway.id]
           const cleanupSummaryLabel =
             cleanupBadgeLabel(cleanupSummary?.cleanup, 'cleaned') ??
@@ -828,7 +859,7 @@ export function GatewayTable({
                       >
                         {displayName}
                       </Link>
-                      <span title={statusTone.label} className={cn('inline-flex min-h-6 items-center gap-1.5 rounded-full border px-2 text-[10px] font-semibold', statusTone.text)}>
+                      <span title={`${statusTone.label}. ${operational.reason}`} className={cn('inline-flex min-h-6 items-center gap-1.5 rounded-full border px-2 text-[10px] font-semibold', statusTone.text)}>
                         <span className={cn('size-1.5 rounded-full', statusTone.dot)} aria-hidden="true" />
                         {statusTone.label}
                       </span>
@@ -942,7 +973,7 @@ export function GatewayTable({
             >
               <SortHeader label="Server" sort="name" align="start" />
               <div className="justify-self-center">
-                <SortHeader label="Clients" sort="clients" />
+                <SortHeader label="Connection" sort="connection" />
               </div>
               {visibleColumns.map((column) => (
                 <div
@@ -979,7 +1010,7 @@ export function GatewayTable({
                     <GripVertical className="size-[9px]" aria-hidden="true" />
                   </button>
                   <SortHeader
-                    label={column === 'uptime' ? 'Uptime' : column === 'endpoint' ? 'Endpoint' : 'Exposed'}
+                    label={column === 'uptime' ? 'Runtime' : column === 'endpoint' ? 'Endpoint' : 'Exposed'}
                     sort={column}
                   />
                 </div>
@@ -988,15 +1019,15 @@ export function GatewayTable({
 
             <GatewaySelectionToolbar gateways={gateways} selectedIds={selectedGatewayIds} onClear={() => setSelectedGatewayIds([])} onBatchSetEnabled={onBatchSetEnabled} onBatchReload={onBatchReload}/>
             {attentionCount > 0 ? (
-              <div className="flex items-center gap-2 border-b border-[color-mix(in_srgb,var(--aurora-error)_22%,var(--aurora-border-default))] bg-[color-mix(in_srgb,var(--aurora-error)_6%,var(--gw-head))] px-5 py-1.5 transition-colors hover:bg-[color-mix(in_srgb,var(--aurora-error)_10%,var(--gw-head))]">
+              <div className="flex items-center gap-2 border-b border-[color-mix(in_srgb,var(--aurora-warn)_22%,var(--aurora-border-default))] bg-[color-mix(in_srgb,var(--aurora-warn)_6%,var(--gw-head))] px-5 py-1.5 transition-colors hover:bg-[color-mix(in_srgb,var(--aurora-warn)_10%,var(--gw-head))]">
                 <button
                   type="button"
                   onClick={() => toggleGroup('attention')}
                   aria-expanded={!isGroupCollapsed('attention')}
                   className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"
                 >
-                  <TriangleAlert className="size-3 shrink-0 text-aurora-error" aria-hidden="true" />
-                  <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-aurora-error">
+                  <TriangleAlert className="size-3 shrink-0 text-aurora-warn" aria-hidden="true" />
+                  <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-aurora-warn">
                     Needs attention
                   </span>
                   <span className="text-[10.5px] tabular-nums text-aurora-text-muted">
@@ -1010,15 +1041,17 @@ export function GatewayTable({
                     aria-hidden="true"
                   />
                 </button>
-                <button
-                  type="button"
-                  onClick={clearAll}
-                  className={cn(GW_ROW_ACTION, 'size-[22px] rounded-[7px]')}
-                  aria-label="Dismiss"
-                  title="Dismiss until something new needs attention"
-                >
-                  <X className="size-3" aria-hidden="true" />
-                </button>
+                {hasDismissibleAttention ? (
+                  <button
+                    type="button"
+                    onClick={clearAll}
+                    className={cn(GW_ROW_ACTION, 'size-[22px] rounded-[7px]')}
+                    aria-label="Dismiss current notifications"
+                    title="Dismiss current notifications until a new incident occurs"
+                  >
+                    <X className="size-3" aria-hidden="true" />
+                  </button>
+                ) : null}
               </div>
             ) : null}
 
