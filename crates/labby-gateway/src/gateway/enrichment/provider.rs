@@ -613,6 +613,12 @@ mod tests {
 
     use super::*;
 
+    // These tests assert provider process behavior, not scheduler latency. A loaded
+    // workspace shard can delay a newly spawned shell beyond one second, so keep
+    // classification tests comfortably above that noise floor. Timeout behavior
+    // itself is covered separately with an intentionally tiny deadline.
+    const PROCESS_TEST_TIMEOUT_MS: u64 = 5_000;
+
     fn sample_input() -> UpstreamEnrichmentInput {
         UpstreamEnrichmentInput {
             name: "github".to_string(),
@@ -680,7 +686,7 @@ printf '{"proposals":[{"upstream":"github","hint":"capabilities: repository issu
         let proposals = run_provider_preview(
             GatewayEnrichmentProvider::Codex,
             &[sample_input()],
-            &runner(script, 1_000, 1_024),
+            &runner(script, PROCESS_TEST_TIMEOUT_MS, 1_024),
         )
         .await
         .expect("provider succeeds with isolated environment");
@@ -704,7 +710,7 @@ head -c 256 /dev/zero | tr '\0' x
             run_provider_preview(
                 GatewayEnrichmentProvider::Codex,
                 &[sample_input()],
-                &runner(script, 1_000, 64),
+                &runner(script, PROCESS_TEST_TIMEOUT_MS, 64),
             )
             .await,
         );
@@ -724,10 +730,7 @@ head -c 256 /dev/zero | tr '\0' x >&2
             run_provider_preview(
                 GatewayEnrichmentProvider::Codex,
                 &[sample_input()],
-                // Process startup approached the one-second deadline under a loaded full-suite
-                // run. Keep the content cap exact while giving this process-bound assertion a
-                // deadline that measures output classification rather than scheduler latency.
-                &runner(script, 5_000, 64),
+                &runner(script, PROCESS_TEST_TIMEOUT_MS, 64),
             )
             .await,
         );
@@ -748,7 +751,7 @@ exit 9
             run_provider_preview(
                 GatewayEnrichmentProvider::Codex,
                 &[sample_input()],
-                &runner(script, 1_000, 1_024),
+                &runner(script, PROCESS_TEST_TIMEOUT_MS, 1_024),
             )
             .await,
         );
@@ -769,7 +772,7 @@ exit 9
             run_provider_preview(
                 GatewayEnrichmentProvider::Codex,
                 &[sample_input()],
-                &runner(script, 1_000, 1_024),
+                &runner(script, PROCESS_TEST_TIMEOUT_MS, 1_024),
             )
             .await,
         );

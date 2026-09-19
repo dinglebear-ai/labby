@@ -46,12 +46,6 @@ use super::tools::MAX_UPSTREAM_RESOURCES;
 /// stalls every queued OAuth writer behind one slow upstream.
 const CATALOG_LISTING_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Number of resource serializations performed while bounding the merged
-/// envelope; tests assert each resource is measured once.
-#[cfg(test)]
-pub(super) static MERGED_RESOURCE_MEASUREMENTS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-
 /// One regular upstream Resource with its exact pre-rewrite provenance.
 ///
 /// This is observational listing metadata, not read authority or a grant.
@@ -515,7 +509,8 @@ impl UpstreamPool {
         let mut bytes = 2usize;
         resources.retain(|item| {
             #[cfg(test)]
-            MERGED_RESOURCE_MEASUREMENTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.merged_resource_measurements
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             bytes = bytes.saturating_add(
                 serde_json::to_vec(&item.resource).map_or(usize::MAX, |body| body.len() + 1),
             );
@@ -1057,12 +1052,12 @@ mod tests {
             .expect("connection identity");
             pool.resource_upstreams.write().await.push(name);
         }
-        MERGED_RESOURCE_MEASUREMENTS.store(0, Ordering::SeqCst);
+        pool.merged_resource_measurements.store(0, Ordering::SeqCst);
 
         let resources = pool.list_upstream_resources_allowed(None).await;
 
         assert_eq!(resources.len(), 3000.min(MAX_UPSTREAM_RESOURCES));
-        let measurements = MERGED_RESOURCE_MEASUREMENTS.load(Ordering::SeqCst);
+        let measurements = pool.merged_resource_measurements.load(Ordering::SeqCst);
         assert!(
             measurements <= 3000,
             "each resource must be measured once while bounding the merged envelope; measured {measurements} times"
