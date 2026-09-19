@@ -14,7 +14,7 @@ The generated [action catalog](../generated/action-catalog.md) is authoritative 
 
 `snippets.list`, `help`, and `schema` are discovery operations. Built-in snippets are loaded from the checked-in snippet directory and user snippets are resolved from the Labby home.
 
-## Tool Declaration Metadata
+## Tool Declaration Scope
 
 Markdown frontmatter may include `tools` as a JSON string array or an indented
 list of exact `<upstream>::<tool>` identifiers. Storage and Code Mode discovery
@@ -22,11 +22,16 @@ preserve omission separately from an explicit empty array. Declarations are
 bounded to 128 unique identifiers of at most 1,024 bytes each; reserved local
 capabilities, malformed identifiers, and duplicate declaration keys are rejected.
 
-**This is descriptive metadata, not an execution restriction.** Omission records
-no declaration; `[]` expresses an intended deny-all declaration; a nonempty list
-records intended dependencies. Current execution still uses the existing caller
-policy regardless of this metadata. Do not rely on `tools` to limit a snippet's
-authority until host-side enforcement is implemented and qualified.
+For native saved-snippet execution (`snippets.exec` / `snippets.test`), Labby
+intersects a declaration with the caller's existing Code Mode policy before
+building the catalog. The declaration can narrow authority but never grant it:
+omission keeps the legacy caller scope, `[]` denies all upstream tools, and a
+nonempty list exposes only those exact dependencies. This also keeps one-shot
+snippet runs from cold-probing unrelated gateway upstreams.
+
+Nested `codemode.run()` inherits the already-established execution scope. Trusted
+local saved snippets may compose inside that declared scope; route-scoped callers
+still cannot use nested snippet resolution to widen their authority.
 
 ## Administrative Actions
 

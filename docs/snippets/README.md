@@ -245,7 +245,17 @@ async () => {
 
 `codemode.run()` resolves snippet source lazily through the live gateway and
 evaluates it inside the same Javy/QuickJS runtime as the caller. Snippet source
-is not injected into search/describe metadata.
+is not injected into search/describe metadata and is not echoed in the normal
+execution response. A saved snippet invocation should cost the model context for
+the snippet name, inputs, and compact result, not the stored JavaScript body.
+The source only needs to enter an LLM context when the user explicitly asks an
+agent to author, inspect, debug, or edit that source.
+
+When frontmatter declares exact `tools`, native saved-snippet execution uses that
+declaration to scope catalog construction and dispatch. This avoids waking or
+probing unrelated gateway upstreams for a workflow whose dependencies are
+already known. Snippets without declarations retain the legacy unscoped catalog
+behavior for compatibility.
 
 Successful admin/trusted-local Code Mode executions return an `execution_id`.
 Promote a prior execution through the live gateway snippets action, not a

@@ -10,6 +10,8 @@ use std::sync::{
 };
 
 use dashmap::DashMap;
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
@@ -419,6 +421,12 @@ pub struct UpstreamPool {
     /// Shared per-upstream SEP-2243 recovery metrics. Gateway-managed pools
     /// inherit one process-lifetime store across pool replacement.
     header_recovery_metrics_store: HeaderRecoveryMetricsStore,
+    /// Test-local serialization counters live on the pool so parallel catalog
+    /// tests cannot contaminate each other's measurement oracles.
+    #[cfg(test)]
+    pub(super) merged_prompt_measurements: Arc<AtomicUsize>,
+    #[cfg(test)]
+    pub(super) merged_resource_measurements: Arc<AtomicUsize>,
 }
 
 /// Type-erased-over-lifecycle running client service.
@@ -635,6 +643,10 @@ impl UpstreamPool {
             shared_http_client,
             usage_store: None,
             header_recovery_metrics_store: HeaderRecoveryMetricsStore::default(),
+            #[cfg(test)]
+            merged_prompt_measurements: Arc::new(AtomicUsize::new(0)),
+            #[cfg(test)]
+            merged_resource_measurements: Arc::new(AtomicUsize::new(0)),
         }
     }
 
