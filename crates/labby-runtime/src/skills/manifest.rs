@@ -480,16 +480,17 @@ mod tests {
     }
 
     #[test]
-    fn rejects_nonstandard_allowed_tools_list() {
+    fn accepts_allowed_tools_array_compatibility_form_without_rewriting_frontmatter() {
         let mut entry = valid_entry();
-        entry.frontmatter.insert(
-            "allowed-tools".to_string(),
-            serde_json::json!(["Read", "Write"]),
-        );
+        let allowed_tools = serde_json::json!(["Read", "Write"]);
+        entry
+            .frontmatter
+            .insert("allowed-tools".to_string(), allowed_tools.clone());
 
+        let validated = validate_skill_entry(&entry).expect("compatibility form accepted");
         assert_eq!(
-            validate_skill_entry(&entry),
-            Err(SkillRejection::InvalidFrontmatter)
+            validated.entry.frontmatter.get("allowed-tools"),
+            Some(&allowed_tools)
         );
     }
 

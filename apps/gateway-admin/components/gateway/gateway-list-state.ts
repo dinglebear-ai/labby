@@ -1,4 +1,5 @@
 import type { Gateway, DiscoveredTool } from '@/lib/types/gateway'
+import { describeGatewayOperationalState } from '@/lib/gateway-operational-state'
 
 export type GatewayPrimaryLens = 'enabled' | 'configured' | 'healthy' | 'disconnected' | 'attention'
 export type GatewayStatusFacet = 'configured' | 'healthy' | 'disconnected' | 'enabled' | 'disabled'
@@ -50,9 +51,10 @@ export function matchesGatewayStatusFacet(
 
   const actual = new Set<GatewayStatusFacet>()
   const enabled = gateway.enabled ?? true
+  const operational = describeGatewayOperationalState(gateway)
   if (gateway.configured ?? true) actual.add('configured')
-  if (enabled && gateway.status.healthy && gateway.status.connected) actual.add('healthy')
-  if (enabled && !gateway.status.connected) actual.add('disconnected')
+  if (operational.kind === 'healthy') actual.add('healthy')
+  if (operational.kind === 'disconnected') actual.add('disconnected')
   if (enabled) actual.add('enabled')
   if (!enabled) actual.add('disabled')
 
@@ -103,9 +105,10 @@ export function filterGateways(gateways: Gateway[], state: GatewayFilterState): 
     if (state.primaryLens === 'enabled' && !enabled && !state.status.includes('disabled')) {
       return false
     }
-    if (state.primaryLens === 'healthy' && !(enabled && gateway.status.healthy && gateway.status.connected)) return false
-    if (state.primaryLens === 'disconnected' && !(enabled && !gateway.status.connected)) return false
-    if (state.primaryLens === 'attention' && !(enabled && (!gateway.status.connected || !gateway.status.healthy || gateway.warnings.length > 0))) return false
+    const operational = describeGatewayOperationalState(gateway)
+    if (state.primaryLens === 'healthy' && operational.kind !== 'healthy') return false
+    if (state.primaryLens === 'disconnected' && operational.kind !== 'disconnected') return false
+    if (state.primaryLens === 'attention' && !operational.needsAttention) return false
     if (state.primaryLens === 'configured' && !(gateway.configured ?? true)) return false
 
     if (normalizedSearch) {
