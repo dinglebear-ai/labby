@@ -658,14 +658,15 @@ CIMD client ID `https://chatgpt.com/oauth/client.json`. The callback-ID form
 authorization server that does not meet those issuer-identification
 requirements; it remains allowlisted for compatibility, not as the preferred
 Labby path. Labby's product defaults cover both forms plus the legacy
-`https://chatgpt.com/aip/plugin-callback`, and Claude's
-`https://claude.ai/api/mcp/auth_callback`. These are redirect allowlist entries,
-not client identifiers: a ChatGPT CIMD client still uses its exact HTTPS
+`https://chatgpt.com/aip/plugin-callback`, Claude's
+`https://claude.ai/api/mcp/auth_callback`, and Google Antigravity's
+`https://antigravity.google/oauth-callback`. These are redirect allowlist entries,
+not client identifiers: a ChatGPT or Antigravity CIMD client still uses its exact HTTPS
 metadata-document URL as `client_id`, and Labby validates the document as
 described above. Treat the stable CIMD URL as the client ID, not as a redirect
 URI or an authorization-server metadata location. Other
 browser-based clients, such as Gemini, VS Code, Zed, Cursor, Windsurf, Cline,
-Roo Code, Kilo Code, Droid, Antigravity, OpenClaw, Hermes, and future MCP
+Roo Code, Kilo Code, Droid, OpenClaw, Hermes, and future MCP
 clients, may use different HTTPS domains. Add those patterns explicitly as they
 are verified, or configure `https://*` only when you intentionally accept the
 risk of trusting any HTTPS DCR callback.
