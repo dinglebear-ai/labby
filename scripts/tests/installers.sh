@@ -974,11 +974,12 @@ SH
     run_installer "$case_home" "$fixtures" "$fake_bin" \
         LABBY_INSTALL_LOCAL_BINARY="$case_root/labby" LABBY_INSTALL_LOCAL_SHA256="$digest" \
         LABBY_INSTALL_VERSION=v1.0.0 LABBY_INSTALL_NO_SETUP=0 \
-        LABBY_SETUP_ROLE=client LABBY_SETUP_SERVER_URL=https://labby.example.com \
-        LABBY_SETUP_OAUTH=google LABBY_SETUP_DESKTOP=0 LABBY_SETUP_NO_BROWSER=1 \
+        LABBY_SETUP_ROLE=server LABBY_SETUP_PUBLIC_URL=https://labby.example.com \
+        LABBY_SETUP_AUTH=oauth LABBY_SETUP_OAUTH=google \
+        LABBY_SETUP_DESKTOP=0 LABBY_SETUP_NO_BROWSER=1 \
         LABBY_TEST_SETUP_ARGS="$case_root/args" > "$case_root/out" 2>&1
-    printf '%s\n' setup --role client --yes --server-url https://labby.example.com \
-        --oauth google --no-desktop --no-browser > "$case_root/expected"
+    printf '%s\n' setup --role server --yes --public-url https://labby.example.com \
+        --auth oauth --oauth google --no-desktop --no-browser > "$case_root/expected"
     cmp "$case_root/expected" "$case_root/args" || fail 'setup options were not preserved'
     if run_installer "$case_home" "$fixtures" "$fake_bin" \
         LABBY_INSTALL_LOCAL_BINARY="$case_root/labby" LABBY_INSTALL_LOCAL_SHA256="$digest" \

@@ -145,7 +145,7 @@ Do not declare success from compilation alone. Run focused tests for the behavio
 
 ## Web UI
 
-`apps/gateway-admin` is the operator web UI and uses the Aurora design system. Reuse existing tokens/components/patterns before introducing new primitives. See its nested `CLAUDE.md` plus [docs/design/design-system-contract.md](docs/design/design-system-contract.md) and [docs/design/component-development.md](docs/design/component-development.md).
+`apps/gateway-admin` is the operator web UI and uses the Aurora design system. Read [DESIGN.md](DESIGN.md) before visual/component work. Shared Aurora tokens and components are canonical in the standalone `dinglebear-ai/aurora` shadcn registry, exposed to this app as `@aurora` in `apps/gateway-admin/components.json`; prefer an existing registry item before introducing a new shared primitive. Labby-specific composition remains local. See the app's nested `CLAUDE.md` plus [docs/design/design-system-contract.md](docs/design/design-system-contract.md) and [docs/design/component-development.md](docs/design/component-development.md).
 
 `apps/labby-desktop` is the native Tauri shell for the canonical Gateway Admin
 Control Plane. It must not grow a separate desktop-only renderer or product
