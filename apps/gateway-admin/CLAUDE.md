@@ -12,7 +12,7 @@ This directory is the Next.js operator UI embedded by Labby. The app currently u
 
 ## Design System
 
-Aurora is the source of truth for styling. Read `components/ui/CLAUDE.md`, `docs/design/design-system-contract.md`, and `docs/design/component-development.md` before UI work. Reuse existing tokens and primitives; do not introduce duplicate buttons, dialogs, inputs, tables, badges, spacing scales, or raw theme colors.
+Aurora is the source of truth for styling. Shared Aurora tokens and components are canonical in the standalone `dinglebear-ai/aurora` shadcn registry; this repo consumes that registry through `@aurora` in `components.json`. Read the repository-root `DESIGN.md`, `components/ui/CLAUDE.md`, `docs/design/design-system-contract.md`, and `docs/design/component-development.md` before UI work. Reuse existing Aurora registry items and local product compositions; do not introduce duplicate buttons, dialogs, inputs, tables, badges, spacing scales, or raw theme colors.
 
 ## Safety And Errors
 

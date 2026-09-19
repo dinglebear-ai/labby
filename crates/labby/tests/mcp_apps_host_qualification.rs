@@ -157,9 +157,23 @@ async fn q4_real_resources_render_in_distinct_openai_and_anthropic_emulators() {
             .await
             .expect("real Labby MCP process");
 
-    let initially_hidden = runner.read_resource("ui://lab/apps/manage").await;
+    // Fresh installs intentionally expose Labby-owned MCP Apps by default.
+    // Exercise the policy transition explicitly so this live oracle verifies
+    // that direct resources/read cannot bypass a disabled surface.
+    let initially_disabled = runner
+        .call_raw(
+            "mcp_app",
+            serde_json::json!({"action":"disable", "params":{"target":"manager"}}),
+        )
+        .await
+        .expect("disable manager through real tools/call");
+    assert_ne!(
+        initially_disabled.is_error,
+        Some(true),
+        "initial disable failed: {initially_disabled:?}"
+    );
     assert!(
-        initially_hidden.is_err(),
+        runner.read_resource("ui://lab/apps/manage").await.is_err(),
         "disabled app resource must not bypass policy"
     );
 
@@ -263,10 +277,12 @@ async fn q4_real_resources_render_in_distinct_openai_and_anthropic_emulators() {
         Some(true),
         "disable failed: {disabled:?}"
     );
-    assert!(
-        runner.read_resource(mcp_uri).await.is_err(),
-        "revoked resource remained readable on the same authenticated session"
-    );
+    for uri in [mcp_uri, openai_uri] {
+        assert!(
+            runner.read_resource(uri).await.is_err(),
+            "revoked resource {uri} remained readable on the same authenticated session"
+        );
+    }
 
     let cleanup = runner.finish().await;
     assert!(

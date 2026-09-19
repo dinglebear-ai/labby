@@ -13,11 +13,11 @@ updated: "2026-08-18"
 
 ## Purpose
 
-This document is the root-level source of truth for the Labby web UI design system.
+This document is Labby's implementation-facing **consumer contract** for the Aurora design system. The cross-product visual/component authority lives in the standalone `dinglebear-ai/aurora` repository: its `DESIGN.md`, shadcn registry, registry source, and gallery are canonical for shared Aurora tokens and primitives. Labby's root `DESIGN.md` is the self-contained agent-facing profile for this repository.
 
-It defines the visual and interaction contract that new pages, refactors, and component work must follow. The goal is to keep Labby consistent as a premium control plane: clean, modern, and operator-friendly without feeling glossy, intimidating, or over-styled.
+This document defines how the Labby web UI applies Aurora, including product-specific composition, current migration constraints, and interaction rules that new pages, refactors, and component work must follow. The goal is to keep Labby consistent as a premium control plane: clean, modern, and operator-friendly without feeling glossy, intimidating, or over-styled.
 
-This contract is implementation-facing. It exists so product pages do not drift into one-off styling decisions.
+When a rule concerns a reusable Aurora token or component, change it upstream in Aurora and then sync Labby. When a rule is specific to Labby page composition or product behavior, this contract owns it. Do not create a second Aurora component authority inside Labby.
 
 Related documents:
 
@@ -223,7 +223,7 @@ All new page and component styling should use semantic Aurora tokens rather than
 - `--aurora-border-default: #1d3d4e`
 - `--aurora-border-strong: #24536c`
 - `--aurora-text-primary: #e6f4fb`
-- `--aurora-text-muted: #a9c6d8` — lifted from the original `#90a9b9` to clear WCAG AA (≥4.5:1) on `--aurora-panel-medium`. The lighter value is the source of truth.
+- `--aurora-text-muted: #a9c6d8` — Labby's current consumer value, lifted from the original `#90a9b9` to clear WCAG AA (≥4.5:1) on `--aurora-panel-medium`. If the canonical Aurora registry carries a different shared value, reconcile that drift upstream-first rather than treating this local snapshot as a second authority.
 
 ### Accent Family
 
@@ -729,7 +729,7 @@ When implementing or refactoring UI:
 - do not introduce alternate dark themes on a per-page basis
 - update `/design-system` when adding or materially changing a shared interaction pattern
 - update the `/design-system` anti-pattern gallery when a recurring drift pattern is found during review
-- treat this document as the stable contract and dated exploration docs as supporting material
+- treat the standalone Aurora `DESIGN.md`/registry as the shared stable contract, this document as Labby's consumer contract, and dated exploration docs as supporting material
 - product code should be linted or reviewed for banned drift signals: `text-xs uppercase tracking-*`, arbitrary alpha suffixes where tint tokens exist, page-local `z-[...]`, icon-only buttons without tooltips, emoji used as UI icons, and raw color values
 - all `overflow-auto`, `overflow-scroll`, `overflow-y-auto`, and `overflow-x-auto` containers must include the `aurora-scrollbar` utility class — this applies the token-backed thin scrollbar style (defined in `app/globals.css`) consistently across all scroll surfaces
 - **shadcn-generic tokens are reserved for `components/ui/` primitives.** Product code — anything under `app/**`, `components/**` except `components/ui/**` — must use the Aurora semantic equivalents:

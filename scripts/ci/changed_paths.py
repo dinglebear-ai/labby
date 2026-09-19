@@ -211,6 +211,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             "clippy.toml",
             "deny.toml",
             "verification/Cargo.toml",
+            ".config/nextest.toml",
         },
     )
     # `verification/` is a separate Cargo workspace and deliberately matches

@@ -34,7 +34,7 @@ pub struct AgentResourceBounds {
 impl AgentResourceBounds {
     pub fn validate(self) -> Result<Self, AgentRuntimeError> {
         if self.max_runtime_millis == 0
-            || self.max_runtime_millis > 86_400_000
+            || self.max_runtime_millis > AGENT_MAX_RUNTIME_MILLIS
             || self.max_output_bytes == 0
             || self.max_output_bytes > 64 * 1024 * 1024
             || self.max_external_effects > 10_000
@@ -616,6 +616,25 @@ mod tests {
             .await
             .unwrap_err(),
             AgentRuntimeError::NotDispatchable
+        );
+    }
+
+    #[test]
+    fn resource_bounds_cannot_outlive_the_authority_lease_contract() {
+        let valid = AgentResourceBounds {
+            max_runtime_millis: AGENT_MAX_RUNTIME_MILLIS,
+            max_output_bytes: 1,
+            max_external_effects: 0,
+        };
+        assert_eq!(valid.validate().unwrap(), valid);
+
+        let overlong = AgentResourceBounds {
+            max_runtime_millis: AGENT_MAX_RUNTIME_MILLIS + 1,
+            ..valid
+        };
+        assert_eq!(
+            overlong.validate().unwrap_err(),
+            AgentRuntimeError::InvalidBounds
         );
     }
 
