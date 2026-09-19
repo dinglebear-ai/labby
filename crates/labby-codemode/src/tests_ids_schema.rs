@@ -8,7 +8,7 @@ use serde_json::json;
 
 use crate::error::ToolError;
 use crate::snippet::store::{SnippetInfo, SnippetInputSpec, SnippetInputType, SnippetSource};
-use crate::types::{CodeModeToolId, CodeModeToolRef, ToolDescriptor, ToolScope};
+use crate::types::{CatalogDescriptor, CodeModeToolId, CodeModeToolRef, ToolScope};
 
 use super::protocol::CodeModeRunnerOutput;
 use super::schema::validate_code_mode_params_against_schema;
@@ -100,7 +100,7 @@ fn snippet_catalog_entry_projects_to_codemode_run() {
         path: "repo-summary.md".into(),
         shadowed: false,
     };
-    let entry = ToolDescriptor::snippet(&info);
+    let entry = CatalogDescriptor::snippet(&info);
     assert_eq!(entry.kind, crate::types::CodeModeCatalogKind::Snippet);
     assert_eq!(entry.id, "snippet::repo-summary");
     assert_eq!(entry.namespace, "snippet");
@@ -144,7 +144,7 @@ fn snippet_catalog_json_input_schema_allows_any_json_value() {
         shadowed: false,
     };
 
-    let entry = ToolDescriptor::snippet(&info);
+    let entry = CatalogDescriptor::snippet(&info);
     let schema = entry.schema.expect("snippet schema");
     let payload = &schema["properties"]["payload"];
     assert!(payload.get("type").is_none(), "{payload}");
@@ -706,7 +706,7 @@ fn code_mode_schema_validator_leaves_normal_schemas_unaffected_by_guards() {
 
 #[test]
 fn builds_catalog_entry_for_tool() {
-    let candidate = ToolDescriptor::tool(
+    let candidate = CatalogDescriptor::tool(
         "github",
         "search_issues",
         "Search issues",

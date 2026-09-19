@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use crate::error::ToolError;
 use crate::lab_action_unknown_tool_hint;
 
-use super::types::ToolDescriptor;
+use super::types::CatalogDescriptor;
 
 /// Resolve the Lab home directory (`$LABBY_HOME`, else `$HOME/.labby`, else a fixed
 /// temp-dir fallback). Self-contained copy of the host helper so the kernel can
@@ -83,7 +83,7 @@ pub(crate) fn lab_action_unknown_tool() -> ToolError {
 }
 
 /// Serialized byte size of a catalog (host render-size accounting).
-pub fn serialized_catalog_size(entries: &[ToolDescriptor]) -> Result<usize, ToolError> {
+pub fn serialized_catalog_size(entries: &[CatalogDescriptor]) -> Result<usize, ToolError> {
     serde_json::to_vec(entries)
         .map(|bytes| bytes.len())
         .map_err(|err| ToolError::Sdk {

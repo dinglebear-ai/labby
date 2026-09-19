@@ -4,7 +4,7 @@ use serde::Serialize;
 
 use crate::error::ToolError;
 use crate::{
-    CodeModeCatalogKind, CodeModeToolSafety, ToolDescriptor, ToolScope, discovery_entry_visible,
+    CatalogDescriptor, CodeModeCatalogKind, CodeModeToolSafety, ToolScope, discovery_entry_visible,
 };
 
 pub const QUERY_MAX_BYTES: usize = 1_024;
@@ -45,6 +45,7 @@ pub struct CodeModeSearchResponse {
 pub struct CodeModeDescribeResponse {
     pub path: String,
     pub id: String,
+    pub kind: CodeModeCatalogKind,
     pub namespace: String,
     pub name: String,
     pub description: String,
@@ -74,11 +75,21 @@ struct SearchResponseRef<'a> {
     hint: Option<&'static str>,
 }
 
-pub fn search_visible_tools(
-    entries: &[ToolDescriptor],
+pub fn search_visible_catalog(
+    entries: &[CatalogDescriptor],
     scope: &ToolScope,
     query: &str,
     limit: usize,
+) -> Result<CodeModeSearchResponse, ToolError> {
+    search_visible_catalog_with_kinds(entries, scope, query, limit, &[])
+}
+
+pub fn search_visible_catalog_with_kinds(
+    entries: &[CatalogDescriptor],
+    scope: &ToolScope,
+    query: &str,
+    limit: usize,
+    kinds: &[CodeModeCatalogKind],
 ) -> Result<CodeModeSearchResponse, ToolError> {
     validate_bytes("query", query, QUERY_MAX_BYTES)?;
     let tokens = tokens(query);
@@ -89,10 +100,12 @@ pub fn search_visible_tools(
     let mut candidates = Vec::with_capacity(50);
     let mut total = 0_usize;
     for (index, entry) in entries.iter().enumerate() {
-        if entry.kind != CodeModeCatalogKind::Tool || !discovery_entry_visible(entry, scope) {
+        if (!kinds.is_empty() && !kinds.contains(&entry.kind))
+            || !discovery_entry_visible(entry, scope)
+        {
             continue;
         }
-        let path = tool_path(entry);
+        let path = entry.discovery_path();
         let fields = [
             (normalize(&path), 12_u32),
             (normalize(&entry.name), 10),
@@ -149,8 +162,8 @@ pub fn search_visible_tools(
     })
 }
 
-pub fn describe_visible_tool(
-    entries: &[ToolDescriptor],
+pub fn describe_visible_catalog(
+    entries: &[CatalogDescriptor],
     scope: &ToolScope,
     target: &str,
 ) -> Result<CodeModeDescribeResponse, ToolError> {
@@ -161,14 +174,16 @@ pub fn describe_visible_tool(
     }
     let visible = entries
         .iter()
-        .filter(|entry| {
-            entry.kind == CodeModeCatalogKind::Tool && discovery_entry_visible(entry, scope)
-        })
+        .filter(|entry| discovery_entry_visible(entry, scope))
         .collect::<Vec<_>>();
     let mut exact = visible
         .iter()
         .copied()
-        .filter(|entry| target == entry.id || target == tool_path(entry) || target == helper(entry))
+        .filter(|entry| {
+            target == entry.id
+                || target == entry.discovery_path()
+                || target == entry.discovery_helper()
+        })
         .collect::<Vec<_>>();
     if exact.is_empty() {
         let bare = visible
@@ -179,7 +194,10 @@ pub fn describe_visible_tool(
         if bare.len() == 1 {
             exact = bare;
         } else if bare.len() > 1 {
-            let mut valid = bare.into_iter().map(tool_path).collect::<Vec<_>>();
+            let mut valid = bare
+                .into_iter()
+                .map(CatalogDescriptor::discovery_path)
+                .collect::<Vec<_>>();
             valid.sort();
             return Err(ToolError::AmbiguousTool {
                 message: "tool target is ambiguous".into(),
@@ -193,18 +211,21 @@ pub fn describe_visible_tool(
     if exact.len() > 1 {
         return Err(unknown());
     }
-    let (typescript, typescript_omitted) = if entry.dts.len() <= DTS_MAX_BYTES {
+    let (typescript, typescript_omitted) = if entry.kind != CodeModeCatalogKind::Tool {
+        (None, None)
+    } else if entry.dts.len() <= DTS_MAX_BYTES {
         (Some(entry.dts.clone()), None)
     } else {
         (None, Some("size_limit"))
     };
     let response = CodeModeDescribeResponse {
-        path: tool_path(entry),
+        path: entry.discovery_path(),
         id: entry.id.clone(),
+        kind: entry.kind,
         namespace: entry.namespace.clone(),
         name: entry.name.clone(),
         description: truncate(&entry.description, DESCRIPTION_MAX_BYTES),
-        helper: helper(entry),
+        helper: entry.discovery_helper(),
         signature: truncate(&entry.signature, SIGNATURE_MAX_BYTES),
         tags: bounded_tags(&entry.tags),
         safety: entry.safety,
@@ -220,9 +241,9 @@ pub fn describe_visible_tool(
     Ok(response)
 }
 
-fn hit(entry: &ToolDescriptor, score: u32) -> CodeModeSearchHit {
+fn hit(entry: &CatalogDescriptor, score: u32) -> CodeModeSearchHit {
     CodeModeSearchHit {
-        path: tool_path(entry),
+        path: entry.discovery_path(),
         id: entry.id.clone(),
         kind: entry.kind,
         namespace: entry.namespace.clone(),
@@ -234,20 +255,41 @@ fn hit(entry: &ToolDescriptor, score: u32) -> CodeModeSearchHit {
         safety: entry.safety,
     }
 }
-fn compare_candidate(a: Candidate, b: Candidate, entries: &[ToolDescriptor]) -> std::cmp::Ordering {
-    b.score
-        .cmp(&a.score)
-        .then_with(|| tool_path(&entries[a.index]).cmp(&tool_path(&entries[b.index])))
+fn compare_candidate(
+    a: Candidate,
+    b: Candidate,
+    entries: &[CatalogDescriptor],
+) -> std::cmp::Ordering {
+    b.score.cmp(&a.score).then_with(|| {
+        entries[a.index]
+            .discovery_path()
+            .cmp(&entries[b.index].discovery_path())
+    })
 }
-fn tool_path(entry: &ToolDescriptor) -> String {
-    format!(
-        "{}.{}",
-        crate::preamble::namespace_segment(&entry.namespace),
-        crate::preamble::tool_name_to_snake(&entry.name)
-    )
+
+/// Backward-compatible tool-only search wrapper. Existing callers keep the
+/// pre-catalog behavior while new callers use the source-neutral APIs above.
+pub fn search_visible_tools(
+    entries: &[CatalogDescriptor],
+    scope: &ToolScope,
+    query: &str,
+    limit: usize,
+) -> Result<CodeModeSearchResponse, ToolError> {
+    search_visible_catalog_with_kinds(entries, scope, query, limit, &[CodeModeCatalogKind::Tool])
 }
-fn helper(entry: &ToolDescriptor) -> String {
-    format!("codemode.{}", tool_path(entry))
+
+/// Backward-compatible tool-only describe wrapper.
+pub fn describe_visible_tool(
+    entries: &[CatalogDescriptor],
+    scope: &ToolScope,
+    target: &str,
+) -> Result<CodeModeDescribeResponse, ToolError> {
+    let tools = entries
+        .iter()
+        .filter(|entry| entry.kind == CodeModeCatalogKind::Tool)
+        .cloned()
+        .collect::<Vec<_>>();
+    describe_visible_catalog(&tools, scope, target)
 }
 fn normalize(value: &str) -> String {
     value

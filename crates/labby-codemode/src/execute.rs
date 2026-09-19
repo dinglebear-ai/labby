@@ -16,9 +16,9 @@ use super::normalize_user_code;
 use super::shape::shape_final_result;
 use super::truncate::{response_within_budget, truncate_execution_response};
 use super::types::{
-    CodeModeCaller, CodeModeCatalogKind, CodeModeDiscoveryEntry, CodeModeExecutionError,
-    CodeModeExecutionOutcome, CodeModeExecutionResponse, CodeModeSurface, CodeModeToolId,
-    CodeModeToolRef, ToolDescriptor, ToolScope,
+    CatalogDescriptor, CodeModeCaller, CodeModeCatalogKind, CodeModeDiscoveryEntry,
+    CodeModeExecutionError, CodeModeExecutionOutcome, CodeModeExecutionResponse, CodeModeSurface,
+    CodeModeToolId, CodeModeToolRef, ToolScope,
 };
 
 /// Compatibility key a Code Mode snippet can return
@@ -507,6 +507,17 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                     .and_then(Value::as_u64)
                     .map(|n| n.clamp(1, 50) as usize)
                     .unwrap_or(50);
+                let kinds = params
+                    .get("kinds")
+                    .and_then(Value::as_array)
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .filter_map(CodeModeCatalogKind::parse_filter)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
                 // Fail-open at this layer too: even though the trait contract
                 // says implementations return `Ok(Vec::new())` on degraded
                 // paths (never `Err`), an accidental `Err` from a host bug
@@ -514,7 +525,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                 // empty ranked list, identical to the "no semantic signal"
                 // case.
                 let ranked = host
-                    .semantic_rank(query, limit, caller, surface, scope)
+                    .semantic_rank(query, limit, &kinds, caller, surface, scope)
                     .await
                     .unwrap_or_default();
                 let ranked_json: Vec<Value> = ranked
@@ -696,16 +707,24 @@ pub fn discovery_render_params(
 }
 
 /// Whether a rendered catalog entry is visible to the sandbox's discovery
-/// catalog under `scope`: snippets are always visible, tools must pass
-/// `scope.allows`.
+/// catalog under `scope`. Callable tools must pass `scope.allows`; non-tool
+/// catalog metadata does not consume tool grants and must already be filtered
+/// by its owning source before it reaches this shared catalog.
+///
+/// This is discovery visibility only. Returning `true` for a metadata kind
+/// never grants a dispatch/load capability; those operations remain separately
+/// authorized by their own runtime paths.
 ///
 /// Single source of truth for the post-render entry filter shared by
 /// `build_code_mode_proxy` and any host recomputing the same scope-filtered
 /// entry set (e.g. a gateway's `semantic_rank`) — see
 /// [`discovery_render_params`] for why divergence here is a security bug,
 /// not a style issue.
-pub fn discovery_entry_visible(entry: &ToolDescriptor, scope: &ToolScope) -> bool {
-    entry.kind == CodeModeCatalogKind::Snippet || scope.allows(&entry.namespace, &entry.name)
+pub fn discovery_entry_visible(entry: &CatalogDescriptor, scope: &ToolScope) -> bool {
+    match entry.kind {
+        CodeModeCatalogKind::Tool => scope.allows(&entry.namespace, &entry.name),
+        _ => true,
+    }
 }
 
 fn remove_soft_warning_if_it_breaks_budget(
@@ -992,13 +1011,13 @@ mod tests {
     /// hide exactly the class of bug this is meant to catch.
     struct FixtureHost {
         pool: crate::pool::RunnerPool,
-        entries: Arc<[ToolDescriptor]>,
+        entries: Arc<[CatalogDescriptor]>,
         catalog_json: Arc<str>,
         fail_list_tools: bool,
     }
 
     impl FixtureHost {
-        fn new(entries: Vec<ToolDescriptor>) -> Self {
+        fn new(entries: Vec<CatalogDescriptor>) -> Self {
             let catalog_json = serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string());
             Self {
                 pool: crate::pool::RunnerPool::from_env()
@@ -1106,6 +1125,7 @@ mod tests {
             &self,
             _query: String,
             _top_k: usize,
+            _kinds: &[CodeModeCatalogKind],
             _caller: &CodeModeCaller,
             _surface: CodeModeSurface,
             _scope: &ToolScope,
@@ -1205,7 +1225,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_internal_call_describe_types_returns_dts_for_matching_id() {
-        let github_tool = ToolDescriptor::tool(
+        let github_tool = CatalogDescriptor::tool(
             "github",
             "list_tags",
             "List repository tags",
@@ -1237,7 +1257,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_internal_call_describe_types_returns_null_for_unknown_id() {
-        let host = FixtureHost::new(vec![ToolDescriptor::tool(
+        let host = FixtureHost::new(vec![CatalogDescriptor::tool(
             "github",
             "list_tags",
             "List repository tags",
@@ -1275,14 +1295,14 @@ mod tests {
     #[tokio::test]
     async fn dispatch_internal_call_describe_types_excludes_out_of_scope_sibling_tool() {
         let host = FixtureHost::new(vec![
-            ToolDescriptor::tool(
+            CatalogDescriptor::tool(
                 "github",
                 "allowed_tool",
                 "An allowed tool",
                 Some(json!({"type": "object"})),
                 None,
             ),
-            ToolDescriptor::tool(
+            CatalogDescriptor::tool(
                 "github",
                 "forbidden_tool",
                 "A forbidden tool",
