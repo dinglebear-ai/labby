@@ -5,7 +5,7 @@
 //! thin adapter: it re-exports the crate's public surface under
 //! `crate::gateway::code_mode::*` import paths, owns the host-side render
 //! caches, and hosts `impl CodeModeHost for GatewayManager`
-//! (`code_mode_host.rs`) plus the upstream→`ToolDescriptor` catalog projection
+//! (`code_mode_host.rs`) plus the upstream→`CatalogDescriptor` catalog projection
 //! (`search.rs`) and the one-shot CLI catalog cache (`catalog_cache.rs`).
 
 pub(crate) mod catalog_cache;
@@ -20,6 +20,7 @@ mod tool_error;
 // ── Re-exports of the crate's neutral public surface ────────────────────────
 //
 pub use labby_codemode::run_code_mode_runner_stdio;
+pub use labby_codemode::{CatalogDescriptor, CodeModeExecutionSource, ToolScope};
 pub use labby_codemode::{
     CodeModeBroker, CodeModeCaller, CodeModeCallerCapabilities, CodeModeHistory,
     CodeModeHistoryEntry, CodeModeHistoryKind, CodeModeSourceLookup, CodeModeSourceStore,
@@ -28,7 +29,6 @@ pub use labby_codemode::{
 };
 #[cfg(any(test, feature = "testkit"))]
 pub use labby_codemode::{CodeModeExecutedCall, CodeModeExecutionResponse};
-pub use labby_codemode::{CodeModeExecutionSource, ToolDescriptor, ToolScope};
 
 pub(crate) use labby_codemode::split_namespaced_id;
 
@@ -114,7 +114,7 @@ pub(crate) struct CatalogRenderCache {
     /// again per invocation (see `labby-codemode`'s `execute.rs`
     /// `describe_types` dispatch), so this is read far more than once per
     /// execution.
-    pub entries: std::sync::Arc<[ToolDescriptor]>,
+    pub entries: std::sync::Arc<[CatalogDescriptor]>,
     /// `serde_json::to_string(&entries)` — the `const tools = ...` payload.
     /// Same `Arc` rationale as `entries`.
     pub catalog_json: std::sync::Arc<str>,

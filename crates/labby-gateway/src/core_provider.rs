@@ -10,7 +10,7 @@ use std::{collections::HashSet, path::Path};
 
 use futures::StreamExt;
 use labby_codemode::{
-    CodeModeToolSafety, ToolDescriptor, ToolScope, ToolsRender, discovery_entry_visible,
+    CatalogDescriptor, CodeModeToolSafety, ToolScope, ToolsRender, discovery_entry_visible,
 };
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -79,7 +79,7 @@ pub struct CoreArgument {
 pub struct CoreCodeModeTool {
     pub operation_id: String,
     pub schema_version: String,
-    pub descriptor: ToolDescriptor,
+    pub descriptor: CatalogDescriptor,
 }
 
 #[derive(Debug, Deserialize)]
@@ -377,7 +377,7 @@ fn project_operation(
         return Err(CoreProviderError::Incompatible);
     }
     let safety = operation_safety(&operation)?;
-    let descriptor = ToolDescriptor::tool_with_safety(
+    let descriptor = CatalogDescriptor::tool_with_safety(
         "unraid",
         &operation.helper,
         &operation.summary,
