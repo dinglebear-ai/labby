@@ -31,11 +31,32 @@ pub(crate) fn truncate_execution_response(
         return response;
     }
 
-    // calls[] carries lightweight metadata only (no result payloads), so there
-    // is nothing per-call to truncate. Cap the FINAL result first — but only
-    // when doing so actually shrinks the envelope. The marker has a ~1 KB
-    // preview, so markering an already-small result (e.g. `{"ok":true}`)
-    // would *grow* it; in a logs-dominant response the result is innocent and
+    // Preserve the model-requested final result before optional debug detail.
+    // High-fan-out executions can make redacted call params dominate an otherwise
+    // compact response (for example, dozens of SSH command strings). Params are
+    // explicitly optional trace metadata, so drop them first under envelope
+    // pressure while preserving every call record and its timing/error fields.
+    // This keeps a useful compact result from being replaced by a truncation
+    // marker merely because tracing was enabled.
+    if response.calls.iter().any(|call| call.params.is_some()) {
+        for call in &mut response.calls {
+            call.params = None;
+        }
+        if response_within_budget(
+            &response,
+            max_response_bytes,
+            max_response_tokens,
+            token_estimate_divisor,
+        ) {
+            return response;
+        }
+    }
+
+    // Cap the FINAL result next, but only when doing so actually shrinks the
+    // envelope. The marker has a ~1 KB preview, so markering an already-small
+    // result (e.g. `{"ok":true}`) would *grow* it. In a logs-dominant response
+    // the result therefore remains intact and the log trimming path below gets
+    // the next opportunity to reclaim space.
     if let Some(result) = response.result.as_ref() {
         let original_len = serde_json::to_string(result).map(|s| s.len()).unwrap_or(0);
         // Prefer the complete example, then trade preview bytes for guidance.
@@ -355,8 +376,9 @@ mod tests {
 
     /// FR-5 (issue #210, lab-41e7m.2): the DEFAULT truncation path replaces an
     /// over-budget result with an OBJECT marker — `truncated: true`,
-    /// `next_action`, a bounded `preview` — while `calls[]` metadata survives
-    /// verbatim. Structure must never collapse to a bare string here; the
+    /// `next_action`, a bounded `preview` — while required `calls[]` metadata
+    /// survives after optional trace params are shed. Structure must never
+    /// collapse to a bare string here; the
     /// string-marker path is `shape.rs`, which only runs under a non-`Off`
     /// result-shape policy.
     #[test]
@@ -407,14 +429,113 @@ mod tests {
             marker["preview"].as_str().is_some_and(|s| s.len() <= 1024),
             "preview is bounded"
         );
+        let mut expected_calls = calls;
+        for call in &mut expected_calls {
+            call.params = None;
+        }
         assert_eq!(
-            truncated.calls, calls,
-            "structured calls[] metadata must survive result truncation"
+            truncated.calls, expected_calls,
+            "required calls[] metadata must survive after optional trace params are dropped"
         );
         assert!(
             truncated.result_shaping.is_none(),
             "stale shaping metadata must not describe the marker"
         );
+    }
+
+    #[test]
+    fn high_fanout_trace_params_are_dropped_before_compact_result() {
+        let calls = (0..76)
+            .map(|i| CodeModeExecutedCall {
+                id: format!("ssh::{i}"),
+                ok: true,
+                elapsed_ms: 25,
+                start_ms: Some(i * 3),
+                params: Some(json!({
+                    "command": format!("ssh host-{i} {}", "x".repeat(2048)),
+                    "timeout": 20_000
+                })),
+                error_kind: None,
+                ui: None,
+            })
+            .collect::<Vec<_>>();
+        let expected_result = json!({
+            "ok": true,
+            "artifact": "homelab/docker-inventory.json",
+            "containers": 138
+        });
+        let mut response = response_with_logs(expected_result.clone(), Vec::new());
+        response.calls = calls;
+        assert!(
+            !response_within_budget(&response, 24 * 1024, 6_000, 4),
+            "oracle must begin over budget"
+        );
+
+        let truncated = truncate_execution_response(response, 24 * 1024, 6_000, 4);
+
+        assert_eq!(truncated.result, Some(expected_result));
+        assert_eq!(truncated.calls.len(), 76, "call records must survive");
+        assert!(
+            truncated.calls.iter().all(|call| call.params.is_none()),
+            "optional trace params should be the first pressure valve"
+        );
+        assert!(response_within_budget(&truncated, 24 * 1024, 6_000, 4));
+    }
+
+    #[test]
+    fn high_fanout_trace_params_stay_dropped_when_result_also_needs_truncation() {
+        let calls = (0..24)
+            .map(|i| CodeModeExecutedCall {
+                id: format!("ssh::{i}"),
+                ok: true,
+                elapsed_ms: 25,
+                start_ms: Some(i * 3),
+                params: Some(json!({
+                    "command": format!("ssh host-{i} {}", "x".repeat(2048)),
+                    "timeout": 20_000
+                })),
+                error_kind: None,
+                ui: None,
+            })
+            .collect::<Vec<_>>();
+        let mut response =
+            response_with_logs(json!({"rows": vec!["r".repeat(96); 180]}), Vec::new());
+        response.calls = calls;
+        let max_bytes = 12 * 1024;
+        let max_tokens = 100_000;
+        let divisor = 4;
+        assert!(
+            !response_within_budget(&response, max_bytes, max_tokens, divisor),
+            "oracle must begin over budget"
+        );
+        let mut without_params = response.clone();
+        for call in &mut without_params.calls {
+            call.params = None;
+        }
+        assert!(
+            !response_within_budget(&without_params, max_bytes, max_tokens, divisor),
+            "the result must still need truncation after optional trace params are removed"
+        );
+
+        let truncated = truncate_execution_response(response, max_bytes, max_tokens, divisor);
+
+        assert_eq!(truncated.calls.len(), 24, "call records must survive");
+        assert!(
+            truncated.calls.iter().all(|call| call.params.is_none()),
+            "optional trace params must remain dropped while later pressure valves run"
+        );
+        assert_eq!(
+            truncated
+                .result
+                .as_ref()
+                .and_then(Value::as_object)
+                .and_then(|marker| marker.get("truncated")),
+            Some(&json!(true)),
+            "the independently oversized result should still become a truncation marker"
+        );
+        assert!(response_within_budget(
+            &truncated, max_bytes, max_tokens, divisor
+        ));
     }
 
     #[test]

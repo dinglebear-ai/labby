@@ -27,7 +27,10 @@ pub(crate) const MAX_SNIPPET_RESOLVES_PER_RUN: usize = 32;
 pub(crate) const MAX_INTERNAL_CALLS_PER_RUN: usize = 32;
 
 /// Maximum total bytes of resolved snippet source allowed in a single run.
-pub(crate) const MAX_SNIPPET_RESOLVED_BYTES_PER_RUN: usize = 256 * 1024;
+/// Keep nested/composed snippets on the same hard byte budget as a direct Code
+/// Mode source so reusable helpers can carry normal agent context without
+/// inheriting a smaller legacy ceiling.
+pub(crate) const MAX_SNIPPET_RESOLVED_BYTES_PER_RUN: usize = MAX_SOURCE_BYTES;
 
 /// Default per-run `callTool` fan-out budget.
 const DEFAULT_MAX_CALLTOOL_PER_RUN: u64 = 512;
@@ -128,5 +131,10 @@ mod tests {
     #[test]
     fn max_source_bytes_is_stable() {
         assert_eq!(MAX_SOURCE_BYTES, 1024 * 1024);
+    }
+
+    #[test]
+    fn composed_snippet_budget_matches_code_mode_hard_source_budget() {
+        assert_eq!(MAX_SNIPPET_RESOLVED_BYTES_PER_RUN, MAX_SOURCE_BYTES);
     }
 }
