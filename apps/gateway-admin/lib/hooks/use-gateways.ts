@@ -369,13 +369,31 @@ export function gatewaysRequestKey(enabled: boolean): string | null {
   return enabled ? GATEWAYS_KEY : null
 }
 
+function gatewayRuntimeRevision(gateways: Gateway[]): string {
+  return JSON.stringify(
+    gateways.map((gateway) => ({
+      ...gateway,
+      // Warning timestamps are synthesized by the adapter on every list poll.
+      // They are presentation metadata, not a runtime-input change. Including
+      // them in the SWR key forced a brand-new runtime cache entry every five
+      // seconds, briefly falling back to the configuration snapshot and making
+      // connection/health rows visibly flicker.
+      warnings: gateway.warnings?.map((warning) => ({
+        occurrence_id: warning.occurrence_id,
+        code: warning.code,
+        message: warning.message,
+      })) ?? [],
+    })),
+  )
+}
+
 export function gatewaysRuntimeRequestKey(
   enabled: boolean,
   includeRuntime: boolean,
   gateways: Gateway[] | undefined,
 ): [string, string] | null {
   return enabled && includeRuntime && gateways
-    ? ['/gateways/runtime', JSON.stringify(gateways)]
+    ? ['/gateways/runtime', gatewayRuntimeRevision(gateways)]
     : null
 }
 

@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { RecentServers, type RecentServer } from './recent-servers'
 import { gatewayDetailHref } from '@/lib/api/gateway-config'
 
-const gateway: RecentServer = { id: 'actual gateway', name: 'Actual server', transport: 'stdio', status: { connected: true, healthy: true, exposed_tool_count: 42 } }
+const gateway: RecentServer = { id: 'actual gateway', name: 'Actual server', transport: 'stdio', status: { connected: true, healthy: true, exposed_tool_count: 42 }, warnings: [] }
 test('compact rows preserve actual gateway navigation status transport and exposed count', () => {
   const html = renderToStaticMarkup(<RecentServers gateways={[gateway]}/>)
   assert.ok(html.includes(`href="${gatewayDetailHref(gateway.id).replace('/?', '?')}"`))
@@ -35,4 +35,17 @@ test('disabled servers are not reported as disconnected failures', () => {
   const html = renderToStaticMarkup(<RecentServers gateways={[{ ...gateway, enabled: false, status: { ...gateway.status, connected: false } }]}/> )
   assert.match(html, /aria-label="Disabled"/)
   assert.doesNotMatch(html, /aria-label="Disconnected"/)
+})
+
+test('recent server status uses the shared discovering and attention semantics', () => {
+  const warming = renderToStaticMarkup(
+    <RecentServers gateways={[{ ...gateway, status: { ...gateway.status, healthy: false, catalog_warming: true } }]}/>,
+  )
+  assert.match(warming, /aria-label="Discovering"/)
+  assert.doesNotMatch(warming, /aria-label="Needs attention"/)
+
+  const stale = renderToStaticMarkup(
+    <RecentServers gateways={[{ ...gateway, status: { ...gateway.status, likely_stale_count: 1 } }]}/>,
+  )
+  assert.match(stale, /aria-label="Needs attention"/)
 })
