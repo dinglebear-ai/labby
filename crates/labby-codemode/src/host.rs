@@ -213,6 +213,74 @@ pub trait CodeModeHost: Send + Sync {
         }
     }
 
+    /// Resolve one caller-visible MCP Prompt through the host's existing
+    /// exposure and OAuth routing policy. `prompt` accepts the stable catalog
+    /// id (`prompt::<upstream>::<name>`) or the gateway's
+    /// `<upstream>/<name>` spelling.
+    fn get_prompt(
+        &self,
+        _prompt: String,
+        _arguments: Value,
+        _caller: &CodeModeCaller,
+        _surface: CodeModeSurface,
+        _scope: &ToolScope,
+    ) -> impl Future<Output = Result<Value, ToolError>> + Send {
+        async {
+            Err(ToolError::Sdk {
+                sdk_kind: "not_found".to_string(),
+                message: "Code Mode Prompt retrieval is not available".to_string(),
+            })
+        }
+    }
+
+    /// List caller-visible Agent Skills through the product host's canonical
+    /// Skills registry. The returned value is a compact metadata envelope.
+    fn list_skills(
+        &self,
+        _caller: &CodeModeCaller,
+        _surface: CodeModeSurface,
+        _scope: &ToolScope,
+    ) -> impl Future<Output = Result<Value, ToolError>> + Send {
+        async {
+            Err(ToolError::Sdk {
+                sdk_kind: "not_found".to_string(),
+                message: "Code Mode Skill discovery is not available".to_string(),
+            })
+        }
+    }
+
+    /// Resolve one caller-visible Skill entry by published URI.
+    fn get_skill(
+        &self,
+        _uri: String,
+        _caller: &CodeModeCaller,
+        _surface: CodeModeSurface,
+        _scope: &ToolScope,
+    ) -> impl Future<Output = Result<Value, ToolError>> + Send {
+        async {
+            Err(ToolError::Sdk {
+                sdk_kind: "not_found".to_string(),
+                message: "Code Mode Skill lookup is not available".to_string(),
+            })
+        }
+    }
+
+    /// Read one manifest-bound verified file from a caller-visible Skill.
+    fn read_skill(
+        &self,
+        _uri: String,
+        _caller: &CodeModeCaller,
+        _surface: CodeModeSurface,
+        _scope: &ToolScope,
+    ) -> impl Future<Output = Result<Value, ToolError>> + Send {
+        async {
+            Err(ToolError::Sdk {
+                sdk_kind: "not_found".to_string(),
+                message: "Code Mode Skill reads are not available".to_string(),
+            })
+        }
+    }
+
     /// Decide whether to execute a `codemode.step(name, fn)` boundary at
     /// `(execution_id, seq)`, BEFORE the sandbox runs `fn`. The step consumes a
     /// `seq` from the same monotonic spine as `call_tool`.

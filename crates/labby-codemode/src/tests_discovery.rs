@@ -151,7 +151,7 @@ fn lexical_ranking_is_weighted_coverage_aware_and_deterministic() {
 }
 
 #[test]
-fn catalog_kind_is_extensible_without_adding_runtime_behavior() {
+fn catalog_kind_is_source_neutral_and_extensible() {
     let kinds = [
         CodeModeCatalogKind::Tool,
         CodeModeCatalogKind::Snippet,
@@ -191,6 +191,47 @@ fn generic_search_and_describe_cover_future_catalog_kinds() {
     assert_eq!(skill.kind, CodeModeCatalogKind::Skill);
     assert_eq!(skill.typescript, None);
     assert_eq!(skill.typescript_omitted, None);
+}
+
+#[test]
+fn progressive_disclosure_helpers_preserve_retrieval_identity() {
+    let resource = CatalogDescriptor::metadata(
+        CodeModeCatalogKind::Resource,
+        "github",
+        "resource::github::file:///README.md",
+        "README",
+        "Repository README",
+        vec!["uri:lab://upstream/github/file:///README.md".to_string()],
+    );
+    let prompt = CatalogDescriptor::metadata(
+        CodeModeCatalogKind::Prompt,
+        "github",
+        "prompt::github::review",
+        "review",
+        "Review changes",
+        Vec::new(),
+    );
+    let skill = CatalogDescriptor::metadata(
+        CodeModeCatalogKind::Skill,
+        "labby",
+        "skill::skill://labby/adversarial-review",
+        "adversarial-review",
+        "Review code adversarially",
+        vec!["uri:skill://labby/adversarial-review".to_string()],
+    );
+
+    assert_eq!(
+        resource.discovery_helper(),
+        r#"codemode.readResource("lab://upstream/github/file:///README.md")"#
+    );
+    assert_eq!(
+        prompt.discovery_helper(),
+        r#"codemode.getPrompt("prompt::github::review", args)"#
+    );
+    assert_eq!(
+        skill.discovery_helper(),
+        r#"codemode.getSkill("skill://labby/adversarial-review")"#
+    );
 }
 
 #[test]

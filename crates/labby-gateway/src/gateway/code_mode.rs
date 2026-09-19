@@ -15,6 +15,7 @@ pub(crate) mod embeddings;
 mod reconstruction_tests;
 mod resources;
 mod search;
+pub mod skills;
 mod tool_error;
 
 // ── Re-exports of the crate's neutral public surface ────────────────────────
@@ -33,6 +34,7 @@ pub use labby_codemode::{CodeModeExecutedCall, CodeModeExecutionResponse};
 pub(crate) use labby_codemode::split_namespaced_id;
 
 pub use code_mode_host::JournalOwner;
+pub use skills::{CodeModeSkillProvider, CodeModeSkillSummary};
 
 // ── Host-side render caches (gateway-owned, keyed on the live tool set) ──────
 

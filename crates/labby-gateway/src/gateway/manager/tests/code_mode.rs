@@ -188,6 +188,44 @@ async fn code_mode_resource_discovery_rejects_empty_oauth_subject() {
 }
 
 #[tokio::test]
+async fn code_mode_oauth_resource_read_rejects_empty_subject_before_connecting() {
+    let mut config = fixture_oauth_upstream("alpha", "http://unused.invalid/mcp");
+    config.proxy_resources = true;
+    let (manager, pool) = code_mode_manager_with_pool(config).await;
+
+    let error = CodeModeHost::read_resource(
+        &manager,
+        "lab://upstream/alpha/fixture://skill".to_string(),
+        &CodeModeCaller::Scoped {
+            capabilities: labby_codemode::CodeModeCallerCapabilities {
+                can_read: true,
+                can_execute: false,
+                can_use_snippets: false,
+                is_admin: false,
+            },
+            sub: Some(String::new()),
+        },
+        CodeModeSurface::Mcp,
+        &ToolScope::default(),
+    )
+    .await
+    .expect_err("OAuth resource reads need a non-empty caller subject");
+
+    assert_eq!(error.kind(), "forbidden");
+    assert!(
+        error
+            .to_string()
+            .contains("requires a caller OAuth subject"),
+        "error should explain how to recover: {error:?}"
+    );
+    assert_eq!(
+        pool.connection_count_for_tests().await,
+        0,
+        "missing subject must be rejected before any upstream connection attempt"
+    );
+}
+
+#[tokio::test]
 async fn code_mode_resource_read_rejects_tool_ids_before_connecting() {
     let (manager, pool) = code_mode_manager_with_pool(fixture_http_upstream("alpha")).await;
     let error = CodeModeHost::read_resource(

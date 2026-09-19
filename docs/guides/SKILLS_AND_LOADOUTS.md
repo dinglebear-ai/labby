@@ -253,7 +253,7 @@ A Loadout is enforced at the real MCP boundaries, not only in UI/config.
 - Tools disabled: direct upstream and Lab service tools are omitted/denied. Code Mode remains available when its separate gate is enabled.
 - Resources disabled: resources/list and resource-template listing return empty; resources/read is denied with a Loadout-specific message. Text Code Mode may remain enabled, but Labby suppresses codemode_ui and strips resource-backed MCP App bindings from advertised tools and tool results so clients are never pointed at UI resources this route cannot read.
 - Prompts disabled: prompts/list returns empty and prompts/get is denied with a Loadout-specific message.
-- Skills disabled: skills/list returns an empty private/no-cache catalog, skills/get is denied, and Skill resource reads are denied.
+- Skills disabled: skills/list returns an empty private/no-cache catalog, skills/get is denied, Skill resource reads are denied, and Code Mode omits Skill descriptors/retrieval from that route.
 - Code Mode disabled: existing route-scope Code Mode denial remains authoritative.
 
 List operations degrade to empty catalogs where that is the least surprising MCP behavior; direct reads/gets/calls return useful denials so agents can course-correct instead of mistaking policy for disappearance.

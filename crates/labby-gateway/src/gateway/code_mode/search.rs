@@ -9,7 +9,9 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use labby_codemode::snippet::store::{SnippetInfo, builtin_snippet_dir, list_snippets};
-use labby_codemode::{CatalogDescriptor, CodeModeToolSafety, ToolScope, ToolsRender};
+use labby_codemode::{
+    CatalogDescriptor, CodeModeCaller, CodeModeSurface, CodeModeToolSafety, ToolScope, ToolsRender,
+};
 use sha2::{Digest, Sha256};
 
 use crate::gateway::manager::GatewayManager;
@@ -128,6 +130,8 @@ pub(crate) async fn build_tools_render(
     scope: &ToolScope,
     include_snippets: bool,
     use_cache: bool,
+    caller: &CodeModeCaller,
+    surface: CodeModeSurface,
 ) -> Result<ToolsRender, ToolError> {
     let raw_tools = if use_cache {
         manager
@@ -143,10 +147,14 @@ pub(crate) async fn build_tools_render(
             )
             .await?
     };
+    let metadata_entries = manager
+        .code_mode_metadata_entries(caller, surface, scope)
+        .await;
     catalog_from_tools(
         manager,
         filter_tools_for_access(raw_tools, scope),
         include_snippets,
+        metadata_entries,
     )
     .await
 }
@@ -166,6 +174,7 @@ pub(super) async fn catalog_from_tools(
     manager: &GatewayManager,
     raw_tools: Vec<UpstreamTool>,
     include_snippets: bool,
+    metadata_entries: Vec<CatalogDescriptor>,
 ) -> Result<ToolsRender, ToolError> {
     // --- catalog render cache ---
     // Compute a cheap fingerprint from the sorted healthy tool ids. This detects
@@ -191,6 +200,19 @@ pub(super) async fn catalog_from_tools(
                 )
             })
             .collect();
+        ids.extend(metadata_entries.iter().map(|entry| {
+            let mut tags = entry.tags.clone();
+            tags.sort();
+            format!(
+                "{}::{}::{}::{}::{}::{}",
+                entry.kind.as_str(),
+                entry.namespace,
+                entry.id,
+                entry.name,
+                entry.description,
+                tags.join("\u{1f}")
+            )
+        }));
         ids.sort_unstable();
         format!("tools:\n{}\n{snippet_fingerprint}", ids.join("\n"))
     };
@@ -265,6 +287,8 @@ pub(super) async fn catalog_from_tools(
         let snippets = snippet_metadata_for_catalog(manager, &snippet_fingerprint).await?;
         entries.extend(snippets.iter().map(CatalogDescriptor::snippet));
     }
+
+    entries.extend(metadata_entries);
 
     entries.sort_by(|a, b| {
         a.kind.cmp(&b.kind).then_with(|| {
@@ -564,6 +588,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn metadata_name_and_tags_invalidate_render_identity() {
+        let dir = tempfile::tempdir().expect("temporary config root");
+        let manager = GatewayManager::new(
+            dir.path().join("config.toml"),
+            crate::gateway::runtime::GatewayRuntimeHandle::default(),
+        );
+        let first = CatalogDescriptor::metadata(
+            labby_codemode::CodeModeCatalogKind::Skill,
+            "labby",
+            "skill::skill://labby/review",
+            "review",
+            "Review code",
+            vec!["code".to_string()],
+        );
+        let second = CatalogDescriptor::metadata(
+            labby_codemode::CodeModeCatalogKind::Skill,
+            "labby",
+            "skill::skill://labby/review",
+            "review-v2",
+            "Review code",
+            vec!["security".to_string()],
+        );
+
+        let first_render = catalog_from_tools(&manager, Vec::new(), false, vec![first])
+            .await
+            .expect("first render");
+        let second_render = catalog_from_tools(&manager, Vec::new(), false, vec![second])
+            .await
+            .expect("second render");
+
+        assert_ne!(first_render.fingerprint, second_render.fingerprint);
+    }
+
+    #[tokio::test]
     async fn concurrent_same_identity_renders_share_arc_allocations() {
         let dir = tempfile::tempdir().expect("temporary config root");
         let manager = GatewayManager::new(
@@ -572,7 +630,7 @@ mod tests {
         );
         let tool = safety_fixture(Some(rmcp::model::ToolAnnotations::new().read_only(true)));
         let renders = futures::future::join_all(
-            (0..16).map(|_| catalog_from_tools(&manager, vec![tool.clone()], false)),
+            (0..16).map(|_| catalog_from_tools(&manager, vec![tool.clone()], false, Vec::new())),
         )
         .await
         .into_iter()
@@ -646,7 +704,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let started = std::time::Instant::now();
-        let render = catalog_from_tools(&manager, tools, false)
+        let render = catalog_from_tools(&manager, tools, false, Vec::new())
             .await
             .expect("4k cold render");
         let elapsed = started.elapsed();
