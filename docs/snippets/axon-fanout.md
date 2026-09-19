@@ -187,7 +187,7 @@ async (overrides = {}) => {
     for (const entry of batch.ok) results[entry.i] = entry.value;
     for (const entry of batch.failed) {
       results[entry.i] = {
-        label: entries[entry.i]?.[0] ?? `batch_job_${entry.i}`,
+        label: entries[entry.i]?.[0] ?? ("batch_job_" + entry.i),
         ok: false,
         error: String(entry.error)
       };
@@ -385,7 +385,7 @@ async (overrides = {}) => {
     for (const entry of batch.ok) results[entry.i] = entry.value;
     for (const entry of batch.failed) {
       results[entry.i] = {
-        label: entries[entry.i]?.[0] ?? `batch_job_${entry.i}`,
+        label: entries[entry.i]?.[0] ?? ("batch_job_" + entry.i),
         ok: false,
         error: String(entry.error)
       };
