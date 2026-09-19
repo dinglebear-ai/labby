@@ -1,7 +1,14 @@
 use super::*;
 
-fn tool(namespace: &str, name: &str, description: &str) -> ToolDescriptor {
-    ToolDescriptor::tool(namespace, name, description, None, None)
+fn tool(namespace: &str, name: &str, description: &str) -> CatalogDescriptor {
+    CatalogDescriptor::tool(namespace, name, description, None, None)
+}
+
+fn capability(kind: CodeModeCatalogKind, namespace: &str, name: &str) -> CatalogDescriptor {
+    let mut entry = tool(namespace, name, "catalog capability");
+    entry.kind = kind;
+    entry.id = format!("{}::{namespace}::{name}", kind.as_str());
+    entry
 }
 
 #[test]
@@ -141,4 +148,83 @@ fn lexical_ranking_is_weighted_coverage_aware_and_deterministic() {
             "other.issues",
         ]
     );
+}
+
+#[test]
+fn catalog_kind_is_extensible_without_adding_runtime_behavior() {
+    let kinds = [
+        CodeModeCatalogKind::Tool,
+        CodeModeCatalogKind::Snippet,
+        CodeModeCatalogKind::Resource,
+        CodeModeCatalogKind::Prompt,
+        CodeModeCatalogKind::Skill,
+        CodeModeCatalogKind::Agent,
+    ];
+    assert_eq!(
+        kinds.map(CodeModeCatalogKind::as_str),
+        ["tool", "snippet", "resource", "prompt", "skill", "agent"]
+    );
+}
+
+#[test]
+fn generic_search_and_describe_cover_future_catalog_kinds() {
+    let entries = vec![
+        tool("github", "issues", "catalog capability"),
+        capability(CodeModeCatalogKind::Resource, "github", "readme"),
+        capability(CodeModeCatalogKind::Prompt, "github", "review"),
+        capability(CodeModeCatalogKind::Skill, "labby", "adversarial_review"),
+        capability(CodeModeCatalogKind::Agent, "labby", "reviewer"),
+    ];
+
+    let response =
+        search_visible_catalog(&entries, &ToolScope::default(), "catalog capability", 50).unwrap();
+    assert_eq!(response.total, 5);
+    assert_eq!(response.results.len(), 5);
+
+    let skill = describe_visible_catalog(
+        &entries,
+        &ToolScope::default(),
+        "skill.labby.adversarial_review",
+    )
+    .unwrap();
+    assert_eq!(skill.id, "skill::labby::adversarial_review");
+    assert_eq!(skill.kind, CodeModeCatalogKind::Skill);
+    assert_eq!(skill.typescript, None);
+    assert_eq!(skill.typescript_omitted, None);
+}
+
+#[test]
+fn generic_search_can_filter_kinds_without_granting_capabilities() {
+    let entries = vec![
+        tool("github", "issues", "catalog capability"),
+        capability(CodeModeCatalogKind::Skill, "labby", "reviewer"),
+        capability(CodeModeCatalogKind::Agent, "labby", "reviewer"),
+    ];
+    let response = search_visible_catalog_with_kinds(
+        &entries,
+        &ToolScope::default(),
+        "catalog capability",
+        50,
+        &[CodeModeCatalogKind::Skill],
+    )
+    .unwrap();
+    assert_eq!(response.total, 1);
+    assert_eq!(response.results[0].kind, CodeModeCatalogKind::Skill);
+}
+
+#[test]
+fn legacy_tool_describe_preserves_ambiguous_bare_name_behavior() {
+    let entries = vec![
+        tool("github", "issues", "GitHub issues"),
+        tool("linear", "issues", "Linear issues"),
+    ];
+
+    let error = describe_visible_tool(&entries, &ToolScope::default(), "issues")
+        .expect_err("bare duplicate tool name must remain ambiguous");
+    assert_eq!(error.kind(), "ambiguous_tool");
+    let valid = match error {
+        error::ToolError::AmbiguousTool { valid, .. } => valid,
+        _ => Vec::new(),
+    };
+    assert_eq!(valid, vec!["github.issues", "linear.issues"]);
 }

@@ -1,7 +1,7 @@
 ---
 title: "Agent Skills and Loadouts"
 created: "2026-08-18"
-updated: "2026-09-16"
+updated: "2026-09-18"
 ---
 
 # Agent Skills and Loadouts
@@ -113,6 +113,19 @@ The MCP skills/list and skills/get paths emit structured start/finish/error even
 ## Loadouts
 
 A Loadout is a named reusable gateway capability projection for protected gateway-subset routes. It is not a second per-upstream allowlist system. A Loadout can only narrow what the route sees; upstream trust and per-upstream exposure rules still apply underneath.
+
+The architectural boundary is explicit:
+
+- **Loadout = declarative capability and policy boundary.** It selects and
+  narrows what a caller may see or invoke. It does not execute orchestration.
+- **Snippet = executable JavaScript composition inside that boundary.** A
+  snippet can compose capabilities already available to the current Code Mode
+  run, but its metadata does not expand the Loadout or grant missing access.
+
+The runtime scope remains authoritative. Current snippet tool declarations are
+discovery/authoring metadata and do not grant execution permission; a snippet
+cannot use a tool that the active Loadout/route/caller projection did not make
+available.
 
 Each Loadout contains:
 

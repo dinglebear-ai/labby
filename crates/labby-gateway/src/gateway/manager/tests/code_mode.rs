@@ -2116,6 +2116,7 @@ async fn semantic_rank_returns_empty_when_unconfigured() {
         .semantic_rank(
             "hello".to_string(),
             5,
+            &[],
             &CodeModeCaller::TrustedLocal,
             CodeModeSurface::Cli,
             &ToolScope::default(),
@@ -2185,7 +2186,7 @@ async fn catalog_embeddings_stay_cold_when_semantic_search_unconfigured() {
 async fn semantic_rank_never_returns_ids_outside_scope_filtered_catalog() {
     // semantic_rank's own internal build_tools_render call uses the SAME
     // `scope` parameter it was given, and its ranking set is additionally
-    // filtered with the same `kind == Snippet || scope.allows(...)` test the
+    // filtered with the same shared discovery visibility predicate the
     // sandbox's own discovery catalog uses — so an id excluded by that scope
     // is structurally never present in the vectors handed to
     // `rank_by_similarity` in the first place.
@@ -2201,6 +2202,7 @@ async fn semantic_rank_never_returns_ids_outside_scope_filtered_catalog() {
         .semantic_rank(
             "anything".to_string(),
             5,
+            &[],
             &CodeModeCaller::TrustedLocal,
             CodeModeSurface::Cli,
             &restrictive_scope,
@@ -2220,7 +2222,7 @@ async fn ensure_embeddings_unreachable_tei_fails_open_and_records_cooldown() {
             ..GatewayConfig::default()
         })
         .await;
-    let entries = vec![labby_codemode::ToolDescriptor::tool(
+    let entries = vec![labby_codemode::CatalogDescriptor::tool(
         "alpha",
         "ping",
         "Ping the alpha upstream",
