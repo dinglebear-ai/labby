@@ -543,11 +543,16 @@ impl PeerContract {
             Some(manager) => manager.allowed_mcp_actions_for_service("artifacts").await,
             None => None,
         };
+        #[cfg(feature = "gateway")]
+        let skill_library_app_enabled = mcp_apps_config.skill_library;
+        #[cfg(not(feature = "gateway"))]
+        let skill_library_app_enabled = false;
         #[cfg(not(feature = "gateway"))]
         let skill_library_allowed_actions: Option<Vec<String>> = None;
         let skill_library_mode = if self.audience.skill_library_management_visible {
             SkillLibraryDescriptorMode::Management {
-                app_visible: self.audience.skill_library_app_visible
+                app_visible: skill_library_app_enabled
+                    && self.audience.skill_library_app_visible
                     && self.route_scope.exposes_resources(),
                 allowed_actions: skill_library_allowed_actions.as_deref(),
             }

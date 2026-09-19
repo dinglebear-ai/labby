@@ -5,6 +5,8 @@
 //! self-contained (per the test-distribution plan's minimal-duplication
 //! guidance).
 
+#[cfg(feature = "skills")]
+use crate::app_assets::{SKILL_LIBRARY_APP_URI, SKILL_LIBRARY_APP_URI_PREFIX};
 use crate::config::{
     GatewayLoadoutConfig, ProtectedGatewaySubsetTarget, ProtectedMcpRouteConfig,
     ProtectedMcpRouteTarget,
@@ -317,6 +319,7 @@ async fn code_mode_manager(
                 },
                 mcp_apps: crate::config::McpAppsConfig {
                     manager: true,
+                    skill_library: true,
                     add_server: true,
                     server_logs: true,
                     gateway_status: true,
@@ -374,6 +377,7 @@ async fn code_mode_manager_with_test_runner(
                 },
                 mcp_apps: crate::config::McpAppsConfig {
                     manager: true,
+                    skill_library: true,
                     add_server: true,
                     server_logs: true,
                     gateway_status: true,
@@ -506,6 +510,7 @@ async fn code_mode_manager_with_pool_and_upstreams(
                 },
                 mcp_apps: crate::config::McpAppsConfig {
                     manager: true,
+                    skill_library: true,
                     add_server: true,
                     server_logs: true,
                     gateway_status: true,
@@ -1202,6 +1207,7 @@ fn mcp_app_schema_and_meta_cover_managed_apps() {
         serde_json::json!([
             "manager",
             "codemode",
+            "skill_library",
             "gateway_status",
             "server_logs",
             "add_server",
@@ -1889,13 +1895,21 @@ async fn mcp_app_individual_disable_only_changes_selected_surface() {
     assert_eq!(structured["enabled"], false);
     assert_eq!(structured["changed"], true);
     assert_eq!(structured["apps"]["server_logs"]["enabled"], false);
-    for target in ["manager", "codemode", "gateway_status", "add_server"] {
+    for target in [
+        "manager",
+        "codemode",
+        "skill_library",
+        "gateway_status",
+        "add_server",
+        "settings",
+    ] {
         assert_eq!(structured["apps"][target]["enabled"], true, "{target}");
     }
 
     let cfg = manager.current_config().await;
     assert!(cfg.mcp_apps.manager);
     assert!(cfg.code_mode.mcp_ui_enabled);
+    assert!(cfg.mcp_apps.skill_library);
     assert!(cfg.mcp_apps.gateway_status);
     assert!(!cfg.mcp_apps.server_logs);
     assert!(cfg.mcp_apps.add_server);
@@ -2060,6 +2074,7 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
     for target in [
         "manager",
         "codemode",
+        "skill_library",
         "gateway_status",
         "server_logs",
         "add_server",
@@ -2071,6 +2086,7 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
     let cfg = manager.current_config().await;
     assert!(!cfg.mcp_apps.manager);
     assert!(!cfg.code_mode.mcp_ui_enabled);
+    assert!(!cfg.mcp_apps.skill_library);
     assert!(!cfg.mcp_apps.gateway_status);
     assert!(!cfg.mcp_apps.server_logs);
     assert!(!cfg.mcp_apps.add_server);
@@ -2116,7 +2132,6 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
             .is_some_and(|meta| !meta.0.contains_key("ui")),
         "server_logs app metadata must be disabled"
     );
-
     let resources = running
         .service()
         .list_resources_impl(None, scoped_context(peer.clone(), &["lab:admin"]))
@@ -2138,6 +2153,14 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
             "managed resource remained listed: {hidden_prefix}"
         );
     }
+    #[cfg(feature = "skills")]
+    assert!(
+        resources
+            .resources
+            .iter()
+            .all(|resource| !resource.uri.starts_with(SKILL_LIBRARY_APP_URI_PREFIX)),
+        "Skill Library resource remained listed after bulk disable"
+    );
     for stale_uri in [
         MCP_APPS_APP_URI,
         CODE_MODE_APP_URI,
@@ -2154,6 +2177,18 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
             )
             .await
             .expect_err("disabled app resource must be unreadable");
+        assert!(stale.message.contains("unknown UI resource"), "{stale:?}");
+    }
+    #[cfg(feature = "skills")]
+    {
+        let stale = running
+            .service()
+            .read_resource_impl(
+                ReadResourceRequestParams::new(SKILL_LIBRARY_APP_URI),
+                scoped_context(peer.clone(), &["lab:admin"]),
+            )
+            .await
+            .expect_err("disabled Skill Library resource must be unreadable");
         assert!(stale.message.contains("unknown UI resource"), "{stale:?}");
     }
 
@@ -2174,6 +2209,7 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
     let cfg = manager.current_config().await;
     assert!(cfg.mcp_apps.manager);
     assert!(cfg.code_mode.mcp_ui_enabled);
+    assert!(cfg.mcp_apps.skill_library);
     assert!(cfg.mcp_apps.gateway_status);
     assert!(cfg.mcp_apps.server_logs);
     assert!(cfg.mcp_apps.add_server);

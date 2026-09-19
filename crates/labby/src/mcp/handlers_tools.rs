@@ -244,13 +244,18 @@ impl LabMcpServer {
             && self.route_scope.allows_service("setup")
             && self.service_visible_on_mcp("setup").await;
         let mut builtin_names = HashSet::new();
+        #[cfg(all(feature = "skills", feature = "gateway"))]
+        let skill_library_app_enabled = mcp_apps_config.skill_library;
+        #[cfg(all(feature = "skills", not(feature = "gateway")))]
+        let skill_library_app_enabled = false;
         #[cfg(feature = "skills")]
         let skill_library_allowed_actions = self.allowed_mcp_actions("artifacts").await;
         #[cfg(feature = "skills")]
         let skill_library_mode = if self.skill_library_http_management_visible(&context) {
             let skills_auth = auth_context_from_extensions(&context.extensions);
             SkillLibraryDescriptorMode::Management {
-                app_visible: code_mode_read_scope_allowed(skills_auth)
+                app_visible: skill_library_app_enabled
+                    && code_mode_read_scope_allowed(skills_auth)
                     && self.route_scope.exposes_resources(),
                 allowed_actions: skill_library_allowed_actions.as_deref(),
             }
@@ -710,7 +715,7 @@ pub(crate) fn code_mode_ui_description(upstreams: &[CodeModeUpstreamDescription]
 /// Description for the always-available `mcp_app` control tool.
 #[cfg(feature = "gateway")]
 pub(crate) const fn mcp_app_tool_description() -> &'static str {
-    "Enable, disable, and inspect Labby-owned MCP App surfaces. The control tool remains available even when its own manager UI is disabled. Targets include the manager UI, Code Mode inspector, gateway status, server logs, Add Server, Settings, or all managed apps."
+    "Enable, disable, and inspect Labby-owned MCP App surfaces. The control tool remains available even when its own manager UI is disabled. Targets include the manager UI, Code Mode inspector, Skill Library, gateway status, server logs, Add Server, Settings, or all managed apps."
 }
 
 #[cfg(feature = "gateway")]
@@ -727,7 +732,7 @@ pub(crate) fn mcp_app_tool_schema() -> Arc<serde_json::Map<String, Value>> {
                 },
                 "target": {
                     "type": "string",
-                    "enum": ["manager", "codemode", "gateway_status", "server_logs", "add_server", "settings", "all"],
+                    "enum": ["manager", "codemode", "skill_library", "gateway_status", "server_logs", "add_server", "settings", "all"],
                     "default": "codemode",
                     "description": "Legacy direct target shape. Use all for the switchboard snapshot or a bulk change."
                 },
@@ -736,7 +741,7 @@ pub(crate) fn mcp_app_tool_schema() -> Arc<serde_json::Map<String, Value>> {
                     "properties": {
                         "target": {
                             "type": "string",
-                            "enum": ["manager", "codemode", "gateway_status", "server_logs", "add_server", "settings", "all"],
+                            "enum": ["manager", "codemode", "skill_library", "gateway_status", "server_logs", "add_server", "settings", "all"],
                             "default": "codemode",
                             "description": "Labby-owned MCP App target used by the shared app host."
                         }
@@ -835,10 +840,19 @@ fn owned_app_tool_meta(resource_uri: String, skybridge_uri: Option<String>) -> M
 
 /// Agent-readable fallback for hosts that do not render the attached app.
 #[cfg(feature = "skills")]
-pub(crate) fn skill_library_tool_description(service_description: &str) -> String {
-    format!(
-        "{service_description} This tool also opens Labby's Artifact Library app on compatible hosts. On non-App hosts, call the documented artifacts.* actions directly with the same action and params envelope. Save and import do not activate an Artifact."
-    )
+pub(crate) fn skill_library_tool_description(
+    service_description: &str,
+    app_visible: bool,
+) -> String {
+    if app_visible {
+        format!(
+            "{service_description} This tool also opens Labby's Artifact Library app on compatible hosts. On non-App hosts, call the documented artifacts.* actions directly with the same action and params envelope. Save and import do not activate an Artifact."
+        )
+    } else {
+        format!(
+            "{service_description} Call the documented artifacts.* actions directly with the same action and params envelope. Save and import do not activate an Artifact."
+        )
+    }
 }
 
 /// Bind the canonical `skills` service descriptor to both supported app hosts.
