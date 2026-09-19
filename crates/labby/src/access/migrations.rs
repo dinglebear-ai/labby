@@ -11,6 +11,55 @@ pub(super) const SCHEMA_VERSION: i64 = 8;
 const MAX_MIGRATION_EVIDENCE_BYTES: usize = 128 * 1024;
 pub(super) const APPLICATION_ID: i64 = 0x4c_41_43_31;
 pub(super) const SCHEMA_FINGERPRINT: &str = "labby-access-v8-20260916";
+/// The superseded v8 expansion shipped by #652.
+///
+/// #680 rolled main back to v7 because that expansion created tables no
+/// consumer read; the v8 re-pin then landed without three of them. A store
+/// that ran the intermediate build reports `user_version = 8` with this
+/// fingerprint, so it is current by version but not by shape.
+pub(super) const V8_LEGACY_SCHEMA_FINGERPRINT: &str = "labby-access-v8-20260913";
+/// Tables the superseded v8 expansion created that current v8 does not define.
+const V8_LEGACY_OBSOLETE_TABLES: [&str; 3] = [
+    "agent_session_evidence",
+    "agent_session_requests",
+    "agent_task_inputs",
+];
+/// Exact schema carried by the superseded v8 build. Compatibility is allowed
+/// only when the entire store manifest matches this audited shape.
+const V8_LEGACY_EXECUTION_EVIDENCE_SCHEMA: &str = r"
+CREATE TABLE agent_session_evidence (
+    session_id TEXT PRIMARY KEY REFERENCES agent_sessions(session_id),
+    input_digest TEXT NOT NULL,
+    input_text TEXT NOT NULL CHECK(length(CAST(input_text AS BLOB)) <= 1048576),
+    output_digest TEXT,
+    transcript TEXT CHECK(transcript IS NULL OR length(CAST(transcript AS BLOB)) <= 1048576),
+    error_code TEXT CHECK(error_code IS NULL OR length(error_code) <= 128),
+    resumed_from_session_id TEXT REFERENCES agent_sessions(session_id),
+    updated_at INTEGER NOT NULL,
+    completed_at INTEGER
+) STRICT;
+CREATE TABLE agent_task_inputs (
+    task_id TEXT PRIMARY KEY REFERENCES agent_tasks(task_id),
+    input_digest TEXT NOT NULL,
+    input_text TEXT NOT NULL CHECK(length(CAST(input_text AS BLOB)) <= 1048576)
+) STRICT;
+CREATE TABLE agent_session_requests (
+    principal_id TEXT NOT NULL,
+    owner_kind TEXT NOT NULL CHECK(owner_kind IN ('installation','personal','team','project')),
+    owner_id TEXT NOT NULL,
+    request_key TEXT NOT NULL CHECK(length(request_key) BETWEEN 1 AND 256),
+    operation TEXT NOT NULL CHECK(operation IN ('run','resume')),
+    agent_id TEXT NOT NULL REFERENCES agent_definitions(agent_id) ON DELETE RESTRICT,
+    agent_version INTEGER NOT NULL CHECK(agent_version > 0),
+    input_digest TEXT NOT NULL,
+    resumed_from_session_id TEXT REFERENCES agent_sessions(session_id) ON DELETE RESTRICT,
+    session_id TEXT NOT NULL UNIQUE REFERENCES agent_sessions(session_id) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY(principal_id,owner_kind,owner_id,request_key),
+    CHECK((operation = 'run' AND resumed_from_session_id IS NULL)
+       OR (operation = 'resume' AND resumed_from_session_id IS NOT NULL))
+) STRICT;
+";
 pub(super) const V7_SCHEMA_VERSION: i64 = 7;
 pub(super) const V7_SCHEMA_FINGERPRINT: &str = "labby-access-v7-20260905";
 pub(super) const V6_SCHEMA_VERSION: i64 = 6;
@@ -76,15 +125,142 @@ pub(super) fn migrate_with_evidence(
             supported: SCHEMA_VERSION,
         });
     }
-    let migration_operation = if found > 0 && found < SCHEMA_VERSION {
+    // A superseded-v8 store is already at the current `user_version`, so the
+    // version-keyed chain below is a no-op for it. It still crosses a schema
+    // shape, so it is gated by the same approval evidence as any other
+    // crossing rather than reconciling implicitly on open.
+    let legacy_v8 = found == SCHEMA_VERSION
+        && stored_schema_fingerprint(connection)?.as_deref() == Some(V8_LEGACY_SCHEMA_FINGERPRINT);
+    if legacy_v8 {
+        // A matching fingerprint is only a hint. Prove the complete audited
+        // legacy shape before asking for approval or making any mutation.
+        validate_legacy_v8_before_migration(connection)?;
+    }
+    let migration_operation = if (found > 0 && found < SCHEMA_VERSION) || legacy_v8 {
         Some(require_migration_evidence(connection, found, evidence)?)
     } else {
         None
     };
     migrate_found(connection, found)?;
+    if legacy_v8 {
+        migrate_legacy_v8(connection)?;
+    } else if found == SCHEMA_VERSION {
+        // A current-version store is a no-op only when it is actually the
+        // exact current schema. Unknown fingerprints or same-version drift
+        // must fail here rather than relying on a later AccessStore open
+        // validation to catch them.
+        super::integrity::validate(connection)?;
+    }
     if let Some(operation) = &migration_operation {
         complete_migration_operation(operation);
     }
+    Ok(())
+}
+
+/// Whether this store carries the superseded v8 shape.
+///
+/// A read failure answers `false` so an operational fault (busy, locked, I/O)
+/// is never reported as a schema verdict; the ordinary integrity path
+/// classifies it instead.
+pub(super) fn is_superseded_v8(connection: &Connection) -> bool {
+    validate_legacy_v8_before_migration(connection).is_ok()
+}
+
+fn stored_schema_fingerprint(connection: &Connection) -> AccessStoreResult<Option<String>> {
+    match connection.query_row(
+        "SELECT schema_fingerprint FROM access_metadata WHERE singleton = 1",
+        [],
+        |row| row.get::<_, String>(0),
+    ) {
+        Ok(fingerprint) => Ok(Some(fingerprint)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(error) => Err(super::store::map_sqlite_error(error)),
+    }
+}
+
+pub(super) fn canonical_legacy_v8_schema() -> AccessStoreResult<Connection> {
+    let connection = canonical_current_schema()?;
+    connection
+        .execute_batch(V8_LEGACY_EXECUTION_EVIDENCE_SCHEMA)
+        .map_err(super::store::map_sqlite_error)?;
+    Ok(connection)
+}
+
+fn validate_legacy_v8_before_migration(connection: &Connection) -> AccessStoreResult<()> {
+    let metadata = read_legacy_metadata(connection)?;
+    let application_id: i64 = connection
+        .query_row("PRAGMA application_id", [], |row| row.get(0))
+        .map_err(super::store::map_sqlite_error)?;
+    if metadata.schema_version != SCHEMA_VERSION
+        || metadata.schema_fingerprint != V8_LEGACY_SCHEMA_FINGERPRINT
+        || metadata.global_revision < 0
+        || !metadata.has_valid_bootstrap_fields()
+        || application_id != APPLICATION_ID
+    {
+        return Err(AccessStoreError::IntegrityViolation {
+            check: "schema_metadata",
+        });
+    }
+    if schema_manifest(connection)? != schema_manifest(&canonical_legacy_v8_schema()?)? {
+        return Err(AccessStoreError::IntegrityViolation {
+            check: "schema_manifest",
+        });
+    }
+    validate_pre_migration_integrity(connection)?;
+    super::integrity::validate_bootstrap_state(connection, metadata.bootstrap_generation)?;
+    super::integrity::validate_team_authority(connection, metadata.bootstrap_generation)
+}
+
+/// Reconcile a superseded-v8 store onto the current v8 shape.
+///
+/// The only structural difference is the three execution-evidence tables the
+/// current expansion never defines. They are dropped when empty. Rows in them
+/// mean this store served a build whose data this transform cannot map, so it
+/// is refused rather than silently discarded; the caller keeps the untouched
+/// store and an operator decides.
+fn migrate_legacy_v8(connection: &mut Connection) -> AccessStoreResult<()> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Exclusive)
+        .map_err(super::store::map_sqlite_error)?;
+    validate_legacy_v8_before_migration(&transaction)?;
+    for table in V8_LEGACY_OBSOLETE_TABLES {
+        let present: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1)",
+                params![table],
+                |row| row.get(0),
+            )
+            .map_err(super::store::map_sqlite_error)?;
+        if !present {
+            continue;
+        }
+        let rows: i64 = transaction
+            .query_row(&format!("SELECT COUNT(*) FROM \"{table}\""), [], |row| {
+                row.get(0)
+            })
+            .map_err(super::store::map_sqlite_error)?;
+        if rows > 0 {
+            return Err(AccessStoreError::IntegrityViolation {
+                check: "legacy_v8_obsolete_payloads",
+            });
+        }
+        transaction
+            .execute_batch(&format!("DROP TABLE \"{table}\""))
+            .map_err(super::store::map_sqlite_error)?;
+    }
+    transaction
+        .execute(
+            "UPDATE access_metadata SET schema_fingerprint = ?1, updated_at = unixepoch()
+             WHERE singleton = 1",
+            params![SCHEMA_FINGERPRINT],
+        )
+        .map_err(super::store::map_sqlite_error)?;
+    // Prove the post-transform store is exactly the current canonical shape
+    // before publishing the transaction.
+    super::integrity::validate(&transaction)?;
+    transaction
+        .commit()
+        .map_err(super::store::map_sqlite_error)?;
     Ok(())
 }
 
@@ -492,7 +668,7 @@ fn verify_migration_evidence(
             "live source does not logically match the approved checkpoint",
         ));
     }
-    let marker_path = database_path.with_extension(format!("migration-v{SCHEMA_VERSION}.state"));
+    let marker_path = migration_marker_path(connection, &database_path, found)?;
     let expected = format!(
         "prepared\noperation_id={}\ncheckpoint_sha256={}\n",
         evidence.operation_id, checkpoint_digest
@@ -523,6 +699,24 @@ fn verify_migration_evidence(
         operation_id: evidence.operation_id,
         checkpoint_sha256: checkpoint_digest,
     })
+}
+
+fn migration_marker_path(
+    connection: &Connection,
+    database_path: &Path,
+    found: i64,
+) -> AccessStoreResult<PathBuf> {
+    // The superseded v8 build may already have a completed v8 marker from the
+    // earlier v7 -> v8 crossing. Its compatibility repair is a distinct
+    // operation and must never reuse or overwrite that historical receipt.
+    let extension = if found == SCHEMA_VERSION
+        && stored_schema_fingerprint(connection)?.as_deref() == Some(V8_LEGACY_SCHEMA_FINGERPRINT)
+    {
+        format!("migration-v{SCHEMA_VERSION}-from-20260913.state")
+    } else {
+        format!("migration-v{SCHEMA_VERSION}.state")
+    };
+    Ok(database_path.with_extension(extension))
 }
 
 fn lowercase_sha256(value: &str) -> bool {
@@ -1936,6 +2130,225 @@ mod credential_migration_tests {
         connection.execute_batch("INSERT INTO agent_definitions VALUES('agent-a','personal','principal-a',1,'{}','active',1,1,100);
             INSERT INTO agent_sessions VALUES('session-a','agent-a',1,'principal-a','authority-a','completed',200,100);").unwrap();
         connection
+    }
+
+    fn legacy_v8_20260913() -> Connection {
+        let connection = canonical_current_schema().unwrap();
+        connection
+            .execute_batch(V8_LEGACY_EXECUTION_EVIDENCE_SCHEMA)
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO access_metadata VALUES(1,8,?1,23,100,0,NULL)",
+                [V8_LEGACY_SCHEMA_FINGERPRINT],
+            )
+            .unwrap();
+        connection
+            .pragma_update(None, "application_id", APPLICATION_ID)
+            .unwrap();
+        connection.pragma_update(None, "user_version", 8).unwrap();
+        connection
+    }
+
+    #[test]
+    fn legacy_v8_requires_approval_before_same_version_compatibility_migration() {
+        let mut connection = legacy_v8_20260913();
+        assert!(matches!(
+            migrate_with_evidence(
+                &mut connection,
+                &MigrationEvidenceSource::Path(PathBuf::from("/nonexistent/approval.json")),
+            ),
+            Err(AccessStoreError::MigrationEvidenceInvalid { .. })
+        ));
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT schema_fingerprint FROM access_metadata WHERE singleton=1",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            V8_LEGACY_SCHEMA_FINGERPRINT
+        );
+    }
+
+    #[test]
+    fn legacy_v8_empty_execution_tables_migrate_to_exact_current_v8() {
+        let mut connection = legacy_v8_20260913();
+        migrate_with_evidence(&mut connection, &MigrationEvidenceSource::UnitFixture).unwrap();
+        super::super::integrity::validate(&connection).unwrap();
+        let canonical = canonical_current_schema().unwrap();
+        assert_eq!(
+            schema_manifest(&connection).unwrap(),
+            schema_manifest(&canonical).unwrap()
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT schema_version,schema_fingerprint,global_revision FROM access_metadata WHERE singleton=1",
+                    [],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?)),
+                )
+                .unwrap(),
+            (SCHEMA_VERSION, SCHEMA_FINGERPRINT.to_owned(), 23)
+        );
+    }
+
+    #[test]
+    fn legacy_v8_compatibility_migration_refuses_nonempty_obsolete_tables() {
+        let mut connection = legacy_v8_20260913();
+        connection
+            .execute_batch(
+                "INSERT INTO agent_definitions VALUES('agent-a','personal','principal-a',1,'{}','active',1,1,100);
+                 INSERT INTO agent_sessions VALUES('session-a','agent-a',1,'principal-a','authority-a','completed',200,100);
+                 INSERT INTO agent_session_evidence(session_id,input_digest,input_text,updated_at) VALUES('session-a','sha256:input','payload',100);",
+            )
+            .unwrap();
+        assert!(matches!(
+            migrate_with_evidence(&mut connection, &MigrationEvidenceSource::UnitFixture),
+            Err(AccessStoreError::IntegrityViolation {
+                check: "legacy_v8_obsolete_payloads"
+            })
+        ));
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT schema_fingerprint FROM access_metadata WHERE singleton=1",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            V8_LEGACY_SCHEMA_FINGERPRINT
+        );
+    }
+
+    #[test]
+    fn legacy_v8_same_fingerprint_with_schema_drift_fails_closed_before_approval() {
+        let mut connection = legacy_v8_20260913();
+        connection
+            .execute_batch("CREATE TABLE unexpected_v8_drift(id INTEGER PRIMARY KEY) STRICT;")
+            .unwrap();
+
+        assert!(matches!(
+            migrate_with_evidence(
+                &mut connection,
+                &MigrationEvidenceSource::Path(PathBuf::from("/nonexistent/approval.json")),
+            ),
+            Err(AccessStoreError::IntegrityViolation {
+                check: "schema_manifest"
+            })
+        ));
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT schema_fingerprint FROM access_metadata WHERE singleton=1",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            V8_LEGACY_SCHEMA_FINGERPRINT
+        );
+    }
+
+    #[test]
+    fn legacy_v8_same_fingerprint_with_changed_definition_fails_closed_before_approval() {
+        let mut connection = legacy_v8_20260913();
+        connection
+            .execute_batch(
+                "DROP TABLE agent_task_inputs;
+                 CREATE TABLE agent_task_inputs (
+                    task_id TEXT PRIMARY KEY,
+                    input_digest TEXT NOT NULL,
+                    input_text TEXT NOT NULL
+                 ) STRICT;",
+            )
+            .unwrap();
+
+        assert!(matches!(
+            migrate_with_evidence(
+                &mut connection,
+                &MigrationEvidenceSource::Path(PathBuf::from("/nonexistent/approval.json")),
+            ),
+            Err(AccessStoreError::IntegrityViolation {
+                check: "schema_manifest"
+            })
+        ));
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT schema_fingerprint FROM access_metadata WHERE singleton=1",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            V8_LEGACY_SCHEMA_FINGERPRINT
+        );
+    }
+
+    #[test]
+    fn current_v8_exact_schema_is_noop_and_healthy() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        migrate_with_evidence(&mut connection, &MigrationEvidenceSource::UnitFixture).unwrap();
+        let before = logical_fingerprint(&connection).unwrap();
+
+        migrate_with_evidence(&mut connection, &MigrationEvidenceSource::UnitFixture).unwrap();
+
+        super::super::integrity::validate(&connection).unwrap();
+        assert_eq!(logical_fingerprint(&connection).unwrap(), before);
+    }
+
+    #[test]
+    fn current_v8_unknown_fingerprint_fails_closed_without_mutation() {
+        let mut connection = legacy_v8_20260913();
+        connection
+            .execute(
+                "UPDATE access_metadata SET schema_fingerprint='labby-access-v8-unknown' WHERE singleton=1",
+                [],
+            )
+            .unwrap();
+
+        assert!(matches!(
+            migrate_with_evidence(&mut connection, &MigrationEvidenceSource::UnitFixture),
+            Err(AccessStoreError::IntegrityViolation {
+                check: "schema_metadata"
+            })
+        ));
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT schema_fingerprint FROM access_metadata WHERE singleton=1",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "labby-access-v8-unknown"
+        );
+    }
+
+    #[test]
+    fn legacy_v8_missing_obsolete_table_fails_closed_without_mutation() {
+        let mut connection = legacy_v8_20260913();
+        connection
+            .execute_batch("DROP TABLE agent_task_inputs;")
+            .unwrap();
+
+        assert!(matches!(
+            migrate_with_evidence(&mut connection, &MigrationEvidenceSource::UnitFixture),
+            Err(AccessStoreError::IntegrityViolation {
+                check: "schema_manifest"
+            })
+        ));
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT schema_fingerprint FROM access_metadata WHERE singleton=1",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            V8_LEGACY_SCHEMA_FINGERPRINT
+        );
     }
 
     #[test]

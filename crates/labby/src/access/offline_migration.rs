@@ -87,6 +87,34 @@ mod tests {
         (directory, paths)
     }
 
+    fn legacy_v8_fixture() -> (tempfile::TempDir, InstallationPaths) {
+        let directory = test_support::secure_tempdir();
+        let paths = InstallationPaths::from_root(directory.path()).unwrap();
+        let connection = migrations::canonical_legacy_v8_schema().unwrap();
+        connection
+            .execute(
+                "INSERT INTO access_metadata VALUES(1,8,?1,3,1,0,NULL)",
+                [migrations::V8_LEGACY_SCHEMA_FINGERPRINT],
+            )
+            .unwrap();
+        connection
+            .pragma_update(None, "application_id", migrations::APPLICATION_ID)
+            .unwrap();
+        connection
+            .pragma_update(None, "user_version", migrations::SCHEMA_VERSION)
+            .unwrap();
+        connection
+            .execute("VACUUM INTO ?1", [paths.access_db().to_str().unwrap()])
+            .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(paths.access_db(), std::fs::Permissions::from_mode(0o600))
+                .unwrap();
+        }
+        (directory, paths)
+    }
+
     fn approve(paths: &InstallationPaths) -> MigrationEvidenceSource {
         migration_fixture::approve_restored_store(
             &paths.access_db(),
@@ -177,6 +205,73 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    #[tokio::test]
+    async fn offline_migration_repairs_exact_superseded_v8_with_verified_reopens() {
+        let (_directory, paths) = legacy_v8_fixture();
+        let historical_marker = paths
+            .access_db()
+            .with_extension(format!("migration-v{}.state", migrations::SCHEMA_VERSION));
+        let historical_receipt = "complete
+operation_id=historical-v7-to-v8
+checkpoint_sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+";
+        std::fs::write(&historical_marker, historical_receipt).unwrap();
+
+        let evidence = approve(&paths);
+        let outcome = migrate(&paths, evidence).await.unwrap();
+
+        assert_eq!(outcome.schema_version, migrations::SCHEMA_VERSION);
+        assert_eq!(outcome.verified_reopens, 2);
+        assert_eq!(
+            std::fs::read_to_string(&historical_marker).unwrap(),
+            historical_receipt,
+            "same-version repair must preserve the historical v8 migration receipt"
+        );
+        let compatibility_marker = paths
+            .access_db()
+            .with_extension("migration-v8-from-20260913.state");
+        assert!(
+            std::fs::read_to_string(compatibility_marker)
+                .unwrap()
+                .starts_with(
+                    "complete
+operation_id=restore-8-to-8
+"
+                ),
+            "same-version repair must publish its own completion receipt"
+        );
+
+        let connection = rusqlite::Connection::open(paths.access_db()).unwrap();
+        super::super::integrity::validate(&connection).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT schema_fingerprint FROM access_metadata WHERE singleton=1",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            migrations::SCHEMA_FINGERPRINT
+        );
+        for table in [
+            "agent_session_evidence",
+            "agent_session_requests",
+            "agent_task_inputs",
+        ] {
+            let present: bool = connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?1)",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(
+                !present,
+                "{table} must be removed by compatibility migration"
+            );
+        }
     }
 
     #[tokio::test]
