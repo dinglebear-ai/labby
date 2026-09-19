@@ -108,6 +108,10 @@ pub(super) async fn handle_snippet_resolve_event<H: CodeModeHost>(
     }
 }
 
+fn snippet_resolution_scope_allowed(caller: &CodeModeCaller, scope: &ToolScope) -> bool {
+    !scope.is_scoped() || matches!(caller, CodeModeCaller::TrustedLocal)
+}
+
 async fn resolve_snippet_for_runner<H: CodeModeHost>(
     broker: &CodeModeBroker<'_, H>,
     name: &str,
@@ -121,7 +125,7 @@ async fn resolve_snippet_for_runner<H: CodeModeHost>(
             required_scopes: vec!["lab:admin".to_string()],
         });
     }
-    if cfg.capability_filter.is_scoped() {
+    if !snippet_resolution_scope_allowed(&cfg.caller, &cfg.capability_filter) {
         return Err(ToolError::Forbidden {
             message: "codemode.run is not available on route-scoped Code Mode surfaces".to_string(),
             required_scopes: vec!["lab:admin".to_string()],
@@ -144,7 +148,7 @@ async fn resolve_snippet_for_runner<H: CodeModeHost>(
     let resolved = host.resolve_snippet(name, input).await?;
     let (name, code, input) = (resolved.name, resolved.code, resolved.input);
     state.snippet_resolved_bytes = state.snippet_resolved_bytes.saturating_add(code.len());
-    if state.snippet_resolved_bytes > MAX_SNIPPET_RESOLVED_BYTES_PER_RUN {
+    if state.snippet_resolved_bytes > cfg.snippet_max_bytes {
         return Err(ToolError::Sdk {
             sdk_kind: "snippet_budget_exceeded".to_string(),
             message: "resolved snippet code budget exceeded".to_string(),
@@ -262,8 +266,35 @@ fn artifact_call(
 
 #[cfg(test)]
 mod tests {
-    use super::artifact_writes_allowed;
+    use super::{artifact_writes_allowed, snippet_resolution_scope_allowed};
     use crate::ToolScope;
+    use crate::types::{CodeModeCaller, CodeModeCallerCapabilities};
+
+    #[test]
+    fn trusted_local_saved_snippets_may_compose_inside_declared_tool_scope() {
+        let scope = ToolScope::scoped_namespaces(
+            vec!["claude-macpoo".to_string()],
+            vec!["claude-macpoo::Bash".to_string()],
+        );
+        assert!(snippet_resolution_scope_allowed(
+            &CodeModeCaller::TrustedLocal,
+            &scope
+        ));
+
+        let route_scoped_admin = CodeModeCaller::Scoped {
+            capabilities: CodeModeCallerCapabilities {
+                can_read: true,
+                can_execute: true,
+                can_use_snippets: true,
+                is_admin: true,
+            },
+            sub: Some("admin".to_string()),
+        };
+        assert!(
+            !snippet_resolution_scope_allowed(&route_scoped_admin, &scope),
+            "route-scoped callers must not use nested snippet resolution to widen authority"
+        );
+    }
 
     #[test]
     fn artifact_writes_are_blocked_for_read_only_runs() {

@@ -777,7 +777,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             SettingsApplyMode::Partial,
             1024,
             1_048_576,
-            Some("131072"),
+            Some("1048576"),
         ),
         number_editable(
             "advanced",
@@ -1941,7 +1941,7 @@ mod tests {
         assert_eq!(field.apply_mode, SettingsApplyMode::Partial);
         assert_eq!(field.min, Some(1024));
         assert_eq!(field.max, Some(1_048_576));
-        assert_eq!(field.example, Some("131072"));
+        assert_eq!(field.example, Some("1048576"));
     }
 
     #[test]

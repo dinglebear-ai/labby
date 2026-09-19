@@ -12,6 +12,9 @@
 //! - [`DANGEROUS_DOCKER_FLAGS`] / [`DANGEROUS_NODE_FLAGS`] / [`DANGEROUS_BUN_FLAGS`] — argv flags that
 //!   are rejected for the corresponding runtime families.
 
+use std::collections::{BTreeSet, VecDeque};
+use std::sync::{Mutex, OnceLock};
+
 use labby_runtime::error::ToolError;
 
 /// Runtime hints / commands the gateway is allowed to execute as stdio upstreams.
@@ -79,7 +82,7 @@ pub const DANGEROUS_PYTHON_FLAGS: &[&str] = &["-c", "--command", "-"];
 /// Deno subcommands/flags that eval inline code or grant blanket permissions.
 pub const DANGEROUS_DENO_FLAGS: &[&str] = &["eval", "--allow-all", "-A"];
 
-/// Validate that a stdio `command` string is in the runtime-hint allowlist.
+/// Configuration rationale for spawn-guard bypass warning deduplication.
 ///
 /// This is the primary S1/S6 guard: only known safe runtimes may be persisted
 /// as the `command` of a stdio upstream. Callers that receive a raw command
@@ -96,9 +99,54 @@ pub const DANGEROUS_DENO_FLAGS: &[&str] = &["eval", "--allow-all", "-A"];
 /// skip the command allowlist **entirely**. This is a coarse, global escape
 /// hatch — with it set, `bash`, `/bin/sh -c`, and arbitrary binaries like
 /// `/tmp/evil` all become spawnable. Prefer `extra_stdio_commands` and leave
-/// the guard on. When the bypass is active, every skipped validation emits a
-/// `WARN` so the weakened posture is visible in logs.
-///
+/// the guard on. When the bypass is active, the first validation of a recently
+/// unseen command emits a `WARN`; repeats are suppressed while retained in a
+/// fixed-size history, so arbitrary command strings cannot grow process memory
+/// without bound. Evicted old commands may warn again.
+const SPAWN_GUARD_WARNING_DEDUPE_CAPACITY: usize = 32;
+
+#[derive(Default)]
+struct SpawnGuardWarningDedupe {
+    seen: BTreeSet<String>,
+    order: VecDeque<String>,
+}
+
+impl SpawnGuardWarningDedupe {
+    fn should_warn(&mut self, command: &str) -> bool {
+        if self.seen.contains(command) {
+            return false;
+        }
+        if self.order.len() == SPAWN_GUARD_WARNING_DEDUPE_CAPACITY
+            && let Some(evicted) = self.order.pop_front()
+        {
+            self.seen.remove(&evicted);
+        }
+        let command = command.to_string();
+        self.seen.insert(command.clone());
+        self.order.push_back(command);
+        true
+    }
+}
+
+fn warn_spawn_guard_bypass(command: &str) {
+    static WARNED_COMMANDS: OnceLock<Mutex<SpawnGuardWarningDedupe>> = OnceLock::new();
+    let warned = WARNED_COMMANDS.get_or_init(|| Mutex::new(SpawnGuardWarningDedupe::default()));
+    let first_for_recent_command = warned
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .should_warn(command);
+    if first_for_recent_command {
+        tracing::warn!(
+            service = "upstream.pool",
+            command = %command,
+            "SECURITY: spawn-guard bypass active — command allowlist NOT enforced \
+             (disable_spawn_guard = true); prefer scoping with [gateway] extra_stdio_commands; \
+             repeated warnings for this recently seen command are suppressed with bounded history"
+        );
+    }
+}
+
+/// Validate that a stdio `command` string is in the runtime-hint allowlist.
 /// Returns `invalid_param` if the command is not in either allowlist.
 pub fn validate_stdio_command(
     command: &str,
@@ -106,12 +154,7 @@ pub fn validate_stdio_command(
     bypass: bool,
 ) -> Result<(), ToolError> {
     if bypass {
-        tracing::warn!(
-            service = "upstream.pool",
-            command = %command,
-            "SECURITY: spawn-guard bypass active — command allowlist NOT enforced \
-             (disable_spawn_guard = true); prefer scoping with [gateway] extra_stdio_commands"
-        );
+        warn_spawn_guard_bypass(command);
         return Ok(());
     }
 
@@ -442,10 +485,11 @@ mod tests {
                     .without_time(),
             );
 
+        let command = "/tmp/spawn-guard-warn-oracle";
         {
             let _guard = tracing::subscriber::set_default(subscriber);
             // The bypass path must allow the otherwise-rejected command...
-            assert!(validate_stdio_command("bash", &[], true).is_ok());
+            assert!(validate_stdio_command(command, &[], true).is_ok());
         }
 
         // ...AND emit a WARN documenting the weakened posture (Sec-M2).
@@ -459,8 +503,55 @@ mod tests {
             "WARN must identify the spawn-guard bypass; captured logs: {logs}"
         );
         assert!(
-            logs.contains("bash"),
+            logs.contains(command),
             "WARN should record the bypassed command; captured logs: {logs}"
+        );
+    }
+
+    #[test]
+    fn command_bypass_warn_is_deduplicated_per_command() {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::{EnvFilter, fmt};
+
+        let _tracing_lock = TRACING_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let buf = SharedBuf::default();
+        let subscriber = tracing_subscriber::registry()
+            .with(EnvFilter::new("labby_gateway=warn"))
+            .with(
+                fmt::layer()
+                    .json()
+                    .with_writer(buf.clone())
+                    .with_ansi(false)
+                    .without_time(),
+            );
+        let command = "/tmp/spawn-guard-dedupe-oracle";
+
+        {
+            let _guard = tracing::subscriber::set_default(subscriber);
+            assert!(validate_stdio_command(command, &[], true).is_ok());
+            assert!(validate_stdio_command(command, &[], true).is_ok());
+            assert!(validate_stdio_command(command, &[], true).is_ok());
+        }
+
+        let logs = captured_logs(&buf);
+        assert_eq!(
+            logs.matches("spawn-guard bypass active").count(),
+            1,
+            "repeat validations of one command must not spam WARN output: {logs}"
+        );
+    }
+
+    #[test]
+    fn spawn_guard_warning_dedupe_stays_bounded_under_unique_commands() {
+        let mut dedupe = SpawnGuardWarningDedupe::default();
+        for index in 0..(SPAWN_GUARD_WARNING_DEDUPE_CAPACITY * 4) {
+            assert!(dedupe.should_warn(&format!("/tmp/unique-{index}")));
+            assert!(dedupe.order.len() <= SPAWN_GUARD_WARNING_DEDUPE_CAPACITY);
+        }
+        assert_eq!(dedupe.order.len(), SPAWN_GUARD_WARNING_DEDUPE_CAPACITY);
+        assert!(
+            dedupe.should_warn("/tmp/unique-0"),
+            "an evicted old command may warn again, keeping memory bounded instead of remembering arbitrary input forever"
         );
     }
 
