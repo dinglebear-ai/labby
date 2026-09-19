@@ -41,7 +41,7 @@ test('failed revocation preserves confirmation for retry; successful retry close
   const firstRevoke = new Promise<BrowserIdentity>((_resolve, reject) => { rejectFirst = reject })
   browserApi.list = async () => [identity]
   browserApi.pairings = async () => []
-  browserApi.sessions = async () => ({ sessions: [], next_cursor: null })
+  browserApi.sessions = async () => ({ sessions: [], next_cursor: null, detail_warnings: [] })
   browserApi.revoke = async () => {
     calls += 1
     if (calls === 1) return firstRevoke
@@ -77,6 +77,37 @@ test('failed revocation preserves confirmation for retry; successful retry close
   }
 })
 
+
+
+test('partial browser session detail failures stay visible without blanking the bridge', async () => {
+  const window = installDom()
+  const { BrowserBridgePage } = await import('./browser-bridge-page')
+  const { createRoot } = await import('react-dom/client')
+  const original = { ...browserApi }
+  browserApi.list = async () => [identity]
+  browserApi.pairings = async () => []
+  browserApi.sessions = async () => ({
+    sessions: [],
+    next_cursor: null,
+    detail_warnings: ['Session stale-session details unavailable: session disappeared'],
+  })
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+  try {
+    await act(async () => root.render(<BrowserBridgePage />))
+    assert.ok(document.body.textContent?.includes('Browser bridge is partially degraded'))
+    assert.ok(document.body.textContent?.includes('stale-session'))
+    assert.ok(document.body.textContent?.includes('Operator Chrome'))
+    assert.equal(document.body.textContent?.includes('Browser bridge unavailable'), false)
+  } finally {
+    await act(async () => root.unmount())
+    container.remove()
+    Object.assign(browserApi, original)
+    await window.happyDOM.close()
+  }
+})
+
 test('session pagination exposes older bounded pages instead of hiding them', async () => {
   const window = installDom()
   const { BrowserBridgePage } = await import('./browser-bridge-page')
@@ -88,8 +119,8 @@ test('session pagination exposes older bounded pages instead of hiding them', as
   browserApi.sessions = async (_signal, cursor) => {
     cursors.push(cursor)
     return cursor === 'older-page'
-      ? { sessions: [], next_cursor: null }
-      : { sessions: [], next_cursor: 'older-page' }
+      ? { sessions: [], next_cursor: null, detail_warnings: [] }
+      : { sessions: [], next_cursor: 'older-page', detail_warnings: [] }
   }
   const container = document.createElement('div')
   document.body.appendChild(container)

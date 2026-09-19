@@ -14,6 +14,7 @@ export default function AdvancedPage(): React.ReactElement {
   const [schema, setSchema] = useState<SettingsSchemaResponse | undefined>()
   const [settings, setSettings] = useState<SettingsState | undefined>()
   const [envSchema, setEnvSchema] = useState<EnvSettingSpec[]>([])
+  const [envWarning, setEnvWarning] = useState<string | undefined>()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | undefined>()
 
@@ -22,13 +23,19 @@ export default function AdvancedPage(): React.ReactElement {
     Promise.all([
       setupApi.settingsSchema(controller.signal),
       setupApi.settingsState('advanced', controller.signal),
-      setupApi.settingsEnvSchema(controller.signal),
+      setupApi.settingsEnvSchema(controller.signal)
+        .then((entries) => ({ entries }))
+        .catch((err: unknown) => ({
+          entries: [] as EnvSettingSpec[],
+          warning: `Environment inventory unavailable: ${err instanceof Error ? err.message : 'load failed'}`,
+        })),
     ])
       .then(([schemaResponse, stateResponse, envResponse]) => {
         if (controller.signal.aborted) return
         setSchema(schemaResponse)
         setSettings(stateResponse)
-        setEnvSchema(envResponse)
+        setEnvSchema(envResponse.entries)
+        setEnvWarning('warning' in envResponse ? envResponse.warning : undefined)
       })
       .catch((err) => {
         if (!controller.signal.aborted) setError(err instanceof Error ? err.message : 'load failed')
@@ -51,7 +58,10 @@ export default function AdvancedPage(): React.ReactElement {
           <Loader2 className="h-4 w-4 animate-spin" /> loading advanced settings
         </div>
       ) : null}
-      {error ? <p className="text-[11.5px] text-destructive">{error}</p> : null}
+      {error ? <p role="alert" className="text-[11.5px] text-destructive">{error}</p> : null}
+      {envWarning ? (
+        <p role="status" className="text-[11.5px] text-aurora-warn">{envWarning} Advanced settings remain usable.</p>
+      ) : null}
       {settings ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <SettingsScalarSection

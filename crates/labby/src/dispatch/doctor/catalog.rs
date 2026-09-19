@@ -23,6 +23,14 @@ pub const ACTIONS: &[ActionSpec] = &[
         }],
     },
     ActionSpec {
+        name: "capabilities.status",
+        description: "Report configuration and runtime degradations that disable or limit Labby capabilities",
+        destructive: false,
+        requires_admin: false,
+        returns: "DoctorReport",
+        params: &[],
+    },
+    ActionSpec {
         name: "system.checks",
         description: "Run local system probes: env vars, Docker, disk, ports, config files",
         destructive: false,

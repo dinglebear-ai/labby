@@ -3429,309 +3429,6 @@
   },
   {
     "service": "setup",
-    "action": "install_plugin",
-    "canonical_action": "setup:plugin.install",
-    "applicable_surfaces": [
-      "mcp",
-      "api",
-      "web_ui"
-    ],
-    "applicable_features": [
-      "all",
-      "api-docs",
-      "base",
-      "default",
-      "fs",
-      "gateway-host",
-      "lab-admin",
-      "no-default",
-      "skills"
-    ],
-    "scenario_kind": "contract_probe",
-    "scenario_id": "destructive_isolated::setup::plugin_install",
-    "minimum_evidence": "metadata_only",
-    "setup_ref": "catalog-only",
-    "fixture_params": {
-      "fixture": "catalog_metadata",
-      "parameters": {
-        "service": "$fixture.service"
-      }
-    },
-    "required": true,
-    "exclusion_reason": null,
-    "persistence_class": "none",
-    "scenario_owner": "catalog_governance"
-  },
-  {
-    "service": "setup",
-    "action": "installed_plugins",
-    "canonical_action": "setup:plugins.installed",
-    "applicable_surfaces": [
-      "mcp",
-      "api",
-      "web_ui"
-    ],
-    "applicable_features": [
-      "all",
-      "api-docs",
-      "base",
-      "default",
-      "fs",
-      "gateway-host",
-      "lab-admin",
-      "no-default",
-      "skills"
-    ],
-    "scenario_kind": "contract_probe",
-    "scenario_id": "external_optional::setup::plugins_installed",
-    "minimum_evidence": "metadata_only",
-    "setup_ref": "catalog-only",
-    "fixture_params": {
-      "fixture": "catalog_metadata",
-      "parameters": {}
-    },
-    "required": true,
-    "exclusion_reason": null,
-    "persistence_class": "none",
-    "scenario_owner": "catalog_governance"
-  },
-  {
-    "service": "setup",
-    "action": "plugin.install",
-    "canonical_action": null,
-    "applicable_surfaces": [
-      "cli",
-      "mcp",
-      "api"
-    ],
-    "applicable_features": [
-      "all",
-      "api-docs",
-      "base",
-      "default",
-      "fs",
-      "gateway-host",
-      "lab-admin",
-      "no-default",
-      "skills"
-    ],
-    "scenario_kind": "destructive_isolated",
-    "scenario_id": "destructive_isolated::setup::plugin_install",
-    "minimum_evidence": "live_state_transition",
-    "setup_ref": "disposable-home",
-    "fixture_params": {
-      "fixture": "isolated_setup_destructive",
-      "parameters": {
-        "service": "$fixture.service"
-      }
-    },
-    "required": true,
-    "exclusion_reason": null,
-    "persistence_class": "durable",
-    "scenario_owner": "stateful_workflow_runner"
-  },
-  {
-    "service": "setup",
-    "action": "plugin.uninstall",
-    "canonical_action": null,
-    "applicable_surfaces": [
-      "cli",
-      "mcp",
-      "api"
-    ],
-    "applicable_features": [
-      "all",
-      "api-docs",
-      "base",
-      "default",
-      "fs",
-      "gateway-host",
-      "lab-admin",
-      "no-default",
-      "skills"
-    ],
-    "scenario_kind": "destructive_isolated",
-    "scenario_id": "destructive_isolated::setup::plugin_uninstall",
-    "minimum_evidence": "live_state_transition",
-    "setup_ref": "disposable-home",
-    "fixture_params": {
-      "fixture": "isolated_setup_destructive",
-      "parameters": {
-        "service": "$fixture.service"
-      }
-    },
-    "required": true,
-    "exclusion_reason": null,
-    "persistence_class": "durable",
-    "scenario_owner": "stateful_workflow_runner"
-  },
-  {
-    "service": "setup",
-    "action": "plugin_connectivity",
-    "canonical_action": null,
-    "applicable_surfaces": [
-      "cli",
-      "mcp",
-      "api"
-    ],
-    "applicable_features": [
-      "all",
-      "api-docs",
-      "base",
-      "default",
-      "fs",
-      "gateway-host",
-      "lab-admin",
-      "no-default",
-      "skills"
-    ],
-    "scenario_kind": "external_optional",
-    "scenario_id": "external_optional::setup::plugin_connectivity",
-    "minimum_evidence": "live_error_path",
-    "setup_ref": "disposable-home+synthetic-external",
-    "fixture_params": {
-      "fixture": "synthetic_external",
-      "parameters": {}
-    },
-    "required": false,
-    "exclusion_reason": null,
-    "persistence_class": "ephemeral",
-    "scenario_owner": "optional_external_runner"
-  },
-  {
-    "service": "setup",
-    "action": "plugin_export",
-    "canonical_action": null,
-    "applicable_surfaces": [
-      "cli",
-      "mcp",
-      "api"
-    ],
-    "applicable_features": [
-      "all",
-      "api-docs",
-      "base",
-      "default",
-      "fs",
-      "gateway-host",
-      "lab-admin",
-      "no-default",
-      "skills"
-    ],
-    "scenario_kind": "external_optional",
-    "scenario_id": "external_optional::setup::plugin_export",
-    "minimum_evidence": "live_error_path",
-    "setup_ref": "disposable-home+synthetic-external",
-    "fixture_params": {
-      "fixture": "synthetic_external",
-      "parameters": {}
-    },
-    "required": false,
-    "exclusion_reason": null,
-    "persistence_class": "ephemeral",
-    "scenario_owner": "optional_external_runner"
-  },
-  {
-    "service": "setup",
-    "action": "plugin_hook",
-    "canonical_action": null,
-    "applicable_surfaces": [
-      "cli",
-      "mcp",
-      "api"
-    ],
-    "applicable_features": [
-      "all",
-      "api-docs",
-      "base",
-      "default",
-      "fs",
-      "gateway-host",
-      "lab-admin",
-      "no-default",
-      "skills"
-    ],
-    "scenario_kind": "destructive_isolated",
-    "scenario_id": "destructive_isolated::setup::plugin_hook",
-    "minimum_evidence": "live_state_transition",
-    "setup_ref": "disposable-home",
-    "fixture_params": {
-      "fixture": "isolated_setup_destructive",
-      "parameters": {}
-    },
-    "required": true,
-    "exclusion_reason": null,
-    "persistence_class": "durable",
-    "scenario_owner": "stateful_workflow_runner"
-  },
-  {
-    "service": "setup",
-    "action": "plugin_sync",
-    "canonical_action": null,
-    "applicable_surfaces": [
-      "cli",
-      "mcp",
-      "api"
-    ],
-    "applicable_features": [
-      "all",
-      "api-docs",
-      "base",
-      "default",
-      "fs",
-      "gateway-host",
-      "lab-admin",
-      "no-default",
-      "skills"
-    ],
-    "scenario_kind": "destructive_isolated",
-    "scenario_id": "destructive_isolated::setup::plugin_sync",
-    "minimum_evidence": "live_state_transition",
-    "setup_ref": "disposable-home",
-    "fixture_params": {
-      "fixture": "isolated_setup_destructive",
-      "parameters": {}
-    },
-    "required": true,
-    "exclusion_reason": null,
-    "persistence_class": "durable",
-    "scenario_owner": "stateful_workflow_runner"
-  },
-  {
-    "service": "setup",
-    "action": "plugins.installed",
-    "canonical_action": null,
-    "applicable_surfaces": [
-      "cli",
-      "mcp",
-      "api"
-    ],
-    "applicable_features": [
-      "all",
-      "api-docs",
-      "base",
-      "default",
-      "fs",
-      "gateway-host",
-      "lab-admin",
-      "no-default",
-      "skills"
-    ],
-    "scenario_kind": "external_optional",
-    "scenario_id": "external_optional::setup::plugins_installed",
-    "minimum_evidence": "live_error_path",
-    "setup_ref": "disposable-home+synthetic-external",
-    "fixture_params": {
-      "fixture": "synthetic_external",
-      "parameters": {}
-    },
-    "required": false,
-    "exclusion_reason": null,
-    "persistence_class": "ephemeral",
-    "scenario_owner": "optional_external_runner"
-  },
-  {
-    "service": "setup",
     "action": "proxy.configure",
     "canonical_action": null,
     "applicable_surfaces": [
@@ -3855,72 +3552,6 @@
     ],
     "scenario_kind": "contract_probe",
     "scenario_id": "contract_probe::setup::schema_get",
-    "minimum_evidence": "metadata_only",
-    "setup_ref": "catalog-only",
-    "fixture_params": {
-      "fixture": "catalog_metadata",
-      "parameters": {}
-    },
-    "required": true,
-    "exclusion_reason": null,
-    "persistence_class": "reconstructed",
-    "scenario_owner": "catalog_governance"
-  },
-  {
-    "service": "setup",
-    "action": "services.status",
-    "canonical_action": null,
-    "applicable_surfaces": [
-      "cli",
-      "mcp",
-      "api"
-    ],
-    "applicable_features": [
-      "all",
-      "api-docs",
-      "base",
-      "default",
-      "fs",
-      "gateway-host",
-      "lab-admin",
-      "no-default",
-      "skills"
-    ],
-    "scenario_kind": "live_invoke",
-    "scenario_id": "live_invoke::setup::services_status",
-    "minimum_evidence": "live_success",
-    "setup_ref": "disposable-home",
-    "fixture_params": {
-      "fixture": "isolated_setup_readonly",
-      "parameters": {}
-    },
-    "required": true,
-    "exclusion_reason": null,
-    "persistence_class": "reconstructed",
-    "scenario_owner": "surface_action_runner"
-  },
-  {
-    "service": "setup",
-    "action": "services_status",
-    "canonical_action": "setup:services.status",
-    "applicable_surfaces": [
-      "mcp",
-      "api",
-      "web_ui"
-    ],
-    "applicable_features": [
-      "all",
-      "api-docs",
-      "base",
-      "default",
-      "fs",
-      "gateway-host",
-      "lab-admin",
-      "no-default",
-      "skills"
-    ],
-    "scenario_kind": "contract_probe",
-    "scenario_id": "live_invoke::setup::services_status",
     "minimum_evidence": "metadata_only",
     "setup_ref": "catalog-only",
     "fixture_params": {
@@ -4201,41 +3832,6 @@
     "exclusion_reason": null,
     "persistence_class": "reconstructed",
     "scenario_owner": "surface_action_runner"
-  },
-  {
-    "service": "setup",
-    "action": "uninstall_plugin",
-    "canonical_action": "setup:plugin.uninstall",
-    "applicable_surfaces": [
-      "mcp",
-      "api",
-      "web_ui"
-    ],
-    "applicable_features": [
-      "all",
-      "api-docs",
-      "base",
-      "default",
-      "fs",
-      "gateway-host",
-      "lab-admin",
-      "no-default",
-      "skills"
-    ],
-    "scenario_kind": "contract_probe",
-    "scenario_id": "destructive_isolated::setup::plugin_uninstall",
-    "minimum_evidence": "metadata_only",
-    "setup_ref": "catalog-only",
-    "fixture_params": {
-      "fixture": "catalog_metadata",
-      "parameters": {
-        "service": "$fixture.service"
-      }
-    },
-    "required": true,
-    "exclusion_reason": null,
-    "persistence_class": "none",
-    "scenario_owner": "catalog_governance"
   },
   {
     "service": "artifacts",
@@ -6423,5 +6019,37 @@
     "scenario_kind": "stateful_scenario", "scenario_id": "stateful_scenario::stash::stash_grants_revoke", "minimum_evidence": "cross_surface_parity",
     "setup_ref": "disposable-home", "fixture_params": {"fixture": "isolated_stash_workflow", "parameters": {"file_id": "$fixture.file_id", "grant_id": "$fixture.grant_id"}},
     "required": true, "exclusion_reason": null, "persistence_class": "durable", "scenario_owner": "stateful_workflow_runner"
+  },
+  {
+    "service": "doctor",
+    "action": "capabilities.status",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::doctor::capabilities_status",
+    "minimum_evidence": "live_success",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_doctor_readonly",
+      "parameters": {}
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "reconstructed",
+    "scenario_owner": "surface_action_runner"
   }
 ]

@@ -173,16 +173,8 @@ const DEPRECATED_ACTION_ALIASES: &[&str] = &[
     // setup — flat snake_case; canonical dotted forms under setup.* added.
     "state",
     "bootstrap",
-    "plugin_hook",
-    "plugin_sync",
-    "plugin_export",
-    "plugin_connectivity",
     "check",
     "repair",
-    "installed_plugins",
-    "services_status",
-    "install_plugin",
-    "uninstall_plugin",
     "finalize",
 ];
 

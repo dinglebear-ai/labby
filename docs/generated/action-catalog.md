@@ -113,6 +113,7 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `doctor` | `access.check` | false | false | false |  | `transport` | `-` | `-` |  | `DoctorReport` | mcp, api |
 | `doctor` | `audit.full` | false | false | false |  | `transport` | `-` | `-` |  | `stream&lt;Finding&gt;` | cli, mcp, api |
 | `doctor` | `auth.check` | false | false | false |  | `transport` | `-` | `-` | `live: boolean` | `DoctorReport` | cli, mcp, api |
+| `doctor` | `capabilities.status` | false | false | false |  | `transport` | `-` | `-` |  | `DoctorReport` | mcp, api |
 | `doctor` | `help` | false | false | false |  | `transport` | `-` | `-` |  | `Catalog` | mcp, api |
 | `doctor` | `oauth.relay.check` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `probe_targets: boolean` | `DoctorReport` | cli, mcp, api |
 | `doctor` | `proxy.check` | false | false | false |  | `transport` | `-` | `-` | `app_url*: string`<br>`mcp_url*: string`<br>`route*: string`<br>`backend_url: string` | `DoctorReport` | cli, mcp, api |
@@ -234,21 +235,10 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `setup` | `draft.set` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `entries*: DraftEntry[]`<br>`force: boolean` | `DraftSetOutcome` | mcp, api, web |
 | `setup` | `finalize` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `force: boolean` | `CommitOutcome` | mcp, api, web |
 | `setup` | `help` | false | false | false |  | `transport` | `-` | `-` |  | `Catalog` | mcp, api |
-| `setup` | `install_plugin` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `service*: string` | `PluginMutationResult` | mcp, api, web |
-| `setup` | `installed_plugins` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `force: boolean` | `InstalledPlugin[]` | mcp, api, web |
-| `setup` | `plugin.install` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `service*: string` | `PluginMutationResult` | cli, mcp, api |
-| `setup` | `plugin.uninstall` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `service*: string` | `PluginMutationResult` | cli, mcp, api |
-| `setup` | `plugin_connectivity` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `server_url: string` | `ConnectivityOutcome` | cli, mcp, api |
-| `setup` | `plugin_export` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `PluginExportOutcome` | cli, mcp, api |
-| `setup` | `plugin_hook` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `repair: boolean` | `PluginHookReport` | cli, mcp, api |
-| `setup` | `plugin_sync` | false | true | true | lab:admin | `transport_admin` | `-` | `-` |  | `PluginSyncOutcome` | cli, mcp, api |
-| `setup` | `plugins.installed` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `force: boolean` | `InstalledPlugin[]` | cli, mcp, api |
 | `setup` | `proxy.configure` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `preferences*: ProxyPreferences`<br>`bearer_token: string`<br>`dry_run: boolean` | `ProxySetupOutcome` | cli, mcp, api |
 | `setup` | `repair` | false | true | true | lab:admin | `transport_admin` | `-` | `-` |  | `SetupReport` | cli, mcp, api |
 | `setup` | `schema` | false | false | false |  | `transport` | `-` | `-` | `action*: string` | `Schema` | mcp, api, web |
 | `setup` | `schema.get` | false | false | false |  | `transport` | `-` | `-` | `services: string[]` | `ServiceSchemaMap` | mcp, api, web |
-| `setup` | `services.status` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `ServiceStatus[]` | cli, mcp, api |
-| `setup` | `services_status` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `ServiceStatus[]` | mcp, api, web |
 | `setup` | `settings.advanced_state` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `SettingsState` | mcp, api |
 | `setup` | `settings.config.update` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `entries*: SettingsUpdateEntry[]` | `SettingsMutationOutcome` | mcp, api, web |
 | `setup` | `settings.env.update` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `entries*: SettingsUpdateEntry[]` | `SettingsState` | mcp, api, web |
@@ -257,7 +247,6 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `setup` | `settings.state` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `section: string` | `SettingsState` | mcp, api, web |
 | `setup` | `settings.update` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `services.built_in_upstream_apis_enabled*: boolean` | `SettingsState` | mcp, api, web |
 | `setup` | `state` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `SetupSnapshot` | cli, mcp, api, web |
-| `setup` | `uninstall_plugin` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `service*: string` | `PluginMutationResult` | mcp, api, web |
 | `snippets` | `help` | false | false | false |  | `transport` | `-` | `-` |  | `Catalog` | mcp, api |
 | `snippets` | `schema` | false | false | false |  | `transport` | `-` | `-` | `action*: string` | `Schema` | mcp, api |
 | `snippets` | `snippets.create` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`body*: string`<br>`description: string`<br>`force: boolean` | `SnippetInfo` | cli, mcp, api |

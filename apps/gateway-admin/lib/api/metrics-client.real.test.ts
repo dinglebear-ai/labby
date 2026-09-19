@@ -99,6 +99,36 @@ test('fetchDashboardMetrics uses complete-window aggregate analytics without raw
   }
 })
 
+test('fetchDashboardMetrics surfaces retained-observability failure without discarding durable usage', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body)) as { action: string }
+    if (body.action === 'gateway.usage.metrics') {
+      return new Response(JSON.stringify(metrics({ total_calls: 37, window_total_calls: 37 })), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    return new Response(JSON.stringify({ message: 'server log store unavailable' }), {
+      status: 503,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+
+  try {
+    const { fetchDashboardMetrics } = await import('./metrics-client.ts')
+    const result = await fetchDashboardMetrics('24h')
+    assert.equal(result.tool_calls.total, 37)
+    assert.equal(result.collected.tokens, false)
+    assert.equal(result.collected.surfaces, false)
+    assert.equal(result.collected.fan_out, false)
+    assert.equal(result.warnings?.length, 1)
+    assert.match(result.warnings?.[0] ?? '', /Retained observability is unavailable/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('fetchToolDetail uses exact filtered aggregate plus a bounded recent-call page', async () => {
   const requests: Array<{ action: string; params?: Record<string, unknown> }> = []
   const originalFetch = globalThis.fetch

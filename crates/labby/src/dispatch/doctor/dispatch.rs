@@ -39,6 +39,11 @@ pub async fn dispatch_with_surface(
             let a = crate::dispatch::helpers::require_str(&params, "action")?;
             return action_schema(ACTIONS, a);
         }
+        "capabilities.status" => {
+            return to_json(Report {
+                findings: system::run_capability_checks(),
+            });
+        }
         "system.checks" => {
             let findings = system::run_system_checks().await;
             return to_json(Report { findings });
@@ -152,6 +157,9 @@ pub async fn dispatch_with_clients_relay_and_auth(
             let a = crate::dispatch::helpers::require_str(&params, "action")?;
             action_schema(ACTIONS, a)
         }
+        "capabilities.status" => to_json(Report {
+            findings: system::run_capability_checks(),
+        }),
         "system.checks" => to_json(Report {
             findings: system::run_system_checks().await,
         }),

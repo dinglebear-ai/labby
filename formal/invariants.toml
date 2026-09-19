@@ -57,3 +57,47 @@ owner = "browser"
 
 [invariant.checks]
 stateright = ["request_cancel_before_dispatch"]
+
+[[invariant]]
+id = "LABBY-CAP-001"
+title = "Every degraded capability is visible in Doctor capability findings."
+kind = "safety"
+severity = "critical"
+model = "capability_visibility"
+owner = "runtime-health"
+
+[invariant.checks]
+stateright = ["degradation_visible_in_doctor"]
+
+[[invariant]]
+id = "LABBY-CAP-002"
+title = "Every degraded capability is visible in readiness health codes."
+kind = "safety"
+severity = "critical"
+model = "capability_visibility"
+owner = "runtime-health"
+
+[invariant.checks]
+stateright = ["degradation_visible_in_readiness"]
+
+[[invariant]]
+id = "LABBY-CAP-003"
+title = "Every degraded capability carries actionable operator detail."
+kind = "safety"
+severity = "high"
+model = "capability_visibility"
+owner = "runtime-health"
+
+[invariant.checks]
+stateright = ["degradation_has_operator_detail"]
+
+[[invariant]]
+id = "LABBY-CAP-004"
+title = "Fatal capability guard mismatches block startup instead of running degraded."
+kind = "safety"
+severity = "critical"
+model = "capability_visibility"
+owner = "runtime-health"
+
+[invariant.checks]
+stateright = ["fatal_guard_blocks_startup"]

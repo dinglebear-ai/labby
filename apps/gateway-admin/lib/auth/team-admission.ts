@@ -9,11 +9,22 @@ import { loadBrowserSession } from './session-store.ts'
  * session. The browser never decides admission; a non-qualifying identity
  * simply stays unprovisioned.
  */
-export async function requestTeamAdmission(): Promise<void> {
+export interface TeamAdmissionAttempt {
+  admissionError?: string
+}
+
+export async function requestTeamAdmission(): Promise<TeamAdmissionAttempt> {
+  let admissionError: string | undefined
   try {
-    await fetch('/v1/catalog', { method: 'GET', credentials: 'include', cache: 'no-store' })
-  } catch {
-    // Admission is best-effort; the session reload below reports the result.
+    const response = await fetch('/v1/catalog', { method: 'GET', credentials: 'include', cache: 'no-store' })
+    if (!response.ok) {
+      admissionError = `Team admission probe returned HTTP ${response.status}.`
+    }
+  } catch (error) {
+    admissionError = `Team admission probe could not reach Labby: ${error instanceof Error ? error.message : 'network request failed'}.`
   }
+  // Always reload. The admission middleware can update authority even when the
+  // probe response itself is not useful to the browser.
   await loadBrowserSession()
+  return { admissionError }
 }

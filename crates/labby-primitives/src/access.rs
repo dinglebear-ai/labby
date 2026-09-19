@@ -477,7 +477,7 @@ mod tests {
         let prefix = |team: &str| format!("team:{team}:");
         assert_ne!(
             format!("{}beta", prefix("alpha")),
-            format!("{}", prefix("alpha:beta")),
+            prefix("alpha:beta").to_string(),
         );
     }
 

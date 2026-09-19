@@ -293,20 +293,35 @@ pub fn run(args: ServeArgs, config: &LabConfig) -> impl Future<Output = Result<E
 async fn initialize_selected_file_stash_runtime(
     registry: &ToolRegistry,
     config: &LabConfig,
+    health: &crate::runtime_health::SubsystemHealth,
 ) -> Arc<crate::file_stash::FileStashRuntime> {
     if registry.service("stash").is_none() {
         return Arc::new(crate::file_stash::FileStashRuntime::blocked());
     }
     match crate::config::file_stash_root_path(config) {
-        Ok(root) => Arc::new(
-            crate::file_stash::FileStashRuntime::initialize_with_preferences(
-                root,
-                config.file_stash.clone(),
-            )
-            .await,
-        ),
-        Err(_) => {
-            tracing::warn!("file stash runtime unavailable: state root could not be resolved");
+        Ok(root) => {
+            let runtime = Arc::new(
+                crate::file_stash::FileStashRuntime::initialize_with_preferences(
+                    root,
+                    config.file_stash.clone(),
+                )
+                .await,
+            );
+            if let crate::file_stash::FileStashStatus::Blocked(reason) = runtime.status().await {
+                health.record_degraded(
+                    crate::runtime_health::FILE_STASH_UNAVAILABLE,
+                    format!("File Stash runtime is blocked: {reason:?}"),
+                );
+            }
+            runtime
+        }
+        Err(error) => {
+            let detail = format!("File Stash state root could not be resolved: {error}");
+            health.record_degraded(
+                crate::runtime_health::FILE_STASH_UNAVAILABLE,
+                detail.clone(),
+            );
+            tracing::warn!(error = %error, "file stash runtime unavailable: state root could not be resolved");
             Arc::new(crate::file_stash::FileStashRuntime::blocked())
         }
     }
@@ -421,13 +436,39 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     let installation_id =
         crate::dispatch::setup::access_bootstrap::installation_id(&installation_paths)
             .context("load durable Labby installation identity")?;
+    let capability_health = crate::runtime_health::SubsystemHealth::process();
+    for problem in crate::composition::config_check::runtime_guard_problems(config, Some(&host)) {
+        if !problem.fatal {
+            capability_health.record_degraded(problem.code, problem.message.clone());
+            tracing::warn!(
+                subsystem = "startup",
+                phase = "capability.guard",
+                code = problem.code,
+                detail = %problem.message,
+                "configuration guard is degrading a Labby capability"
+            );
+        }
+    }
 
     let access_runtime = match access_db_path() {
-        Ok(path) => Arc::new(AccessRuntime::initialize(path).await),
-        Err(_) => {
+        Ok(path) => {
+            let runtime = Arc::new(AccessRuntime::initialize(path).await);
+            if let crate::access::AccessRuntimeStatus::Blocked(reason) = runtime.status().await {
+                capability_health.record_degraded(
+                    crate::runtime_health::ACCESS_UNAVAILABLE,
+                    format!("access runtime is blocked: {reason:?}"),
+                );
+            }
+            runtime
+        }
+        Err(error) => {
             // Access enforcement is not active yet, so preserve existing serve
             // availability while exposing a typed blocked runtime to every
             // transport. Do not log ambient path/config details.
+            capability_health.record_degraded(
+                crate::runtime_health::ACCESS_UNAVAILABLE,
+                format!("access state path could not be resolved: {error}"),
+            );
             tracing::warn!("access runtime unavailable: state path could not be resolved");
             Arc::new(AccessRuntime::blocked_unavailable())
         }
@@ -458,10 +499,25 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         crate::dispatch::depot::authority_projection::start_managed_projection(&config.depot)
             .await
             .context("start managed Depot authority projection")?;
-    let file_stash_runtime = initialize_selected_file_stash_runtime(&registry, config).await;
+    let file_stash_runtime =
+        initialize_selected_file_stash_runtime(&registry, config, capability_health.as_ref()).await;
 
     let spawn_depth = resolve_lab_spawn_depth(std::env::var("LABBY_SPAWN_DEPTH").ok());
     let suppress_upstream_runtime = stdio_recursion_guard_active(stdio_mode, spawn_depth);
+    #[cfg(feature = "gateway")]
+    let recursion_guard_degrades_upstreams =
+        stdio_guard_degrades_gateway(config, suppress_upstream_runtime);
+    #[cfg(not(feature = "gateway"))]
+    let recursion_guard_degrades_upstreams = false;
+    if recursion_guard_degrades_upstreams {
+        capability_health.record_degraded(
+            crate::runtime_health::STDIO_UPSTREAM_RUNTIME_SUPPRESSED,
+            format!(
+                "configured/discovered upstream MCP runtime is unavailable in this nested stdio process because LABBY_SPAWN_DEPTH={}; no live Labby daemon bridge was detected, so start or recover the canonical daemon, or launch a top-level Labby process without LABBY_SPAWN_DEPTH",
+                spawn_depth.unwrap_or_default()
+            ),
+        );
+    }
     let mut bearer_token = http_token();
     let auth_config =
         resolve_auth_for_config(&config).context("invalid HTTP auth configuration")?;
@@ -488,14 +544,14 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     }
 
     #[cfg(feature = "skills")]
-    let skill_library_runtime = bootstrap_selected_skill_library_with(
-        &registry,
-        &crate::runtime_health::SubsystemHealth::process(),
-        || bootstrap_skill_library(config),
-    );
+    let skill_library_runtime =
+        bootstrap_selected_skill_library_with(&registry, capability_health.as_ref(), || {
+            bootstrap_skill_library(config)
+        });
     #[cfg(feature = "gateway")]
     let gateway_manager = build_gateway_runtime(
         config,
+        capability_health.as_ref(),
         &auth_config,
         transport,
         spawn_depth,
@@ -523,7 +579,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         ),
     );
     #[cfg(not(feature = "gateway"))]
-    reject_protected_routes_without_gateway(config)?;
+    reject_protected_routes_without_gateway(config, capability_health.as_ref())?;
     if stdio_mode {
         tracing::info!(
             subsystem = "api_server",
@@ -546,6 +602,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
                 notifier,
                 spawn_depth,
                 suppress_upstream_runtime,
+                recursion_guard_degrades_upstreams,
             )
             .await;
         }
@@ -559,6 +616,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
                 notifier,
                 spawn_depth,
                 suppress_upstream_runtime,
+                recursion_guard_degrades_upstreams,
             )
             .await;
         }
@@ -600,6 +658,10 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
             Ok(crate::dispatch::setup::BootstrapOutcome::Created { env_path, token }) => {
                 bearer_token = Some(token.clone());
                 if let Err(error) = dotenvy::from_path(&env_path) {
+                    capability_health.record_degraded(
+                        crate::runtime_health::BOOTSTRAP_ENV_RELOAD_DEGRADED,
+                        format!("generated environment file could not be reloaded: {error}"),
+                    );
                     tracing::error!(
                         surface = "cli",
                         service = "serve",
@@ -636,7 +698,13 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
             }
             Ok(crate::dispatch::setup::BootstrapOutcome::AlreadyPresent { .. }) => {}
             Err(error) => {
-                tracing::warn!(surface = "cli", service = "serve", error = %error, "first-run bootstrap skipped");
+                capability_health.record_degraded(
+                    crate::runtime_health::BOOTSTRAP_DEGRADED,
+                    format!(
+                        "first-run bootstrap could not prepare the local environment; setup may require manual configuration: {error}"
+                    ),
+                );
+                tracing::warn!(surface = "cli", service = "serve", error = %error, "first-run bootstrap skipped; capability health will report the degraded setup state");
             }
         }
     }
@@ -771,6 +839,10 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
             }
             Err(error) => {
                 crate::oauth::public_relay::set_public_relay_manager(None);
+                capability_health.record_degraded(
+                    crate::runtime_health::OAUTH_RELAY_UNAVAILABLE,
+                    format!("configured public OAuth callback relay failed to load: {error}"),
+                );
                 tracing::warn!(
                     subsystem = "startup",
                     phase = "oauth.public_relay.disabled",
@@ -790,8 +862,13 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
                 state = state.with_actor_key_deriver(deriver);
             }
             Err(error) => {
+                let detail = crate::runtime_health::error_chain(error.as_ref());
+                capability_health.record_degraded(
+                    crate::runtime_health::ACTOR_KEY_UNAVAILABLE,
+                    format!("actor-key derivation is disabled: {detail}"),
+                );
                 tracing::warn!(
-                    error = %crate::runtime_health::error_chain(error.as_ref()),
+                    error = %detail,
                     "actor_key derivation disabled because actor-key secret could not be loaded"
                 );
             }
@@ -859,10 +936,17 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
             );
             state = state.with_workspace_root(root.to_path_buf());
         } else {
+            let detail = workspace_runtime
+                .workspace_root_error()
+                .unwrap_or("workspace root is invalid");
+            capability_health.record_degraded(
+                crate::runtime_health::WORKSPACE_UNAVAILABLE,
+                format!("filesystem browser is disabled: {detail}"),
+            );
             tracing::warn!(
                 subsystem = "startup",
                 phase = "fs.workspace_root",
-                error = workspace_runtime.workspace_root_error(),
+                error = detail,
                 "workspace.root invalid; fs service disabled"
             );
         }
@@ -1062,8 +1146,7 @@ fn resolve_trusted_host_verifier(
     peer_auth_enabled: bool,
 ) -> Result<Option<Arc<labby_auth::trusted_host::TrustedHostVerifier>>> {
     let enabled = std::env::var("LABBY_INTEGRATED_TRUSTED_HOST")
-        .ok()
-        .is_some_and(|value| matches!(value.trim(), "1" | "true" | "TRUE"));
+        .is_ok_and(|value| matches!(value.trim(), "1" | "true" | "TRUE"));
     if !enabled {
         return Ok(None);
     }
@@ -1924,6 +2007,7 @@ fn build_http_router(
 #[cfg(feature = "gateway")]
 async fn build_gateway_runtime(
     config: &LabConfig,
+    health: &crate::runtime_health::SubsystemHealth,
     auth_config: &labby_auth::config::AuthConfig,
     transport: Transport,
     spawn_depth: Option<u32>,
@@ -1977,6 +2061,12 @@ async fn build_gateway_runtime(
         match labby_gateway::usage::UsageStore::open(crate::config::usage_db_path()?).await {
             Ok(store) => Some(Arc::new(store)),
             Err(error) => {
+                health.record_degraded(
+                    crate::runtime_health::USAGE_TELEMETRY_UNAVAILABLE,
+                    format!(
+                        "usage telemetry is disabled because its store failed to open: {error}"
+                    ),
+                );
                 tracing::warn!(
                     error = %error,
                     "failed to open gateway usage store; usage telemetry disabled for this run"
@@ -1995,6 +2085,12 @@ async fn build_gateway_runtime(
         {
             Ok(store) => Some(Arc::new(store)),
             Err(error) => {
+                health.record_degraded(
+                    crate::runtime_health::CODEMODE_JOURNAL_UNAVAILABLE,
+                    format!(
+                        "Code Mode journaling is disabled because its store failed to open: {error}"
+                    ),
+                );
                 tracing::warn!(
                     error = %error,
                     "failed to open Code Mode step journal; journaling disabled for this run"
@@ -2081,6 +2177,15 @@ async fn build_gateway_runtime(
     let openapi_http_client = labby_openapi::http::build_dispatch_client()?;
     let openapi_registry =
         labby_openapi::OpenApiRegistry::load(openapi_provider_config, Duration::from_secs(8)).await;
+    if !openapi_registry.warnings().is_empty() {
+        health.record_degraded(
+            crate::runtime_health::OPENAPI_PROVIDER_DEGRADED,
+            format!(
+                "OpenAPI provider capability is partially unavailable: {}",
+                openapi_registry.warnings().join("; ")
+            ),
+        );
+    }
     if openapi_registry.is_empty() {
         tracing::info!(
             service = "openapi",
@@ -2140,6 +2245,10 @@ async fn build_gateway_runtime(
                         );
                     }
                     Err(error) => {
+                        health.record_degraded(
+                            crate::runtime_health::GATEWAY_IMPORT_DEGRADED,
+                            format!("pending gateway discovery failed during startup: {error}"),
+                        );
                         tracing::warn!(
                             subsystem = "gateway_client",
                             phase = "auto_import.pending_failed",
@@ -2162,6 +2271,10 @@ async fn build_gateway_runtime(
                         );
                     }
                     Err(error) => {
+                        health.record_degraded(
+                            crate::runtime_health::GATEWAY_IMPORT_DEGRADED,
+                            format!("gateway auto-import failed during startup: {error}"),
+                        );
                         tracing::warn!(
                             subsystem = "gateway_client",
                             phase = "auto_import.failed",
@@ -2207,7 +2320,10 @@ async fn build_gateway_runtime(
 }
 
 #[cfg(not(feature = "gateway"))]
-fn reject_protected_routes_without_gateway(config: &LabConfig) -> Result<()> {
+fn reject_protected_routes_without_gateway(
+    config: &LabConfig,
+    health: &crate::runtime_health::SubsystemHealth,
+) -> Result<()> {
     if !config.protected_mcp_routes.is_empty() {
         anyhow::bail!(
             "protected MCP routes are configured but this labby build does not include the gateway feature"
@@ -2216,11 +2332,18 @@ fn reject_protected_routes_without_gateway(config: &LabConfig) -> Result<()> {
     // Configured upstreams are harmless without the gateway client, but the
     // operator should know they're being ignored rather than silently dropped.
     if !config.upstream.is_empty() {
+        health.record_degraded(
+            crate::runtime_health::GATEWAY_FEATURE_UNAVAILABLE,
+            format!(
+                "{} gateway upstream(s) are configured but this Labby build does not include the gateway feature; those upstreams are unavailable. Install a gateway-enabled build or remove the unused upstream configuration.",
+                config.upstream.len()
+            ),
+        );
         tracing::warn!(
             subsystem = "startup",
             phase = "bootstrap.plan",
             upstream_count = config.upstream.len(),
-            "gateway upstreams are configured but this build has no gateway support (gateway feature); values ignored"
+            "gateway upstreams are configured but this build has no gateway support (gateway feature); capability health reports them as unavailable"
         );
     }
     Ok(())
@@ -2268,13 +2391,25 @@ fn run_stdio(
     notifier: PeerNotifier,
     spawn_depth: Option<u32>,
     suppress_upstream_runtime: bool,
+    recursion_guard_degrades_upstreams: bool,
 ) -> impl Future<Output = Result<ExitCode>> {
     // The server bootstrap stays on the stack throughout this session. Keep
     // the protocol future on the heap rather than copying it into that frame.
     Box::pin(async move {
         let file_stash_shutdown = Arc::clone(&file_stash_runtime);
-        if suppress_upstream_runtime {
+        if recursion_guard_degrades_upstreams {
             tracing::warn!(
+                surface = "mcp",
+                service = "stdio",
+                action = "recursion_guard.degraded",
+                subsystem = "mcp_server",
+                phase = "stdio.recursion_guard",
+                transport = "stdio",
+                spawn_depth,
+                "nested stdio recursion guard disabled an expected upstream MCP runtime; capability health contains remediation"
+            );
+        } else if suppress_upstream_runtime {
+            tracing::info!(
                 surface = "mcp",
                 service = "stdio",
                 action = "recursion_guard.detected",
@@ -2282,7 +2417,7 @@ fn run_stdio(
                 phase = "stdio.recursion_guard",
                 transport = "stdio",
                 spawn_depth,
-                "LABBY_SPAWN_DEPTH is set for stdio MCP serve; upstream spawning is disabled in this mode"
+                "stdio recursion guard active; no configured or auto-import upstream runtime is expected, so no user-facing capability is degraded"
             );
         } else {
             tracing::info!(
@@ -2379,6 +2514,16 @@ fn resolve_lab_spawn_depth(env: Option<String>) -> Option<u32> {
 
 fn stdio_recursion_guard_active(stdio_mode: bool, spawn_depth: Option<u32>) -> bool {
     stdio_mode && spawn_depth.unwrap_or_default() > 0
+}
+
+#[cfg(feature = "gateway")]
+fn stdio_guard_degrades_gateway(config: &LabConfig, suppress_upstream_runtime: bool) -> bool {
+    suppress_upstream_runtime
+        && (!config.upstream.is_empty()
+            || !matches!(
+                config.gateway_import_mode,
+                crate::config::GatewayImportMode::Off
+            ))
 }
 
 /// Build the MCP streamable HTTP service from app state.
@@ -2832,6 +2977,8 @@ mod tests {
     use futures::StreamExt;
     use tower::ServiceExt;
 
+    #[cfg(feature = "gateway")]
+    use super::stdio_guard_degrades_gateway;
     #[cfg(feature = "fs")]
     use super::workspace_runtime_home_from_env_values;
     use super::{
@@ -2857,9 +3004,11 @@ mod tests {
         let mut config = LabConfig::default();
         config.file_stash.root = Some(stash_root.clone());
 
-        let runtime = initialize_selected_file_stash_runtime(&registry, &config).await;
+        let health = crate::runtime_health::SubsystemHealth::default();
+        let runtime = initialize_selected_file_stash_runtime(&registry, &config, &health).await;
 
         assert!(!stash_root.exists());
+        assert!(health.degraded_codes().is_empty());
         assert!(matches!(
             runtime.status().await,
             crate::file_stash::FileStashStatus::Blocked(_)
@@ -3142,6 +3291,45 @@ mod tests {
         assert!(!stdio_recursion_guard_active(true, None));
         assert!(!stdio_recursion_guard_active(true, Some(0)));
         assert!(stdio_recursion_guard_active(true, Some(1)));
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn stdio_recursion_guard_warns_only_when_upstream_capability_is_expected() {
+        let mut config = LabConfig::default();
+        assert!(!stdio_guard_degrades_gateway(&config, false));
+        assert!(!stdio_guard_degrades_gateway(&config, true));
+
+        config.upstream.push(crate::config::UpstreamConfig {
+            name: "fixture".into(),
+            display_name: None,
+            lifecycle: None,
+            enabled: true,
+            priority: 1.0,
+            url: None,
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
+            bearer_token_env: None,
+            command: None,
+            args: vec![],
+            env: Default::default(),
+            proxy_resources: true,
+            proxy_prompts: true,
+            expose_tools: None,
+            expose_resources: None,
+            expose_prompts: None,
+            proxy_skills: false,
+            expose_skills: None,
+            code_mode_hint: None,
+            oauth: None,
+            imported_from: None,
+        });
+        assert!(stdio_guard_degrades_gateway(&config, true));
+        config.upstream.clear();
+
+        config.gateway_import_mode = crate::config::GatewayImportMode::Pending;
+        assert!(stdio_guard_degrades_gateway(&config, true));
     }
 
     #[test]

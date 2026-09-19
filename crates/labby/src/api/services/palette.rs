@@ -349,7 +349,7 @@ fn append_labby_actions(
         .filter(|service| state.enabled_services.contains(service.name))
     {
         for action in palette_actions(service.name, service.actions) {
-            if !labby_action_visible(state, service.name, action, auth) {
+            if !labby_action_visible(action, auth) {
                 continue;
             }
             let input_schema = labby_action_schema(action);
@@ -502,7 +502,7 @@ fn labby_schema_response(
             sdk_kind: "not_found".to_string(),
             message: format!("launcher entry `{id}` was not found"),
         })?;
-    if !labby_action_visible(state, service_name, action, auth) {
+    if !labby_action_visible(action, auth) {
         return Err(ToolError::Sdk {
             sdk_kind: "not_found".to_string(),
             message: format!("launcher entry `{id}` was not found"),
@@ -541,7 +541,7 @@ async fn execute_labby_action(
             sdk_kind: "not_found".to_string(),
             message: format!("launcher entry `{}` was not found", request.id),
         })?;
-    if !labby_action_visible(&state, service_name, action, Some(auth_context)) {
+    if !labby_action_visible(action, Some(auth_context)) {
         return Err(ApiError::new(ToolError::Sdk {
             sdk_kind: "not_found".to_string(),
             message: format!("launcher entry `{}` was not found", request.id),
@@ -650,22 +650,8 @@ fn parse_labby_launcher_id(id: &str) -> Result<(&str, &str), ToolError> {
     Ok((service, action))
 }
 
-fn labby_action_visible(
-    state: &AppState,
-    service: &str,
-    action: &ActionSpec,
-    auth: Option<&AuthContext>,
-) -> bool {
-    if action_requires_admin(action) && !auth.is_some_and(has_admin_scope) {
-        return false;
-    }
-    if service == "setup"
-        && setup_plugin_lifecycle_action(action.name)
-        && !http_bind_is_loopback(state)
-    {
-        return false;
-    }
-    true
+fn labby_action_visible(action: &ActionSpec, auth: Option<&AuthContext>) -> bool {
+    !action_requires_admin(action) || auth.is_some_and(has_admin_scope)
 }
 
 fn action_requires_admin(action: &ActionSpec) -> bool {
@@ -674,17 +660,6 @@ fn action_requires_admin(action: &ActionSpec) -> bool {
 
 fn has_admin_scope(auth: &AuthContext) -> bool {
     auth.scopes.iter().any(|scope| scope == "lab:admin")
-}
-
-fn setup_plugin_lifecycle_action(action: &str) -> bool {
-    crate::dispatch::setup::PLUGIN_LIFECYCLE_ACTIONS.contains(&action)
-}
-
-fn http_bind_is_loopback(state: &AppState) -> bool {
-    let host = state.http_bind_host.as_deref().map(String::as_str);
-    let host = host.unwrap_or("127.0.0.1");
-    let normalized = host.trim().trim_start_matches('[').trim_end_matches(']');
-    matches!(normalized, "127.0.0.1" | "::1" | "localhost")
 }
 
 fn validate_labby_action_params(action: &ActionSpec, params: &Value) -> Result<(), ToolError> {
@@ -2111,9 +2086,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn palette_catalog_hides_setup_plugin_lifecycle_actions_on_non_loopback_bind() {
-        let mut state = AppState::from_registry(build_default_registry());
-        state.http_bind_host = Some(Arc::new("0.0.0.0".to_string()));
+    async fn palette_catalog_does_not_expose_retired_setup_plugin_lifecycle_actions() {
+        let state = AppState::from_registry(build_default_registry());
         let auth = AuthContext {
             sub: "admin".to_string(),
             actor_key: None,

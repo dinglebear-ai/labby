@@ -103,9 +103,13 @@ fn from_t1(
     binary: ArtifactIdentity,
 ) -> Result<ValidatedReport, String> {
     use verify_core::Verdict;
-    if t1.schema != 1
+    if t1.schema != 2
         || t1.lane != "model_checking"
-        || t1.model != crate::MODEL
+        || t1.models
+            != labby_model::MODELS
+                .iter()
+                .map(|model| (*model).to_owned())
+                .collect::<Vec<_>>()
         || t1.universal_proof
     {
         return Err("input is not a bounded Labby T1 report".into());
@@ -205,10 +209,14 @@ fn from_t0(
     source: SourceIdentity,
     binary: ArtifactIdentity,
 ) -> Result<ValidatedReport, String> {
-    if t0.schema != 1
+    if t0.schema != 2
         || t0.lane != "model_replay"
         || t0.universal_proof
-        || t0.catalog.model != crate::MODEL
+        || t0.catalog.models
+            != labby_model::MODELS
+                .iter()
+                .map(|model| (*model).to_owned())
+                .collect::<Vec<_>>()
         || t0.catalog.project != "labby"
         || t0.reports.is_empty()
         || t0.golden_coverage.is_empty()

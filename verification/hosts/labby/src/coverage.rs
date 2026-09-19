@@ -1,10 +1,24 @@
 use std::{collections::BTreeSet, time::Instant};
 
-use labby_model::{BrowserRequestModel, Step, TerminalOutcome};
+use labby_model::{
+    BrowserRequestModel, CAPABILITY_VISIBILITY_MODEL, CapabilityPhase, CapabilityVisibilityModel,
+    CapabilityVisibilityStep, MODEL, Step, TerminalOutcome,
+};
 use verify_core::{ScenarioTarget, StepOutcome};
 use verify_scenario::ValidatedScenario;
 
 pub(crate) fn has_semantic_witness(
+    scenario: &ValidatedScenario,
+    deadline: Instant,
+) -> Result<bool, &'static str> {
+    match scenario.scenario().model.as_str() {
+        MODEL => browser_request_witness(scenario, deadline),
+        CAPABILITY_VISIBILITY_MODEL => capability_visibility_witness(scenario, deadline),
+        _ => Ok(false),
+    }
+}
+
+fn browser_request_witness(
     scenario: &ValidatedScenario,
     deadline: Instant,
 ) -> Result<bool, &'static str> {
@@ -133,6 +147,39 @@ pub(crate) fn has_semantic_witness(
             .iter()
             .any(|request| owned_completion_requests.contains(request)),
         "LABBY-REQ-005" => !cancelled_before_dispatch.is_empty() && cancelled_request_blocked,
+        _ => false,
+    })
+}
+
+fn capability_visibility_witness(
+    scenario: &ValidatedScenario,
+    deadline: Instant,
+) -> Result<bool, &'static str> {
+    let raw = scenario.scenario();
+    let Ok(steps) = raw
+        .steps
+        .iter()
+        .cloned()
+        .map(serde_json::from_value::<CapabilityVisibilityStep>)
+        .collect::<Result<Vec<_>, _>>()
+    else {
+        return Ok(false);
+    };
+    let model = CapabilityVisibilityModel;
+    let Ok(mut state) = model.init(&serde_json::Value::Object(raw.initial.clone())) else {
+        return Ok(false);
+    };
+    for step in &steps {
+        if Instant::now() >= deadline {
+            return Err("semantic witness deadline exceeded");
+        }
+        if !matches!(model.apply(&mut state, step), Ok(StepOutcome::Applied {})) {
+            return Ok(false);
+        }
+    }
+    Ok(match raw.invariant.as_str() {
+        "LABBY-CAP-001" | "LABBY-CAP-002" | "LABBY-CAP-003" => !state.degraded.is_empty(),
+        "LABBY-CAP-004" => state.phase == CapabilityPhase::Blocked && state.fatal_guard.is_some(),
         _ => false,
     })
 }
