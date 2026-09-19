@@ -226,15 +226,24 @@ export function GatewayHero({
   onLensChange: (lens: GatewayLens) => void
   actions?: React.ReactNode
 }) {
-  const attention = serverStates.filter((server) => !['healthy', 'disabled'].includes(server.state)).length
+  const attention = serverStates.filter((server) => ['disconnected', 'needs attention'].includes(server.state)).length
+  const discovering = serverStates.filter((server) => server.state === 'discovering').length
   const pulseColor =
-    attention > 0 ? 'var(--aurora-warn)' : totalServers > 0 ? 'var(--aurora-success)' : 'var(--aurora-text-muted)'
+    attention > 0
+      ? 'var(--aurora-warn)'
+      : discovering > 0
+        ? 'var(--aurora-accent-strong)'
+        : totalServers > 0
+          ? 'var(--aurora-success)'
+          : 'var(--aurora-text-muted)'
   const pulseLabel =
     totalServers === 0
       ? 'no servers'
       : attention > 0
         ? `${attention} need${attention === 1 ? 's' : ''} attention`
-        : 'all systems nominal'
+        : discovering > 0
+          ? `${discovering} discovering`
+          : 'all systems nominal'
 
   const totalDiscovered =
     discoveredTools + discoveredPrompts + discoveredResources + discoveredSkills
@@ -288,7 +297,7 @@ export function GatewayHero({
             >
               Gateway Control Plane
             </span>
-            <button type="button" onClick={() => onLensChange('attention')} aria-label={`Needs attention: ${attention}`} aria-pressed={!toolsViewActive && activeLens === 'attention'} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: 'none', background: activeLens === 'attention' ? 'var(--aurora-hover-bg)' : 'none', padding: '2px 7px', margin: '-2px -7px', borderRadius: 7, cursor: 'pointer' }}>
+            <button type="button" onClick={() => onLensChange('attention')} aria-label={attention > 0 ? `Needs attention: ${attention}` : `Gateway status: ${pulseLabel}`} aria-pressed={!toolsViewActive && activeLens === 'attention'} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: 'none', background: activeLens === 'attention' ? 'var(--aurora-hover-bg)' : 'none', padding: '2px 7px', margin: '-2px -7px', borderRadius: 7, cursor: 'pointer' }}>
               <span
                 style={{
                   width: 6,

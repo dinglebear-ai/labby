@@ -15,7 +15,31 @@ test('configuration-only gateway loading never hydrates fleet runtime state', ()
   const gateways = [{ id: 'alpha' }] as Parameters<typeof gatewaysRuntimeRequestKey>[2]
   assert.equal(gatewaysRuntimeRequestKey(false, true, gateways), null)
   assert.equal(gatewaysRuntimeRequestKey(true, false, gateways), null)
-  assert.deepEqual(gatewaysRuntimeRequestKey(true, true, gateways), ['/gateways/runtime', '[{"id":"alpha"}]'])
+  assert.deepEqual(gatewaysRuntimeRequestKey(true, true, gateways), ['/gateways/runtime', '[{"id":"alpha","warnings":[]}]'])
+})
+
+test('runtime cache key ignores synthesized warning timestamps but preserves warning meaning', () => {
+  const base = {
+    id: 'alpha',
+    warnings: [{ code: 'prompts_unavailable', message: 'Prompts timed out', timestamp: '2026-09-18T23:00:00Z' }],
+  } as NonNullable<Parameters<typeof gatewaysRuntimeRequestKey>[2]>[number]
+  const laterTimestamp = {
+    ...base,
+    warnings: [{ ...base.warnings[0], timestamp: '2026-09-18T23:00:05Z' }],
+  }
+  const changedWarning = {
+    ...base,
+    warnings: [{ ...base.warnings[0], message: 'Prompts recovered then failed again' }],
+  }
+
+  assert.deepEqual(
+    gatewaysRuntimeRequestKey(true, true, [base]),
+    gatewaysRuntimeRequestKey(true, true, [laterTimestamp]),
+  )
+  assert.notDeepEqual(
+    gatewaysRuntimeRequestKey(true, true, [base]),
+    gatewaysRuntimeRequestKey(true, true, [changedWarning]),
+  )
 })
 
 test('gateway snapshots stay idle until their consumer is enabled', async () => {
