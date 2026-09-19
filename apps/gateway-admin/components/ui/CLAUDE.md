@@ -1,6 +1,6 @@
 # `components/ui/` — shadcn primitive customization rule
 
-These are forked shadcn primitives. Keep them shallow so re-syncing with upstream stays trivial.
+These are Labby's pre-registry customized shadcn primitives. Keep them shallow while they remain in use. Shared Aurora primitives are canonical in the standalone `dinglebear-ai/aurora` registry and install under `components/ui/aurora/*`; new reusable Aurora behavior belongs upstream there, not in a second Labby-only fork. Existing `components/ui/*` primitives may migrate incrementally after their public API and call sites are reconciled.
 
 ## What may be baked into a primitive
 

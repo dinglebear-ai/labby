@@ -573,8 +573,13 @@ Options:
       --public-url <PUBLIC_URL>
           Public browser/OAuth URL for the server
 
+      --auth <AUTH>
+          Server authentication topology. Existing server invocations that pass --oauth google|authelia without --auth keep their historical OAuth + bearer break-glass behavior
+
+          [possible values: bearer, oauth, both]
+
       --oauth <OAUTH>
-          Authentication provider to configure during setup. Bearer remains available as break-glass auth
+          OAuth identity provider to configure during setup. Selects exactly one inbound provider
 
           [possible values: none, google, authelia]
 

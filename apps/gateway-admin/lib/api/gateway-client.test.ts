@@ -898,6 +898,61 @@ test('gatewayApi.hydrateRuntime treats gateway.mcp.list as authoritative runtime
   )
 })
 
+test('gatewayApi.hydrateRuntime does not erase connected warning degradation', async () => {
+  await withGatewayFetch(
+    {
+      'gateway.mcp.list': () => [
+        {
+          name: 'claude-macpoo',
+          enabled: true,
+          connected: true,
+          discovered_tool_count: 25,
+          exposed_tool_count: 25,
+          discovered_resource_count: 0,
+          exposed_resource_count: 0,
+          discovered_prompt_count: 0,
+          exposed_prompt_count: 0,
+        },
+      ],
+    },
+    async () => {
+      const [gateway] = await gatewayApi.hydrateRuntime([
+        {
+          id: 'claude-macpoo',
+          name: 'claude-macpoo',
+          transport: 'stdio',
+          source: 'custom_gateway',
+          configured: true,
+          enabled: true,
+          config: { command: '/usr/bin/ssh' },
+          status: {
+            connected: true,
+            healthy: false,
+            discovered_tool_count: 25,
+            exposed_tool_count: 25,
+            discovered_resource_count: 0,
+            exposed_resource_count: 0,
+            discovered_prompt_count: 0,
+            exposed_prompt_count: 0,
+          },
+          discovery: { tools: [], resources: [], prompts: [] },
+          warnings: [
+            {
+              code: 'prompts_unavailable',
+              message: 'Prompt discovery timed out; tools are unaffected',
+              timestamp: '2026-09-18T23:00:00Z',
+            },
+          ],
+        },
+      ])
+
+      assert.equal(gateway?.status.connected, true)
+      assert.equal(gateway?.status.healthy, false)
+      assert.equal(gateway?.warnings[0]?.code, 'prompts_unavailable')
+    },
+  )
+})
+
 test('gatewayApi.hydrateToolInventory lazily fills tool rows and isolates one server failure', async () => {
   await withGatewayFetch(
     {

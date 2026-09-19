@@ -49,6 +49,8 @@ test('long metric values stay on one line without hiding their full value', () =
 
 test('default hero uses the measured full-screen description and stat strip geometry', () => {
   const markup = renderToStaticMarkup(<ConsoleHero eyebrow="Observe" title="Usage Explorer" description="Reference description" stats={[{ label: 'Matched', value: 3 }]} />)
+  assert.match(markup, /padding:22px 24px 18px/)
+  assert.match(markup, /font-size:30px/)
   assert.match(markup, /margin-top:7px;max-width:560px/)
   assert.match(markup, /padding:11px 12px 12px/)
   assert.match(markup, /background:var\(--gw0-0_30\)/)

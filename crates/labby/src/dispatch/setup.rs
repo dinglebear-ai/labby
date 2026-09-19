@@ -32,6 +32,7 @@ pub use access_bootstrap::{
     cleanup_prepare, complete_prepare, consume_prepare, inspect_prepare, prepare_access_bootstrap,
     recover_prepare, revoke_prepare, status_prepare,
 };
+#[cfg(target_os = "linux")]
 pub(crate) use bootstrap::bootstrap_at;
 pub use bootstrap::{
     BootstrapOutcome, bootstrap, bootstrap_action, ensure_oauth_encryption_key_at, should_bootstrap,

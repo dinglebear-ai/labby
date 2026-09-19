@@ -1,7 +1,7 @@
 ---
 title: "Setup Service"
 created: "2026-08-18"
-updated: "2026-09-15"
+updated: "2026-09-18"
 ---
 
 # Setup Service
@@ -46,7 +46,8 @@ Interactive setup:
 ```bash
 labby setup
 # role: Server
-# authentication: Google OAuth
+# authentication: OAuth + bearer break-glass
+# OAuth provider: Google
 # public URL: https://labby.example.com
 ```
 
@@ -59,6 +60,7 @@ export LABBY_AUTH_ADMIN_EMAIL='operator@example.com'
 
 labby setup \
   --role server \
+  --auth both \
   --oauth google \
   --public-url https://labby.example.com \
   --no-desktop \
@@ -190,7 +192,7 @@ global admin warning surface.
 Bare `labby setup` prompts for a server or client role. Server setup uses a native
 service by default; Linux x86_64 hosts with a reachable Incus daemon can select
 `--deployment incus`. A server binds to `127.0.0.1:8765` unless explicitly changed.
-Google and Authelia configuration require provider credentials and a public URL.
+Server authentication topology is selected independently from the OAuth provider: `--auth bearer` uses only the generated static credential, `--auth oauth` uses OAuth without a static bearer, and `--auth both` uses OAuth plus a generated static bearer break-glass credential. OAuth then selects exactly one inbound provider with `--oauth google|authelia`; Google and Authelia are alternatives, not simultaneous providers. Provider configuration requires credentials, a bootstrap admin email, and a public URL. Existing invocations that pass `--oauth google|authelia` without `--auth` retain the historical OAuth + bearer behavior for compatibility. Switching a server back to bearer-only setup clears the inactive OAuth provider, bootstrap-admin, and provider client credential entries from the protected `.env`.
 Client setup saves the selected gateway URL and uses browser OAuth or a bearer
 token. The optional desktop app is off by default in the interactive prompt;
 `--desktop` or `LABBY_SETUP_DESKTOP=1` selects it. It is downloaded from the
@@ -220,8 +222,14 @@ OAuth client setup requires a browser; `--no-browser` rejects that combination
 before changing configuration. A bearer client can be configured without a browser.
 
 ```bash
-# Inspect a native server setup without changing host state.
-labby setup --role server --oauth none --no-desktop --yes --dry-run
+# Inspect a native bearer-only server setup without changing host state.
+labby setup --role server --auth bearer --oauth none --no-desktop --yes --dry-run
+
+# Inspect OAuth-only Google setup. Provider credentials remain in protected env vars.
+labby setup --role server --auth oauth --oauth google --public-url https://labby.example.com --no-desktop --yes --dry-run
+
+# Preserve OAuth plus the generated static bearer break-glass credential.
+labby setup --role server --auth both --oauth authelia --public-url https://labby.example.com --no-desktop --yes --dry-run
 
 # Connect this machine to an existing OAuth gateway.
 labby setup --role client --server-url https://labby.example.com --oauth google --no-desktop --yes
@@ -234,7 +242,8 @@ The Linux/macOS release installer invokes this same setup flow after verifying
 and installing the binary. This contract requires an installer-bearing release that includes the first-run role interface; public `v1.13.3` predates it and rejects `labby setup --role ...`. The verified installer also requires an attestation-capable, authenticated GitHub CLI; Ubuntu 26.04's packaged `gh 2.46.0` is too old. Verify `gh attestation verify --help` and `gh auth status --hostname github.com` before bootstrap. Unattended callers must select `LABBY_SETUP_ROLE`;
 other shell options include `LABBY_SETUP_DEPLOYMENT`, `LABBY_SETUP_HOST`,
 `LABBY_SETUP_PORT`, `LABBY_SETUP_SERVER_URL`, `LABBY_SETUP_PUBLIC_URL`,
-`LABBY_SETUP_OAUTH`, `LABBY_SETUP_DESKTOP`, and `LABBY_SETUP_NO_BROWSER`.
+`LABBY_SETUP_AUTH`, `LABBY_SETUP_OAUTH`, `LABBY_SETUP_DESKTOP`, and
+`LABBY_SETUP_NO_BROWSER`.
 Provider/client secrets use the normal credential environment variables, not
 command-line arguments. Set `LABBY_INSTALL_NO_SETUP=1` to install only the binary.
 Updates set this flag automatically so they cannot restart onboarding.

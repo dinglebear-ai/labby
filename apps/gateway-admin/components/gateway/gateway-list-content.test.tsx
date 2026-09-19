@@ -4,6 +4,7 @@ import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 import { GatewayListView } from './gateway-list-content'
+import { GatewayHero } from './gateway-hero'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import type { Gateway } from '@/lib/types/gateway'
 
@@ -71,11 +72,11 @@ test('gateway list view renders quick-lens cards and primary actions', () => {
     <SidebarProvider>
       <GatewayListView
         summary={{
-          enabled: 2,
+          enabled: 3,
           healthy: 1,
           disconnected: 1,
           tools: 2,
-          totalServers: 2,
+          totalServers: 3,
           exposedTools: 2,
           discoveredPrompts: 1,
           exposedPrompts: 1,
@@ -86,6 +87,7 @@ test('gateway list view renders quick-lens cards and primary actions', () => {
           serverStates: [
             { id: 'a', name: 'a', color: 'var(--aurora-success)', state: 'healthy' },
             { id: 'b', name: 'b', color: 'var(--aurora-error)', state: 'disconnected' },
+            { id: 'c', name: 'c', color: 'var(--aurora-accent-primary)', state: 'discovering' },
           ],
         }}
         showToolsView={false}
@@ -140,5 +142,63 @@ test('gateway list view renders quick-lens cards and primary actions', () => {
   assert.match(markup, /aria-label="Gateway actions, search and filters"/)
   assert.doesNotMatch(markup, /data-gateway-filters="all-viewports"/)
   assert.match(markup, /aria-label="Reload visible servers"/)
-  assert.match(markup, />2</)
+  assert.match(markup, />3</)
+})
+
+test('gateway hero reports discovery as in progress instead of nominal health', () => {
+  const markup = renderToStaticMarkup(
+    <GatewayHero
+      totalServers={1}
+      healthy={0}
+      enabled={1}
+      disconnected={0}
+      discoveredTools={0}
+      exposedTools={0}
+      discoveredPrompts={0}
+      exposedPrompts={0}
+      discoveredResources={0}
+      exposedResources={0}
+      discoveredSkills={0}
+      exposedSkills={0}
+      serverStates={[
+        { id: 'warming', name: 'warming', color: 'var(--aurora-accent-primary)', state: 'discovering' },
+      ]}
+      activeLens="enabled"
+      toolsViewActive={false}
+      onLensChange={() => {}}
+    />,
+  )
+
+  assert.match(markup, />1 discovering<\/span>/)
+  assert.match(markup, /aria-label="Gateway status: 1 discovering"/)
+  assert.doesNotMatch(markup, /all systems nominal/)
+})
+
+test('gateway hero does not report a disabled-only fleet as nominal', () => {
+  const markup = renderToStaticMarkup(
+    <GatewayHero
+      totalServers={1}
+      healthy={0}
+      enabled={0}
+      disconnected={0}
+      discoveredTools={0}
+      exposedTools={0}
+      discoveredPrompts={0}
+      exposedPrompts={0}
+      discoveredResources={0}
+      exposedResources={0}
+      discoveredSkills={0}
+      exposedSkills={0}
+      serverStates={[
+        { id: 'disabled', name: 'disabled', color: 'var(--aurora-text-muted)', state: 'disabled' },
+      ]}
+      activeLens="configured"
+      toolsViewActive={false}
+      onLensChange={() => {}}
+    />,
+  )
+
+  assert.match(markup, />no active servers<\/span>/)
+  assert.match(markup, /aria-label="Gateway status: no active servers"/)
+  assert.doesNotMatch(markup, /all systems nominal/)
 })

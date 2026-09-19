@@ -13,7 +13,7 @@ use serde_json::json;
 #[cfg(target_os = "linux")]
 use sha2::{Digest as _, Sha256};
 
-use super::{SetupArgs, SetupDeploymentArg, SetupOauthArg, SetupRoleArg};
+use super::{SetupArgs, SetupAuthArg, SetupDeploymentArg, SetupOauthArg, SetupRoleArg};
 use crate::config::env_merge::{self, EnvEntry, MergeRequest};
 use crate::output::{OutputFormat, print};
 
@@ -56,6 +56,7 @@ struct SetupPlan {
     port: u16,
     server_url: Option<String>,
     public_url: Option<String>,
+    server_auth: Option<SetupAuthArg>,
     oauth: Option<OAuthConfig>,
     client_auth: Option<ClientAuth>,
     client_bearer_token: Option<String>,
@@ -303,23 +304,57 @@ fn collect_server_plan(
         None => DEFAULT_PORT,
     };
 
-    let provider = match args.oauth {
+    let server_auth = match args.auth {
         Some(value) => value,
+        // Backwards compatibility: before --auth existed, selecting an OAuth
+        // provider also retained Labby's static bearer break-glass credential.
+        None if matches!(
+            args.oauth,
+            Some(SetupOauthArg::Google | SetupOauthArg::Authelia)
+        ) =>
+        {
+            SetupAuthArg::Both
+        }
         None if interactive => match Select::with_theme(theme)
             .with_prompt("Authentication")
-            .items([
-                "Bearer token — local/CLI clients; not for ChatGPT web",
-                "Google OAuth — required for Labby + ChatGPT web (+ bearer break-glass)",
-                "Authelia OAuth — self-hosted IdP (+ bearer break-glass)",
-            ])
+            .items(["Bearer token", "OAuth only", "OAuth + bearer break-glass"])
             .default(0)
             .interact()?
         {
-            1 => SetupOauthArg::Google,
-            2 => SetupOauthArg::Authelia,
-            _ => SetupOauthArg::None,
+            1 => SetupAuthArg::OAuth,
+            2 => SetupAuthArg::Both,
+            _ => SetupAuthArg::Bearer,
         },
-        None => SetupOauthArg::None,
+        None => SetupAuthArg::Bearer,
+    };
+
+    let provider = match server_auth {
+        SetupAuthArg::Bearer => {
+            if matches!(
+                args.oauth,
+                Some(SetupOauthArg::Google | SetupOauthArg::Authelia)
+            ) {
+                bail!("--auth bearer cannot be combined with --oauth google|authelia");
+            }
+            SetupOauthArg::None
+        }
+        SetupAuthArg::OAuth | SetupAuthArg::Both => match args.oauth {
+            Some(SetupOauthArg::Google) => SetupOauthArg::Google,
+            Some(SetupOauthArg::Authelia) => SetupOauthArg::Authelia,
+            Some(SetupOauthArg::None) => {
+                bail!("--auth oauth|both requires --oauth google|authelia")
+            }
+            None if interactive => match Select::with_theme(theme)
+                .with_prompt("OAuth provider")
+                .items(["Google", "Authelia"])
+                .default(0)
+                .interact()?
+            {
+                1 => SetupOauthArg::Authelia,
+                _ => SetupOauthArg::Google,
+            },
+            None => bail!("OAuth authentication requires --oauth google|authelia"),
+        },
     };
 
     let (public_url, oauth) = match provider {
@@ -415,6 +450,7 @@ fn collect_server_plan(
         port,
         server_url: None,
         public_url,
+        server_auth: Some(server_auth),
         oauth,
         client_auth: None,
         client_bearer_token: None,
@@ -432,6 +468,11 @@ fn collect_client_plan(
     invoking_home: PathBuf,
     invoking_user: Option<String>,
 ) -> Result<SetupPlan> {
+    if args.auth.is_some() {
+        bail!(
+            "--auth configures server authentication topology; client mode selects browser OAuth or bearer with --oauth"
+        )
+    }
     let raw_url = match args.server_url.as_deref() {
         Some(value) => value.to_string(),
         None if interactive => Input::<String>::with_theme(theme)
@@ -491,6 +532,7 @@ fn collect_client_plan(
         port: DEFAULT_PORT,
         server_url: Some(server_url),
         public_url: None,
+        server_auth: None,
         oauth: None,
         client_auth: Some(client_auth),
         client_bearer_token,
@@ -753,7 +795,7 @@ async fn apply_native_server(plan: &SetupPlan) -> Result<serde_json::Value> {
         let outcome = crate::dispatch::setup::host_service::install_self_transaction(&executable)
             .await
             .map_err(|e| anyhow::anyhow!("install Labby system service: {e}"))?;
-        if plan.oauth.is_none() {
+        if matches!(resolved_server_auth(plan), SetupAuthArg::Bearer) {
             // Access stores enforce same-user ownership, including during health
             // inspection. Bootstrap with the installed executable as the service
             // account, then refresh the daemon's cached admission state.
@@ -775,7 +817,7 @@ async fn apply_native_server(plan: &SetupPlan) -> Result<serde_json::Value> {
                 .await
                 .map_err(|e| anyhow::anyhow!("refresh native owner admission: {e}"))?;
         }
-        configure_local_client(plan, &token)?;
+        configure_local_client(plan, token.as_deref())?;
         let desktop = report_desktop_install(plan, &install_desktop);
         return Ok(with_desktop_summary(
             json!({
@@ -796,7 +838,7 @@ async fn apply_native_server(plan: &SetupPlan) -> Result<serde_json::Value> {
     {
         let home_env = plan.invoking_home.join(".labby/.env");
         let token = configure_server_env(&home_env, plan)?;
-        if plan.oauth.is_none() {
+        if matches!(resolved_server_auth(plan), SetupAuthArg::Bearer) {
             bootstrap_static_owner_at(
                 home_env
                     .parent()
@@ -805,7 +847,7 @@ async fn apply_native_server(plan: &SetupPlan) -> Result<serde_json::Value> {
             .await?;
         }
         install_macos_service(plan)?;
-        configure_local_client(plan, &token)?;
+        configure_local_client(plan, token.as_deref())?;
         let desktop = report_desktop_install(plan, &install_desktop);
         return Ok(with_desktop_summary(
             json!({
@@ -846,7 +888,7 @@ async fn apply_incus_server(plan: &SetupPlan, format: OutputFormat) -> Result<se
     // keeping immutable image bytes free of user secrets.
     let token = configure_incus_server(plan)?;
     converge_incus_publish("labby", &plan.host, plan.port)?;
-    configure_local_client(plan, &token)?;
+    configure_local_client(plan, token.as_deref())?;
     let desktop = report_desktop_install(plan, &install_desktop);
     Ok(with_desktop_summary(
         json!({
@@ -982,7 +1024,7 @@ fn ensure_release_incus_image() -> Result<String> {
 }
 
 #[cfg(target_os = "linux")]
-fn configure_incus_server(plan: &SetupPlan) -> Result<String> {
+fn configure_incus_server(plan: &SetupPlan) -> Result<Option<String>> {
     const CONTAINER: &str = "labby";
     const REMOTE_ENV: &str = "/home/labby/.labby/.env";
 
@@ -1035,7 +1077,7 @@ fn configure_incus_server(plan: &SetupPlan) -> Result<String> {
         ],
         "protect Incus access state directory",
     )?;
-    if plan.oauth.is_none() {
+    if matches!(resolved_server_auth(plan), SetupAuthArg::Bearer) {
         run_status(
             "incus",
             &[
@@ -1212,8 +1254,18 @@ pub(super) async fn bootstrap_static_owner_at(root: &Path) -> Result<()> {
     }
 }
 
+fn resolved_server_auth(plan: &SetupPlan) -> SetupAuthArg {
+    plan.server_auth.unwrap_or_else(|| {
+        if plan.oauth.is_some() {
+            SetupAuthArg::Both
+        } else {
+            SetupAuthArg::Bearer
+        }
+    })
+}
+
 #[cfg(any(test, target_os = "linux", target_os = "macos"))]
-fn configure_server_env(path: &Path, plan: &SetupPlan) -> Result<String> {
+fn configure_server_env(path: &Path, plan: &SetupPlan) -> Result<Option<String>> {
     // The access store requires an owner-only state directory. Environment
     // merges protect individual files but create new parents with the umask.
     let root = path.parent().context("server environment has no parent")?;
@@ -1224,15 +1276,28 @@ fn configure_server_env(path: &Path, plan: &SetupPlan) -> Result<String> {
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(paths.root(), std::fs::Permissions::from_mode(0o700))?;
     }
-    if !path.exists() {
-        crate::dispatch::setup::bootstrap_at(path)
-            .map_err(|e| anyhow::anyhow!("bootstrap server credentials: {e}"))?;
+    // Do not run the generic bearer bootstrap here. This function already
+    // owns the complete server environment plan, and OAuth-only setup must
+    // never mint a throwaway static credential just to clear it immediately.
+    // env_merge creates a missing .env with the same owner-only guarantees.
+    let auth = resolved_server_auth(plan);
+    match (auth, plan.oauth.as_ref()) {
+        (SetupAuthArg::Bearer, None) | (SetupAuthArg::OAuth | SetupAuthArg::Both, Some(_)) => {}
+        (SetupAuthArg::Bearer, Some(_)) => {
+            bail!("bearer-only server plan cannot contain an OAuth provider")
+        }
+        (SetupAuthArg::OAuth | SetupAuthArg::Both, None) => {
+            bail!("OAuth server plan requires exactly one OAuth provider")
+        }
     }
-    let token = read_env(path, "LABBY_MCP_HTTP_TOKEN")
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(crate::dispatch::setup::generate_mcp_token);
+
+    let token = matches!(auth, SetupAuthArg::Bearer | SetupAuthArg::Both).then(|| {
+        read_env(path, "LABBY_MCP_HTTP_TOKEN")
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(crate::dispatch::setup::generate_mcp_token)
+    });
     let mut entries = vec![
-        EnvEntry::new("LABBY_MCP_HTTP_TOKEN", token.clone()).force(),
+        EnvEntry::new("LABBY_MCP_HTTP_TOKEN", token.as_deref().unwrap_or("")).force(),
         EnvEntry::new("LABBY_MCP_TRANSPORT", "http").force(),
         EnvEntry::new("LABBY_MCP_HTTP_HOST", plan.host.clone()).force(),
         EnvEntry::new("LABBY_MCP_HTTP_PORT", plan.port.to_string()).force(),
@@ -1241,7 +1306,16 @@ fn configure_server_env(path: &Path, plan: &SetupPlan) -> Result<String> {
         entries.push(EnvEntry::new("LABBY_PUBLIC_URL", public_url).force());
     }
     match plan.oauth.as_ref() {
-        None => entries.push(EnvEntry::new("LABBY_AUTH_MODE", "bearer").force()),
+        None => entries.extend([
+            EnvEntry::new("LABBY_AUTH_MODE", "bearer").force(),
+            EnvEntry::new("LABBY_AUTH_PROVIDER", "").force(),
+            EnvEntry::new("LABBY_AUTH_ADMIN_EMAIL", "").force(),
+            EnvEntry::new("LABBY_GOOGLE_CLIENT_ID", "").force(),
+            EnvEntry::new("LABBY_GOOGLE_CLIENT_SECRET", "").force(),
+            EnvEntry::new("LABBY_AUTHELIA_ISSUER_URL", "").force(),
+            EnvEntry::new("LABBY_AUTHELIA_CLIENT_ID", "").force(),
+            EnvEntry::new("LABBY_AUTHELIA_CLIENT_SECRET", "").force(),
+        ]),
         Some(OAuthConfig::Google {
             client_id,
             client_secret,
@@ -1283,14 +1357,14 @@ fn configure_server_env(path: &Path, plan: &SetupPlan) -> Result<String> {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn configure_local_client(plan: &SetupPlan, token: &str) -> Result<()> {
+fn configure_local_client(plan: &SetupPlan, token: Option<&str>) -> Result<()> {
     let env = plan.invoking_home.join(".labby/.env");
     let server = format!("http://127.0.0.1:{}", plan.port);
     merge_env(
         &env,
         vec![
             EnvEntry::new("LABBY_SERVER_URL", server).force(),
-            EnvEntry::new("LABBY_MCP_HTTP_TOKEN", token).force(),
+            EnvEntry::new("LABBY_MCP_HTTP_TOKEN", token.unwrap_or("")).force(),
         ],
     )?;
     if is_unix_root()
@@ -1519,6 +1593,7 @@ fn redacted_plan(plan: &SetupPlan) -> serde_json::Value {
         "port": plan.port,
         "server_url": plan.server_url,
         "public_url": plan.public_url,
+        "server_auth": plan.server_auth,
         "oauth": plan.oauth.as_ref().map(|provider| match provider { OAuthConfig::Google { .. } => "google", OAuthConfig::Authelia { .. } => "authelia" }),
         "client_auth": plan.client_auth,
         "install_desktop": plan.install_desktop,
@@ -1553,6 +1628,7 @@ mod tests {
             port: DEFAULT_PORT,
             server_url: None,
             public_url: None,
+            server_auth: Some(SetupAuthArg::Bearer),
             oauth: None,
             client_auth: None,
             client_bearer_token: None,
@@ -1611,6 +1687,7 @@ mod tests {
             port: DEFAULT_PORT,
             server_url: Some("http://127.0.0.1:8765".into()),
             public_url: None,
+            server_auth: None,
             oauth: None,
             client_auth: Some(ClientAuth::Bearer),
             client_bearer_token: Some("client-token".into()),
@@ -1761,6 +1838,162 @@ mod tests {
         );
     }
 
+    #[test]
+    fn oauth_only_server_env_clears_static_bearer() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let mut plan = server_plan(root.clone());
+        plan.server_auth = Some(SetupAuthArg::OAuth);
+        plan.public_url = Some("https://labby.example.com".into());
+        plan.oauth = Some(OAuthConfig::Google {
+            client_id: "client-id".into(),
+            client_secret: "client-secret".into(),
+            admin_email: "admin@example.com".into(),
+        });
+
+        let token = configure_server_env(&root.join(".env"), &plan).unwrap();
+        assert!(token.is_none());
+        assert_eq!(
+            read_env(&root.join(".env"), "LABBY_AUTH_MODE").as_deref(),
+            Some("oauth")
+        );
+        assert_eq!(
+            read_env(&root.join(".env"), "LABBY_AUTH_PROVIDER").as_deref(),
+            Some("google")
+        );
+        assert_eq!(
+            read_env(&root.join(".env"), "LABBY_MCP_HTTP_TOKEN").as_deref(),
+            Some("")
+        );
+        for entry in std::fs::read_dir(&root).unwrap().filter_map(Result::ok) {
+            let name = entry.file_name();
+            if name.to_string_lossy().starts_with(".env.bak.") {
+                assert_eq!(
+                    read_env(&entry.path(), "LABBY_MCP_HTTP_TOKEN").as_deref(),
+                    Some(""),
+                    "fresh OAuth-only setup must never retain a generated bearer in its backup"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn client_plan_refuses_server_auth_topology() {
+        let args = SetupArgs {
+            role: Some(SetupRoleArg::Client),
+            auth: Some(SetupAuthArg::OAuth),
+            server_url: Some("https://labby.example.com".into()),
+            yes: true,
+            ..SetupArgs::default()
+        };
+        let error = collect_client_plan(
+            &args,
+            false,
+            &ColorfulTheme::default(),
+            PathBuf::from("/tmp/operator"),
+            Some("operator".into()),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("server authentication topology"));
+    }
+
+    #[test]
+    fn oauth_plus_bearer_server_env_generates_break_glass_token() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let mut plan = server_plan(root.clone());
+        plan.server_auth = Some(SetupAuthArg::Both);
+        plan.public_url = Some("https://labby.example.com".into());
+        plan.oauth = Some(OAuthConfig::Google {
+            client_id: "client-id".into(),
+            client_secret: "client-secret".into(),
+            admin_email: "admin@example.com".into(),
+        });
+
+        let token = configure_server_env(&root.join(".env"), &plan)
+            .unwrap()
+            .expect("break-glass token");
+        assert_eq!(token.len(), 64);
+        assert_eq!(
+            read_env(&root.join(".env"), "LABBY_MCP_HTTP_TOKEN").as_deref(),
+            Some(token.as_str())
+        );
+        assert_eq!(
+            read_env(&root.join(".env"), "LABBY_AUTH_MODE").as_deref(),
+            Some("oauth")
+        );
+    }
+
+    #[test]
+    fn switching_server_from_oauth_to_bearer_clears_provider_credentials() {
+        for (provider, oauth) in [
+            (
+                "google",
+                OAuthConfig::Google {
+                    client_id: "google-client-id".into(),
+                    client_secret: "google-client-secret".into(),
+                    admin_email: "google-admin@example.com".into(),
+                },
+            ),
+            (
+                "authelia",
+                OAuthConfig::Authelia {
+                    issuer_url: "https://auth.example.com".into(),
+                    client_id: "authelia-client-id".into(),
+                    client_secret: "authelia-client-secret".into(),
+                    admin_email: "authelia-admin@example.com".into(),
+                },
+            ),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path().canonicalize().unwrap();
+            let env = root.join(".env");
+            let mut oauth_plan = server_plan(root.clone());
+            oauth_plan.server_auth = Some(SetupAuthArg::OAuth);
+            oauth_plan.public_url = Some("https://labby.example.com".into());
+            oauth_plan.oauth = Some(oauth);
+            configure_server_env(&env, &oauth_plan).unwrap();
+            assert_eq!(
+                read_env(&env, "LABBY_AUTH_PROVIDER").as_deref(),
+                Some(provider)
+            );
+
+            let token = configure_server_env(&env, &server_plan(root.clone()))
+                .unwrap()
+                .expect("bearer token");
+            assert_eq!(token.len(), 64);
+            assert_eq!(read_env(&env, "LABBY_AUTH_MODE").as_deref(), Some("bearer"));
+            for key in [
+                "LABBY_AUTH_PROVIDER",
+                "LABBY_AUTH_ADMIN_EMAIL",
+                "LABBY_GOOGLE_CLIENT_ID",
+                "LABBY_GOOGLE_CLIENT_SECRET",
+                "LABBY_AUTHELIA_ISSUER_URL",
+                "LABBY_AUTHELIA_CLIENT_ID",
+                "LABBY_AUTHELIA_CLIENT_SECRET",
+            ] {
+                assert_eq!(
+                    read_env(&env, key).as_deref(),
+                    Some(""),
+                    "{key} must be cleared when OAuth is disabled"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_oauth_plan_resolves_to_both_for_compatibility() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut plan = server_plan(directory.path().to_path_buf());
+        plan.server_auth = None;
+        plan.oauth = Some(OAuthConfig::Google {
+            client_id: "id".into(),
+            client_secret: "secret".into(),
+            admin_email: "admin@example.com".into(),
+        });
+        assert_eq!(resolved_server_auth(&plan), SetupAuthArg::Both);
+    }
+
     #[tokio::test]
     async fn fresh_nested_server_root_supports_durable_owner_bootstrap() {
         let directory = tempfile::tempdir().unwrap();
@@ -1897,6 +2130,7 @@ esac
             port: 9123,
             server_url: None,
             public_url: None,
+            server_auth: Some(SetupAuthArg::Bearer),
             oauth: None,
             client_auth: None,
             client_bearer_token: None,
