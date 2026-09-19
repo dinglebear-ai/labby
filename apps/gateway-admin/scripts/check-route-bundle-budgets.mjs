@@ -18,7 +18,13 @@ async function compressedInitialRouteBytes(output) {
   )
   let total = 0
   for (const source of sources) {
-    const relative = source.replace(/^\/_next\//, '')
+    // Next may emit absolute chunk URLs when an assetPrefix/CDN is configured.
+    // Bundle accounting still reads the local build artifact, so normalize the
+    // source through URL parsing and strip the stable /_next/ mount point.
+    const pathname = new URL(source, 'https://labby.invalid').pathname
+    const nextMount = pathname.indexOf('/_next/')
+    if (nextMount === -1) throw new Error(`Initial script does not use the Next.js asset mount: ${source}`)
+    const relative = pathname.slice(nextMount + '/_next/'.length)
     const body = await readFile(path.join(appRoot, '.next', relative))
     total += gzipSync(body).byteLength
   }

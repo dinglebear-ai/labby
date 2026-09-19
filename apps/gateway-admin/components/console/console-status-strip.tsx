@@ -186,12 +186,13 @@ export function ConsoleStatusContent({ state }: { state: ConsoleStatusState }): 
   }
 }
 
-export function useConsoleStatus() {
+export function useConsoleStatus(enabled = true): ConsoleStatusState {
   const session = useBrowserSession()
   const identity = session.status === 'authenticated' ? authorityIdentity(session.authority) : session.status
   const [result, setResult] = React.useState<{ identity: string; state: ConsoleStatusState }>({ identity, state: { kind: 'loading' } })
 
   React.useEffect(() => {
+    if (!enabled) return
     const controller = new AbortController()
     let timer: ReturnType<typeof setTimeout> | undefined
     const refresh = async () => {
@@ -206,8 +207,9 @@ export function useConsoleStatus() {
     }
     void refresh()
     return () => { controller.abort(); clearTimeout(timer) }
-  }, [identity])
+  }, [enabled, identity])
 
+  if (!enabled) return { kind: 'unauthorized' }
   return result.identity === identity ? result.state : { kind: 'loading' } as ConsoleStatusState
 }
 
