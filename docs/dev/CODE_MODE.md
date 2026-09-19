@@ -121,6 +121,32 @@ Semantic embeddings are built over the rendered catalog generically, and
 semantic ranking applies the same visibility and kind filters as lexical
 search.
 
+### Capability catalog
+
+Code Mode discovery is represented by a source-neutral `CatalogDescriptor`,
+not a tool-specific descriptor. The catalog vocabulary is intentionally broader
+than the capabilities populated today:
+
+- `tool`
+- `snippet`
+- `resource`
+- `prompt`
+- `skill`
+- `agent`
+
+This slice only populates the existing `tool` and `snippet` sources. The
+other kinds reserve stable discovery/filter vocabulary for later adapters; they
+do **not** add resource, prompt, Skill, or agent loading/execution behavior.
+Synthetic/future metadata kinds are describable without inheriting Tool
+dispatch or TypeScript-schema fetch behavior.
+
+Catalog membership is discovery metadata, not authorization. Tool execution is
+still checked against the current `ToolScope` at dispatch time, and a
+`kinds` search filter only narrows results. It never grants a capability.
+Semantic embeddings are built over the rendered catalog generically, and
+semantic ranking applies the same visibility and kind filters as lexical
+search.
+
 Resource reads use the same route and caller scoping as Code Mode tool calls.
 Native `ui://` widget resources are also supported when the owning upstream is
 visible to the current run.

@@ -573,6 +573,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn future_catalog_kinds_participate_in_embedding_identity() {
+        let tool = CatalogDescriptor::tool("fixture", "query", "Shared text", None, None);
+        let mut skill = CatalogDescriptor::tool("labby", "review", "Shared text", None, None);
+        skill.kind = labby_codemode::CodeModeCatalogKind::Skill;
+        skill.id = "skill::labby::review".to_string();
+
+        assert_ne!(
+            rendered_embedding_corpus_fingerprint(std::slice::from_ref(&tool)),
+            rendered_embedding_corpus_fingerprint(&[tool, skill])
+        );
+    }
+
     #[tokio::test]
     async fn metadata_name_and_tags_invalidate_render_identity() {
         let dir = tempfile::tempdir().expect("temporary config root");
@@ -605,19 +618,6 @@ mod tests {
             .expect("second render");
 
         assert_ne!(first_render.fingerprint, second_render.fingerprint);
-    }
-
-    #[test]
-    fn future_catalog_kinds_participate_in_embedding_identity() {
-        let tool = CatalogDescriptor::tool("fixture", "query", "Shared text", None, None);
-        let mut skill = CatalogDescriptor::tool("labby", "review", "Shared text", None, None);
-        skill.kind = labby_codemode::CodeModeCatalogKind::Skill;
-        skill.id = "skill::labby::review".to_string();
-
-        assert_ne!(
-            rendered_embedding_corpus_fingerprint(std::slice::from_ref(&tool)),
-            rendered_embedding_corpus_fingerprint(&[tool, skill])
-        );
     }
 
     #[tokio::test]
