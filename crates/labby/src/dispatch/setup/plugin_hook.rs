@@ -520,7 +520,7 @@ fn resolve_connectivity_target(
     plugin_target
         .filter(|value| !value.trim().is_empty())
         .or_else(|| product_target.filter(|value| !value.trim().is_empty()))
-        .unwrap_or("http://localhost:40100")
+        .unwrap_or("http://127.0.0.1:8765")
         .to_string()
 }
 
@@ -833,11 +833,11 @@ mod tests {
         );
         assert_eq!(
             resolve_connectivity_target(Some(""), Some("")),
-            "http://localhost:40100"
+            "http://127.0.0.1:8765"
         );
         assert_eq!(
             resolve_connectivity_target(None, None),
-            "http://localhost:40100"
+            "http://127.0.0.1:8765"
         );
     }
 
@@ -972,7 +972,7 @@ mod tests {
     }
 
     #[test]
-    fn plugin_manifest_defaults_to_dookie_host_proxy() {
+    fn plugin_manifest_defaults_to_standard_loopback_server() {
         let manifest: serde_json::Value = serde_json::from_str(include_str!(
             "../../../../../plugins/labby/.claude-plugin/plugin.json"
         ))
@@ -980,7 +980,7 @@ mod tests {
 
         assert_eq!(
             manifest["userConfig"]["server_url"]["default"],
-            "http://localhost:40100"
+            "http://127.0.0.1:8765"
         );
     }
 

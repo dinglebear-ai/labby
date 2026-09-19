@@ -1,7 +1,7 @@
 ---
 title: "HTTP Auth Modes"
 created: "2026-07-30"
-updated: "2026-09-16"
+updated: "2026-09-18"
 ---
 
 # HTTP Auth Modes
@@ -14,6 +14,16 @@ Labby supports two HTTP auth modes:
   Run Labby's authorization server with exactly one inbound human identity
   provider: Google (stable) or Authelia OpenID Connect (open beta). Labby
   issues its own JWT access tokens and exposes JWKS plus RFC 9728 metadata.
+
+The first-run setup layer exposes three operator-facing topologies on top of those two runtime modes:
+
+| Setup topology | CLI | Runtime representation |
+|---|---|---|
+| Bearer only | `--auth bearer --oauth none` | `LABBY_AUTH_MODE=bearer` with a generated `LABBY_MCP_HTTP_TOKEN` |
+| OAuth only | `--auth oauth --oauth google|authelia` | `LABBY_AUTH_MODE=oauth` with no static bearer |
+| OAuth + bearer | `--auth both --oauth google|authelia` | `LABBY_AUTH_MODE=oauth` plus a generated static bearer break-glass credential |
+
+Existing setup calls that specify `--oauth google|authelia` but omit `--auth` resolve to OAuth + bearer for backwards compatibility. OAuth selects exactly one inbound provider; Google and Authelia cannot both be active on the same instance.
 
 This document covers mode selection, startup behavior, registration and token flow, JWT validation, and operator-facing constraints.
 For the complete generated route/auth matrix, see
@@ -28,7 +38,7 @@ OAuth mode is configured through env vars and/or `config.toml`. Env vars take pr
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `LABBY_AUTH_MODE` | no | `bearer` or `oauth`. Defaults to `bearer`. |
-| `LABBY_MCP_HTTP_TOKEN` | bearer mode | Static bearer token for protected HTTP routes. |
+| `LABBY_MCP_HTTP_TOKEN` | bearer mode or OAuth + bearer | Static bearer token for protected HTTP routes. Leave unset/empty for an OAuth-only deployment. |
 | `LABBY_TOKEN_ENCRYPTION_KEY` | oauth mode | 32-byte key encoded as 64 hex digits or 43 base64url characters; encrypts reusable Google provider credentials and local refresh replay responses in `auth.db`. |
 | `LABBY_PUBLIC_URL` | oauth mode | Public base URL for metadata and JWT issuer/audience. It also supplies the Google callback base unless `LABBY_GOOGLE_CALLBACK_URL` is set. Path-prefixed deployments are supported. |
 | `LABBY_GOOGLE_CLIENT_ID` | Google provider | Google OAuth client ID. |
@@ -1242,8 +1252,9 @@ sets `readOnlyHint: true` without a contradictory `destructiveHint: true`.
 `codemode` and the optional `codemode_ui` require `lab` or `lab:admin` and retain
 full execution authority. On the root gateway, the always-available `mcp_app`
 control tool uses the same read/open scopes, while changing Labby-owned app
-visibility requires `lab:admin`. Its own manager UI is opt-in like every other
-Labby-owned app surface. The control tool is omitted from protected subset routes
+visibility requires `lab:admin`. Fresh installs expose its manager UI by default;
+an operator can disable that UI resource without removing the control tool. The
+control tool is omitted from protected subset routes
 so a subset-scoped token cannot mutate gateway-global UI visibility.
 
 Gateway management actions on a protected `gateway_subset` route are bounded

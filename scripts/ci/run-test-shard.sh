@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Run one shard of the workspace test suite for the `test` job in ci.yml.
 #
-# Shards select Cargo targets rather than nextest filters: nextest compiles
-# every selected target before it filters tests, so a hash partition over the
-# whole workspace would still link all of `crates/labby/tests` on every
-# runner. Keeping the target set small is what lets the pool finish a shard in
-# a few minutes instead of one runner spending 40 minutes on everything.
+# Shards select a small Cargo target set first: nextest compiles every selected
+# target before applying test filters, so a hash partition over the whole
+# workspace would still link all of `crates/labby/tests` on every runner. The
+# integration shards apply one additional filter only to de-duplicate shared
+# support-harness tests after the target set is bounded.
 set -euo pipefail
 
 shard="${1:-}"
@@ -56,7 +56,13 @@ case "$shard" in
       fi
     done
     [ "${#targets[@]}" -gt 0 ] || { echo "shard $shard selected no targets" >&2; exit 1; }
-    cargo nextest run -p labby "${common[@]}" "${targets[@]}"
+    # `support/live_labby.rs` is embedded into many integration binaries, so its
+    # internal harness tests would otherwise run once per binary. Execute those
+    # shared tests only in the dedicated live_process_harness target; every
+    # binary's actual product tests still run normally. This removes duplicate
+    # process supervisors and keeps the shard fast without weakening coverage.
+    cargo nextest run -p labby "${common[@]}" "${targets[@]}" \
+      -E 'not test(live_labby::) | binary(=live_process_harness)'
     ;;
   crates)
     # Integration tests of the extracted crates, then the workspace doctests

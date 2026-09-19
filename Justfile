@@ -71,6 +71,18 @@ docs-check:
     python3 scripts/check-depot-control-plane-contract.py
     python3 -m unittest scripts/ci/test_depot_control_plane_contract.py
 
+# Inspect an item from the canonical standalone Aurora shadcn registry.
+aurora-view item="aurora-base":
+    npx -y shadcn@latest view "@aurora/{{item}}" -c apps/gateway-admin
+
+# Preview a canonical Aurora primitive/block without applying it to Labby.
+aurora-preview item="button":
+    npx -y shadcn@latest add "@aurora/aurora-{{item}}" --diff -c apps/gateway-admin
+
+# Validate Labby's portable DESIGN.md contract.
+design-check:
+    npx -y -p @google/design.md designmd lint DESIGN.md
+
 # Build strict Rustdoc for the complete workspace target surface.
 rustdoc:
     #!/usr/bin/env bash
