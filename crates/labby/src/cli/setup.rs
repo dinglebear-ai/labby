@@ -74,7 +74,11 @@ pub struct SetupArgs {
     #[arg(long)]
     pub public_url: Option<String>,
 
-    /// Authentication provider to configure during setup. Bearer remains available as break-glass auth.
+    /// Server authentication topology. Existing server invocations that pass --oauth google|authelia without --auth keep their historical OAuth + bearer break-glass behavior.
+    #[arg(long, value_enum)]
+    pub auth: Option<SetupAuthArg>,
+
+    /// OAuth identity provider to configure during setup. Selects exactly one inbound provider.
     #[arg(long, value_enum)]
     pub oauth: Option<SetupOauthArg>,
 
@@ -128,6 +132,7 @@ impl Default for SetupArgs {
             port: None,
             server_url: None,
             public_url: None,
+            auth: None,
             oauth: None,
             desktop: false,
             no_desktop: false,
@@ -154,6 +159,16 @@ pub enum SetupRoleArg {
 pub enum SetupDeploymentArg {
     Native,
     Incus,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SetupAuthArg {
+    Bearer,
+    #[value(name = "oauth")]
+    #[serde(rename = "oauth")]
+    OAuth,
+    Both,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -212,7 +227,7 @@ pub enum SetupCommand {
     /// Validate connectivity to the lab MCP server.
     PluginConnectivity {
         /// Requested server URL; it must match the active plugin, persisted, or
-        /// http://localhost:40100 host-proxy target.
+        /// standard http://127.0.0.1:8765 loopback target.
         #[arg(long)]
         server_url: Option<String>,
     },
@@ -1612,6 +1627,19 @@ mod tests {
         assert!(!args.provision);
         assert!(!args.dry_run);
         assert!(args.yes);
+    }
+
+    #[test]
+    fn parses_setup_auth_topology_and_oauth_provider_separately() {
+        let cli = crate::cli::Cli::try_parse_from([
+            "labby", "setup", "--role", "server", "--auth", "oauth", "--oauth", "google", "--yes",
+        ])
+        .unwrap();
+        let crate::cli::Command::Setup(args) = cli.command else {
+            panic!("expected setup command");
+        };
+        assert_eq!(args.auth, Some(SetupAuthArg::OAuth));
+        assert_eq!(args.oauth, Some(SetupOauthArg::Google));
     }
 
     #[test]

@@ -17,5 +17,8 @@
     "lib": "@/lib",
     "hooks": "@/hooks"
   },
+  "registries": {
+    "@aurora": "https://raw.githubusercontent.com/dinglebear-ai/aurora/main/public/r/{name}.json"
+  },
   "iconLibrary": "lucide"
 }
