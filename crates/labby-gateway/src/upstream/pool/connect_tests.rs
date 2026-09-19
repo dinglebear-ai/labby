@@ -17,7 +17,8 @@ use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 use labby_auth::upstream::cache::OauthClientCache;
 use labby_runtime::gateway_config::{
-    UpstreamConfig, UpstreamOauthConfig, UpstreamOauthMode, UpstreamOauthRegistration,
+    UpstreamConfig, UpstreamLifecycle, UpstreamOauthConfig, UpstreamOauthMode,
+    UpstreamOauthRegistration,
 };
 
 use super::UpstreamPool;
@@ -773,6 +774,115 @@ async fn http_header_mismatch_refreshes_rmcp_schema_cache_and_mcp_param_header()
     );
 }
 
+#[derive(Clone, Default)]
+struct DirectStatelessResponder {
+    discover_requests: Arc<AtomicUsize>,
+    list_tools_requests: Arc<AtomicUsize>,
+    tool_calls: Arc<AtomicUsize>,
+}
+
+impl Respond for DirectStatelessResponder {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body).expect("valid JSON-RPC request");
+        let method = body
+            .get("method")
+            .and_then(Value::as_str)
+            .expect("JSON-RPC method");
+        let id = body.get("id").cloned().unwrap_or(Value::Null);
+
+        match method {
+            "server/discover" => {
+                self.discover_requests.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(405).set_body_string("Method Not Allowed")
+            }
+            "tools/list" => {
+                self.list_tools_requests.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "tools": [{
+                            "name": "search",
+                            "description": "Finds exactly what you're looking for",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "query": {"type": "string"}
+                                },
+                                "required": ["query"]
+                            }
+                        }]
+                    }
+                }))
+            }
+            "tools/call" => {
+                self.tool_calls.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "content": [{
+                            "type": "text",
+                            "text": "QUASAR-LANTERN-917 retrieved"
+                        }],
+                        "isError": false
+                    }
+                }))
+            }
+            other => ResponseTemplate::new(500)
+                .set_body_string(format!("unexpected MCP method: {other}")),
+        }
+    }
+}
+
+#[tokio::test]
+async fn direct_stateless_http_skips_discovery_and_proxies_tools() {
+    let server = MockServer::start().await;
+    let responder = DirectStatelessResponder::default();
+    Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/mcp"))
+        .respond_with(responder.clone())
+        .mount(&server)
+        .await;
+
+    let mut config = test_upstream_config();
+    config.name = "direct-stateless-http".to_string();
+    config.url = Some(format!("{}/mcp", server.uri()));
+    config.lifecycle = Some(UpstreamLifecycle::DirectStateless);
+
+    let (connection, tools) = connect_http_upstream(
+        config.url.as_deref().expect("url"),
+        &config,
+        None,
+        None,
+        None,
+        (),
+    )
+    .await
+    .expect("direct stateless upstream connects");
+
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name, "search");
+    assert_eq!(responder.discover_requests.load(Ordering::SeqCst), 0);
+    assert_eq!(responder.list_tools_requests.load(Ordering::SeqCst), 1);
+
+    let mut params = rmcp::model::CallToolRequestParams::new("search");
+    params.arguments = Some(serde_json::Map::from_iter([(
+        "query".to_string(),
+        Value::String("QUASAR-LANTERN-917".to_string()),
+    )]));
+    let response = connection
+        .peer
+        .call_tool_once(params)
+        .await
+        .expect("direct stateless tools/call succeeds");
+
+    assert!(matches!(
+        response,
+        rmcp::model::CallToolResponse::Complete(_)
+    ));
+    assert_eq!(responder.tool_calls.load(Ordering::SeqCst), 1);
+}
 #[tokio::test]
 async fn http_upstream_does_not_downgrade_generic_server_failures() {
     let server = MockServer::start().await;

@@ -141,8 +141,13 @@ response-limit, health, and reprobe policies as other gateway transports. See
   The gateway-to-upstream boundary attempts `server/discover` first
   and performs one bounded fallback to legacy `initialize` for recognized
   lifecycle-compatibility failures; HTTP/TCP, Unix-socket, and stdio upstreams
-  share that policy. A stdio child that exits before answering the probe is
-  reported as a startup failure, not respawned as a legacy server.
+  share that policy. HTTP and Unix-socket upstreams may instead opt into
+  `lifecycle = "direct_stateless"`: Labby answers the discovery exchange
+  locally, then forwards self-contained 2026-07-28 requests unchanged. This is
+  intended for direct-call stateless servers that reject `server/discover` but
+  implement normal methods such as `tools/list` and `tools/call`. A stdio child
+  that exits before answering the probe is reported as a startup failure, not
+  respawned as a legacy server.
 - Protected MCP routes validate route-specific OAuth resources and scopes.
 - OAuth metadata and callback routes are public by protocol design.
 - Browser session cookies are separate from MCP authorization headers.

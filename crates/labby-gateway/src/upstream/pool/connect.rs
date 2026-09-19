@@ -572,8 +572,10 @@ async fn connect_unix_socket_upstream_once<H: ClientHandler>(
     })?;
     let mut transport_config = StreamableHttpClientTransportConfig::with_uri(request_uri);
     transport_config.custom_headers = configured_custom_headers(config)?;
-    let socket_client =
-        LabbyUnixSocketHttpClient::new(socket_path, url, max_transport_response_bytes());
+    let socket_client = http_client::DirectStatelessHttpClient::new(
+        LabbyUnixSocketHttpClient::new(socket_path, url, max_transport_response_bytes()),
+        config.lifecycle == Some(UpstreamLifecycle::DirectStateless),
+    );
 
     let service = if config.oauth.is_some() {
         let subject = subject.ok_or_else(|| {
@@ -938,8 +940,10 @@ async fn connect_http_upstream_once<H: ClientHandler>(
 
     // Wrap in BodyCappedHttpClient so both the OAuth and non-OAuth paths
     // enforce the streaming response-size cap (P-H4).
-    let capped =
-        http_client::BodyCappedHttpClient::new(base_client, max_transport_response_bytes());
+    let capped = http_client::DirectStatelessHttpClient::new(
+        http_client::BodyCappedHttpClient::new(base_client, max_transport_response_bytes()),
+        config.lifecycle == Some(UpstreamLifecycle::DirectStateless),
+    );
 
     // OAuth path: when the upstream declares oauth config, build an AuthClient.
     if config.oauth.is_some() {

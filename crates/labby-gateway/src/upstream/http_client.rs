@@ -610,6 +610,155 @@ fn chunk_contains_event_boundary(chunk: &[u8], prev_ended_with_lf: bool) -> bool
     chunk.windows(2).any(|w| w == b"\n\n")
 }
 
+/// Compatibility adapter for direct-call stateless MCP servers that do not
+/// implement `server/discover`.
+///
+/// The rmcp 3 client uses `server/discover` to establish the 2026-07-28
+/// stateless lifecycle before issuing self-contained requests. A small class
+/// of remote servers instead accepts those self-contained requests directly
+/// while returning an HTTP method error for discovery. This adapter satisfies
+/// only that discovery exchange locally, then delegates every real MCP request
+/// to the wrapped HTTP client unchanged.
+#[derive(Clone)]
+pub struct DirectStatelessHttpClient<C> {
+    inner: C,
+    enabled: bool,
+}
+
+impl<C> DirectStatelessHttpClient<C> {
+    #[must_use]
+    pub fn new(inner: C, enabled: bool) -> Self {
+        Self { inner, enabled }
+    }
+}
+
+fn direct_stateless_discovery_response(
+    message: &ClientJsonRpcMessage,
+) -> Option<RawRxJsonRpcMessage<rmcp::RoleClient>> {
+    if jsonrpc_method_header(message)?.to_str().ok()? != "server/discover" {
+        return None;
+    }
+
+    let id = jsonrpc_message_id(message)?;
+    serde_json::from_value(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": {
+            "resultType": "complete",
+            "supportedVersions": ["2026-07-28"],
+            "capabilities": {"tools": {}},
+            "serverInfo": {
+                "name": "direct-stateless-upstream",
+                "version": "1.0.0"
+            },
+            "ttlMs": 0,
+            "cacheScope": "private"
+        }
+    }))
+    .ok()
+}
+
+impl<C> StreamableHttpClient for DirectStatelessHttpClient<C>
+where
+    C: StreamableHttpClient + Sync,
+{
+    type Error = C::Error;
+
+    fn preserves_raw_responses() -> bool {
+        C::preserves_raw_responses()
+    }
+
+    async fn post_message(
+        &self,
+        uri: Arc<str>,
+        message: ClientJsonRpcMessage,
+        session_id: Option<Arc<str>>,
+        auth_header: Option<String>,
+        custom_headers: HashMap<HeaderName, HeaderValue>,
+    ) -> Result<StreamableHttpPostResponse, StreamableHttpError<Self::Error>> {
+        if self.enabled
+            && let Some(response) = direct_stateless_discovery_response(&message)
+        {
+            return Ok(StreamableHttpPostResponse::RawJson(response, None));
+        }
+        self.inner
+            .post_message(uri, message, session_id, auth_header, custom_headers)
+            .await
+    }
+
+    async fn post_message_with_max_sse_event_size(
+        &self,
+        uri: Arc<str>,
+        message: ClientJsonRpcMessage,
+        session_id: Option<Arc<str>>,
+        auth_header: Option<String>,
+        custom_headers: HashMap<HeaderName, HeaderValue>,
+        max_sse_event_size: usize,
+    ) -> Result<StreamableHttpPostResponse, StreamableHttpError<Self::Error>> {
+        if self.enabled
+            && let Some(response) = direct_stateless_discovery_response(&message)
+        {
+            return Ok(StreamableHttpPostResponse::RawJson(response, None));
+        }
+        self.inner
+            .post_message_with_max_sse_event_size(
+                uri,
+                message,
+                session_id,
+                auth_header,
+                custom_headers,
+                max_sse_event_size,
+            )
+            .await
+    }
+
+    async fn delete_session(
+        &self,
+        uri: Arc<str>,
+        session_id: Arc<str>,
+        auth_header: Option<String>,
+        custom_headers: HashMap<HeaderName, HeaderValue>,
+    ) -> Result<(), StreamableHttpError<Self::Error>> {
+        self.inner
+            .delete_session(uri, session_id, auth_header, custom_headers)
+            .await
+    }
+
+    async fn get_stream(
+        &self,
+        uri: Arc<str>,
+        session_id: Option<Arc<str>>,
+        last_event_id: Option<String>,
+        auth_header: Option<String>,
+        custom_headers: HashMap<HeaderName, HeaderValue>,
+    ) -> Result<BoxStream<'static, Result<Sse, SseError>>, StreamableHttpError<Self::Error>> {
+        self.inner
+            .get_stream(uri, session_id, last_event_id, auth_header, custom_headers)
+            .await
+    }
+
+    async fn get_stream_with_max_sse_event_size(
+        &self,
+        uri: Arc<str>,
+        session_id: Option<Arc<str>>,
+        last_event_id: Option<String>,
+        auth_header: Option<String>,
+        custom_headers: HashMap<HeaderName, HeaderValue>,
+        max_sse_event_size: usize,
+    ) -> Result<BoxStream<'static, Result<Sse, SseError>>, StreamableHttpError<Self::Error>> {
+        self.inner
+            .get_stream_with_max_sse_event_size(
+                uri,
+                session_id,
+                last_event_id,
+                auth_header,
+                custom_headers,
+                max_sse_event_size,
+            )
+            .await
+    }
+}
+
 impl StreamableHttpClient for BodyCappedHttpClient {
     type Error = reqwest::Error;
 

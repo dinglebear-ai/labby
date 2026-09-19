@@ -480,6 +480,11 @@ pub enum UpstreamLifecycle {
     /// Always open with `initialize`. For legacy servers that terminate on an
     /// unknown first request, which leaves no rejection to classify.
     Initialize,
+    /// Use the modern stateless request model but satisfy `server/discover`
+    /// locally instead of forwarding it upstream. This is for direct-call
+    /// stateless HTTP servers that accept self-contained MCP requests such as
+    /// `tools/list` and `tools/call` but do not implement discovery.
+    DirectStateless,
 }
 
 /// Configuration for a single upstream MCP server.
