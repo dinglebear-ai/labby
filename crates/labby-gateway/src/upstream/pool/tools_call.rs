@@ -1216,8 +1216,8 @@ mod tests {
             .expect("upstream is connected")
             .expect("echo call succeeds");
 
-        // The write is fire-and-forget (`tokio::spawn`); give it a beat to land.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // The write is fire-and-forget (`tokio::spawn`); drain its tracked tasks before asserting.
+        store.drain_pending_writes().await;
 
         let count: i64 = store
             .with_conn(|conn| {
@@ -1386,8 +1386,8 @@ mod tests {
             .expect_err("slow tool call should time out");
         assert!(result.contains("timed out"));
 
-        // The write is fire-and-forget (`tokio::spawn`); give it a beat to land.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // The write is fire-and-forget (`tokio::spawn`); drain its tracked tasks before asserting.
+        store.drain_pending_writes().await;
 
         let count: i64 = store
             .with_conn(|conn| {

@@ -19,7 +19,9 @@ use super::UpstreamPool;
 use super::capability::peer_declares_prompts;
 use super::catalog_pagination;
 use super::helpers::merge_upstream_prompts;
-use super::logging::is_capability_unsupported;
+use super::logging::{
+    UpstreamRequestLog, is_capability_unsupported, log_upstream_capability_skipped,
+};
 use super::tools::MAX_UPSTREAM_PROMPTS;
 
 /// One regular non-OAuth upstream Prompt with exact pre-namespace provenance.
@@ -96,10 +98,10 @@ impl UpstreamPool {
                         catalog_pagination::list_prompts(&peer, remaining, MAX_UPSTREAM_PROMPTS)
                             .await
                     } else {
-                        tracing::debug!(
-                            upstream = %observed.upstream(),
-                            "initialize did not advertise prompts; skipping prompts/list"
-                        );
+                        log_upstream_capability_skipped(UpstreamRequestLog::prompts_list(
+                            observed.upstream(),
+                            false,
+                        ));
                         Ok(Vec::new())
                     };
                     (observed, result)

@@ -242,7 +242,7 @@ mod tests {
     use rmcp::model::{
         ClientCapabilities, ErrorData, GetPromptRequestParams, GetPromptResponse, GetPromptResult,
         Implementation, ListPromptsResult, Prompt, PromptMessage, ProtocolVersion,
-        RequestMetaObject, Role,
+        RequestMetaObject, Role, ServerCapabilities, ServerInfo,
     };
     use rmcp::service::RequestContext;
     use rmcp::{RoleServer, ServerHandler};
@@ -270,6 +270,10 @@ mod tests {
     }
 
     impl ServerHandler for EchoPromptServer {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_prompts().build())
+        }
+
         async fn list_prompts(
             &self,
             _request: Option<rmcp::model::PaginatedRequestParams>,

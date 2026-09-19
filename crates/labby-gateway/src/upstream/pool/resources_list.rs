@@ -34,8 +34,8 @@ use super::helpers::{
     upstream_discovery_timeout, upstream_transport,
 };
 use super::logging::{
-    UpstreamRequestLog, is_capability_unsupported, log_upstream_request_error,
-    log_upstream_request_finish, log_upstream_request_start,
+    UpstreamRequestLog, is_capability_unsupported, log_upstream_capability_skipped,
+    log_upstream_request_error, log_upstream_request_finish, log_upstream_request_start,
 };
 use super::tools::MAX_UPSTREAM_RESOURCES;
 
@@ -379,17 +379,13 @@ impl UpstreamPool {
                 let peer = observed.peer.clone();
                 let request_timeout = catalog_listing_timeout(self.request_timeout);
                 async move {
-                    let started = Instant::now();
                     let event = UpstreamRequestLog::resources_list(&name, false);
-                    log_upstream_request_start(event);
                     let result = if !peer_declares_resources(&peer) {
-                        log_upstream_request_finish(event, started.elapsed().as_millis(), Some(0));
-                        tracing::debug!(
-                            upstream = %name,
-                            "initialize did not advertise resources; skipping resources/list"
-                        );
+                        log_upstream_capability_skipped(event);
                         Ok(Vec::new())
                     } else {
+                        let started = Instant::now();
+                        log_upstream_request_start(event);
                         match catalog_pagination::list_resources(
                             &peer,
                             request_timeout,
@@ -760,15 +756,7 @@ impl UpstreamPool {
                         None,
                     )
                     .await;
-                    log_upstream_request_finish(
-                        event,
-                        started.elapsed().as_millis(),
-                        Some(0),
-                    );
-                    tracing::debug!(
-                        upstream = %config.name,
-                        "initialize did not advertise resources; skipping subject-scoped resources/list"
-                    );
+                    log_upstream_capability_skipped(event);
                     return (config.name, policy, Ok(Vec::new()));
                 }
                 let timeout_ms = request_timeout.as_millis();
@@ -1150,6 +1138,19 @@ mod tests {
             Err(ErrorData::new(
                 rmcp::model::ErrorCode::METHOD_NOT_FOUND,
                 "resources/list should not be called",
+                None,
+            ))
+        }
+
+        async fn read_resource(
+            &self,
+            _request: rmcp::model::ReadResourceRequestParams,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<rmcp::model::ReadResourceResponse, ErrorData> {
+            self.resource_calls.fetch_add(1, Ordering::SeqCst);
+            Err(ErrorData::new(
+                rmcp::model::ErrorCode::METHOD_NOT_FOUND,
+                "resources/read should not be called",
                 None,
             ))
         }
@@ -2000,7 +2001,9 @@ mod tests {
         let mut config = oauth_schema_config("tools-only");
         config.proxy_resources = true;
 
-        let resources = pool.subject_scoped_resources(&[config], "alice").await;
+        let resources = pool
+            .subject_scoped_resources(std::slice::from_ref(&config), "alice")
+            .await;
 
         assert!(resources.is_empty());
         assert_eq!(
@@ -2015,6 +2018,24 @@ mod tests {
         assert_eq!(
             subject.optional_catalogs.resources.clone(),
             Some(Vec::<String>::new())
+        );
+        drop(connections);
+
+        let error = pool
+            .subject_scoped_read_resource_request(
+                &config,
+                "alice",
+                rmcp::model::ReadResourceRequestParams::new(
+                    "lab://upstream/tools-only/file:///missing".to_string(),
+                ),
+            )
+            .await
+            .expect_err("resources/read must fail before RPC when resources are not advertised");
+        assert!(error.contains("does not advertise the MCP resources capability"));
+        assert_eq!(
+            resource_calls.load(Ordering::SeqCst),
+            0,
+            "resources/read must not be sent when initialize omits resources"
         );
     }
 

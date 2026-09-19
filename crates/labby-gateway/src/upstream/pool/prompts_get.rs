@@ -33,7 +33,10 @@ use super::helpers::{
     bare_upstream_prompt_name, estimate_prompt_result_size, merge_upstream_prompts,
     prefixed_upstream_prompt_name, upstream_transport,
 };
-use super::logging::{UpstreamRequestLog, log_upstream_request_error, log_upstream_request_start};
+use super::logging::{
+    UpstreamRequestLog, log_upstream_capability_skipped, log_upstream_request_error,
+    log_upstream_request_start,
+};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub(crate) enum ExactPromptCallError {
@@ -299,11 +302,7 @@ impl UpstreamPool {
             if !peer_declares_prompts(&peer) {
                 self.record_subject_optional_catalog(&name, subject, &peer, None, Some(Vec::new()))
                     .await;
-                tracing::debug!(
-                    upstream = %name,
-                    phase = "oauth_initialize",
-                    "initialize did not advertise prompts; skipping subject-scoped prompts/list"
-                );
+                log_upstream_capability_skipped(UpstreamRequestLog::prompts_list(&name, true));
                 continue;
             }
             let remaining = deadline_at.saturating_duration_since(tokio::time::Instant::now());
@@ -428,10 +427,7 @@ impl UpstreamPool {
             if !peer_declares_prompts(&peer) {
                 self.record_subject_optional_catalog(&name, subject, &peer, None, Some(Vec::new()))
                     .await;
-                tracing::debug!(
-                    upstream = %name,
-                    "initialize did not advertise prompts; skipping prompt ownership discovery"
-                );
+                log_upstream_capability_skipped(UpstreamRequestLog::prompts_list(&name, true));
                 continue;
             }
             match catalog_pagination::list_prompts(
@@ -619,6 +615,15 @@ impl UpstreamPool {
                 });
             }
         };
+        if !peer_declares_prompts(&peer) {
+            log_upstream_capability_skipped(event);
+            return Err(CapabilityCallError::Other {
+                message: format!(
+                    "upstream {} does not advertise the MCP prompts capability",
+                    config.name
+                ),
+            });
+        }
         let timeout_ms = self.request_timeout.as_millis();
         timed_capability_call(
             self,
