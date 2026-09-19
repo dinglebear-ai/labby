@@ -173,3 +173,32 @@ test('gateway hero reports discovery as in progress instead of nominal health', 
   assert.match(markup, /aria-label="Gateway status: 1 discovering"/)
   assert.doesNotMatch(markup, /all systems nominal/)
 })
+
+test('gateway hero does not report a disabled-only fleet as nominal', () => {
+  const markup = renderToStaticMarkup(
+    <GatewayHero
+      totalServers={1}
+      healthy={0}
+      enabled={0}
+      disconnected={0}
+      discoveredTools={0}
+      exposedTools={0}
+      discoveredPrompts={0}
+      exposedPrompts={0}
+      discoveredResources={0}
+      exposedResources={0}
+      discoveredSkills={0}
+      exposedSkills={0}
+      serverStates={[
+        { id: 'disabled', name: 'disabled', color: 'var(--aurora-text-muted)', state: 'disabled' },
+      ]}
+      activeLens="configured"
+      toolsViewActive={false}
+      onLensChange={() => {}}
+    />,
+  )
+
+  assert.match(markup, />no active servers<\/span>/)
+  assert.match(markup, /aria-label="Gateway status: no active servers"/)
+  assert.doesNotMatch(markup, /all systems nominal/)
+})
