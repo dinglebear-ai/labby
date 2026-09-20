@@ -4,6 +4,56 @@ use clap::{CommandFactory, Parser};
 use labby::cli::Cli;
 use std::process::{Command, Output};
 
+#[test]
+fn live_repository_text_does_not_teach_retired_cli_prefixes() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("workspace root");
+    let tracked = Command::new("git")
+        .args(["ls-files", "-z"])
+        .current_dir(root)
+        .output()
+        .expect("list tracked repository files");
+    assert!(tracked.status.success());
+
+    let mut stale = Vec::new();
+    for raw in tracked
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|p| !p.is_empty())
+    {
+        let relative = String::from_utf8_lossy(raw);
+        if relative == "CHANGELOG.md"
+            || relative == "crates/labby/src/cli/migration.rs"
+            || relative == "plugins/scripts/health-check"
+            || relative == "docs/generated/cli-migration.md"
+            || relative.starts_with("crates/labby/tests/")
+            || relative.starts_with("docs/archive/")
+            || relative.starts_with("docs/plans/")
+            || relative.starts_with("docs/sessions/")
+            || relative.starts_with("docs/superpowers/")
+        {
+            continue;
+        }
+        let path = root.join(relative.as_ref());
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for (retired, replacement) in labby::cli::migration::MOVED {
+            let needle = format!("labby {retired}");
+            if contents.contains(&needle) {
+                stale.push(format!("{relative}: {needle} -> labby {replacement}"));
+            }
+        }
+    }
+    assert!(
+        stale.is_empty(),
+        "live files contain retired CLI spellings:\n{}",
+        stale.join("\n")
+    );
+}
+
 fn public_commands(command: &clap::Command, prefix: &str, paths: &mut Vec<String>) {
     for child in command
         .get_subcommands()
@@ -56,7 +106,6 @@ fn canonical_commands_use_resources_and_consistent_operands() {
         vec!["auth", "login", "--server", "https://example.invalid"],
         vec!["host", "service", "status"],
         vec!["host", "incus", "backup", "validate"],
-        vec!["plugin", "list"],
         vec!["config", "draft", "discard", "--dry-run"],
         vec!["state", "access", "migrate"],
         vec!["help", "--all"],
@@ -171,13 +220,7 @@ fn complete_json_help_matches_every_public_command() {
         actual, expected,
         "JSON help must have no missing or phantom commands"
     );
-    for required in [
-        "labby help",
-        "labby auth",
-        "labby host",
-        "labby plugin",
-        "labby config",
-    ] {
+    for required in ["labby help", "labby auth", "labby host", "labby config"] {
         assert!(
             actual.contains(required),
             "required public group missing: {required}"
@@ -497,7 +540,7 @@ fn public_name_contract_detects_injected_bad_commands_and_aliases() {
 }
 
 #[test]
-fn plugin_validation_recipe_uses_the_executable_cli_grammar() {
+fn setup_validation_recipe_uses_the_executable_cli_grammar() {
     let recipe = include_str!("../../../Justfile")
         .split_once("\nvalidate-plugin:\n")
         .expect("plugin validation recipe")
@@ -514,7 +557,7 @@ fn plugin_validation_recipe_uses_the_executable_cli_grammar() {
         .expect("cargo argument boundary")
         .1;
     let argv = std::iter::once("labby").chain(arguments.split_whitespace());
-    Cli::try_parse_from(argv).expect("plugin-validation recipe must use valid Labby arguments");
+    Cli::try_parse_from(argv).expect("setup-validation recipe must use valid Labby arguments");
 }
 
 fn snapshot_tree(

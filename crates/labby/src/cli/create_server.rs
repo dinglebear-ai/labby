@@ -253,15 +253,33 @@ mod tests {
         assert_eq!(quote("a'b"), "'a'\\''b'");
     }
 
+    #[cfg(unix)]
     #[test]
     fn equivalent_command_preserves_flag_like_upstream_arguments() {
         use clap::Parser as _;
         let mut input = args();
         input.name = "docs".into();
         input.command = Some("npx".into());
-        input.args = vec!["-y".into(), "--version".into()];
+        input.args = vec![
+            "-y".into(),
+            "--version".into(),
+            "value with spaces".into(),
+            "a'b".into(),
+        ];
         let command = invocation(&input);
-        let parsed = crate::cli::Cli::try_parse_from(command.split_whitespace()).unwrap();
+        let script = format!("set -- {command}; printf '%s\\0' \"$@\"");
+        let output = std::process::Command::new("sh")
+            .args(["-c", &script])
+            .output()
+            .expect("execute generated shell syntax");
+        assert!(output.status.success());
+        let words = output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|word| !word.is_empty())
+            .map(|word| String::from_utf8(word.to_vec()).unwrap())
+            .collect::<Vec<_>>();
+        let parsed = crate::cli::Cli::try_parse_from(words).unwrap();
         let crate::cli::Command::Server(crate::cli::server::ServerArgs {
             command: crate::cli::server::ServerCommand::Add(actual),
         }) = parsed.command

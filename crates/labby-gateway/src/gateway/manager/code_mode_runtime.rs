@@ -920,7 +920,7 @@ impl GatewayManager {
             match outcome {
                 Ok(_) => {
                     // Keep the one-shot CLI catalog cache warm from the
-                    // long-lived surface so `gateway code exec` rarely has to
+                    // long-lived surface so `code run` rarely has to
                     // cold-connect upstreams for proxy generation.
                     if upstream.oauth.is_none() {
                         cache_updates.push(

@@ -556,6 +556,7 @@ pub(super) async fn dispatch_command(
                     json!({
                         "clients": args.clients,
                         "include_existing": args.include_existing,
+                        "explain": args.explain,
                     }),
                 ),
                 GatewayCommand::Import(args) => {
@@ -566,6 +567,7 @@ pub(super) async fn dispatch_command(
                             "all": args.all,
                             "names": args.names,
                             "clients": args.clients,
+                            "dry_run": args.dry_run,
                         }),
                     )
                 }

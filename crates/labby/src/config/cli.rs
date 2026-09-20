@@ -225,7 +225,7 @@ pub fn read(path: &Path) -> Result<CliPreferences, ToolError> {
 }
 
 /// Serialize read/modify/write with the existing host lock and atomic writer.
-/// Only the [cli] table is changed; unrelated comments and tables are preserved.
+/// Only the `[cli]` table is changed; unrelated comments and tables are preserved.
 pub fn change(path: &Path, change: Change) -> Result<(CliPreferences, bool), ToolError> {
     match &change {
         Change::Add { name, entry, .. } => {

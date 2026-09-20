@@ -166,7 +166,7 @@ labby logs journal --container labby --follow
 
 The default `logs` command reads a bounded local rolling-log query and terminates. It supports severity, service, action, filename, and text/request-ID filters. It does not depend on systemd or probe other machines. `logs journal` explicitly selects the existing deployment journal backend. Streaming requires `--follow`; failures do not silently switch log sources. Journal output is raw text, so `logs journal --json` is rejected before starting any external process.
 
-Destructive actions retain shared `ActionSpec.destructive` policy and existing explicit confirmations. Missing confirmation in a noninteractive session produces an actionable error rather than an invisible prompt. Supported dry-run previews return redacted parameters with `dry_run: true`, `executed: false`, and no operation dispatch. A preview does not imply that unsupported operations have gained dry-run support.
+Destructive actions retain shared `ActionSpec.destructive` policy and existing explicit confirmations. Missing confirmation in a noninteractive session produces an actionable error rather than an invisible prompt. Local adapter previews return redacted parameters with `dry_run: true`, `executed: false`, and no operation dispatch. Operations such as `server import --dry-run` dispatch to an explicitly read-only shared gateway preview so selection, tombstone, and conflict semantics cannot diverge from execution; the gateway returns before configuration persistence or runtime reconciliation. A preview does not imply that unsupported operations have gained dry-run support.
 
 ## Breaking migration and rollout
 

@@ -520,8 +520,8 @@ fn cli_action_cases() -> std::collections::BTreeSet<CliActionCase> {
                 "--no-browser",
                 MISSING,
                 "--wait",
-                "--wait-timeout-secs",
-                "1",
+                "--timeout",
+                "1s",
                 "--json",
             ],
         ),
@@ -613,31 +613,6 @@ fn cli_action_cases() -> std::collections::BTreeSet<CliActionCase> {
             &["config", "draft", "discard", "--dry-run", "--json"],
         ),
         (
-            "setup:plugin.install",
-            &["plugin", "install", MISSING, "--dry-run", "--json"],
-        ),
-        (
-            "setup:plugin.uninstall",
-            &["plugin", "uninstall", MISSING, "--dry-run", "--json"],
-        ),
-        (
-            "setup:plugin_connectivity",
-            &[
-                "plugin",
-                "check",
-                "--server-url",
-                "http://127.0.0.1:9",
-                "--json",
-            ],
-        ),
-        ("setup:plugin_export", &["plugin", "export", "--json"]),
-        (
-            "setup:plugin_hook",
-            &["plugin", "hook", "--no-repair", "--json"],
-        ),
-        ("setup:plugin_sync", &["plugin", "sync", "--json"]),
-        ("setup:plugins.installed", &["plugin", "list", "--json"]),
-        (
             "setup:proxy.configure",
             &[
                 "config",
@@ -651,7 +626,6 @@ fn cli_action_cases() -> std::collections::BTreeSet<CliActionCase> {
             ],
         ),
         ("setup:repair", &["setup", "repair", "--json"]),
-        ("setup:services.status", &["config", "status", "--json"]),
         ("setup:state", &["setup", "--json"]),
         (
             "snippets:snippets.create",
@@ -1068,36 +1042,6 @@ async fn stateful_cli_workflows_observe_mutations_and_always_roll_them_back() {
     })
     .await
     .expect("stateful workflows absolute deadline");
-}
-
-#[tokio::test]
-async fn retired_cli_aliases_are_rejected_before_dispatch() {
-    let root = tempfile::tempdir().expect("retired command root");
-    std::fs::create_dir_all(root.path().join("tmp")).unwrap();
-    for (old, replacement) in [
-        ("install-plugin", "plugin install"),
-        ("uninstall-plugin", "plugin uninstall"),
-        ("installed-plugins", "plugin list"),
-        ("services-status", "config status"),
-    ] {
-        let output = action_scenarios::run_cli(root.path(), &["setup", old, "--json"])
-            .await
-            .unwrap();
-        assert_eq!(
-            output.status.code(),
-            Some(2),
-            "retired command must not execute"
-        );
-        assert!(output.stdout.is_empty());
-        let envelope: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
-        assert_eq!(envelope["error"]["side_effects"], "none_expected");
-        assert!(
-            envelope["error"]["cause"]
-                .as_str()
-                .unwrap()
-                .contains(replacement)
-        );
-    }
 }
 
 #[test]

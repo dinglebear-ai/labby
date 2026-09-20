@@ -38,6 +38,16 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 ### Changed
 
+- **cli (breaking):** reorganize the public command grammar around resource and
+  action words such as `server`, `route`, `loadout`, `auth`, `host`, `plugin`,
+  `config`, `code`, `snippet`, `skill`, `state`, and `context`. Retired command
+  paths are rejected with replacement guidance instead of remaining aliases;
+  scripts, installed completions, and scheduled jobs must migrate using the
+  [generated command map](docs/generated/cli-migration.md). The redesigned CLI
+  retains shared gateway dispatch, adds contexts, guided server creation,
+  cached completion, explicit duration units, bulk lifecycle workflows, and
+  `server discover --explain`; `server import --dry-run` obtains a redacted
+  non-mutating plan from the same shared gateway action used for import.
 - **auth/access (breaking for operators):** browser sessions for allowlisted
   identities other than `LABBY_AUTH_ADMIN_EMAIL` no longer receive `lab:admin`;
   they receive the static-token scopes with admin scopes lowered (default

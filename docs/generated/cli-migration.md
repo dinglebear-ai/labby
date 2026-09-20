@@ -47,14 +47,6 @@ This is a breaking command-grammar migration. Old command paths are rejected wit
 | `labby setup incus-ssh` | `labby host incus ssh` |
 | `labby setup access-bootstrap` | `labby auth bootstrap` |
 | `labby setup owner-link-prepare` | `labby auth owner link` |
-| `labby setup installed-plugins` | `labby plugin list` |
-| `labby setup services-status` | `labby config status` |
-| `labby setup plugin-hook` | `labby plugin hook` |
-| `labby setup plugin-sync` | `labby plugin sync` |
-| `labby setup plugin-export` | `labby plugin export` |
-| `labby setup plugin-connectivity` | `labby plugin check` |
-| `labby setup install-plugin` | `labby plugin install` |
-| `labby setup uninstall-plugin` | `labby plugin uninstall` |
 | `labby setup draft` | `labby config draft` |
 | `labby setup proxy` | `labby config proxy set` |
 | `labby setup install` | `labby host install` |

@@ -6,16 +6,16 @@ import/discovery, protected routes, and Code Mode enablement.
 ## Gateway Model
 
 Labby is the operator gateway. External MCP servers are registered as upstream
-gateways, then exposed through policy-filtered MCP resources/tools and the public
-Code Mode `codemode` tool.
+servers in that gateway, then exposed through policy-filtered MCP resources/tools
+and the public Code Mode `codemode` tool.
 
 Common CLI state checks:
 
 ```bash
-labby gateway list --json
-labby gateway get <name> --json
-labby gateway mcp list --json
-labby gateway public-urls --json
+labby server list --json
+labby server get <name> --json
+labby server status --json
+labby gateway urls --json
 ```
 
 Common action-dispatch equivalents:
@@ -29,28 +29,27 @@ Common action-dispatch equivalents:
 
 ## Adding And Testing Upstreams
 
-The CLI tests a configured gateway by name. Add it first (or update an existing
-gateway), then test the saved configuration:
+The CLI tests a configured upstream server by name. Add it first (or update an
+existing server), then test the saved configuration:
 
 ```bash
-labby gateway add --name candidate --url https://example.invalid/mcp --json
-labby gateway test --name candidate --json
-labby gateway update candidate --url https://new.example.invalid/mcp --json
-labby gateway test --name candidate --json
+labby server add candidate --url https://example.invalid/mcp --json
+labby server test candidate --json
+labby server set candidate --url https://new.example.invalid/mcp --json
+labby server test candidate --json
 ```
 
 Add HTTP or stdio upstreams:
 
 ```bash
-labby gateway add --name docs --url https://example.invalid/mcp --json
-labby gateway add --name local-tool --command node --arg server.js --json
+labby server add docs --url https://example.invalid/mcp --json
+labby server add local-tool --command node --arg server.js --json
 ```
 
 If bearer auth is needed, prefer an env-var reference:
 
 ```bash
-labby gateway add \
-  --name private-tool \
+labby server add private-tool \
   --url https://example.invalid/mcp \
   --bearer-token-env PRIVATE_TOOL_BEARER_TOKEN \
   --json
@@ -80,23 +79,33 @@ Only reload promises to pick up changed bearer-token env values.
 Discovery scans local MCP client configs from known editors/tools:
 
 ```bash
-labby gateway discover --json
-labby gateway discover --clients claude,codex --json
+labby server discover --json
+labby server discover --clients claude-code,codex --json
+labby server discover --explain --json
 ```
+
+`--explain` returns the selected client kinds, matching config paths,
+per-client discovery counts, and the number of duplicate names omitted. It
+never returns environment values or raw config contents. Discovery runs on the
+selected gateway host.
 
 Import is destructive because it mutates gateway config:
 
 ```bash
-labby gateway import --name <server> -y --json
-labby gateway import --all -y --json
+labby server import --name <server> -y --json
+labby server import --all -y --json
+labby server import --all --dry-run --json
 ```
+
+`--dry-run` returns the redacted import plan and any skip reasons without
+writing gateway configuration or reconciling runtime state.
 
 Pending discovered servers can be reviewed and approved/rejected:
 
 ```bash
-labby gateway pending list --json
-labby gateway pending approve <name> -y --json
-labby gateway pending reject <name> -y --json
+labby server pending list --json
+labby server pending approve <name> -y --json
+labby server pending reject <name> -y --json
 ```
 
 Use `--dry-run` on pending approve/reject when available.
@@ -123,10 +132,10 @@ OAuth is per upstream and subject. Shared gateway credential flows are available
 from CLI:
 
 ```bash
-labby gateway mcp auth status <name> --json
-labby gateway mcp auth start <name> --json
-labby gateway mcp auth open <name> --wait --json
-labby gateway mcp auth clear <name> --json
+labby server auth status <name> --json
+labby server auth login <name> --no-browser --json
+labby server auth login <name> --wait --json
+labby server auth logout <name> --json
 ```
 
 Use the server-side OAuth status path when browser OAuth looks connected but
@@ -139,9 +148,9 @@ The gateway-wide code-mode setting exposes the synthetic public MCP tools
 `codemode` instead of raw upstream tools:
 
 ```bash
-labby gateway code status --json
-labby gateway code enable --json
-labby gateway code disable --json
+labby code status --json
+labby code enable --json
+labby code disable --json
 ```
 
 In action dispatch:
@@ -177,15 +186,13 @@ does not provide it.
 Protected routes publish Lab-managed public MCP routes with OAuth protection:
 
 ```bash
-labby gateway protected-route list --json
-labby gateway protected-route test \
-  --name route \
+labby route list --json
+labby route test route \
   --public-host lab.example.invalid \
   --public-path /mcp \
   --upstream upstream-name \
   --json
-labby gateway protected-route add \
-  --name route \
+labby route add route \
   --public-host lab.example.invalid \
   --public-path /mcp \
   --upstream upstream-name \
@@ -208,9 +215,9 @@ reads when fields are marked secret.
 
 | Symptom | First check |
 | --- | --- |
-| Upstream missing from Code Mode search | `labby gateway mcp list --json`, then `gateway.schema` |
-| OAuth works in browser but runtime fails | `labby gateway mcp auth status <name> --json` |
+| Upstream missing from Code Mode search | `labby server status --json`, then `gateway.schema` |
+| OAuth works in browser but runtime fails | `labby server auth status <name> --json` |
 | Tool absent from one upstream | `gateway.discovered_tools`, exposure policy, reload |
-| Stale process or old schema | `labby gateway mcp cleanup <name> --dry-run --json` |
+| Stale process or old schema | `labby server cleanup <name> --dry-run --json` |
 | Config changed but runtime did not | `labby gateway reload --json` |
 | Import keeps reappearing | pending/tombstone actions in generated action catalog |

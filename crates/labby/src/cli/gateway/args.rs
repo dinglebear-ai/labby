@@ -40,23 +40,34 @@ pub enum GatewayCommand {
     Loadout(GatewayLoadoutArgs),
     /// Reload gateways from config and reconcile runtime state.
     Reload,
+    /// Report authoritative daemon reachability and upstream runtime state.
+    Status,
     /// Manage upstream MCP server lifecycle and OAuth.
+    #[command(skip)]
     Mcp(GatewayMcpArgs),
     /// Inspect inbound MCP clients/sessions connected to this gateway.
+    #[command(name = "sessions")]
     Clients(GatewayClientsArgs),
     /// Scan the machine for MCP server configs from known editors and tools (read-only)
+    #[command(skip)]
     Discover(GatewayDiscoverArgs),
     /// Import discovered MCP servers into the gateway (disabled by default)
+    #[command(skip)]
     Import(GatewayImportArgs),
     /// Manage pending discovered servers waiting for approval
+    #[command(skip)]
     Pending(GatewayPendingArgs),
     /// Show resolved public URL configuration (app and MCP gateway)
+    #[command(name = "urls")]
     PublicUrls,
     /// Search, inspect, and execute Code Mode snippets through dispatch
+    #[command(skip)]
     Code(GatewayCodeArgs),
     /// Generate and approve Code Mode upstream hint proposals.
+    #[command(skip)]
     Enrich(GatewayEnrichArgs),
     /// Inspect and manage Agent Skills exposed by gateway upstreams.
+    #[command(skip)]
     Skills(GatewaySkillsArgs),
     /// Query gateway upstream call-usage telemetry.
     Usage(GatewayUsageArgs),
@@ -77,6 +88,7 @@ pub enum GatewayLoadoutCommand {
     /// Add a reusable Loadout.
     Add(GatewayLoadoutCreateArgs),
     /// Patch selected Loadout fields without resetting unspecified fields.
+    #[command(name = "set")]
     Update(GatewayLoadoutUpdateArgs),
     /// Remove an unreferenced Loadout.
     Remove(GatewayLoadoutRemoveArgs),
@@ -326,7 +338,8 @@ pub struct GatewayEnrichArgs {
     pub provider: String,
     #[arg(long)]
     pub max_upstreams: Option<usize>,
-    #[arg(long)]
+    /// Maximum duration, with a unit such as 30s or 2m.
+    #[arg(long = "timeout", value_parser = crate::cli::duration::milliseconds)]
     pub timeout_ms: Option<u64>,
     /// Skip confirmation for provider-backed preview runs.
     #[arg(short = 'y', long, alias = "no-confirm")]
@@ -335,6 +348,7 @@ pub struct GatewayEnrichArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum GatewayEnrichCommand {
+    #[command(skip)]
     Apply(GatewayEnrichApplyArgs),
 }
 
@@ -384,8 +398,9 @@ pub enum GatewayCodeCommand {
     },
     /// Execute a sandboxed JavaScript snippet that calls the typed
     /// `codemode.<upstream>.<tool>` helpers (or `callTool` directly).
+    #[command(name = "run")]
     Exec {
-        #[arg(long, conflicts_with = "file")]
+        #[arg(long, conflicts_with = "file", required_unless_present = "file")]
         code: Option<String>,
         #[arg(long)]
         file: Option<std::path::PathBuf>,
@@ -437,6 +452,9 @@ pub struct GatewayDiscoverArgs {
     /// Also show servers already present in the gateway config
     #[arg(long, default_value_t = false)]
     pub include_existing: bool,
+    /// Explain which clients and matching config paths produced the result.
+    #[arg(long, default_value_t = false)]
+    pub explain: bool,
 }
 
 #[derive(Debug, Args)]
@@ -453,6 +471,9 @@ pub struct GatewayImportArgs {
     /// Skip confirmation for the destructive config import.
     #[arg(short = 'y', long, alias = "no-confirm")]
     pub yes: bool,
+    /// Preview the import plan without changing gateway configuration.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Args)]
@@ -462,21 +483,21 @@ pub struct GatewayGetArgs {
 
 #[derive(Debug, Args)]
 pub struct GatewayTestArgs {
-    /// Name of a configured gateway to test (omit to test with inline --url/--command).
-    #[arg(long)]
+    /// Name of the configured upstream to test.
+    #[arg(required = true)]
     pub name: Option<String>,
 }
 
 #[derive(Debug, Args)]
 pub struct GatewayAddArgs {
-    /// Unique name for the gateway upstream.
-    #[arg(long)]
+    /// Unique upstream name. Missing values can be filled interactively.
+    #[arg(default_value = "", hide_default_value = true)]
     pub name: String,
     /// HTTP(S) URL for a remote MCP server (mutually exclusive with --command).
-    #[arg(long)]
+    #[arg(long, conflicts_with = "command")]
     pub url: Option<String>,
     /// Stdio command to launch for a local MCP server (mutually exclusive with --url).
-    #[arg(long)]
+    #[arg(long, conflicts_with = "url")]
     pub command: Option<String>,
     /// Additional arguments passed to the stdio command (repeat for multiple).
     #[arg(long = "arg")]
@@ -497,6 +518,9 @@ pub struct GatewayAddArgs {
     /// Initial skill-name exposure allowlist. Repeat for multiple patterns.
     #[arg(long = "expose-skill")]
     pub expose_skills: Vec<String>,
+    /// Preview the proposed configuration without contacting or changing a gateway.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Args)]
@@ -579,6 +603,7 @@ pub enum GatewayProtectedRouteCommand {
     /// Add a Gateway-managed protected MCP route.
     Add(GatewayProtectedRouteUpsertArgs),
     /// Replace a Gateway-managed protected MCP route.
+    #[command(name = "replace")]
     Update(GatewayProtectedRouteUpdateArgs),
     /// Remove a Gateway-managed protected MCP route.
     Remove(GatewayProtectedRouteRemoveArgs),
@@ -648,7 +673,7 @@ pub struct GatewayProtectedRouteUpdateArgs {
 
 #[derive(Debug, Args)]
 pub struct GatewayProtectedRouteUpsertArgs {
-    #[arg(long)]
+    /// Unique route name.
     pub name: String,
     #[arg(long, default_value_t = true)]
     pub enabled: bool,
@@ -752,7 +777,7 @@ pub struct GatewayOauthUpstreamArgs {
     pub open: bool,
     #[arg(long, default_value_t = false)]
     pub wait: bool,
-    #[arg(long, default_value_t = 120)]
+    #[arg(long = "timeout", default_value = "120s", value_parser = crate::cli::duration::seconds)]
     pub wait_timeout_secs: u64,
 }
 

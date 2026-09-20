@@ -42,7 +42,7 @@ The generated [service catalog](./generated/service-catalog.md) is authoritative
 | `doctor` | [services/DOCTOR.md](./services/DOCTOR.md) | Always-on system, auth, OAuth relay, and proxy diagnostics |
 | `gateway` | [services/GATEWAY.md](./services/GATEWAY.md) | Upstream catalog, protected routes, virtual servers, OAuth, Code Mode host |
 | upstream proxy runtime | [services/UPSTREAM.md](./services/UPSTREAM.md) | HTTP/Unix/stdio upstream MCP connections, discovery, filtering, health, OAuth, skills |
-| `setup` | [services/SETUP.md](./services/SETUP.md) | Bootstrap, settings, repair, plugin lifecycle, proxy setup, host provisioning |
+| `setup` | [services/SETUP.md](./services/SETUP.md) | Bootstrap, settings, repair, proxy setup, host provisioning |
 | `server_logs` | [services/SERVER_LOGS.md](./services/SERVER_LOGS.md) | Labby's own server-process log query and journal tail |
 | `fs` | [services/FILESYSTEM.md](./services/FILESYSTEM.md) | Optional jailed read-only workspace browsing and preview |
 | `stash` | [services/STASH.md](./services/STASH.md) | Linux principal-scoped file upload, download, sharing, and bounded MCP reads |

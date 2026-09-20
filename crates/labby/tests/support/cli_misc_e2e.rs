@@ -69,66 +69,7 @@ async fn run_setup_state(root: &Path) {
     record_success("setup:state", &state, EvidenceLevel::LiveSuccess);
 }
 
-async fn run_plugin_lifecycle(root: &Path) {
-    let plugin_home = home(root, "setup-plugin-lifecycle");
-    let install = execute(
-        &plugin_home,
-        &[
-            "plugin",
-            "install",
-            "matrix-owned-missing",
-            "--yes",
-            "--json",
-        ],
-        &[],
-    )
-    .await;
-    record_output(
-        "setup:plugin.install",
-        &install,
-        EvidenceLevel::LiveStateTransition,
-    );
-
-    let uninstall = execute(
-        &plugin_home,
-        &[
-            "plugin",
-            "uninstall",
-            "matrix-owned-missing",
-            "--yes",
-            "--json",
-        ],
-        &[],
-    )
-    .await;
-    record_output(
-        "setup:plugin.uninstall",
-        &uninstall,
-        EvidenceLevel::LiveStateTransition,
-    );
-}
-
 async fn run_setup_mutations(root: &Path) {
-    let sync_home = home(root, "setup-plugin-sync");
-    let sync = execute(
-        &sync_home,
-        &["plugin", "sync", "--yes", "--json"],
-        &[("CLAUDE_PLUGIN_OPTION_SERVER_URL", "http://127.0.0.1:8765")],
-    )
-    .await;
-    let synced_env = sync_home.join(".labby/.env");
-    assert!(
-        std::fs::read_to_string(&synced_env)
-            .expect("read synchronized plugin env")
-            .contains("LABBY_SERVER_URL"),
-        "plugin sync did not publish its owned setting"
-    );
-    record_success(
-        "setup:plugin_sync",
-        &sync,
-        EvidenceLevel::LiveStateTransition,
-    );
-
     let proxy_home = home(root, "setup-proxy");
     let proxy = execute(
         &proxy_home,

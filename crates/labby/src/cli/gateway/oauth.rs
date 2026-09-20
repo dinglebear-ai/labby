@@ -95,18 +95,15 @@ pub(super) async fn run_gateway_oauth_start(
         if authenticated {
             eprintln!(
                 "{}",
-                theme.success(&format!(
-                    "OAuth completed for `{}`. The callback stored the shared gateway credential.",
-                    args.name
-                ))
+                theme
+                    .success("OAuth completed. The callback stored the shared gateway credential.")
             );
         } else {
             eprintln!(
                 "{}",
-                theme.warn(&format!(
-                    "Timed out waiting for OAuth completion for `{}` after {}s. The browser callback may still succeed later; re-run `labby server auth status {}` to check.",
-                    args.name, args.wait_timeout_secs, args.name
-                ))
+                theme.warn(
+                    "Timed out waiting for OAuth completion. The browser callback may still succeed later; re-run `labby server auth status <name>` to check."
+                )
             );
         }
         if format.is_json() {

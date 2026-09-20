@@ -6,18 +6,17 @@ updated: "2026-09-18"
 
 # Setup Service
 
-The `setup` service owns Labby's first-run, configuration, repair, plugin-lifecycle, proxy-configuration, and host-provisioning workflows. It is always compiled and is exposed through CLI, MCP, HTTP API, and the web UI.
+The `setup` service owns Labby's first-run, configuration, repair, proxy-configuration, and host-provisioning workflows. It is always compiled and is exposed through CLI, MCP, HTTP API, and the web UI.
 
 The generated [action catalog](../generated/action-catalog.md) is authoritative for exact action names, parameters, destructive flags, scopes, and surface availability.
 
 ## Responsibilities
 
 - bootstrap a new Labby home and supported host runtime
-- inspect setup state and service status
+- inspect setup state
 - stage, commit, and discard configuration drafts
 - expose schema-driven settings state and mutations
 - configure the direct stdio MCP proxy
-- install, uninstall, inspect, and synchronize the checked-in Claude plugin integration
 - repair supported setup state
 - project observational access-store health into setup checks without owning access-store repair
 

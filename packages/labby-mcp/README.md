@@ -374,6 +374,19 @@ names retain normal syntax. Help and completion work offline, even with broken
 configuration. See the [CLI guide](./docs/surfaces/CLI.md) and
 [breaking migration map](./docs/generated/cli-migration.md).
 
+### Select A Gateway
+
+```bash
+labby context add homelab --server https://example.invalid --use
+labby auth login --context homelab
+labby --context homelab server list
+labby config check
+```
+
+Contexts save non-secret destinations in the existing host configuration.
+Explicit `--server` or `--context` never borrows an unrelated environment token
+and never falls back to local execution. Host-local commands remain local.
+
 ### Manage Upstream MCP Servers
 
 ```bash
@@ -391,6 +404,22 @@ existing authorization and confirmation requirements.
 The stdio spawn guard allows known runtimes such as `npx`, `uvx`, `docker`,
 `node`, `python`, `python3`, `deno`, `pipx`, and `dnx`; customize it in
 `[gateway]` inside `config.toml`.
+
+Missing creation arguments can be filled by `labby server add` in an interactive
+terminal. Scripts should use complete arguments and `--no-input --json`.
+Timeouts use explicit units, such as `30s` or `2m`.
+
+```bash
+labby server restart alpha beta --timeout 30s
+labby server restart --all --dry-run
+labby --context homelab completions refresh
+labby completions zsh --resources
+```
+
+Restart waits for observed completion and a connected replacement unless
+`--no-wait` is explicit. Bulk operations report every target and return a failing
+exit status when any target fails; uncertain operations are never replayed.
+Optional cached completion is authority-scoped and offline on every Tab key.
 
 ### Use Code Mode
 
@@ -695,8 +724,9 @@ removed; operators run `labby setup` themselves. Do not reintroduce a `hooks/`
 directory, bundle a binary under `plugins/labby/bin/`, or add
 Docker/systemd bootstrap logic to plugin assets.
 
-`labby plugin hook` remains a CLI command for on-demand audit and settings
-sync (`--no-repair` for read-only), exercised by `just validate-plugin`.
+`just validate-plugin` runs the supported read-only `labby setup check` flow
+against an isolated Labby home. Plugin lifecycle hooks and per-service plugin
+mutation commands remain retired.
 
 ## Related Servers
 

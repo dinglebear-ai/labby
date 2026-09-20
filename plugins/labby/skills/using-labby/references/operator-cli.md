@@ -30,7 +30,6 @@ labby code describe example.tool
 labby code run --file ./task.js
 labby snippet list
 labby host service status
-labby plugin list
 labby config show --json
 labby config check
 ```

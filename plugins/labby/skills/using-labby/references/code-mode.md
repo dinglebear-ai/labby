@@ -322,7 +322,7 @@ labby code run --code 'async () => ({ ok: true })' --json
 labby code run --file ./snippet.js --json
 ```
 
-The CLI mirrors execution only; there is no CLI `gateway code search`
+The CLI mirrors execution only; there is no CLI `code search`
 subcommand. Use in-sandbox `codemode.search()` for catalog filtering.
 
 ## Safe Execution Pattern

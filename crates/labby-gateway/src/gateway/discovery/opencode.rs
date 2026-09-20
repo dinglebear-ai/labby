@@ -120,12 +120,24 @@ fn candidate_paths(home: &Path, xdg: Option<&Path>) -> Vec<PathBuf> {
         .join("opencode");
 
     #[cfg(not(target_os = "windows"))]
-    let default_config_dir = xdg
-        .map(|x| x.join("opencode"))
-        .unwrap_or_else(|| home.join(".config/opencode"));
+    {
+        if let Some(xdg) = xdg {
+            let config_dir = xdg.join("opencode");
+            paths.push(config_dir.join("opencode.jsonc"));
+            paths.push(config_dir.join("opencode.json"));
+        }
+        let home_config_dir = home.join(".config/opencode");
+        if xdg.is_none_or(|xdg| xdg.join("opencode") != home_config_dir) {
+            paths.push(home_config_dir.join("opencode.jsonc"));
+            paths.push(home_config_dir.join("opencode.json"));
+        }
+    }
 
-    paths.push(default_config_dir.join("opencode.jsonc"));
-    paths.push(default_config_dir.join("opencode.json"));
+    #[cfg(target_os = "windows")]
+    {
+        paths.push(default_config_dir.join("opencode.jsonc"));
+        paths.push(default_config_dir.join("opencode.json"));
+    }
 
     paths
 }

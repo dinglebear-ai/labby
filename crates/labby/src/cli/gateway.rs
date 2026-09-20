@@ -153,7 +153,7 @@ fn filtered_builtin_service_registry(config: &LabConfig) -> ToolRegistry {
 /// attach the `x-labby-team-id` header.
 ///
 /// The lazy local manager remains for the two paths that still run locally:
-/// `gateway code exec` (falls back to the CLI's own `CodeModeBroker` only when
+/// `code run` (falls back to the CLI's own `CodeModeBroker` only when
 /// opportunistic daemon detection finds nothing or the remote Code Mode call
 /// fails without an explicitly configured server), and `gateway list` (answers
 /// from the daemon when one is reachable and otherwise reads local config,
@@ -227,7 +227,7 @@ pub async fn run(
     let lazy_manager = LazyGatewayManager::new(config, discover_upstreams, team_id);
     // Race the command against SIGINT/SIGTERM so the drain below also runs
     // when the invocation is killed externally (e.g. `timeout 100s labby
-    // gateway code exec ...` SIGTERMs at the deadline). Without this the
+    // code run ...` SIGTERMs at the deadline). Without this the
     // default signal disposition kills the process before the drain and
     // orphans spawned stdio upstream children.
     let result = tokio::select! {
@@ -325,6 +325,8 @@ mod tests {
         );
         assert!(Cli::try_parse_from(["lab", "server", "remove", "fixture-http"]).is_ok());
         assert!(Cli::try_parse_from(["lab", "server", "import", "--all", "--yes"]).is_ok());
+        assert!(Cli::try_parse_from(["lab", "server", "discover", "--explain"]).is_ok());
+        assert!(Cli::try_parse_from(["lab", "server", "import", "--all", "--dry-run"]).is_ok());
         assert!(Cli::try_parse_from(["lab", "server", "quarantine", "list"]).is_ok());
         assert!(
             Cli::try_parse_from(["lab", "server", "quarantine", "restore", "gateway-alpha"])
@@ -363,7 +365,7 @@ mod tests {
             Cli::try_parse_from(["lab", "server", "cleanup", "fixture-http", "--aggressive",])
                 .is_ok()
         );
-        // Cloudflare-parity: only `gateway code exec` survives. Discovery stays
+        // Cloudflare-parity: only `code run` survives. Discovery stays
         // inside the Code Mode runtime.
         assert!(
             Cli::try_parse_from([
@@ -374,7 +376,7 @@ mod tests {
                 "async () => tools.slice(0, 3)",
             ])
             .is_err(),
-            "`gateway code search` was removed per spec — only `gateway code exec` is supported"
+            "`code search` was removed per spec — only `code run` is supported"
         );
         assert!(Cli::try_parse_from(["lab", "code", "schema", "github::search_issues"]).is_err());
         assert!(

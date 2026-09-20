@@ -204,56 +204,6 @@ impl HostArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct PluginArgs {
-    #[command(subcommand)]
-    pub command: PluginCommand,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum PluginCommand {
-    /// List installed plugins.
-    List {
-        /// Bypass the short in-process cache.
-        #[arg(long)]
-        force: bool,
-    },
-    /// Install a service plugin.
-    Install(setup::PluginMutationArgs),
-    /// Uninstall a service plugin.
-    Uninstall(setup::PluginMutationArgs),
-    /// Synchronize plugin options into the existing installation environment.
-    Sync(setup::PluginSyncArgs),
-    /// Export plugin configuration. Output can contain sensitive values.
-    Export,
-    /// Check plugin connectivity to the selected Labby server.
-    Check {
-        #[arg(long)]
-        server_url: Option<String>,
-    },
-    /// Run the binary-owned local plugin setup hook.
-    Hook {
-        #[arg(long)]
-        no_repair: bool,
-    },
-}
-
-impl PluginArgs {
-    pub fn operation(self) -> super::Command {
-        setup_action(match self.command {
-            PluginCommand::List { force } => setup::SetupCommand::InstalledPlugins { force },
-            PluginCommand::Install(args) => setup::SetupCommand::InstallPlugin(args),
-            PluginCommand::Uninstall(args) => setup::SetupCommand::UninstallPlugin(args),
-            PluginCommand::Sync(args) => setup::SetupCommand::PluginSync(args),
-            PluginCommand::Export => setup::SetupCommand::PluginExport,
-            PluginCommand::Check { server_url } => {
-                setup::SetupCommand::PluginConnectivity { server_url }
-            }
-            PluginCommand::Hook { no_repair } => setup::SetupCommand::PluginHook { no_repair },
-        })
-    }
-}
-
-#[derive(Debug, Args)]
 pub struct ConfigArgs {
     #[command(subcommand)]
     pub command: ConfigCommand,
@@ -265,8 +215,6 @@ pub enum ConfigCommand {
     Show,
     /// Validate the host configuration without changing files or starting services.
     Check,
-    /// Report joined service configuration, setup draft, and plugin state.
-    Status,
     /// Manage the local setup draft.
     Draft(setup::DraftArgs),
     /// Configure defaults for the ephemeral MCP proxy.
@@ -291,7 +239,6 @@ impl ConfigArgs {
             ConfigCommand::Check => {
                 return super::Command::ConfigInspect(super::config_inspect::Operation::Check);
             }
-            ConfigCommand::Status => setup::SetupCommand::ServicesStatus,
             ConfigCommand::Draft(args) => setup::SetupCommand::Draft(args),
             ConfigCommand::Proxy {
                 command: ProxyConfigCommand::Set(args),

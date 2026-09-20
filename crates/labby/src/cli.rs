@@ -146,8 +146,6 @@ pub enum Command {
     Setup(setup::SetupArgs),
     /// Install, update, or operate the host service and its Incus deployment.
     Host(operator::HostArgs),
-    /// Manage installed plugins and their configuration.
-    Plugin(operator::PluginArgs),
     /// Inspect setup state and manage drafts or proxy defaults.
     Config(operator::ConfigArgs),
     /// Migrate, export, verify, or restore durable installation state offline.
@@ -193,7 +191,6 @@ impl Command {
         match self {
             Self::Auth(args) => args.operation(),
             Self::Host(args) => args.operation(),
-            Self::Plugin(args) => args.operation(),
             Self::Config(args) => args.operation(),
             #[cfg(feature = "gateway")]
             Self::Server(args) => Self::Gateway(gateway::GatewayArgs {
@@ -235,7 +232,6 @@ impl Command {
             Self::Context(_) => "context",
             Self::Auth(_) => "auth",
             Self::Host(_) => "host",
-            Self::Plugin(_) => "plugin",
             Self::Config(_) => "config",
             Self::Serve(_) => "serve",
             Self::Mcp(_) => "mcp",
@@ -302,9 +298,9 @@ fn dispatch_inner(mut cli: Cli, mut config: LabConfig) -> impl Future<Output = R
             Command::ConfigInspect(operation) => config_inspect::run(operation, format),
             Command::Help(args) => help::run(args, format),
             Command::Context(args) => context::run(args, server, team_id, format).await,
-            Command::Auth(_) | Command::Host(_) | Command::Plugin(_) | Command::Config(_) => Err(
-                anyhow::anyhow!("internal CLI lowering failure; no operation was dispatched"),
-            ),
+            Command::Auth(_) | Command::Host(_) | Command::Config(_) => Err(anyhow::anyhow!(
+                "internal CLI lowering failure; no operation was dispatched"
+            )),
             #[cfg(feature = "gateway")]
             Command::Server(_) | Command::Route(_) | Command::Loadout(_) | Command::Code(_) => {
                 Err(anyhow::anyhow!(
@@ -696,10 +692,6 @@ mod tests {
         let error = Cli::try_parse_from(["labby", "setup", "install-plugin", "gateway", "-y"])
             .expect_err("retired setup install-plugin must stay unavailable");
         assert!(error.to_string().contains("unrecognized subcommand"));
-
-        let cli = Cli::try_parse_from(["labby", "plugin", "install", "gateway", "-y"])
-            .expect("plugin install parses");
-        assert!(matches!(cli.command.into_operation(), Command::Setup(_)));
     }
 
     #[test]

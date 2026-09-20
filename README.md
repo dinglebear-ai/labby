@@ -724,8 +724,9 @@ removed; operators run `labby setup` themselves. Do not reintroduce a `hooks/`
 directory, bundle a binary under `plugins/labby/bin/`, or add
 Docker/systemd bootstrap logic to plugin assets.
 
-`labby plugin hook` remains a CLI command for on-demand audit and settings
-sync (`--no-repair` for read-only), exercised by `just validate-plugin`.
+`just validate-plugin` runs the supported read-only `labby setup check` flow
+against an isolated Labby home. Plugin lifecycle hooks and per-service plugin
+mutation commands remain retired.
 
 ## Related Servers
 

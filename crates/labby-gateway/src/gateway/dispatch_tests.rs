@@ -4796,6 +4796,18 @@ fn shape_include_existing_false_filters_out_already_configured_servers() {
 
 // ── handle_import and handle_discover validation branch tests ──────────
 
+#[test]
+fn discovery_web_and_cli_default_payloads_normalize_identically() {
+    let web: GatewayDiscoverParams = serde_json::from_value(json!({})).unwrap();
+    let cli: GatewayDiscoverParams = serde_json::from_value(json!({
+        "clients": [],
+        "include_existing": false,
+        "explain": false
+    }))
+    .unwrap();
+    assert_eq!(web, cli);
+}
+
 #[tokio::test]
 async fn gateway_import_rejects_empty_params() {
     let manager = test_manager();
@@ -4865,6 +4877,75 @@ async fn gateway_import_result_has_correct_shape() {
         result.get("imported").is_some(),
         "should have imported field"
     );
+}
+
+#[tokio::test]
+async fn gateway_discover_explain_reports_scan_without_changing_default_shape() {
+    let manager = test_manager();
+    let home = tempfile::tempdir().expect("tempdir");
+    let config_path = home.path().join(".cursor/mcp.json");
+    std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &config_path,
+        r#"{"mcpServers":{"fixture":{"command":"fixture-secret-free"}}}"#,
+    )
+    .unwrap();
+    let _home_guard = crate::gateway::discovery::TestHomeDirGuard::set(home.path().to_path_buf());
+
+    let ordinary =
+        dispatch_with_manager(&manager, "gateway.discover", json!({"clients":["cursor"]}))
+            .await
+            .unwrap();
+    assert!(ordinary.is_array());
+
+    let explained = dispatch_with_manager(
+        &manager,
+        "gateway.discover",
+        json!({"clients":["cursor"], "explain":true}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(explained["servers"][0]["name"], "fixture");
+    assert_eq!(
+        explained["explanation"]["scanned_clients"],
+        json!(["cursor"])
+    );
+    assert_eq!(
+        explained["explanation"]["discovered_by_client"]["cursor"],
+        1
+    );
+    assert_eq!(
+        explained["explanation"]["matched_paths"],
+        json!([config_path])
+    );
+}
+
+#[tokio::test]
+async fn gateway_import_dry_run_returns_plan_without_mutating_config() {
+    let manager = test_manager();
+    let home = tempfile::tempdir().expect("tempdir");
+    let config_path = home.path().join(".cursor/mcp.json");
+    std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &config_path,
+        r#"{"mcpServers":{"fixture":{"command":"fixture-command","env":{"TOKEN":"secret"}}}}"#,
+    )
+    .unwrap();
+    let _home_guard = crate::gateway::discovery::TestHomeDirGuard::set(home.path().to_path_buf());
+
+    let result = dispatch_with_manager(
+        &manager,
+        "gateway.import",
+        json!({"all":true, "clients":["cursor"], "dry_run":true}),
+    )
+    .await
+    .unwrap();
+
+    assert!(result["imported"].as_array().unwrap().is_empty());
+    assert_eq!(result["planned"][0]["name"], "fixture");
+    assert_eq!(result["planned"][0]["transport"], "stdio");
+    assert!(!result.to_string().contains("secret"));
+    assert!(manager.current_config().await.upstream.is_empty());
 }
 
 // --- lab-l3cm regression: public dispatch() must handle built-ins before manager resolution ---
@@ -4997,6 +5078,7 @@ fn already_configured_flag_set_when_name_in_existing() {
         &GatewayDiscoverParams {
             include_existing: true,
             clients: vec![],
+            explain: false,
         },
     );
     assert_eq!(views.len(), 1);

@@ -148,11 +148,7 @@ fn render_outcome(outcome: UpdateOutcome, format: OutputFormat) -> Result<()> {
         return Ok(());
     }
     if outcome.dry_run {
-        println!(
-            "dry-run: would install labby {} to {}",
-            outcome.version,
-            outcome.binary.display()
-        );
+        println!("dry-run: validated the requested Labby installation update");
     } else {
         println!("updated labby: {}", outcome.binary.display());
     }

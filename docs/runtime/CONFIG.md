@@ -443,7 +443,7 @@ it. A Unix-socket upstream requires `transport = "unix_socket"`, a `socket_path`
 request path and `Host` authority; a custom `Authorization` header is rejected so
 credentials stay in `bearer_token_env` or `[upstream.oauth]`.
 
-Use `labby gateway add`, `update`, `remove`, `reload`, and related
+Use `labby server add`, `update`, `remove`, `reload`, and related
 commands rather than editing active gateway state concurrently by hand.
 
 To recover disconnected upstream MCP servers automatically, enable the
@@ -489,7 +489,7 @@ tokens, authorization codes, or client secrets in TOML.
 
 ## Direct Stdio Proxy
 
-`labby setup proxy` writes all ten non-secret `[proxy]` keys to
+`labby config proxy set` writes all ten non-secret `[proxy]` keys to
 `$LABBY_HOME/config.toml`. Bearer material is stored separately in
 `$LABBY_HOME/.env` under the configured `proxy.bearer_token_env` key. The
 default key is `LABBY_PROXY_BEARER_TOKEN`; it is separate from the daemon

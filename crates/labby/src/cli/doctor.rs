@@ -4,7 +4,7 @@
 //!   labby doctor              — full audit (system + auth + gateway + relay)
 //!   labby doctor system       — local system checks only
 //!   labby doctor auth         — auth/OAuth configuration checks
-//!   labby doctor oauth-relay  — public OAuth callback relay registry checks
+//!   labby doctor relay  — public OAuth callback relay registry checks
 //!
 //! Exit codes: 0 = ok, 1 = warnings, 2 = failures.
 

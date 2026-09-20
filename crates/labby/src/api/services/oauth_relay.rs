@@ -170,7 +170,7 @@ pub(crate) fn admin_descriptors() -> Vec<crate::api::route_registry::RouteDescri
 /// Per `docs/runtime/OAUTH.md`, `/healthz` only reports process-alive,
 /// relay-enabled, and registry-loaded from the already-validated in-memory
 /// manager snapshot — it never touches disk. Deep persisted-vs-live
-/// staleness detection belongs to `labby doctor oauth-relay`
+/// staleness detection belongs to `labby doctor relay`
 /// (`crate::dispatch::doctor::relay::check_public_relay`), which is an
 /// authenticated/operator-triggered check, not a public unauthenticated one.
 async fn healthz(State(state): State<AppState>) -> impl IntoResponse {

@@ -27,8 +27,8 @@ use super::params::{
     VirtualServerSurfaceParams,
 };
 use super::types::{
-    DiscoveredServerView, ImportErrorView, ImportSkipReason, ImportSkipView,
-    McpClientTransportType, ServiceActionView,
+    DiscoveredServerView, DiscoveryExplanationView, ExplainedDiscoveryView, ImportErrorView,
+    ImportPlanView, ImportSkipReason, ImportSkipView, McpClientTransportType, ServiceActionView,
 };
 
 fn parse_params<T: DeserializeOwned>(params_value: Value) -> Result<T, ToolError> {
@@ -246,22 +246,32 @@ async fn handle_discover(
         message: "cannot determine home directory".to_string(),
     })?;
 
-    let mut discovered = tokio::task::spawn_blocking(move || super::discovery::discover_all(&home))
-        .await
-        .map_err(|e| ToolError::internal_message(format!("discovery task panicked: {e}")))?;
-    if !params.clients.is_empty() {
-        let filter: std::collections::HashSet<&str> =
-            params.clients.iter().map(String::as_str).collect();
-        discovered.retain(|s| filter.contains(s.source_client.as_str()));
-    }
+    let clients = params.clients.clone();
+    let report = tokio::task::spawn_blocking(move || {
+        super::discovery::discover_with_report(&home, &clients)
+    })
+    .await
+    .map_err(|e| ToolError::internal_message(format!("discovery task panicked: {e}")))?;
 
     let cfg = manager.current_config().await;
     let existing: std::collections::HashSet<String> =
         cfg.upstream.iter().map(|u| u.name.clone()).collect();
 
-    let views = shape_discovered_views(discovered, &cfg, &existing, &params);
+    let views = shape_discovered_views(report.servers, &cfg, &existing, &params);
 
-    to_json(views)
+    if params.explain {
+        to_json(ExplainedDiscoveryView {
+            servers: views,
+            explanation: DiscoveryExplanationView {
+                scanned_clients: report.scanned_clients,
+                matched_paths: report.matched_paths,
+                discovered_by_client: report.discovered_by_client,
+                duplicates_omitted: report.duplicates_omitted,
+            },
+        })
+    } else {
+        to_json(views)
+    }
 }
 
 fn shape_discovered_views(
@@ -371,6 +381,26 @@ async fn handle_import(
     let cfg = manager.current_config().await;
     let (mut result, specs_to_add) =
         super::manager::partition_discovered_for_import(&cfg, to_import);
+
+    if params.dry_run {
+        result.planned = specs_to_add
+            .iter()
+            .map(|spec| {
+                let source = spec.imported_from.as_ref();
+                ImportPlanView {
+                    name: spec.name.clone(),
+                    source_client: source.map(|value| value.client.clone()).unwrap_or_default(),
+                    source_path: source.map(|value| value.path.clone()).unwrap_or_default(),
+                    transport: if spec.url.is_some() {
+                        McpClientTransportType::Http
+                    } else {
+                        McpClientTransportType::Stdio
+                    },
+                }
+            })
+            .collect();
+        return to_json(result);
+    }
 
     if !specs_to_add.is_empty() {
         let outcome = manager

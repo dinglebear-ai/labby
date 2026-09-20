@@ -499,7 +499,7 @@ pub(crate) struct CodeModeSetParams {
 }
 
 /// Parameters for `gateway.discover` — read-only scan of external MCP configs.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct GatewayDiscoverParams {
     /// Limit discovery to these client kinds (e.g. `["cursor", "vscode"]`).
     /// Empty means scan all supported clients.
@@ -508,10 +508,13 @@ pub(crate) struct GatewayDiscoverParams {
     /// Also return servers whose name already exists in the gateway config.
     #[serde(default)]
     pub include_existing: bool,
+    /// Return redacted scan diagnostics alongside discovered servers.
+    #[serde(default)]
+    pub explain: bool,
 }
 
 /// Parameters for `gateway.import` — import discovered servers (disabled by default).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct GatewayImportParams {
     /// Specific server names to import. Mutually exclusive with `all`.
     #[serde(default)]
@@ -522,4 +525,7 @@ pub(crate) struct GatewayImportParams {
     /// Limit discovery to these client kinds. Empty means scan all.
     #[serde(default)]
     pub clients: Vec<String>,
+    /// Preview the exact import selection without mutating gateway configuration.
+    #[serde(default)]
+    pub dry_run: bool,
 }

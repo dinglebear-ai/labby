@@ -82,7 +82,7 @@ X-Custom-Auth = "unique-header-credential"
         ] {
             assert!(
                 !serialized.contains(secret),
-                "config output disclosed {secret}"
+                "config output disclosed a credential fixture"
             );
         }
         assert_eq!(output["upstream"][0]["env"]["DATABASE_URL"], "[redacted]");

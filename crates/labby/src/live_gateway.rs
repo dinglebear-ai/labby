@@ -16,7 +16,7 @@
 //! gateway's configured public URLs (`LABBY_MCP_GATEWAY_URL`,
 //! `LABBY_PUBLIC_URL`). Only exhaustion of that bounded candidate walk permits
 //! standalone local behavior, and only for the few paths that still have one
-//! (stdio MCP serving, `gateway code exec`, `gateway list`). Gateway *actions*
+//! (stdio MCP serving, `code run`, `gateway list`). Gateway *actions*
 //! dispatched from the CLI fail closed with `daemon_unavailable` when no daemon
 //! is reachable: they may be scoped by the daemon's authenticated caller and
 //! selected Team, and a one-shot local manager has neither.

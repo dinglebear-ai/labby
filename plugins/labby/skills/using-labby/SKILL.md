@@ -35,10 +35,10 @@ service actions, read `docs/generated/service-catalog.md` and
 | `labby serve` | Start the HTTP/API server |
 | `labby doctor` | Audit config, auth, and runtime health |
 | `labby gateway status` | Quick availability check |
-| `labby setup` | First-run/setup and plugin install flows |
+| `labby setup` | First-run onboarding plus local setup check and repair flows |
 | `labby gateway ...` | Manage proxied upstream MCP gateways and Code Mode |
-| `labby server discover` | Scan local MCP client configs for upstream servers |
-| `labby server import [-y]` | Import discovered MCP servers into the gateway |
+| `labby server discover [--explain]` | Scan gateway-host MCP client configs for upstream servers |
+| `labby server import [--dry-run] [-y]` | Preview or import discovered MCP servers into the gateway |
 | `labby logs ...` | Read or follow Labby service logs |
 | `labby host incus ...` | Manage the supported Incus gateway container |
 | `labby host update ...` | Install a selected or latest Labby release |

@@ -110,8 +110,8 @@ pub async fn run(args: StateArgs, format: OutputFormat) -> Result<ExitCode> {
             "{} durable-state entries verified (manifest v{})",
             outcome.entries_verified, outcome.manifest_version
         );
-        if let Some(warning) = &outcome.maintenance_warning {
-            eprintln!("restore committed with maintenance warning: {warning}");
+        if outcome.maintenance_warning.is_some() {
+            eprintln!("restore committed with a maintenance warning; use --json for details");
         }
     }
     Ok(ExitCode::SUCCESS)

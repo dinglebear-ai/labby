@@ -10,7 +10,7 @@ use tokio::process::Command;
 #[cfg(feature = "gateway")]
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
-    matchers::{method, path},
+    matchers::{body_partial_json, method, path},
 };
 
 fn command(home: &Path, args: &[&str]) -> Command {
@@ -98,12 +98,32 @@ async fn configuration_inspection_and_context_reads_are_nonmutating_and_redacted
     let root = home.path().join(".labby");
     std::fs::create_dir(&root).unwrap();
     let path = root.join("config.toml");
-    let content = "[custom]\ntoken = \"do-not-print-config-secret\"\n";
+    let content = r#"
+[custom]
+token = "do-not-print-config-secret"
+
+[[upstream]]
+name = "secret-fixture"
+url = "https://user:url-password@example.invalid/mcp?api_key=query-secret"
+headers = { X_Arbitrary_Credential = "header-secret" }
+env = { STRANGE_PRIVATE_VALUE = "env-secret" }
+"#;
     std::fs::write(&path, content).unwrap();
     let before = std::fs::read(&path).unwrap();
     let shown = run(home.path(), &["--json", "config", "show"]).await;
     success(&shown);
     assert!(!String::from_utf8_lossy(&shown.stdout).contains("do-not-print-config-secret"));
+    for secret in [
+        "url-password",
+        "query-secret",
+        "header-secret",
+        "env-secret",
+    ] {
+        assert!(
+            !String::from_utf8_lossy(&shown.stdout).contains(secret),
+            "config show leaked a credential fixture"
+        );
+    }
     assert_eq!(
         success(&run(home.path(), &["--json", "config", "check"]).await)["valid"],
         true
@@ -195,6 +215,167 @@ async fn guided_inputs_are_never_requested_by_json_or_noninteractive_commands() 
     assert_eq!(value["executed"], false);
     assert_eq!(value["action"], "gateway.add");
     assert!(gateway.received_requests().await.unwrap().is_empty());
+}
+
+#[cfg(feature = "gateway")]
+#[tokio::test]
+async fn oauth_wait_json_is_single_document_url_is_stderr_and_timeout_fails() {
+    let home = tempfile::tempdir().unwrap();
+    let gateway = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/health"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&gateway)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/gateway/actions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"name":"gateway.reload"},
+            {"name":"gateway.oauth.start"},
+            {"name":"gateway.oauth.wait"}
+        ])))
+        .mount(&gateway)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/gateway"))
+        .and(body_partial_json(json!({"action":"gateway.oauth.start"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "authorization_url":"https://authorize.example.test/session"
+        })))
+        .mount(&gateway)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/gateway"))
+        .and(body_partial_json(json!({"action":"gateway.oauth.wait"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"authenticated":false})))
+        .mount(&gateway)
+        .await;
+
+    let output = run(
+        home.path(),
+        &[
+            "--json",
+            "--server",
+            &gateway.uri(),
+            "server",
+            "auth",
+            "login",
+            "fixture",
+            "--no-browser",
+            "--wait",
+            "--timeout",
+            "1s",
+        ],
+    )
+    .await;
+    assert!(!output.status.success());
+    let parsed = serde_json::from_slice(&output.stdout);
+    assert!(
+        parsed.is_ok(),
+        "stdout is one JSON document; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: Value = parsed.unwrap();
+    assert_eq!(value["authenticated"], false);
+    assert_eq!(value["timed_out"], true);
+    assert_eq!(
+        value["authorization_url"],
+        "https://authorize.example.test/session"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("https://authorize.example.test/session"));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout)
+            .matches('\n')
+            .count(),
+        1
+    );
+}
+
+#[cfg(feature = "gateway")]
+#[tokio::test]
+async fn discovery_and_import_flags_reach_the_shared_gateway_actions() {
+    let home = tempfile::tempdir().unwrap();
+    let gateway = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/health"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&gateway)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/gateway/actions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"name":"gateway.reload"},
+            {"name":"gateway.discover"},
+            {"name":"gateway.import"}
+        ])))
+        .mount(&gateway)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/gateway"))
+        .and(body_partial_json(json!({
+            "action":"gateway.discover",
+            "params":{"clients":["cursor"],"include_existing":false,"explain":true}
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "servers":[],
+            "explanation":{"scanned_clients":["cursor"],"matched_paths":[],"discovered_by_client":{"cursor":0},"duplicates_omitted":0}
+        })))
+        .expect(1)
+        .mount(&gateway)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/gateway"))
+        .and(body_partial_json(json!({
+            "action":"gateway.import",
+            "params":{"all":true,"names":[],"clients":["cursor"],"dry_run":true}
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "imported":[],"planned":[]
+        })))
+        .expect(1)
+        .mount(&gateway)
+        .await;
+
+    let discovered = success(
+        &run(
+            home.path(),
+            &[
+                "--json",
+                "--server",
+                &gateway.uri(),
+                "server",
+                "discover",
+                "--clients",
+                "cursor",
+                "--explain",
+            ],
+        )
+        .await,
+    );
+    assert_eq!(
+        discovered["explanation"]["scanned_clients"],
+        json!(["cursor"])
+    );
+
+    let preview = success(
+        &run(
+            home.path(),
+            &[
+                "--json",
+                "--server",
+                &gateway.uri(),
+                "server",
+                "import",
+                "--all",
+                "--clients",
+                "cursor",
+                "--dry-run",
+            ],
+        )
+        .await,
+    );
+    assert_eq!(preview["imported"], json!([]));
 }
 
 #[cfg(feature = "gateway")]

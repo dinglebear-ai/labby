@@ -31,7 +31,7 @@ to the registered machine target. Codex or the MCP client still owns PKCE,
 - Current upstream: Labby on Dookie, `http://10.1.0.6:40100`.
 - Rollback upstream: `callback-relay:39001`.
 - Public relay health path: `/healthz`.
-- Deep registry/target check: `labby doctor oauth-relay --probe-targets`.
+- Deep registry/target check: `labby doctor relay --probe-targets`.
 
 The checked-in Labby implementation owns the public relay registry, forwarding
 policy, admin surface, and doctor checks. SWAG owns only the public reverse-proxy

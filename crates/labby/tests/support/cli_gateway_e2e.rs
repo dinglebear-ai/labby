@@ -19,7 +19,25 @@ pub(crate) async fn run() {
     let owned = tempfile::tempdir().expect("owned gateway CLI home");
     std::fs::create_dir_all(owned.path().join("tmp")).unwrap();
     let upstream_script = owned.path().join("upstream.py");
-    std::fs::write(&upstream_script, "raise SystemExit\n").expect("owned upstream fixture");
+    std::fs::write(
+        &upstream_script,
+        r#"import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    if "id" not in request:
+        continue
+    method = request.get("method")
+    if method == "initialize":
+        result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}}, "serverInfo": {"name": "cli-lifecycle-fixture", "version": "1"}}
+    elif method == "tools/list":
+        result = {"tools": []}
+    else:
+        print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "error": {"code": -32601, "message": "Method not found"}}), flush=True)
+        continue
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+"#,
+    )
+    .expect("owned upstream fixture");
     let upstream_script = upstream_script.to_str().expect("UTF-8 fixture path");
 
     let add = success(
@@ -196,7 +214,10 @@ pub(crate) async fn run() {
         &["server", "disable", UPSTREAM, "--json"],
     )
     .await;
-    assert_eq!(disabled["gateway"]["config"]["enabled"], false);
+    assert_eq!(
+        disabled["results"][0]["result"]["gateway"]["config"]["enabled"],
+        false
+    );
     assert_eq!(
         success(&guard, owned.path(), &["server", "get", UPSTREAM, "--json"]).await["config"]["enabled"],
         false
@@ -213,7 +234,7 @@ pub(crate) async fn run() {
         &["server", "enable", UPSTREAM, "--json"],
     )
     .await;
-    assert_eq!(enabled["config"]["enabled"], true);
+    assert_eq!(enabled["results"][0]["result"]["config"]["enabled"], true);
     assert_eq!(
         success(&guard, owned.path(), &["server", "get", UPSTREAM, "--json"]).await["config"]["enabled"],
         true
@@ -230,8 +251,11 @@ pub(crate) async fn run() {
         &["server", "restart", UPSTREAM, "--json"],
     )
     .await;
-    assert_eq!(restarted["gateway"]["config"]["name"], UPSTREAM);
-    assert!(restarted.get("cleanup").is_some());
+    assert_eq!(
+        restarted["results"][0]["result"]["gateway"]["config"]["name"],
+        UPSTREAM
+    );
+    assert!(restarted["results"][0]["result"].get("cleanup").is_some());
     record(
         "gateway:gateway.mcp.restart",
         EvidenceLevel::LiveStateTransition,

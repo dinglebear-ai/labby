@@ -985,18 +985,15 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
     let release = fs::read_to_string(repo_root().join(".github/workflows/release.yml"))
         .expect("read release workflow");
     assert!(
-        release.matches("skills --help").count() >= 2
-            && release
-                .matches("Read Agent Skills visible to the local CLI")
-                .count()
-                >= 2,
+        release.matches("skill --help").count() >= 2
+            && release.matches("Read locally visible skills").count() >= 2,
         "Unix and Windows release artifacts must prove the compiled Skills surface"
     );
     let incus_smoke = fs::read_to_string(repo_root().join("scripts/ci/smoke-incus-image.sh"))
         .expect("read Incus smoke script");
     assert!(
         incus_smoke.contains("labby skill --help")
-            && incus_smoke.contains("Read Agent Skills visible to the local CLI"),
+            && incus_smoke.contains("Read locally visible skills"),
         "the baked Incus binary must prove the compiled Skills surface"
     );
 

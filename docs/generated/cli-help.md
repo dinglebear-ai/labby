@@ -24,7 +24,6 @@ Commands:
   logs         Query bounded local process logs, or explicitly select the deployment journal
   setup        Guide onboarding, check prerequisites, or explicitly repair local setup
   host         Install, update, or operate the host service and its Incus deployment
-  plugin       Manage installed plugins and their configuration
   config       Inspect setup state and manage drafts or proxy defaults
   state        Migrate, export, verify, or restore durable installation state offline
   serve        Run the Labby HTTP runtime in the foreground
@@ -2853,6 +2852,9 @@ Options:
       --include-existing
           Also show servers already present in the gateway config
 
+      --explain
+          Explain which clients and matching config paths produced the result
+
   -v, --verbose...
           Include diagnostic events on stderr. Repeat for trace-level detail
 
@@ -2909,6 +2911,9 @@ Options:
 
   -y, --yes
           Skip confirmation for the destructive config import
+
+      --dry-run
+          Preview the import plan without changing gateway configuration
 
       --no-input
           Never prompt for missing input or confirmation
@@ -3115,8 +3120,8 @@ Inspect or restore quarantined virtual servers
 Usage: labby server quarantine [OPTIONS] <COMMAND>
 
 Commands:
-  list     List Lab-backed virtual servers quarantined during config migration
-  restore  Restore a quarantined Lab-backed virtual server into the active gateway list
+  list     List Labby-backed virtual servers quarantined during config migration
+  restore  Restore a quarantined Labby-backed virtual server into the active gateway list
 
 Options:
       --json
@@ -3153,7 +3158,7 @@ Options:
 ## `labby server quarantine list`
 
 ```text
-List Lab-backed virtual servers quarantined during config migration
+List Labby-backed virtual servers quarantined during config migration
 
 Usage: labby server quarantine list [OPTIONS]
 
@@ -3192,7 +3197,7 @@ Options:
 ## `labby server quarantine restore`
 
 ```text
-Restore a quarantined Lab-backed virtual server into the active gateway list
+Restore a quarantined Labby-backed virtual server into the active gateway list
 
 Usage: labby server quarantine restore [OPTIONS] <ID>
 
@@ -3240,7 +3245,7 @@ Manage public protected MCP routes. Use replace for full configuration replaceme
 Usage: labby route [OPTIONS] <COMMAND>
 
 Commands:
-  list     List Gateway-managed public MCP routes protected by Lab OAuth
+  list     List Gateway-managed public MCP routes protected by Labby OAuth
   get      Get one Gateway-managed protected MCP route
   add      Add a Gateway-managed protected MCP route
   replace  Replace a Gateway-managed protected MCP route
@@ -3282,7 +3287,7 @@ Options:
 ## `labby route list`
 
 ```text
-List Gateway-managed public MCP routes protected by Lab OAuth
+List Gateway-managed public MCP routes protected by Labby OAuth
 
 Usage: labby route list [OPTIONS]
 
@@ -3422,7 +3427,7 @@ Options:
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --gateway-subset
-          Expose a scoped Lab gateway MCP surface instead of proxying one backend
+          Expose a scoped Labby gateway MCP surface instead of proxying one backend
 
       --project-id <PROJECT_ID>
           Bind this gateway subset to an access-control project
@@ -3434,7 +3439,7 @@ Options:
           Upstream names to expose for --gateway-subset. Repeat or comma-separate
 
       --target-service <TARGET_SERVICE>
-          Built-in Lab service names to expose for --gateway-subset. Repeat or comma-separate
+          Built-in Labby service names to expose for --gateway-subset. Repeat or comma-separate
 
       --expose-code-mode
           Expose codemode on this gateway subset
@@ -3510,7 +3515,7 @@ Options:
 
 
       --gateway-subset
-          Expose a scoped Lab gateway MCP surface instead of proxying one backend
+          Expose a scoped Labby gateway MCP surface instead of proxying one backend
 
       --project-id <PROJECT_ID>
           Bind this gateway subset to an access-control project
@@ -3525,7 +3530,7 @@ Options:
           Upstream names to expose for --gateway-subset. Repeat or comma-separate
 
       --target-service <TARGET_SERVICE>
-          Built-in Lab service names to expose for --gateway-subset. Repeat or comma-separate
+          Built-in Labby service names to expose for --gateway-subset. Repeat or comma-separate
 
       --expose-code-mode
           Expose codemode on this gateway subset
@@ -3644,7 +3649,7 @@ Options:
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --gateway-subset
-          Expose a scoped Lab gateway MCP surface instead of proxying one backend
+          Expose a scoped Labby gateway MCP surface instead of proxying one backend
 
       --project-id <PROJECT_ID>
           Bind this gateway subset to an access-control project
@@ -3656,7 +3661,7 @@ Options:
           Upstream names to expose for --gateway-subset. Repeat or comma-separate
 
       --target-service <TARGET_SERVICE>
-          Built-in Lab service names to expose for --gateway-subset. Repeat or comma-separate
+          Built-in Labby service names to expose for --gateway-subset. Repeat or comma-separate
 
       --expose-code-mode
           Expose codemode on this gateway subset
@@ -3824,7 +3829,7 @@ Options:
           Upstream names selected by this Loadout. Repeat or comma-separate
 
       --service <SERVICES>
-          Built-in Lab services selected by this Loadout. Repeat or comma-separate
+          Built-in Labby services selected by this Loadout. Repeat or comma-separate
 
   -v, --verbose...
           Include diagnostic events on stderr. Repeat for trace-level detail
@@ -5532,7 +5537,7 @@ Commands:
   auth    Check auth/OAuth configuration (env vars, files, permissions)
   relay   Check public OAuth callback relay registry and optionally target sockets
   proxy   Check public Lab and protected MCP proxy endpoints from caller-visible URLs
-  system  Run local system checks (env vars, Docker, disk, toolchain)
+  system  Run local system checks (env vars, disk, toolchain)
 
 Options:
       --json
@@ -5704,7 +5709,7 @@ Options:
 ## `labby doctor system`
 
 ```text
-Run local system checks (env vars, Docker, disk, toolchain)
+Run local system checks (env vars, disk, toolchain)
 
 Usage: labby doctor system [OPTIONS]
 
@@ -7256,362 +7261,6 @@ Options:
           Print help
 ```
 
-## `labby plugin`
-
-```text
-Manage installed plugins and their configuration
-
-Usage: labby plugin [OPTIONS] <COMMAND>
-
-Commands:
-  list       List installed plugins
-  install    Install a service plugin
-  uninstall  Uninstall a service plugin
-  sync       Synchronize plugin options into the existing installation environment
-  export     Export plugin configuration. Output can contain sensitive values
-  check      Check plugin connectivity to the selected Labby server
-  hook       Run the binary-owned local plugin setup hook
-
-Options:
-      --json
-          Emit machine-readable JSON. Diagnostics never enter stdout
-
-      --color <COLOR>
-          Control human-readable CLI styling
-
-          [default: auto]
-          [possible values: auto, plain, color]
-
-  -v, --verbose...
-          Include diagnostic events on stderr. Repeat for trace-level detail
-
-  -q, --quiet
-          Suppress console logs, but always report command errors
-
-      --no-input
-          Never prompt for missing input or confirmation
-
-      --context <CONTEXT>
-          Select a saved destination for a daemon-backed command. Never falls back locally
-
-      --server <SERVER>
-          Explicit Labby server URL; uses credentials bound to that destination
-
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
-
-  -h, --help
-          Print help
-```
-
-## `labby plugin list`
-
-```text
-List installed plugins
-
-Usage: labby plugin list [OPTIONS]
-
-Options:
-      --force
-          Bypass the short in-process cache
-
-      --json
-          Emit machine-readable JSON. Diagnostics never enter stdout
-
-      --color <COLOR>
-          Control human-readable CLI styling
-
-          [default: auto]
-          [possible values: auto, plain, color]
-
-  -v, --verbose...
-          Include diagnostic events on stderr. Repeat for trace-level detail
-
-  -q, --quiet
-          Suppress console logs, but always report command errors
-
-      --no-input
-          Never prompt for missing input or confirmation
-
-      --context <CONTEXT>
-          Select a saved destination for a daemon-backed command. Never falls back locally
-
-      --server <SERVER>
-          Explicit Labby server URL; uses credentials bound to that destination
-
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
-
-  -h, --help
-          Print help
-```
-
-## `labby plugin install`
-
-```text
-Install a service plugin
-
-Usage: labby plugin install [OPTIONS] <SERVICE>
-
-Arguments:
-  <SERVICE>
-          Service name, for example `unifi` or `apprise`
-
-Options:
-      --json
-          Emit machine-readable JSON. Diagnostics never enter stdout
-
-  -y, --yes
-          Skip confirmation for destructive actions
-
-      --color <COLOR>
-          Control human-readable CLI styling
-
-          [default: auto]
-          [possible values: auto, plain, color]
-
-      --dry-run
-          Print what would be dispatched without executing
-
-  -v, --verbose...
-          Include diagnostic events on stderr. Repeat for trace-level detail
-
-  -q, --quiet
-          Suppress console logs, but always report command errors
-
-      --no-input
-          Never prompt for missing input or confirmation
-
-      --context <CONTEXT>
-          Select a saved destination for a daemon-backed command. Never falls back locally
-
-      --server <SERVER>
-          Explicit Labby server URL; uses credentials bound to that destination
-
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
-
-  -h, --help
-          Print help
-```
-
-## `labby plugin uninstall`
-
-```text
-Uninstall a service plugin
-
-Usage: labby plugin uninstall [OPTIONS] <SERVICE>
-
-Arguments:
-  <SERVICE>
-          Service name, for example `unifi` or `apprise`
-
-Options:
-      --json
-          Emit machine-readable JSON. Diagnostics never enter stdout
-
-  -y, --yes
-          Skip confirmation for destructive actions
-
-      --color <COLOR>
-          Control human-readable CLI styling
-
-          [default: auto]
-          [possible values: auto, plain, color]
-
-      --dry-run
-          Print what would be dispatched without executing
-
-  -v, --verbose...
-          Include diagnostic events on stderr. Repeat for trace-level detail
-
-  -q, --quiet
-          Suppress console logs, but always report command errors
-
-      --no-input
-          Never prompt for missing input or confirmation
-
-      --context <CONTEXT>
-          Select a saved destination for a daemon-backed command. Never falls back locally
-
-      --server <SERVER>
-          Explicit Labby server URL; uses credentials bound to that destination
-
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
-
-  -h, --help
-          Print help
-```
-
-## `labby plugin sync`
-
-```text
-Synchronize plugin options into the existing installation environment
-
-Usage: labby plugin sync [OPTIONS]
-
-Options:
-      --json
-          Emit machine-readable JSON. Diagnostics never enter stdout
-
-  -y, --yes
-          Skip confirmation for this destructive action
-
-      --color <COLOR>
-          Control human-readable CLI styling
-
-          [default: auto]
-          [possible values: auto, plain, color]
-
-      --dry-run
-          Print what would be dispatched without executing
-
-  -v, --verbose...
-          Include diagnostic events on stderr. Repeat for trace-level detail
-
-  -q, --quiet
-          Suppress console logs, but always report command errors
-
-      --no-input
-          Never prompt for missing input or confirmation
-
-      --context <CONTEXT>
-          Select a saved destination for a daemon-backed command. Never falls back locally
-
-      --server <SERVER>
-          Explicit Labby server URL; uses credentials bound to that destination
-
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
-
-  -h, --help
-          Print help
-```
-
-## `labby plugin export`
-
-```text
-Export plugin configuration. Output can contain sensitive values
-
-Usage: labby plugin export [OPTIONS]
-
-Options:
-      --json
-          Emit machine-readable JSON. Diagnostics never enter stdout
-
-      --color <COLOR>
-          Control human-readable CLI styling
-
-          [default: auto]
-          [possible values: auto, plain, color]
-
-  -v, --verbose...
-          Include diagnostic events on stderr. Repeat for trace-level detail
-
-  -q, --quiet
-          Suppress console logs, but always report command errors
-
-      --no-input
-          Never prompt for missing input or confirmation
-
-      --context <CONTEXT>
-          Select a saved destination for a daemon-backed command. Never falls back locally
-
-      --server <SERVER>
-          Explicit Labby server URL; uses credentials bound to that destination
-
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
-
-  -h, --help
-          Print help
-```
-
-## `labby plugin check`
-
-```text
-Check plugin connectivity to the selected Labby server
-
-Usage: labby plugin check [OPTIONS]
-
-Options:
-      --json
-          Emit machine-readable JSON. Diagnostics never enter stdout
-
-      --server-url <SERVER_URL>
-
-
-      --color <COLOR>
-          Control human-readable CLI styling
-
-          [default: auto]
-          [possible values: auto, plain, color]
-
-  -v, --verbose...
-          Include diagnostic events on stderr. Repeat for trace-level detail
-
-  -q, --quiet
-          Suppress console logs, but always report command errors
-
-      --no-input
-          Never prompt for missing input or confirmation
-
-      --context <CONTEXT>
-          Select a saved destination for a daemon-backed command. Never falls back locally
-
-      --server <SERVER>
-          Explicit Labby server URL; uses credentials bound to that destination
-
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
-
-  -h, --help
-          Print help
-```
-
-## `labby plugin hook`
-
-```text
-Run the binary-owned local plugin setup hook
-
-Usage: labby plugin hook [OPTIONS]
-
-Options:
-      --json
-          Emit machine-readable JSON. Diagnostics never enter stdout
-
-      --no-repair
-
-
-      --color <COLOR>
-          Control human-readable CLI styling
-
-          [default: auto]
-          [possible values: auto, plain, color]
-
-  -v, --verbose...
-          Include diagnostic events on stderr. Repeat for trace-level detail
-
-  -q, --quiet
-          Suppress console logs, but always report command errors
-
-      --no-input
-          Never prompt for missing input or confirmation
-
-      --context <CONTEXT>
-          Select a saved destination for a daemon-backed command. Never falls back locally
-
-      --server <SERVER>
-          Explicit Labby server URL; uses credentials bound to that destination
-
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
-
-  -h, --help
-          Print help
-```
-
 ## `labby config`
 
 ```text
@@ -7620,11 +7269,10 @@ Inspect setup state and manage drafts or proxy defaults
 Usage: labby config [OPTIONS] <COMMAND>
 
 Commands:
-  show    Show the redacted host configuration snapshot without applying environment overrides
-  check   Validate the host configuration without changing files or starting services
-  status  Report joined service configuration, setup draft, and plugin state
-  draft   Manage the local setup draft
-  proxy   Configure defaults for the ephemeral MCP proxy
+  show   Show the redacted host configuration snapshot without applying environment overrides
+  check  Validate the host configuration without changing files or starting services
+  draft  Manage the local setup draft
+  proxy  Configure defaults for the ephemeral MCP proxy
 
 Options:
       --json
@@ -7703,45 +7351,6 @@ Options:
 Validate the host configuration without changing files or starting services
 
 Usage: labby config check [OPTIONS]
-
-Options:
-      --json
-          Emit machine-readable JSON. Diagnostics never enter stdout
-
-      --color <COLOR>
-          Control human-readable CLI styling
-
-          [default: auto]
-          [possible values: auto, plain, color]
-
-  -v, --verbose...
-          Include diagnostic events on stderr. Repeat for trace-level detail
-
-  -q, --quiet
-          Suppress console logs, but always report command errors
-
-      --no-input
-          Never prompt for missing input or confirmation
-
-      --context <CONTEXT>
-          Select a saved destination for a daemon-backed command. Never falls back locally
-
-      --server <SERVER>
-          Explicit Labby server URL; uses credentials bound to that destination
-
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
-
-  -h, --help
-          Print help
-```
-
-## `labby config status`
-
-```text
-Report joined service configuration, setup draft, and plugin state
-
-Usage: labby config status [OPTIONS]
 
 Options:
       --json

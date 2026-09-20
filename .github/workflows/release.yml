@@ -162,11 +162,11 @@ jobs:
           LABBY_CODE_MODE_POOL_SIZE: "0"
         run: |
           set -euo pipefail
-          ./dist/${{ matrix.binary }} --json gateway code exec \
+          ./dist/${{ matrix.binary }} --json code run \
             --code 'async () => ({ ok: true, sum: 1 + 1 })' \
             | grep -q '"sum":2'
-          ./dist/${{ matrix.binary }} skills --help \
-            | grep -q 'Read Agent Skills visible to the local CLI'
+          ./dist/${{ matrix.binary }} skill --help \
+            | grep -q 'Read locally visible skills'
 
       - name: Package Windows artifact
         if: runner.os == 'Windows'
@@ -192,15 +192,15 @@ jobs:
           # returns the non-matching lines, so it is truthy for any multi-line
           # output even when the expected text is present. Out-String joins the
           # lines so each check tests one string.
-          $output = & ".\dist\${{ matrix.binary }}" --json gateway code exec --code "async () => ({ ok: true, sum: 1 + 1 })" | Out-String
+          $output = & ".\dist\${{ matrix.binary }}" --json code run --code "async () => ({ ok: true, sum: 1 + 1 })" | Out-String
           if ($LASTEXITCODE -ne 0) {
             throw "Code Mode packaged smoke failed with exit code $LASTEXITCODE"
           }
           if ($output -notmatch '"sum":2') {
             throw "Code Mode packaged smoke did not return expected result: $output"
           }
-          $skillsHelp = & ".\dist\${{ matrix.binary }}" skills --help | Out-String
-          if ($LASTEXITCODE -ne 0 -or $skillsHelp -notmatch 'Read Agent Skills visible to the local CLI') {
+          $skillsHelp = & ".\dist\${{ matrix.binary }}" skill --help | Out-String
+          if ($LASTEXITCODE -ne 0 -or $skillsHelp -notmatch 'Read locally visible skills') {
             throw "Packaged binary does not expose the required Skills surface: $skillsHelp"
           }
 
