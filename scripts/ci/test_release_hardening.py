@@ -844,24 +844,76 @@ class ReleaseHelperTests(unittest.TestCase):
             self.assertEqual("manual_reconciliation_required", result["mcp_version"]["status"])
     def test_release_incident_is_idempotently_created_updated_and_closed(self) -> None:
         script = ROOT / "scripts/ci/manage-release-incident.sh"
-        for complete, existing, expected in (
-            ("false", "", "issue create"),
-            ("false", "17", "issue edit 17"),
-            ("true", "17", "issue close 17"),
-            ("true", "", "issue list"),
-        ):
-            with self.subTest(complete=complete, existing=existing), tempfile.TemporaryDirectory() as tmp:
-                work = Path(tmp); log = work / "calls"; gh = work / "gh"
+        script_text = script.read_text()
+        exact_filter = (
+            '.[] | select((has(\"pull_request\") | not) and '
+            '.title == \"Release publication is incomplete\") | .number'
+        )
+        self.assertIn(f"--jq '{exact_filter}'", script_text)
+        self.assertNotIn("gh issue ", script_text)
+        self.assertNotIn("| head", script_text)
+
+        cases = (
+            ("create", "false", "",
+             ("api --method POST repos/acme/labby/issues -f title=Release publication is incomplete",),
+             ("api --method PATCH repos/acme/labby/issues/",)),
+            ("update-first-exact-match", "false", "17\n18\n",
+             ("api --method PATCH repos/acme/labby/issues/17",),
+             ("repos/acme/labby/issues/18", "api --method POST repos/acme/labby/issues -f title=")),
+            ("close", "true", "17\n",
+             ("api --method POST repos/acme/labby/issues/17/comments",
+              "api --method PATCH repos/acme/labby/issues/17 -f state=closed"),
+             ("api --method POST repos/acme/labby/issues -f title=",)),
+            ("complete-without-open-incident", "true", "", (),
+             ("api --method POST", "api --method PATCH")),
+        )
+
+        for name, complete, issue_numbers, expected, forbidden in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                work = Path(tmp)
+                log = work / "calls"
+                gh = work / "gh"
                 gh.write_text(
-                    "#!/bin/sh\n"
+                    "#!/usr/bin/env bash\n"
+                    "set -euo pipefail\n"
                     "printf '%s\\n' \"$*\" >> \"$CALL_LOG\"\n"
-                    "case \"$1 $2\" in 'issue list') printf '%s\\n' \"$ISSUE_NUMBER\";; esac\n"
-                ); gh.chmod(0o755)
+                    "[[ $1 == api ]] || { printf 'non-REST gh invocation: %s\\n' \"$*\" >&2; exit 90; }\n"
+                    "if [[ $* == *'repos/acme/labby/issues?state=open&per_page=100'* ]]; then\n"
+                    "  expected='.[] | select((has(\"pull_request\") | not) and .title == \"Release publication is incomplete\") | .number'\n"
+                    "  previous=''\n"
+                    "  for arg in \"$@\"; do\n"
+                    "    if [[ $previous == --jq ]]; then\n"
+                    "      [[ $arg == \"$expected\" ]] || { printf 'unexpected jq filter: %s\\n' \"$arg\" >&2; exit 91; }\n"
+                    "      printf '%s' \"$ISSUE_NUMBERS\"\n"
+                    "      exit 0\n"
+                    "    fi\n"
+                    "    previous=$arg\n"
+                    "  done\n"
+                    "  printf 'missing --jq exact-title filter\\n' >&2\n"
+                    "  exit 92\n"
+                    "fi\n"
+                )
+                gh.chmod(0o755)
                 (work / "reconciliation.json").write_text('{"complete":false}')
-                env = os.environ | {"PATH": f"{work}:{os.environ['PATH']}", "CALL_LOG": str(log), "ISSUE_NUMBER": existing, "GITHUB_SERVER_URL": "https://github.test", "GITHUB_REPOSITORY": "acme/labby", "GITHUB_RUN_ID": "1"}
-                result = subprocess.run(["bash", str(script), complete], cwd=work, env=env, check=False)
-                self.assertEqual(0, result.returncode)
-                self.assertIn(expected, log.read_text())
+                env = os.environ | {
+                    "PATH": f"{work}:{os.environ['PATH']}",
+                    "CALL_LOG": str(log),
+                    "ISSUE_NUMBERS": issue_numbers,
+                    "GITHUB_SERVER_URL": "https://github.test",
+                    "GITHUB_REPOSITORY": "acme/labby",
+                    "GITHUB_RUN_ID": "1",
+                }
+                result = subprocess.run(
+                    ["bash", str(script), complete], cwd=work, env=env,
+                    text=True, capture_output=True, check=False,
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+                calls = log.read_text()
+                self.assertIn("api --paginate repos/acme/labby/issues?state=open&per_page=100", calls)
+                for fragment in expected:
+                    self.assertIn(fragment, calls)
+                for fragment in forbidden:
+                    self.assertNotIn(fragment, calls)
 
     def test_cache_boundary_denies_pr_credentials_and_partial_capabilities(self) -> None:
         script = str(ROOT / "scripts/ci/check-cache-boundary.py")
