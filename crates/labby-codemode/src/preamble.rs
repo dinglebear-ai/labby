@@ -103,6 +103,8 @@ const CODEMODE_TOP_LEVEL_RESERVED: &[&str] = &[
     "run",
     "step",
     "batch",
+    "invokeSubagent",
+    "subagents",
 ];
 
 /// Convert a dotted/hyphenated/slashed/coloned tool name to snake_case.
@@ -216,7 +218,7 @@ codemode.search = async function(input) {{
       [__codemodeNormalize(entry.namespace), 8],
       [__codemodeNormalize(entry.description), 5],
       [__codemodeNormalize((entry.tags || []).join(" ")), 7],
-      [__codemodeNormalize(entry.kind === "snippet" ? "codemode run snippet" : ""), 9]
+      [__codemodeNormalize(entry.kind === "snippet" ? "codemode run snippet" : (entry.kind === "subagent" ? "codemode invokeSubagent subagents subagent" : "")), 9]
     ];
     var covered = 0;
     var score = 0;
@@ -348,6 +350,7 @@ codemode.describe = async function(target) {{
     var entry = __codemodeDiscovery[i];
     if (raw === entry.id || raw === entry.path || raw === entry.helper) exact.push(entry);
     if (entry.kind === "snippet" && raw === "snippet::" + entry.name) exact.push(entry);
+    if (entry.kind === "subagent" && raw === "subagent::" + entry.name) exact.push(entry);
     if (raw === entry.name) bare.push(entry);
     if (raw === entry.namespace) ambiguous.push(entry);
   }}
@@ -394,6 +397,9 @@ codemode.describe = async function(target) {{
     var toolDeclaration = entry.tools === undefined ? "omitted (caller policy unchanged)" : (entry.tools.length ? entry.tools.join(", ") : "[] (intended deny-all)");
     markdown = "# " + entry.name + "\n\nKind: snippet\n\nName: `" + entry.name + "`\n\nDescription: " + entry.description + "\n\nRun: `codemode.run(" + JSON.stringify(entry.name) + ", input)`\n" + (inputLines ? "\nInputs:\n" + inputLines + "\n" : "\nInputs: none\n");
     markdown += "\nDeclared upstream tools: " + toolDeclaration + "\nMetadata only: declarations do not currently restrict execution.\n";
+  }} else if (entry.kind === "subagent") {{
+    var roleTag = (entry.tags && entry.tags.length) ? ("\nRole / Tags: " + entry.tags.join(", ") + "\n") : "";
+    markdown = "# " + entry.name + "\n\nKind: subagent\n\nName: `" + entry.name + "`\n\nDescription: " + entry.description + "\n" + roleTag + "\nInvoke: `codemode.invokeSubagent(" + JSON.stringify(entry.name) + ", {{ prompt: \"...\" }})`\nHelper: `codemode.subagents." + entry.name + "({{ prompt: \"...\" }})`\n";
   }} else {{
     markdown = "# " + entry.path + "\n\n" + entry.description + "\n\n- kind: `tool`\n- id: `" + entry.id + "`\n- helper: `" + entry.helper + "`\n- signature: `" + entry.signature + "`\n";
     // Fetched from the host on demand rather than embedded in the sandbox
@@ -438,6 +444,13 @@ codemode.readResource = async function(uri) {{
 }};
 codemode.run = function(name, input) {{
   return globalThis.__labRunSnippet(name, input == null ? {{}} : input);
+}};
+codemode.invokeSubagent = async function(name, input) {{
+  if (typeof name !== "string" || !name.trim()) {{
+    throw new TypeError("codemode.invokeSubagent requires a non-empty subagent name");
+  }}
+  var params = typeof input === "string" ? {{ prompt: input }} : (input == null ? {{}} : input);
+  return callTool("__lab_internal::invoke_subagent", {{ name: name.trim(), params: params }});
 }};
 codemode.step = function(name, fn) {{
   return globalThis.__labCodemodeStep(name, fn);
@@ -611,6 +624,29 @@ pub(crate) fn generate_js_proxy_from_catalog(tools: &[&ToolDescriptor]) -> Resul
             parts,
             "codemode[{namespace_snake_json}] = {{\n{methods}\n}};\n"
         );
+    }
+
+    let mut subagents: Vec<&ToolDescriptor> = Vec::new();
+    for entry in tools {
+        if entry.kind == CodeModeCatalogKind::Subagent {
+            subagents.push(*entry);
+        }
+    }
+    if !subagents.is_empty() {
+        subagents.sort_by(|a, b| a.name.cmp(&b.name));
+        let mut subagent_defs = Vec::new();
+        for subagent in &subagents {
+            let snake = tool_name_to_snake(&subagent.name);
+            let name_json =
+                serde_json::to_string(&subagent.name).unwrap_or_else(|_| "\"unknown\"".to_string());
+            let snake_json =
+                serde_json::to_string(snake.as_str()).unwrap_or_else(|_| format!("\"{snake}\""));
+            subagent_defs.push(format!(
+                "    {snake_json}: function(p) {{ return codemode.invokeSubagent({name_json}, p); }}"
+            ));
+        }
+        let methods = subagent_defs.join(",\n");
+        let _ = write!(parts, "codemode[\"subagents\"] = {{\n{methods}\n}};\n");
     }
 
     Ok(format!(
@@ -996,6 +1032,8 @@ mod tests {
             "readResource",
             "step",
             "batch",
+            "invokeSubagent",
+            "subagents",
         ] {
             let namespace = namespace_segment(raw);
             let tool = descriptor(raw, "lookup");

@@ -70,9 +70,12 @@ Inside the sandbox:
   in-execution catalog and includes compact intrinsic safety facts when the
   live descriptor supplies an unambiguous fact.
 - `await codemode.describe("github.list_pull_requests")` returns compact docs
-  for an exact tool or snippet target.
+  for an exact tool, snippet, or subagent target.
 - `await codemode.run("gateway-summary", input)` resolves and runs a snippet
   inside the same sandbox runtime.
+- `await codemode.invokeSubagent("researcher", input)` invokes a delegated
+  subagent task through the internal bridge.
+- `await codemode.subagents.researcher(input)` calls the generated subagent proxy helper.
 - `await codemode.github.list_pull_requests(params)` calls the generated helper.
 - `await callTool("github::list_pull_requests", params)` calls the raw bridge.
 - `await codemode.listResources("upstream-name")` lists that upstream's exposed

@@ -500,6 +500,40 @@ mod tests {
     }
 
     #[test]
+    fn accepts_antigravity_metadata_document() {
+        let raw = r#"{
+            "client_id": "https://antigravity.google/oauth/client-metadata.json",
+            "client_name": "Google Antigravity",
+            "client_uri": "https://antigravity.google",
+            "logo_uri": "https://antigravity.google/assets/image/brand/antigravity-icon__full-color.png",
+            "redirect_uris": [
+                "https://antigravity.google/oauth-callback"
+            ],
+            "grant_types": [
+                "authorization_code",
+                "refresh_token"
+            ],
+            "response_types": [
+                "code"
+            ],
+            "token_endpoint_auth_method": "none"
+        }"#;
+        let document: ClientMetadataDocument = serde_json::from_str(raw).unwrap();
+        let client = validate_document(
+            "https://antigravity.google/oauth/client-metadata.json",
+            document,
+            &["https://antigravity.google/oauth-callback".to_string()],
+        )
+        .unwrap();
+        assert_eq!(client.client_id, "https://antigravity.google/oauth/client-metadata.json");
+        assert_eq!(client.token_endpoint_auth_method, "none");
+        assert_eq!(
+            client.redirect_uris,
+            vec!["https://antigravity.google/oauth-callback".to_string()]
+        );
+    }
+
+    #[test]
     fn rejects_malformed_or_incomplete_client_metadata_documents() {
         assert!(serde_json::from_str::<ClientMetadataDocument>("not-json").is_err());
         for raw in [

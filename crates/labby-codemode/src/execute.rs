@@ -223,12 +223,15 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                 sdk_kind: "invalid_param".to_string(),
                 message,
             })?;
-        let tool_entries = catalog
+        let proxy_entries = catalog
             .iter()
-            .filter(|entry| entry.kind == CodeModeCatalogKind::Tool)
+            .filter(|entry| {
+                entry.kind == CodeModeCatalogKind::Tool
+                    || entry.kind == CodeModeCatalogKind::Subagent
+            })
             .collect::<Vec<_>>();
         let namespace_js =
-            super::preamble::generate_js_proxy_from_catalog(&tool_entries).map_err(|message| {
+            super::preamble::generate_js_proxy_from_catalog(&proxy_entries).map_err(|message| {
                 ToolError::Sdk {
                     sdk_kind: "invalid_param".to_string(),
                     message,
@@ -580,6 +583,19 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                     .filter(|dts| !dts.is_empty());
                 Ok(serde_json::json!({ "dts": dts }))
             }
+            "invoke_subagent" => {
+                let name = params
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .filter(|name| !name.trim().is_empty())
+                    .ok_or_else(|| ToolError::MissingParam {
+                        message: "invoke_subagent requires a non-empty `name`".to_string(),
+                        param: "name".to_string(),
+                    })?;
+                let subagent_params = params.get("params").cloned().unwrap_or(Value::Null);
+                host.invoke_subagent(name.to_string(), subagent_params, caller, surface, scope)
+                    .await
+            }
             _ => Err(ToolError::Sdk {
                 sdk_kind: "unknown_tool".to_string(),
                 message: format!("unknown internal tool `{LAB_INTERNAL_NAMESPACE}::{tool}`"),
@@ -705,7 +721,9 @@ pub fn discovery_render_params(
 /// [`discovery_render_params`] for why divergence here is a security bug,
 /// not a style issue.
 pub fn discovery_entry_visible(entry: &ToolDescriptor, scope: &ToolScope) -> bool {
-    entry.kind == CodeModeCatalogKind::Snippet || scope.allows(&entry.namespace, &entry.name)
+    entry.kind == CodeModeCatalogKind::Snippet
+        || entry.kind == CodeModeCatalogKind::Subagent
+        || scope.allows(&entry.namespace, &entry.name)
 }
 
 fn remove_soft_warning_if_it_breaks_budget(

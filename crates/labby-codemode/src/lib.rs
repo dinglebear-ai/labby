@@ -61,6 +61,8 @@ mod tests_ids_schema;
 #[cfg(test)]
 mod tests_normalize;
 #[cfg(test)]
+mod tests_subagents;
+#[cfg(test)]
 mod tests_ts_signatures;
 
 // ── Public surface ──────────────────────────────────────────────────────────

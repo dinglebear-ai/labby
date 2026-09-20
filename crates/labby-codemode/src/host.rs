@@ -213,6 +213,25 @@ pub trait CodeModeHost: Send + Sync {
         }
     }
 
+    /// Invoke a delegated subagent by name with input parameters.
+    ///
+    /// Hosts that do not support subagent invocation reject the call by default.
+    fn invoke_subagent(
+        &self,
+        name: String,
+        _params: Value,
+        _caller: &CodeModeCaller,
+        _surface: CodeModeSurface,
+        _scope: &ToolScope,
+    ) -> impl Future<Output = Result<Value, ToolError>> + Send {
+        async move {
+            Err(ToolError::Sdk {
+                sdk_kind: "not_found".to_string(),
+                message: format!("Code Mode subagent `{name}` is not available"),
+            })
+        }
+    }
+
     /// Decide whether to execute a `codemode.step(name, fn)` boundary at
     /// `(execution_id, seq)`, BEFORE the sandbox runs `fn`. The step consumes a
     /// `seq` from the same monotonic spine as `call_tool`.

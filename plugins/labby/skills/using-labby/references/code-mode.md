@@ -86,24 +86,38 @@ Call a Windows helper through the live-confirmed helper path:
 }
 ```
 
+Invoke a subagent via `codemode.invokeSubagent` or `codemode.subagents.<name>`:
+
+```json
+{
+  "code": "async () => {\n    const outcome = await codemode.invokeSubagent(\"researcher\", {\n      prompt: \"Analyze recent commit diffs for breaking changes\"\n    });\n    return { ok: true, summary: outcome };\n  }"
+}
+```
+
+```json
+{
+  "code": "async () => {\n    const outcome = await codemode.subagents.researcher({\n      prompt: \"Analyze recent commit diffs for breaking changes\"\n    });\n    return { ok: true, summary: outcome };\n  }"
+}
+```
+
 ## Search Catalog Entries
 
 Each `codemode.search()` entry contains:
 
 | Field | Meaning |
 | --- | --- |
-| `id` | Canonical `<upstream>::<tool>` ID for `callTool`. |
-| `namespace` | Upstream gateway name. |
-| `name` | Upstream tool name. |
-| `description` | Sanitized tool description. |
+| `id` | Canonical `<upstream>::<tool>`, `snippet::<name>`, or `subagent::<name>` ID. |
+| `namespace` | Upstream gateway name, `snippet`, or `subagent`. |
+| `name` | Tool, snippet, or subagent name. |
+| `description` | Sanitized description. |
 | `signature` | Compact callable signature. |
-| `kind` | `tool` or `snippet`. |
-| `tags` | Snippet tags when present. |
+| `kind` | `tool`, `snippet`, or `subagent`. |
+| `tags` | Snippet tags or subagent role tags when present. |
 
 The catalog searched by `codemode.search()` is complete and in-sandbox; only
 your filtered return value enters the model context. Use `codemode.describe()`
 for exact target docs, including generated TypeScript parameter declarations
-for tools.
+for tools, input schemas for snippets, and invocation details for subagents.
 
 ## Codemode Arguments
 

@@ -1400,6 +1400,9 @@ const DEFAULT_CLIENT_REDIRECT_URI_PATTERNS: &[&str] = &[
     "https://chatgpt.com/connector_platform_oauth_redirect",
     "https://claude.ai/api/mcp/auth_callback",
     "https://claude.com/api/mcp/auth_callback",
+    "https://antigravity.google/oauth-callback",
+    "https://antigravity.google/oauth-callback/*",
+    "https://antigravity.google/oauth/*",
 ];
 
 /// Resolve auth configuration from a full `LabConfig`.
@@ -3966,6 +3969,9 @@ future = "keep"
                 "https://chatgpt.com/connector_platform_oauth_redirect".to_string(),
                 "https://claude.ai/api/mcp/auth_callback".to_string(),
                 "https://claude.com/api/mcp/auth_callback".to_string(),
+                "https://antigravity.google/oauth-callback".to_string(),
+                "https://antigravity.google/oauth-callback/*".to_string(),
+                "https://antigravity.google/oauth/*".to_string(),
             ]
         );
     }

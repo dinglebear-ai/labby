@@ -1,4 +1,4 @@
-use std::{env, time::Duration};
+use std::{env, net::SocketAddr, time::Duration};
 
 use reqwest::{Client, StatusCode, Url};
 use serde_json::{Value, json};
@@ -7,6 +7,7 @@ use crate::dispatch::error::ToolError;
 
 pub(crate) const BASE_URL_ENV: &str = "LABBY_PHOENIX_OPENAI_BASE_URL";
 pub(crate) const API_KEY_ENV: &str = "LABBY_PHOENIX_OPENAI_API_KEY";
+pub(crate) const RESOLVE_ADDR_ENV: &str = "LABBY_PHOENIX_OPENAI_RESOLVE_ADDR";
 const REQUEST_TIMEOUT: Duration = Duration::from_mins(5);
 const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -63,7 +64,12 @@ impl OpenAiBackend {
             return Self::from_url(base_url, None).ok();
         }
         let base_url = env::var(BASE_URL_ENV).ok()?;
-        match Self::from_url(&base_url, env::var(API_KEY_ENV).ok()) {
+        let resolve_addr = env::var(RESOLVE_ADDR_ENV).ok();
+        match Self::from_url_with_resolve(
+            &base_url,
+            env::var(API_KEY_ENV).ok(),
+            resolve_addr.as_deref(),
+        ) {
             Ok(backend) => Some(backend),
             Err(error) => {
                 tracing::warn!(
@@ -76,7 +82,16 @@ impl OpenAiBackend {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn from_url(base_url: &str, api_key: Option<String>) -> Result<Self, ToolError> {
+        Self::from_url_with_resolve(base_url, api_key, None)
+    }
+
+    fn from_url_with_resolve(
+        base_url: &str,
+        api_key: Option<String>,
+        resolve_addr: Option<&str>,
+    ) -> Result<Self, ToolError> {
         let mut base_url = Url::parse(base_url).map_err(|_| invalid_endpoint())?;
         if !matches!(base_url.scheme(), "http" | "https")
             || !base_url.has_host()
@@ -94,15 +109,21 @@ impl OpenAiBackend {
             format!("{path}/")
         };
         base_url.set_path(&normalized_path);
-        let http = Client::builder()
+        let mut builder = Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
             .redirect(reqwest::redirect::Policy::none())
-            .no_proxy()
-            .build()
-            .map_err(|error| {
-                unavailable(format!("failed to build Phoenix HTTP client: {error}"))
-            })?;
+            .no_proxy();
+        if let Some(resolve_addr) = resolve_addr {
+            let host = base_url.host_str().ok_or_else(invalid_endpoint)?;
+            let addr = resolve_addr
+                .parse::<SocketAddr>()
+                .map_err(|_| invalid_resolve_addr())?;
+            builder = builder.resolve(host, addr);
+        }
+        let http = builder.build().map_err(|error| {
+            unavailable(format!("failed to build Phoenix HTTP client: {error}"))
+        })?;
         Ok(Self {
             http,
             base_url,
@@ -294,6 +315,13 @@ fn invalid_endpoint() -> ToolError {
     }
 }
 
+fn invalid_resolve_addr() -> ToolError {
+    ToolError::InvalidParam {
+        message: format!("{RESOLVE_ADDR_ENV} must be an IP:port socket address"),
+        param: RESOLVE_ADDR_ENV.into(),
+    }
+}
+
 fn provider_http_error(status: StatusCode, body: &[u8]) -> ToolError {
     let body = &body[..body.len().min(MAX_ERROR_BODY_BYTES)];
     let detail = serde_json::from_slice::<Value>(body)
@@ -345,6 +373,46 @@ mod tests {
         assert!(OpenAiBackend::from_url("file:///tmp/provider", None).is_err());
         assert!(OpenAiBackend::from_url("https://user:secret@example.test/v1", None).is_err());
         assert!(OpenAiBackend::from_url("https://example.test/v1?token=secret", None).is_err());
+    }
+
+    #[tokio::test]
+    async fn provider_dns_override_preserves_logical_hostname() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": []})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let backend = OpenAiBackend::from_url_with_resolve(
+            "http://provider.test/v1",
+            None,
+            Some(&server.address().to_string()),
+        )
+        .unwrap();
+        assert_eq!(backend.base_url().host_str(), Some("provider.test"));
+        assert!(backend.models().await.unwrap().is_empty());
+        server.verify().await;
+    }
+
+    #[test]
+    fn provider_dns_override_rejects_invalid_socket_addresses() {
+        drop(rustls::crypto::ring::default_provider().install_default());
+        assert!(
+            OpenAiBackend::from_url_with_resolve(
+                "https://provider.test/v1",
+                None,
+                Some("not-an-address"),
+            )
+            .is_err()
+        );
     }
 
     #[tokio::test]

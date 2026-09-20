@@ -166,6 +166,8 @@ pub enum CodeModeCatalogKind {
     Tool,
     /// Reusable Code Mode snippet.
     Snippet,
+    /// Delegated subagent.
+    Subagent,
 }
 
 /// Named snippet input plus its validation/default specification.
@@ -262,6 +264,38 @@ impl ToolDescriptor {
             inputs,
         }
     }
+
+    /// Build a catalog descriptor for a subagent.
+    #[must_use]
+    pub fn subagent(
+        name: &str,
+        description: &str,
+        role: Option<&str>,
+        input_schema: Option<Value>,
+    ) -> Self {
+        let signature = format!("codemode.invokeSubagent({name:?}, input)");
+        let dts = format!(
+            "/** {description} */\ndeclare function invokeSubagent(name: {name:?}, input: {{ prompt: string; [key: string]: any }}): Promise<any>;\n"
+        );
+        Self {
+            kind: CodeModeCatalogKind::Subagent,
+            tools: None,
+            id: format!("subagent::{name}"),
+            name: name.to_string(),
+            namespace: "subagent".to_string(),
+            description: description.to_string(),
+            safety: Some(CodeModeToolSafety {
+                read_only: Some(false),
+                destructive: Some(false),
+            }),
+            schema: input_schema,
+            output_schema: None,
+            signature,
+            dts,
+            tags: role.map(|r| vec![r.to_string()]).unwrap_or_default(),
+            inputs: Vec::new(),
+        }
+    }
 }
 
 fn snippet_inputs_schema(inputs: &std::collections::BTreeMap<String, SnippetInputSpec>) -> Value {
@@ -348,6 +382,13 @@ impl CodeModeDiscoveryEntry {
                 format!("snippet.{}", entry.name),
                 format!("codemode.run({:?}, input)", entry.name),
             ),
+            CodeModeCatalogKind::Subagent => {
+                let name = super::preamble::tool_name_to_snake(&entry.name);
+                (
+                    format!("subagent.{}", entry.name),
+                    format!("codemode.subagents.{name}"),
+                )
+            }
         };
         Self {
             kind: entry.kind,
