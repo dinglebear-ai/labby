@@ -8222,6 +8222,9 @@
           },
           "name": {
             "type": "string"
+          },
+          "wait_ms": {
+            "type": "integer"
           }
         }
       },

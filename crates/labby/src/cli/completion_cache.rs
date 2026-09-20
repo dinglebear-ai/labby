@@ -339,7 +339,12 @@ pub fn query(words: &[String]) -> Vec<String> {
                 .filter(|command| !command.is_hide_set())
                 .map(|command| command.get_name().to_owned()),
         );
-        if path.first().is_some_and(|part| part == "context") {
+        if path.first().is_some_and(|part| part == "context")
+            && path
+                .last()
+                .is_some_and(|part| matches!(part.as_str(), "get" | "set" | "use" | "remove"))
+            && !node.contains_id("name")
+        {
             if let Ok((config, _)) = metadata_config(&matches) {
                 candidates.extend(config.cli.contexts.into_keys());
             }

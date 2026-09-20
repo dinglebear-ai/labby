@@ -36,16 +36,25 @@ fn setup_proxy_noninteractive_dry_run_is_supported() {
 fn setup_proxy_non_tty_without_yes_fails_without_reading_stdin() {
     let home = tempfile::tempdir().expect("temp home");
     let output = command(home.path())
-        .args(["config", "proxy", "set"])
+        .args(["--json", "--no-input", "config", "proxy", "set"])
         .stdin(std::process::Stdio::null())
         .output()
         .expect("run noninteractive setup proxy");
 
-    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["kind"], "confirmation_required");
+    assert_eq!(error["error"]["recovery"]["action"], "confirm");
+    assert_eq!(error["error"]["side_effects"], "none_expected");
     assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("setup proxy requires --yes when stdin is not a TTY")
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("--yes")
     );
+    assert!(!home.path().join(".labby/config.toml").exists());
+    assert!(!home.path().join(".labby/.env").exists());
 }
 
 #[test]

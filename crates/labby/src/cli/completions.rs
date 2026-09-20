@@ -95,7 +95,7 @@ complete -c labby -a "(__labby_cached_resources)"
                 "PowerShell completion generator changed its registration contract"
             );
             script = script.replacen(marker, "$script:LabbyStaticCompletion = ", 1);
-            r#"
+            r"
 Register-ArgumentCompleter -Native -CommandName 'labby' -ScriptBlock {
     param($wordToComplete, $commandAst, $cursorPosition)
     & $script:LabbyStaticCompletion $wordToComplete $commandAst $cursorPosition
@@ -114,20 +114,25 @@ Register-ArgumentCompleter -Native -CommandName 'labby' -ScriptBlock {
         [CompletionResult]::new($_, $_, [CompletionResultType]::ParameterValue, $_)
     }
 }
-"#
+"
         }
         Shell::Elvish => {
-            r#"
+            r"
 var labby-static-completer = $edit:completion:arg-completer[labby]
 set edit:completion:arg-completer[labby] = {|@words|
     try { $labby-static-completer $@words } catch { }
     var query-words = $words[1..]
     try { labby completions query -- $@query-words 2>/dev/null } catch { }
 }
-"#
+"
         }
         _ => anyhow::bail!("Cached resource completion is not supported for this shell"),
     };
+    script.push_str(
+        "
+# Labby cached resource completion: offline query only.
+",
+    );
     script.push_str(extension);
     Ok(script)
 }
@@ -215,9 +220,15 @@ mod tests {
             let static_script = script(shell, false).unwrap();
             let cached = script(shell, true).unwrap();
             assert!(static_script.contains("context"));
-            assert!(cached.contains("completions query --"));
+            let extension = cached
+                .split_once("# Labby cached resource completion: offline query only.\n")
+                .expect("cached completion extension boundary")
+                .1;
+            // Static completion is allowed to *list* refresh as a command.
+            // Only the executable resource-query extension must never run it.
+            assert!(extension.contains("completions query --"));
             assert!(
-                !cached.contains("labby completions refresh"),
+                !extension.contains("labby completions refresh"),
                 "Tab must not refresh remotely"
             );
             assert!(cached.len() > static_script.len());

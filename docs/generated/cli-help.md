@@ -11,6 +11,7 @@ Usage: labby [OPTIONS] <COMMAND>
 
 Commands:
   help         Discover commands, expand an entire subtree, or search offline help
+  context      Save and select non-secret destinations in the existing host configuration
   auth         Authenticate to Labby and manage credential bootstrap or OAuth relays
   gateway      Inspect the selected Labby gateway, its sessions, URLs, and usage
   server       Manage upstream MCP servers: configuration, testing, lifecycle, and authentication
@@ -46,6 +47,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -97,6 +107,362 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby context`
+
+```text
+Save and select non-secret destinations in the existing host configuration
+
+Usage: labby context [OPTIONS] <COMMAND>
+
+Commands:
+  list    List saved destinations without connecting to them
+  get     Read one context, or the selected context when NAME is omitted
+  add     Save a non-secret destination. Requires --server URL. Does not authenticate
+  set     Patch the supplied --server or --team-id; leave omitted fields unchanged
+  use     Select an existing context for subsequent daemon-backed commands
+  remove  Remove an inactive context, without revoking any credentials
+  clear   Clear the convenience selection without deleting saved contexts
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby context list`
+
+```text
+List saved destinations without connecting to them
+
+Usage: labby context list [OPTIONS]
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby context get`
+
+```text
+Read one context, or the selected context when NAME is omitted
+
+Usage: labby context get [OPTIONS] [NAME]
+
+Arguments:
+  [NAME]
+
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby context add`
+
+```text
+Save a non-secret destination. Requires --server URL. Does not authenticate
+
+Usage: labby context add [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --use
+
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby context set`
+
+```text
+Patch the supplied --server or --team-id; leave omitted fields unchanged
+
+Usage: labby context set [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+
+
+Options:
+      --clear-team
+
+
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby context use`
+
+```text
+Select an existing context for subsequent daemon-backed commands
+
+Usage: labby context use [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby context remove`
+
+```text
+Remove an inactive context, without revoking any credentials
+
+Usage: labby context remove [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby context clear`
+
+```text
+Clear the convenience selection without deleting saved contexts
+
+Usage: labby context clear [OPTIONS]
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -113,6 +479,8 @@ Usage: labby auth [OPTIONS] <COMMAND>
 
 Commands:
   login      Sign in to an explicitly selected Labby server
+  status     Inspect the saved OAuth session without refreshing credentials or contacting the server
+  logout     Remove only the local OAuth session for the selected destination
   bootstrap  Prepare, consume, or recover the existing credential bootstrap workflow
   owner      Approve an existing owner identity link while the gateway is stopped
   relay      Operate OAuth callback relays and their registry
@@ -134,6 +502,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -149,14 +526,14 @@ Sign in to an explicitly selected Labby server
 Usage: labby auth login [OPTIONS]
 
 Options:
+      --client-metadata-url <CLIENT_METADATA_URL>
+          Public HTTPS client metadata document for servers that require CIMD
+
       --json
           Emit machine-readable JSON. Diagnostics never enter stdout
 
-      --server <SERVER>
-          HTTPS server origin. Defaults to LABBY_SERVER_URL
-
-      --client-metadata-url <CLIENT_METADATA_URL>
-          Public HTTPS client metadata document for servers that require CIMD
+      --client-id <CLIENT_ID>
+          Client identifier registered with the server in advance
 
       --color <COLOR>
           Control human-readable CLI styling
@@ -164,20 +541,104 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
-      --client-id <CLIENT_ID>
-          Client identifier registered with the server in advance
+      --client-secret-env <CLIENT_SECRET_ENV>
+          Environment variable containing the preregistered client secret
 
   -v, --verbose...
           Include diagnostic events on stderr. Repeat for trace-level detail
 
-      --client-secret-env <CLIENT_SECRET_ENV>
-          Environment variable containing the preregistered client secret
+      --dynamic-registration
+          Use server-advertised dynamic registration instead of a saved selection
 
   -q, --quiet
           Suppress console logs, but always report command errors
 
-      --dynamic-registration
-          Use server-advertised dynamic registration instead of a saved selection
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby auth status`
+
+```text
+Inspect the saved OAuth session without refreshing credentials or contacting the server
+
+Usage: labby auth status [OPTIONS]
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby auth logout`
+
+```text
+Remove only the local OAuth session for the selected destination
+
+Usage: labby auth logout [OPTIONS]
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -215,6 +676,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -258,11 +728,14 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
       --subject <SUBJECT>
 
 
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
 
       --loadout-id <LOADOUT_ID>
 
@@ -270,8 +743,14 @@ Options:
       --route-id <ROUTE_ID>
 
 
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --resource <RESOURCE>
 
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --scope <SCOPE>
 
@@ -309,6 +788,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -341,6 +829,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -381,6 +878,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -413,6 +919,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -447,6 +962,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -479,6 +1003,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -513,6 +1046,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -553,6 +1095,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -591,6 +1142,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -620,6 +1180,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -658,6 +1227,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -701,6 +1279,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -739,6 +1326,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -771,6 +1367,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -805,6 +1410,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -838,6 +1452,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -870,6 +1493,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -908,6 +1540,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -945,6 +1586,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -975,6 +1625,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -1004,6 +1663,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -1038,6 +1706,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -1068,6 +1745,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -1097,6 +1783,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -1131,6 +1826,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -1177,11 +1881,17 @@ Options:
       --capability <CAPABILITY>
           Restrict to one capability family
 
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
 
       --operation <OPERATION>
           Restrict to one operation name
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --subject-scoped <SUBJECT_SCOPED>
           Restrict by OAuth subject scoping (`true` or `false`)
@@ -1190,6 +1900,9 @@ Options:
 
       --actor <ACTOR>
           Restrict to one actor subject
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --outcome <OUTCOME>
           Restrict to one outcome; failed matches every non-ok outcome
@@ -1251,11 +1964,17 @@ Options:
       --capability <CAPABILITY>
           Restrict to one capability family
 
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
 
       --operation <OPERATION>
           Restrict to one operation name
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --subject-scoped <SUBJECT_SCOPED>
           Restrict by OAuth subject scoping (`true` or `false`)
@@ -1264,6 +1983,9 @@ Options:
 
       --actor <ACTOR>
           Restrict to one actor subject
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --outcome <OUTCOME>
           Restrict to one outcome; failed matches every non-ok outcome
@@ -1328,6 +2050,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -1357,6 +2088,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -1392,6 +2132,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -1404,11 +2153,11 @@ Options:
 ```text
 Add an upstream server and reconcile runtime state
 
-Usage: labby server add [OPTIONS] <NAME>
+Usage: labby server add [OPTIONS] [NAME]
 
 Arguments:
-  <NAME>
-          Unique name for the upstream server
+  [NAME]
+          Unique upstream name. Missing values can be filled interactively
 
 Options:
       --json
@@ -1438,12 +2187,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
       --proxy-resources <PROXY_RESOURCES>
           [default: true]
           [possible values: true, false]
 
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
 
       --proxy-skills <PROXY_SKILLS>
           Aggregate this upstream's Agent Skills (SEP-2640) through the gateway.
@@ -1455,6 +2207,15 @@ Options:
 
       --expose-skill <EXPOSE_SKILLS>
           Initial skill-name exposure allowlist. Repeat for multiple patterns
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --dry-run
+          Preview the proposed configuration without contacting or changing a gateway
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help (see a summary with '-h')
@@ -1502,17 +2263,26 @@ Options:
       --clear-command
           Clear the stdio command from this gateway
 
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+      --no-input
+          Never prompt for missing input or confirmation
 
       --arg <ARGS>
           Replace all command arguments with these values (repeat for multiple)
 
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
       --bearer-token-env <BEARER_TOKEN_ENV>
           Environment variable name whose value is used as the upstream bearer token
 
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --clear-bearer-token-env
           Clear the upstream bearer token environment variable name
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --proxy-resources <PROXY_RESOURCES>
           [possible values: true, false]
@@ -1559,6 +2329,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -1593,6 +2372,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -1623,6 +2411,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -1635,21 +2432,18 @@ Options:
 ```text
 Enable an upstream for new sessions
 
-Usage: labby server enable [OPTIONS] <NAME>
+Usage: labby server enable [OPTIONS] [NAMES]...
 
 Arguments:
-  <NAME>
-
+  [NAMES]...
+          Explicit upstream names. Omitting names never means all servers
 
 Options:
-      --cleanup
-
+      --all
+          Select all visible servers; restart selects enabled servers only
 
       --json
           Emit machine-readable JSON. Diagnostics never enter stdout
-
-      --aggressive
-
 
       --color <COLOR>
           Control human-readable CLI styling
@@ -1657,11 +2451,29 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --dry-run
+          Inspect targets and show the proposed operation without changing them
+
+      --cleanup
+          Clean up old processes when disabling. Not valid when enabling
+
   -v, --verbose...
           Include diagnostic events on stderr. Repeat for trace-level detail
 
+      --aggressive
+          Use broader process cleanup matching; requires --cleanup
+
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -1675,21 +2487,18 @@ Options:
 ```text
 Disable an upstream, optionally cleaning up its processes
 
-Usage: labby server disable [OPTIONS] <NAME>
+Usage: labby server disable [OPTIONS] [NAMES]...
 
 Arguments:
-  <NAME>
-
+  [NAMES]...
+          Explicit upstream names. Omitting names never means all servers
 
 Options:
-      --cleanup
-
+      --all
+          Select all visible servers; restart selects enabled servers only
 
       --json
           Emit machine-readable JSON. Diagnostics never enter stdout
-
-      --aggressive
-
 
       --color <COLOR>
           Control human-readable CLI styling
@@ -1697,11 +2506,29 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --dry-run
+          Inspect targets and show the proposed operation without changing them
+
+      --cleanup
+          Clean up old processes when disabling. Not valid when enabling
+
   -v, --verbose...
           Include diagnostic events on stderr. Repeat for trace-level detail
 
+      --aggressive
+          Use broader process cleanup matching; requires --cleanup
+
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -1715,15 +2542,15 @@ Options:
 ```text
 Reconnect an enabled upstream and clean up its old runtime
 
-Usage: labby server restart [OPTIONS] <NAME>
+Usage: labby server restart [OPTIONS] [NAMES]...
 
 Arguments:
-  <NAME>
-          Name of the enabled upstream MCP server to reconnect
+  [NAMES]...
+          Explicit upstream names. Omitting names never means all servers
 
 Options:
-      --aggressive
-          Use broader host-wide process matching when cleaning up the old runtime
+      --all
+          Select all visible servers; restart selects enabled servers only
 
       --json
           Emit machine-readable JSON. Diagnostics never enter stdout
@@ -1734,11 +2561,34 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --dry-run
+          Inspect targets and show the proposed operation without changing them
+
+      --timeout <TIMEOUT>
+          Bound completion per server (1ms to 5m), for example 30s
+
+          [default: 30s]
+
   -v, --verbose...
           Include diagnostic events on stderr. Repeat for trace-level detail
 
+      --no-wait
+          Return an accepted result without waiting for restart completion
+
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --aggressive
+          Use broader host-wide matching when cleaning up the old runtime
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -1780,6 +2630,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -1815,6 +2674,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -1849,16 +2717,25 @@ Options:
       --wait
           Wait for OAuth completion
 
+      --timeout <WAIT_TIMEOUT_SECS>
+          Bound OAuth completion with explicit units, such as 120s or 2m
+
+          [default: 120s]
+
   -v, --verbose...
           Include diagnostic events on stderr. Repeat for trace-level detail
 
-      --wait-timeout-secs <WAIT_TIMEOUT_SECS>
-          Bound the wait for OAuth completion in seconds
-
-          [default: 120]
-
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -1894,6 +2771,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -1927,6 +2813,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -1963,6 +2858,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -2006,6 +2910,15 @@ Options:
   -y, --yes
           Skip confirmation for the destructive config import
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -2041,6 +2954,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -2070,6 +2992,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -2111,6 +3042,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -2151,6 +3091,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -2185,6 +3134,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -2214,6 +3172,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -2248,6 +3215,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -2287,6 +3263,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -2316,6 +3301,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -2350,6 +3344,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -2400,14 +3403,23 @@ Options:
       --backend-url <BACKEND_URL>
 
 
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
 
       --scope <SCOPES>
 
 
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --health-path <HEALTH_PATH>
 
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --gateway-subset
           Expose a scoped Lab gateway MCP surface instead of proxying one backend
@@ -2473,8 +3485,8 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+      --no-input
+          Never prompt for missing input or confirmation
 
       --upstream <UPSTREAM>
 
@@ -2482,8 +3494,17 @@ Options:
       --backend-url <BACKEND_URL>
 
 
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --scope <SCOPES>
 
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --health-path <HEALTH_PATH>
 
@@ -2546,6 +3567,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -2595,14 +3625,23 @@ Options:
       --backend-url <BACKEND_URL>
 
 
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
 
       --scope <SCOPES>
 
 
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --health-path <HEALTH_PATH>
 
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --gateway-subset
           Expose a scoped Lab gateway MCP surface instead of proxying one backend
@@ -2659,6 +3698,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -2688,6 +3736,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -2722,6 +3779,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -2769,11 +3835,14 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
       --no-resources
           Hide MCP Resources on this Loadout. Skills require Resources
 
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
 
       --no-prompts
           Hide MCP Prompts on this Loadout
@@ -2781,8 +3850,14 @@ Options:
       --no-skills
           Hide Agent Skills on this Loadout
 
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --code-mode
           Expose Code Mode on this Loadout
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -2830,8 +3905,11 @@ Options:
       --clear-upstreams
           Clear all selected upstreams
 
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
 
       --service <SERVICES>
           Replace service selection. Repeat or comma-separate
@@ -2839,8 +3917,14 @@ Options:
       --clear-services
           Clear all selected built-in services
 
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --expose-tools <EXPOSE_TOOLS>
           [possible values: true, false]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --expose-resources <EXPOSE_RESOURCES>
           [possible values: true, false]
@@ -2891,6 +3975,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -2931,6 +4024,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -2970,6 +4072,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -3004,6 +4115,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -3033,6 +4153,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -3064,6 +4193,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -3093,6 +4231,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -3129,6 +4276,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -3158,6 +4314,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -3189,6 +4354,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -3218,6 +4392,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -3255,6 +4438,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -3288,6 +4480,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -3332,14 +4533,23 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+      --no-input
+          Never prompt for missing input or confirmation
 
-      --timeout-ms <TIMEOUT_MS>
+      --timeout <TIMEOUT_MS>
+          Maximum duration, with a unit such as 30s or 2m
 
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
 
   -y, --yes
           Skip confirmation for provider-backed preview runs
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -3380,6 +4590,15 @@ Options:
   -y, --yes
 
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -3419,6 +4638,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -3448,6 +4676,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -3482,6 +4719,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -3519,6 +4765,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -3566,6 +4821,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -3605,6 +4869,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -3649,6 +4922,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -3689,6 +4971,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -3726,6 +5017,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -3761,6 +5061,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -3802,6 +5111,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -3836,6 +5154,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -3869,6 +5196,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -3906,6 +5242,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -3938,6 +5283,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -3976,6 +5330,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -4010,6 +5373,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -4043,6 +5415,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -4081,6 +5462,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -4114,6 +5504,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -4151,6 +5550,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -4184,6 +5592,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -4216,6 +5633,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -4259,6 +5685,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -4288,6 +5723,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -4339,14 +5783,23 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
       --query <QUERY>
           Match text or a request ID across redacted fields
 
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
 
       --file <FILE>
           Restrict results to a matching rolling-log filename
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -4385,6 +5838,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -4433,13 +5895,16 @@ Options:
       --skip-deps
           Skip runtime dependency installation and only converge user/service state
 
+      --no-input
+          Never prompt for missing input or confirmation
+
       --role <ROLE>
           Configure this machine as a Labby server or as a client of another server
 
           [possible values: server, client]
 
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
 
       --deployment <DEPLOYMENT>
           Server deployment backend. Native is the fastest path; Incus is isolated
@@ -4449,8 +5914,14 @@ Options:
       --host <HOST>
           Server listen address. Defaults to 127.0.0.1
 
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --port <PORT>
           Server listen or published port. Defaults to 8765
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --server-url <SERVER_URL>
           Explicit Labby server URL for client mode
@@ -4516,6 +5987,15 @@ Options:
       --smoke
           Smoke-test mode: print the state machine snapshot as JSON and exit
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -4546,6 +6026,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -4575,6 +6064,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -4612,6 +6110,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -4641,6 +6148,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -4695,8 +6211,11 @@ Options:
       --no-incus-sync
           Do not sync the updated binary into an Incus container
 
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
 
       --no-web-assets
           Do not update or clear the Incus filesystem web asset directory
@@ -4704,8 +6223,14 @@ Options:
       --container <CONTAINER>
           Incus container name for the post-update sync
 
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --check-url <CHECK_URL>
           Optional public or host-bound URL to verify after the Incus sync
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --force-fallback
           Fall back to `incus stop --force && incus start` if the service restart path fails
@@ -4751,6 +6276,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -4780,6 +6314,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -4811,6 +6354,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -4840,6 +6392,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -4879,6 +6440,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -4908,6 +6478,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -4945,6 +6524,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -4974,6 +6562,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -5011,6 +6608,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -5044,6 +6650,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -5076,6 +6691,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -5112,6 +6736,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -5158,17 +6791,26 @@ Options:
       --no-backup-config
           Do not apply an Incus snapshot policy
 
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
 
       --runtime-profile-name <RUNTIME_PROFILE_NAME>
           Rootless profile for existing containers with a different root pool
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --storage-driver <STORAGE_DRIVER>
           Incus storage driver: zfs, btrfs, or dir
 
       --storage-pool <STORAGE_POOL>
           Incus storage pool used by the profile root disk
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --storage-source <STORAGE_SOURCE>
           Incus storage source path/dataset for the pool
@@ -5241,8 +6883,11 @@ Options:
       --check-url <CHECK_URL>
           Optional public or host-bound URL to verify after the service is ready
 
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
 
       --force-fallback
           Fall back to `incus stop --force && incus start` if the service restart path fails
@@ -5250,8 +6895,14 @@ Options:
       --no-force-fallback
           Disable the default Incus force-restart fallback
 
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --dry-run
           Print the resolved operation without mutating the container
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --rollback
           Restore the retained release that preceded the last successful sync
@@ -5287,6 +6938,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -5321,6 +6981,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -5366,6 +7035,15 @@ Options:
   -y, --yes
           Confirm applying the backup policy without prompting
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -5399,6 +7077,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -5449,8 +7136,11 @@ Options:
       --dry-run
           Print the plan without mutating the container or remote hosts
 
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
 
       --include <INCLUDE>
           Only process hosts whose alias or HostName matches this filter. Repeatable
@@ -5458,8 +7148,14 @@ Options:
       --exclude <EXCLUDE>
           Skip hosts whose alias or HostName matches this filter. Repeatable
 
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --fail-fast
           Abort on the first failed host instead of continuing and reporting failures
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --continue-on-error
           Continue past failed hosts and report them at the end (default)
@@ -5524,8 +7220,11 @@ Options:
       --include <INCLUDE>
           Only process hosts whose alias or HostName matches this filter. Repeatable
 
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
 
       --exclude <EXCLUDE>
           Skip hosts whose alias or HostName matches this filter. Repeatable
@@ -5533,8 +7232,14 @@ Options:
       --fail-fast
           Abort on the first failed host instead of continuing and reporting failures
 
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --continue-on-error
           Continue past failed hosts and report them at the end (default)
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --install-config
           Refresh the sanitized SSH config before verifying. Default for unfiltered runs
@@ -5583,6 +7288,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -5615,6 +7329,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -5656,6 +7379,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -5696,6 +7428,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -5732,6 +7473,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -5761,6 +7511,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -5795,6 +7554,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -5828,6 +7596,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -5843,6 +7620,8 @@ Inspect setup state and manage drafts or proxy defaults
 Usage: labby config [OPTIONS] <COMMAND>
 
 Commands:
+  show    Show the redacted host configuration snapshot without applying environment overrides
+  check   Validate the host configuration without changing files or starting services
   status  Report joined service configuration, setup draft, and plugin state
   draft   Manage the local setup draft
   proxy   Configure defaults for the ephemeral MCP proxy
@@ -5862,6 +7641,93 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby config show`
+
+```text
+Show the redacted host configuration snapshot without applying environment overrides
+
+Usage: labby config show [OPTIONS]
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby config check`
+
+```text
+Validate the host configuration without changing files or starting services
+
+Usage: labby config check [OPTIONS]
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -5892,6 +7758,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -5925,6 +7800,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -5962,6 +7846,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -5994,6 +7887,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -6041,11 +7943,14 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
       --port-range-start <PORT_RANGE_START>
           First candidate in the random external-port range
 
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
 
       --port-range-end <PORT_RANGE_END>
           Last candidate in the random external-port range
@@ -6053,14 +7958,20 @@ Options:
       --bearer-token-env <BEARER_TOKEN_ENV>
           Environment key used for the proxy bearer secret
 
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --oauth-scope <OAUTH_SCOPES>
           OAuth scope to require; repeatable and replaces the configured list
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --inherit-env <INHERIT_ENV>
           Ambient environment variable inherited by child servers; repeatable
 
-      --shutdown-grace-ms <SHUTDOWN_GRACE_MS>
-          Grace period before forced child shutdown
+      --shutdown-grace <SHUTDOWN_GRACE_MS>
+          Grace period before forced child shutdown, such as 500ms or 5s
 
       --bearer-token-stdin
           Read a bearer secret from stdin without echoing or persisting it in TOML
@@ -6104,6 +8015,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -6137,6 +8057,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -6166,6 +8095,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -6200,6 +8138,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -6233,6 +8180,15 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
@@ -6265,6 +8221,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -6308,14 +8273,23 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --no-input
+          Never prompt for missing input or confirmation
+
       --port <PORT>
           Bind port for the HTTP transport
 
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
 
       --log-level <LOG_LEVEL>
           Override the log filter level for this process. Sets `LABBY_LOG=labby=<level>,warn` before tracing init. Example: `--log-level debug`
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -6346,6 +8320,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -6382,6 +8365,15 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -6436,8 +8428,11 @@ Options:
       --local
           Override exposure to a local loopback URL
 
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
 
       --cwd <CWD>
           Child working directory
@@ -6445,8 +8440,14 @@ Options:
       --env <NAME=VALUE>
           Explicit child environment entry; repeatable
 
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
       --inherit-env <NAME>
           Inherit one ambient environment variable; repeatable
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -6457,13 +8458,65 @@ Options:
 ```text
 Generate shell completions offline from the same command tree
 
-Usage: labby completions [OPTIONS] <SHELL>
+Usage: labby completions [OPTIONS] [SHELL]
+       labby completions <COMMAND>
+
+Commands:
+  query    Suggest from the command graph and a valid local cache; never contacts a gateway
+  refresh  Explicitly refresh resource names for the selected gateway and authority
+  clear    Remove only the selected authority's local resource-name cache
 
 Arguments:
-  <SHELL>
-          Target shell
+  [SHELL]
+          Generate a script for this shell
 
           [possible values: bash, elvish, fish, powershell, zsh]
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --resources
+          Include offline, authority-scoped cached resource-name suggestions
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby completions query`
+
+```text
+Suggest from the command graph and a valid local cache; never contacts a gateway
+
+Usage: labby completions query [OPTIONS] [-- <WORDS>...]
+
+Arguments:
+  [WORDS]...
+          Words after labby, ending with the current partial word (which may be empty)
 
 Options:
       --json
@@ -6480,6 +8533,93 @@ Options:
 
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby completions refresh`
+
+```text
+Explicitly refresh resource names for the selected gateway and authority
+
+Usage: labby completions refresh [OPTIONS]
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby completions clear`
+
+```text
+Remove only the selected authority's local resource-name cache
+
+Usage: labby completions clear [OPTIONS]
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)

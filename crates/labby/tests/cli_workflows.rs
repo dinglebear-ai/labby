@@ -7,6 +7,7 @@ use std::{
     time::Duration,
 };
 use tokio::process::Command;
+#[cfg(feature = "gateway")]
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{method, path},
@@ -47,6 +48,42 @@ fn success(output: &Output) -> Value {
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).expect("one JSON result")
+}
+
+#[tokio::test]
+async fn context_name_completion_only_suggests_names_at_valid_operand_positions() {
+    let home = tempfile::tempdir().unwrap();
+    success(
+        &run(
+            home.path(),
+            &[
+                "--json",
+                "context",
+                "add",
+                "alpha",
+                "--server",
+                "https://example.invalid",
+            ],
+        )
+        .await,
+    );
+    let path = home.path().join(".labby/config.toml");
+    let before = std::fs::read(&path).unwrap();
+    for (words, expected) in [
+        (vec!["context", "use", "al"], json!(["alpha"])),
+        (vec!["--context", "al"], json!(["alpha"])),
+        (vec!["context", "al"], json!([])),
+        (vec!["context", "list", "al"], json!([])),
+        (vec!["context", "get", "alpha", "al"], json!([])),
+    ] {
+        let args = [vec!["--json", "completions", "query", "--"], words.clone()].concat();
+        let result = success(&run(home.path(), &args).await);
+        assert_eq!(
+            result, expected,
+            "invalid context completion position: {words:?}"
+        );
+    }
+    assert_eq!(std::fs::read(path).unwrap(), before);
 }
 
 #[tokio::test]
