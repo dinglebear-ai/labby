@@ -53,6 +53,13 @@ fn human_console_target_enabled(target: &str) -> bool {
         || target.starts_with("labby_gateway::")
 }
 
+fn json_console_target_enabled(console_enabled: bool, _target: &str) -> bool {
+    // JSON logging is an operator-selected structured stream. Preserve every
+    // target admitted by EnvFilter so diagnostics and conformance consumers do
+    // not lose machine-readable lifecycle events.
+    console_enabled
+}
+
 /// Initialize tracing.
 ///
 /// Accepts config.toml log preferences; env vars `LABBY_LOG` / `LABBY_LOG_FORMAT`
@@ -126,7 +133,7 @@ fn init_tracing(
                     .json()
                     .with_writer(std::io::stderr)
                     .with_filter(filter_fn(move |metadata| {
-                        console_enabled && human_console_target_enabled(metadata.target())
+                        json_console_target_enabled(console_enabled, metadata.target())
                     })),
             ) // console
             .with(fmt::layer().json().with_writer(non_blocking_file)) // file
@@ -652,7 +659,7 @@ mod tests {
 
     use super::{
         ClapErrorKind, argv_command_label, clap_error_value, cli_error_value,
-        human_console_target_enabled, parse_cli_args,
+        human_console_target_enabled, json_console_target_enabled, parse_cli_args,
     };
     use crate::dispatch::error::ToolError;
 
@@ -662,6 +669,12 @@ mod tests {
         assert!(human_console_target_enabled(
             "labby_gateway::upstream::pool::logging"
         ));
+    }
+
+    #[test]
+    fn json_console_preserves_configured_structured_targets() {
+        assert!(json_console_target_enabled(true, "labby_browser::hub"));
+        assert!(!json_console_target_enabled(false, "labby_browser::hub"));
     }
 
     #[test]
