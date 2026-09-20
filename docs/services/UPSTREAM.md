@@ -727,7 +727,7 @@ Keep this distinction explicit in operator docs:
 
 ### 1. Configure upstreams
 
-Prefer `labby server add`/`update`. For offline editing, add `[[upstream]]`
+Prefer `labby server add`/`set`. For offline editing, add `[[upstream]]`
 entries to the selected `$LABBY_HOME/config.toml` (normally
 `~/.labby/config.toml`).
 

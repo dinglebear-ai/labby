@@ -28,7 +28,6 @@ fn live_repository_text_does_not_teach_retired_cli_prefixes() {
             || relative == "crates/labby/src/cli/migration.rs"
             || relative == "plugins/scripts/health-check"
             || relative == "docs/generated/cli-migration.md"
-            || relative.starts_with("crates/labby/tests/")
             || relative.starts_with("docs/archive/")
             || relative.starts_with("docs/plans/")
             || relative.starts_with("docs/sessions/")
@@ -41,9 +40,15 @@ fn live_repository_text_does_not_teach_retired_cli_prefixes() {
             continue;
         };
         for (retired, replacement) in labby::cli::migration::MOVED {
-            let needle = format!("labby {retired}");
-            if contents.contains(&needle) {
-                stale.push(format!("{relative}: {needle} -> labby {replacement}"));
+            let needles = [
+                format!("labby {retired}"),
+                format!("labby --json {retired}"),
+                format!("-- --json {retired}"),
+            ];
+            for needle in needles {
+                if contents.contains(&needle) {
+                    stale.push(format!("{relative}: {needle} -> labby {replacement}"));
+                }
             }
         }
     }

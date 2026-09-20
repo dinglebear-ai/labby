@@ -185,9 +185,10 @@ explicit target fails closed instead of falling back to local configuration.
 It does not configure the daemon listener. This client-side selector is outside
 the generated per-service environment inventory.
 
-`labby gateway <subcommand>` (add/update/remove/reload/enable/disable/list/
-mcp auth */protected-route */discover/import/code *) prefers the live
-`labby serve` daemon's HTTP API over its own local `config.toml` mutation --
+Server mutations (`labby server add/set/remove/reload/enable/disable`) and
+related server authentication, route, discovery, import, and Code Mode
+workflows prefer the live `labby serve` daemon's HTTP API over their own local
+`config.toml` mutation --
 see `docs/services/GATEWAY.md` for why that split exists. To reach a daemon
 running on a different host (not just the one the CLI happens to run on),
 the invoking machine should configure an explicit client target and the

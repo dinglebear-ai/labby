@@ -155,7 +155,7 @@ fn filtered_builtin_service_registry(config: &LabConfig) -> ToolRegistry {
 /// The lazy local manager remains for the two paths that still run locally:
 /// `code run` (falls back to the CLI's own `CodeModeBroker` only when
 /// opportunistic daemon detection finds nothing or the remote Code Mode call
-/// fails without an explicitly configured server), and `gateway list` (answers
+/// fails without an explicitly configured server), and `server list` (answers
 /// from the daemon when one is reachable and otherwise reads local config,
 /// including when a non-explicit daemon's response does not decode). No other
 /// gateway subcommand builds the local manager. Building `GatewayManager`

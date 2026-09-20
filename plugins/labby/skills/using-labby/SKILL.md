@@ -57,7 +57,7 @@ This is a common-workflow list, not a command inventory. Use
 For command details and workflows, read:
 
 - `references/operator-cli.md` for top-level CLI, setup, docs, doctor, logs, and gateway workflows.
-- `references/gateway-operations.md` for gateway add/update/import/OAuth/protected routes/runtime operations.
+- `references/gateway-operations.md` for server add/set/import/auth, route, and runtime operations.
 - `references/code-mode.md` for `codemode`, schemas, confirmations, limits, and error recovery.
 - `references/config-reference.md` for `~/.labby/.env`, `config.toml`, and mutable gateway settings.
 - `references/service-catalog.md` for generated catalog sources and action-dispatch discovery.

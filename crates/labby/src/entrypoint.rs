@@ -563,7 +563,7 @@ pub async fn run() -> ExitCode {
     //    directly to avoid mutating the environment (crate forbids unsafe_code).
     // For one-shot CLI commands (not Serve/Mcp) we silence labby's INFO chatter
     // by default — upstream connect/discovery events would otherwise flood
-    // ordinary commands like `gateway list`. LABBY_LOG still wins when set.
+    // ordinary commands like `server list`. LABBY_LOG still wins when set.
     let log_filter_override: Option<String> = match &cli.command {
         _ if cli.verbose > 1 => {
             Some("labby=trace,labby_gateway=trace,labby_auth=debug,rmcp=warn".to_string())
@@ -581,7 +581,7 @@ pub async fn run() -> ExitCode {
             .map(|level| format!("labby={level},warn")),
         _ if std::env::var_os("LABBY_LOG").is_none() && config.log.filter.is_none() => {
             // Silence upstream connect/discovery warnings — failures are surfaced
-            // inline in command output (e.g. `gateway list`); raw events just leak
+            // inline in command output (e.g. `server list`); raw events just leak
             // above the human-readable result. Set LABBY_LOG=labby=warn to see them.
             Some("labby=warn,labby::cli::audit=info,labby::cli::helpers=info,labby::dispatch::upstream=error,rmcp=warn".to_string())
         }

@@ -106,7 +106,7 @@ store. Do not point rehearsal approval at the live installation. Run:
 ```sh
 LABBY_HOME=/absolute/rehearsal-installation \
 LABBY_ACCESS_MIGRATION_EVIDENCE=/absolute/rehearsal-approval.json \
-labby --json state migrate-access
+labby --json state access migrate
 ```
 
 The command applies the existing approval and logical checkpoint checks,
