@@ -138,16 +138,25 @@ fn resolve_target_set_from(
         }
     }
 
-    let host = host_env
-        .or_else(|| config.mcp.host.clone())
-        .unwrap_or_else(|| "127.0.0.1".to_string());
+    let configured_host = host_env.or_else(|| config.mcp.host.clone());
     let port = port_env
         .and_then(|value| value.parse::<u16>().ok())
         .or(config.mcp.port)
         .unwrap_or(8765);
 
     let mut candidates = Vec::new();
-    push_candidate(&mut candidates, &format!("http://{host}:{port}"));
+    // Opportunistic discovery always checks the local daemon first. A configured
+    // non-loopback bind/advertise address (for example a Tailscale IP) is still
+    // tried next, but using it for an in-container CLI request can trip Labby's
+    // DNS-rebinding Host validation even though the daemon is on the same host.
+    push_candidate(&mut candidates, &format!("http://127.0.0.1:{port}"));
+    if let Some(host) = configured_host
+        && !host.eq_ignore_ascii_case("127.0.0.1")
+        && !host.eq_ignore_ascii_case("localhost")
+        && host != "::1"
+    {
+        push_candidate(&mut candidates, &format!("http://{host}:{port}"));
+    }
     let public = config.public_urls();
     for raw in [public.mcp_gateway, public.app].into_iter().flatten() {
         push_candidate(&mut candidates, &raw);
@@ -1210,7 +1219,7 @@ mod tests {
     }
 
     #[test]
-    fn local_candidate_prefers_env_over_config_over_default() {
+    fn local_candidate_prefers_loopback_before_configured_hosts() {
         let mut config = LabConfig::default();
         config.mcp.host = Some("configured.example".to_string());
         config.mcp.port = Some(1234);
@@ -1221,7 +1230,10 @@ mod tests {
         );
         assert_eq!(
             candidate_base_urls_from(None, None, &config),
-            vec!["http://configured.example:1234".to_string()]
+            vec![
+                "http://127.0.0.1:1234".to_string(),
+                "http://configured.example:1234".to_string(),
+            ]
         );
         assert_eq!(
             candidate_base_urls_from(
@@ -1229,7 +1241,10 @@ mod tests {
                 Some("9999".to_string()),
                 &config
             ),
-            vec!["http://env.example:9999".to_string()]
+            vec![
+                "http://127.0.0.1:9999".to_string(),
+                "http://env.example:9999".to_string(),
+            ]
         );
     }
 
