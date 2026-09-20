@@ -13,7 +13,7 @@ jobs:
     # Audit/build/replay budgets plus bounded setup and evidence-upload margin.
     timeout-minutes: 20
     env:
-      CARGO_TARGET_DIR: verification/target
+      CARGO_TARGET_DIR: tools/verification/target
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -24,10 +24,10 @@ jobs:
           tool: cargo-deny@0.20.2
       - name: Audit the executed isolated dependency graph
         timeout-minutes: 2
-        run: cargo deny --manifest-path verification/Cargo.toml --config verification/deny.toml --locked check
+        run: cargo deny --manifest-path tools/verification/Cargo.toml --config tools/verification/deny.toml --locked check
       - name: Build model host (separate build budget)
         timeout-minutes: 12
-        run: cargo build --manifest-path verification/Cargo.toml -p labby-verify --locked
+        run: cargo build --manifest-path tools/verification/Cargo.toml -p labby-verify --locked
       - name: Replay catalog and corpus (T0, 60 seconds)
         run: |
           set -euo pipefail
@@ -35,14 +35,14 @@ jobs:
           mkdir -p verification-evidence
           git rev-parse HEAD > verification-evidence/source-revision.txt
           printf '%s' "$source_status" > verification-evidence/source-dirty.txt
-          sha256sum verification/target/debug/labby-verify > verification-evidence/binary-sha256.txt
-          timeout --signal=TERM --kill-after=5s 60s verification/target/debug/labby-verify t0 formal > verification-evidence/model-replay.json
+          sha256sum tools/verification/target/debug/labby-verify > verification-evidence/binary-sha256.txt
+          timeout --signal=TERM --kill-after=5s 60s tools/verification/target/debug/labby-verify t0 tools/verification/formal > verification-evidence/model-replay.json
       - name: Render retained evidence without changing the replay result
         if: always()
         run: |
           set -euo pipefail
           for format in json text markdown html; do
-            verification/target/debug/labby-verify report-t0 verification-evidence/model-replay.json verification-evidence/source-revision.txt verification-evidence/source-dirty.txt verification-evidence/binary-sha256.txt "$format" dinglebear-ai/labby > "verification-evidence/report.$format"
+            tools/verification/target/debug/labby-verify report-t0 verification-evidence/model-replay.json verification-evidence/source-revision.txt verification-evidence/source-dirty.txt verification-evidence/binary-sha256.txt "$format" dinglebear-ai/labby > "verification-evidence/report.$format"
           done
           cat verification-evidence/report.markdown >> "$GITHUB_STEP_SUMMARY"
       - name: Preserve model-only evidence

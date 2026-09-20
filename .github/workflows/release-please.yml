@@ -214,7 +214,7 @@ jobs:
 
           # The separate verification workspace pins the product's
           # labby-model at the exact release version.
-          verify_host_path = "verification/hosts/labby/Cargo.toml"
+          verify_host_path = "tools/verification/hosts/labby/Cargo.toml"
           text = open(verify_host_path).read()
           patched, count = re.subn(
               r'(\nlabby-model = \{ version = "=)[^"]+(")',
@@ -257,11 +257,11 @@ jobs:
           # Desktop is a separate Cargo workspace; the root update cannot repair
           # its package version in the independent lockfile.
           cargo update --manifest-path apps/labby-desktop/src-tauri/Cargo.toml --workspace --offline || cargo update --manifest-path apps/labby-desktop/src-tauri/Cargo.toml --workspace
-          cargo update --manifest-path verification/Cargo.toml -p labby-model --offline \
-            || cargo update --manifest-path verification/Cargo.toml -p labby-model
+          cargo update --manifest-path tools/verification/Cargo.toml -p labby-model --offline \
+            || cargo update --manifest-path tools/verification/Cargo.toml -p labby-model
           git diff --stat -- Cargo.toml Cargo.lock packages/labby-mcp/package.json server.json \
             apps/labby-desktop/package.json apps/labby-desktop/src-tauri/Cargo.toml apps/labby-desktop/src-tauri/Cargo.lock apps/labby-desktop/src-tauri/tauri.conf.json \
-            verification/hosts/labby/Cargo.toml verification/Cargo.lock
+            tools/verification/hosts/labby/Cargo.toml tools/verification/Cargo.lock
 
       - name: Commit and push if changed
         if: ${{ steps.pr.outputs.found == 'true' }}
@@ -269,7 +269,7 @@ jobs:
           set -euo pipefail
           paths=(Cargo.toml Cargo.lock packages/labby-mcp/package.json server.json
             apps/labby-desktop/package.json apps/labby-desktop/src-tauri/Cargo.toml apps/labby-desktop/src-tauri/Cargo.lock apps/labby-desktop/src-tauri/tauri.conf.json
-            verification/hosts/labby/Cargo.toml verification/Cargo.lock)
+            tools/verification/hosts/labby/Cargo.toml tools/verification/Cargo.lock)
           if git diff --quiet -- "${paths[@]}"; then
             echo "Release metadata already in sync, nothing to commit."
             exit 0

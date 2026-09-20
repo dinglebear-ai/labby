@@ -1,9 +1,7 @@
 name: Build gateway-admin
 description: >
-  Install Node + pnpm and run `next build` so that
-  `apps/gateway-admin/out/` exists before cargo compiles the `lab`
-  crate (its `include_dir!("../../apps/gateway-admin/out")` macro panics
-  if the directory is missing).
+  Install Node + pnpm, test the frontend, and generate the ignored static export
+  consumed by release and full-product Rust builds.
 
 runs:
   using: composite

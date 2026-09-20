@@ -9,10 +9,10 @@ from unittest.mock import Mock, patch
 from scripts.ci import refresh_mcp_auth_denominator
 
 ROOT = Path(__file__).resolve().parents[2]
-MATRIX = ROOT / "conformance/auth-requirements.json"
-NORMATIVE = ROOT / "conformance/mcp-auth-normative.json"
-COVERAGE = ROOT / "conformance/mcp-auth-coverage-manifest.json"
-OPENAI_NORMATIVE = ROOT / "conformance/openai-auth-normative.json"
+MATRIX = ROOT / "tools/verification/conformance/auth-requirements.json"
+NORMATIVE = ROOT / "tools/verification/conformance/mcp-auth-normative.json"
+COVERAGE = ROOT / "tools/verification/conformance/mcp-auth-coverage-manifest.json"
+OPENAI_NORMATIVE = ROOT / "tools/verification/conformance/openai-auth-normative.json"
 
 
 class AuthSpecificationMatrixTests(unittest.TestCase):

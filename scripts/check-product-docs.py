@@ -33,8 +33,6 @@ TOP_LEVEL_DOCS = {
     "docs/assets/brand/README.md",
     "docs/specs/stdio-mcp-proxy.md",
     "plugins/labby/README.md",
-    "LICENSING.md",
-    "COMMERCIAL-LICENSING.md",
 }
 
 CANONICAL_DIRS = (

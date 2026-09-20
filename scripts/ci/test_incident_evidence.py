@@ -31,10 +31,10 @@ class IncidentEvidenceTests(unittest.TestCase):
     def test_required_conformance_runs_actual_capture_pipeline(self):
         workflow = (Path(__file__).resolve().parents[2] /
                     ".github/workflows/verification-conformance.yml").read_text()
-        self.assertIn("cargo build --manifest-path verification/Cargo.toml -p labby-verify --locked", workflow)
+        self.assertIn("cargo build --manifest-path tools/verification/Cargo.toml -p labby-verify --locked", workflow)
         self.assertIn("timeout --signal=TERM --kill-after=5s 200s", workflow)
         self.assertIn("python3 scripts/ci/validate_incident_evidence.py", workflow)
-        self.assertIn("--verifier verification/target/debug/labby-verify", workflow)
+        self.assertIn("--verifier tools/verification/target/debug/labby-verify", workflow)
         self.assertNotIn("continue-on-error:", workflow)
 
     def setUp(self):

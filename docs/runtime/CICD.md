@@ -17,8 +17,8 @@ workflow, `.github/workflows/verification.yml`. It runs isolated compilation,
 workspace boundary tests, core tests (including generated-schema freshness),
 Clippy, formatting, and a pinned cargo-deny audit of its own lockfile/policy on
 `ubuntu-24.04` within 15 minutes. It never regenerates
-schemas to hide drift. Both `verification/**` and the design-schema mirror are
-inputs, along with `crates/labby-model/**` and `formal/**`. Its broad toolkit
+schemas to hide drift. Both `tools/verification/**` and the design-schema mirror are
+inputs, along with `crates/labby-model/**` and `tools/verification/formal/**`. Its broad toolkit
 checks remain advisory; failures are visible, not swallowed. The pure
 `verify-core`/`verify-scenario` leaves and their inherited workspace manifest
 also route product Rust checks because the dev-facing `labby-model` consumes
@@ -71,11 +71,11 @@ Those tests supplement, but do not replace, the real-process evidence lane.
 `ci.yml` starts with a `changes` job that runs `scripts/ci/changed_paths.py`.
 That classifier maps the changed file list into stable routing categories:
 `all`, `docs`, `docs_check`, `workflow`, `rust_compile`, `rust_test`, `web`,
-`palette`, `browser_extension`, `npm`, `docker`, `security`,
+`palette`, `browser_extension`, `npm`, `incus`, `security`,
 `javascript_advisories`, `release`, `unraid`, and `verification`. Scheduled and manual runs enable every category so periodic/manual
 validation stays broad.
 
-The independent `verification/` Cargo workspace has its own build, lint, test,
+The independent `tools/verification/` Cargo workspace has its own build, lint, test,
 and dependency-audit job. Changes under that tree enable `verification` without
 enabling the product Rust matrix. Its inherited `rust-toolchain.toml`,
 `clippy.toml`, `.cargo/` configuration, and `Justfile` recipes also enable the
@@ -197,7 +197,7 @@ jobs when their changed-path category is enabled:
 | Unraid plugin checksums | `unraid` | `scripts/ci/unraid-plugin-checksums.sh` — fails if `unraid/labby.plg`'s companion-file `<MD5>` entities drift from `unraid/source/`. The `--tag`/`--tarball` form (checking `labbyVersion` and the release-tarball `<MD5>`) is a manual tool run when deliberately re-pointing `labbyVersion` at a new release — not a CI gate, since a freshly-built tarball's MD5 isn't reproducible run-to-run |
 | Protected docs guard | separate required `pull_request_target` workflow | blocks `docs/sessions/**` and `docs/superpowers/**` changes unless a maintainer applies `protected-docs-approved` |
 | Workflow lint | `workflow` | `actionlint` over `.github/workflows/` |
-| Frontend build | `rust_compile`, `docs_check`, `web`, `docker`, or `release` | `./.github/actions/build-gateway-admin` (`pnpm install --frozen-lockfile && pnpm build` in `apps/gateway-admin`) |
+| Frontend build | `rust_compile`, `docs_check`, `web`, or `release` | `./.github/actions/build-gateway-admin` (`pnpm install --frozen-lockfile && pnpm build` in `apps/gateway-admin`) |
 | Gateway Admin browser tests | `web` | frozen install, pinned Playwright Chromium provisioning, and `pnpm test:browser`; explicitly aggregated by `ci-gate` |
 | Browser extension | `browser_extension` | frozen npm install, Node tests, and TypeScript type-check for extension and shared Browser Bridge protocol changes; explicitly aggregated by `ci-gate` |
 | Compile | `rust_compile` | `cargo check --workspace --all-features` |
@@ -216,16 +216,16 @@ jobs when their changed-path category is enabled:
 | Tests (Linux fork PR fallback) | `rust_test` | same warm-up plus nextest run on GitHub-hosted `ubuntu-24.04` without repository secrets |
 | Tests (Windows) | `rust_test` | same nextest run on GitHub-hosted `windows-latest`, including fork PRs; required by `ci-gate` |
 | macOS updater lifecycle | `workflow`, `release`, or `rust_test` | shell installer contracts plus focused Rust self-update and gateway recovery tests on the native macOS runner; required by `ci-gate` |
-| MCP conformance | `rust_test` or `workflow` | Labby's revision-pinned rmcp authenticated smoke, dated `2026-07-28` suites, and the checked MCP/OpenAI auth denominator in `conformance/auth-requirements.json` |
+| MCP conformance | `rust_test` or `workflow` | Labby's revision-pinned rmcp authenticated smoke, dated `2026-07-28` suites, and the checked MCP/OpenAI auth denominator in `tools/verification/conformance/auth-requirements.json` |
 | MCP upstream drift | weekly/manual separate workflow | compares pinned MCP spec and rmcp commits, maps upstream changes to Labby code and required tests, and opens or updates one actionable issue |
 | Release metadata contract | `release` | version and Rust toolchain lockstep only; release builds do not run in PR CI |
-| Incus source contract | `docker` | runs the image release ShellCheck command at default severity and validates the Incus supply manifest, image-definition pins, install guidance, and rolling-pointer contract |
+| Incus source contract | `incus` | runs the image release ShellCheck command at default severity and validates the Incus supply manifest, image-definition pins, install guidance, and rolling-pointer contract |
 
 Every distributable or deployable Labby binary must include the `skills`
 feature. The Cargo feature graph makes `gateway` depend on `skills`, so the
 default `gateway-host`, the sealed `integrated-gateway`, and `all` profiles all
 include it. Featureless and non-gateway slices exist only to verify dependency
-boundaries. Release binaries, the production container, and the Incus image
+boundaries. Release binaries and the Incus image
 each run a packaged-artifact smoke that proves the Skills CLI surface exists.
 The standalone Skills job runs the `skills::` test filter, covering shared
 registry/provider behavior as well as MCP adapters without gateway support.
@@ -259,7 +259,7 @@ gap baseline are documented in
 [MCP_CONFORMANCE.md](../surfaces/MCP_CONFORMANCE.md).
 
 That job also checks the complete dated specification inventory against the
-immutable source revision in `conformance/mcp-spec-sources.json`, then executes
+immutable source revision in `tools/verification/conformance/mcp-spec-sources.json`, then executes
 the registered oracles with `mcp_spec_compliance.py run --gate oracles`.
 The `mcp-spec-compliance` artifact retains receipts and explicit coverage gaps.
 This is a regression gate for the registered oracles, not a claim of full
@@ -269,7 +269,7 @@ requirements remain unreviewed or uncovered. See
 
 The advisory `MCP upstream drift` workflow watches both the MCP specification
 repository and the latest rmcp release. Its pinned inputs live in
-`conformance/upstream-baseline.json`; `scripts/ci/mcp_upstream_drift.py`
+`tools/verification/conformance/upstream-baseline.json`; `scripts/ci/mcp_upstream_drift.py`
 translates upstream file/release changes into the Labby modules and validation
 commands that must be reviewed. It updates a stable issue rather than creating
 notification spam. Never advance the baseline merely to silence the issue:
@@ -523,6 +523,13 @@ synced installer, runs `pnpm run test:unit`, runs `pnpm exec tsc --noEmit`, and
 then runs `pnpm build`. This is the CI gate for the embedded gateway-admin
 assets compiled into the `labby` binary. The explicit TypeScript check provides
 a distinct type-safety gate alongside the Next.js production build.
+
+`apps/gateway-admin/out/` is generated and ignored; it is never a source
+artifact. CI and release jobs build it once and pass the export to Rust jobs as
+a workflow artifact. Backend-only source builds remain valid without Node and
+embed an empty asset set; distributable builds must consume the generated
+export so the binary includes the Admin UI. `just web-build` creates the local
+export for full-product source builds and Incus syncs.
 
 ```bash
 cd apps/gateway-admin

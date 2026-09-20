@@ -35,7 +35,7 @@ pub enum DoctorCheck {
     OauthRelay(DoctorOauthRelayArgs),
     /// Check public Lab and protected MCP proxy endpoints from caller-visible URLs
     Proxy(DoctorProxyArgs),
-    /// Run local system checks (env vars, Docker, disk, toolchain)
+    /// Run local system checks (env vars, disk, toolchain)
     System,
 }
 
@@ -372,7 +372,6 @@ async fn run_system(format: OutputFormat) -> Result<ExitCode> {
     let groups: &[(&str, &str)] = &[
         ("env:", "Environment variables"),
         ("config:", "Config files"),
-        ("docker:", "Docker"),
         ("rust:", "Toolchain"),
         ("disk:", "Disk"),
     ];
@@ -420,7 +419,7 @@ fn print_finding(theme: CliTheme, f: &Finding) {
 }
 
 fn print_finding_indented(theme: CliTheme, f: &Finding) {
-    // Strip the category prefix (auth:, docker:, etc.) from the check name for cleaner display
+    // Strip the category prefix (auth:, config:, etc.) from the check name for cleaner display
     let check_label = f
         .check
         .split_once(':')

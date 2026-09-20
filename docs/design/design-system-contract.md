@@ -13,7 +13,7 @@ updated: "2026-08-18"
 
 ## Purpose
 
-This document is Labby's implementation-facing **consumer contract** for the Aurora design system. The cross-product visual/component authority lives in the standalone `dinglebear-ai/aurora` repository: its `DESIGN.md`, shadcn registry, registry source, and gallery are canonical for shared Aurora tokens and primitives. Labby's root `DESIGN.md` is the self-contained agent-facing profile for this repository.
+This document is Labby's implementation-facing **consumer contract** for the Aurora design system. The cross-product visual/component authority lives in the standalone `dinglebear-ai/aurora` repository: its `DESIGN.md`, shadcn registry, registry source, and gallery are canonical for shared Aurora tokens and primitives. Labby's `docs/DESIGN.md` is the self-contained agent-facing profile for this repository.
 
 This document defines how the Labby web UI applies Aurora, including product-specific composition, current migration constraints, and interaction rules that new pages, refactors, and component work must follow. The goal is to keep Labby consistent as a premium control plane: clean, modern, and operator-friendly without feeling glossy, intimidating, or over-styled.
 

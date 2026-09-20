@@ -8,8 +8,7 @@ updated: "2026-07-30"
 
 Incus is the recommended self-hosted Labby gateway deployment. Bare metal is the
 secondary supported shape when you already want Labby to own a whole host or VM.
-Docker is retained for development, compatibility, and image-smoke work; it is
-not the recommended self-host boundary for the agent gateway.
+Labby does not ship a Docker image or Compose deployment.
 
 Labby launches stdio MCP servers and agent CLIs at runtime. That workload needs
 a persistent system environment with normal package installation, systemd, SSH,
@@ -48,13 +47,6 @@ sudo install -D -m 755 target/release/labby /usr/local/bin/labby
 sudo labby setup --provision --yes
 ```
 
-Use Docker only for explicit development or image smoke:
-
-```bash
-just dev-container
-just dev-container-debug
-```
-
 ## Host Preparation
 
 Install and initialize Incus explicitly on the host first. The bootstrap command
@@ -66,8 +58,8 @@ sudo incus admin init
 ```
 
 Host networking and storage still matter. If containers cannot reach the
-network, check the host bridge/NAT rules and Docker's FORWARD/NAT policy before
-debugging Labby itself.
+network, check the host bridge/NAT and firewall policy before debugging Labby
+itself.
 
 The bootstrap can use a ZFS, Btrfs, or dir-backed Incus storage pool. By default
 it creates a dedicated ZFS pool named `labby-zfs`; set
@@ -497,13 +489,6 @@ Rollback from bare metal:
 sudo systemctl disable --now labby.service
 sudo rm -f /etc/systemd/system/labby.service
 sudo systemctl daemon-reload
-```
-
-Docker can still be used for compatibility smoke:
-
-```bash
-docker compose -f docker-compose.yml up -d labby-master --no-deps
-curl -fsS http://127.0.0.1:8765/ready
 ```
 
 ## Dependency Diagnostics

@@ -15,7 +15,7 @@ pub use browser_request::{
 pub const MODEL: &str = "browser_request";
 
 /// The request-lifecycle invariant catalog compiled into verification hosts.
-pub const CATALOG_TOML: &str = include_str!("../../../formal/invariants.toml");
+pub const CATALOG_TOML: &str = include_str!("../../../tools/verification/formal/invariants.toml");
 
 /// Parse and validate the built-in catalog against a caller-owned backend set.
 pub fn catalog(
