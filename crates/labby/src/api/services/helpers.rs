@@ -257,6 +257,7 @@ where
             input_tokens,
             output_tokens = 0,
             kind = e.kind(),
+            reason = e.user_message(),
             "dispatch error"
         ),
         Err(e) => tracing::warn!(
@@ -272,6 +273,7 @@ where
             input_tokens,
             output_tokens = 0,
             kind = e.kind(),
+            reason = e.user_message(),
             "dispatch error"
         ),
     }
@@ -635,6 +637,53 @@ mod tests {
         assert!(logs.contains("\"action\":\"safe.read\""));
         assert!(logs.contains("\"request_id\":\"req-123\""));
         assert!(logs.contains("\"elapsed_ms\""));
+    }
+
+    #[test]
+    fn dispatch_error_logs_safe_caller_facing_reason() {
+        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let buf = SharedBuf::default();
+        let subscriber = tracing_subscriber::registry()
+            .with(EnvFilter::new("labby=info"))
+            .with(
+                fmt::layer()
+                    .json()
+                    .with_writer(buf.clone())
+                    .with_ansi(false)
+                    .without_time(),
+            );
+        let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_support::rebuild_tracing_interest_cache();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async {
+            let req = make_req("safe.read", json!({}));
+            let _ = handle_action(
+                "testsvc",
+                test_surface(),
+                Some("req-error-reason"),
+                req,
+                ACTIONS,
+                |a, p| err_dispatch(a, p),
+            )
+            .await;
+        });
+
+        drop(_guard);
+        let logs = captured_logs(&buf);
+        assert!(
+            logs.contains("dispatch error"),
+            "expected dispatch error log, got: {logs}"
+        );
+        assert!(
+            logs.contains("\"reason\":\"missing required parameter `id`\""),
+            "dispatch error must preserve the safe caller-facing reason: {logs}"
+        );
     }
 
     // ── Destructive intent log fires for destructive actions ────────────────

@@ -30,4 +30,5 @@ test('trace rows retain native expansion, keyboard focus, and compact responsive
   assert.match(source, /sm:grid-cols-\[88px_minmax\(0,1fr\)_70px_64px_20px\]/)
   assert.match(source, /trace\.events\.map\(\(event, index\)/)
   assert.match(source, /event\.fields\[key\] === undefined \? null/)
+  for (const field of ['method', 'matched_route', 'status', 'route_match_kind', 'handler', 'reason']) assert.match(source, new RegExp("'" + field + "'"))
 })

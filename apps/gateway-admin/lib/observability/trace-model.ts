@@ -28,6 +28,9 @@ function eventPhase(entry: ServerLogEntry): EventPhase {
   if (explicit === 'start' || explicit === 'finish' || explicit === 'error') return explicit
   const message = entry.message?.toLowerCase()
   if (!message) return null
+  if (entry.fields.http_route_evidence === true && message === 'http route completed') {
+    return number(entry.fields.status) >= 400 ? 'error' : 'finish'
+  }
   if (SUCCESS_MESSAGES.has(message)) return 'finish'
   if (ERROR_MESSAGES.has(message)) return 'error'
   if (START_MESSAGES.has(message)) return 'start'
@@ -101,6 +104,13 @@ export function buildTraceSummary(
       ? Math.max(0, terminalTimestamp - startTimestamp)
       : 0
     const explicitElapsed = rootTerminal ? number(rootTerminal.fields.elapsed_ms) : 0
+    const terminalStatus = rootTerminal ? number(rootTerminal.fields.status) : 0
+    const errorKind = terminalPhase === 'error'
+      ? [...rootEvents].reverse()
+        .map((entry) => entry.kind ?? text(entry.fields.kind))
+        .find((value): value is string => value !== null)
+        ?? (terminalStatus >= 400 ? 'http_' + terminalStatus : null)
+      : null
     const upstreams = [...new Set(fields.map((value) => text(value.upstream)).filter((value): value is string => value !== null))]
     const rootFields = rootEvents.map((entry) => entry.fields)
     const startedAt = startTimestamp
@@ -116,10 +126,12 @@ export function buildTraceSummary(
         ?? 'internal',
       service: rootStart?.service
         ?? rootEvents.map((entry) => entry.service).find(Boolean)
+        ?? rootFields.map((value) => text(value.route_group)).find(Boolean)
         ?? ordered[0]?.service
         ?? 'runtime',
       action: rootStart?.action
         ?? rootEvents.map((entry) => entry.action).find(Boolean)
+        ?? rootFields.map((value) => text(value.handler)).find(Boolean)
         ?? ordered[0]?.action
         ?? rootStart?.message
         ?? 'event',
@@ -127,9 +139,7 @@ export function buildTraceSummary(
         ?? fields.map((value) => text(value.actor_key)).find(Boolean)
         ?? null,
       outcome: terminalPhase === 'error' ? 'failed' : terminalPhase === 'finish' ? 'ok' : 'incomplete',
-      error_kind: terminalPhase === 'error'
-        ? rootTerminal?.kind ?? text(rootTerminal?.fields.kind) ?? null
-        : null,
+      error_kind: errorKind,
       upstreams,
       response_bytes: Math.max(...fields.map((value) => number(value.response_bytes)), 0),
       input_tokens: Math.max(...fields.map((value) => number(value.input_tokens)), 0),

@@ -185,7 +185,7 @@ function TracesExplorer({ initialSearch }: { initialSearch: string }) {
                               </span>
                             </div>
                             <div className="mt-[3px] flex flex-wrap gap-x-3 gap-y-1 text-[9.5px] text-aurora-text-muted">
-                              {['event', 'upstream', 'operation', 'kind', 'elapsed_ms', 'response_bytes'].map((key) =>
+                              {['event', 'method', 'matched_route', 'status', 'route_match_kind', 'handler', 'kind', 'reason', 'elapsed_ms', 'upstream', 'operation', 'response_bytes'].map((key) =>
                                 event.fields[key] === undefined ? null : (
                                   <span key={key}><span className="text-aurora-text-subtle">{key}</span> {valueLabel(event.fields[key])}</span>
                                 ),

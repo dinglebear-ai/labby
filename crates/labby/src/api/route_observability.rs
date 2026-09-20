@@ -139,7 +139,9 @@ pub(crate) async fn record_matched_route(
         .extensions()
         .get::<MatchedPath>()
         .map(|matched| matched.as_str().to_owned());
+    let started = std::time::Instant::now();
     let response = next.run(request).await;
+    let elapsed_ms = started.elapsed().as_millis();
     if let Some((template, route_group, handler, runtime_condition, mounted)) = descriptor.as_ref()
     {
         let runtime_match = response
@@ -154,14 +156,17 @@ pub(crate) async fn record_matched_route(
                             .descriptor(&method, matched)
                             .is_some_and(|matched_descriptor| matched_descriptor.path == *template)
                 }));
-        let match_kind = route_match_kind(
-            actually_matched,
-            runtime_condition.is_some(),
-            response.status(),
-        );
+        let status = response.status();
+        let match_kind = route_match_kind(actually_matched, runtime_condition.is_some(), status);
+        let event = if status.is_client_error() || status.is_server_error() {
+            "error"
+        } else {
+            "finish"
+        };
         tracing::info!(
             surface = "api",
             http_route_evidence = true,
+            event,
             request_id = request_id.as_deref().unwrap_or("-"),
             method,
             matched_route = template,
@@ -169,7 +174,8 @@ pub(crate) async fn record_matched_route(
             handler,
             route_match_kind = match_kind,
             runtime_condition = runtime_condition.unwrap_or("-"),
-            status = response.status().as_u16(),
+            status = status.as_u16(),
+            elapsed_ms,
             "HTTP route completed"
         );
     }

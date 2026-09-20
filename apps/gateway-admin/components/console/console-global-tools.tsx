@@ -30,6 +30,7 @@ type PhoenixWindowRect = { x: number; y: number; width: number; height: number }
 function useTrayCounts() {
   const session = useBrowserSession()
   const identity = session.status === 'authenticated' ? authorityIdentity(session.authority) : session.status
+  const projectId = session.status === 'authenticated' ? session.projectId : undefined
   const [result, setResult] = useState<{ identity: string; counts: TrayCounts }>({ identity, counts: {} })
   useEffect(() => {
     const controller = new AbortController()
@@ -38,14 +39,14 @@ function useTrayCounts() {
     const refresh = async () => {
       const signal = controller.signal
       const results = await Promise.allSettled([
-        skillLibrary.list('', signal),
+        projectId ? skillLibrary.list('', signal) : Promise.resolve(null),
         gatewayApi.listLoadouts(signal), snippetsApi.list(signal),
         gatewayAction<BackendGatewayMcpRuntimeView[]>('gateway.mcp.list', {}, signal),
       ])
       if (signal.aborted) return
       const counts: TrayCounts = {}
       const [artifacts, loadouts, snippets, tools] = results
-      if (artifacts.status === 'fulfilled' && !artifacts.value.next_cursor) counts.artifacts = artifacts.value.items.length
+      if (artifacts.status === 'fulfilled' && artifacts.value && !artifacts.value.next_cursor) counts.artifacts = artifacts.value.items.length
       if (loadouts.status === 'fulfilled') counts.loadouts = loadouts.value.length
       if (snippets.status === 'fulfilled') counts.snippets = snippets.value.length
       if (tools.status === 'fulfilled') counts.tools = deriveConsoleStatus(tools.value).tools
@@ -54,7 +55,7 @@ function useTrayCounts() {
     }
     void refresh()
     return () => { controller.abort(); clearTimeout(timer) }
-  }, [identity, session.status])
+  }, [identity, projectId, session.status])
   return result.identity === identity && session.status === 'authenticated' ? result.counts : {}
 }
 

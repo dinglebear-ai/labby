@@ -18,6 +18,66 @@ test('global library tray links real routes and distinguishes zero from unavaila
   assert.equal((html.match(/Count unavailable for the current authority/g) ?? []).length, 2)
 })
 
+test('global tray does not poll the project-scoped Artifact Library without an active project', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
+  const originalFetch = globalThis.fetch
+  const actions: string[] = []
+  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const body = init?.body ? JSON.parse(String(init.body)) as { action?: string } : {}
+    if (body.action) actions.push(body.action)
+    return new Response(JSON.stringify(body.action === 'snippets.list' ? { snippets: [] } : []), { status: 200 })
+  }) as typeof fetch
+  const [{ ConsoleGlobalTools }, { renderClient }] = await Promise.all([
+    import('./console-global-tools.tsx'),
+    import('../../lib/testing/dom-test-utils.tsx'),
+  ])
+  const view = await renderClient(<ConsoleGlobalTools />)
+  try {
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)) })
+    assert.equal(actions.includes('artifacts.list'), false, 'projectless chrome must not generate a guaranteed Artifact Library 403')
+    assert.equal(actions.includes('gateway.mcp.list'), true, 'unscoped tray counts should still refresh')
+  } finally {
+    globalThis.fetch = originalFetch
+    await view.unmount()
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  }
+})
+
+test('global tray polls Artifact Library only when the request carries the selected project', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf', projectId: 'project-1' })
+  const originalFetch = globalThis.fetch
+  let artifactProjectHeader: string | null | undefined
+  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const body = init?.body ? JSON.parse(String(init.body)) as { action?: string } : {}
+    if (body.action === 'artifacts.list') {
+      artifactProjectHeader = new Headers(init?.headers).get('x-labby-project-id')
+      return new Response(JSON.stringify({
+        library_version: 1,
+        published_library_version: 1,
+        can_create: false,
+        create_visibilities: [],
+        allowed_actions: [],
+        items: [],
+        next_cursor: null,
+      }), { status: 200 })
+    }
+    return new Response(JSON.stringify(body.action === 'snippets.list' ? { snippets: [] } : []), { status: 200 })
+  }) as typeof fetch
+  const [{ ConsoleGlobalTools }, { renderClient }] = await Promise.all([
+    import('./console-global-tools.tsx'),
+    import('../../lib/testing/dom-test-utils.tsx'),
+  ])
+  const view = await renderClient(<ConsoleGlobalTools />)
+  try {
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)) })
+    assert.equal(artifactProjectHeader, 'project-1')
+  } finally {
+    globalThis.fetch = originalFetch
+    await view.unmount()
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  }
+})
+
 test('Phoenix opens an explicit unavailable session panel without simulated send actions', async () => {
   __setBrowserSessionStateForTests({ status: 'unauthenticated' })
   const { PhoenixAvailability } = await import('./console-global-tools.tsx')

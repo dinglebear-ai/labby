@@ -124,3 +124,56 @@ test('drops the oldest correlation group when a retained sample is truncated', (
   ], { truncated: true })
   assert.deepEqual(summary.traces.map((trace) => trace.id), ['req-new'])
 })
+
+test('HTTP route completion is terminal and exposes route identity instead of an incomplete runtime warning', () => {
+  const ok = buildTraceSummary([
+    entry(0, 'req-http-ok', 'HTTP route completed', {
+      event: undefined,
+      surface: 'api',
+      http_route_evidence: true,
+      method: 'GET',
+      matched_route: '/v1/health',
+      route_group: 'health',
+      handler: 'health',
+      status: 200,
+      elapsed_ms: 7,
+    }, { service: null, action: null, kind: null }),
+  ]).traces[0]
+
+  assert.equal(ok?.outcome, 'ok')
+  assert.equal(ok?.service, 'health')
+  assert.equal(ok?.action, 'health')
+  assert.equal(ok?.elapsed_ms, 7)
+  assert.equal(ok?.error_kind, null)
+
+  const denied = buildTraceSummary([
+    entry(0, 'req-http-denied', 'HTTP route completed', {
+      event: undefined,
+      surface: 'api',
+      http_route_evidence: true,
+      method: 'POST',
+      matched_route: '/v1/artifacts',
+      route_group: 'artifacts',
+      handler: 'handle',
+      status: 403,
+    }, { service: null, action: null, kind: null }),
+  ]).traces[0]
+
+  assert.equal(denied?.outcome, 'failed')
+  assert.equal(denied?.error_kind, 'http_403')
+  assert.equal(denied?.service, 'artifacts')
+  assert.equal(denied?.action, 'handle')
+})
+
+test('HTTP route terminal keeps the richer correlated dispatch error kind', () => {
+  const trace = buildTraceSummary([
+    entry(0, 'req-forbidden', 'dispatch start', { surface: 'api' }, { service: 'artifacts', action: 'artifacts.list', kind: null }),
+    entry(1, 'req-forbidden', 'dispatch error', { surface: 'api', kind: 'forbidden', reason: 'Skill Library project context is required' }, { service: 'artifacts', action: 'artifacts.list', kind: 'forbidden' }),
+    entry(2, 'req-forbidden', 'HTTP route completed', { event: undefined, surface: 'api', http_route_evidence: true, matched_route: '/v1/artifacts', route_group: 'artifacts', handler: 'handle', status: 403 }, { service: null, action: null, kind: null }),
+  ]).traces[0]
+
+  assert.equal(trace?.outcome, 'failed')
+  assert.equal(trace?.error_kind, 'forbidden')
+  assert.equal(trace?.service, 'artifacts')
+  assert.equal(trace?.action, 'artifacts.list')
+})
