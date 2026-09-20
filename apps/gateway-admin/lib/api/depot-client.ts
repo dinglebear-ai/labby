@@ -164,7 +164,7 @@ export type DepotArtifact = {
   }
   publication?: { state?: string; visibility?: string; distribution?: string }
   license?: { declared?: string | null; redistribution?: string; reviewState?: string; takedownState?: string }
-  lineage?: { following?: boolean; upstreamArtifactId?: string; forkedFromArtifactId?: string | null }
+  lineage?: { following?: boolean; upstreamArtifactId?: string | null; forkedFromArtifactId?: string | null }
 }
 
 const controlReadmeSchema = z.discriminatedUnion('state', [

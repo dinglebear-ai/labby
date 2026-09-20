@@ -1,5 +1,6 @@
 ---
 title: Claude and Codex Artifact Authoring Reference
+created: 2026-09-16
 updated: 2026-09-16
 ---
 

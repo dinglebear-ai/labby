@@ -22,7 +22,6 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ConsoleHero, type ConsoleHeroStat } from '@/components/console/console-hero'
-import { LibraryTabs } from '@/components/depot/depot-workspace-pages'
 import { DashboardPanel } from '@/components/dashboard/panel'
 import { PrimitiveExposureTable } from '@/components/gateway/primitive-exposure-table'
 import {
@@ -230,7 +229,6 @@ export function SkillsPageContent({ upstream, embedded = false }: { upstream?: s
             eyebrow={upstream ? "Labby · Library · Upstream" : "Labby · Library"}
             pulse={pulse}
             title={upstream ?? "Skills"}
-            footer={<LibraryTabs active="skills" attached counts={{ skills: rows ? totalSkillCount(rows) : undefined }} />}
             actions={
               <div className="flex items-center gap-2">
                 {upstream ? (
