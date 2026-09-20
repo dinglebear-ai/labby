@@ -8,9 +8,9 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-MATRIX = ROOT / "conformance/mcp-auth-normative.json"
-MANIFEST = ROOT / "conformance/mcp-auth-coverage-manifest.json"
-SUMMARY = ROOT / "conformance/auth-requirements.json"
+MATRIX = ROOT / "tools/verification/conformance/mcp-auth-normative.json"
+MANIFEST = ROOT / "tools/verification/conformance/mcp-auth-coverage-manifest.json"
+SUMMARY = ROOT / "tools/verification/conformance/auth-requirements.json"
 HARNESS = "python3 scripts/ci/mcp_auth_normative_conformance.py"
 SUMMARY_ROWS = {
     "MCP-AUTH-001": "MCP-2026-AUTH-INDEX-004",
@@ -121,7 +121,7 @@ IMPLEMENTATION_REMAPS = {
 }
 
 EVIDENCE_PATH_REMAPS = {
-    "MCP-2026-AUTH-INDEX-001": ["conformance/mcp-auth-normative.json", "scripts/ci/mcp_auth_normative_conformance.py"],
+    "MCP-2026-AUTH-INDEX-001": ["tools/verification/conformance/mcp-auth-normative.json", "scripts/ci/mcp_auth_normative_conformance.py"],
     "MCP-2026-AUTH-INDEX-003": ["crates/labby-gateway/src/upstream/pool/connect_stdio.rs"],
     "MCP-2026-AUTH-INDEX-016": ["crates/labby-auth/src/middleware.rs"],
     "MCP-2026-AUTH-INDEX-017": ["Cargo.lock"],

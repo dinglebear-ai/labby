@@ -73,7 +73,7 @@ def fetch_denominator() -> dict:
     # Preserve the reviewed, context-complete wording for stable row IDs while
     # still refreshing and checking every upstream page digest. Newly extracted
     # IDs remain visible and therefore require an explicit coverage disposition.
-    matrix = ROOT / "conformance/mcp-auth-normative.json"
+    matrix = ROOT / "tools/verification/conformance/mcp-auth-normative.json"
     if matrix.exists():
         reviewed = {
             row["id"]: row["requirement"]
@@ -101,7 +101,7 @@ def main() -> None:
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
     output = fetch_denominator()
-    path = ROOT / "conformance/mcp-auth-normative.json"
+    path = ROOT / "tools/verification/conformance/mcp-auth-normative.json"
     if args.check:
         current = json.loads(path.read_text())
         if denominator_projection(current) != denominator_projection(output):

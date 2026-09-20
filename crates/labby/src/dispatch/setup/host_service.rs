@@ -251,8 +251,6 @@ pub(crate) struct HostServiceStatus {
     pub local_ready: Option<bool>,
     pub local_ready_error: Option<String>,
     pub ready_owned_by_service: Option<bool>,
-    pub docker_labby_master_running: Option<bool>,
-    pub docker_labby_master_error: Option<String>,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -1714,11 +1712,6 @@ pub(crate) async fn status() -> Result<HostServiceStatus, ToolError> {
     let path = unit_path();
     let port = configured_local_port()?;
     let installed = path.is_file();
-    let (docker_labby_master_running, docker_labby_master_error) =
-        match docker_labby_master_running().await {
-            Ok(value) => (value, None),
-            Err(err) => (None, Some(err.user_message().to_string())),
-        };
     let (ready_response, mut local_ready_error) = match check_ready(port).await {
         Ok(value) => (Some(value), None),
         Err(err) => (None, Some(err)),
@@ -1782,8 +1775,6 @@ pub(crate) async fn status() -> Result<HostServiceStatus, ToolError> {
         local_ready,
         local_ready_error,
         ready_owned_by_service,
-        docker_labby_master_running,
-        docker_labby_master_error,
     })
 }
 
@@ -2098,7 +2089,6 @@ async fn append_optional_verify(
 }
 
 async fn preflight_port_available(operation: &str) -> Result<u16, ToolError> {
-    let docker_running = docker_labby_master_running().await?;
     let port = configured_local_port()?;
     let holder = port_holder(port).await?;
     let (active_state, main_pid) = if holder.is_some() {
@@ -2106,8 +2096,7 @@ async fn preflight_port_available(operation: &str) -> Result<u16, ToolError> {
     } else {
         (None, None)
     };
-    if docker_running != Some(true)
-        && holder.is_some()
+    if holder.is_some()
         && active_state.as_deref() == Some("active")
         && main_pid.is_some_and(|pid| process_listens_on_port(pid, port))
     {
@@ -2116,7 +2105,6 @@ async fn preflight_port_available(operation: &str) -> Result<u16, ToolError> {
     preflight_decision(
         operation,
         port,
-        docker_running,
         holder.as_deref(),
         active_state.as_deref(),
         main_pid,
@@ -2127,20 +2115,10 @@ async fn preflight_port_available(operation: &str) -> Result<u16, ToolError> {
 fn preflight_decision(
     operation: &str,
     port: u16,
-    docker_running: Option<bool>,
     holder: Option<&str>,
     active_state: Option<&str>,
     main_pid: Option<u32>,
 ) -> Result<(), ToolError> {
-    if docker_running == Some(true) {
-        return Err(ToolError::Conflict {
-            message: format!(
-                "cannot {operation} {SERVICE_NAME}: Docker container `labby-master` is running; stop it before starting the host gateway"
-            ),
-            existing_id: "labby-master".to_string(),
-        });
-    }
-
     if let Some(holder) = holder
         && !holder_can_be_host_service_from(holder, active_state, main_pid)
     {
@@ -2366,20 +2344,6 @@ fn process_has_socket_inode(pid: u32, inodes: &BTreeSet<String>) -> bool {
         };
         inodes.contains(inode)
     })
-}
-
-async fn docker_labby_master_running() -> Result<Option<bool>, ToolError> {
-    match run_command(
-        "docker",
-        &["inspect", "-f", "{{.State.Running}}", "labby-master"],
-    )
-    .await
-    {
-        Ok(output) => Ok(Some(output.stdout.trim() == "true")),
-        Err(err) if command_not_found(&err) => Ok(None),
-        Err(err) if docker_container_missing(&err) => Ok(Some(false)),
-        Err(err) => Err(err),
-    }
 }
 
 async fn poll_ready(port: u16) -> Result<(), String> {
@@ -2617,16 +2581,6 @@ fn command_not_found(err: &ToolError) -> bool {
     let message = err.to_string();
     message.contains("failed to run `")
         && (message.contains("No such file or directory") || message.contains("os error 2"))
-}
-
-fn docker_container_missing(err: &ToolError) -> bool {
-    let message = err.to_string();
-    let message = message.to_lowercase();
-    let has_container_id = message.contains("labby-master");
-    let has_not_found = message.contains("no such object")
-        || message.contains("no such container")
-        || message.contains("not found");
-    has_container_id && has_not_found
 }
 
 fn io_error(err: std::io::Error) -> ToolError {
@@ -4154,25 +4108,10 @@ mod tests {
     }
 
     #[test]
-    fn preflight_blocks_docker_labby_master() {
-        let err = preflight_decision("install", 8765, Some(true), None, None, None).unwrap_err();
-
-        assert_eq!(err.kind(), "conflict");
-        assert!(err.to_string().contains("labby-master"));
-    }
-
-    #[test]
     fn preflight_blocks_foreign_port_holder() {
         let holder = r#"LISTEN 0 4096 127.0.0.1:8765 0.0.0.0:* users:(("other",pid=54321,fd=17))"#;
-        let err = preflight_decision(
-            "restart",
-            8765,
-            Some(false),
-            Some(holder),
-            Some("active"),
-            Some(12345),
-        )
-        .unwrap_err();
+        let err = preflight_decision("restart", 8765, Some(holder), Some("active"), Some(12345))
+            .unwrap_err();
 
         assert_eq!(err.kind(), "conflict");
         assert!(
@@ -4185,38 +4124,7 @@ mod tests {
     fn preflight_allows_active_service_pid_holder() {
         let holder = r#"LISTEN 0 4096 127.0.0.1:8765 0.0.0.0:* users:(("labby",pid=12345,fd=17))"#;
 
-        preflight_decision(
-            "restart",
-            8765,
-            Some(false),
-            Some(holder),
-            Some("active"),
-            Some(12345),
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn docker_container_missing_matches_lowercase_and_uppercase_no_object() {
-        let upper_case = ToolError::Sdk {
-            sdk_kind: "internal_error".into(),
-            message:
-                "command failed: docker inspect ...\nstderr: Error: No such object: labby-master"
-                    .into(),
-        };
-        let lower_case = ToolError::Sdk {
-            sdk_kind: "internal_error".into(),
-            message: "command failed: docker inspect ...\nstderr: no such object: labby-master"
-                .into(),
-        };
-        let other = ToolError::Sdk {
-            sdk_kind: "internal_error".into(),
-            message: "command failed: docker inspect ...\nstderr: Error: No such container".into(),
-        };
-
-        assert!(docker_container_missing(&upper_case));
-        assert!(docker_container_missing(&lower_case));
-        assert!(!docker_container_missing(&other));
+        preflight_decision("restart", 8765, Some(holder), Some("active"), Some(12345)).unwrap();
     }
 
     #[test]

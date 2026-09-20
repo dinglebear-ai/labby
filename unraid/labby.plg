@@ -123,7 +123,7 @@
   PluginAuthor and License fields and a working Icon URL, and its
   PluginURL is corrected to match labby.plg's pluginURL byte-for-byte
   (it had been using the equivalent-but-different raw.githubusercontent.com
-  spelling, which CA compares as a string). The repo-root icon.svg that
+  spelling, which CA compares as a string). The docs/assets/brand/icon.svg that
   ca_profile.xml references now actually exists. scripts/ci/unraid-plugin-
   checksums.sh gained a PluginURL cross-check so this cannot drift again.
 

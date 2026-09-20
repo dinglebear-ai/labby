@@ -211,7 +211,7 @@ Commands:
   auth         Check auth/OAuth configuration (env vars, files, permissions)
   oauth-relay  Check public OAuth callback relay registry and optionally target sockets
   proxy        Check public Lab and protected MCP proxy endpoints from caller-visible URLs
-  system       Run local system checks (env vars, Docker, disk, toolchain)
+  system       Run local system checks (env vars, disk, toolchain)
   help         Print this message or the help of the given subcommand(s)
 
 Options:
@@ -324,7 +324,7 @@ Options:
 ## `labby doctor system`
 
 ```text
-Run local system checks (env vars, Docker, disk, toolchain)
+Run local system checks (env vars, disk, toolchain)
 
 Usage: system [OPTIONS]
 

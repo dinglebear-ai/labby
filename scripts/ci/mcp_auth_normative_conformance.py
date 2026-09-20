@@ -12,8 +12,8 @@ from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-MATRIX = ROOT / "conformance/mcp-auth-normative.json"
-COVERAGE = ROOT / "conformance/mcp-auth-coverage-manifest.json"
+MATRIX = ROOT / "tools/verification/conformance/mcp-auth-normative.json"
+COVERAGE = ROOT / "tools/verification/conformance/mcp-auth-coverage-manifest.json"
 
 def rmcp_manifest() -> Path:
     """Resolve the pinned Git dependency checkout populated by Cargo."""

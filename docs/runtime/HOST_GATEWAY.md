@@ -8,9 +8,8 @@ updated: "2026-07-30"
 
 The recommended self-hosted Labby gateway deployment is the **amd64 Ubuntu 26.04
 Incus system container** described in [INCUS.md](./INCUS.md). Bare metal is the
-secondary supported shape when Labby owns a dedicated host or VM. Docker remains
-available for development, compatibility, and image-smoke work, but it is no
-longer the recommended self-host boundary.
+secondary supported shape when Labby owns a dedicated host or VM. Labby does
+not ship a Docker image or Compose deployment.
 
 Labby launches stdio MCP servers and agent CLIs at runtime, so the gateway needs
 a persistent system environment with normal package installation, systemd, SSH,
@@ -23,7 +22,6 @@ running Labby directly on the host.
 |------|----------|-------------|
 | Incus system container | Normal self-hosted gateway deployment | `scripts/incus-bootstrap.sh --version vX.Y.Z` |
 | Bare metal / dedicated VM | The host itself is the gateway appliance | `labby setup --provision --yes` |
-| Docker | Development, compatibility, and image smoke | `just dev-container` / `just dev-container-debug` |
 
 See [INCUS.md](./INCUS.md) for the full Incus runbook, bare-metal variant,
 Tailscale setup, rollback, and dependency diagnostics.
@@ -225,23 +223,6 @@ The web asset target is `/home/labby/.labby/web-assets`. Pass
 web export exists, sync moves the remote filesystem export aside so the
 updated binary's embedded assets are used.
 
-## Explicit Docker Smoke Path
-
-Docker remains an explicit compatibility and development-image smoke path:
-
-```bash
-just dev-container
-just dev-container-debug
-```
-
-Stop Docker before starting the system service because both runtimes bind the
-configured Labby HTTP port:
-
-```bash
-docker compose -f docker-compose.yml stop labby-master
-labby setup host-service install --install-self -y
-```
-
 ## Rollback And Runtime Recovery
 
 Roll back the most recent successful Incus sync through its retained,
@@ -249,14 +230,6 @@ transactional prior-release snapshot:
 
 ```bash
 labby incus sync --container labby --rollback
-```
-
-Switch temporarily to Docker for a compatibility smoke:
-
-```bash
-systemctl disable --now labby.service
-docker compose -f docker-compose.yml up -d labby-master --no-deps
-curl -fsS http://127.0.0.1:8765/ready
 ```
 
 ## Dependency Diagnostics

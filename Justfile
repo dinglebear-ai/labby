@@ -15,34 +15,34 @@ test:
 
 # Incubating verification toolkit: separate workspace and lockfile.
 verify-check:
-    cargo check --manifest-path verification/Cargo.toml --workspace --all-features --all-targets --locked
+    cargo check --manifest-path tools/verification/Cargo.toml --workspace --all-features --all-targets --locked
 
 verify-test:
-    python3 -m unittest discover -s verification/tests -p 'test_*.py' -v
-    cargo test --manifest-path verification/Cargo.toml --workspace --all-features --locked
+    python3 -m unittest discover -s tools/verification/tests -p 'test_*.py' -v
+    cargo test --manifest-path tools/verification/Cargo.toml --workspace --all-features --locked
 
 verify-lint:
-    cargo clippy --manifest-path verification/Cargo.toml --workspace --all-features --all-targets --locked -- -D warnings
-    cargo fmt --manifest-path verification/Cargo.toml --all -- --check
+    cargo clippy --manifest-path tools/verification/Cargo.toml --workspace --all-features --all-targets --locked -- -D warnings
+    cargo fmt --manifest-path tools/verification/Cargo.toml --all -- --check
 
 verify-fmt:
-    cargo fmt --manifest-path verification/Cargo.toml --all
+    cargo fmt --manifest-path tools/verification/Cargo.toml --all
 
 verify-deny:
-    cargo deny --manifest-path verification/Cargo.toml --config verification/deny.toml --locked check
+    cargo deny --manifest-path tools/verification/Cargo.toml --config tools/verification/deny.toml --locked check
 
 # Labby model adoption gate; build time is separate from the 60-second CI replay cap.
 verify-t0:
-    cargo run --manifest-path verification/Cargo.toml -p labby-verify --locked -- t0 formal
+    cargo run --manifest-path tools/verification/Cargo.toml -p labby-verify --locked -- t0 tools/verification/formal
 
 # Bounded model checking; not implementation conformance or universal proof.
 verify-t1:
-    cargo run --manifest-path verification/Cargo.toml -p labby-verify --locked -- t1 formal
+    cargo run --manifest-path tools/verification/Cargo.toml -p labby-verify --locked -- t1 tools/verification/formal
 
-# Regenerate the authoritative invariant schema and design-document mirror.
+# Regenerate the authoritative verification schemas.
 verify-schema:
-    cargo run --manifest-path verification/Cargo.toml -p verify-core --example invariants-schema --locked -- --write
-    cargo run --manifest-path verification/Cargo.toml -p verify-scenario --example scenario-schema --locked -- --write
+    cargo run --manifest-path tools/verification/Cargo.toml -p verify-core --example invariants-schema --locked -- --write
+    cargo run --manifest-path tools/verification/Cargo.toml -p verify-scenario --example scenario-schema --locked -- --write
 
 # Validate pinned specification extraction and reviewed applicability, not compliance.
 mcp-spec-check spec_checkout:
@@ -112,10 +112,6 @@ rustdoc-audit:
 test-integration:
     cargo nextest run --workspace --all-features --run-ignored ignored-only
 
-# Run the pinned, isolated real-Authelia OIDC acceptance harness.
-test-authelia:
-    bash tests/authelia/run.sh
-
 live-e2e tier="pr" seed="1":
     scripts/ci/labby-live-e2e.sh "{{tier}}" "{{seed}}"
 
@@ -153,9 +149,8 @@ deny:
 build:
     cargo build --workspace --all-features --profile {{local_release_profile}}
 
-# Build release binary with all features.
-# bin/labby is the container bind-mount (docker-compose.yml); the plugin does
-# NOT ship a binary — hosts install labby via scripts/install.sh or cargo.
+# Build release binary with all features. The plugin does not ship a binary;
+# hosts install Labby via scripts/install.sh or Cargo.
 build-release:
     cargo build --workspace --all-features --release
     mkdir -p bin
@@ -256,90 +251,6 @@ host-service-status:
 host-service-uninstall:
     sudo /usr/local/bin/labby setup host-service uninstall -y
 
-# Explicit container compatibility path. Prefer host-sync for normal gateway
-# development; this remains useful for prod-like image smoke and Docker-specific
-# ACP adapter changes.
-dev-container: web-build build-release
-    docker compose -f docker-compose.yml restart
-
-dev-container-debug:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    nightly_rustc=$(rustup which --toolchain nightly rustc)
-    RUSTC="$nightly_rustc" RUSTC_WRAPPER="" RUSTFLAGS="-C link-arg=-fuse-ld=mold -Z codegen-backend=cranelift" \
-        cargo build -p labby --all-features
-    mkdir -p bin
-    install -m 755 target/debug/labby bin/labby
-    docker compose -f docker-compose.yml restart
-
-# Explicit container sync path. The normal gateway workflow is host-sync.
-# Rebuilds the dev image only when runtime inputs changed, then restarts Docker.
-sync-container:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    repo="$(pwd)"
-    profile="{{local_release_profile}}"
-    if command -v mold >/dev/null 2>&1; then
-      export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-fuse-ld=mold"
-    fi
-
-    LABBY_TARGET_DIR="${CARGO_TARGET_DIR:-target}"
-    case "$LABBY_TARGET_DIR" in
-      /*) LABBY_BIN="$LABBY_TARGET_DIR/$profile/labby" ;;
-      *)  LABBY_BIN="$repo/$LABBY_TARGET_DIR/$profile/labby" ;;
-    esac
-
-    release_stale=0
-    if [ ! -x "$LABBY_BIN" ]; then
-      release_stale=1
-    else
-      while IFS= read -r -d '' input; do
-        if [ "$input" -nt "$LABBY_BIN" ]; then
-          release_stale=1
-          break
-        fi
-      done < <(git ls-files -z -- Cargo.toml Cargo.lock rust-toolchain.toml .cargo build.rs crates config apps/gateway-admin/out)
-    fi
-    if [ "$release_stale" -eq 1 ]; then
-      cargo build --workspace --all-features --profile "$profile" --bin labby
-    else
-      echo "$profile binary is current: $LABBY_BIN"
-    fi
-
-    mkdir -p bin
-    install -m 755 "$LABBY_BIN" bin/labby
-    mkdir -p ~/.local/bin
-    ln -sf "$LABBY_BIN" ~/.local/bin/labby
-    echo "labby → $LABBY_BIN"
-
-    compose=(docker compose -f docker-compose.yml)
-    container_sentinel="$LABBY_TARGET_DIR/.labby-container-built"
-    image_stale=0
-    if ! docker image inspect labby:dev >/dev/null 2>&1; then
-      image_stale=1
-    else
-      while IFS= read -r -d '' input; do
-        if [ "$input" -nt "$container_sentinel" ] 2>/dev/null; then
-          image_stale=1
-          break
-        fi
-      done < <(git ls-files -z -- config/Dockerfile.fast docker-compose.yml docker-compose.prod.yml config/acp-adapters.package.json)
-    fi
-    if [ "$image_stale" -eq 1 ]; then
-      "${compose[@]}" build labby-master
-      mkdir -p "$(dirname "$container_sentinel")"
-      touch "$container_sentinel"
-      "${compose[@]}" up -d labby-master --no-deps --no-build
-    else
-      echo "dev runtime image is current"
-      "${compose[@]}" up -d labby-master --no-deps --no-build
-    fi
-    "${compose[@]}" restart labby-master
-    "${compose[@]}" ps labby-master
-    echo "container synced"
-
-container-sync: sync-container
-
 # Install release binary to ~/.local/bin/labby (updates the host CLI)
 install: build-release
     just link-bin
@@ -401,22 +312,6 @@ service-uninstall:
       Linux) just host-service-uninstall ;;
       *) echo "error: service-uninstall supports macOS (launchd) and Linux (systemd)" >&2; exit 1 ;;
     esac
-
-# Ensure host-side runtime directories are owned by the current user before
-# Docker can claim them as root during bind-mount creation.
-ensure-host-dirs:
-    scripts/ensure-host-dirs
-
-# Start the explicit Docker compatibility container path for the first time (or
-# after docker-compose changes).
-dev-up: ensure-host-dirs
-    docker compose -f docker-compose.yml up -d
-
-# Backward-compatible alias for explicit Docker compatibility smoke.
-dev: dev-container
-
-# Backward-compatible alias for explicit Docker debug smoke.
-dev-debug: dev-container-debug
 
 # Rebuild static Labby web assets served by labby serve
 web-build:
@@ -492,38 +387,6 @@ mcp-token:
         echo "✓ appended LABBY_MCP_HTTP_TOKEN to .env"
     fi
     echo "  $token"
-
-# Run the prod image locally with prod-like env (LABBY_UPSTREAM_DISCOVERY_CONCURRENCY=3, no
-# bind-mounted binary). Useful for testing spawn-storm safeguards and discovery timeouts that
-# are masked by the dev stack's higher concurrency default (16). Starts detached, polls /health
-# for up to 60s, then prints the container ID. Stop with: docker stop lab-prod-test
-# See docs/OPERATIONS.md §Dev/Prod Container Drift for the full drift inventory.
-prod-run: build-release
-    #!/usr/bin/env bash
-    set -euo pipefail
-    docker stop lab-prod-test 2>/dev/null || true
-    docker rm   lab-prod-test 2>/dev/null || true
-    docker build -f config/Dockerfile.fast -t labby:prod-test .
-    docker run -d --name lab-prod-test \
-        -p 18765:8765 \
-        -v "${HOME}/.labby:/home/labby/.labby" \
-        -e LABBY_MCP_HTTP_HOST=0.0.0.0 \
-        -e LABBY_MCP_HTTP_PORT=8765 \
-        -e LABBY_UPSTREAM_DISCOVERY_CONCURRENCY=3 \
-        labby:prod-test
-    echo "container started — polling http://localhost:18765/health (60s timeout)..."
-    deadline=$(( $(date +%s) + 60 ))
-    until curl -sf http://localhost:18765/health >/dev/null 2>&1; do
-        if [ "$(date +%s)" -ge "$deadline" ]; then
-            echo "TIMEOUT: /health did not return 200 within 60s" >&2
-            docker logs lab-prod-test >&2
-            docker stop lab-prod-test
-            exit 1
-        fi
-        sleep 2
-    done
-    echo "healthy — container: lab-prod-test (host port 18765)"
-    echo "stop with: docker stop lab-prod-test"
 
 # Smoke-test the lab-bg3e.3 setup wizard end-to-end against a throw-away
 # LABBY_HOME. Used by CI to verify first-run detection + draft commit cycle

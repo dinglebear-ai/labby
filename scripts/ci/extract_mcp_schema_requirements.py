@@ -227,7 +227,7 @@ def main() -> int:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("conformance/mcp-spec-schema.json"),
+        default=Path("tools/verification/conformance/mcp-spec-schema.json"),
     )
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--write", action="store_true")

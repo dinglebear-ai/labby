@@ -275,13 +275,13 @@ fn verification_workspace_changes_route_to_the_required_jobs() {
     // Runner/backend code remains isolated from the product workspace.
     let out = classify(
         "pull_request",
-        &["verification/crates/verify-runner/src/lib.rs"],
+        &["tools/verification/crates/verify-runner/src/lib.rs"],
     );
     assert_eq!(out["verification"], "true");
     assert_eq!(out["rust_compile"], "false");
     assert_eq!(out["rust_test"], "false");
     assert_eq!(out["web"], "false");
-    assert_eq!(out["docker"], "false");
+    assert_eq!(out["incus"], "false");
     assert_eq!(out["release"], "false");
 
     // The product's M3 model imports verify-core and verify-scenario, so edits
@@ -289,8 +289,8 @@ fn verification_workspace_changes_route_to_the_required_jobs() {
     let out = classify(
         "pull_request",
         &[
-            "verification/crates/verify-core/src/lib.rs",
-            "verification/crates/verify-scenario/src/lib.rs",
+            "tools/verification/crates/verify-core/src/lib.rs",
+            "tools/verification/crates/verify-scenario/src/lib.rs",
         ],
     );
     assert_eq!(out["verification"], "true");
@@ -328,7 +328,7 @@ fn docs_only_changes_skip_expensive_runtime_categories() {
     assert_eq!(out["rust_test"], "false");
     assert_eq!(out["web"], "false");
     assert_eq!(out["npm"], "false");
-    assert_eq!(out["docker"], "false");
+    assert_eq!(out["incus"], "false");
     assert_eq!(out["security"], "false");
     assert_eq!(out["release"], "false");
     // Canonical prose participates in docs-check because the recipe also
@@ -373,7 +373,7 @@ fn npm_launcher_changes_enable_npm_checks_only() {
     assert_eq!(out["rust_compile"], "false");
     assert_eq!(out["rust_test"], "false");
     assert_eq!(out["web"], "false");
-    assert_eq!(out["docker"], "false");
+    assert_eq!(out["incus"], "false");
     assert_eq!(out["security"], "false");
 }
 
@@ -386,14 +386,14 @@ fn server_json_changes_enable_npm_registry_checks() {
 }
 
 #[test]
-fn rust_changes_enable_compile_test_security_release_and_container_smoke() {
+fn rust_changes_enable_compile_test_security_release_and_incus_contract() {
     let out = classify("pull_request", &["crates/labby/src/dispatch/gateway.rs"]);
     assert_eq!(out["rust_compile"], "true");
     assert_eq!(out["rust_test"], "true");
     assert_eq!(out["security"], "true");
     assert_eq!(out["javascript_advisories"], "false");
     assert_eq!(out["release"], "true");
-    assert_eq!(out["docker"], "true");
+    assert_eq!(out["incus"], "true");
     assert_eq!(out["web"], "false");
 }
 
@@ -417,16 +417,16 @@ fn nextest_policy_changes_run_the_full_rust_test_path() {
     let out = classify("pull_request", &[".config/nextest.toml"]);
     assert_eq!(out["rust_compile"], "true");
     assert_eq!(out["rust_test"], "true");
-    assert_eq!(out["docker"], "true");
+    assert_eq!(out["incus"], "true");
     assert_eq!(out["release"], "true");
 }
 
 #[test]
-fn frontend_changes_enable_web_release_and_container_without_rust_tests() {
+fn frontend_changes_enable_web_release_and_incus_without_rust_tests() {
     let out = classify("pull_request", &["apps/gateway-admin/app/page.tsx"]);
     assert_eq!(out["web"], "true");
     assert_eq!(out["release"], "true");
-    assert_eq!(out["docker"], "true");
+    assert_eq!(out["incus"], "true");
     assert_eq!(out["rust_compile"], "false");
     assert_eq!(out["rust_test"], "false");
     assert_eq!(out["security"], "false");
@@ -562,8 +562,8 @@ fn secondary_workflow_changes_enable_only_their_own_categories() {
     // Non-ci.yml workflow files enable the workflow gate (actionlint,
     // mcp-conformance) without re-running the full Rust/web/desktop suites.
     for path in [
-        "conformance/expected-failures-dated.yaml",
-        "conformance/expected-failures-extensions.yaml",
+        "tools/verification/conformance/expected-failures-dated.yaml",
+        "tools/verification/conformance/expected-failures-extensions.yaml",
         ".github/labeler.yml",
     ] {
         let out = classify("pull_request", &[path]);
@@ -605,21 +605,21 @@ fn lifecycle_test_inventory_runner_handles_every_declared_extension() {
 #[test]
 fn auth_matrix_changes_route_to_conformance() {
     for path in [
-        "conformance/auth-requirements.json",
-        "conformance/mcp-auth-coverage-manifest.json",
+        "tools/verification/conformance/auth-requirements.json",
+        "tools/verification/conformance/mcp-auth-coverage-manifest.json",
         "scripts/ci/test_auth_spec_matrix.py",
-        "conformance/mcp-auth-normative.json",
-        "conformance/openai-auth-normative.json",
+        "tools/verification/conformance/mcp-auth-normative.json",
+        "tools/verification/conformance/openai-auth-normative.json",
         "scripts/ci/refresh_mcp_auth_denominator.py",
         "scripts/ci/refresh_openai_auth_denominator.py",
         "scripts/ci/publish_mcp_auth_disposition.py",
         "scripts/ci/openai-auth-conformance.sh",
         "scripts/ci/auth_backup_restore_drill.py",
-        "conformance/mcp-spec-dispositions.json",
-        "conformance/mcp-spec-requirements.json",
-        "conformance/mcp-spec-sources.json",
-        "conformance/mcp-spec-schema.json",
-        "conformance/mcp-spec-oracles.json",
+        "tools/verification/conformance/mcp-spec-dispositions.json",
+        "tools/verification/conformance/mcp-spec-requirements.json",
+        "tools/verification/conformance/mcp-spec-sources.json",
+        "tools/verification/conformance/mcp-spec-schema.json",
+        "tools/verification/conformance/mcp-spec-oracles.json",
         "scripts/ci/mcp_spec_compliance.py",
         "scripts/ci/extract_mcp_spec_requirements.py",
         "scripts/ci/extract_mcp_schema_requirements.py",
@@ -638,18 +638,18 @@ fn auth_matrix_changes_route_to_conformance() {
 #[test]
 fn verification_workspace_uses_its_own_advisory_lane() {
     for path in [
-        "verification/Cargo.lock",
-        "verification/crates/verify-runner/src/registry.rs",
-        "verification/schemas/invariants.schema.json",
+        "tools/verification/Cargo.lock",
+        "tools/verification/crates/verify-runner/src/registry.rs",
+        "tools/verification/schemas/invariants.schema.json",
     ] {
         let out = classify("pull_request", &[path]);
         assert_eq!(out["rust_compile"], "false", "{path}");
         assert_eq!(out["rust_test"], "false", "{path}");
     }
     for path in [
-        "verification/Cargo.toml",
-        "verification/crates/verify-core/src/catalog.rs",
-        "verification/crates/verify-scenario/src/envelope.rs",
+        "tools/verification/Cargo.toml",
+        "tools/verification/crates/verify-core/src/catalog.rs",
+        "tools/verification/crates/verify-scenario/src/envelope.rs",
         "crates/labby-model/src/lib.rs",
     ] {
         let out = classify("pull_request", &[path]);
@@ -665,7 +665,7 @@ fn verification_workspace_uses_its_own_advisory_lane() {
     let paths = workflow["on"]["pull_request"]["paths"]
         .as_array()
         .expect("path triggers");
-    assert!(paths.iter().any(|path| path == "verification/**"));
+    assert!(paths.iter().any(|path| path == "tools/verification/**"));
     assert_eq!(workflow["jobs"]["core"]["timeout-minutes"], 15);
     assert_eq!(
         workflow["jobs"]["core"]["name"],
@@ -1478,7 +1478,7 @@ fn ci_contract_runs_inside_a_gating_job() {
 const STALE_CLASSIFIER: &str = r#"import argparse
 from pathlib import Path
 
-keys = "all docs docs_check workflow rust_compile rust_test web desktop npm docker security release".split()
+keys = "all docs docs_check workflow rust_compile rust_test web desktop npm incus security release".split()
 parser = argparse.ArgumentParser()
 parser.add_argument("--event", required=True)
 parser.add_argument("--output", type=Path, required=True)

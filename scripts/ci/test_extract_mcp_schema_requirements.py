@@ -29,7 +29,7 @@ class McpSchemaExtractionTests(unittest.TestCase):
     def test_committed_inventory_matches_pinned_source(self) -> None:
         self.assertEqual(
             extract(PINNED_SOURCE),
-            json.loads((ROOT / "conformance/mcp-spec-schema.json").read_text()),
+            json.loads((ROOT / "tools/verification/conformance/mcp-spec-schema.json").read_text()),
         )
 
     def test_inventory_covers_every_definition_and_has_no_static_outcome(self) -> None:
