@@ -9,6 +9,7 @@ Historical material that still has durable value lives under `docs/archive/` and
 ## Start Here
 
 - [Architecture](./ARCH.md) — workspace boundaries, runtime flow, and product surfaces.
+- [Architecture decisions](./adr/README.md) — accepted and proposed durable architecture choices, their boundaries, and alternatives.
 - [Labby product contracts over private Depot](./adr/0002-labby-product-contracts-over-private-depot.md) — accepted ownership and shared-shim decision, with a [current capability audit](./design/depot-capability-audit.md).
 - [Technology](./TECH.md) — toolchain, dependencies, build posture, Rustdoc, and release model.
 - [Conventions](./CONVENTIONS.md) — engineering rules that current code is expected to follow.
