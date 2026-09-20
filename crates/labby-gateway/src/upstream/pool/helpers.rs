@@ -294,8 +294,8 @@ pub(super) fn max_response_bytes_override(value: usize) -> bool {
 }
 
 /// Classify a raw transport/connect error for breaker, backoff, and operator
-/// logging (`auth_failed` / `auth_required` / `timeout` / `dns_error` /
-/// `connection_refused` / `connection_error`).
+/// logging (`auth_failed` / `auth_required` / `timeout` / `response_too_large` /
+/// `dns_error` / `connection_refused` / `connection_error`).
 ///
 /// This is a DIFFERENT vocabulary from the model-facing
 /// `upstream_failure_kind` in `crates/labby/src/mcp/call_tool_upstream.rs`,
@@ -321,6 +321,8 @@ pub(super) fn classify_upstream_error(error: &str) -> &'static str {
         "auth_required"
     } else if lower.contains("timed out") || lower.contains("timeout") {
         "timeout"
+    } else if lower.contains("response_too_large") {
+        "response_too_large"
     } else if lower.contains("dns") || lower.contains("name or service not known") {
         "dns_error"
     } else if lower.contains("connection refused") {
@@ -598,6 +600,16 @@ mod tests {
         assert!(parse_response_bytes("0").is_err());
         assert!(parse_response_bytes("not-a-number").is_err());
         assert!(parse_response_bytes("-1").is_err());
+    }
+
+    #[test]
+    fn classify_upstream_error_preserves_response_limit_kind() {
+        assert_eq!(
+            classify_upstream_error(
+                "Client error: response_too_large: received more than 1024 bytes"
+            ),
+            "response_too_large"
+        );
     }
 
     /// `config_value` fallback is used when the env var isn't set. Doesn't

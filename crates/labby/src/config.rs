@@ -680,6 +680,10 @@ pub struct OpenApiSpecToml {
     /// Header name for `OPENAPI_<LABEL>_API_KEY` injection (default `X-API-Key`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_header: Option<String>,
+    /// OAuth-enabled gateway upstream used to resolve a bearer token for the
+    /// authenticated caller subject at dispatch time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth_upstream: Option<String>,
     /// Deny-by-default allowlist of raw operationIds.
     #[serde(default)]
     pub allowed_operations: Vec<String>,
@@ -2147,10 +2151,10 @@ fn load_toml_from_paths(candidates: &[PathBuf]) -> Result<LabConfig> {
 }
 
 /// Labby-owned app-surface sections that `raw` (a `config.toml` document)
-/// does not declare and therefore inherits at their on-by-default posture:
-/// `code_mode` (Code Mode plus its inspector UI) and `mcp_apps` (every
-/// Labby-owned MCP App UI). Startup names these once so an install upgraded
-/// from a release where they defaulted off sees the change. Unparseable input
+/// does not declare and therefore inherits from code defaults. `code_mode`
+/// keeps text execution enabled while its inspector UI defaults off; `mcp_apps`
+/// keeps every Labby-owned MCP App UI opt-in. Startup names inherited sections
+/// once so operators can see which defaults were applied. Unparseable input
 /// yields nothing; the config loader owns that error.
 #[must_use]
 pub fn inherited_app_surface_sections(raw: &str) -> Vec<&'static str> {
@@ -2805,6 +2809,20 @@ pub fn load_openapi_provider_config(
                         value,
                     })
             });
+        let oauth_upstream = match raw.oauth_upstream.as_deref().map(str::trim) {
+            Some("") => {
+                return Err(ConfigError::InvalidOpenApiOauthUpstream {
+                    label: label.clone(),
+                });
+            }
+            Some(value) => Some(value.to_owned()),
+            None => None,
+        };
+        if oauth_upstream.is_some() && credential.is_some() {
+            return Err(ConfigError::ConflictingOpenApiAuth {
+                label: label.clone(),
+            });
+        }
 
         let spec_source = match (
             raw.spec_url
@@ -2835,6 +2853,7 @@ pub fn load_openapi_provider_config(
             base_url,
             allowed_operations: raw.allowed_operations.clone(),
             credential,
+            oauth_upstream,
         });
     }
     Ok(OpenApiProviderConfig { specs })
@@ -3357,6 +3376,51 @@ allowed_operations = ["getUser"]"#;
         assert!(cfg.specs[0].credential.is_some());
         // Credential must NEVER round-trip through the TOML struct.
         assert!(!format!("{:?}", cfg.specs[0]).contains("tok-123"));
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn openapi_oauth_upstream_loads_without_static_secret() {
+        let toml = r#"[[openapi.specs]]
+label = "vendor"
+base_url = "https://api.example.com"
+spec_url = "https://api.example.com/openapi.json"
+oauth_upstream = "vendor-oauth"
+allowed_operations = ["getUser"]"#;
+        let cfg = load_openapi_provider_config(&openapi_section(toml), &|_| None).unwrap();
+        assert_eq!(cfg.specs[0].oauth_upstream.as_deref(), Some("vendor-oauth"));
+        assert!(cfg.specs[0].credential.is_none());
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn openapi_oauth_upstream_rejects_blank_name() {
+        let toml = r#"[[openapi.specs]]
+label = "vendor"
+base_url = "https://api.example.com"
+spec_url = "https://api.example.com/openapi.json"
+oauth_upstream = "   ""#;
+        let err = load_openapi_provider_config(&openapi_section(toml), &|_| None).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::InvalidOpenApiOauthUpstream { ref label } if label == "vendor"
+        ));
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn openapi_oauth_upstream_rejects_process_global_secret() {
+        let toml = r#"[[openapi.specs]]
+label = "vendor"
+base_url = "https://api.example.com"
+spec_url = "https://api.example.com/openapi.json"
+oauth_upstream = "vendor-oauth""#;
+        let env = |k: &str| (k == "OPENAPI_VENDOR_TOKEN").then(|| "must-not-win".to_string());
+        let err = load_openapi_provider_config(&openapi_section(toml), &env).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::ConflictingOpenApiAuth { ref label } if label == "vendor"
+        ));
     }
 
     #[cfg(feature = "gateway")]

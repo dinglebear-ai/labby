@@ -107,41 +107,32 @@ fn default_mcp_scopes() -> Vec<String> {
 /// control tool stays available when its manager UI is disabled. Code Mode keeps
 /// its existing `CodeModeConfig::mcp_ui_enabled` field for backward-compatible
 /// config.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct McpAppsConfig {
     /// Attach MCP App metadata to the always-available `mcp_app` control tool and advertise its UI resources.
-    /// The control tool itself remains available when this is false.
-    /// Fresh installs expose the manager UI by default.
-    #[serde(default = "default_true")]
+    /// The control tool itself remains available when this is false. Fresh installs keep the UI opt-in.
+    #[serde(default)]
     pub manager: bool,
+    /// Attach the Skill Library UI metadata/resources to the `artifacts` service.
+    /// The underlying text service remains available when this is false.
+    #[serde(default)]
+    pub skill_library: bool,
     /// Advertise the synthetic Add Server app tool and its UI resources.
-    /// Fresh installs expose the complete Labby app surface by default.
-    #[serde(default = "default_true")]
+    /// Fresh installs keep Labby-owned MCP App UIs opt-in.
+    #[serde(default)]
     pub add_server: bool,
     /// Attach the Server Logs app metadata and advertise its UI resources.
-    /// Fresh installs expose the complete Labby app surface by default.
-    #[serde(default = "default_true")]
+    /// Fresh installs keep Labby-owned MCP App UIs opt-in.
+    #[serde(default)]
     pub server_logs: bool,
     /// Advertise the synthetic Gateway Status app tool and its UI resources.
-    /// Fresh installs expose the complete Labby app surface by default.
-    #[serde(default = "default_true")]
+    /// Fresh installs keep Labby-owned MCP App UIs opt-in.
+    #[serde(default)]
     pub gateway_status: bool,
     /// Advertise the schema-backed Settings app tool and its UI resources.
-    /// Fresh installs expose the complete Labby app surface by default.
-    #[serde(default = "default_true")]
+    /// Fresh installs keep Labby-owned MCP App UIs opt-in.
+    #[serde(default)]
     pub settings: bool,
-}
-
-impl Default for McpAppsConfig {
-    fn default() -> Self {
-        Self {
-            manager: true,
-            add_server: true,
-            server_logs: true,
-            gateway_status: true,
-            settings: true,
-        }
-    }
 }
 
 // ─── Code Mode ───────────────────────────────────────────────────────────────
@@ -216,8 +207,8 @@ pub struct CodeModeConfig {
     pub trusted_read_only_tools: Vec<String>,
     /// Whether the explicit `codemode_ui` MCP App tool and resources are advertised.
     /// The text-only `codemode` executor remains available when this is false.
-    /// The inspector is enabled by default so Code Mode has a useful first-run UI.
-    #[serde(default = "default_true")]
+    /// The inspector is opt-in on fresh installs, like the other Labby-owned MCP App UIs.
+    #[serde(default)]
     pub mcp_ui_enabled: bool,
     /// Whether Code Mode call traces include redacted/capped tool params.
     #[serde(default = "default_code_mode_trace_params")]
@@ -287,7 +278,7 @@ impl Default for CodeModeConfig {
         Self {
             enabled: true,
             trusted_read_only_tools: Vec::new(),
-            mcp_ui_enabled: true,
+            mcp_ui_enabled: false,
             trace_params: default_code_mode_trace_params(),
             result_shape_policy: CodeModeResultShapePolicy::Off,
             timeout_ms: default_code_mode_timeout_ms(),
@@ -1597,6 +1588,18 @@ pub enum ConfigError {
         /// Provider label with ambiguous spec source configuration.
         label: String,
     },
+    #[error("openapi spec '{label}' cannot combine oauth_upstream with a static token or API key")]
+    /// An OpenAPI provider mixes subject-scoped OAuth with a process-global secret.
+    ConflictingOpenApiAuth {
+        /// Provider label with conflicting authentication sources.
+        label: String,
+    },
+    #[error("openapi spec '{label}' has an empty oauth_upstream")]
+    /// An OpenAPI provider configured caller-scoped OAuth without naming an upstream.
+    InvalidOpenApiOauthUpstream {
+        /// Provider label with the invalid OAuth upstream reference.
+        label: String,
+    },
 }
 
 // ─── Outbound OAuth ──────────────────────────────────────────────────────────
@@ -2397,7 +2400,7 @@ client_secret_env = "SECRET"
         assert_eq!(cfg, expected);
         assert!(cfg.enabled);
         assert!(cfg.trusted_read_only_tools.is_empty());
-        assert!(cfg.mcp_ui_enabled);
+        assert!(!cfg.mcp_ui_enabled);
         assert!(cfg.trace_params);
         assert_eq!(cfg.timeout_ms, 30_000);
         assert_eq!(cfg.token_estimate_divisor, 4);
@@ -2458,51 +2461,50 @@ client_secret_env = "SECRET"
     }
 
     #[test]
-    fn mcp_apps_config_defaults_all_managed_apps_enabled() {
+    fn mcp_apps_config_defaults_all_managed_apps_disabled() {
         let cfg: McpAppsConfig = toml::from_str("").unwrap();
         assert_eq!(cfg, McpAppsConfig::default());
-        assert!(cfg.manager);
-        assert!(cfg.add_server);
-        assert!(cfg.server_logs);
-        assert!(cfg.gateway_status);
-        assert!(cfg.settings);
+        assert!(!cfg.manager);
+        assert!(!cfg.skill_library);
+        assert!(!cfg.add_server);
+        assert!(!cfg.server_logs);
+        assert!(!cfg.gateway_status);
+        assert!(!cfg.settings);
     }
 
     #[test]
     fn documented_labby_app_defaults_match_code() {
         // GATEWAY.md is the operator-facing statement of the Labby-owned app
-        // surface defaults. Code Mode and every managed MCP App now default
-        // on, so the doc must not still promise an off-by-default posture.
+        // surface defaults. Code Mode execution stays on, while every Labby-owned
+        // MCP App UI is opt-in by default.
         let doc = include_str!("../../../docs/services/GATEWAY.md");
         assert!(CodeModeConfig::default().enabled);
-        assert!(CodeModeConfig::default().mcp_ui_enabled);
+        assert!(!CodeModeConfig::default().mcp_ui_enabled);
         assert_eq!(
             McpAppsConfig::default(),
             McpAppsConfig {
-                manager: true,
-                add_server: true,
-                server_logs: true,
-                gateway_status: true,
-                settings: true,
+                manager: false,
+                skill_library: false,
+                add_server: false,
+                server_logs: false,
+                gateway_status: false,
+                settings: false,
             }
         );
         assert!(
-            !doc.contains("defaults to `false` and must be explicitly enabled"),
-            "docs/services/GATEWAY.md still documents the retired off-by-default app posture"
-        );
-        assert!(
-            doc.contains("defaults to `true`") || doc.contains("enabled by default"),
-            "docs/services/GATEWAY.md must state that Labby-owned app surfaces default on"
+            doc.contains("default to `false`") || doc.contains("opt-in"),
+            "docs/services/GATEWAY.md must state that Labby-owned app surfaces default off"
         );
     }
 
     #[test]
     fn mcp_apps_config_supports_independent_visibility_switches() {
         let cfg: McpAppsConfig = toml::from_str(
-            "manager = true\nadd_server = false\nserver_logs = true\ngateway_status = false\nsettings = false\n",
+            "manager = true\nskill_library = true\nadd_server = false\nserver_logs = true\ngateway_status = false\nsettings = false\n",
         )
         .unwrap();
         assert!(cfg.manager);
+        assert!(cfg.skill_library);
         assert!(!cfg.add_server);
         assert!(cfg.server_logs);
         assert!(!cfg.gateway_status);

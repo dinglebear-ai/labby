@@ -95,7 +95,11 @@ x-labby-tenant = "infrastructure"
 
 Filesystem paths work on Unix targets. Linux also supports abstract `@name` notation, for example `socket_path = "@cortex-mcp"`. The gateway and upstream must share the same socket namespace, directly or through a bind mount. Unix sockets are same-host transports; cross-node and Tailscale traffic remains HTTP/TCP.
 
-The Unix connector reuses the normal capped HTTP worker, so response-size limits, SSE event limits, timeouts, retry/lifecycle policy, bearer/OAuth handling, custom headers, and structured error mapping remain aligned with HTTP/TCP upstreams.
+Unix-socket upstreams use rmcp's native `UnixSocketHttpClient` for socket I/O, HTTP/1.1 framing, Streamable HTTP sessions, and SSE. Labby keeps only a thin gateway adapter around that client so the established defensive SEP-2243 `Mcp-Method`/`Mcp-Name` derivation remains identical to the TCP HTTP path. The configured `url` is split deliberately: its authority becomes the HTTP `Host` header, while only its path and query are sent as the request target (for example `http://cortex.local/mcp?tenant=infra` becomes `POST /mcp?tenant=infra`).
+
+The same gateway policies remain in force as for HTTP/TCP: bounded ordinary response bodies, bounded SSE events, request/discovery deadlines, one bounded lifecycle fallback from `server/discover` to legacy `initialize`, bearer or OAuth credentials, custom headers, relay notifications, and explicit cancellation. The relay-cancellation side channel uses the same rmcp-backed Unix client rather than a second socket implementation.
+
+A failed Unix socket degrades only that upstream. Startup/refresh discovery records an unhealthy catalog entry and sanitized `last_error`, while healthy upstreams remain connected and routable. With `[gateway].auto_reconnect = true`, the standard reprobe loop retries the failed socket with the same jitter/backoff and circuit-breaker rules as other non-OAuth upstreams. Structured logs use `transport = "unix_socket"`, redacted targets, classified failure `kind`, and connect/reprobe timing; filesystem socket paths are not emitted as log targets.
 
 ### Stdio Upstream
 

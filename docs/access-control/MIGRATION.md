@@ -1,7 +1,7 @@
 ---
 title: "Multi-user ownership migration and recovery"
 created: "2026-09-05"
-updated: "2026-09-16"
+updated: "2026-09-18"
 status: "implemented-runbook"
 ---
 
@@ -124,6 +124,31 @@ and its approval document. Keep the checkpoint and approval until the
 post-migration authorization and inventory checks in this runbook pass.
 Ordinary startup continues to refuse legacy stores; setting the evidence
 variable alone does not activate migration through the daemon.
+
+### Superseded v8 compatibility
+
+A short-lived v8 build used schema fingerprint
+`labby-access-v8-20260913` and created three execution-payload tables that
+current v8 (`labby-access-v8-20260916`) no longer defines:
+`agent_session_evidence`, `agent_session_requests`, and
+`agent_task_inputs`. Because both stores report `PRAGMA user_version = 8`,
+the compatibility path is shape-aware rather than version-only.
+
+Labby recognizes this source only when its complete SQLite schema manifest,
+application ID, metadata, bootstrap state, and team-authority invariants match
+the audited superseded-v8 shape. Unknown v8 drift remains corrupt and is not
+eligible for compatibility repair. The three obsolete tables must also be
+empty; any rows fail closed rather than being discarded.
+
+The repair uses the same offline approval, independent checkpoint, logical
+fingerprint, installation-lock, exclusive-transaction, completion-marker, and
+verified-reopen controls as an ordinary version migration. The same-version
+repair writes a distinct compatibility completion marker so an existing v8
+receipt from the earlier v7-to-v8 crossing is preserved and cannot block or be
+overwritten by the repair. Approval therefore
+uses `source_version: 8` and `target_version: 8`, while
+`target_fingerprint` remains `labby-access-v8-20260916`. No daemon startup
+path performs this reconciliation implicitly.
 
 ## Production-shaped v5 inventory
 

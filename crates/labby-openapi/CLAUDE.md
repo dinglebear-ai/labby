@@ -20,9 +20,12 @@ Code Mode operations for the `openapi` provider. It exists to keep `rmcp-openapi
 - **`base_url` is mandatory in config.** `rmcp-openapi` never reads the spec's `servers[]`;
   the base URL is always operator-configured and SSRF-validated at load time. No `servers[]`
   parsing.
-- **Credentials injected server-side**, from our own `OpenApiCredential` config (rmcp-openapi
-  does not expose per-operation security schemes — `ToolMetadata.security` is always `None`).
-  The JS snippet never sees a raw key. Header-style injection only in v1.
+- **Credentials are injected server-side after the sandbox boundary.** Static
+  `OpenApiCredential` values may be loaded from process env, while caller-scoped
+  OAuth arrives only as a per-dispatch credential override resolved by the host.
+  The registry stores the non-secret `oauth_upstream` reference, never a user's
+  bearer token. Static auth and `oauth_upstream` are mutually exclusive. The JS
+  snippet never sees a raw key/token. Header-style injection only in v1.
 - **Never format a raw `rmcp_openapi::*` or `reqwest` error** into any `tracing` field or
   `ToolError`/`OpenApiError` message — always map to a fixed, scrubbed `OpenApiError` variant
   first. A committed canary test enforces this.

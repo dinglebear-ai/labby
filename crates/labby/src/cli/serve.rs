@@ -992,10 +992,9 @@ fn resolve_web_ui_auth_disabled(
 
 /// Name the Labby-owned app surfaces whose `config.toml` section is absent
 /// and which therefore run at their on-by-default posture. One INFO line at
-/// startup, only when something is inherited, so an install upgraded from a
-/// release where Code Mode and the MCP App UIs defaulted off can see why they
-/// appeared. A missing file inherits everything; an unreadable one is the
-/// loader's error to report.
+/// startup, only when something is inherited, so an operator can see which
+/// surface defaults were applied. A missing file inherits everything; an
+/// unreadable one is the loader's error to report.
 fn log_inherited_app_surface_defaults(config_path: &Path, config: &LabConfig) {
     let raw = match std::fs::read_to_string(config_path) {
         Ok(raw) => raw,
@@ -1013,13 +1012,13 @@ fn log_inherited_app_surface_defaults(config_path: &Path, config: &LabConfig) {
         code_mode_enabled = config.code_mode.enabled,
         code_mode_ui_enabled = config.code_mode.mcp_ui_enabled,
         mcp_apps_manager = config.mcp_apps.manager,
+        mcp_apps_skill_library = config.mcp_apps.skill_library,
         mcp_apps_add_server = config.mcp_apps.add_server,
         mcp_apps_server_logs = config.mcp_apps.server_logs,
         mcp_apps_gateway_status = config.mcp_apps.gateway_status,
         mcp_apps_settings = config.mcp_apps.settings,
-        "config.toml declares no [code_mode] or [mcp_apps] section; Code Mode and \
-         the Labby-owned MCP App UIs default to enabled — set the switches to \
-         false to opt out"
+        "config.toml inherits app surface defaults: text Code Mode stays enabled, \
+         while Labby-owned MCP App UIs default off and must be explicitly enabled"
     );
 }
 
@@ -2071,6 +2070,10 @@ async fn build_gateway_runtime(
         },
         gateway_runtime,
     )?;
+    #[cfg(feature = "skills")]
+    let gateway_manager = gateway_manager.with_code_mode_skill_provider(Arc::new(
+        crate::skills::code_mode::CanonicalCodeModeSkillProvider,
+    ));
 
     // Code Mode `openapi` provider: config-parse errors DO fail boot (bad TOML),
     // but spec-LOAD failures never do — `OpenApiRegistry::load` degrades + WARNs

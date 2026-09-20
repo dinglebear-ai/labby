@@ -136,17 +136,107 @@ fn javy_search_filters_lexical_and_semantic_results_by_kind() {
 }
 
 #[test]
+fn javy_prompt_and_skill_helpers_dispatch_exact_internal_calls() {
+    let preamble = generate_discovery_js(&[], 0.5).unwrap();
+    let script = format!(
+        "{preamble}
+         globalThis.calls = [];
+         globalThis.callTool = async (id, params) => {{
+           globalThis.calls.push({{id, params}});
+           return {{id, params}};
+         }};
+         globalThis.result = null;
+         (async () => {{
+           const prompt = await codemode.getPrompt('prompt::alpha::review', {{tone: 'strict'}});
+           const skills = await codemode.listSkills();
+           const skill = await codemode.getSkill('skill://labby/fixture');
+           const read = await codemode.readSkill('skill://labby/fixture/SKILL.md');
+           const validation = [];
+           try {{ await codemode.getPrompt('prompt::alpha::review', []); }}
+           catch (error) {{ validation.push(String(error)); }}
+           try {{ await codemode.getSkill('   '); }}
+           catch (error) {{ validation.push(String(error)); }}
+           globalThis.result = JSON.stringify({{prompt, skills, skill, read, calls, validation}});
+         }})().catch(error => {{ globalThis.result = JSON.stringify({{error: String(error)}}); }});"
+    );
+    let mut config = javy::Config::default();
+    config.memory_limit(8 * 1024 * 1024);
+    let runtime = javy::Runtime::new(config).unwrap();
+    runtime
+        .context()
+        .with(|cx| cx.eval::<(), _>(script))
+        .unwrap();
+    runtime.resolve_pending_jobs().unwrap();
+    let result: String = runtime
+        .context()
+        .with(|cx| cx.globals().get("result"))
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_str(&result).unwrap();
+    assert!(value.get("error").is_none(), "{value}");
+    assert_eq!(value["calls"].as_array().unwrap().len(), 4);
+    assert_eq!(
+        value["calls"],
+        serde_json::json!([
+            {
+                "id": "__lab_internal::get_prompt",
+                "params": {
+                    "prompt": "prompt::alpha::review",
+                    "arguments": { "tone": "strict" }
+                }
+            },
+            {
+                "id": "__lab_internal::list_skills",
+                "params": {}
+            },
+            {
+                "id": "__lab_internal::get_skill",
+                "params": { "uri": "skill://labby/fixture" }
+            },
+            {
+                "id": "__lab_internal::read_skill",
+                "params": { "uri": "skill://labby/fixture/SKILL.md" }
+            }
+        ])
+    );
+    assert_eq!(
+        value["prompt"]["params"]["arguments"],
+        serde_json::json!({ "tone": "strict" })
+    );
+    assert_eq!(
+        value["read"]["params"]["uri"],
+        "skill://labby/fixture/SKILL.md"
+    );
+    let validation = value["validation"].as_array().unwrap();
+    assert_eq!(validation.len(), 2);
+    assert!(
+        validation[0]
+            .as_str()
+            .unwrap()
+            .contains("arguments must be an object")
+    );
+    assert!(
+        validation[1]
+            .as_str()
+            .unwrap()
+            .contains("requires a non-empty Skill URI")
+    );
+    assert_eq!(
+        value["calls"].as_array().unwrap().len(),
+        4,
+        "validation failures must not dispatch extra internal calls"
+    );
+}
+
+#[test]
 fn javy_describe_keeps_future_catalog_kinds_metadata_only() {
-    let mut skill = CatalogDescriptor::tool(
+    let mut skill = CatalogDescriptor::metadata(
+        CodeModeCatalogKind::Skill,
         "labby",
+        "skill::skill://labby/adversarial-review",
         "adversarial_review",
         "Review code adversarially",
-        None,
-        None,
+        vec!["uri:skill://labby/adversarial-review".to_string()],
     );
-    skill.kind = CodeModeCatalogKind::Skill;
-    skill.id = "skill::labby::adversarial_review".into();
-    skill.signature.clear();
     skill.dts = "this must never be fetched for metadata-only kinds".into();
 
     let entry = CodeModeDiscoveryEntry::from_catalog(&skill);
@@ -181,7 +271,15 @@ fn javy_describe_keeps_future_catalog_kinds_metadata_only() {
     assert_eq!(value["description"]["kind"], "skill");
     assert_eq!(
         value["description"]["id"],
-        "skill::labby::adversarial_review"
+        "skill::skill://labby/adversarial-review"
+    );
+    assert_eq!(
+        value["description"]["helper"],
+        r#"codemode.getSkill("skill://labby/adversarial-review")"#
+    );
+    assert_eq!(
+        value["description"]["tags"],
+        serde_json::json!(["uri:skill://labby/adversarial-review"])
     );
     assert_eq!(value["describeTypeCalls"], 0);
     let markdown = value["description"]["markdown"].as_str().unwrap();

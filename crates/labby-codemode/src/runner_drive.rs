@@ -1022,9 +1022,14 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
     pending_tool_calls.push(Box::pin(async move {
         let start_ms = execution_start.elapsed().as_millis();
         let call_start = std::time::Instant::now();
-        if !super::execute::local_providers_allowed(&caller, &capability_filter) {
+        let provider_allowed = if matches!(local.provider, LocalProviderName::Openapi) {
+            super::execute::openapi_provider_allowed(&caller, &capability_filter, &openapi_registry)
+        } else {
+            super::execute::local_providers_allowed(&caller, &capability_filter)
+        };
+        if !provider_allowed {
             let error = CodeModeCallError::from(ToolError::Forbidden {
-                message: "local Code Mode providers require unscoped lab:admin".to_string(),
+                message: "local Code Mode provider is not available to this caller".to_string(),
                 required_scopes: vec!["lab:admin".to_string()],
             })
             .with_tool(id.clone());
@@ -1076,7 +1081,16 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
             // NO LOCAL_PROVIDER_LOCK — openapi has no shared mutable local state,
             // and must not serialize behind slow state/git ops. It still
             // participates in the reserved local-provider decision/record spine.
-            dispatch_openapi_provider(&openapi_registry, &openapi_http_client, local, params).await
+            dispatch_openapi_provider(
+                &openapi_registry,
+                &openapi_http_client,
+                broker.host,
+                &caller,
+                &capability_filter,
+                local,
+                params,
+            )
+            .await
         } else {
             let _guard = LOCAL_PROVIDER_LOCK
                 .get_or_init(|| Mutex::new(()))
@@ -1116,9 +1130,12 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
 /// Dispatch an `openapi::<label>.<operationId>` call to `labby-openapi`. Splits
 /// the method on the FIRST `.` so a dotted operationId (`vendor.pets.list`) is
 /// preserved. Runs OUTSIDE `LOCAL_PROVIDER_LOCK`.
-async fn dispatch_openapi_provider(
+async fn dispatch_openapi_provider<H: CodeModeHost>(
     registry: &labby_openapi::OpenApiRegistry,
     client: &reqwest::Client,
+    host: Option<&H>,
+    caller: &CodeModeCaller,
+    scope: &ToolScope,
     local: LocalProviderCall,
     params: Value,
 ) -> Result<Value, ToolError> {
@@ -1129,9 +1146,40 @@ async fn dispatch_openapi_provider(
             message: "openapi call must be openapi::<label>.<operationId>".to_string(),
             param: "id".to_string(),
         })?;
-    labby_openapi::dispatch_openapi_call(registry, client, label, op, params)
-        .await
-        .map_err(Into::into)
+    let operation = registry.operation(label, op).map_err(ToolError::from)?;
+    let credential = if operation.oauth_upstream.is_some() {
+        if scope.is_scoped() || caller.subject().is_none_or(str::is_empty) {
+            return Err(ToolError::Forbidden {
+                message: "subject-scoped OpenAPI requires an authenticated unscoped caller".into(),
+                required_scopes: vec!["lab".into()],
+            });
+        }
+        let host = host.ok_or_else(|| ToolError::Forbidden {
+            message: "subject-scoped OpenAPI requires a host-authenticated caller".into(),
+            required_scopes: vec!["lab".into()],
+        })?;
+        Some(
+            host.resolve_openapi_credential(label, op, caller)
+                .await?
+                .ok_or_else(|| ToolError::Forbidden {
+                    message: "subject-scoped OpenAPI credential is unavailable".into(),
+                    required_scopes: vec!["lab".into()],
+                })?,
+        )
+    } else {
+        if !super::execute::local_providers_allowed(caller, scope) {
+            return Err(ToolError::Forbidden {
+                message: "static OpenAPI credentials require unscoped lab:admin".into(),
+                required_scopes: vec!["lab:admin".into()],
+            });
+        }
+        None
+    };
+    labby_openapi::dispatch_openapi_call_with_credential(
+        registry, client, label, op, params, credential,
+    )
+    .await
+    .map_err(Into::into)
 }
 
 fn enqueue_rejected_tool_call(
@@ -1757,7 +1805,15 @@ sleep 3600
         };
         let res = tokio::time::timeout(
             Duration::from_secs(2),
-            dispatch_openapi_provider(&reg, &client, call, serde_json::json!({})),
+            dispatch_openapi_provider::<NoopHost>(
+                &reg,
+                &client,
+                None,
+                &CodeModeCaller::TrustedLocal,
+                &ToolScope::default(),
+                call,
+                serde_json::json!({}),
+            ),
         )
         .await;
         assert!(res.is_ok(), "openapi must not block on LOCAL_PROVIDER_LOCK");

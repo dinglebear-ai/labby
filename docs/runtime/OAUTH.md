@@ -1309,6 +1309,13 @@ identity. Authenticated non-admin callers use their own subject and cannot borro
 that shared grant. Repeating the browser authorization does not populate their
 personal credential entry.
 
+The same subject boundary applies to Code Mode OpenAPI specs configured with
+`oauth_upstream`. The OpenAPI registry stores only the upstream name. At dispatch,
+the gateway resolves and refreshes the credential for the authenticated caller's
+verified `sub`, injects the resulting bearer after the sandbox boundary, and never
+falls back to another subject or to the shared operator credential. Missing subject,
+missing personal credentials, and route/tool-scoped OpenAPI execution fail closed.
+
 When an upstream reports missing personal credentials, call the native Gateway
 service action `gateway.oauth.authorize` with `{ "upstream": "<name>" }` from
 a connector with `lab` scope. Creating a personal grant requires `scope.manage`;

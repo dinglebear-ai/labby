@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 
+use super::UpstreamPool;
 use super::connect::connect_upstream;
 use super::testsupport::test_upstream_config;
 
@@ -279,6 +280,70 @@ async fn filesystem_unix_socket_upstream_preserves_http_behavior() {
     let socket_path = tempdir.path().join("mcp.sock");
     let listener = UnixListener::bind(&socket_path).expect("bind filesystem Unix socket");
     exercise_unix_socket(socket_path.to_string_lossy().as_ref(), listener).await;
+}
+
+#[tokio::test]
+async fn dead_unix_socket_degrades_without_poisoning_healthy_discovery() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let healthy_path = tempdir.path().join("healthy.sock");
+    let dead_path = tempdir.path().join("dead.sock");
+    let listener = UnixListener::bind(&healthy_path).expect("bind healthy Unix socket");
+    let server = tokio::spawn(serve_unix_mcp(listener, RequestSignals::new()));
+
+    let mut healthy = test_upstream_config();
+    healthy.name = "healthy-unix".to_string();
+    healthy.transport = Some(UpstreamTransport::UnixSocket);
+    healthy.socket_path = Some(healthy_path.to_string_lossy().into_owned());
+    healthy.url = Some("http://healthy.internal/mcp".to_string());
+
+    let mut dead = test_upstream_config();
+    dead.name = "dead-unix".to_string();
+    dead.transport = Some(UpstreamTransport::UnixSocket);
+    dead.socket_path = Some(dead_path.to_string_lossy().into_owned());
+    dead.url = Some("http://dead.internal/mcp".to_string());
+
+    let pool = UpstreamPool::new();
+    pool.discover_all(&[healthy, dead]).await;
+
+    assert_eq!(pool.upstream_count().await, 2);
+    assert_eq!(
+        pool.connection_count_for_tests().await,
+        1,
+        "only the healthy Unix upstream should own a live connection"
+    );
+    let status = pool.upstream_status().await;
+    assert!(status.iter().any(|(name, health)| {
+        name == "healthy-unix" && matches!(health, crate::upstream::types::UpstreamHealth::Healthy)
+    }));
+    assert!(status.iter().any(|(name, health)| {
+        name == "dead-unix"
+            && matches!(
+                health,
+                crate::upstream::types::UpstreamHealth::Unhealthy {
+                    consecutive_failures: 1
+                }
+            )
+    }));
+    let healthy_tools = pool.healthy_tools().await;
+    assert!(healthy_tools.iter().any(|tool| {
+        tool.upstream_name.as_ref() == "healthy-unix" && tool.tool.name.as_ref() == "unix_echo"
+    }));
+    assert!(
+        healthy_tools
+            .iter()
+            .all(|tool| tool.upstream_name.as_ref() != "dead-unix"),
+        "dead Unix upstream must not publish routable tools"
+    );
+    let error = pool
+        .upstream_last_error("dead-unix")
+        .await
+        .expect("dead upstream should retain its last error");
+    assert!(
+        !error.contains(dead_path.to_string_lossy().as_ref()),
+        "operator-facing upstream status must not leak the filesystem socket path: {error}"
+    );
+
+    server.abort();
 }
 
 #[cfg(target_os = "linux")]

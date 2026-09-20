@@ -19,6 +19,7 @@ use labby_runtime::gateway_config::UpstreamConfig;
 
 use super::super::types::{ToolExposurePolicy, UpstreamCapability};
 use super::UpstreamPool;
+use super::capability::peer_declares_resources;
 use super::capability_call::{
     CapabilityCallError, bounded_service_error_text, timed_capability_call,
     timed_capability_call_with_timeout,
@@ -33,8 +34,8 @@ use super::helpers::{
     upstream_discovery_timeout, upstream_transport,
 };
 use super::logging::{
-    UpstreamRequestLog, is_capability_unsupported, log_upstream_request_error,
-    log_upstream_request_finish, log_upstream_request_start,
+    UpstreamRequestLog, is_capability_unsupported, log_upstream_capability_skipped,
+    log_upstream_request_error, log_upstream_request_finish, log_upstream_request_start,
 };
 use super::tools::MAX_UPSTREAM_RESOURCES;
 
@@ -378,51 +379,56 @@ impl UpstreamPool {
                 let peer = observed.peer.clone();
                 let request_timeout = catalog_listing_timeout(self.request_timeout);
                 async move {
-                    let started = Instant::now();
                     let event = UpstreamRequestLog::resources_list(&name, false);
-                    log_upstream_request_start(event);
-                    let result = match catalog_pagination::list_resources(
-                        &peer,
-                        request_timeout,
-                        MAX_UPSTREAM_RESOURCES,
-                    )
-                    .await
-                    {
-                        Ok(resources) => {
-                            let response_bytes = serde_json::to_vec(&resources)
-                                .map_or(usize::MAX, |body| body.len());
-                            log_upstream_request_finish(
-                                event,
-                                started.elapsed().as_millis(),
-                                Some(response_bytes),
-                            );
-                            Ok(resources)
-                        }
-                        Err(catalog_pagination::CatalogPaginationError::Service(error))
-                            if is_capability_unsupported(&error) =>
+                    let result = if !peer_declares_resources(&peer) {
+                        log_upstream_capability_skipped(event);
+                        Ok(Vec::new())
+                    } else {
+                        let started = Instant::now();
+                        log_upstream_request_start(event);
+                        match catalog_pagination::list_resources(
+                            &peer,
+                            request_timeout,
+                            MAX_UPSTREAM_RESOURCES,
+                        )
+                        .await
                         {
-                            log_upstream_request_finish(
-                                event,
-                                started.elapsed().as_millis(),
-                                Some(0),
-                            );
-                            tracing::debug!(
-                                upstream = %name,
-                                "upstream does not implement resources/list — capability absent"
-                            );
-                            Ok(Vec::new())
-                        }
-                        Err(error) => {
-                            let error_text = error.bounded_text();
-                            log_upstream_request_error(
-                                event,
-                                started.elapsed().as_millis(),
-                                error.kind(),
-                                Some(&error_text),
-                                None,
-                                None,
-                            );
-                            Err(error_text)
+                            Ok(resources) => {
+                                let response_bytes = serde_json::to_vec(&resources)
+                                    .map_or(usize::MAX, |body| body.len());
+                                log_upstream_request_finish(
+                                    event,
+                                    started.elapsed().as_millis(),
+                                    Some(response_bytes),
+                                );
+                                Ok(resources)
+                            }
+                            Err(catalog_pagination::CatalogPaginationError::Service(error))
+                                if is_capability_unsupported(&error) =>
+                            {
+                                log_upstream_request_finish(
+                                    event,
+                                    started.elapsed().as_millis(),
+                                    Some(0),
+                                );
+                                tracing::debug!(
+                                    upstream = %name,
+                                    "upstream does not implement resources/list — capability absent"
+                                );
+                                Ok(Vec::new())
+                            }
+                            Err(error) => {
+                                let error_text = error.bounded_text();
+                                log_upstream_request_error(
+                                    event,
+                                    started.elapsed().as_millis(),
+                                    error.kind(),
+                                    Some(&error_text),
+                                    None,
+                                    None,
+                                );
+                                Err(error_text)
+                            }
                         }
                     };
                     (observed, result)
@@ -558,13 +564,21 @@ impl UpstreamPool {
             let peer = observed.peer.clone();
             let shared_budget = Arc::clone(&shared_budget);
             futures.push(async move {
-                let result = catalog_pagination::list_resource_templates_with_budget(
-                    &peer,
-                    self.request_timeout,
-                    MAX_UPSTREAM_RESOURCES,
-                    &shared_budget,
-                )
-                .await;
+                let result = if peer_declares_resources(&peer) {
+                    catalog_pagination::list_resource_templates_with_budget(
+                        &peer,
+                        self.request_timeout,
+                        MAX_UPSTREAM_RESOURCES,
+                        &shared_budget,
+                    )
+                    .await
+                } else {
+                    tracing::debug!(
+                        upstream = %observed.upstream(),
+                        "initialize did not advertise resources; skipping resources/templates/list"
+                    );
+                    Ok(Vec::new())
+                };
                 (observed, result)
             });
         }
@@ -733,6 +747,18 @@ impl UpstreamPool {
                         return (config.name, policy, Err(error));
                     }
                 };
+                if !peer_declares_resources(&peer) {
+                    pool.record_subject_optional_catalog(
+                        &config.name,
+                        &subject,
+                        &peer,
+                        Some(Vec::new()),
+                        None,
+                    )
+                    .await;
+                    log_upstream_capability_skipped(event);
+                    return (config.name, policy, Ok(Vec::new()));
+                }
                 let timeout_ms = request_timeout.as_millis();
                 let result = timed_capability_call_with_timeout(
                     &pool,
@@ -742,13 +768,25 @@ impl UpstreamPool {
                     event,
                     started,
                     async {
-                        catalog_pagination::list_resources(
+                        match catalog_pagination::list_resources(
                             &peer,
                             request_timeout,
                             MAX_UPSTREAM_RESOURCES,
                         )
                         .await
-                        .map_err(|error| error.into_service_error(&config.name))
+                        {
+                            Ok(resources) => Ok(resources),
+                            Err(catalog_pagination::CatalogPaginationError::Service(error))
+                                if is_capability_unsupported(&error) =>
+                            {
+                                tracing::debug!(
+                                    upstream = %config.name,
+                                    "subject-scoped upstream does not implement resources/list — capability absent"
+                                );
+                                Ok(Vec::new())
+                            }
+                            Err(error) => Err(error.into_service_error(&config.name)),
+                        }
                     },
                     |resources| serde_json::to_vec(resources).map_or(usize::MAX, |body| body.len()),
                     Some(&subject),
@@ -1067,6 +1105,55 @@ mod tests {
     #[derive(Clone)]
     struct SchemaToolServer {
         tool_name: &'static str,
+    }
+
+    #[derive(Clone)]
+    struct ToolsOnlyResourceProbeServer {
+        resource_calls: Arc<AtomicUsize>,
+    }
+
+    impl ServerHandler for ToolsOnlyResourceProbeServer {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        }
+
+        async fn list_tools(
+            &self,
+            _request: Option<PaginatedRequestParams>,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<ListToolsResult, ErrorData> {
+            Ok(ListToolsResult::with_all_items(vec![Tool::new(
+                "example",
+                "subject-specific tool",
+                Arc::new(serde_json::Map::new()),
+            )]))
+        }
+
+        async fn list_resources(
+            &self,
+            _request: Option<PaginatedRequestParams>,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<ListResourcesResult, ErrorData> {
+            self.resource_calls.fetch_add(1, Ordering::SeqCst);
+            Err(ErrorData::new(
+                rmcp::model::ErrorCode::METHOD_NOT_FOUND,
+                "resources/list should not be called",
+                None,
+            ))
+        }
+
+        async fn read_resource(
+            &self,
+            _request: rmcp::model::ReadResourceRequestParams,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<rmcp::model::ReadResourceResponse, ErrorData> {
+            self.resource_calls.fetch_add(1, Ordering::SeqCst);
+            Err(ErrorData::new(
+                rmcp::model::ErrorCode::METHOD_NOT_FOUND,
+                "resources/read should not be called",
+                None,
+            ))
+        }
     }
 
     struct SlowResourceListServer;
@@ -1874,6 +1961,81 @@ mod tests {
                 "lab://upstream/google-drive/file:///tmp/upstream-one",
                 "lab://upstream/google-drive/lab://upstream/old-name/file:///tmp/upstream-two",
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn subject_scoped_resources_honor_initialize_and_skip_unadvertised_capability() {
+        let resource_calls = Arc::new(AtomicUsize::new(0));
+        let pool = catalog_pool_with_server(
+            "tools-only",
+            ToolsOnlyResourceProbeServer {
+                resource_calls: Arc::clone(&resource_calls),
+            },
+        )
+        .await;
+        let peer = pool
+            .connections
+            .read()
+            .await
+            .get("tools-only")
+            .expect("fixture connection")
+            .peer
+            .clone();
+        let connection = pool
+            .connections
+            .write()
+            .await
+            .remove("tools-only")
+            .expect("move fixture connection into subject cache");
+        pool.subject_connections.write().await.insert(
+            ("tools-only".to_string(), "alice".to_string()),
+            SubjectScopedConnection {
+                optional_catalogs: Default::default(),
+                _connection: connection,
+                peer,
+                tools: Vec::new(),
+                last_used: Instant::now(),
+            },
+        );
+        let mut config = oauth_schema_config("tools-only");
+        config.proxy_resources = true;
+
+        let resources = pool
+            .subject_scoped_resources(std::slice::from_ref(&config), "alice")
+            .await;
+
+        assert!(resources.is_empty());
+        assert_eq!(
+            resource_calls.load(Ordering::SeqCst),
+            0,
+            "resources/list must not be sent when initialize omits resources"
+        );
+        let connections = pool.subject_connections.read().await;
+        let subject = connections
+            .get(&("tools-only".to_string(), "alice".to_string()))
+            .expect("subject connection remains cached");
+        assert_eq!(
+            subject.optional_catalogs.resources.clone(),
+            Some(Vec::<String>::new())
+        );
+        drop(connections);
+
+        let error = pool
+            .subject_scoped_read_resource_request(
+                &config,
+                "alice",
+                rmcp::model::ReadResourceRequestParams::new(
+                    "lab://upstream/tools-only/file:///missing".to_string(),
+                ),
+            )
+            .await
+            .expect_err("resources/read must fail before RPC when resources are not advertised");
+        assert!(error.contains("does not advertise the MCP resources capability"));
+        assert_eq!(
+            resource_calls.load(Ordering::SeqCst),
+            0,
+            "resources/read must not be sent when initialize omits resources"
         );
     }
 

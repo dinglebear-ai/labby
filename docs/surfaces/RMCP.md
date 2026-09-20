@@ -96,6 +96,13 @@ Rules:
 - transport configuration must not fork the catalog or discovery model
 - Unix listeners may use bearer/OAuth or Linux kernel peer credentials; client-supplied identity headers never substitute for peer credentials
 
+The hosted transport contract above is distinct from the gateway's outbound
+Unix-socket upstream client. Outbound Unix MCP connections use rmcp's native
+`UnixSocketHttpClient`; Labby layers only its existing gateway policy adapter
+for bounded responses and defensive standard headers. Normal upstream RPCs and
+the relay-cancellation side channel must share that adapter rather than opening
+a second custom/reqwest Unix connector.
+
 Hosted Streamable HTTP-specific rules:
 
 - use RMCP's streamable HTTP server transport, not a custom protocol

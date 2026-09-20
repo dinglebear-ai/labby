@@ -8,9 +8,15 @@
 //! `resources/read` bypass.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
-use rmcp::model::GetPromptRequestParams;
+use rmcp::model::{
+    GetPromptRequestParams, ListPromptsResult, PaginatedRequestParams, ServerCapabilities,
+    ServerInfo,
+};
+use rmcp::service::RequestContext;
+use rmcp::{RoleServer, ServerHandler};
 
 use labby_runtime::gateway_config::{
     UpstreamConfig, UpstreamOauthConfig, UpstreamOauthMode, UpstreamOauthRegistration,
@@ -24,6 +30,43 @@ use super::testsupport::*;
 /// `StaticCatalogServer` advertises exactly these two prompts (bare names).
 const EXPOSED_PROMPT: &str = "upstream.prompt.one";
 const HIDDEN_PROMPT: &str = "upstream.prompt.two";
+
+#[derive(Clone)]
+struct ToolsOnlyPromptProbeServer {
+    prompt_calls: Arc<AtomicUsize>,
+}
+
+impl ServerHandler for ToolsOnlyPromptProbeServer {
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    }
+
+    async fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, rmcp::model::ErrorData> {
+        self.prompt_calls.fetch_add(1, Ordering::SeqCst);
+        Err(rmcp::model::ErrorData::new(
+            rmcp::model::ErrorCode::METHOD_NOT_FOUND,
+            "prompts/list should not be called",
+            None,
+        ))
+    }
+
+    async fn get_prompt(
+        &self,
+        _request: GetPromptRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::GetPromptResponse, rmcp::model::ErrorData> {
+        self.prompt_calls.fetch_add(1, Ordering::SeqCst);
+        Err(rmcp::model::ErrorData::new(
+            rmcp::model::ErrorCode::METHOD_NOT_FOUND,
+            "prompts/get should not be called",
+            None,
+        ))
+    }
+}
 
 fn namespaced(upstream: &str, prompt: &str) -> String {
     format!("{upstream}/{prompt}")
@@ -221,6 +264,55 @@ async fn expose_prompts_filters_the_subject_scoped_listing() {
         .collect();
 
     assert_eq!(names, vec![namespaced("static", EXPOSED_PROMPT)]);
+}
+
+#[tokio::test]
+async fn subject_scoped_prompts_honor_initialize_and_skip_unadvertised_capability() {
+    let prompt_calls = Arc::new(AtomicUsize::new(0));
+    let pool = catalog_pool_with_server(
+        "tools-only",
+        ToolsOnlyPromptProbeServer {
+            prompt_calls: Arc::clone(&prompt_calls),
+        },
+    )
+    .await;
+    seed_subject_connection(&pool, "tools-only", "alice").await;
+    let config = oauth_upstream_config("tools-only", None);
+
+    let prompts = pool
+        .subject_scoped_prompts(std::slice::from_ref(&config), "alice", &[])
+        .await;
+
+    assert!(prompts.is_empty());
+    assert_eq!(
+        prompt_calls.load(Ordering::SeqCst),
+        0,
+        "prompts/list must not be sent when initialize omits prompts"
+    );
+    let connections = pool.subject_connections.read().await;
+    let subject = connections
+        .get(&("tools-only".to_string(), "alice".to_string()))
+        .expect("subject connection remains cached");
+    assert_eq!(
+        subject.optional_catalogs.prompts.clone(),
+        Some(Vec::<String>::new())
+    );
+    drop(connections);
+
+    let error = pool
+        .subject_scoped_get_prompt(
+            &config,
+            "alice",
+            GetPromptRequestParams::new(namespaced("tools-only", "missing")),
+        )
+        .await
+        .expect_err("prompts/get must fail before RPC when prompts are not advertised");
+    assert!(error.contains("does not advertise the MCP prompts capability"));
+    assert_eq!(
+        prompt_calls.load(Ordering::SeqCst),
+        0,
+        "prompts/get must not be sent when initialize omits prompts"
+    );
 }
 
 /// …and the subject-scoped fetch is gated too, so the filtered list is not

@@ -100,6 +100,10 @@ const CODEMODE_TOP_LEVEL_RESERVED: &[&str] = &[
     "describe",
     "listResources",
     "readResource",
+    "getPrompt",
+    "listSkills",
+    "getSkill",
+    "readSkill",
     "run",
     "step",
     "batch",
@@ -433,6 +437,10 @@ codemode.describe = async function(target) {{
     path: entry.path,
     id: entry.id,
     kind: entry.kind,
+    namespace: entry.namespace,
+    name: entry.name,
+    helper: entry.helper,
+    tags: entry.tags || [],
     safety: entry.safety,
     markdown: markdown
   }};
@@ -448,6 +456,33 @@ codemode.readResource = async function(uri) {{
     throw new TypeError("codemode.readResource requires a non-empty URI string");
   }}
   return callTool("__lab_internal::read_resource", {{ uri: uri }});
+}};
+codemode.getPrompt = async function(prompt, args) {{
+  if (typeof prompt !== "string" || !prompt.trim()) {{
+    throw new TypeError("codemode.getPrompt requires a non-empty prompt id");
+  }}
+  if (args !== undefined && (args === null || typeof args !== "object" || Array.isArray(args))) {{
+    throw new TypeError("codemode.getPrompt arguments must be an object");
+  }}
+  return callTool("__lab_internal::get_prompt", {{
+    prompt: prompt,
+    arguments: args || {{}},
+  }});
+}};
+codemode.listSkills = async function() {{
+  return callTool("__lab_internal::list_skills", {{}});
+}};
+codemode.getSkill = async function(uri) {{
+  if (typeof uri !== "string" || !uri.trim()) {{
+    throw new TypeError("codemode.getSkill requires a non-empty Skill URI string");
+  }}
+  return callTool("__lab_internal::get_skill", {{ uri: uri }});
+}};
+codemode.readSkill = async function(uri) {{
+  if (typeof uri !== "string" || !uri.trim()) {{
+    throw new TypeError("codemode.readSkill requires a non-empty Skill URI string");
+  }}
+  return callTool("__lab_internal::read_skill", {{ uri: uri }});
 }};
 codemode.run = function(name, input) {{
   return globalThis.__labRunSnippet(name, input == null ? {{}} : input);
@@ -772,6 +807,14 @@ mod tests {
         assert!(js.contains("codemode.batch = async function(jobs)"));
         assert!(js.contains("codemode.readResource = async function(uri)"));
         assert!(js.contains("__lab_internal::read_resource"));
+        assert!(js.contains("codemode.getPrompt = async function(prompt, args)"));
+        assert!(js.contains("__lab_internal::get_prompt"));
+        assert!(js.contains("codemode.listSkills = async function()"));
+        assert!(js.contains("codemode.getSkill = async function(uri)"));
+        assert!(js.contains("codemode.readSkill = async function(uri)"));
+        assert!(js.contains("__lab_internal::list_skills"));
+        assert!(js.contains("__lab_internal::get_skill"));
+        assert!(js.contains("__lab_internal::read_skill"));
         assert!(js.contains("Promise.allSettled"));
         assert!(js.contains("Promise.resolve().then(job)"));
         assert!(js.contains("ok.push({ i: index, value: result.value })"));
@@ -1009,6 +1052,10 @@ mod tests {
             "describe",
             "listResources",
             "readResource",
+            "getPrompt",
+            "listSkills",
+            "getSkill",
+            "readSkill",
             "step",
             "batch",
         ] {

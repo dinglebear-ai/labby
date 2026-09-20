@@ -238,7 +238,7 @@ fn parse_json_rpc_error(
 /// versions. Keep the adapter defensive because it is the final wire boundary
 /// for both OAuth and non-OAuth upstream clients, and strict peers reject a
 /// body/header mismatch before dispatching the request.
-fn jsonrpc_method_header(message: &ClientJsonRpcMessage) -> Option<HeaderValue> {
+pub(super) fn jsonrpc_method_header(message: &ClientJsonRpcMessage) -> Option<HeaderValue> {
     let value = serde_json::to_value(message).ok()?;
     let method = value.get("method").and_then(serde_json::Value::as_str)?;
     HeaderValue::from_str(method).ok()
@@ -251,7 +251,7 @@ fn jsonrpc_method_header(message: &ClientJsonRpcMessage) -> Option<HeaderValue> 
 /// the SDK did not populate its negotiated custom-header map. Values use the
 /// SEP-2243 Base64 sentinel when they cannot be represented safely as a plain
 /// HTTP field value.
-fn jsonrpc_name_header(message: &ClientJsonRpcMessage) -> Option<HeaderValue> {
+pub(super) fn jsonrpc_name_header(message: &ClientJsonRpcMessage) -> Option<HeaderValue> {
     let value = serde_json::to_value(message).ok()?;
     let method = value.get("method").and_then(serde_json::Value::as_str)?;
     let params = value.get("params")?;

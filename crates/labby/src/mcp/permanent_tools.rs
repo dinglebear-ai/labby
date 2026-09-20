@@ -334,6 +334,13 @@ impl PermanentToolRegistry {
             } => allowed_actions,
             SkillLibraryDescriptorMode::Hidden => None,
         };
+        let app_visible = matches!(
+            mode,
+            SkillLibraryDescriptorMode::Management {
+                app_visible: true,
+                ..
+            }
+        );
         let annotations = ToolAnnotations::new()
             .read_only(false)
             .destructive(true)
@@ -341,7 +348,7 @@ impl PermanentToolRegistry {
             .open_world(true);
         let tool = Tool::new(
             service.name,
-            skill_library_tool_description(service.description),
+            skill_library_tool_description(service.description, app_visible),
             skill_action_schema(allowed_actions),
         )
         .with_annotations(annotations)
@@ -954,6 +961,12 @@ mod tests {
                 .meta
                 .as_ref()
                 .is_some_and(|meta| !meta.0.contains_key("ui"))
+        );
+        assert!(
+            hidden_app.description.as_deref().is_some_and(
+                |description| !description.contains("opens Labby's Artifact Library app")
+            ),
+            "a disabled Skill Library must not advertise an app binding"
         );
         assert_eq!(hidden_app.input_schema, tool.input_schema);
     }

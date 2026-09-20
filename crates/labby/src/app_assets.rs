@@ -44,7 +44,8 @@ pub(crate) const SETTINGS_APP_URI: &str = "ui://lab/settings/editor";
 pub(crate) const SETTINGS_APP_SKYBRIDGE_URI: &str = "ui://lab/settings/editor.skybridge";
 pub(crate) const SETTINGS_APP_HTML: &str = include_str!("mcp/assets/settings_app.html");
 
-/// Always-on MCP App manager used to control the other Labby-owned app surfaces.
+/// Opt-in MCP App manager UI used to control the other Labby-owned app surfaces.
+/// The text-only `mcp_app` control tool remains always available.
 #[cfg(feature = "gateway")]
 pub(crate) const MCP_APPS_APP_URI: &str = "ui://lab/apps/manage";
 #[cfg(feature = "gateway")]

@@ -1,7 +1,7 @@
 //! Config reads/writes for upstream entries: `add`, `batch_add`, `update`,
 //! `remove`, service env config, and the code-mode config mutation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use tokio::time::Instant;
 
@@ -96,6 +96,17 @@ impl GatewayManager {
     /// Return a snapshot of the current gateway config (read-only).
     pub async fn current_config(&self) -> GatewayConfig {
         self.config.read().await.clone()
+    }
+
+    /// Return the configured upstream names without cloning the full gateway config.
+    pub async fn upstream_names(&self) -> BTreeSet<String> {
+        self.config
+            .read()
+            .await
+            .upstream
+            .iter()
+            .map(|upstream| upstream.name.clone())
+            .collect()
     }
 
     /// Return the current visibility switches for Labby-owned MCP Apps.
@@ -532,6 +543,7 @@ impl GatewayManager {
         match target {
             "manager" => cfg.mcp_apps.manager = enabled,
             "codemode" => cfg.code_mode.mcp_ui_enabled = enabled,
+            "skill_library" => cfg.mcp_apps.skill_library = enabled,
             "gateway_status" => cfg.mcp_apps.gateway_status = enabled,
             "server_logs" => cfg.mcp_apps.server_logs = enabled,
             "add_server" => cfg.mcp_apps.add_server = enabled,
@@ -539,6 +551,7 @@ impl GatewayManager {
             "all" => {
                 cfg.mcp_apps.manager = enabled;
                 cfg.code_mode.mcp_ui_enabled = enabled;
+                cfg.mcp_apps.skill_library = enabled;
                 cfg.mcp_apps.gateway_status = enabled;
                 cfg.mcp_apps.server_logs = enabled;
                 cfg.mcp_apps.add_server = enabled;
@@ -581,6 +594,7 @@ impl GatewayManager {
             enabled,
             manager = current.mcp_apps.manager,
             code_mode = current.code_mode.mcp_ui_enabled,
+            skill_library = current.mcp_apps.skill_library,
             add_server = current.mcp_apps.add_server,
             server_logs = current.mcp_apps.server_logs,
             gateway_status = current.mcp_apps.gateway_status,
