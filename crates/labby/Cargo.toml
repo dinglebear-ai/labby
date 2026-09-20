@@ -149,7 +149,7 @@ labby-winjob = { path = "../labby-winjob" }
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 rsa.workspace = true
 labby-model = { path = "../labby-model" }
-verify-core = { path = "../../verification/crates/verify-core", version = "=0.1.0" }
+verify-core = { path = "../../tools/verification/crates/verify-core", version = "=0.1.0" }
 ed25519-dalek.workspace = true
 jsonschema = { version = "0.37.4", default-features = false }
 rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "ring"] }

@@ -23,9 +23,9 @@ class VerificationWorkflowTests(unittest.TestCase):
             Loader=yaml.BaseLoader,
         )
 
-    def test_triggers_include_inputs_and_schema_mirror(self) -> None:
+    def test_triggers_include_inputs_and_canonical_verification_docs(self) -> None:
         paths = self.workflow["on"]["pull_request"]["paths"]
-        for required in ["verification/**", "docs/plans/verification-toolkit/**",
+        for required in ["tools/verification/**", "docs/dev/VERIFICATION.md",
                          "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**",
                          "clippy.toml", "Justfile", ".github/actions/setup-rust-kache/**",
                          ".github/workflows/verification.yml",
@@ -48,21 +48,21 @@ class VerificationWorkflowTests(unittest.TestCase):
     def test_schema_is_asserted_not_regenerated_in_ci(self) -> None:
         steps = self.workflow["jobs"]["core"]["steps"]
         runs = [step["run"] for step in steps if "run" in step]
-        self.assertIn("cargo test --manifest-path verification/Cargo.toml --workspace --all-features --locked", runs)
-        self.assertIn("python3 -m unittest discover -s verification/tests -p 'test_*.py' -v", runs)
+        self.assertIn("cargo test --manifest-path tools/verification/Cargo.toml --workspace --all-features --locked", runs)
+        self.assertIn("python3 -m unittest discover -s tools/verification/tests -p 'test_*.py' -v", runs)
         for step in steps:
             self.assertNotIn("continue-on-error", step)
             self.assertNotIn("--write", step.get("run", ""))
             self.assertNotIn("verify-schema", step.get("run", ""))
 
     def test_product_gates_only_follow_consumed_pure_toolkit_leaves(self) -> None:
-        for path in ["verification/Cargo.lock",
-                     "verification/crates/verify-runner/src/registry.rs"]:
+        for path in ["tools/verification/Cargo.lock",
+                     "tools/verification/crates/verify-runner/src/registry.rs"]:
             result = classify("pull_request", [path])
             self.assertFalse(result["rust_compile"])
             self.assertFalse(result["rust_test"])
-        for path in ["verification/Cargo.toml", "verification/crates/verify-core/src/catalog.rs",
-                     "verification/crates/verify-scenario/src/envelope.rs"]:
+        for path in ["tools/verification/Cargo.toml", "tools/verification/crates/verify-core/src/catalog.rs",
+                     "tools/verification/crates/verify-scenario/src/envelope.rs"]:
             result = classify("pull_request", [path])
             self.assertTrue(result["rust_compile"])
             self.assertTrue(result["rust_test"])
@@ -74,7 +74,7 @@ class VerificationWorkflowTests(unittest.TestCase):
                          if step.get("with", {}).get("tool") == "cargo-deny@0.20.2")
         self.assertEqual(installer["uses"],
                          "taiki-e/install-action@3ae2e1de8b1f6447853fd29a6000b3953b0494ac")
-        command = "cargo deny --manifest-path verification/Cargo.toml --config verification/deny.toml --locked check"
+        command = "cargo deny --manifest-path tools/verification/Cargo.toml --config tools/verification/deny.toml --locked check"
         audit = next(step for step in steps if step.get("run") == command)
         self.assertLess(steps.index(installer), steps.index(audit))
 
@@ -98,10 +98,10 @@ class VerificationWorkflowTests(unittest.TestCase):
         self.assertEqual(replay["steps"][0]["with"]["persist-credentials"], "false")
         runs = "\n".join(s.get("run", "") for s in replay["steps"])
         self.assertIn("--kill-after=5s 60s", runs)
-        self.assertIn("labby-verify t0 formal", runs)
+        self.assertIn("labby-verify t0 tools/verification/formal", runs)
         self.assertIn("git rev-parse HEAD", runs)
         self.assertIn("sha256sum", runs)
-        audit = "cargo deny --manifest-path verification/Cargo.toml --config verification/deny.toml --locked check"
+        audit = "cargo deny --manifest-path tools/verification/Cargo.toml --config tools/verification/deny.toml --locked check"
         self.assertIn(audit, runs)
         installer = next(step for step in replay["steps"]
                          if step.get("with", {}).get("tool") == "cargo-deny@0.20.2")
@@ -138,10 +138,10 @@ class VerificationWorkflowTests(unittest.TestCase):
         self.assertGreater(int(job["timeout-minutes"]), 2 + 12 + 5)
         runs = "\n".join(step.get("run", "") for step in job["steps"])
         self.assertIn("--kill-after=5s 290s", runs)
-        self.assertIn("labby-verify t1 formal", runs)
+        self.assertIn("labby-verify t1 tools/verification/formal", runs)
         self.assertIn("-p verify-loom", runs)
         self.assertIn("--test lifecycle loom_", runs)
-        self.assertIn("cargo deny --manifest-path verification/Cargo.toml --config verification/deny.toml --locked check", runs)
+        self.assertIn("cargo deny --manifest-path tools/verification/Cargo.toml --config tools/verification/deny.toml --locked check", runs)
         self.assertEqual(job["steps"][0]["with"]["persist-credentials"], "false")
         for step in job["steps"]:
             self.assertNotIn("continue-on-error", step)

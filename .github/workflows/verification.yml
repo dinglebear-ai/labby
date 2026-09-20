@@ -3,10 +3,10 @@ name: Verification toolkit (advisory)
 on:
   pull_request:
     paths:
-      - 'verification/**'
+      - 'tools/verification/**'
       - 'crates/labby-model/**'
-      - 'formal/**'
-      - 'docs/plans/verification-toolkit/**'
+      - 'tools/verification/formal/**'
+      - 'docs/dev/VERIFICATION.md'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
@@ -42,17 +42,17 @@ jobs:
         with:
           components: clippy,rustfmt
       - name: Compile isolated workspace
-        run: cargo check --manifest-path verification/Cargo.toml --workspace --all-features --all-targets --locked
+        run: cargo check --manifest-path tools/verification/Cargo.toml --workspace --all-features --all-targets --locked
       - name: Test workspace boundaries
-        run: python3 -m unittest discover -s verification/tests -p 'test_*.py' -v
+        run: python3 -m unittest discover -s tools/verification/tests -p 'test_*.py' -v
       - name: Test core and generated schema drift
-        run: cargo test --manifest-path verification/Cargo.toml --workspace --all-features --locked
+        run: cargo test --manifest-path tools/verification/Cargo.toml --workspace --all-features --locked
       - name: Lint isolated workspace
-        run: cargo clippy --manifest-path verification/Cargo.toml --workspace --all-features --all-targets --locked -- -D warnings
+        run: cargo clippy --manifest-path tools/verification/Cargo.toml --workspace --all-features --all-targets --locked -- -D warnings
       - name: Check formatting
-        run: cargo fmt --manifest-path verification/Cargo.toml --all -- --check
+        run: cargo fmt --manifest-path tools/verification/Cargo.toml --all -- --check
       - uses: taiki-e/install-action@3ae2e1de8b1f6447853fd29a6000b3953b0494ac
         with:
           tool: cargo-deny@0.20.2
       - name: Audit isolated dependency graph
-        run: cargo deny --manifest-path verification/Cargo.toml --config verification/deny.toml --locked check
+        run: cargo deny --manifest-path tools/verification/Cargo.toml --config tools/verification/deny.toml --locked check

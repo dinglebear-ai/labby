@@ -269,7 +269,7 @@ class IncusContract(unittest.TestCase):
         for _ in range(2):
             with tempfile.TemporaryDirectory() as directory:
                 root = pathlib.Path(directory)
-                for path in ["config/container-supply.conf", "config/Dockerfile", "config/Dockerfile.fast", "config/incus/provision-supply.json", "config/incus/labby-image.yaml"]:
+                for path in ["config/incus/provision-supply.json", "config/incus/labby-image.yaml"]:
                     destination = root / path
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(ROOT / path, destination)
@@ -280,7 +280,7 @@ class IncusContract(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
-            for path in ["config/container-supply.conf", "config/Dockerfile", "config/Dockerfile.fast", "config/incus/provision-supply.json", "config/incus/labby-image.yaml"]:
+            for path in ["config/incus/provision-supply.json", "config/incus/labby-image.yaml"]:
                 destination = root / path
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(ROOT / path, destination)
@@ -291,7 +291,7 @@ class IncusContract(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
-            for path in ["config/container-supply.conf", "config/Dockerfile", "config/Dockerfile.fast", "config/incus/provision-supply.json", "config/incus/labby-image.yaml"]:
+            for path in ["config/incus/provision-supply.json", "config/incus/labby-image.yaml"]:
                 destination = root / path
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(ROOT / path, destination)
@@ -305,7 +305,7 @@ class IncusContract(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
-            for path in ["config/container-supply.conf", "config/Dockerfile", "config/Dockerfile.fast", "config/incus/provision-supply.json", "config/incus/labby-image.yaml"]:
+            for path in ["config/incus/provision-supply.json", "config/incus/labby-image.yaml"]:
                 destination = root / path
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(ROOT / path, destination)
@@ -315,17 +315,6 @@ class IncusContract(unittest.TestCase):
             manifest.write_text(json.dumps(supply))
             result = subprocess.run([validator, "--root", root], capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0, "whole rust/go supply objects were cross-bound")
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = pathlib.Path(directory)
-            for path in ["config/container-supply.conf", "config/Dockerfile", "config/incus/provision-supply.json", "config/incus/labby-image.yaml"]:
-                destination = root / path
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(ROOT / path, destination)
-            dockerfile = root / "config/Dockerfile"
-            dockerfile.write_text(dockerfile.read_text().replace("ARG LABBY_NPM_VERSION", "ARG LABBY_UNMANIFESTED_VERSION", 1))
-            result = subprocess.run([validator, "--root", root], capture_output=True, text=True)
-            self.assertNotEqual(result.returncode, 0, "unmanifested Docker supply was accepted")
 
     def test_incus_pointer_uses_one_leased_generation_manifest(self):
         text = self.text("scripts/ci/promote-incus-pointer.sh")

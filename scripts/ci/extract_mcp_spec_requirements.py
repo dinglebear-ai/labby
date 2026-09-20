@@ -386,9 +386,9 @@ def extract(source_root: Path, auth_path: Path) -> tuple[dict, dict]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-root", type=Path, required=True)
-    parser.add_argument("--sources-output", type=Path, default=Path("conformance/mcp-spec-sources.json"))
-    parser.add_argument("--requirements-output", type=Path, default=Path("conformance/mcp-spec-requirements.json"))
-    parser.add_argument("--auth-requirements", type=Path, default=Path("conformance/mcp-auth-normative.json"))
+    parser.add_argument("--sources-output", type=Path, default=Path("tools/verification/conformance/mcp-spec-sources.json"))
+    parser.add_argument("--requirements-output", type=Path, default=Path("tools/verification/conformance/mcp-spec-requirements.json"))
+    parser.add_argument("--auth-requirements", type=Path, default=Path("tools/verification/conformance/mcp-auth-normative.json"))
     args = parser.parse_args()
     sources, requirements = extract(args.source_root, args.auth_requirements)
     args.sources_output.write_text(json.dumps(sources, indent=2) + "\n")

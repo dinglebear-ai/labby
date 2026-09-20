@@ -36,7 +36,7 @@ jobs:
         run: |
           cargo build -p labby --all-features --bin labby --locked
           cargo test -p labby --all-features --test lifecycle_conformance --no-run --locked
-          cargo build --manifest-path verification/Cargo.toml -p labby-verify --locked
+          cargo build --manifest-path tools/verification/Cargo.toml -p labby-verify --locked
       - name: Capture real product binary identity
         run: sha256sum target/debug/labby > "$LABBY_CONFORMANCE_EVIDENCE_DIR/binary-sha256.txt"
       - name: Run required real-process conformance (five minutes excluding build)
@@ -56,7 +56,7 @@ jobs:
           timeout --signal=TERM --kill-after=5s 200s
           python3 scripts/ci/validate_incident_evidence.py
           --evidence-dir "$LABBY_CONFORMANCE_EVIDENCE_DIR"
-          --verifier verification/target/debug/labby-verify
+          --verifier tools/verification/target/debug/labby-verify
       - name: Preserve lifecycle conformance evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

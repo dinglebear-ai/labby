@@ -28,7 +28,7 @@ Testing must prove:
 
 ## MCP specification oracles
 
-The dated MCP inventory under `conformance/mcp-spec-*.json` separates four
+The dated MCP inventory under `tools/verification/conformance/mcp-spec-*.json` separates four
 things: immutable specification sources, extracted normative requirements,
 reviewed product applicability, and executable test oracles. An oracle is an
 independent expected outcome checked against the implementation; extracting a

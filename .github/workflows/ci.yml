@@ -96,7 +96,7 @@ jobs:
       desktop: ${{ steps.classify.outputs.desktop }}
       unraid: ${{ steps.classify.outputs.unraid }}
       npm: ${{ steps.classify.outputs.npm }}
-      docker: ${{ steps.classify.outputs.docker }}
+      incus: ${{ steps.classify.outputs.incus }}
       security: ${{ steps.classify.outputs.security }}
       javascript_advisories: ${{ steps.classify.outputs.javascript_advisories }}
       release: ${{ steps.classify.outputs.release }}
@@ -392,7 +392,6 @@ jobs:
         needs.changes.outputs.rust_compile == 'true' ||
         needs.changes.outputs.docs_check == 'true' ||
         needs.changes.outputs.web == 'true' ||
-        needs.changes.outputs.docker == 'true' ||
         needs.changes.outputs.release == 'true'
       }}
     steps:
@@ -987,10 +986,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: changes
-    # `verification/` is a separate Cargo workspace, so none of the product Rust
+    # `tools/verification/` is a separate Cargo workspace, so none of the product Rust
     # jobs above touch it. Without this job and its routing key a change
     # confined to that directory would build and test nothing while CI reported
-    # green. See verification/CLAUDE.md.
+    # green. See tools/verification/CLAUDE.md.
     if: ${{ needs.changes.outputs.verification == 'true' || needs.changes.outputs.workflow == 'true' }}
     env:
       CARGO_DENY_VERSION: "0.19.8"
@@ -1008,7 +1007,7 @@ jobs:
       - run: just verify-check
       - run: just verify-test
       # The root `Cargo Deny` job reads the root lockfile only and never sees
-      # verification/Cargo.lock. A license gate nobody runs is worse than none.
+      # tools/verification/Cargo.lock. A license gate nobody runs is worse than none.
       #
       # Installed from the same pinned release and checksum as that job rather
       # than through `just verify-deny`, which assumes a cargo-deny already on
@@ -1030,7 +1029,7 @@ jobs:
           "$tool_dir/cargo-deny" --version
           "$tool_dir/cargo-deny" \
             --log-level warn \
-            --manifest-path ./verification/Cargo.toml \
+            --manifest-path ./tools/verification/Cargo.toml \
             --all-features \
             check
 
@@ -1618,9 +1617,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     needs: changes
-    # Incus supply inputs live under config/ and scripts/, which the changed-path
-    # classifier routes through its `docker` key.
-    if: ${{ needs.changes.outputs.docker == 'true' }}
+    if: ${{ needs.changes.outputs.incus == 'true' }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -1778,21 +1775,6 @@ jobs:
             coverage-summary.md
           if-no-files-found: error
 
-  authelia-acceptance:
-    name: Pinned Authelia acceptance
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    needs: changes
-    if: ${{ needs.changes.outputs.rust_test == 'true' }}
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
-        with:
-          persist-credentials: false
-      - name: Install Rust and kache
-        uses: ./.github/actions/setup-rust-kache
-      - name: Run isolated real-Authelia flow
-        run: bash tests/authelia/run.sh
-
   verification-t0:
     name: Verification T0
     uses: ./.github/workflows/verification-t0.yml
@@ -1848,7 +1830,6 @@ jobs:
       - incus-contract
       - desktop-web
       - desktop-rust
-      - authelia-acceptance
     steps:
       - name: report changed-path routing drift
         if: ${{ needs.changes.outputs.gate_key_drift != '' }}
@@ -1933,4 +1914,3 @@ jobs:
           require_success_or_skipped incus-contract "${{ needs.incus-contract.result }}"
           require_success_or_skipped desktop-web "${{ needs.desktop-web.result }}"
           require_success_or_skipped desktop-rust "${{ needs.desktop-rust.result }}"
-          require_success_or_skipped authelia-acceptance "${{ needs.authelia-acceptance.result }}"

@@ -24,7 +24,7 @@ pub const CAPABILITY_VISIBILITY_MODEL: &str = "capability_visibility";
 pub const MODELS: &[&str] = &[MODEL, CAPABILITY_VISIBILITY_MODEL];
 
 /// The request-lifecycle invariant catalog compiled into verification hosts.
-pub const CATALOG_TOML: &str = include_str!("../../../formal/invariants.toml");
+pub const CATALOG_TOML: &str = include_str!("../../../tools/verification/formal/invariants.toml");
 
 /// Parse and validate the built-in catalog against a caller-owned backend set.
 pub fn catalog(
