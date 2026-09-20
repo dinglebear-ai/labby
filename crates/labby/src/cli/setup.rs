@@ -734,7 +734,10 @@ async fn run_provision(args: SetupArgs, format: OutputFormat) -> Result<ExitCode
     }
     if !args.dry_run && !yes {
         if !crate::cli::helpers::interactive_allowed() {
-            anyhow::bail!("setup --provision requires --yes when stdin is not a TTY");
+            return Err(crate::dispatch::error::ToolError::Sdk {
+                sdk_kind: "confirmation_required".into(),
+                message: "setup --provision requires --yes when interactive confirmation is disabled. Review the operation before confirming; no operation was executed.".into(),
+            }.into());
         }
         eprint!("Proceed? [y/N] ");
         io::stderr().flush()?;
@@ -936,7 +939,10 @@ async fn run_command(command: SetupCommand, format: OutputFormat) -> Result<Exit
 
 async fn run_setup_proxy(args: SetupProxyArgs, format: OutputFormat) -> Result<()> {
     if !args.yes && !args.dry_run && !crate::cli::helpers::interactive_allowed() {
-        anyhow::bail!("config proxy set requires --yes when stdin is not a TTY");
+        return Err(crate::dispatch::error::ToolError::Sdk {
+                sdk_kind: "confirmation_required".into(),
+                message: "config proxy set requires --yes when interactive confirmation is disabled. Review the operation before confirming; no operation was executed.".into(),
+            }.into());
     }
 
     let home = crate::dispatch::helpers::lab_home();
@@ -1389,7 +1395,10 @@ fn require_incus_ssh_confirmation(container: &str, target_count: usize, yes: boo
         return Ok(());
     }
     if !crate::cli::helpers::interactive_allowed() {
-        anyhow::bail!("host incus ssh bootstrap requires --yes when stdin is not a TTY");
+        return Err(crate::dispatch::error::ToolError::Sdk {
+                sdk_kind: "confirmation_required".into(),
+                message: "host incus ssh bootstrap requires --yes when interactive confirmation is disabled. Review the operation before confirming; no operation was executed.".into(),
+            }.into());
     }
     eprintln!(
         "This will generate an SSH key in container `{container}` and update authorized_keys on {target_count} host(s)."
@@ -1410,7 +1419,10 @@ fn require_incus_backup_confirmation(container: &str, yes: bool) -> Result<()> {
         return Ok(());
     }
     if !crate::cli::helpers::interactive_allowed() {
-        anyhow::bail!("host incus backup apply requires --yes when stdin is not a TTY");
+        return Err(crate::dispatch::error::ToolError::Sdk {
+                sdk_kind: "confirmation_required".into(),
+                message: "host incus backup apply requires --yes when interactive confirmation is disabled. Review the operation before confirming; no operation was executed.".into(),
+            }.into());
     }
     eprintln!("This will apply Incus snapshot policy config to container `{container}`.");
     eprint!("Proceed? [y/N] ");
