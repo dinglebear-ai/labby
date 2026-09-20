@@ -7,7 +7,7 @@
 - Added the first-class `install-labby` Agent Skill with guided verified
   release installation, authentication selection, listener/deployment
   configuration, Incus guidance, Tailscale Funnel, approval-gated reverse-proxy
-  configuration, agent MCP onboarding, live `mcporter` verification, and
+  configuration, agent MCP onboarding, first-party live MCP verification, and
   optional Phoenix/Codex App Server setup.
 - Added focused references for OAuth provider setup, Incus/agent isolation,
   public exposure, reverse-proxy safety, and runtime verification.
@@ -18,6 +18,9 @@
 
 ### Changed
 
+- Replaced the install Skill's mutable third-party package-runner verification with a
+  checked-in, protocol-explicit HTTP MCP verifier that discovers the live
+  `gateway` tool and executes the read-only `gateway.help` action.
 - The distributable plugin now defaults to Labby's ordinary loopback endpoint,
   `http://127.0.0.1:8765`, rather than a private deployment-specific proxy.
 - Documented the bundled MCP entry as bearer-specific and added the explicit
