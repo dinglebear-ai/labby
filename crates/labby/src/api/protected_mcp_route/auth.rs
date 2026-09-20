@@ -305,6 +305,10 @@ pub(super) async fn authenticate_protected_route_request(
         ProtectedMcpRouteEffectiveTarget::GatewaySubset(target)
             if target.project_id.is_some()
     );
+    // Direct named-upstream routes use the AuthContext inserted above; its
+    // subject came from the already-validated access-token claims and cannot be
+    // supplied independently by the caller. Project-bound routes additionally
+    // require a canonical VerifiedIdentity for access/delegation policy.
     let identity = requires_project_binding
         .then(|| labby_auth::verified_identity_from_access_claims(&claims, &auth_state.config))
         .transpose()
@@ -315,6 +319,9 @@ pub(super) async fn authenticate_protected_route_request(
                 &route.scopes,
             )
         })?;
+    if let Some(identity) = identity.as_ref() {
+        request.extensions_mut().insert(identity.clone());
+    }
     let transport = requires_project_binding
         .then(|| {
             crate::mcp::bound_access::validate_transport_credential_binding(

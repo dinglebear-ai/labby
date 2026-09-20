@@ -806,7 +806,7 @@ impl LabMcpServer {
                 #[cfg(feature = "skills")]
                 if is_project_artifact_management_call(&request) {
                     if let Some(response) =
-                        Box::pin(self.destructive_confirmation_response(&request, &context)).await
+                        Box::pin(self.destructive_confirmation_response(&request, &context)).await?
                     {
                         return Ok(response);
                     }
@@ -824,7 +824,7 @@ impl LabMcpServer {
         }
         let project_owned = false;
         if let Some(response) =
-            Box::pin(self.destructive_confirmation_response(&request, &context)).await
+            Box::pin(self.destructive_confirmation_response(&request, &context)).await?
         {
             return Ok(response);
         }
@@ -1352,14 +1352,9 @@ impl LabMcpServer {
                         );
                         let enrichment_scope = crate::dispatch::gateway::GatewayEnrichmentScope {
                             route_visible_upstreams: self.route_scope.allowed_upstreams().cloned(),
-                            oauth_subject: self
-                                .route_oauth_subject(
-                                    crate::mcp::context::oauth_upstream_subject_for_request(
-                                        auth_context_from_extensions(&context.extensions),
-                                        self.request_subject(&context),
-                                    ),
-                                )
-                                .map(std::borrow::Cow::into_owned),
+                            oauth_subject: Some(
+                                crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT.to_owned(),
+                            ),
                         };
                         Box::pin(crate::dispatch::gateway::dispatch_with_manager_scoped(
                             manager,
@@ -1416,14 +1411,9 @@ impl LabMcpServer {
                             .expect("availability requires a gateway manager");
                         let enrichment_scope = crate::dispatch::gateway::GatewayEnrichmentScope {
                             route_visible_upstreams: self.route_scope.allowed_upstreams().cloned(),
-                            oauth_subject: self
-                                .route_oauth_subject(
-                                    crate::mcp::context::oauth_upstream_subject_for_request(
-                                        auth_context_from_extensions(&context.extensions),
-                                        self.request_subject(&context),
-                                    ),
-                                )
-                                .map(std::borrow::Cow::into_owned),
+                            oauth_subject: Some(
+                                crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT.to_owned(),
+                            ),
                         };
                         if synthetic_action == "refresh" {
                             drop(
@@ -2085,16 +2075,13 @@ impl LabMcpServer {
                         params,
                         self.request_subject(&context),
                     );
+                    let request_oauth_subject = self.request_oauth_subject(&context);
                     let enrichment_scope = crate::dispatch::gateway::GatewayEnrichmentScope {
                         route_visible_upstreams: self.route_scope.allowed_upstreams().cloned(),
                         oauth_subject: crate::access::gateway_runtime_subject(
                             &action,
                             team_id.as_deref(),
-                            crate::mcp::context::oauth_upstream_subject_for_request(
-                                auth_context_from_extensions(&context.extensions),
-                                self.request_subject(&context),
-                            )
-                            .as_deref(),
+                            request_oauth_subject.as_deref(),
                         ),
                     };
                     if let Some(authority) = gateway_authority.as_ref()
@@ -2205,7 +2192,7 @@ impl LabMcpServer {
         &self,
         request: &CallToolRequestParams,
         context: &RequestContext<RoleServer>,
-    ) -> Option<CallToolResponse> {
+    ) -> Result<Option<CallToolResponse>, ErrorData> {
         #[cfg(feature = "gateway")]
         {
             let auth = auth_context_from_extensions(&context.extensions);
@@ -2221,12 +2208,12 @@ impl LabMcpServer {
                 // Authorization precedes elicitation: a read-only caller must not
                 // be prompted to confirm a destructive app operation they cannot
                 // execute. The normal call path will return `forbidden`.
-                return None;
+                return Ok(None);
             }
         }
 
         if !self.tool_request_is_destructive(request, context).await {
-            return None;
+            return Ok(None);
         }
 
         let service = request.name.as_ref();
@@ -2278,9 +2265,12 @@ impl LabMcpServer {
         match crate::mcp::elicitation::destructive_confirmation(
             request, service, action, &binding, &owner,
         ) {
-            crate::mcp::elicitation::DestructiveConfirmation::Proceed => None,
+            crate::mcp::elicitation::DestructiveConfirmation::Proceed => Ok(None),
             crate::mcp::elicitation::DestructiveConfirmation::InputRequired(result) => {
-                Some(CallToolResponse::InputRequired(result))
+                Ok(Some(CallToolResponse::InputRequired(result)))
+            }
+            crate::mcp::elicitation::DestructiveConfirmation::MissingRequiredClientCapability => {
+                Err(crate::mcp::elicitation::missing_form_elicitation_capability_error())
             }
             crate::mcp::elicitation::DestructiveConfirmation::Refused => {
                 let envelope = build_error(
@@ -2289,7 +2279,7 @@ impl LabMcpServer {
                     "confirmation_required",
                     &format!("action `{action}` is destructive — confirm to proceed"),
                 );
-                Some(error_result_from_envelope(envelope).into())
+                Ok(Some(error_result_from_envelope(envelope).into()))
             }
         }
     }
@@ -2448,11 +2438,7 @@ impl LabMcpServer {
                 return false;
             };
             let owner = self.request_runtime_owner(context);
-            let oauth_subject =
-                self.route_oauth_subject(crate::mcp::context::oauth_upstream_subject_for_request(
-                    auth_context_from_extensions(&context.extensions),
-                    self.request_subject(context),
-                ));
+            let oauth_subject = self.request_oauth_subject(context);
             return manager
                 .resolve_raw_upstream_tool_scoped(
                     service,
@@ -2477,11 +2463,7 @@ impl LabMcpServer {
             return Ok(None);
         };
         let owner = self.request_runtime_owner(context);
-        let oauth_subject =
-            self.route_oauth_subject(crate::mcp::context::oauth_upstream_subject_for_request(
-                auth_context_from_extensions(&context.extensions),
-                self.request_subject(context),
-            ));
+        let oauth_subject = self.request_oauth_subject(context);
         let allowed = self.route_scope.allowed_upstreams();
 
         if self.code_mode_widget_callbacks_enabled() {

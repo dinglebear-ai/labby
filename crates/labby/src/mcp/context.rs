@@ -42,6 +42,23 @@ pub(crate) fn redacted_oauth_subject_label() -> &'static str {
     "[redacted]"
 }
 
+#[cfg(feature = "gateway")]
+fn request_oauth_subject_for_route<'a>(
+    is_root: bool,
+    team_subject: Option<String>,
+    auth: Option<&AuthContext>,
+    request_subject: Option<&'a str>,
+) -> Option<std::borrow::Cow<'a, str>> {
+    let personal = if is_root {
+        oauth_upstream_subject_for_request(auth, request_subject)
+    } else {
+        auth.and_then(|_| request_subject)
+            .filter(|subject| !subject.trim().is_empty())
+            .map(std::borrow::Cow::Borrowed)
+    };
+    team_subject.map(std::borrow::Cow::Owned).or(personal)
+}
+
 impl LabMcpServer {
     pub(crate) fn request_usage_attribution(
         &self,
@@ -182,15 +199,21 @@ impl LabMcpServer {
         configs
     }
 
+    /// Resolve the upstream OAuth subject for this MCP request. Root/operator
+    /// traffic keeps its explicit shared-admin policy, while a protected route
+    /// always preserves the authenticated caller subject unless the route is
+    /// intentionally bound to a Team-custodied credential.
     #[cfg(feature = "gateway")]
-    pub(crate) fn route_oauth_subject<'a>(
+    pub(crate) fn request_oauth_subject<'a>(
         &self,
-        personal: Option<std::borrow::Cow<'a, str>>,
+        context: &'a RequestContext<RoleServer>,
     ) -> Option<std::borrow::Cow<'a, str>> {
-        self.route_scope
-            .team_credential_subject()
-            .map(std::borrow::Cow::Owned)
-            .or(personal)
+        request_oauth_subject_for_route(
+            self.route_scope.is_root(),
+            self.route_scope.team_credential_subject(),
+            auth_context_from_extensions(&context.extensions),
+            self.request_subject(context),
+        )
     }
 
     #[cfg(feature = "gateway")]

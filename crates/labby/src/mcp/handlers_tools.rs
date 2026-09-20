@@ -35,8 +35,6 @@ use crate::mcp::catalog::{
 };
 use crate::mcp::catalog::{SERVER_LOGS_TOOL_NAME, ToolCatalogSnapshot};
 #[cfg(feature = "gateway")]
-use crate::mcp::context::oauth_upstream_subject_for_request;
-#[cfg(feature = "gateway")]
 use crate::mcp::context::tool_execute_scope_allowed;
 #[cfg(any(feature = "gateway", feature = "skills"))]
 use crate::mcp::context::{auth_context_from_extensions, code_mode_read_scope_allowed};
@@ -416,10 +414,7 @@ impl LabMcpServer {
                 .iter()
                 .filter(|(_, health)| health.is_open())
                 .count();
-            let oauth_subject = self.route_oauth_subject(oauth_upstream_subject_for_request(
-                auth,
-                self.request_subject(&context),
-            ));
+            let oauth_subject = self.request_oauth_subject(&context);
             let oauth_configs = if oauth_subject.is_some() {
                 self.route_scoped_oauth_upstream_configs().await
             } else {

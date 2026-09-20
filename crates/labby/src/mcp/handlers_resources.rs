@@ -57,8 +57,6 @@ use crate::mcp::catalog::{
     ADD_SERVER_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME, SETTINGS_TOOL_NAME,
 };
 use crate::mcp::catalog::{CODE_MODE_UI_TOOL_NAME, SERVER_LOGS_TOOL_NAME};
-#[cfg(feature = "gateway")]
-use crate::mcp::context::oauth_upstream_subject_for_request;
 use crate::mcp::context::{
     auth_context_from_extensions, code_mode_read_scope_allowed, tool_execute_scope_allowed,
 };
@@ -1015,9 +1013,7 @@ impl LabMcpServer {
                 }
             }
             if !resources.finished()
-                && let Some(oauth_subject) = self.route_oauth_subject(
-                    oauth_upstream_subject_for_request(auth, self.request_subject(&context)),
-                )
+                && let Some(oauth_subject) = self.request_oauth_subject(&context)
             {
                 let configs = self.route_scoped_oauth_upstream_configs().await;
                 let mut scoped_resources = pool
@@ -1763,12 +1759,8 @@ impl LabMcpServer {
         // ownership must be resolved before the raw pool path, otherwise the
         // unconditional raw return makes this route unreachable.
         #[cfg(feature = "gateway")]
-        let auth = auth_context_from_extensions(&context.extensions);
-        #[cfg(feature = "gateway")]
-        if let Some(oauth_subject) = self.route_oauth_subject(oauth_upstream_subject_for_request(
-            auth,
-            self.request_subject(&context),
-        )) && let Some(pool) = self.current_upstream_pool().await
+        if let Some(oauth_subject) = self.request_oauth_subject(&context)
+            && let Some(pool) = self.current_upstream_pool().await
             && let Some(upstream_name) = uri
                 .strip_prefix("lab://upstream/")
                 .and_then(|rest| rest.split('/').next())

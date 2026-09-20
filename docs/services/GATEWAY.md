@@ -1,7 +1,7 @@
 ---
 title: "Gateway Management"
 created: "2026-07-30"
-updated: "2026-09-15"
+updated: "2026-09-18"
 ---
 
 # Gateway Management
@@ -697,8 +697,11 @@ scopes = ["mcp:read", "mcp:write"]
 
 When `upstream` is set, the protected route does not need `backend_url`. Lab
 resolves the target URL and auth mode from the named `[[upstream]]` entry. For
-OAuth upstreams, Lab uses the upstream OAuth credential stored for the shared
-Gateway subject `gateway`.
+OAuth upstreams, Lab resolves the upstream credential from the authenticated
+protected-route caller subject. The public bearer is validated by Lab and only
+the server-derived subject selects the per-`(upstream, subject)` credential; a
+missing verified subject fails closed. Operator Gateway actions remain on the
+intentional shared subject `gateway`.
 
 On the first `tools/list` for a protected route, Labby resolves the route's
 finite allowlist of enabled, non-OAuth upstreams before building the raw tool
@@ -722,7 +725,7 @@ Fields:
 | `enabled` | Whether the route participates in metadata, challenge, auth, and proxy resolution. Defaults to `true`. |
 | `public_host` | Bare public host only. Do not include scheme, port, or path. |
 | `public_path` | Public MCP path prefix. Must include a service segment and cannot use Lab-reserved paths like `/.well-known/*` or `/v1/*`. |
-| `upstream` | Optional named Gateway upstream to publish at this path. If the upstream uses OAuth, Lab uses the shared Gateway upstream OAuth credential when proxying. Mutually exclusive with `backend_url`; when set, `backend_url` is intentionally empty. |
+| `upstream` | Optional named Gateway upstream to publish at this path. If the upstream uses OAuth, Lab uses the authenticated protected-route caller subject to select the upstream OAuth credential and fails closed if that server-verified subject is unavailable. Mutually exclusive with `backend_url`; when set, `backend_url` is intentionally empty. |
 | `backend_url` | Full backend Streamable HTTP MCP endpoint URL, for example `http://node.internal.example:3100/mcp`. Origin-only URLs are accepted as legacy input and default to `/mcp`. Mutually exclusive with `upstream`. |
 | `backend_mcp_path` | Deprecated compatibility field for older configs. New routes should put the path in `backend_url`. |
 | `scopes` | OAuth scopes advertised and enforced for this route. Defaults to `mcp:read` and `mcp:write`. |
@@ -989,6 +992,7 @@ Expected:
 - `401`
 - `WWW-Authenticate: Bearer resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/syslog"`
 - structured public auth error
+- trusted browser origins may read `WWW-Authenticate` because CORS exposes that response header
 - no backend URL appears in headers or body
 
 OAuth resource flow:
@@ -1002,10 +1006,12 @@ Use the advertised authorization server to request a token for resource
 token must be presented to the public route, not to the backend.
 
 If the protected route publishes a named upstream that also uses OAuth, Lab
-performs a second, separate auth step behind the route: it uses the upstream
-OAuth credential stored for the shared Gateway subject when proxying to the
-private upstream MCP server. The public Lab token is never passed through to the
-upstream authorization server.
+performs a second, separate auth step behind the route. The validated public
+route credential establishes a server-owned `AuthContext`; project-bound routes also carry a verified identity.
+Lab uses that authenticated caller subject to select the upstream OAuth
+credential. Two callers therefore resolve different `(upstream, subject)` rows.
+If the verified subject is unavailable, the route fails closed. The public Lab
+token is never passed through to the upstream authorization server.
 
 Stateless server discovery:
 
@@ -1129,10 +1135,11 @@ web UI, CLI, and MCP tool surface all refer to the same stored upstream
 credential row.
 
 When an OAuth upstream is also published through a protected MCP route with
-`upstream = "<name>"`, successful upstream authorization is required before the
-route can proxy MCP traffic. `gateway.test` and the Gateway UI capability
-checks use the same shared subject and should report discovered tools/resources
-after authorization.
+`upstream = "<name>"`, that route uses the authenticated caller subject rather
+than the shared operator subject. The caller must therefore have an upstream
+OAuth credential for its own subject before the route can proxy MCP traffic.
+`gateway.test`, the Gateway UI capability checks, stdio, and the operator OAuth
+actions intentionally keep using the shared `gateway` subject.
 
 Callback security invariants (enforced in code, spec-required):
 

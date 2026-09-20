@@ -16,6 +16,7 @@ pub mod catalog;
 pub(crate) mod catalog_churn;
 pub(crate) mod catalog_coalesce;
 pub(crate) mod catalog_notifications;
+#[allow(dead_code)]
 pub mod completion;
 pub mod context;
 pub mod elicitation;

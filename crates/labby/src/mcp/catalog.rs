@@ -12,8 +12,7 @@ use super::server::LabMcpServer;
 use crate::dispatch::upstream::pool::UpstreamPool;
 #[cfg(feature = "gateway")]
 use crate::mcp::context::{
-    auth_context_from_extensions, code_mode_read_scope_allowed, oauth_upstream_subject_for_request,
-    tool_execute_scope_allowed,
+    auth_context_from_extensions, code_mode_read_scope_allowed, tool_execute_scope_allowed,
 };
 #[cfg(feature = "gateway")]
 use crate::mcp::handlers_resources::admin_app_resources_visible;
@@ -212,10 +211,7 @@ impl LabMcpServer {
                 #[cfg(not(feature = "skills"))]
                 skill_library_app_visible: false,
                 oauth_subject: self
-                    .route_oauth_subject(oauth_upstream_subject_for_request(
-                        auth,
-                        self.request_subject(context),
-                    ))
+                    .request_oauth_subject(context)
                     .map(std::borrow::Cow::into_owned),
                 project_listing: crate::mcp::peer_contract::ProjectPeerListing::from_extensions(
                     &context.extensions,

@@ -1372,7 +1372,7 @@ pub fn build_router_with_bearer(
 /// Always includes `http://localhost`, `http://127.0.0.1`, and `http://[::1]`
 /// as safe loopback defaults.
 fn build_cors_layer(config_origins: &[String]) -> CorsLayer {
-    use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
+    use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, WWW_AUTHENTICATE};
     use axum::http::{HeaderValue, Method};
 
     // Env var overrides config.toml when present.
@@ -1447,6 +1447,7 @@ fn build_cors_layer(config_origins: &[String]) -> CorsLayer {
             HeaderName::from_static("x-request-id"),
             HeaderName::from_static(labby_auth::session::BROWSER_CSRF_HEADER_NAME),
         ])
+        .expose_headers([WWW_AUTHENTICATE])
 }
 
 async fn service_actions(
@@ -1724,6 +1725,42 @@ mod tests {
             .expect("serialized challenge is ASCII");
         assert!(challenge.contains("%0A%E2%98%83"));
         assert!(challenge.contains("lab:read,bad%0D%0Anext"));
+    }
+
+    #[tokio::test]
+    async fn cors_exposes_www_authenticate_to_allowed_browser_origins() {
+        let app = Router::new()
+            .route(
+                "/challenge",
+                get(|| async {
+                    (
+                        StatusCode::UNAUTHORIZED,
+                        [(header::WWW_AUTHENTICATE, "Bearer")],
+                    )
+                }),
+            )
+            .layer(build_cors_layer(&[]));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/challenge")
+                    .header(header::ORIGIN, "http://localhost:8765")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let exposed = response
+            .headers()
+            .get(header::ACCESS_CONTROL_EXPOSE_HEADERS)
+            .and_then(|value| value.to_str().ok())
+            .expect("CORS response exposes response headers");
+        assert!(
+            exposed
+                .split(',')
+                .any(|name| name.trim().eq_ignore_ascii_case("www-authenticate")),
+            "browser clients must be able to read OAuth challenges"
+        );
     }
 
     #[test]

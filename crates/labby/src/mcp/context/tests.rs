@@ -8,8 +8,8 @@ use super::{
 };
 #[cfg(feature = "gateway")]
 use super::{
-    oauth_upstream_subject_for_request, team_credential_binding_matches,
-    upstream_uses_capability_relay,
+    oauth_upstream_subject_for_request, request_oauth_subject_for_route,
+    team_credential_binding_matches, upstream_uses_capability_relay,
 };
 use crate::dispatch::error::ToolError;
 use crate::registry::RegisteredService;
@@ -429,6 +429,47 @@ fn oauth_upstream_subject_preserves_non_admin_request_subjects() {
     assert!(
         oauth_upstream_subject_for_request(Some(&read_only), None).is_none(),
         "non-admin HTTP callers must not fall back to shared gateway credentials without a subject"
+    );
+}
+
+#[test]
+#[cfg(feature = "gateway")]
+fn request_oauth_subject_policy_preserves_protected_callers_and_root_admin_sharing() {
+    let shared = crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
+    let mut alice = make_auth(&["lab:admin"]);
+    alice.sub = "alice".to_string();
+    let mut bob = make_auth(&["lab"]);
+    bob.sub = "bob".to_string();
+
+    assert_eq!(
+        request_oauth_subject_for_route(true, None, Some(&alice), Some("alice")).as_deref(),
+        Some(shared),
+        "root admin/operator traffic keeps the intentional shared gateway credential"
+    );
+
+    let alice_subject = request_oauth_subject_for_route(false, None, Some(&alice), Some("alice"));
+    let bob_subject = request_oauth_subject_for_route(false, None, Some(&bob), Some("bob"));
+    assert_eq!(alice_subject.as_deref(), Some("alice"));
+    assert_eq!(bob_subject.as_deref(), Some("bob"));
+    assert_ne!(
+        alice_subject, bob_subject,
+        "protected callers must not borrow each other's OAuth subject"
+    );
+
+    assert!(
+        request_oauth_subject_for_route(false, None, Some(&alice), None).is_none(),
+        "protected routes fail closed without a server-verified request subject"
+    );
+    assert_eq!(
+        request_oauth_subject_for_route(
+            false,
+            Some("team:alpha".to_string()),
+            Some(&alice),
+            Some("alice"),
+        )
+        .as_deref(),
+        Some("team:alpha"),
+        "an explicit Team-custodied route binding overrides personal caller credentials"
     );
 }
 

@@ -41,9 +41,7 @@ use rmcp::service::{Peer, RequestContext};
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument as _;
 
-use crate::mcp::context::{
-    auth_context_from_extensions, oauth_upstream_subject_for_request, redacted_oauth_subject_label,
-};
+use crate::mcp::context::redacted_oauth_subject_label;
 use crate::mcp::envelope::{build_error, build_error_extra};
 use crate::mcp::error::canonical_kind;
 use crate::mcp::handlers_tools::strip_resource_backed_ui_meta;
@@ -418,10 +416,7 @@ impl LabMcpServer {
         let upstream_capability = "tools";
         let upstream_operation = "tool.call";
         let raw_runtime_owner = self.request_runtime_owner(context);
-        let raw_oauth_subject = self.route_oauth_subject(oauth_upstream_subject_for_request(
-            auth_context_from_extensions(&context.extensions),
-            self.request_subject(context),
-        ));
+        let raw_oauth_subject = self.request_oauth_subject(context);
         let pre_resolved_upstream = resolved_upstream_tool
             .as_ref()
             .map(|resolved| resolved.upstream_name.clone());
@@ -797,11 +792,8 @@ impl LabMcpServer {
             }
         }
 
-        let auth = auth_context_from_extensions(&context.extensions);
-        if let Some(oauth_subject) = self.route_oauth_subject(oauth_upstream_subject_for_request(
-            auth,
-            self.request_subject(context),
-        )) && let Some(pool) = self.current_upstream_pool().await
+        if let Some(oauth_subject) = self.request_oauth_subject(context)
+            && let Some(pool) = self.current_upstream_pool().await
         {
             let mut owner = pre_resolved_oauth_config
                 .as_ref()

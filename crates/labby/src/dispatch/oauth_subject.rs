@@ -20,7 +20,9 @@ pub(crate) fn oauth_upstream_subject_for_request<'a>(
         Some(ctx) if ctx.scopes.iter().any(|scope| scope == "lab:admin") => Some(Cow::Borrowed(
             crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT,
         )),
-        Some(_) => request_subject.map(Cow::Borrowed),
+        Some(_) => request_subject
+            .filter(|subject| !subject.trim().is_empty())
+            .map(Cow::Borrowed),
     }
 }
 
@@ -42,7 +44,7 @@ mod tests {
     }
 
     #[test]
-    fn trusted_local_and_admin_callers_share_gateway_credentials() {
+    fn trusted_local_and_root_admin_are_shared() {
         let shared = crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
         assert_eq!(
             oauth_upstream_subject_for_request(None, Some("ignored-local-subject")).as_deref(),

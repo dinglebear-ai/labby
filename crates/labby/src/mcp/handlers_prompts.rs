@@ -38,7 +38,7 @@ use crate::mcp::bound_access::{
 };
 use crate::mcp::context::auth_context_from_extensions;
 #[cfg(feature = "gateway")]
-use crate::mcp::context::{forwardable_client_capabilities, oauth_upstream_subject_for_request};
+use crate::mcp::context::forwardable_client_capabilities;
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
 use crate::mcp::pagination::{
     CatalogSnapshotCollector, PageCollector, error_kind as pagination_error_kind, invalid_cursor,
@@ -282,9 +282,7 @@ impl LabMcpServer {
                 });
                 prompts.accept(listed.prompt);
             }
-            if let Some(oauth_subject) = self.route_oauth_subject(
-                oauth_upstream_subject_for_request(auth, self.request_subject(&context)),
-            ) {
+            if let Some(oauth_subject) = self.request_oauth_subject(&context) {
                 let configs = self.route_scoped_oauth_upstream_configs().await;
                 let scoped_prompts = pool
                     .subject_scoped_prompts_until(
@@ -783,12 +781,8 @@ impl LabMcpServer {
         }
 
         #[cfg(feature = "gateway")]
-        let auth = auth_context_from_extensions(&context.extensions);
-        #[cfg(feature = "gateway")]
-        if let Some(oauth_subject) = self.route_oauth_subject(oauth_upstream_subject_for_request(
-            auth,
-            self.request_subject(&context),
-        )) && let Some(pool) = self.current_upstream_pool().await
+        if let Some(oauth_subject) = self.request_oauth_subject(&context)
+            && let Some(pool) = self.current_upstream_pool().await
         {
             let configs = self.route_scoped_oauth_upstream_configs().await;
             if let Some(upstream_name) = pool

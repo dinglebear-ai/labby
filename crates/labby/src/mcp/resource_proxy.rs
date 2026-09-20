@@ -27,10 +27,7 @@ use crate::config::UpstreamConfig;
 use crate::dispatch::upstream::pool::{
     CapabilityCallError, UpstreamPool, redact_resource_uri_for_logging,
 };
-use crate::mcp::context::{
-    auth_context_from_extensions, forwardable_client_capabilities,
-    oauth_upstream_subject_for_request, redacted_oauth_subject_label,
-};
+use crate::mcp::context::{forwardable_client_capabilities, redacted_oauth_subject_label};
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
 use crate::mcp::resource_errors::{
     classify_fetch_failure as classify_resource_fetch_failure,
@@ -116,14 +113,10 @@ impl LabMcpServer {
             ));
         };
 
-        let auth = auth_context_from_extensions(&context.extensions);
         let scope = crate::dispatch::gateway::GatewayEnrichmentScope {
             route_visible_upstreams: self.route_scope.allowed_upstreams().cloned(),
             oauth_subject: self
-                .route_oauth_subject(oauth_upstream_subject_for_request(
-                    auth,
-                    self.request_subject(context),
-                ))
+                .request_oauth_subject(context)
                 .map(std::borrow::Cow::into_owned),
         };
         let json = if uri == "lab://gateway/servers" {
@@ -421,11 +414,7 @@ impl LabMcpServer {
         context: &RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, ErrorData> {
         let uri = request.uri.clone();
-        let auth = auth_context_from_extensions(&context.extensions);
-        let oauth_subject = self.route_oauth_subject(oauth_upstream_subject_for_request(
-            auth,
-            self.request_subject(context),
-        ));
+        let oauth_subject = self.request_oauth_subject(context);
         if let Some(oauth_subject) = oauth_subject.as_ref() {
             let configs = self.route_scoped_oauth_upstream_configs().await;
             match pool

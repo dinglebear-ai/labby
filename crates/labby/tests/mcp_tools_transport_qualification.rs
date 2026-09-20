@@ -15,7 +15,7 @@ mod support {
 }
 
 use qualification::{TransportKind, TransportQualification, assert_typed_error, run_failure_safe};
-use rmcp::model::ElicitationAction;
+use rmcp::model::{ElicitationAction, ErrorCode};
 
 const SECRET_CANARY: &str = "q1-secret-must-never-cross-the-mcp-boundary";
 
@@ -37,6 +37,16 @@ fn qualify_transport(
         harness
             .assert_exact_server_identity("labby", env!("CARGO_PKG_VERSION"), "2026-07-28")
             .unwrap_or_else(|error| panic!("{transport:?} identity: {error}"));
+
+        let completion_error = harness
+            .call_unsupported_completion()
+            .await
+            .unwrap_or_else(|error| panic!("{transport:?} completion rejection: {error}"));
+        assert_eq!(
+            completion_error.code,
+            ErrorCode::METHOD_NOT_FOUND,
+            "{transport:?}: completion/complete must reject with JSON-RPC -32601"
+        );
 
         let gateway_call = harness
             .call_raw(
@@ -184,13 +194,26 @@ async fn q1_elicitation_accept_decline_cancel_malformed_abandon_and_unsupported_
         let refusal = unsupported
             .call_destructive_without_elicitation()
             .await
-            .expect("unsupported-client refusal response");
+            .expect("unsupported-client missing-capability response");
         let after = unsupported
             .effect_counts()
             .expect("unsupported after effects");
         let cleanup = unsupported.finish().await;
-        assert_typed_error(&refusal, "confirmation_required", SECRET_CANARY)
-            .expect("unsupported client typed refusal");
+        assert_eq!(
+            refusal.code,
+            ErrorCode::MISSING_REQUIRED_CLIENT_CAPABILITY,
+            "2026-07-28 clients missing form elicitation must receive the protocol capability error"
+        );
+        assert_eq!(
+            refusal
+                .data
+                .as_ref()
+                .and_then(|data| data.get("requiredCapabilities"))
+                .and_then(|caps| caps.get("elicitation"))
+                .and_then(|elicitation| elicitation.get("form")),
+            Some(&serde_json::json!({})),
+            "missing-capability errors must identify elicitation.form"
+        );
         assert_eq!(after, before, "unsupported client must cause no effect");
         assert!(
             cleanup.is_clean(),

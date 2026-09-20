@@ -567,8 +567,7 @@ impl ServerHandler for LabMcpServer {
             .enable_resources()
             .enable_resources_list_changed()
             .enable_prompts()
-            .enable_prompts_list_changed()
-            .enable_completions();
+            .enable_prompts_list_changed();
         let builder = builder.enable_extensions_with(mcp_extensions());
         #[cfg(feature = "gateway")]
         let builder = if gateway_manager_configured {
@@ -790,15 +789,14 @@ impl ServerHandler for LabMcpServer {
 
     fn complete(
         &self,
-        mut request: CompleteRequestParams,
-        context: RequestContext<RoleServer>,
+        _request: CompleteRequestParams,
+        _context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<CompleteResult, ErrorData>> + Send {
-        Box::pin(async move {
-            restore_request_meta(&mut request.meta, &context.meta);
-            Ok(provenance::stamp_complete_result(
-                self.complete_impl(request, context).await?,
-            ))
-        })
+        std::future::ready(Err(ErrorData::new(
+            rmcp::model::ErrorCode::METHOD_NOT_FOUND,
+            "Method not found",
+            None,
+        )))
     }
 
     async fn list_prompts(
@@ -1417,8 +1415,8 @@ mod tests {
             "2026-07-28 removes logging/setLevel and must not advertise legacy logging"
         );
         assert!(
-            info.capabilities.completions.is_some(),
-            "RMCP completion capability must be advertised"
+            info.capabilities.completions.is_none(),
+            "completion/complete is intentionally unsupported and must not be advertised"
         );
         if let Some(extensions) = info.capabilities.extensions.as_ref() {
             for invented_auth_extension in [

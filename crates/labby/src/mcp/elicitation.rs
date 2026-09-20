@@ -1,6 +1,8 @@
+use rmcp::ErrorData;
 use rmcp::model::{
-    CallToolRequestParams, ElicitRequest, ElicitRequestParams, ElicitResult, ElicitationAction,
-    ElicitationSchema, InputRequest, InputRequests, InputRequiredResult, PrimitiveSchemaDefinition,
+    CallToolRequestParams, ClientCapabilities, ElicitRequest, ElicitRequestParams, ElicitResult,
+    ElicitationAction, ElicitationCapability, ElicitationSchema, FormElicitationCapability,
+    InputRequest, InputRequests, InputRequiredResult, PrimitiveSchemaDefinition, ProtocolVersion,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -26,7 +28,17 @@ fn pending_confirmations() -> &'static Mutex<HashMap<String, PendingConfirmation
 pub(crate) enum DestructiveConfirmation {
     Proceed,
     InputRequired(InputRequiredResult),
+    MissingRequiredClientCapability,
     Refused,
+}
+
+pub(crate) fn missing_form_elicitation_capability_error() -> ErrorData {
+    let required = ClientCapabilities::builder()
+        .enable_elicitation_with(
+            ElicitationCapability::new().with_form(FormElicitationCapability::new()),
+        )
+        .build();
+    ErrorData::missing_required_client_capability(required)
 }
 
 /// Apply the 2026-07-28 MRTR elicitation pattern to one destructive tool call.
@@ -50,7 +62,16 @@ pub(crate) fn destructive_confirmation(
         .and_then(|elicitation| elicitation.form)
         .is_some();
     if !supports_form_elicitation {
-        return DestructiveConfirmation::Refused;
+        let modern_request = request
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.protocol_version())
+            .is_some_and(|version| version == ProtocolVersion::V_2026_07_28);
+        return if modern_request {
+            DestructiveConfirmation::MissingRequiredClientCapability
+        } else {
+            DestructiveConfirmation::Refused
+        };
     }
 
     if let Some(responses) = request.input_responses.as_ref() {
@@ -146,7 +167,7 @@ mod tests {
 
     use super::{
         DestructiveConfirmation, MAX_CONFIRMATIONS_PER_OWNER, destructive_confirmation,
-        pending_confirmations,
+        missing_form_elicitation_capability_error, pending_confirmations,
     };
 
     fn elicitation_request() -> CallToolRequestParams {
@@ -291,7 +312,33 @@ mod tests {
     }
 
     #[test]
-    fn destructive_confirmation_fails_closed_without_elicitation() {
+    fn modern_request_without_form_elicitation_reports_required_capability() {
+        let mut request = CallToolRequestParams::new("danger");
+        request.meta = Some(RequestMetaObject::with_client_context(
+            ProtocolVersion::V_2026_07_28,
+            Implementation::new("test-client", "1.0.0"),
+            ClientCapabilities::builder().build(),
+        ));
+
+        assert!(matches!(
+            destructive_confirmation(&request, "danger", "danger.delete", "binding-c", "owner-d"),
+            DestructiveConfirmation::MissingRequiredClientCapability
+        ));
+
+        let error = missing_form_elicitation_capability_error();
+        assert_eq!(
+            error.code,
+            rmcp::model::ErrorCode::MISSING_REQUIRED_CLIENT_CAPABILITY
+        );
+        assert_eq!(
+            error.data.expect("required capability payload")["requiredCapabilities"]["elicitation"]
+                ["form"],
+            json!({})
+        );
+    }
+
+    #[test]
+    fn legacy_request_without_elicitation_fails_closed() {
         let request = CallToolRequestParams::new("danger");
 
         assert!(matches!(

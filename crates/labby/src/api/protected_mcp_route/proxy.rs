@@ -8,10 +8,7 @@ use super::policy::{
 };
 use crate::api::{error::ApiError, state::AppState};
 use crate::config::ProtectedMcpRouteEffectiveTarget;
-use crate::dispatch::{
-    error::ToolError, gateway::SHARED_GATEWAY_OAUTH_SUBJECT,
-    upstream::auth::configured_bearer_token,
-};
+use crate::dispatch::{error::ToolError, upstream::auth::configured_bearer_token};
 use axum::{
     body::Body,
     http::{HeaderName, HeaderValue, Method, Request, StatusCode, header},
@@ -32,8 +29,10 @@ pub(super) async fn proxy_protected_mcp_route(
         .strip_prefix(&route.public_path)
         .unwrap_or("");
 
+    let oauth_subject =
+        protected_route_oauth_subject(request.extensions().get::<labby_auth::AuthContext>());
     let (mut upstream, upstream_auth_token, upstream_target, exposure_config) =
-        match protected_route_upstream_target(state, &route).await {
+        match protected_route_upstream_target(state, &route, oauth_subject).await {
             Ok(target) => target,
             Err(response) => return response,
         };
@@ -290,9 +289,17 @@ pub(super) async fn proxy_protected_mcp_route(
     })
 }
 
+fn protected_route_oauth_subject(auth: Option<&labby_auth::AuthContext>) -> Option<&str> {
+    auth.and_then(|auth| {
+        let subject = auth.sub.trim();
+        (!subject.is_empty()).then_some(subject)
+    })
+}
+
 pub(super) async fn protected_route_upstream_target(
     state: &AppState,
     route: &crate::config::ProtectedMcpRouteConfig,
+    oauth_subject: Option<&str>,
 ) -> Result<
     (
         reqwest::Url,
@@ -395,12 +402,26 @@ pub(super) async fn protected_route_upstream_target(
     })?;
 
     let token = if upstream_config.oauth.is_some() {
+        let Some(oauth_subject) = oauth_subject else {
+            tracing::warn!(
+                route = %route.name,
+                resource = %route.public_resource(),
+                upstream = %upstream_name,
+                "protected MCP route proxy failed: authenticated OAuth subject missing"
+            );
+            return Err(ApiError::new(ToolError::Sdk {
+                sdk_kind: "auth_failed".into(),
+                message: "authenticated subject unavailable for upstream OAuth".into(),
+            })
+            .into_response());
+        };
+        let subject_id = labby_auth::util::fingerprint(oauth_subject);
         let Some(oauth_manager) = manager.upstream_oauth_manager(&upstream_name) else {
             tracing::warn!(
                 route = %route.name,
                 resource = %route.public_resource(),
                 upstream = %upstream_name,
-                subject = %SHARED_GATEWAY_OAUTH_SUBJECT,
+                subject_id = %subject_id,
                 "protected MCP route proxy failed: upstream oauth manager missing"
             );
             return Err(ApiError::new(ToolError::Sdk {
@@ -410,14 +431,14 @@ pub(super) async fn protected_route_upstream_target(
             .into_response());
         };
         let auth_client = oauth_manager
-            .build_auth_client(SHARED_GATEWAY_OAUTH_SUBJECT)
+            .build_auth_client(oauth_subject)
             .await
             .map_err(|error| {
                 tracing::warn!(
                     route = %route.name,
                     resource = %route.public_resource(),
                     upstream = %upstream_name,
-                    subject = %SHARED_GATEWAY_OAUTH_SUBJECT,
+                    subject_id = %subject_id,
                     kind = error.kind(),
                     error = %error,
                     "protected MCP route proxy failed: upstream oauth auth client unavailable"
@@ -435,7 +456,7 @@ pub(super) async fn protected_route_upstream_target(
                 route = %route.name,
                 resource = %route.public_resource(),
                 upstream = %upstream_name,
-                subject = %SHARED_GATEWAY_OAUTH_SUBJECT,
+                subject_id = %subject_id,
                 error = %error,
                 "protected MCP route proxy failed: upstream oauth token unavailable"
             );
@@ -458,4 +479,48 @@ pub(super) async fn protected_route_upstream_target(
         format!("upstream:{upstream_name}"),
         Some(upstream_config),
     ))
+}
+
+#[cfg(test)]
+mod oauth_subject_tests {
+    use super::protected_route_oauth_subject;
+    use labby_auth::AuthContext;
+
+    fn auth(subject: &str, scopes: &[&str]) -> AuthContext {
+        AuthContext {
+            actor_key: None,
+            sub: subject.to_owned(),
+            scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
+            issuer: "https://labby.example".to_owned(),
+            via_session: false,
+            csrf_token: None,
+            email: None,
+        }
+    }
+
+    #[test]
+    fn protected_named_upstream_oauth_is_caller_subject_scoped_even_for_admins() {
+        let alice = auth("alice", &["lab"]);
+        let bob = auth("bob", &["lab:admin"]);
+
+        assert_eq!(protected_route_oauth_subject(Some(&alice)), Some("alice"));
+        assert_eq!(protected_route_oauth_subject(Some(&bob)), Some("bob"));
+        assert_ne!(
+            protected_route_oauth_subject(Some(&alice)),
+            protected_route_oauth_subject(Some(&bob)),
+            "one authenticated caller must never borrow another caller's upstream OAuth connection"
+        );
+        assert_ne!(
+            protected_route_oauth_subject(Some(&bob)),
+            Some(crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT),
+            "route authentication must not silently promote an admin caller to the shared operator credential"
+        );
+    }
+
+    #[test]
+    fn protected_named_upstream_oauth_fails_closed_without_verified_subject() {
+        assert_eq!(protected_route_oauth_subject(None), None);
+        let empty = auth("", &["lab"]);
+        assert_eq!(protected_route_oauth_subject(Some(&empty)), None);
+    }
 }

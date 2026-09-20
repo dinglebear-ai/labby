@@ -1,8 +1,8 @@
 //! Result provenance metadata for the MCP response boundary.
 
 use rmcp::model::{
-    CallToolResponse, CallToolResult, CompleteResult, CreateTaskResult, GetPromptResponse,
-    GetPromptResult, GetTaskResult, Implementation, InputRequiredResult, ListPromptsResult,
+    CallToolResponse, CallToolResult, CreateTaskResult, GetPromptResponse, GetPromptResult,
+    GetTaskResult, Implementation, InputRequiredResult, ListPromptsResult,
     ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, MetaObject,
     ReadResourceResponse,
 };
@@ -63,11 +63,6 @@ pub(crate) fn stamp_read_resource_response(
         _ => {}
     }
     response
-}
-
-pub(crate) fn stamp_complete_result(mut result: CompleteResult) -> CompleteResult {
-    stamp_meta(&mut result.meta);
-    result
 }
 
 pub(crate) fn stamp_list_prompts_result(mut result: ListPromptsResult) -> ListPromptsResult {

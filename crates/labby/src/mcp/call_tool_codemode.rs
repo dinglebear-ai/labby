@@ -671,10 +671,7 @@ impl LabMcpServer {
             Some(auth) => {
                 let capabilities = code_mode_capabilities_for_scopes(&auth.scopes);
                 let sub = self
-                    .route_oauth_subject(
-                        self.request_subject(context)
-                            .map(std::borrow::Cow::Borrowed),
-                    )
+                    .request_oauth_subject(context)
                     .map(std::borrow::Cow::into_owned);
                 if let (Some(provider_token), Some(provider_request_id)) = (
                     self.request_host_provider_token(context),

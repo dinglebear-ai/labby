@@ -192,3 +192,29 @@ fn lab_gateway_does_not_call_labby_default_registry() {
         "labby-gateway must not call build_default_registry: {offenders:?}"
     );
 }
+
+#[test]
+fn mcp_upstream_oauth_subject_policy_is_centralized() {
+    let mcp = lab_src().join("mcp");
+    let mut files = Vec::new();
+    rust_files(&mcp, &mut files);
+
+    let offenders: Vec<_> = files
+        .into_iter()
+        .filter(|path| {
+            let rel = path.strip_prefix(lab_src()).unwrap();
+            if rel == Path::new("mcp/context.rs") || rel == Path::new("mcp/context/tests.rs") {
+                return false;
+            }
+            let content = fs::read_to_string(path).expect("read MCP source");
+            content.contains("oauth_upstream_subject_for_request")
+                || content.contains(".route_oauth_subject(")
+        })
+        .map(|path| path.strip_prefix(lab_src()).unwrap().display().to_string())
+        .collect();
+
+    assert!(
+        offenders.is_empty(),
+        "MCP upstream OAuth subject selection must flow through request_oauth_subject; offenders: {offenders:?}"
+    );
+}

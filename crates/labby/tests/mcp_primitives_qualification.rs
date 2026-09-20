@@ -1,4 +1,4 @@
-//! Q1 real-process MCP resources, prompts, templates, and completion qualification.
+//! Q1 real-process MCP resources, prompts, templates, and unsupported-completion qualification.
 
 #![cfg(all(feature = "gateway", feature = "proxy-testkit"))]
 #![allow(clippy::panic)]
@@ -40,7 +40,7 @@ fn assert_mcp_kind(error: ServiceError, kind: &str) {
 }
 
 #[tokio::test]
-async fn q1_resources_prompts_templates_completions_and_collisions_round_trip() {
+async fn q1_resources_prompts_templates_and_collisions_round_trip_while_completion_is_rejected() {
     let alpha = PrimitiveFixture::start("alpha", FixtureMode::Normal)
         .await
         .expect("alpha fixture");
@@ -53,10 +53,12 @@ async fn q1_resources_prompts_templates_completions_and_collisions_round_trip() 
     let peer = runner.service().peer();
     let server = peer.peer_info().expect("discover response");
     assert!(
-        server.capabilities.resources.is_some()
-            && server.capabilities.prompts.is_some()
-            && server.capabilities.completions.is_some(),
+        server.capabilities.resources.is_some() && server.capabilities.prompts.is_some(),
         "only advertised primitive capabilities may be exercised"
+    );
+    assert!(
+        server.capabilities.completions.is_none(),
+        "Labby must not advertise completion/complete"
     );
 
     let resources = tokio::time::timeout(REQUEST_TIMEOUT, peer.list_resources(None))
@@ -160,31 +162,17 @@ async fn q1_resources_prompts_templates_completions_and_collisions_round_trip() 
         "alpha:shared:alice"
     );
 
-    let prompt_completion = peer
+    let unsupported_completion = peer
         .complete(CompleteRequestParams::new(
             Reference::for_prompt("alpha/shared"),
             ArgumentInfo::new("subject", "al"),
         ))
         .await
-        .expect("advertised prompt completion");
-    assert_eq!(
-        prompt_completion.completion.values,
-        ["alpha:shared:subject:al"]
-    );
-    let template_completion = peer
-        .complete(CompleteRequestParams::new(
-            Reference::for_resource("lab://upstream/beta/fixture://template/{value}"),
-            ArgumentInfo::new("value", "be"),
-        ))
-        .await
-        .expect("advertised resource completion");
-    assert_eq!(
-        template_completion.completion.values,
-        ["beta:fixture://template/{value}:value:be"]
-    );
+        .expect_err("completion/complete must be unsupported");
+    assert_mcp_code(unsupported_completion, ErrorCode::METHOD_NOT_FOUND);
     assert_eq!(alpha.prompt_gets(), 1);
-    assert_eq!(alpha.completions(), 1);
-    assert_eq!(beta.completions(), 1);
+    assert_eq!(alpha.completions(), 0);
+    assert_eq!(beta.completions(), 0);
 
     let invalid_prompt = peer
         .get_prompt(GetPromptRequestParams::new("alpha/shared"))

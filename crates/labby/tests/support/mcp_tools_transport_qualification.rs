@@ -14,6 +14,7 @@ use rmcp::model::{
 };
 use rmcp::service::{
     ClientLifecycleMode, ClientServiceExt, PeerRequestOptions, RequestContext, RunningService,
+    ServiceError,
 };
 use rmcp::transport::TokioChildProcess;
 use rmcp::transport::streamable_http_client::{
@@ -408,13 +409,45 @@ impl TransportQualification {
         }
     }
 
-    pub(crate) async fn call_destructive_without_elicitation(
-        &self,
-    ) -> Result<CallToolResult, String> {
-        self.complete_once(
-            CallToolRequestParams::new("forge.destructive").with_arguments(Map::new()),
+    pub(crate) async fn call_destructive_without_elicitation(&self) -> Result<ErrorData, String> {
+        let params = CallToolRequestParams::new("forge.destructive").with_arguments(Map::new());
+        let response = tokio::time::timeout(
+            REQUEST_TIMEOUT,
+            self.service
+                .as_ref()
+                .expect("active service")
+                .call_tool_once(params),
         )
         .await
+        .map_err(|_| "destructive response exceeded the request deadline".to_owned())?;
+
+        match response {
+            Err(ServiceError::McpError(error)) => Ok(error),
+            Err(error) => Err(format!("unexpected destructive transport error: {error}")),
+            Ok(response) => Err(format!(
+                "destructive call without required client capability unexpectedly succeeded: {response:?}"
+            )),
+        }
+    }
+
+    pub(crate) async fn call_unsupported_completion(&self) -> Result<ErrorData, String> {
+        let response = tokio::time::timeout(
+            REQUEST_TIMEOUT,
+            self.service
+                .as_ref()
+                .expect("active service")
+                .complete_prompt_argument("run-action", "action", "doctor", None),
+        )
+        .await
+        .map_err(|_| "completion response exceeded the request deadline".to_owned())?;
+
+        match response {
+            Err(ServiceError::McpError(error)) => Ok(error),
+            Err(error) => Err(format!("unexpected completion transport error: {error}")),
+            Ok(response) => Err(format!(
+                "unsupported completion unexpectedly succeeded: {response:?}"
+            )),
+        }
     }
 
     async fn complete_once(&self, params: CallToolRequestParams) -> Result<CallToolResult, String> {
