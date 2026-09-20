@@ -9,16 +9,12 @@ updated: "2026-07-30"
 `unraid/` packages labby as a classic Unraid webGUI plugin (`.plg`) — a
 native, rc.d-managed process by default, with an optional Incus-backed mode
 for stdio MCP workloads. No Docker, no systemd on the host (Unraid does not
-run one). This is a separate deployment target from [INCUS.md](./INCUS.md)
-(recommended self-hosted gateway runtime) and the Docker Compose stack
-(`docker-compose.prod.yml`); pick whichever fits the host, they are not
-mutually exclusive.
+run one). This is a separate deployment target from [INCUS.md](./INCUS.md),
+the recommended self-hosted gateway runtime.
 
-## Why native instead of Docker
+## Why a native plugin
 
-Unraid has first-class Docker support, and the released image
-(`ghcr.io/dinglebear-ai/labby`) already runs there. The `.plg` path exists because
-"installable as an Unraid plugin" specifically means the classic
+The `.plg` path exists because "installable as an Unraid plugin" specifically means the classic
 `.plg`/Plugins-tab mechanism, and because labby is a single, dynamically
 linked (glibc) binary with no bundled shared libraries and its own embedded
 admin web UI — it does not need container isolation or a companion frontend
@@ -156,7 +152,7 @@ built with the fix should land both at the same version. Tracked as
 ## Layout
 
 ```text
-icon.svg                                       repo-root brand mark (dinglebear-ai mark system) — the CA repository icon
+docs/assets/brand/icon.svg                    brand mark (dinglebear-ai mark system) — the CA repository icon
                                                ca_profile.xml points at, and the vector source for both PNGs below
 ca_profile.xml                                 repo-root Community Applications repository profile
 unraid/
@@ -267,7 +263,7 @@ though its Tailwind/Vue tokens aren't directly usable from a classic
   in any genuine first-party `.page`; the core stylesheet styles submit/
   button inputs automatically.
 - **Icon**: `Icon="labby.png"` + `Tag="labby.png"` — the real Labby brand
-  mark (dinglebear-ai mark system, generated from the repo-root `icon.svg`).
+  mark (dinglebear-ai mark system, generated from the `docs/assets/brand/icon.svg`).
   Verified against a live 7.3.x install's core code: these are **two
   different resolution paths**. `Icon=".png"` (Settings panel grid, via
   `MainContent.php`'s `process_icon()`) and the plugin manager's `icon`
@@ -408,7 +404,7 @@ CA is not the plugin's own boot-time download path:
 - **`ca_profile.xml`** (repo root, required there — CA looks for it at the
   root of a submitted repository, not in a subdirectory) — the *repository*
   profile: one-line overview, project page, and the repo icon. Its `<Icon>`
-  points at the repo-root `icon.svg`.
+  points at the `docs/assets/brand/icon.svg`.
 - **`unraid/ca/labby.xml`** — the *plugin* entry. Its `<PluginURL>` must
   match `labby.plg`'s `pluginURL` entity **byte-for-byte**, or the Apps-page
   install button breaks silently. Both are
@@ -454,7 +450,8 @@ submit flow (`/submit`) per the
 CA requires an OSI-approved license in the repo. `LICENSE` (AGPL-3.0-only,
 adopted in #346 alongside separate commercial terms) satisfies this, and
 `labby.xml` declares `<License>AGPL-3.0-only</License>` to match. Keep that
-element in sync with `Cargo.toml`'s `license` field and `LICENSING.md` — it
+element in sync with `Cargo.toml`'s `license` field and the project notice in
+`LICENSE` — it
 is a public claim about how the listing is distributed, and nothing checks
 it automatically. Do not advertise the commercial option in that element;
 CA's field describes the open-source license only.

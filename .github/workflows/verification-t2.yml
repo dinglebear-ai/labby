@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
-      CARGO_TARGET_DIR: verification/target
+      CARGO_TARGET_DIR: tools/verification/target
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -40,7 +40,7 @@ jobs:
           sha256sum "$LABBY_KANI_DRIVER" > verification-evidence/kani-driver-sha256.txt
           "$LABBY_KANI_DRIVER" --version > verification-evidence/kani-version.txt
           timeout --signal=TERM --kill-after=5s 1200s \
-            cargo test --manifest-path verification/Cargo.toml -p verify-kani \
+            cargo test --manifest-path tools/verification/Cargo.toml -p verify-kani \
               --test actual_kani --locked -- --ignored --test-threads=1 \
               2>&1 | tee verification-evidence/kani-qualification.txt
       - name: Preserve bounded-proof evidence
@@ -56,7 +56,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
-      CARGO_TARGET_DIR: verification/target
+      CARGO_TARGET_DIR: tools/verification/target
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -69,7 +69,7 @@ jobs:
           mkdir -p verification-evidence
           git rev-parse HEAD > verification-evidence/source-revision.txt
           timeout --signal=TERM --kill-after=5s 2100s \
-            cargo test --manifest-path verification/Cargo.toml -p verify-loom \
+            cargo test --manifest-path tools/verification/Cargo.toml -p verify-loom \
               --locked --test lifecycle shuttle_ -- --test-threads=1 \
               2>&1 | tee verification-evidence/shuttle-qualification.txt
       - name: Preserve bounded-schedule evidence

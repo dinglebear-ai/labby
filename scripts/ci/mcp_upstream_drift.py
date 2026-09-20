@@ -222,7 +222,7 @@ def generate_report(baseline: dict[str, Any], token: str | None) -> tuple[str, b
         ),
         "",
         "When the upstream change is intentionally adopted, update code/tests first, run the",
-        "listed validation, then advance `conformance/upstream-baseline.json` in the same PR.",
+        "listed validation, then advance `tools/verification/conformance/upstream-baseline.json` in the same PR.",
     ]
     return "\n".join(lines) + "\n", drift
 
@@ -230,7 +230,7 @@ def generate_report(baseline: dict[str, Any], token: str | None) -> tuple[str, b
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--baseline", type=Path, default=Path("conformance/upstream-baseline.json")
+        "--baseline", type=Path, default=Path("tools/verification/conformance/upstream-baseline.json")
     )
     parser.add_argument("--output", type=Path, default=Path("target/mcp-upstream-drift.md"))
     parser.add_argument("--github-output", type=Path)

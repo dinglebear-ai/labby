@@ -45,8 +45,6 @@ active_roots=(
   scripts
   plugins/scripts
   .github
-  docker-compose.yml
-  docker-compose.prod.yml
 )
 
 forbidden_pattern='pub mod (acp|acp_registry|mcpregistry|marketplace|device_runtime|deploy)|feature = "(acp_registry|mcpregistry|marketplace|deploy|stash)"|labby_apis::(acp|acp_registry|mcpregistry|marketplace|device_runtime|deploy)|mcpregistry.url|ACP_SESSION_CWD|NodeRuntimeRole|DevicePreferences|ResolvedDeviceRuntime|Stash(Component|Revision|Origin|Provider|Target)|marketplace-stash|/v1/(acp|marketplace|nodes|fleet)|/dev/api/marketplace|marketplaceActionUrl|nodeDetailUrl|nodeLogsSearchUrl'

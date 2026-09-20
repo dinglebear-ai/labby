@@ -24,7 +24,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "system.checks",
-        description: "Run local system probes: env vars, Docker, disk, ports, config files",
+        description: "Run local system probes: env vars, disk, ports, config files",
         destructive: false,
         requires_admin: false,
         returns: "DoctorReport",

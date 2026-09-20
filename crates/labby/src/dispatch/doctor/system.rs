@@ -341,6 +341,7 @@ fn path_test_command(path: &str, writable: bool) -> std::process::Command {
     }
 }
 
+#[cfg(test)]
 fn executable_test_command(program: &str, args: &[&str]) -> std::process::Command {
     let mut command = std::process::Command::new(program);
     command.args(args);
@@ -596,35 +597,11 @@ fn command_check(service: &str, label: &str, cmd: &str, cancellation: &AtomicBoo
     }
 }
 
-/// Verify `docker compose` (the v2 CLI plugin) is actually wired up,
-/// not just that the `docker` binary exists.
-///
-/// Runs `docker compose version` and treats a non-zero exit (or missing
-/// binary) as the plugin being unavailable.
-#[cfg(test)]
-#[allow(dead_code)]
-fn compose_plugin_check(cancellation: &AtomicBool) -> Finding {
-    let found = cancellable_command_status(
-        std::process::Command::new("docker").args(["compose", "version"]),
-        cancellation,
-    );
-    Finding {
-        service: "system".to_string(),
-        check: "docker:compose-plugin".to_string(),
-        severity: if found { Severity::Ok } else { Severity::Warn },
-        message: if found {
-            "`docker compose` plugin is available".to_string()
-        } else {
-            "`docker compose` plugin not available".to_string()
-        },
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------
 
-/// Run all local system probes: env-var checks, config files, Docker, disk.
+/// Run all local system probes: env-var checks, config files, toolchain, and disk.
 ///
 /// Order: env-var checks first (preserves current `labby doctor` output), then
 /// system-level checks.
@@ -713,30 +690,6 @@ pub async fn run_system_checks() -> Vec<Finding> {
             format!("~/{name} not present"),
         ));
     }
-    probes.push(process_probe(
-        "system",
-        "docker:socket",
-        path_test_command("/var/run/docker.sock", false),
-        "/var/run/docker.sock found".into(),
-        Severity::Warn,
-        "/var/run/docker.sock not found".into(),
-    ));
-    probes.push(process_probe(
-        "system",
-        "docker:cli",
-        command_available_command("docker"),
-        "`docker` is available".into(),
-        Severity::Warn,
-        "`docker` not found on PATH".into(),
-    ));
-    probes.push(process_probe(
-        "system",
-        "docker:compose-plugin",
-        executable_test_command("docker", &["compose", "version"]),
-        "`docker compose` plugin is available".into(),
-        Severity::Warn,
-        "`docker compose` plugin not available".into(),
-    ));
     probes.push(process_probe(
         "system",
         "rust:cargo",

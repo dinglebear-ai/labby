@@ -258,7 +258,7 @@ def source_check(sources: dict, catalog: dict, checkout: Path) -> None:
     # Counts/hashes alone do not prove completeness: a row could be deleted
     # together with its page count. Re-extract the immutable source and compare
     # the entire derived denominator, including wording and inferred metadata.
-    regenerated_sources, regenerated_catalog = extract(checkout, ROOT / "conformance/mcp-auth-normative.json")
+    regenerated_sources, regenerated_catalog = extract(checkout, ROOT / "tools/verification/conformance/mcp-auth-normative.json")
     require(sources == regenerated_sources, "source inventory differs from deterministic extraction")
     require(catalog == regenerated_catalog, "requirement inventory differs from deterministic extraction")
 
@@ -403,11 +403,11 @@ def main() -> int:
         # Do this even if subsequent source validation/fetch fails: a failed
         # attempt must not upload an earlier run's successful documents.
         invalidate_evidence(args.receipt, args.output)
-    sources = json.loads((ROOT / "conformance/mcp-spec-sources.json").read_text())
-    catalog = json.loads((ROOT / "conformance/mcp-spec-requirements.json").read_text())
-    mapping = json.loads((ROOT / "conformance/mcp-spec-oracles.json").read_text())
-    dispositions = json.loads((ROOT / "conformance/mcp-spec-dispositions.json").read_text())
-    schema_catalog = json.loads((ROOT / "conformance/mcp-spec-schema.json").read_text())
+    sources = json.loads((ROOT / "tools/verification/conformance/mcp-spec-sources.json").read_text())
+    catalog = json.loads((ROOT / "tools/verification/conformance/mcp-spec-requirements.json").read_text())
+    mapping = json.loads((ROOT / "tools/verification/conformance/mcp-spec-oracles.json").read_text())
+    dispositions = json.loads((ROOT / "tools/verification/conformance/mcp-spec-dispositions.json").read_text())
+    schema_catalog = json.loads((ROOT / "tools/verification/conformance/mcp-spec-schema.json").read_text())
     rows = validate_catalog(sources, catalog)
     if args.spec_checkout:
         source_check(sources, catalog, args.spec_checkout)

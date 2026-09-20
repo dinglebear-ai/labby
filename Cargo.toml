@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-exclude = ["verification"]
+exclude = ["tools/verification"]
 members = ["crates/labby-apis", "crates/labby", "crates/labby-auth", "crates/labby-browser", "crates/labby-codemode", "crates/labby-gateway", "crates/labby-model", "crates/labby-openapi", "crates/labby-web", "crates/labby-runtime", "crates/labby-winjob", "crates/labby-primitives", "crates/xtask"]
 
 [workspace.package]

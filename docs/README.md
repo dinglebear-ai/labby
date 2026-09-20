@@ -20,6 +20,8 @@ Historical material that still has durable value lives under `docs/archive/` and
 - [Phoenix Assistant](./services/PHOENIX_ASSISTANT.md) — App Server chronology, reasoning/tool event timeline, attachments, context usage, and verification oracles.
 - [Local access bootstrap](./guides/LOCAL_ACCESS_BOOTSTRAP.md) — offline proof preparation, direct-local consume, recovery, revocation, and cleanup.
 - [Access Control, Workspaces, and Artifact Distribution](./access-control/README.md) — active specification/contract for organizations, groups, projects, effective workspaces, scoped assets/capabilities, and Personal Labby Artifact sync/fork flows.
+- [Skills-over-MCP compatibility](./plans/skills-over-mcp-compat/README.md) — historical implementation plan and progress record; the current contract is [Skills extension](./contracts/skills-extension.md) and current product behavior is [Artifacts And Agent Skills](./services/SKILLS.md).
+- [Verification and compliance](./dev/VERIFICATION.md) — implemented specification oracles, model/replay tiers, real-process conformance, evidence boundaries, and qualification rules; operational commands live in the [verification workspace](../tools/verification/README.md).
 - [Configuration](./runtime/CONFIG.md) and [Environment](./runtime/ENV.md) — runtime configuration and environment variables.
 - [Operations](./OPERATIONS.md) — build, doctor, deployment, CI, release, and operator workflows.
 - [Privilege-exposure runbook](./runtime/PRIVILEGE_EXPOSURE_RUNBOOK.md) — tamper review, credential rotation, owner re-verification, and config rollback after an admin-scope exposure.
@@ -76,7 +78,6 @@ HTTP route, not a registered multi-surface service.
 - [Unraid plugin](./runtime/UNRAID.md)
 - [GitHub Actions runner](./runtime/ACTIONS_RUNNER.md)
 - [CI/CD](./runtime/CICD.md)
-- [Container runtime](./runtime/CONTAINERS.md)
 - [Durable-state disaster recovery](./runtime/DISASTER_RECOVERY.md)
 - [Operations](./OPERATIONS.md)
 - [Technology and Rust build](./TECH.md)
@@ -111,6 +112,7 @@ Normative cross-surface contracts live under [contracts/](./contracts/):
 
 ## Product Design
 
+- [Gateway Admin design profile](./DESIGN.md) — self-contained Labby consumer profile for Aurora.
 - [Design index](./design/README.md)
 - [Labby and Depot SaaS North Star](./design/labby-depot-saas-north-star.md) — accepted target for public Depot, personal and hosted Labby, Lime as the first private tenant, paid team runtimes, R2, and the long-term tenant-aware data plane.
 - [Phabby shared control plane](./design/phabby-control-plane.md) — accepted Phoenix/OTP target and Rust/BEAM ownership boundary.
@@ -133,7 +135,7 @@ These are useful engineering records, not substitutes for current product contra
 - [Skills-over-MCP compatibility](./plans/skills-over-mcp-compat/README.md) — completed implementation record for PR #456; current protocol contract is [Skills extension](./contracts/skills-extension.md).
 - [Provider-neutral Skills core](./plans/provider-neutral-skills-core/README.md) — completed implementation record for PR #486; current runtime behavior is projected through [Artifacts And Agent Skills](./services/SKILLS.md).
 - [First-class usage metrics](./plans/usage-metrics-first-class/README.md) — shipped dimensional analytics record with its remaining long-window policy decision called out explicitly.
-- [Verification toolkit](./plans/verification-toolkit/README.md) — active proposed correctness-engineering toolkit and qualification work; its status must not be read as shipped product coverage.
+- [Verification and compliance](./dev/VERIFICATION.md) — current correctness-engineering architecture, qualification boundaries, and evidence contracts; operational usage lives in the [verification workspace](../tools/verification/README.md).
 
 ## Plugins And Snippets
 

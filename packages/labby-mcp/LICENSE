@@ -659,3 +659,36 @@ specific requirements.
 if any, to sign a "copyright disclaimer" for the program, if necessary.
 For more information on this, and how to apply and follow the GNU AGPL, see
 <http://www.gnu.org/licenses/>.
+
+-------------------------------------------------------------------------------
+LABBY PROJECT LICENSING NOTICE
+-------------------------------------------------------------------------------
+
+Except for third-party material and files carrying a separate license or
+copyright notice, the original software in Labby authored by Jacob Magar or
+Dinglebear AI is licensed under the GNU Affero General Public License version
+3.0 only (SPDX: AGPL-3.0-only), whose complete and unmodified text appears
+above.
+
+This grant applies to revisions containing this notice. Earlier revisions
+remain available under the licenses under which they were originally
+published; those earlier grants are not revoked.
+
+Dinglebear-owned portions are also available under separate written commercial
+terms for organizations that need terms outside AGPL-3.0-only. No commercial
+license is granted by this file. A commercial agreement covers only copyrights
+owned or controlled by Dinglebear AI; it does not relicense third-party code,
+dependencies, trademarks, data, artwork, or separately licensed material.
+
+Files and directories containing their own license, copyright notice, or
+upstream attribution remain under those original terms. Dependencies are
+licensed by their respective authors.
+
+External code contributions must not be merged until Dinglebear AI has a
+contributor agreement or another documented grant permitting both AGPL and
+commercial distribution. Issues, bug reports, and suggestions do not transfer
+copyright.
+
+To request separate commercial terms, contact Dinglebear AI through this
+repository's GitHub contact channels and identify the intended product,
+deployment model, distribution method, and support needs.

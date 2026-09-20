@@ -55,8 +55,8 @@ else
   output_dir="${repo_root}/${MCP_CONFORMANCE_OUTPUT_DIR}"
 fi
 cargo_target_dir="${CARGO_TARGET_DIR:-${repo_root}/target}"
-dated_baseline="${repo_root}/conformance/expected-failures-dated.yaml"
-extension_baseline="${repo_root}/conformance/expected-failures-extensions.yaml"
+dated_baseline="${repo_root}/tools/verification/conformance/expected-failures-dated.yaml"
+extension_baseline="${repo_root}/tools/verification/conformance/expected-failures-extensions.yaml"
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/labby-mcp-conformance.XXXXXX")"
 rmcp_target_dir="${CARGO_TARGET_DIR:-${work_dir}/rust-sdk/target}"
 server_pid=""

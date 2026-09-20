@@ -63,7 +63,7 @@ The MCP pipeline is an exact seven-stage chain:
   -> 7. derived coverage report and gate result
 ```
 
-Committed intent and generated facts live under `conformance/`:
+Committed intent and generated facts live under `tools/verification/conformance/`:
 
 | Artifact | Ownership and mutation rule |
 | --- | --- |
@@ -78,9 +78,9 @@ test selection is fail-closed in `scripts/ci/mcp_oracle_runner.py`; Cargo
 oracles use exact nextest package, target, and test selectors. Extractor and
 reporter unit tests live beside the CI scripts.
 
-The separate [`verification/` Cargo workspace](../../verification/README.md)
+The separate [`tools/verification/` Cargo workspace](../../tools/verification/README.md)
 owns generic catalog, scenario,
-runner, report, and backend contracts. `verification/hosts/labby` owns Labby's
+runner, report, and backend contracts. `tools/verification/hosts/labby` owns Labby's
 model and adapters. Product wire, browser, provider, and actual-host tests stay
 in their product test suites; they must not be relabeled as model evidence.
 
@@ -190,7 +190,7 @@ directory as the `mcp-spec-compliance` artifact.
 ## Running the MCP gates
 
 Use the repository's MCP specification Just recipes with a checkout whose HEAD
-exactly matches `conformance/mcp-spec-sources.json`. They default to
+exactly matches `tools/verification/conformance/mcp-spec-sources.json`. They default to
 `target/mcp-spec-source`, or accept a checkout path as their final argument.
 The recipe list in the Justfile is the command source of truth:
 
@@ -295,8 +295,8 @@ The local recipe-to-evidence mapping is exact:
 
 | Recipe | Executes | Claim and prerequisites |
 | --- | --- | --- |
-| `just verify-t0` | `labby-verify t0 formal` | Model catalog and deterministic replay only. |
-| `just verify-t1` | `labby-verify t1 formal` | Bounded Stateright exploration only. |
+| `just verify-t0` | `labby-verify t0 tools/verification/formal` | Model catalog and deterministic replay only. |
+| `just verify-t1` | `labby-verify t1 tools/verification/formal` | Bounded Stateright exploration only. |
 | `just verify-c1` | Serial `lifecycle_conformance` product test | Real-process controlled lifecycle relation; use the workflow for retained CI provenance. |
 | `just verify-t2-shuttle` | `verify-loom` Shuttle lifecycle controls | Local bounded schedules; no external installation. |
 | `just verify-t2-kani` | Ignored `actual_kani` controls | Requires executable Kani 0.67.0 in `LABBY_KANI_DRIVER`; the recipe does not install it. |
@@ -419,7 +419,7 @@ semantics:
 | `just openai-auth-oracles OAI-AUTH-NNN` | one exact verification group | Execute that group's exact tests; unknown IDs fail. |
 
 The 21 `OAI-CLAUSE-*` entries in
-`conformance/openai-auth-normative.json` are source obligations. They map to
+`tools/verification/conformance/openai-auth-normative.json` are source obligations. They map to
 the 11 executable `OAI-AUTH-*` groups, so a clause ID is not accepted by the
 OpenAI execution recipe. The OpenAI shell runner supports listing and exact or
 complete execution, but has no separate validation-only mode; its matrix
@@ -432,7 +432,7 @@ provider's current metadata and registration still interoperate.
 
 ## Extending OpenAI host coverage
 
-`conformance/openai-auth-normative.json` is the reviewed OpenAI MCP connector
+`tools/verification/conformance/openai-auth-normative.json` is the reviewed OpenAI MCP connector
 **authorization** denominator. It is not a denominator for the complete OpenAI
 tools/connectors/MCP guide. Keep source excerpts short, pinned or dated, and map
 each applicable auth clause to exact verification IDs. Build a separate
@@ -473,7 +473,5 @@ Before accepting a new disposition or oracle, confirm:
 - [Transport](../surfaces/TRANSPORT.md) defines stdio and Streamable HTTP
   behavior.
 - [OAuth](../runtime/OAUTH.md) defines runtime authorization behavior.
-- [Verification workspace](../../verification/README.md) documents concrete
+- [Verification workspace](../../tools/verification/README.md) documents concrete
   model/replay commands and formats.
-- [Verification toolkit design](../plans/verification-toolkit/README.md)
-  preserves architecture decisions and qualification planning.

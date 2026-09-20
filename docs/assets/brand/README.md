@@ -9,8 +9,8 @@ Rendered brand assets for `labby`, plus the source needed to regenerate them.
 | `social-preview.template.html` | Source for the card above | `render-social-preview.sh` |
 | `render-social-preview.sh` | Renders the card to `.github/social-preview.png` | run by hand |
 
-The 460x460 avatar mark lives at `icon.svg` in the repository root, where the
-Unraid plugin and packaging metadata expect it.
+The 460x460 Community Applications avatar mark lives alongside these assets as
+`icon.svg`; the Unraid plugin and packaging metadata reference that stable path.
 
 ## The mark
 

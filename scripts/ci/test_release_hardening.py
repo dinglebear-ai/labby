@@ -621,7 +621,6 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
                 subprocess.run(["python3", str(ROOT / "scripts/ci/changed_paths.py"), "--event", "pull_request", "--changed-files", str(changed), "--output", str(output)], check=True, stdout=subprocess.DEVNULL)
                 routed = dict(line.split("=", 1) for line in output.read_text().splitlines())
                 self.assertEqual("true", routed["workflow"], path)
-                self.assertEqual("true", routed["docker"], path)
 
     def test_lifecycle_inventory_is_self_reconciling(self) -> None:
         checker = self.text("scripts/ci/check-lifecycle-scripts.sh")
@@ -1408,7 +1407,7 @@ if authenticated_action; then exit 93; fi
                  "apps/labby-desktop/src-tauri/tauri.conf.json"]
         # The verification workspace pins labby-model at the exact release
         # version; the patch script refuses to run without that manifest.
-        pinned = "verification/hosts/labby/Cargo.toml"
+        pinned = "tools/verification/hosts/labby/Cargo.toml"
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for path in paths + [pinned]:

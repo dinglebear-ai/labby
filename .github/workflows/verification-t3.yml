@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
-      CARGO_TARGET_DIR: verification/target
+      CARGO_TARGET_DIR: tools/verification/target
       LABBY_JAVA: java
       LABBY_TLA_TOOLS_JAR: verification-tools/tla2tools-1.7.4.jar
       LABBY_ALLOY_JAR: verification-tools/alloy-6.2.0.jar
@@ -58,7 +58,7 @@ jobs:
           set -euo pipefail
           git rev-parse HEAD > verification-evidence/source-revision.txt
           timeout --signal=TERM --kill-after=5s 2700s \
-            cargo test --manifest-path verification/Cargo.toml \
+            cargo test --manifest-path tools/verification/Cargo.toml \
               -p verify-tla -p verify-alloy --locked --test actual_tools \
               -- --ignored --test-threads=1 \
               2>&1 | tee verification-evidence/formal-qualification.txt

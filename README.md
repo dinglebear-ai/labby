@@ -326,9 +326,8 @@ checkout.
 
 The recommended self-hosted gateway substrate is an amd64 Ubuntu 26.04 Incus
 system container. Bare metal is the secondary supported shape for a dedicated
-gateway host or VM. Docker is retained for explicit development/image smoke,
-but it is not the recommended production boundary for Labby because stdio MCP
-servers and agent CLIs are installed and launched at runtime.
+gateway host or VM. Labby does not ship a Docker image or Compose deployment;
+stdio MCP servers and agent CLIs are installed and launched at runtime.
 
 ```bash
 scripts/incus-bootstrap.sh --version vX.Y.Z
@@ -427,7 +426,7 @@ without the `gateway` feature.
 
 ```bash
 labby doctor            # audit every configured service
-labby doctor system     # local env vars, Docker, disk, toolchain
+labby doctor system     # local env vars, disk, toolchain
 labby doctor auth       # auth/OAuth env vars, files, permissions
 labby doctor proxy      # zero-route stdio-proxy config/dependency preflight
 labby doctor proxy --app-url URL --mcp-url URL --route /path
@@ -623,17 +622,11 @@ labby setup host-service install --install-self -y # install current binary + st
 labby setup host-service restart --install-self -y # reinstall current binary + restart service
 labby setup host-service status --json # inspect the host Labby gateway service
 just host-sync        # repo dev shortcut: rebuild + install binary + restart host service
-just dev-container    # explicit Docker compatibility/prod-like smoke path
-just dev-container-debug # explicit Docker debug binary path
 just web-build        # cd apps/gateway-admin && pnpm build
 just web-watch        # rebuild web assets when frontend files change
 just run -- help      # cargo run --all-features -- <args>
 just chat-local       # local Labby admin UI workflow with browser auth disabled
-just dev-up           # start the explicit Docker compatibility stack
-just dev              # alias for just dev-container
-just dev-debug        # alias for just dev-container-debug
 just install          # build-release + symlink ~/.local/bin/labby
-just prod-run         # local prod-like image smoke on port 18765
 just mcp-token        # rotate LABBY_MCP_HTTP_TOKEN in .env
 ```
 
@@ -660,24 +653,7 @@ in-box with `labby setup --provision`. Bare metal uses the same provisioner and
 system unit when the host or VM is dedicated to Labby. The default service is
 `/etc/systemd/system/labby.service`, running as `User=labby`, `Group=labby`, with
 `ExecStart=/usr/local/bin/labby serve`. From a source checkout, `just host-sync`
-remains the rebuild-and-restart developer shortcut. Docker remains available
-for prod-like image smoke and adapter-container work, but it is no longer the
-recommended agent gateway runtime.
-
-### Dev Container
-
-The development Compose stack mirrors the production process controls: a
-read-only root filesystem, dropped capabilities, `no-new-privileges`, loopback
-port binding, bounded logs, and named volumes for durable state and data. It
-also bind-mounts the source repository read-only so locally built web assets are
-visible without rebuilding the image. The clean-checkout defaults mount the
-tracked, non-secret `config/config.example.toml` and `config/.env.example`.
-Set `LABBY_CONFIG_FILE` and `LABBY_ENV_FILE` to select local runtime files;
-Compose mounts both read-only at their canonical paths beneath `$LABBY_HOME`. Labby-owned runtime
-state remains writable in the surrounding `labby-home` named volume. Startup logs and the
-setup settings state report `/home/labby/.labby/config.toml` as the effective
-source. The image installs pinned Claude,
-Codex, and Gemini CLIs for stdio upstreams that invoke provider tools.
+remains the rebuild-and-restart developer shortcut.
 
 ### Releases
 
@@ -732,4 +708,4 @@ Start at [docs/README.md](./docs/README.md). High-value entrypoints:
 
 ## License
 
-Original Dinglebear-authored portions of this project are licensed under [AGPL-3.0-only](LICENSE). Separate commercial licensing is available for organizations that need terms outside the AGPL. Third-party material remains under its original license. See [LICENSING.md](https://github.com/dinglebear-ai/labby/blob/main/LICENSING.md).
+Original Dinglebear-authored portions of this project are licensed under [AGPL-3.0-only](LICENSE). The same file records the project-specific scope, third-party treatment, contribution policy, and availability of separately negotiated commercial terms.

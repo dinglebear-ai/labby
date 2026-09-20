@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      CARGO_TARGET_DIR: verification/target
+      CARGO_TARGET_DIR: tools/verification/target
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -24,10 +24,10 @@ jobs:
           tool: cargo-deny@0.20.2
       - name: Audit the executed isolated dependency graph
         timeout-minutes: 2
-        run: cargo deny --manifest-path verification/Cargo.toml --config verification/deny.toml --locked check
+        run: cargo deny --manifest-path tools/verification/Cargo.toml --config tools/verification/deny.toml --locked check
       - name: Build model host (separate build budget)
         timeout-minutes: 12
-        run: cargo build --manifest-path verification/Cargo.toml -p labby-verify --locked
+        run: cargo build --manifest-path tools/verification/Cargo.toml -p labby-verify --locked
       - name: Check bounded models (T1, less than five minutes)
         run: |
           set -euo pipefail
@@ -35,14 +35,14 @@ jobs:
           mkdir -p verification-evidence
           git rev-parse HEAD > verification-evidence/source-revision.txt
           printf '%s' "$source_status" > verification-evidence/source-dirty.txt
-          sha256sum verification/target/debug/labby-verify > verification-evidence/binary-sha256.txt
-          timeout --signal=TERM --kill-after=5s 290s verification/target/debug/labby-verify t1 formal > verification-evidence/model-checking.json
+          sha256sum tools/verification/target/debug/labby-verify > verification-evidence/binary-sha256.txt
+          timeout --signal=TERM --kill-after=5s 290s tools/verification/target/debug/labby-verify t1 tools/verification/formal > verification-evidence/model-checking.json
       - name: Check bounded Loom lifecycle schedules (T1, less than five minutes)
         timeout-minutes: 5
         run: |
           set -euo pipefail
           timeout --signal=TERM --kill-after=5s 290s \
-            cargo test --manifest-path verification/Cargo.toml -p verify-loom \
+            cargo test --manifest-path tools/verification/Cargo.toml -p verify-loom \
               --locked --test lifecycle loom_ -- --test-threads=1 \
               2>&1 | tee verification-evidence/loom-qualification.txt
       - name: Render retained evidence without changing the search result
@@ -50,7 +50,7 @@ jobs:
         run: |
           set -euo pipefail
           for format in json text markdown html; do
-            verification/target/debug/labby-verify report-t1 verification-evidence/model-checking.json verification-evidence/source-revision.txt verification-evidence/source-dirty.txt verification-evidence/binary-sha256.txt "$format" dinglebear-ai/labby > "verification-evidence/report.$format"
+            tools/verification/target/debug/labby-verify report-t1 verification-evidence/model-checking.json verification-evidence/source-revision.txt verification-evidence/source-dirty.txt verification-evidence/binary-sha256.txt "$format" dinglebear-ai/labby > "verification-evidence/report.$format"
           done
           cat verification-evidence/report.markdown >> "$GITHUB_STEP_SUMMARY"
       - name: Preserve bounded model evidence

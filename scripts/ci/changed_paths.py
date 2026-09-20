@@ -22,7 +22,7 @@ OUTPUT_KEYS = [
     "browser_extension",
     "desktop",
     "npm",
-    "docker",
+    "incus",
     "security",
     "javascript_advisories",
     "release",
@@ -50,10 +50,10 @@ def lifecycle_paths() -> set[str]:
 def is_auth_conformance_input(path: str) -> bool:
     """Inputs whose changes must execute the dated auth conformance job."""
     return path in {
-        "conformance/auth-requirements.json",
-        "conformance/mcp-auth-coverage-manifest.json",
-        "conformance/mcp-auth-normative.json",
-        "conformance/openai-auth-normative.json",
+        "tools/verification/conformance/auth-requirements.json",
+        "tools/verification/conformance/mcp-auth-coverage-manifest.json",
+        "tools/verification/conformance/mcp-auth-normative.json",
+        "tools/verification/conformance/openai-auth-normative.json",
         "scripts/ci/test_auth_spec_matrix.py",
     } or starts(
         path,
@@ -63,7 +63,7 @@ def is_auth_conformance_input(path: str) -> bool:
         "scripts/ci/refresh_openai_auth_",
         "scripts/ci/publish_mcp_auth_",
         "scripts/ci/auth_backup_restore_",
-        "conformance/mcp-spec-",
+        "tools/verification/conformance/mcp-spec-",
         "scripts/ci/mcp_spec_",
         "scripts/ci/mcp_oracle_",
         "scripts/ci/extract_mcp_spec_",
@@ -111,15 +111,15 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
         or p
         in {
             ".github/labeler.yml",
-            "conformance/expected-failures-dated.yaml",
-            "conformance/expected-failures-extensions.yaml",
+            "tools/verification/conformance/expected-failures-dated.yaml",
+            "tools/verification/conformance/expected-failures-extensions.yaml",
             "scripts/ci/changed_paths.py",
             "scripts/ci/mcp-conformance.sh",
             "scripts/ci/mcp_upstream_drift.py",
             "scripts/ci/test_mcp_upstream_drift.py",
-            "conformance/upstream-baseline.json",
-            "conformance/auth-requirements.json",
-            "conformance/mcp-auth-normative.json",
+            "tools/verification/conformance/upstream-baseline.json",
+            "tools/verification/conformance/auth-requirements.json",
+            "tools/verification/conformance/mcp-auth-normative.json",
             "scripts/ci/test_auth_spec_matrix.py",
             "scripts/ci/refresh_mcp_auth_denominator.py",
             "scripts/ci/auth_backup_restore_drill.py",
@@ -195,8 +195,8 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             "crates/",
             "tests/",
             ".cargo/",
-            "verification/crates/verify-core/",
-            "verification/crates/verify-scenario/",
+            "tools/verification/crates/verify-core/",
+            "tools/verification/crates/verify-scenario/",
         )
     )
     rust_manifests = any_match(
@@ -210,19 +210,19 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             "build.rs",
             "clippy.toml",
             "deny.toml",
-            "verification/Cargo.toml",
+            "tools/verification/Cargo.toml",
             ".config/nextest.toml",
         },
     )
-    # `verification/` is a separate Cargo workspace and deliberately matches
+    # `tools/verification/` is a separate Cargo workspace and deliberately matches
     # none of the `rust_sources` prefixes above: a product change should not
     # build the toolkit, and a toolkit change should not run the full product
     # Rust matrix. It therefore needs its own routing key — without one, a
-    # change confined to verification/ would route to nothing at all and CI
+    # change confined to tools/verification/ would route to nothing at all and CI
     # would report green having compiled and tested none of it.
     verification = any_match(
         paths,
-        lambda p: starts(p, "verification/", ".cargo/")
+        lambda p: starts(p, "tools/verification/", ".cargo/")
         or p in {"rust-toolchain.toml", "clippy.toml", "Justfile"},
     )
     rust_compile = rust_sources or rust_manifests
@@ -238,21 +238,19 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
     security = security or rust_sources
     javascript_advisories = any_match(paths, is_js_dependency_input)
     docs_check = docs_check or rust_sources
-    docker_inputs = any_match(
+    incus_inputs = any_match(
         paths,
-        lambda p: starts(p, "config/", "scripts/")
-        or p in lifecycle_paths()
-        or p
-        in {
-            ".dockerignore",
-            ".env.example",
-            "docker-compose.yml",
-            "docker-compose.yaml",
-            "docker-compose.prod.yml",
-            "docker-compose.prod.yaml",
+        lambda p: starts(p, "config/incus/")
+        or p in {
+            "scripts/incus-bootstrap.sh",
+            "scripts/check-incus-ssh",
+            "scripts/ci/build-incus-image.sh",
+            "scripts/ci/smoke-incus-image.sh",
+            "scripts/ci/test-incus-contract.py",
+            "scripts/ci/validate-supply-manifest.py",
         },
     )
-    docker = rust_compile or web or docker_inputs
+    incus = rust_compile or web or incus_inputs
     release = rust_compile or web or any_match(paths, lambda p: starts(p, "release/"))
     unraid = any_match(
         paths,
@@ -275,7 +273,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
         "browser_extension": browser_extension,
         "desktop": desktop,
         "npm": npm,
-        "docker": docker,
+        "incus": incus,
         "security": security,
         "javascript_advisories": javascript_advisories,
         "release": release,

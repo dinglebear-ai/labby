@@ -60,9 +60,9 @@ a fresh Labby binary, and then runs:
 6. the complete client extension suite
 
 Reports are written under `target/mcp-conformance/`. Known dated fixture gaps
-use the strict `conformance/expected-failures-dated.yaml` baseline, while
+use the strict `tools/verification/conformance/expected-failures-dated.yaml` baseline, while
 experimental extension gaps use
-`conformance/expected-failures-extensions.yaml`. An unexpected failure or an
+`tools/verification/conformance/expected-failures-extensions.yaml`. An unexpected failure or an
 expected failure that starts passing both fail CI.
 
 ## Labby-Native Multi-Hop Matrix
@@ -210,7 +210,7 @@ fixture harness in the same CI job.
 
 ### Authorization requirement denominator
 
-[`conformance/auth-requirements.json`](../../conformance/auth-requirements.json)
+[`tools/verification/conformance/auth-requirements.json`](../../tools/verification/conformance/auth-requirements.json)
 is the concise requirement-family summary for MCP `2026-07-28` authorization
 and the OpenAI plugin authentication requirements used by ChatGPT. The fixed,
 exhaustive denominators are maintained separately in the MCP and OpenAI
@@ -237,7 +237,7 @@ inventoried route, registered service, or action therefore fails CI until its
 authentication exposure is explicitly classified.
 
 The independently generated
-[`conformance/mcp-auth-normative.json`](../../conformance/mcp-auth-normative.json)
+[`tools/verification/conformance/mcp-auth-normative.json`](../../tools/verification/conformance/mcp-auth-normative.json)
 preserves every normative-keyword occurrence in the official Authorization,
 Authorization Server Discovery, Client Registration, and Authorization
 Security Considerations Markdown pages. At the 2026-08-30 refresh this is 132
@@ -258,7 +258,7 @@ not-applicable role branches. Aggregate rows may not also claim direct tests,
 and CI rejects unknown, duplicate, self-referential, cyclic, or unresolved
 subordinate mappings.
 `scripts/ci/publish_mcp_auth_disposition.py` reproducibly publishes the reviewed
-row mappings from `conformance/mcp-auth-coverage-manifest.json` without changing
+row mappings from `tools/verification/conformance/mcp-auth-coverage-manifest.json` without changing
 the frozen primary-source denominator. Every manifest entry binds the extracted
 source-clause digest, asserted obligation, executable assertions, and evidence;
 the publisher contains no numeric-range promotion logic.
@@ -298,7 +298,7 @@ and review the Labby-native matrix plus dated and extension baselines on every
 update.
 
 The separate `MCP upstream drift` workflow compares
-`conformance/upstream-baseline.json` with the current specification branch and
+`tools/verification/conformance/upstream-baseline.json` with the current specification branch and
 latest rmcp release. Detected drift opens or updates one stable issue; advance
 the baseline only in the PR that adopts and verifies the upstream change.
 

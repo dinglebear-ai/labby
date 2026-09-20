@@ -8,7 +8,7 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-MATRIX = ROOT / "conformance/openai-auth-normative.json"
+MATRIX = ROOT / "tools/verification/conformance/openai-auth-normative.json"
 
 
 def main() -> int:
