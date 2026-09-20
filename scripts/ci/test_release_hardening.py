@@ -845,60 +845,77 @@ class ReleaseHelperTests(unittest.TestCase):
     def test_release_incident_is_idempotently_created_updated_and_closed(self) -> None:
         script = ROOT / "scripts/ci/manage-release-incident.sh"
         script_text = script.read_text()
-        exact_filter = (
-            '.[] | select((has(\"pull_request\") | not) and '
-            '.title == \"Release publication is incomplete\") | .number'
-        )
-        self.assertIn(f"--jq '{exact_filter}'", script_text)
         self.assertNotIn("gh issue ", script_text)
         self.assertNotIn("| head", script_text)
 
+        exact_issue = {
+            "number": 17,
+            "title": "Release publication is incomplete",
+        }
+        wrong_title_issue = {
+            "number": 11,
+            "title": "Release publication is incomplete - old",
+        }
+        pull_request = {
+            "number": 19,
+            "title": "Release publication is incomplete",
+            "pull_request": {"url": "https://github.test/acme/labby/pull/19"},
+        }
         cases = (
-            ("create", "false", "",
-             ("api --method POST repos/acme/labby/issues -f title=Release publication is incomplete",),
-             ("api --method PATCH repos/acme/labby/issues/",)),
-            ("update-first-exact-match", "false", "17\n18\n",
-             ("api --method PATCH repos/acme/labby/issues/17",),
-             ("repos/acme/labby/issues/18", "api --method POST repos/acme/labby/issues -f title=")),
-            ("close", "true", "17\n",
-             ("api --method POST repos/acme/labby/issues/17/comments",
-              "api --method PATCH repos/acme/labby/issues/17 -f state=closed"),
-             ("api --method POST repos/acme/labby/issues -f title=",)),
-            ("complete-without-open-incident", "true", "", (),
-             ("api --method POST", "api --method PATCH")),
+            (
+                "create",
+                "false",
+                [[wrong_title_issue]],
+                ("api --method POST repos/acme/labby/issues -f title=Release publication is incomplete",),
+                ("repos/acme/labby/issues/11",),
+            ),
+            (
+                "update-exact-title-on-later-page",
+                "false",
+                [[wrong_title_issue, pull_request], [exact_issue]],
+                ("api --method PATCH repos/acme/labby/issues/17 -f body=",),
+                ("api --method POST repos/acme/labby/issues -f title=", "repos/acme/labby/issues/11", "repos/acme/labby/issues/19"),
+            ),
+            (
+                "close",
+                "true",
+                [[wrong_title_issue, exact_issue]],
+                (
+                    "api --method POST repos/acme/labby/issues/17/comments -f body=All release distributions now match the immutable manifest.",
+                    "api --method PATCH repos/acme/labby/issues/17 -f state=closed -f state_reason=completed",
+                ),
+                ("repos/acme/labby/issues/11",),
+            ),
+            (
+                "complete-without-open-incident",
+                "true",
+                [[wrong_title_issue]],
+                (),
+                ("--method POST", "--method PATCH"),
+            ),
         )
 
-        for name, complete, issue_numbers, expected, forbidden in cases:
+        for name, complete, issues, expected, forbidden in cases:
             with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
                 work = Path(tmp)
                 log = work / "calls"
                 gh = work / "gh"
                 gh.write_text(
-                    "#!/usr/bin/env bash\n"
-                    "set -euo pipefail\n"
+                    "#!/bin/sh\n"
+                    "set -eu\n"
                     "printf '%s\\n' \"$*\" >> \"$CALL_LOG\"\n"
-                    "[[ $1 == api ]] || { printf 'non-REST gh invocation: %s\\n' \"$*\" >&2; exit 90; }\n"
-                    "if [[ $* == *'repos/acme/labby/issues?state=open&per_page=100'* ]]; then\n"
-                    "  expected='.[] | select((has(\"pull_request\") | not) and .title == \"Release publication is incomplete\") | .number'\n"
-                    "  previous=''\n"
-                    "  for arg in \"$@\"; do\n"
-                    "    if [[ $previous == --jq ]]; then\n"
-                    "      [[ $arg == \"$expected\" ]] || { printf 'unexpected jq filter: %s\\n' \"$arg\" >&2; exit 91; }\n"
-                    "      printf '%s' \"$ISSUE_NUMBERS\"\n"
-                    "      exit 0\n"
-                    "    fi\n"
-                    "    previous=$arg\n"
-                    "  done\n"
-                    "  printf 'missing --jq exact-title filter\\n' >&2\n"
-                    "  exit 92\n"
-                    "fi\n"
+                    "if [ \"$1\" != api ]; then exit 90; fi\n"
+                    "case \"$*\" in\n"
+                    "  *'--paginate --slurp repos/acme/labby/issues?state=open&per_page=100'*) printf '%s\\n' \"$ISSUES_JSON\";;\n"
+                    "  *) printf '%s\\n' '{}';;\n"
+                    "esac\n"
                 )
                 gh.chmod(0o755)
                 (work / "reconciliation.json").write_text('{"complete":false}')
                 env = os.environ | {
                     "PATH": f"{work}:{os.environ['PATH']}",
                     "CALL_LOG": str(log),
-                    "ISSUE_NUMBERS": issue_numbers,
+                    "ISSUES_JSON": json.dumps(issues),
                     "GITHUB_SERVER_URL": "https://github.test",
                     "GITHUB_REPOSITORY": "acme/labby",
                     "GITHUB_RUN_ID": "1",
@@ -909,11 +926,18 @@ class ReleaseHelperTests(unittest.TestCase):
                 )
                 self.assertEqual(0, result.returncode, result.stderr)
                 calls = log.read_text()
-                self.assertIn("api --paginate repos/acme/labby/issues?state=open&per_page=100", calls)
+                self.assertIn(
+                    "api --paginate --slurp repos/acme/labby/issues?state=open&per_page=100",
+                    calls,
+                )
                 for fragment in expected:
                     self.assertIn(fragment, calls)
                 for fragment in forbidden:
                     self.assertNotIn(fragment, calls)
+                self.assertNotIn("issue list", calls)
+                self.assertNotIn("issue edit", calls)
+                self.assertNotIn("issue close", calls)
+                self.assertNotIn("issue create", calls)
 
     def test_cache_boundary_denies_pr_credentials_and_partial_capabilities(self) -> None:
         script = str(ROOT / "scripts/ci/check-cache-boundary.py")
