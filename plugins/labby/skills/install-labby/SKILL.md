@@ -1,11 +1,13 @@
 ---
 name: install-labby
-description: Use when installing, configuring, repairing, or validating Labby, including auth, deployment, public exposure, and agent MCP setup.
+description: Use when performing a new Labby installation or first-run onboarding, including initial auth, deployment, public exposure, agent MCP setup, and verification. For an established installation, upgrades, diagnosis, repair, rollback, or routine operation, use $using-labby instead.
 ---
 
 # Install Labby
 
 Use Labby's CLI/MCP actions as the mutation authority; preserve existing state and prove the live runtime.
+
+If inspection shows an established Labby installation, stop this workflow and use `$using-labby`. Do not turn an install request into an unbounded repair or upgrade.
 
 ## Rules
 
@@ -26,4 +28,4 @@ Use Labby's CLI/MCP actions as the mutation authority; preserve existing state a
 7. With permission, use [Agent setup](references/agents.md), show proposed changes, configure approved clients, reload, and re-test.
 8. Report version, deployment/service, URLs, auth topology without secrets, state paths, evidence, and deferred work.
 
-On failure, isolate the failing layer, make the smallest reversible fix, and rerun the same oracle.
+If first-run setup fails, isolate the failing installation layer, make the smallest reversible fix, and rerun the same oracle. Route post-install operation, upgrades, diagnosis, repair, and rollback to `$using-labby`.

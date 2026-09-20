@@ -18,7 +18,7 @@ while [[ $# -gt 0 ]]; do
       if [[ $2 == Mcp-Method:* ]]; then method=${2#Mcp-Method: }; fi
       shift 2
       ;;
-    --write-out|--config|--data) shift 2 ;;
+    --write-out|--config|--data|--connect-timeout|--max-time) shift 2 ;;
     *) shift ;;
   esac
 done
@@ -59,5 +59,19 @@ if PATH="$fixture_dir:$PATH" LABBY_MCP_TOKEN=$'unsafe\nheader' \
   exit 1
 fi
 grep -F 'LABBY_MCP_TOKEN must be a single line' "$fixture_dir/err" >/dev/null
+
+if PATH="$fixture_dir:$PATH" LABBY_MCP_CONNECT_TIMEOUT=0 \
+  "$verifier" http://127.0.0.1:8765/mcp >"$fixture_dir/out" 2>"$fixture_dir/err"; then
+  echo "invalid connect timeout unexpectedly passed" >&2
+  exit 1
+fi
+grep -F 'LABBY_MCP_CONNECT_TIMEOUT must be a positive integer' "$fixture_dir/err" >/dev/null
+
+if PATH="$fixture_dir:$PATH" LABBY_MCP_MAX_TIME=forever \
+  "$verifier" http://127.0.0.1:8765/mcp >"$fixture_dir/out" 2>"$fixture_dir/err"; then
+  echo "invalid overall timeout unexpectedly passed" >&2
+  exit 1
+fi
+grep -F 'LABBY_MCP_MAX_TIME must be a positive integer' "$fixture_dir/err" >/dev/null
 
 echo 'verify-labby-mcp tests passed'

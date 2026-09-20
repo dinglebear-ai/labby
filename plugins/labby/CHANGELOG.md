@@ -21,6 +21,9 @@
 - Replaced the install Skill's mutable third-party package-runner verification with a
   checked-in, protocol-explicit HTTP MCP verifier that discovers the live
   `gateway` tool and executes the read-only `gateway.help` action.
+- Narrowed the installer trigger to new installations and first-run onboarding,
+  routed established operation and recovery to `using-labby`, and bounded MCP
+  verification with explicit connection and total request timeouts.
 - The distributable plugin now defaults to Labby's ordinary loopback endpoint,
   `http://127.0.0.1:8765`, rather than a private deployment-specific proxy.
 - Documented the bundled MCP entry as bearer-specific and added the explicit

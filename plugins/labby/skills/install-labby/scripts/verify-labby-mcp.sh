@@ -12,6 +12,8 @@ Environment:
   LABBY_MCP_PROTOCOL_VERSION  MCP protocol version (default: 2025-06-18)
   LABBY_EXPECTED_VERSION      Optional exact version expected from `labby --version`
   LABBY_BIN                   Labby executable to inspect (default: labby)
+  LABBY_MCP_CONNECT_TIMEOUT   Connection timeout in seconds (default: 10)
+  LABBY_MCP_MAX_TIME          Total request timeout in seconds (default: 30)
 EOF
 }
 
@@ -35,6 +37,8 @@ done
 mcp_url=$1
 protocol_version=${LABBY_MCP_PROTOCOL_VERSION:-2025-06-18}
 labby_bin=${LABBY_BIN:-labby}
+connect_timeout=${LABBY_MCP_CONNECT_TIMEOUT:-10}
+max_time=${LABBY_MCP_MAX_TIME:-30}
 
 if [[ "$mcp_url" != http://* && "$mcp_url" != https://* ]]; then
   echo "MCP URL must use http:// or https://" >&2
@@ -45,6 +49,9 @@ if [[ "$protocol_version" == *$'\n'* || "$protocol_version" == *$'\r'* ]]; then
   echo "MCP protocol version must be a single line" >&2
   exit 64
 fi
+
+[[ "$connect_timeout" =~ ^[1-9][0-9]*$ ]] || { echo "LABBY_MCP_CONNECT_TIMEOUT must be a positive integer" >&2; exit 64; }
+[[ "$max_time" =~ ^[1-9][0-9]*$ ]] || { echo "LABBY_MCP_MAX_TIME must be a positive integer" >&2; exit 64; }
 
 if [[ ${LABBY_MCP_TOKEN:-} == *$'\n'* || ${LABBY_MCP_TOKEN:-} == *$'\r'* ]]; then
   echo "LABBY_MCP_TOKEN must be a single line" >&2
@@ -89,6 +96,8 @@ mcp_request() {
   local status
 
   status=$(curl --config "$curl_config" \
+    --connect-timeout "$connect_timeout" \
+    --max-time "$max_time" \
     --output "$response_file" \
     --write-out '%{http_code}' \
     --header "Mcp-Method: ${method}" \
