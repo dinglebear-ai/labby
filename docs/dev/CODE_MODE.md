@@ -1,7 +1,7 @@
 ---
 title: "Code Mode"
 created: "2026-07-30"
-updated: "2026-09-19"
+updated: "2026-09-20"
 ---
 
 # Code Mode
@@ -84,11 +84,17 @@ Inside the sandbox:
 - `await codemode.getPrompt("prompt::<upstream>::<name>", args)` resolves an
   exposed MCP Prompt through the same exposure and OAuth-subject policy as the
   native prompt surface.
-- `await codemode.listSkills()` lists caller-visible Agent Skills from the
-  canonical Skills registry.
+- `await codemode.listSkills()` lists the bounded, eagerly projected caller-visible
+  Agent Skills catalog.
+- `await codemode.search({ query: "rust", kinds: ["skill"] })` additionally
+  queries compatible lazy Skill providers on demand and merges those metadata
+  hits into the current sandbox discovery index without preloading their full
+  catalogs. Depot-compatible providers are detected by the
+  `depot.skills.search` + `depot.skills.load` + `depot.skills.read` tool trio.
 - `await codemode.getSkill("skill://...")` fetches one authorized Skill
   entry, and `await codemode.readSkill("skill://...")` reads its verified
-  manifest-bound content.
+  content. Canonical/local Skills win first; missing URIs fall back through the
+  same scoped lazy provider that surfaced them.
 
 ### Capability catalog
 
@@ -103,7 +109,12 @@ not a tool-specific descriptor. The stable catalog vocabulary is:
 - `agent`
 
 The live catalog currently projects Tools, Snippets, exposed MCP Resources,
-exposed MCP Prompts, and caller-visible Agent Skills. Agent entries remain
+exposed MCP Prompts, and caller-visible Agent Skills. Large remote Skill
+catalogs do not need to be projected in full: compatible providers participate
+in explicit Skill-filtered searches lazily, and only their bounded matching
+metadata is merged into that execution's discovery index. Unfiltered searches
+stay local, so arbitrary search text is not sent to remote Skill providers
+unless the caller explicitly includes the `skill` kind. Agent entries remain
 reserved for a later adapter.
 
 Resource, Prompt, and Skill descriptors are metadata-only catalog entries: they

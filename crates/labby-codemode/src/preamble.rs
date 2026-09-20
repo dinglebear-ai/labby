@@ -215,6 +215,28 @@ codemode.search = async function(input) {{
   var __codemodeNoMatchHint = "No matches. Broaden the query or try synonyms.";
   if (!tokens.length) return {{ results: [], total: 0, truncated: false, hint: __codemodeNoMatchHint }};
 
+  // Lazy Skill providers are queried on demand instead of being projected in
+  // full into every sandbox preamble. Merge returned metadata into this run's
+  // discovery index so search + describe behave exactly like eager entries.
+  var wantsSkills = hasKindFilter && !!kindFilter["skill"];
+  if (wantsSkills) {{
+    try {{
+      var lazyResponse = await callTool("__lab_internal::search_skills", {{ query: query, limit: limit }});
+      var lazyEntries = (lazyResponse && Array.isArray(lazyResponse.entries)) ? lazyResponse.entries : [];
+      var knownIds = Object.create(null);
+      for (var ki = 0; ki < __codemodeDiscovery.length; ki++) knownIds[__codemodeDiscovery[ki].id] = true;
+      for (var li = 0; li < lazyEntries.length; li++) {{
+        var lazyEntry = lazyEntries[li];
+        if (!lazyEntry || lazyEntry.kind !== "skill" || typeof lazyEntry.id !== "string" || knownIds[lazyEntry.id]) continue;
+        knownIds[lazyEntry.id] = true;
+        __codemodeDiscovery.push(lazyEntry);
+      }}
+    }} catch (e) {{
+      // Remote discovery is additive and fail-open. Eager/local catalog search
+      // remains available when a lazy provider is slow or unavailable.
+    }}
+  }}
+
   // --- lexical scoring (unchanged algorithm) ---
   var lexicalById = {{}};
   var scored = [];

@@ -539,6 +539,36 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                     .await
             }
             "list_skills" => host.list_skills(caller, surface, scope).await,
+            "search_skills" => {
+                let query = params
+                    .get("query")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| ToolError::MissingParam {
+                        message: "search_skills requires a non-empty `query`".to_string(),
+                        param: "query".to_string(),
+                    })?;
+                if query.len() > MAX_SEMANTIC_QUERY_BYTES {
+                    return Err(ToolError::InvalidParam {
+                        message: format!(
+                            "Skill search query exceeds max length {MAX_SEMANTIC_QUERY_BYTES} bytes"
+                        ),
+                        param: "query".to_string(),
+                    });
+                }
+                let limit = params
+                    .get("limit")
+                    .and_then(Value::as_u64)
+                    .map(|value| value.clamp(1, 50) as usize)
+                    .unwrap_or(50);
+                let entries = host
+                    .search_skills(query.to_string(), limit, caller, surface, scope)
+                    .await?
+                    .into_iter()
+                    .map(|entry| CodeModeDiscoveryEntry::from_catalog(&entry))
+                    .collect::<Vec<_>>();
+                Ok(serde_json::json!({ "entries": entries }))
+            }
             "get_skill" => {
                 let uri = params
                     .get("uri")
@@ -1269,6 +1299,26 @@ mod tests {
             }))
         }
 
+        async fn search_skills(
+            &self,
+            query: String,
+            limit: usize,
+            _caller: &CodeModeCaller,
+            _surface: CodeModeSurface,
+            _scope: &ToolScope,
+        ) -> Result<Vec<CatalogDescriptor>, ToolError> {
+            let uri = "skill://remote/fixture/SKILL.md";
+            let entry = CatalogDescriptor::metadata(
+                CodeModeCatalogKind::Skill,
+                "remote",
+                &format!("skill::{uri}"),
+                "fixture-remote",
+                &format!("remote Skill matching {query}"),
+                vec![format!("uri:{uri}"), format!("limit:{limit}")],
+            );
+            Ok(vec![entry])
+        }
+
         async fn get_skill(
             &self,
             uri: String,
@@ -1508,6 +1558,45 @@ mod tests {
             .expect("fixture Skill URI")
             .to_string();
         assert_eq!(uri, "skill://labby/fixture");
+
+        let lazy = broker
+            .call_tool_id(
+                "__lab_internal::search_skills",
+                json!({ "query": "remote fixture", "limit": 7 }),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &scope,
+                ExecCtx::none(),
+            )
+            .await
+            .expect("search_skills must reach the host with bounded inputs");
+        assert_eq!(lazy["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(lazy["entries"][0]["kind"], "skill");
+        assert_eq!(lazy["entries"][0]["name"], "fixture-remote");
+        assert_eq!(lazy["entries"][0]["namespace"], "remote");
+        assert_eq!(
+            lazy["entries"][0]["id"],
+            "skill::skill://remote/fixture/SKILL.md"
+        );
+        assert!(
+            lazy["entries"][0]["tags"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("limit:7"))
+        );
+
+        let invalid_lazy = broker
+            .call_tool_id(
+                "__lab_internal::search_skills",
+                json!({ "query": "   " }),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &scope,
+                ExecCtx::none(),
+            )
+            .await
+            .expect_err("blank lazy Skill query must fail before host dispatch");
+        assert_eq!(invalid_lazy.kind(), "missing_param");
 
         let skill = broker
             .call_tool_id(
