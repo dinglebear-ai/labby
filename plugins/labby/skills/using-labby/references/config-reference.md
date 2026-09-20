@@ -54,6 +54,6 @@ does not retain raw results, and is not redaction.
 ## Config Mutation
 
 Use setup actions and the typed gateway commands instead of direct `.env`
-edits when possible. For upstream MCP servers, use `labby gateway add`, `labby gateway update`,
-`labby gateway discover`, `labby gateway import`, and `labby gateway reload`.
+edits when possible. For upstream MCP servers, use `labby server add`, `labby server set`,
+`labby server discover`, `labby server import`, and `labby gateway reload`.
 For operational gateway examples, read `gateway-operations.md`.

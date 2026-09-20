@@ -87,7 +87,7 @@ Live tool contracts reverified before this update:
 Run with:
 
 ```bash
-labby gateway code exec --json --code "$(awk '/^```js$/{flag=1;next}/^```$/{if(flag){exit}}flag' docs/snippets/repo-context-triage.md)"
+labby code run --json --code "$(awk '/^```js$/{flag=1;next}/^```$/{if(flag){exit}}flag' docs/snippets/repo-context-triage.md)"
 ```
 
 ```js

@@ -23,6 +23,22 @@ pub(super) fn run_gateway_code(
     // nested broker/catalog call chain executes.
     Box::pin(async move {
         match args.command {
+            GatewayCodeCommand::Search { query, limit } => {
+                let source = format!(
+                    "async () => await codemode.search({})",
+                    serde_json::to_string(&json!({ "query": query, "limit": limit }))?
+                );
+                let response = execute_code_mode(manager, config, &source).await?;
+                crate::output::print(&response, format)?;
+            }
+            GatewayCodeCommand::Describe { path } => {
+                let source = format!(
+                    "async () => await codemode.describe({})",
+                    serde_json::to_string(&path)?
+                );
+                let response = execute_code_mode(manager, config, &source).await?;
+                crate::output::print(&response, format)?;
+            }
             GatewayCodeCommand::Status => {
                 let value = dispatch_gateway_action(
                     manager,
@@ -98,44 +114,66 @@ fn execute_code_mode(
     code: &str,
 ) -> impl Future<Output = Result<serde_json::Value>> {
     Box::pin(async move {
-        if let Some(live) = remote::detect(config, "cli").await? {
-            match live.call_codemode_tool(code).await {
-                Ok(value) => return Ok(value),
-                Err(error) => {
-                    if !live.allows_local_fallback() {
-                        return Err(anyhow::Error::new(error).context(format!(
-                            "Code Mode execution through configured Labby server ({}) failed",
-                            live.source()
-                        )));
-                    }
-                    tracing::warn!(
-                        surface = "cli",
-                        service = "gateway",
-                        action = "gateway.code.exec",
-                        error = %error,
-                        "remote code mode execution failed, falling back to local broker"
-                    );
-                }
-            }
-        }
-
-        let manager = manager.get().await?;
-        let broker = CodeModeBroker::new(Some(manager.as_ref()));
-        let response = broker
-            .execute(
-                code,
-                CodeModeCaller::TrustedLocal,
-                CodeModeSurface::Cli,
-                manager.code_mode_config().await,
-                crate::dispatch::gateway::code_mode::ToolScope::default(),
-                // No durable-run execution id on the local CLI broker path: journaling
-                // is driven through the MCP `codemode` tool where an execution id +
-                // owner context exist. `None` keeps `record_step` write-free here.
-                None,
-            )
-            .await?;
-        Ok(serde_json::to_value(response)?)
+        let selected = remote::detect(config, "cli").await?;
+        let remote_call = selected.map(|live| async move {
+            let source = live.source();
+            live.with_team_id(manager.team_id().map(str::to_owned))
+                .call_codemode_tool(code).await
+                .map_err(|error| anyhow::Error::new(error).context(format!(
+                    "Code Mode execution through the selected Labby server ({source}) failed. The operation was not retried locally. Side effects may already have occurred; inspect gateway logs before retrying."
+                )))
+        });
+        execute_selected(remote_call, || async move {
+            tracing::debug!(
+                surface = "cli",
+                service = "gateway",
+                action = "gateway.code.exec",
+                target_mode = "local",
+                "no daemon selected; executing in the local broker"
+            );
+            let manager = manager.get().await?;
+            let broker = CodeModeBroker::new(Some(manager.as_ref()));
+            let response = broker
+                .execute(
+                    code,
+                    CodeModeCaller::TrustedLocal,
+                    CodeModeSurface::Cli,
+                    manager.code_mode_config().await,
+                    crate::dispatch::gateway::code_mode::ToolScope::default(),
+                    None,
+                )
+                .await?;
+            Ok(serde_json::to_value(response)?)
+        })
+        .await
     })
+}
+
+/// Target selection is final once execution starts. A lost response must never
+/// replay a possibly committed operation through another broker.
+fn execute_selected<R, L, F>(
+    remote: Option<R>,
+    local: F,
+) -> impl Future<Output = Result<serde_json::Value>>
+where
+    R: Future<Output = Result<serde_json::Value>>,
+    L: Future<Output = Result<serde_json::Value>>,
+    F: FnOnce() -> L,
+{
+    Box::pin(async move {
+        match remote {
+            Some(call) => call.await,
+            None => Box::pin(local()).await,
+        }
+    })
+}
+
+fn source_error(message: String) -> anyhow::Error {
+    crate::dispatch::error::ToolError::Sdk {
+        sdk_kind: "invalid_param".to_string(),
+        message: format!("{message} No Code Mode operation was executed."),
+    }
+    .into()
 }
 
 fn read_code_mode_source(
@@ -143,30 +181,64 @@ fn read_code_mode_source(
     file: Option<std::path::PathBuf>,
     max_source_bytes: u64,
 ) -> Result<String> {
+    use std::io::{IsTerminal as _, Read as _};
+    let too_large = || {
+        source_error(format!(
+            "Code Mode source exceeds the {max_source_bytes}-byte allocation limit. Use a smaller source file."
+        ))
+    };
     match (code, file) {
         (Some(code), None) => {
-            // Check the inline string length before any further buffering.
             if code.len() as u64 > max_source_bytes {
-                anyhow::bail!("Code Mode source exceeds {max_source_bytes} bytes");
+                return Err(too_large());
             }
             Ok(code)
         }
         (None, Some(path)) => {
-            let metadata = std::fs::metadata(&path)?;
-            if metadata.len() > max_source_bytes {
-                anyhow::bail!("Code Mode source file exceeds {max_source_bytes} bytes");
+            let mut bytes = Vec::new();
+            if path.as_os_str() == "-" {
+                let stdin = std::io::stdin();
+                if stdin.is_terminal() {
+                    return Err(source_error("--file - requires redirected standard input. Pipe a source file, or pass --file PATH.".to_string()));
+                }
+                stdin
+                    .lock()
+                    .take(max_source_bytes.saturating_add(1))
+                    .read_to_end(&mut bytes)
+                    .map_err(|error| {
+                        source_error(format!("Cannot read Code Mode source from stdin: {error}."))
+                    })?;
+            } else {
+                let file = std::fs::File::open(&path).map_err(|error| source_error(format!(
+                    "Cannot open Code Mode source file `{}`: {error}. Check --file and its permissions.", path.display())))?;
+                if file
+                    .metadata()
+                    .map_err(|error| {
+                        source_error(format!("Cannot inspect Code Mode source file: {error}."))
+                    })?
+                    .len()
+                    > max_source_bytes
+                {
+                    return Err(too_large());
+                }
+                file.take(max_source_bytes.saturating_add(1))
+                    .read_to_end(&mut bytes)
+                    .map_err(|error| {
+                        source_error(format!(
+                            "Cannot read Code Mode source file `{}`: {error}.",
+                            path.display()
+                        ))
+                    })?;
             }
-            use std::io::Read as _;
-            let mut buf = String::new();
-            std::fs::File::open(&path)?
-                .take(max_source_bytes + 1)
-                .read_to_string(&mut buf)?;
-            if buf.len() as u64 > max_source_bytes {
-                anyhow::bail!("Code Mode source file exceeds {max_source_bytes} bytes");
+            if bytes.len() as u64 > max_source_bytes {
+                return Err(too_large());
             }
-            Ok(buf)
+            String::from_utf8(bytes)
+                .map_err(|_| source_error("Code Mode source must be valid UTF-8 text.".to_string()))
         }
-        _ => anyhow::bail!("provide exactly one of --code or --file"),
+        _ => Err(source_error(
+            "Provide exactly one of --code or --file. Use --file - to read stdin.".to_string(),
+        )),
     }
 }
 
@@ -182,5 +254,40 @@ mod tests {
 
         let over_limit = "a".repeat(max_source_bytes + 1);
         assert!(read_code_mode_source(Some(over_limit), None, max_source_bytes as u64).is_err());
+    }
+    #[tokio::test]
+    async fn failed_remote_execution_never_invokes_local_broker() {
+        let local_calls = std::cell::Cell::new(0);
+        let result = execute_selected(
+            Some(async { Err(anyhow::anyhow!("response lost after possible commit")) }),
+            || async {
+                local_calls.set(local_calls.get() + 1);
+                Ok(json!({"replayed": true}))
+            },
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(
+            local_calls.get(),
+            0,
+            "an uncertain remote result must not be replayed"
+        );
+    }
+
+    #[test]
+    fn missing_source_has_a_typed_actionable_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let error =
+            read_code_mode_source(None, Some(dir.path().join("missing.js")), 1024).unwrap_err();
+        let error = error
+            .downcast_ref::<crate::dispatch::error::ToolError>()
+            .unwrap();
+        assert_eq!(error.kind(), "invalid_param");
+        assert!(error.user_message().contains("missing.js"));
+        assert!(
+            error
+                .user_message()
+                .contains("No Code Mode operation was executed")
+        );
     }
 }

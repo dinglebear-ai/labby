@@ -272,7 +272,7 @@ Common error kinds:
 | `response_too_large` | The gateway capped an oversized upstream response; narrow the query or paginate. Distinct from `result_too_large`/`artifact_too_large`, which cap Code Mode's own result/artifact output. |
 | `timeout` | Split work into smaller executions. |
 | `network_error` / `server_error` / `decode_error` / `upstream_error` | Retry or operate the upstream service; unknown structured upstream-local kinds are returned as `upstream_error` without poisoning upstream health. |
-| `oauth_needs_reauth` | Check `labby gateway mcp auth status <upstream> --json`. |
+| `oauth_needs_reauth` | Check `labby server auth status <upstream> --json`. |
 | `snippet_not_found` | Check the snippet name with `codemode.search()`. |
 
 ## Runtime And Limits
@@ -287,7 +287,7 @@ Implementation facts that affect operation:
 - The runner process starts with a cleared environment and temp cwd.
 - The parent host brokers all tool calls, validates schemas, enforces
   scope/tool policy, and terminates runaway executions.
-- CLI `labby gateway code exec` is operator-driven and has its own policy for
+- CLI `labby code run` is operator-driven and has its own policy for
   destructive upstream tools; MCP `codemode` exposes only `code`, `upstreams`,
   and `tools` as top-level arguments.
 - Code Mode does not add a generic destructive-call confirmation gate. An
@@ -318,8 +318,8 @@ catalog, including `result_shape_policy`.
 CLI execution:
 
 ```bash
-labby gateway code exec --code 'async () => ({ ok: true })' --json
-labby gateway code exec --file ./snippet.js --json
+labby code run --code 'async () => ({ ok: true })' --json
+labby code run --file ./snippet.js --json
 ```
 
 The CLI mirrors execution only; there is no CLI `gateway code search`

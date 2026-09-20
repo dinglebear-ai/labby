@@ -458,7 +458,7 @@ pub fn update_loadout(
         .ok_or_else(|| ToolError::Sdk {
             sdk_kind: "not_found".to_string(),
             message: format!(
-                "loadout `{name}` not found; run `gateway.loadout.list` or `labby gateway loadout list` to discover valid names"
+                "loadout `{name}` not found; run `gateway.loadout.list` or `labby loadout list` to discover valid names"
             ),
         })?;
     normalize_loadout(&mut loadout)?;
@@ -500,7 +500,7 @@ pub fn remove_loadout(
         .ok_or_else(|| ToolError::Sdk {
             sdk_kind: "not_found".to_string(),
             message: format!(
-                "loadout `{name}` not found; run `gateway.loadout.list` or `labby gateway loadout list` to discover valid names"
+                "loadout `{name}` not found; run `gateway.loadout.list` or `labby loadout list` to discover valid names"
             ),
         })?;
     let referenced_by = cfg

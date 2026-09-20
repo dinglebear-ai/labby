@@ -361,7 +361,11 @@ fn launchd_executes_native_binary_and_escapes_paths() {
     )
     .unwrap();
     assert!(plist.contains("<string>/custom &amp; bin/labby</string>"));
-    assert!(plist.contains("<string>update</string><string>--automatic</string>"));
+    assert!(
+        plist.contains("<string>host</string><string>update</string><string>--automatic</string>")
+    );
+    use clap::Parser as _;
+    assert!(crate::cli::Cli::try_parse_from(["labby", "host", "update", "--automatic"]).is_ok());
     assert!(plist.contains("<integer>86400</integer>"));
     assert!(!plist.contains("python"));
 }

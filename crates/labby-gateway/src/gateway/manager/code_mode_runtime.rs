@@ -449,7 +449,7 @@ impl GatewayManager {
     /// are subject-scoped, so they are probed on every run (when a subject is
     /// present, which the gateway host always supplies) and never cached.
     ///
-    /// A one-shot `labby gateway code exec` must not connect the full upstream
+    /// A one-shot `labby code run` must not connect the full upstream
     /// fleet per invocation just to generate the `codemode.*` proxy. Tool calls
     /// still resolve live (`resolve_code_mode_upstream_tool` ensures the target
     /// upstream), so a stale cache can only mis-shape the proxy — `callTool`

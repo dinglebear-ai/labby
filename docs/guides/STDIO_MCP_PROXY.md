@@ -16,7 +16,7 @@ filters, or catalog normalization.
 Run the one-time setup, check the host, then launch a JavaScript server:
 
 ```console
-labby setup proxy
+labby config proxy set
 labby doctor proxy
 labby proxy /path/to/dist.js
 ```
@@ -173,7 +173,7 @@ The latter two are child-process inputs, not persisted proxy preferences.
 
 ## Setup, secrets, and doctor
 
-`labby setup proxy` is interactive on a terminal. For automation use `--yes`
+`labby config proxy set` is interactive on a terminal. For automation use `--yes`
 and explicit flags; `--dry-run` previews without mutation. The setup action
 preserves unrelated TOML keys, comments, and `.env` entries and is byte-stable
 on a second identical run.
@@ -182,10 +182,10 @@ Bearer setup has two safe paths:
 
 ```console
 # Generate a new 64-character random hex token when none exists.
-labby setup proxy --yes --auth bearer
+labby config proxy set --yes --auth bearer
 
 # Store a supplied token from stdin; the literal is never written to TOML.
-printf '%s\n' "$TOKEN" | labby setup proxy --yes --bearer-token-stdin
+printf '%s\n' "$TOKEN" | labby config proxy set --yes --bearer-token-stdin
 ```
 
 The non-secret preferences go to `$LABBY_HOME/config.toml`; the bearer secret
@@ -336,7 +336,7 @@ mapping.
   support. Labby does not fall back to local exposure.
 
 `bearer auth requires ...`
-: Run `labby setup proxy --yes --auth bearer`, export the configured key, or
+: Run `labby config proxy set --yes --auth bearer`, export the configured key, or
   pipe the secret to `--bearer-token-stdin`. Confirm the effective
   `$LABBY_HOME/config.toml` sets the intended `bearer_token_env`.
 

@@ -19,7 +19,7 @@ Useful local references when the Lab checkout is present on the current host:
 - `/home/jmagar/workspace/labby/docs/snippets/*.md`
 - `/home/jmagar/workspace/labby/crates/labby/src/dispatch/snippets/`
 
-If those paths are unavailable, treat the live gateway and `labby snippets --help` as the source of
+If those paths are unavailable, treat the live gateway and `labby snippet --help` as the source of
 truth. Do not invent snippet actions, flags, tool ids, or schemas from memory.
 
 ## Snippet Shape
@@ -89,15 +89,15 @@ Rules:
 
 ## Authoring Workflow
 
-1. List existing snippets: `labby snippets list --json`.
+1. List existing snippets: `labby snippet list --json`.
 2. Search gateway tools with `codemode.search()` / `codemode.describe()` and inspect schemas/signatures. If `labby` is not on `PATH`,
    locate the active Labby CLI before continuing instead of guessing command syntax.
 3. Pick tools and decide parallel vs chained execution.
 4. Draft Markdown with frontmatter, tutorial text, declared inputs, and one `js`/`javascript` fenced block.
-5. Validate without saving: `labby snippets validate my-workflow --file draft.md`.
-6. Save as a user snippet: `labby snippets create my-workflow --file draft.md --description "..."`.
-7. Smoke-test execution: `labby snippets test my-workflow --param topic="mcp-ui rust"`.
-8. Run normally: `labby snippets exec my-workflow --param topic="mcp-ui rust"`.
+5. Validate without saving: `labby snippet validate my-workflow --file draft.md`.
+6. Save as a user snippet: `labby snippet add my-workflow --file draft.md --description "..."`.
+7. Smoke-test execution: `labby snippet test my-workflow --param topic="mcp-ui rust"`.
+8. Run normally: `labby snippet run my-workflow --param topic="mcp-ui rust"`.
 
 Use `--force` only when intentionally replacing a user snippet.
 
@@ -142,5 +142,5 @@ Before calling the work done:
 - Optional inputs have defaults or code fallbacks.
 - Required inputs fail fast with clear validation.
 - Fan-out is bounded by explicit snippet limits and the Code Mode wall-clock/output budgets.
-- `labby snippets validate` passes.
-- `labby snippets test` passes for one snippet, or `labby snippets test --all` passes when changing shared built-ins.
+- `labby snippet validate` passes.
+- `labby snippet test` passes for one snippet, or `labby snippet test --all` passes when changing shared built-ins.

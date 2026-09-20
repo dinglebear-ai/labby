@@ -157,10 +157,10 @@ forward the public native-client document to Labby along with OAuth routes.
 Explicit alternatives are available for deployment policy and older servers:
 
 ```bash
-labby login --server https://lab.example --dynamic-registration
-labby login --server https://lab.example --client-metadata-url https://client.example/labby.json
-labby login --server https://lab.example --client-id registered-native-client
-labby login --server https://lab.example --client-id registered-client --client-secret-env CLI_CLIENT_SECRET
+labby auth login --server https://lab.example --dynamic-registration
+labby auth login --server https://lab.example --client-metadata-url https://client.example/labby.json
+labby auth login --server https://lab.example --client-id registered-native-client
+labby auth login --server https://lab.example --client-id registered-client --client-secret-env CLI_CLIENT_SECRET
 ```
 
 Only the environment variable name is stored for a preregistered secret; the

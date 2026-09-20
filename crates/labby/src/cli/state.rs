@@ -16,7 +16,10 @@ pub struct StateArgs {
 #[derive(Debug, Subcommand)]
 pub enum StateCommand {
     /// Migrate an existing AccessStore offline using LABBY_ACCESS_MIGRATION_EVIDENCE.
+    #[command(skip)]
     MigrateAccess,
+    /// Manage offline access-store migrations.
+    Access(StateAccessArgs),
     /// Export an authenticated disaster-recovery bundle using LABBY_RECOVERY_KEY_PATH.
     Export {
         #[arg(long)]
@@ -34,6 +37,18 @@ pub enum StateCommand {
     },
 }
 
+#[derive(Debug, Args)]
+pub struct StateAccessArgs {
+    #[command(subcommand)]
+    pub command: StateAccessCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum StateAccessCommand {
+    /// Migrate the access store offline using verified migration evidence.
+    Migrate,
+}
+
 #[allow(clippy::print_stdout)]
 #[derive(Serialize)]
 struct StateOutcome {
@@ -46,7 +61,10 @@ struct StateOutcome {
 
 pub async fn run(args: StateArgs, format: OutputFormat) -> Result<ExitCode> {
     let (operation, committed, manifest, maintenance_warning) = match args.command {
-        StateCommand::MigrateAccess => {
+        StateCommand::MigrateAccess
+        | StateCommand::Access(StateAccessArgs {
+            command: StateAccessCommand::Migrate,
+        }) => {
             let paths = crate::installation::InstallationPaths::resolve()?;
             let outcome = crate::access::offline_migration::migrate(
                 &paths,
@@ -106,11 +124,12 @@ mod tests {
 
     #[test]
     fn migrate_access_is_an_explicit_offline_cli_operation() {
-        let cli = crate::cli::Cli::try_parse_from(["labby", "--json", "state", "migrate-access"])
-            .unwrap();
+        let cli =
+            crate::cli::Cli::try_parse_from(["labby", "--json", "state", "access", "migrate"])
+                .unwrap();
         assert!(cli.json);
         assert!(matches!(
-            cli.command,
+            cli.command.into_operation(),
             crate::cli::Command::State(StateArgs {
                 command: StateCommand::MigrateAccess
             })

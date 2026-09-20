@@ -1,64 +1,70 @@
 # Operator CLI
 
-Use this reference when operating Labby from the shell. Generated help in
-`docs/generated/cli-help.md` is authoritative.
+Use the executable command tree, not MCP service/action identifiers, when operating Labby from a shell. Public command names have no hyphens. Flags and resource names may contain hyphens.
 
-## Common Commands
-
-| Command | Use |
-| --- | --- |
-| `labby serve` | Start the HTTP API, native MCP endpoint, auth routes, and web UI. |
-| `labby mcp` | Start stdio MCP. |
-| `labby gateway` | Manage upstreams, protected routes, OAuth, reload, and Code Mode. |
-| `labby setup` | Bootstrap, repair, provision, plugin hooks, and host service operations. |
-| `labby doctor` | Audit supported configuration and runtime health. |
-| `labby logs` | Inspect local Labby server logs. |
-| `labby snippets` | Manage Code Mode snippets. |
-| `labby state` | Export, verify, or restore complete durable installation state offline. |
-| `labby skills` | Read Agent Skills visible to the local CLI. |
-| `labby proxy` | Proxy a stdio MCP server to Streamable HTTP. |
-| `labby docs` | Generate or verify code-owned docs. |
-| `labby health` | Quick local health check. |
-| `labby oauth` | Run local OAuth callback relay helpers. |
-| `labby incus` | Operate the supported Incus gateway container. |
-| `labby update` | Update the installed release. |
-| `labby completions` | Generate shell completions. |
-
-Use `docs/generated/cli-help.md` and `labby <command> --help` before scripting
-against a subcommand. Root `labby --help` / `labby help` intentionally show the
-service/action catalog rather than the Clap command inventory. This table is
-deliberately selective; generated CLI help is the full shell-command inventory.
-Prefer global `--json` for machine-readable output.
-
-For disaster recovery, read `docs/runtime/DISASTER_RECOVERY.md` before using
-`labby state export`, `verify`, or `restore`.
-
-## Common Workflow
+## Discover Before Executing
 
 ```bash
-labby health --json
-labby doctor system --json
-labby gateway list --json
-labby gateway code status --json
-labby setup check --json
+labby --help
+labby help --all
+labby help server --all
+labby help --search oauth
+labby help --all --json
 ```
 
-Destructive actions require explicit confirmation, normally `-y` in a
-non-interactive shell. Use dry-run or plan-style actions when the command exposes
-them.
+Help is offline. Generated `docs/generated/cli-help.md` and `cli-help.json` derive from the same parser and contain the complete public inventory. Retired paths fail with migration guidance; they are not hidden executable aliases.
 
-## Generated Discovery
+## Resource-Oriented Workflows
 
 ```bash
-labby docs generate
-labby docs check
+labby gateway status --json
+labby server list --json
+labby server get axon
+labby server test axon
+labby server restart axon --timeout 30s
+labby server auth login axon --wait --timeout 2m
+labby route list
+labby loadout list
+labby code search "oauth" --limit 10
+labby code describe example.tool
+labby code run --file ./task.js
+labby snippet list
+labby host service status
+labby plugin list
+labby config show --json
+labby config check
 ```
 
-The generated service, action, MCP, API, and CLI catalogs are the source of truth
-for current command/action availability.
+`gateway` describes the selected daemon; `server` manages upstream MCP servers. `set` patches supplied fields, while `route replace` replaces configuration. `host` contains local installation, update, service, and Incus operations. `setup` is onboarding/check/repair, not ongoing server administration. `auth relay` contains callback-relay operations. `serve`, `mcp`, and `proxy` are distinct runtime/transport entry points.
 
-## Removed Commands
+## Select an Authority Explicitly
 
-Do not infer commands from historical documentation. Product surfaces absent
-from generated help and the live action catalog are unsupported rather than
-hidden behind feature flags.
+```bash
+labby context add homelab --server https://example.invalid --use
+labby --context homelab server list
+labby auth status --context homelab
+labby context clear
+```
+
+Explicit `--server` or `--context` wins over environment targets; environment targets win over the saved default. An explicit context or server URL uses the existing destination-bound OAuth session, never an unrelated environment bearer token. Team selectors do not grant access. Host-local commands reject explicit remote selectors. Local snippet and skill operations stay local.
+
+## Automation and Safety
+
+Use `--json` and `--no-input` in scripts. Missing arguments or confirmation then fail rather than prompting. `server add` guides missing input only in an interactive terminal, displays the equivalent redacted command, and requires confirmation before dispatch.
+
+Lifecycle operations accept explicit names or `--all`; omission never means all servers. Supported previews use `--dry-run`. The default restart checks completion and replacement connection health. `--no-wait` reports acceptance only. Partial results stay on stdout with per-target outcomes and a request ID; any target failure produces a nonzero exit status. Do not replay uncertain operations automatically.
+
+```bash
+labby server restart alpha beta --dry-run
+labby logs --query REQUEST_ID --json
+labby --context homelab completions refresh
+labby completions zsh --resources
+```
+
+Completion refresh is explicit. Tab reads a bounded local snapshot keyed by destination, Team, and credentials. Expired, corrupt, or differently scoped snapshots provide no resource names and never trigger network access.
+
+Destructive operations require the confirmation flag their own help specifies, normally `--yes`. Before `state export`, `state verify`, or `state restore`, read `docs/runtime/DISASTER_RECOVERY.md`. These are offline installation-state operations.
+
+## Maintainer Verification
+
+Repository tooling uses `just docs-generate` and `just docs-check`. Developer-only documentation helpers are intentionally not advertised as operator commands. The behavioral contract and rollout requirements are in `docs/surfaces/CLI.md`.

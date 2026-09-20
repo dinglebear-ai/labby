@@ -298,15 +298,14 @@ mod tests {
     fn gateway_cli_parser_accepts_expected_commands() {
         Cli::command().debug_assert();
 
-        assert!(Cli::try_parse_from(["lab", "gateway", "list"]).is_ok());
-        assert!(Cli::try_parse_from(["lab", "gateway", "get", "fixture-http"]).is_ok());
-        assert!(Cli::try_parse_from(["lab", "gateway", "test", "--name", "fixture-http"]).is_ok());
+        assert!(Cli::try_parse_from(["lab", "server", "list"]).is_ok());
+        assert!(Cli::try_parse_from(["lab", "server", "get", "fixture-http"]).is_ok());
+        assert!(Cli::try_parse_from(["lab", "server", "test", "fixture-http"]).is_ok());
         assert!(
             Cli::try_parse_from([
                 "lab",
-                "gateway",
+                "server",
                 "add",
-                "--name",
                 "fixture-http",
                 "--url",
                 "http://127.0.0.1:8791",
@@ -316,74 +315,43 @@ mod tests {
         assert!(
             Cli::try_parse_from([
                 "lab",
-                "gateway",
-                "update",
+                "server",
+                "set",
                 "fixture-http",
                 "--proxy-resources",
                 "true",
             ])
             .is_ok()
         );
-        assert!(Cli::try_parse_from(["lab", "gateway", "remove", "fixture-http"]).is_ok());
-        assert!(Cli::try_parse_from(["lab", "gateway", "import", "--all", "--yes"]).is_ok());
-        assert!(Cli::try_parse_from(["lab", "gateway", "quarantine", "list"]).is_ok());
+        assert!(Cli::try_parse_from(["lab", "server", "remove", "fixture-http"]).is_ok());
+        assert!(Cli::try_parse_from(["lab", "server", "import", "--all", "--yes"]).is_ok());
+        assert!(Cli::try_parse_from(["lab", "server", "quarantine", "list"]).is_ok());
         assert!(
-            Cli::try_parse_from(["lab", "gateway", "quarantine", "restore", "gateway-alpha"])
+            Cli::try_parse_from(["lab", "server", "quarantine", "restore", "gateway-alpha"])
                 .is_ok()
         );
         assert!(Cli::try_parse_from(["lab", "gateway", "reload"]).is_ok());
         assert!(
-            Cli::try_parse_from([
-                "lab",
-                "gateway",
-                "mcp",
-                "auth",
-                "start",
-                "fixture-http",
-                "--open",
-                "--wait",
-            ])
-            .is_ok()
-        );
-        assert!(
-            Cli::try_parse_from([
-                "lab",
-                "gateway",
-                "mcp",
-                "auth",
-                "open",
-                "fixture-http",
-                "--wait",
-            ])
-            .is_ok()
-        );
-        assert!(
-            Cli::try_parse_from(["lab", "gateway", "mcp", "auth", "status", "fixture-http",])
+            Cli::try_parse_from(["lab", "server", "auth", "login", "fixture-http", "--wait",])
                 .is_ok()
         );
         assert!(
-            Cli::try_parse_from(["lab", "gateway", "mcp", "auth", "clear", "fixture-http",])
+            Cli::try_parse_from(["lab", "server", "auth", "login", "fixture-http", "--wait",])
                 .is_ok()
         );
-        assert!(Cli::try_parse_from(["lab", "gateway", "mcp", "list",]).is_ok());
-        assert!(Cli::try_parse_from(["lab", "gateway", "clients", "list",]).is_ok());
-        assert!(Cli::try_parse_from(["lab", "gateway", "mcp", "enable", "fixture-http",]).is_ok());
+        assert!(Cli::try_parse_from(["lab", "server", "auth", "status", "fixture-http",]).is_ok());
+        assert!(Cli::try_parse_from(["lab", "server", "auth", "logout", "fixture-http",]).is_ok());
+        assert!(Cli::try_parse_from(["lab", "server", "status",]).is_ok());
+        assert!(Cli::try_parse_from(["lab", "gateway", "sessions", "list",]).is_ok());
+        assert!(Cli::try_parse_from(["lab", "server", "enable", "fixture-http",]).is_ok());
         assert!(
-            Cli::try_parse_from([
-                "lab",
-                "gateway",
-                "mcp",
-                "restart",
-                "fixture-http",
-                "--aggressive",
-            ])
-            .is_ok()
+            Cli::try_parse_from(["lab", "server", "restart", "fixture-http", "--aggressive",])
+                .is_ok()
         );
         assert!(
             Cli::try_parse_from([
                 "lab",
-                "gateway",
-                "mcp",
+                "server",
                 "disable",
                 "fixture-http",
                 "--cleanup",
@@ -392,22 +360,14 @@ mod tests {
             .is_ok()
         );
         assert!(
-            Cli::try_parse_from([
-                "lab",
-                "gateway",
-                "mcp",
-                "cleanup",
-                "fixture-http",
-                "--aggressive",
-            ])
-            .is_ok()
+            Cli::try_parse_from(["lab", "server", "cleanup", "fixture-http", "--aggressive",])
+                .is_ok()
         );
         // Cloudflare-parity: only `gateway code exec` survives. Discovery stays
         // inside the Code Mode runtime.
         assert!(
             Cli::try_parse_from([
                 "lab",
-                "gateway",
                 "code",
                 "search",
                 "--code",
@@ -416,31 +376,28 @@ mod tests {
             .is_err(),
             "`gateway code search` was removed per spec — only `gateway code exec` is supported"
         );
-        assert!(
-            Cli::try_parse_from(["lab", "gateway", "code", "schema", "github::search_issues"])
-                .is_err()
-        );
+        assert!(Cli::try_parse_from(["lab", "code", "schema", "github::search_issues"]).is_err());
         assert!(
             Cli::try_parse_from([
                 "lab",
-                "gateway",
                 "code",
-                "exec",
+                "run",
                 "--code",
                 "await callTool(\"github::search_issues\", {query:\"repo\"})",
             ])
             .is_ok()
         );
+        assert!(Cli::try_parse_from(["lab", "code", "run", "--file", "snippet.js",]).is_ok());
         assert!(
-            Cli::try_parse_from(["lab", "gateway", "code", "exec", "--file", "snippet.js",])
+            Cli::try_parse_from(["lab", "code", "hints", "preview", "--upstream", "github"])
                 .is_ok()
         );
-        assert!(Cli::try_parse_from(["lab", "gateway", "enrich", "--upstream", "github"]).is_ok());
         assert!(
             Cli::try_parse_from([
                 "lab",
-                "gateway",
-                "enrich",
+                "code",
+                "hints",
+                "preview",
                 "--all",
                 "--provider",
                 "codex",
@@ -452,8 +409,8 @@ mod tests {
         assert!(
             Cli::try_parse_from([
                 "lab",
-                "gateway",
-                "enrich",
+                "code",
+                "hints",
                 "apply",
                 "--upstream",
                 "github",
@@ -464,19 +421,18 @@ mod tests {
             ])
             .is_ok()
         );
-        assert!(Cli::try_parse_from(["lab", "gateway", "skills", "list"]).is_ok());
+        assert!(Cli::try_parse_from(["lab", "skill", "source", "list"]).is_ok());
         assert!(
-            Cli::try_parse_from(["lab", "gateway", "skills", "list", "--upstream", "axon"]).is_ok()
+            Cli::try_parse_from(["lab", "skill", "source", "list", "--upstream", "axon"]).is_ok()
         );
-        assert!(
-            Cli::try_parse_from(["lab", "gateway", "skills", "trust", "axon", "--yes"]).is_ok()
-        );
+        assert!(Cli::try_parse_from(["lab", "skill", "source", "trust", "axon", "--yes"]).is_ok());
         assert!(
             Cli::try_parse_from([
                 "lab",
-                "gateway",
-                "skills",
-                "expose",
+                "skill",
+                "source",
+                "exposure",
+                "set",
                 "axon",
                 "--pattern",
                 "review-*",
@@ -485,11 +441,10 @@ mod tests {
             ])
             .is_ok()
         );
-        assert!(Cli::try_parse_from(["lab", "gateway", "loadout", "list"]).is_ok());
+        assert!(Cli::try_parse_from(["lab", "loadout", "list"]).is_ok());
         assert!(
             Cli::try_parse_from([
                 "lab",
-                "gateway",
                 "loadout",
                 "add",
                 "ops",
@@ -502,24 +457,15 @@ mod tests {
             .is_ok()
         );
         assert!(
-            Cli::try_parse_from([
-                "lab",
-                "gateway",
-                "loadout",
-                "update",
-                "ops",
-                "--expose-skills",
-                "false"
-            ])
-            .is_ok()
+            Cli::try_parse_from(["lab", "loadout", "set", "ops", "--expose-skills", "false"])
+                .is_ok()
         );
-        assert!(Cli::try_parse_from(["lab", "gateway", "loadout", "remove", "ops"]).is_ok());
+        assert!(Cli::try_parse_from(["lab", "loadout", "remove", "ops"]).is_ok());
         assert!(
             Cli::try_parse_from([
                 "lab",
-                "gateway",
                 "loadout",
-                "update",
+                "set",
                 "ops",
                 "--expose-skills",
                 "false",
@@ -528,23 +474,14 @@ mod tests {
             .is_ok()
         );
         assert!(
-            Cli::try_parse_from([
-                "lab",
-                "gateway",
-                "loadout",
-                "remove",
-                "ops",
-                "--stage-for-restart",
-            ])
-            .is_ok()
+            Cli::try_parse_from(["lab", "loadout", "remove", "ops", "--stage-for-restart",])
+                .is_ok()
         );
         assert!(
             Cli::try_parse_from([
                 "lab",
-                "gateway",
-                "protected-route",
+                "route",
                 "add",
-                "--name",
                 "ops",
                 "--public-host",
                 "mcp.example.com",
@@ -556,15 +493,7 @@ mod tests {
             .is_ok()
         );
         assert!(
-            Cli::try_parse_from([
-                "lab",
-                "gateway",
-                "protected-route",
-                "remove",
-                "ops",
-                "--stage-for-restart",
-            ])
-            .is_ok()
+            Cli::try_parse_from(["lab", "route", "remove", "ops", "--stage-for-restart",]).is_ok()
         );
         assert!(Cli::try_parse_from(["lab", "gateway", "usage", "metrics"]).is_ok());
         assert!(Cli::try_parse_from(["lab", "gateway", "usage", "calls", "--limit", "10"]).is_ok());
@@ -574,10 +503,10 @@ mod tests {
     fn gateway_cli_rejects_shared_oauth_subject_override() {
         let error = Cli::try_parse_from([
             "lab",
-            "gateway",
-            "mcp",
+            "server",
             "auth",
-            "start",
+            "login",
+            "--no-browser",
             "fixture-http",
             "--subject",
             "private-subject-marker",
@@ -591,8 +520,8 @@ mod tests {
     fn gateway_enrich_apply_parser_captures_approval_args() {
         let cli = Cli::try_parse_from([
             "lab",
-            "gateway",
-            "enrich",
+            "code",
+            "hints",
             "apply",
             "--upstream",
             "github",
@@ -604,7 +533,7 @@ mod tests {
         ])
         .expect("gateway enrich apply parses");
 
-        let Command::Gateway(args) = cli.command else {
+        let Command::Gateway(args) = cli.command.into_operation() else {
             panic!("expected gateway command");
         };
         let GatewayCommand::Enrich(args) = args.command else {
@@ -624,8 +553,9 @@ mod tests {
     fn gateway_enrich_preview_parser_captures_approval_args() {
         let cli = Cli::try_parse_from([
             "lab",
-            "gateway",
-            "enrich",
+            "code",
+            "hints",
+            "preview",
             "--upstream",
             "github",
             "--provider",
@@ -634,7 +564,7 @@ mod tests {
         ])
         .expect("gateway enrich preview parses");
 
-        let Command::Gateway(args) = cli.command else {
+        let Command::Gateway(args) = cli.command.into_operation() else {
             panic!("expected gateway command");
         };
         let GatewayCommand::Enrich(args) = args.command else {
@@ -674,7 +604,7 @@ mod tests {
         ])
         .expect("gateway usage metrics parses");
 
-        let Command::Gateway(args) = cli.command else {
+        let Command::Gateway(args) = cli.command.into_operation() else {
             panic!("expected gateway command");
         };
         let GatewayCommand::Usage(usage) = args.command else {
@@ -720,7 +650,7 @@ mod tests {
         ])
         .expect("gateway usage calls parses");
 
-        let Command::Gateway(args) = cli.command else {
+        let Command::Gateway(args) = cli.command.into_operation() else {
             panic!("expected gateway command");
         };
         let GatewayCommand::Usage(usage) = args.command else {
@@ -745,16 +675,15 @@ mod tests {
     fn gateway_add_defaults_resource_proxying_on() {
         let cli = Cli::try_parse_from([
             "lab",
-            "gateway",
+            "server",
             "add",
-            "--name",
             "fixture-http",
             "--url",
             "http://127.0.0.1:8791",
         ])
         .expect("gateway add parses");
 
-        let Command::Gateway(args) = cli.command else {
+        let Command::Gateway(args) = cli.command.into_operation() else {
             panic!("expected gateway command");
         };
         let GatewayCommand::Add(args) = args.command else {
@@ -768,9 +697,8 @@ mod tests {
     fn gateway_add_allows_resource_proxying_opt_out() {
         let cli = Cli::try_parse_from([
             "lab",
-            "gateway",
+            "server",
             "add",
-            "--name",
             "fixture-http",
             "--url",
             "http://127.0.0.1:8791",
@@ -779,7 +707,7 @@ mod tests {
         ])
         .expect("gateway add parses");
 
-        let Command::Gateway(args) = cli.command else {
+        let Command::Gateway(args) = cli.command.into_operation() else {
             panic!("expected gateway command");
         };
         let GatewayCommand::Add(args) = args.command else {

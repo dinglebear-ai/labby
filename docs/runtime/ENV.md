@@ -89,7 +89,7 @@ token:
 LABBY_PROXY_BEARER_TOKEN=replace-with-a-generated-secret
 ```
 
-`proxy.bearer_token_env` may name another key. `labby setup proxy --auth
+`proxy.bearer_token_env` may name another key. `labby config proxy set --auth
 bearer` generates and writes the value when it is absent; piping a value to
 `--bearer-token-stdin` replaces it without writing the literal to TOML.
 

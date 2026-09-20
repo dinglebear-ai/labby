@@ -66,9 +66,9 @@ OAuth config. Labby supports no-auth HTTP upstreams.
 ## Updating And Removing Upstreams
 
 ```bash
-labby gateway update <name> --url https://new.example.invalid/mcp --json
-labby gateway update <name> --bearer-token-env NEW_GATEWAY_BEARER_TOKEN --json
-labby gateway remove <name> --json
+labby server set <name> --url https://new.example.invalid/mcp --json
+labby server set <name> --bearer-token-env NEW_GATEWAY_BEARER_TOKEN --json
+labby server remove <name> --json
 labby gateway reload --json
 ```
 

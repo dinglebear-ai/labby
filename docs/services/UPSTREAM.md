@@ -36,8 +36,8 @@ launch history preserves known modes without inventing a mode for old receipts.
 
 ## What Operators Configure
 
-To proxy an upstream server through Labby, prefer `labby gateway add` and
-`labby gateway update`. For offline editing, first identify the selected
+To proxy an upstream server through Labby, prefer `labby server add` and
+`labby server set`. For offline editing, first identify the selected
 installation root: `LABBY_HOME` when set, otherwise `~/.labby`. Edit only its
 `config.toml`, optionally provide bearer-token env vars in its `.env`, then
 start `labby serve` normally. Labby does not merge a second XDG or

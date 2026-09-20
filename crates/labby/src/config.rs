@@ -14,6 +14,7 @@
 //! like `unraid` reads `UNRAID_URL` as the default instance and
 //! `UNRAID_NODE2_URL` as an additional instance labeled `node2`.
 
+pub mod cli;
 pub mod depot;
 #[cfg(test)]
 mod depot_tests;
@@ -430,6 +431,12 @@ pub struct LabConfig {
     /// Default output format for CLI commands that print tables.
     #[serde(default)]
     pub output: OutputPreferences,
+    /// Non-secret operator CLI destinations, in the existing host configuration.
+    #[serde(default)]
+    pub cli: cli::CliPreferences,
+    /// Selected only by a CLI invocation; never persisted or applied to the daemon.
+    #[serde(skip)]
+    pub cli_target: Option<cli::SelectedTarget>,
     /// MCP server defaults.
     #[serde(default)]
     pub mcp: McpPreferences,
@@ -2166,10 +2173,24 @@ pub fn inherited_app_surface_sections(raw: &str) -> Vec<&'static str> {
         .collect()
 }
 
+/// Parse and validate an offline snapshot without acquiring a writer or applying environment state.
+pub(crate) fn parse_snapshot(raw: &str) -> Result<LabConfig> {
+    validate_top_level_extension_boundary(raw)
+        .map_err(|_| anyhow::anyhow!("Invalid top-level TOML structure in config.toml"))?;
+    let mut config: LabConfig = toml::from_str(raw).map_err(|error| {
+        let span = error.span().unwrap_or(0..0);
+        anyhow::anyhow!("Invalid configuration type or syntax at bytes {}..{}; inspect that location in config.toml", span.start, span.end)
+    })?;
+    config.normalize_protected_mcp_routes()?;
+    config.validate()?;
+    Ok(config)
+}
+
 fn validate_top_level_extension_boundary(raw: &str) -> Result<()> {
     let table = raw.parse::<toml::Table>()?;
     const OWNED: &[&str] = &[
         "config_version",
+        "cli",
         "output",
         "mcp",
         "proxy",

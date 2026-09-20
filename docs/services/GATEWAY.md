@@ -822,7 +822,7 @@ the same rules as other gateway-subset routes.
 
 Route testing has two layers:
 
-- `labby gateway protected-route test ...` validates the route config and
+- `labby route test ...` validates the route config and
   backend health path before saving or updating the Labby config.
 - `just protected-mcp-smoke -- --app-url https://lab.example.com --mcp-url
   https://mcp.example.com --route /syslog` verifies the deployed public flow:

@@ -180,7 +180,7 @@ Every service client implements a common health surface:
 - `service_type()`
 - `health()`
 
-That gives `labby health`, `labby doctor`, and MCP `status` surfaces a shared
+That gives `labby gateway status`, `labby doctor`, and MCP `status` surfaces a shared
 model without forcing all other service operations into one trait.
 
 ### `ServiceStatus`

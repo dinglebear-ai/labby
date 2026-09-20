@@ -4071,6 +4071,24 @@ async fn gateway_mcp_disable_with_cleanup_returns_gateway_and_cleanup_payload() 
 }
 
 #[tokio::test]
+async fn gateway_mcp_restart_rejects_invalid_wait_before_starting_transaction() {
+    let manager = test_manager();
+    for wait_ms in [300_001_u64, u64::MAX] {
+        let error = dispatch_with_manager(
+            &manager,
+            "gateway.mcp.restart",
+            json!({"name":"must-not-be-resolved", "wait_ms":wait_ms}),
+        )
+        .await
+        .expect_err("out-of-range restart budget must be rejected");
+        assert!(
+            matches!(error, ToolError::InvalidParam { ref param, .. } if param == "wait_ms"),
+            "budget validation must precede looking up a server or starting a runtime: {error:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn gateway_mcp_restart_rejects_a_disabled_upstream_without_enabling_it() {
     let manager = test_manager();
     manager
@@ -4126,7 +4144,7 @@ async fn gateway_mcp_restart_response_matches_action_spec() {
     let value = dispatch_with_manager(
         &manager,
         "gateway.mcp.restart",
-        json!({"name": "restart-spec", "aggressive": true}),
+        json!({"name": "restart-spec", "aggressive": true, "wait_ms": 300_000}),
     )
     .await
     .expect("restart dispatch");

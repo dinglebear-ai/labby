@@ -107,12 +107,9 @@ fn record_asserted_cli_result((case, output): (CliActionCase, std::process::Outp
     let body = machine_json(&output);
     let (evidence, outcome_kind) = if output.status.success() {
         if !output.stdout.is_empty() || !output.stderr.is_empty() {
-            let rendered = String::from_utf8_lossy(&output.stdout);
             assert!(
-                body.is_some()
-                    || (rendered.starts_with("[dry-run]")
-                        && rendered.contains(case.key.split_once(':').unwrap().1)),
-                "{} successful result was neither JSON nor its asserted dry-run contract",
+                body.is_some(),
+                "{} successful --json result must be JSON, including dry-run previews",
                 case.key
             );
         }
@@ -343,7 +340,7 @@ fn cli_action_cases() -> std::collections::BTreeSet<CliActionCase> {
         ("doctor:auth.check", &["doctor", "auth", "--json"]),
         (
             "doctor:oauth.relay.check",
-            &["doctor", "oauth-relay", "--probe-targets", "--json"],
+            &["doctor", "relay", "--probe-targets", "--json"],
         ),
         (
             "doctor:proxy.check",
@@ -353,29 +350,36 @@ fn cli_action_cases() -> std::collections::BTreeSet<CliActionCase> {
         ("doctor:system.checks", &["doctor", "system", "--json"]),
         (
             "gateway:gateway.add",
-            &["gateway", "add", "--name", MISSING, "--json"],
+            &[
+                "server",
+                "add",
+                MISSING,
+                "--url",
+                "https://example.invalid/mcp",
+                "--json",
+            ],
         ),
         (
             "gateway:gateway.clients.list",
-            &["gateway", "clients", "list", "--json"],
+            &["gateway", "sessions", "list", "--json"],
         ),
         (
             "gateway:gateway.code_mode.get",
-            &["gateway", "code", "status", "--json"],
+            &["code", "status", "--json"],
         ),
         (
             "gateway:gateway.code_mode.set",
-            &["gateway", "code", "enable", "--json"],
+            &["code", "enable", "--json"],
         ),
         (
             "gateway:gateway.discover",
-            &["gateway", "discover", "--clients", "not-a-client", "--json"],
+            &["server", "discover", "--clients", "not-a-client", "--json"],
         ),
         (
             "gateway:gateway.enrich.apply",
             &[
-                "gateway",
-                "enrich",
+                "code",
+                "hints",
                 "apply",
                 "--upstream",
                 MISSING,
@@ -390,39 +394,36 @@ fn cli_action_cases() -> std::collections::BTreeSet<CliActionCase> {
         (
             "gateway:gateway.enrich.preview",
             &[
-                "gateway",
-                "enrich",
+                "code",
+                "hints",
+                "preview",
                 "--upstream",
                 MISSING,
                 "--yes",
                 "--json",
             ],
         ),
-        (
-            "gateway:gateway.get",
-            &["gateway", "get", MISSING, "--json"],
-        ),
+        ("gateway:gateway.get", &["server", "get", MISSING, "--json"]),
         (
             "gateway:gateway.import",
-            &["gateway", "import", "--name", MISSING, "--yes", "--json"],
+            &["server", "import", "--name", MISSING, "--yes", "--json"],
         ),
         (
             "gateway:gateway.import_pending.approve",
-            &["gateway", "pending", "approve", MISSING, "--yes", "--json"],
+            &["server", "pending", "approve", MISSING, "--yes", "--json"],
         ),
         (
             "gateway:gateway.import_pending.list",
-            &["gateway", "pending", "list", "--json"],
+            &["server", "pending", "list", "--json"],
         ),
         (
             "gateway:gateway.import_pending.reject",
-            &["gateway", "pending", "reject", MISSING, "--yes", "--json"],
+            &["server", "pending", "reject", MISSING, "--yes", "--json"],
         ),
-        ("gateway:gateway.list", &["gateway", "list", "--json"]),
+        ("gateway:gateway.list", &["server", "list", "--json"]),
         (
             "gateway:gateway.loadout.add",
             &[
-                "gateway",
                 "loadout",
                 "add",
                 MISSING,
@@ -433,34 +434,25 @@ fn cli_action_cases() -> std::collections::BTreeSet<CliActionCase> {
         ),
         (
             "gateway:gateway.loadout.get",
-            &["gateway", "loadout", "get", MISSING, "--json"],
+            &["loadout", "get", MISSING, "--json"],
         ),
         (
             "gateway:gateway.loadout.list_state",
-            &["gateway", "loadout", "list", "--json"],
+            &["loadout", "list", "--json"],
         ),
         (
             "gateway:gateway.loadout.patch",
-            &[
-                "gateway",
-                "loadout",
-                "update",
-                MISSING,
-                "--description",
-                "x",
-                "--json",
-            ],
+            &["loadout", "set", MISSING, "--description", "x", "--json"],
         ),
         (
             "gateway:gateway.loadout.remove",
-            &["gateway", "loadout", "remove", MISSING, "--json"],
+            &["loadout", "remove", MISSING, "--json"],
         ),
         (
             "gateway:gateway.loadout.stage_patch",
             &[
-                "gateway",
                 "loadout",
-                "update",
+                "set",
                 MISSING,
                 "--description",
                 "x",
@@ -471,7 +463,6 @@ fn cli_action_cases() -> std::collections::BTreeSet<CliActionCase> {
         (
             "gateway:gateway.loadout.stage_remove",
             &[
-                "gateway",
                 "loadout",
                 "remove",
                 MISSING,
@@ -481,35 +472,32 @@ fn cli_action_cases() -> std::collections::BTreeSet<CliActionCase> {
         ),
         (
             "gateway:gateway.mcp.cleanup",
-            &["gateway", "mcp", "cleanup", MISSING, "--dry-run", "--json"],
+            &["server", "cleanup", MISSING, "--dry-run", "--json"],
         ),
         (
             "gateway:gateway.mcp.disable",
-            &["gateway", "mcp", "disable", MISSING, "--json"],
+            &["server", "disable", MISSING, "--json"],
         ),
         (
             "gateway:gateway.mcp.enable",
-            &["gateway", "mcp", "enable", MISSING, "--json"],
+            &["server", "enable", MISSING, "--json"],
         ),
-        (
-            "gateway:gateway.mcp.list",
-            &["gateway", "mcp", "list", "--json"],
-        ),
+        ("gateway:gateway.mcp.list", &["server", "status", "--json"]),
         (
             "gateway:gateway.mcp.restart",
-            &["gateway", "mcp", "restart", MISSING, "--json"],
+            &["server", "restart", MISSING, "--json"],
         ),
         (
             "gateway:gateway.oauth.clear",
-            &["gateway", "mcp", "auth", "clear", MISSING, "--json"],
+            &["server", "auth", "logout", MISSING, "--json"],
         ),
         (
             "gateway:gateway.oauth.google_revoke",
             &[
-                "gateway",
-                "mcp",
                 "auth",
-                "revoke-google",
+                "provider",
+                "google",
+                "revoke",
                 MISSING,
                 "--confirm",
                 "--json",
@@ -517,19 +505,19 @@ fn cli_action_cases() -> std::collections::BTreeSet<CliActionCase> {
         ),
         (
             "gateway:gateway.oauth.start",
-            &["gateway", "mcp", "auth", "start", MISSING, "--json"],
+            &["server", "auth", "login", "--no-browser", MISSING, "--json"],
         ),
         (
             "gateway:gateway.oauth.status",
-            &["gateway", "mcp", "auth", "status", MISSING, "--json"],
+            &["server", "auth", "status", MISSING, "--json"],
         ),
         (
             "gateway:gateway.oauth.wait",
             &[
-                "gateway",
-                "mcp",
+                "server",
                 "auth",
-                "start",
+                "login",
+                "--no-browser",
                 MISSING,
                 "--wait",
                 "--wait-timeout-secs",
@@ -540,15 +528,15 @@ fn cli_action_cases() -> std::collections::BTreeSet<CliActionCase> {
         ("gateway:gateway.protected_route.add", &PROTECTED_ADD),
         (
             "gateway:gateway.protected_route.get",
-            &["gateway", "protected-route", "get", MISSING, "--json"],
+            &["route", "get", MISSING, "--json"],
         ),
         (
             "gateway:gateway.protected_route.list_state",
-            &["gateway", "protected-route", "list", "--json"],
+            &["route", "list", "--json"],
         ),
         (
             "gateway:gateway.protected_route.remove",
-            &["gateway", "protected-route", "remove", MISSING, "--json"],
+            &["route", "remove", MISSING, "--json"],
         ),
         (
             "gateway:gateway.protected_route.stage_add",
@@ -556,14 +544,7 @@ fn cli_action_cases() -> std::collections::BTreeSet<CliActionCase> {
         ),
         (
             "gateway:gateway.protected_route.stage_remove",
-            &[
-                "gateway",
-                "protected-route",
-                "remove",
-                MISSING,
-                "--stage-for-restart",
-                "--json",
-            ],
+            &["route", "remove", MISSING, "--stage-for-restart", "--json"],
         ),
         (
             "gateway:gateway.protected_route.stage_update",
@@ -573,26 +554,26 @@ fn cli_action_cases() -> std::collections::BTreeSet<CliActionCase> {
         ("gateway:gateway.protected_route.update", &PROTECTED_UPDATE),
         (
             "gateway:gateway.public_urls.get",
-            &["gateway", "public-urls", "--json"],
+            &["gateway", "urls", "--json"],
         ),
         ("gateway:gateway.reload", &["gateway", "reload", "--json"]),
         (
             "gateway:gateway.remove",
-            &["gateway", "remove", MISSING, "--json"],
+            &["server", "remove", MISSING, "--json"],
         ),
         (
             "gateway:gateway.skills.list",
-            &["gateway", "skills", "list", "--upstream", MISSING, "--json"],
+            &["skill", "source", "list", "--upstream", MISSING, "--json"],
         ),
         (
             "gateway:gateway.test",
-            &["gateway", "test", "--name", MISSING, "--json"],
+            &["server", "test", MISSING, "--json"],
         ),
         (
             "gateway:gateway.update",
             &[
-                "gateway",
-                "update",
+                "server",
+                "set",
                 MISSING,
                 "--url",
                 "http://127.0.0.1:9/mcp",
@@ -616,57 +597,86 @@ fn cli_action_cases() -> std::collections::BTreeSet<CliActionCase> {
         ),
         (
             "gateway:gateway.virtual_server.quarantine.list",
-            &["gateway", "quarantine", "list", "--json"],
+            &["server", "quarantine", "list", "--json"],
         ),
         (
             "gateway:gateway.virtual_server.quarantine.restore",
-            &["gateway", "quarantine", "restore", MISSING, "--json"],
+            &["server", "quarantine", "restore", MISSING, "--json"],
         ),
         (
             "server_logs:server_logs.query",
-            &["logs", "--no-follow", "--container", MISSING, "--json"],
+            &["logs", "--query", MISSING, "--json"],
         ),
         ("setup:check", &["setup", "check", "--json"]),
         (
             "setup:draft.discard",
-            &["setup", "draft", "discard", "--dry-run", "--json"],
+            &["config", "draft", "discard", "--dry-run", "--json"],
         ),
         (
-            "setup:proxy.configure",
+            "setup:plugin.install",
+            &["plugin", "install", MISSING, "--dry-run", "--json"],
+        ),
+        (
+            "setup:plugin.uninstall",
+            &["plugin", "uninstall", MISSING, "--dry-run", "--json"],
+        ),
+        (
+            "setup:plugin_connectivity",
             &[
-                "setup",
-                "proxy",
+                "plugin",
+                "check",
                 "--server-url",
                 "http://127.0.0.1:9",
                 "--json",
             ],
         ),
+        ("setup:plugin_export", &["plugin", "export", "--json"]),
+        (
+            "setup:plugin_hook",
+            &["plugin", "hook", "--no-repair", "--json"],
+        ),
+        ("setup:plugin_sync", &["plugin", "sync", "--json"]),
+        ("setup:plugins.installed", &["plugin", "list", "--json"]),
+        (
+            "setup:proxy.configure",
+            &[
+                "config",
+                "proxy",
+                "set",
+                "--path",
+                "/matrix-missing",
+                "--yes",
+                "--dry-run",
+                "--json",
+            ],
+        ),
         ("setup:repair", &["setup", "repair", "--json"]),
+        ("setup:services.status", &["config", "status", "--json"]),
         ("setup:state", &["setup", "--json"]),
         (
             "snippets:snippets.create",
-            &["snippets", "create", MISSING, "--json"],
+            &["snippet", "add", MISSING, "--json"],
         ),
         (
             "snippets:snippets.exec",
-            &["snippets", "exec", MISSING, "--json"],
+            &["snippet", "run", MISSING, "--json"],
         ),
         (
             "snippets:snippets.get",
-            &["snippets", "get", MISSING, "--json"],
+            &["snippet", "get", MISSING, "--json"],
         ),
-        ("snippets:snippets.list", &["snippets", "list", "--json"]),
+        ("snippets:snippets.list", &["snippet", "list", "--json"]),
         (
             "snippets:snippets.remove",
-            &["snippets", "remove", MISSING, "--yes", "--json"],
+            &["snippet", "remove", MISSING, "--yes", "--json"],
         ),
         (
             "snippets:snippets.test",
-            &["snippets", "test", MISSING, "--json"],
+            &["snippet", "test", MISSING, "--json"],
         ),
         (
             "snippets:snippets.validate",
-            &["snippets", "validate", MISSING, "--json"],
+            &["snippet", "validate", MISSING, "--json"],
         ),
     ];
     cases
@@ -675,11 +685,35 @@ fn cli_action_cases() -> std::collections::BTreeSet<CliActionCase> {
         .collect()
 }
 
-const PROTECTED_ADD: [&str; 14] = [
-    "gateway",
-    "protected-route",
+const PROTECTED_ADD: [&str; 11] = [
+    "route",
     "add",
-    "--name",
+    "matrix-missing",
+    "--public-host",
+    "invalid.test",
+    "--public-path",
+    "/mcp",
+    "--upstream",
+    "matrix-missing",
+    "--enabled",
+    "--json",
+];
+const PROTECTED_STAGE_ADD: [&str; 11] = [
+    "route",
+    "add",
+    "matrix-missing",
+    "--public-host",
+    "invalid.test",
+    "--public-path",
+    "/mcp",
+    "--upstream",
+    "matrix-missing",
+    "--stage-for-restart",
+    "--json",
+];
+const PROTECTED_UPDATE: [&str; 12] = [
+    "route",
+    "replace",
     "matrix-missing",
     "--public-host",
     "invalid.test",
@@ -691,11 +725,9 @@ const PROTECTED_ADD: [&str; 14] = [
     "true",
     "--json",
 ];
-const PROTECTED_STAGE_ADD: [&str; 13] = [
-    "gateway",
-    "protected-route",
-    "add",
-    "--name",
+const PROTECTED_STAGE_UPDATE: [&str; 11] = [
+    "route",
+    "replace",
     "matrix-missing",
     "--public-host",
     "invalid.test",
@@ -706,40 +738,9 @@ const PROTECTED_STAGE_ADD: [&str; 13] = [
     "--stage-for-restart",
     "--json",
 ];
-const PROTECTED_UPDATE: [&str; 13] = [
-    "gateway",
-    "protected-route",
-    "update",
-    "matrix-missing",
-    "--public-host",
-    "invalid.test",
-    "--public-path",
-    "/mcp",
-    "--upstream",
-    "matrix-missing",
-    "--enabled",
-    "true",
-    "--json",
-];
-const PROTECTED_STAGE_UPDATE: [&str; 12] = [
-    "gateway",
-    "protected-route",
-    "update",
-    "matrix-missing",
-    "--public-host",
-    "invalid.test",
-    "--public-path",
-    "/mcp",
-    "--upstream",
-    "matrix-missing",
-    "--stage-for-restart",
-    "--json",
-];
-const PROTECTED_TEST: [&str; 12] = [
-    "gateway",
-    "protected-route",
+const PROTECTED_TEST: [&str; 10] = [
+    "route",
     "test",
-    "--name",
     "matrix-missing",
     "--public-host",
     "invalid.test",
@@ -847,8 +848,8 @@ async fn stateful_cli_workflows_observe_mutations_and_always_roll_them_back() {
         let create = action_scenarios::run_cli(
             home,
             &[
-                "snippets",
-                "create",
+                "snippet",
+                "add",
                 "matrix-owned",
                 "--code",
                 "async () => ({ ok: true })",
@@ -858,7 +859,7 @@ async fn stateful_cli_workflows_observe_mutations_and_always_roll_them_back() {
         .await
         .unwrap();
         action_scenarios::assert_success_json(&create, "snippets.create");
-        let get = action_scenarios::run_cli(home, &["snippets", "get", "matrix-owned", "--json"])
+        let get = action_scenarios::run_cli(home, &["snippet", "get", "matrix-owned", "--json"])
             .await
             .unwrap();
         action_scenarios::assert_success_json(&get, "snippets.get");
@@ -866,22 +867,21 @@ async fn stateful_cli_workflows_observe_mutations_and_always_roll_them_back() {
         record_observed_transition("snippets:snippets.create");
         record_observed_success("snippets:snippets.get");
         let validate =
-            action_scenarios::run_cli(home, &["snippets", "validate", "matrix-owned", "--json"])
+            action_scenarios::run_cli(home, &["snippet", "validate", "matrix-owned", "--json"])
                 .await
                 .unwrap();
         action_scenarios::assert_success_json(&validate, "snippets.validate");
         record_observed_success("snippets:snippets.validate");
         let remove = action_scenarios::run_cli(
             home,
-            &["snippets", "remove", "matrix-owned", "--yes", "--json"],
+            &["snippet", "remove", "matrix-owned", "--yes", "--json"],
         )
         .await
         .unwrap();
         action_scenarios::assert_success_json(&remove, "snippets.remove");
-        let absent =
-            action_scenarios::run_cli(home, &["snippets", "get", "matrix-owned", "--json"])
-                .await
-                .unwrap();
+        let absent = action_scenarios::run_cli(home, &["snippet", "get", "matrix-owned", "--json"])
+            .await
+            .unwrap();
         assert!(
             !absent.status.success(),
             "removed snippet remained observable"
@@ -897,7 +897,7 @@ async fn stateful_cli_workflows_observe_mutations_and_always_roll_them_back() {
         std::fs::create_dir_all(draft.parent().unwrap()).unwrap();
         std::fs::write(&draft, "LABBY_MATRIX_VALUE=owned\n").unwrap();
         let dry_run =
-            action_scenarios::run_cli(home, &["setup", "draft", "discard", "--dry-run", "--json"])
+            action_scenarios::run_cli(home, &["config", "draft", "discard", "--dry-run", "--json"])
                 .await
                 .unwrap();
         assert!(dry_run.status.success(), "setup dry-run failed");
@@ -909,7 +909,7 @@ async fn stateful_cli_workflows_observe_mutations_and_always_roll_them_back() {
         );
         assert!(draft.exists(), "interrupted discard changed state");
         let discard =
-            action_scenarios::run_cli(home, &["setup", "draft", "discard", "--yes", "--json"])
+            action_scenarios::run_cli(home, &["config", "draft", "discard", "--yes", "--json"])
                 .await
                 .unwrap();
         action_scenarios::assert_success_json(&discard, "setup.draft.discard");
@@ -930,9 +930,8 @@ async fn stateful_cli_workflows_observe_mutations_and_always_roll_them_back() {
         let gateway_add = action_scenarios::run_cli_against(
             home,
             &[
-                "gateway",
+                "server",
                 "add",
-                "--name",
                 "matrix-owned",
                 "--url",
                 "http://127.0.0.1:9/mcp",
@@ -945,7 +944,7 @@ async fn stateful_cli_workflows_observe_mutations_and_always_roll_them_back() {
         action_scenarios::assert_success_json(&gateway_add, "gateway.add");
         let gateway_get = action_scenarios::run_cli_against(
             home,
-            &["gateway", "get", "matrix-owned", "--json"],
+            &["server", "get", "matrix-owned", "--json"],
             &gateway_daemon,
         )
         .await
@@ -970,8 +969,8 @@ async fn stateful_cli_workflows_observe_mutations_and_always_roll_them_back() {
         let gateway_update = action_scenarios::run_cli_against(
             home,
             &[
-                "gateway",
-                "update",
+                "server",
+                "set",
                 "matrix-owned",
                 "--url",
                 "http://127.0.0.1:10/mcp",
@@ -984,7 +983,7 @@ async fn stateful_cli_workflows_observe_mutations_and_always_roll_them_back() {
         action_scenarios::assert_success_json(&gateway_update, "gateway.update");
         let gateway_updated = action_scenarios::run_cli_against(
             home,
-            &["gateway", "get", "matrix-owned", "--json"],
+            &["server", "get", "matrix-owned", "--json"],
             &gateway_daemon,
         )
         .await
@@ -997,7 +996,7 @@ async fn stateful_cli_workflows_observe_mutations_and_always_roll_them_back() {
         record_observed_transition("gateway:gateway.update");
         let gateway_remove = action_scenarios::run_cli_against(
             home,
-            &["gateway", "remove", "matrix-owned", "--json"],
+            &["server", "remove", "matrix-owned", "--json"],
             &gateway_daemon,
         )
         .await
@@ -1005,7 +1004,7 @@ async fn stateful_cli_workflows_observe_mutations_and_always_roll_them_back() {
         action_scenarios::assert_success_json(&gateway_remove, "gateway.remove");
         let gateway_absent = action_scenarios::run_cli_against(
             home,
-            &["gateway", "get", "matrix-owned", "--json"],
+            &["server", "get", "matrix-owned", "--json"],
             &gateway_daemon,
         )
         .await
@@ -1020,38 +1019,29 @@ async fn stateful_cli_workflows_observe_mutations_and_always_roll_them_back() {
 
         // Code Mode: observe both sides of the setting transition and restore
         // the isolated home to its initial disabled posture.
-        let enable = action_scenarios::run_cli_against(
-            home,
-            &["gateway", "code", "enable", "--json"],
-            &gateway_daemon,
-        )
-        .await
-        .unwrap();
+        let enable =
+            action_scenarios::run_cli_against(home, &["code", "enable", "--json"], &gateway_daemon)
+                .await
+                .unwrap();
         action_scenarios::assert_success_json(&enable, "gateway.code_mode.enable");
-        let enabled = action_scenarios::run_cli_against(
-            home,
-            &["gateway", "code", "status", "--json"],
-            &gateway_daemon,
-        )
-        .await
-        .unwrap();
+        let enabled =
+            action_scenarios::run_cli_against(home, &["code", "status", "--json"], &gateway_daemon)
+                .await
+                .unwrap();
         let enabled = action_scenarios::assert_success_json(&enabled, "gateway.code_mode.enabled");
         assert_eq!(enabled["enabled"], true, "Code Mode did not enable");
         let disable = action_scenarios::run_cli_against(
             home,
-            &["gateway", "code", "disable", "--json"],
+            &["code", "disable", "--json"],
             &gateway_daemon,
         )
         .await
         .unwrap();
         action_scenarios::assert_success_json(&disable, "gateway.code_mode.disable");
-        let disabled = action_scenarios::run_cli_against(
-            home,
-            &["gateway", "code", "status", "--json"],
-            &gateway_daemon,
-        )
-        .await
-        .unwrap();
+        let disabled =
+            action_scenarios::run_cli_against(home, &["code", "status", "--json"], &gateway_daemon)
+                .await
+                .unwrap();
         let disabled =
             action_scenarios::assert_success_json(&disabled, "gateway.code_mode.disabled");
         assert_eq!(disabled["enabled"], false, "Code Mode cleanup failed");
@@ -1059,13 +1049,10 @@ async fn stateful_cli_workflows_observe_mutations_and_always_roll_them_back() {
 
         // Missing transport parameters prove the stable invalid-input contract
         // after cleanup and cannot silently fall back to ambient configuration.
-        let invalid = action_scenarios::run_cli_against(
-            home,
-            &["gateway", "test", "--json"],
-            &gateway_daemon,
-        )
-        .await
-        .unwrap();
+        let invalid =
+            action_scenarios::run_cli_against(home, &["server", "test", "--json"], &gateway_daemon)
+                .await
+                .unwrap();
         assert!(
             !invalid.status.success(),
             "invalid gateway proposal unexpectedly succeeded"
@@ -1084,13 +1071,59 @@ async fn stateful_cli_workflows_observe_mutations_and_always_roll_them_back() {
 }
 
 #[tokio::test]
+async fn retired_cli_aliases_are_rejected_before_dispatch() {
+    let root = tempfile::tempdir().expect("retired command root");
+    std::fs::create_dir_all(root.path().join("tmp")).unwrap();
+    for (old, replacement) in [
+        ("install-plugin", "plugin install"),
+        ("uninstall-plugin", "plugin uninstall"),
+        ("installed-plugins", "plugin list"),
+        ("services-status", "config status"),
+    ] {
+        let output = action_scenarios::run_cli(root.path(), &["setup", old, "--json"])
+            .await
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "retired command must not execute"
+        );
+        assert!(output.stdout.is_empty());
+        let envelope: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(envelope["error"]["side_effects"], "none_expected");
+        assert!(
+            envelope["error"]["cause"]
+                .as_str()
+                .unwrap()
+                .contains(replacement)
+        );
+    }
+}
+
+#[test]
+fn every_cli_action_case_parses_with_the_canonical_grammar() {
+    use clap::Parser as _;
+    let failures = cli_action_cases()
+        .into_iter()
+        .filter_map(|case| {
+            labby::cli::Cli::try_parse_from(
+                std::iter::once("labby").chain(case.argv.iter().copied()),
+            )
+            .err()
+            .map(|error| format!("{} has stale CLI arguments: {error}", case.key))
+        })
+        .collect::<Vec<_>>();
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[tokio::test]
 async fn explicit_remote_failure_never_falls_back_or_creates_local_state() {
     let root = tempfile::tempdir().expect("explicit remote root");
     std::fs::create_dir_all(root.path().join("tmp")).unwrap();
     let mut command = tokio::process::Command::from(live_labby::isolated_command(root.path()));
     command
         .env("LABBY_SERVER_URL", "http://127.0.0.1:9")
-        .args(["gateway", "list", "--json"]);
+        .args(["server", "list", "--json"]);
     let output = live_labby::bounded_cli_output(&mut command, action_scenarios::CHILD_DEADLINE)
         .await
         .expect("explicit remote failure deadline");

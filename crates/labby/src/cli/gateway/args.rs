@@ -8,23 +8,35 @@ pub struct GatewayArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum GatewayCommand {
+    /// Canonical CLI lifecycle orchestration over the shared runtime actions.
+    #[command(skip)]
+    Lifecycle(crate::cli::server_lifecycle::Request),
     /// List configured gateways and their runtime status.
+    #[command(skip)]
     List,
     /// Get one configured gateway.
+    #[command(skip)]
     Get(GatewayGetArgs),
     /// Test a configured or proposed gateway without saving it.
+    #[command(skip)]
     Test(GatewayTestArgs),
     /// Add a gateway and reconcile runtime state.
+    #[command(skip)]
     Add(GatewayAddArgs),
     /// Update a gateway and reconcile runtime state.
+    #[command(skip)]
     Update(GatewayUpdateArgs),
     /// Remove a gateway and reconcile runtime state.
+    #[command(skip)]
     Remove(GatewayRemoveArgs),
     /// Manage Labby-backed virtual servers quarantined during config migration.
+    #[command(skip)]
     Quarantine(GatewayQuarantineArgs),
     /// Manage public MCP routes protected by Labby OAuth.
+    #[command(skip)]
     ProtectedRoute(GatewayProtectedRouteArgs),
     /// Manage reusable gateway capability loadouts.
+    #[command(skip)]
     Loadout(GatewayLoadoutArgs),
     /// Reload gateways from config and reconcile runtime state.
     Reload,

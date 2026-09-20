@@ -66,7 +66,7 @@ After installing Labby, configure proxy defaults once and launch a JavaScript
 stdio server without proxy flags:
 
 ```bash
-labby setup proxy
+labby config proxy set
 labby doctor proxy
 labby proxy /path/to/dist.js
 ```
@@ -175,7 +175,7 @@ The PowerShell installer installs the binary; run setup separately as shown abov
 
 For unattended shell installs, set `LABBY_SETUP_ROLE=server` or `client` and the
 corresponding `LABBY_SETUP_*` options. For a binary-only install, set
-`LABBY_INSTALL_NO_SETUP=1`. Manual and automatic `labby update` operations always
+`LABBY_INSTALL_NO_SETUP=1`. Manual and automatic `labby host update` operations always
 skip first-run setup. See the [setup guide](./docs/services/SETUP.md) for examples.
 
 Override install behavior with `LABBY_INSTALL_DIR`, `LABBY_INSTALL_VERSION`, or
@@ -231,16 +231,16 @@ updater job after the server passes its health check. See the
 For an installation without a persistent server, use the standalone daily job:
 
 ```bash
-labby update --auto-update enable
-labby update --auto-update status
-labby update --auto-update disable
+labby host update auto enable
+labby host update auto status
+labby host update auto disable
 ```
 
 Both modes require Apple Silicon and GitHub CLI (`gh`) for release attestation
 verification. They skip drafts, prereleases, missing platform assets, and versions
 equal to or older than the installed binary. The installer verifies attestations
 and checksums before atomic replacement. No separate language runtime is required.
-Use `labby update --automatic --dry-run` to check without installing.
+Use `labby host update --automatic --dry-run` to check without installing.
 
 ### Build From Source
 
@@ -359,21 +359,35 @@ set, it starts a standalone local gateway instead. See the
 [local bridge guide](./docs/surfaces/TRANSPORT.md#local-bridge-to-the-running-daemon)
 for client configuration and `LABBY_SERVER_URL` fail-closed behavior.
 
-### Manage Upstream MCP Gateways
+### Discover Commands
 
 ```bash
-labby gateway add \
-  --name github \
-  --url https://example.com/mcp \
-  --bearer-token-env GITHUB_MCP_TOKEN \
-  -y
-
-labby gateway reload
-labby gateway list
+labby --help
+labby help --all
+labby help server --all
+labby help --search oauth
+labby help --all --json
 ```
 
-Stdio upstreams execute local commands when tested or reconciled, so gateway
-tests and config mutations use the shared destructive-action confirmation gate.
+Public command names use separate words without hyphens. Flags and resource
+names retain normal syntax. Help and completion work offline, even with broken
+configuration. See the [CLI guide](./docs/surfaces/CLI.md) and
+[breaking migration map](./docs/generated/cli-migration.md).
+
+### Manage Upstream MCP Servers
+
+```bash
+labby server add github \
+  --url https://example.com/mcp \
+  --bearer-token-env GITHUB_MCP_TOKEN
+
+labby gateway reload
+labby server list
+```
+
+Stdio upstreams can execute local commands when tested or reconciled. Review
+configuration before adding or testing them; the CLI retains each operation's
+existing authorization and confirmation requirements.
 The stdio spawn guard allows known runtimes such as `npx`, `uvx`, `docker`,
 `node`, `python`, `python3`, `deno`, `pipx`, and `dnx`; customize it in
 `[gateway]` inside `config.toml`.
@@ -384,15 +398,17 @@ When `[code_mode].enabled = true`, Labby hides raw proxied upstream tools from M
 `list_tools()` and exposes the canonical synthetic `codemode` tool.
 
 ```bash
-labby gateway code status
-labby gateway code enable
-labby gateway code exec --code 'async () => tools.length'
+labby code status
+labby code enable
+labby code search 'github issues' --limit 5
+labby code describe github.search_issues
+labby code run --file ./task.js
 ```
 
 MCP call shapes:
 
 ```json
-{ "code": "async () => (await codemode.search(\"github issues\")).results" }
+{ "code": "async () => (await codemode.search({\"query\":\"github issues\",\"limit\":5})).results" }
 ```
 
 ```json
@@ -409,12 +425,12 @@ from inside the sandbox.
 ### Work With Code Mode Snippets
 
 ```bash
-labby snippets list
-labby snippets get gateway-summary
-labby snippets create --name my-snippet --file ./my-snippet.js
-labby snippets validate my-snippet
-labby snippets exec my-snippet
-labby snippets test my-snippet
+labby snippet list
+labby snippet get gateway-summary
+labby snippet add my-snippet --file ./my-snippet.js
+labby snippet validate my-snippet
+labby snippet run my-snippet
+labby snippet test my-snippet
 ```
 
 Snippets are stored per-user under `$LABBY_HOME` and executed through the
@@ -431,13 +447,18 @@ labby doctor auth       # auth/OAuth env vars, files, permissions
 labby doctor proxy      # zero-route stdio-proxy config/dependency preflight
 labby doctor proxy --app-url URL --mcp-url URL --route /path
                         # routed public reverse-proxy checks remain available
-labby doctor oauth-relay
-labby health            # lightweight liveness/readiness probe
-labby logs              # tail the active deployment's service journal
+labby doctor relay
+labby gateway status    # query the selected daemon and its upstream state
+labby logs --lines 50    # bounded local rolling logs, without systemd
+labby logs --level error --query REQUEST_ID --json
+labby logs journal --follow  # explicitly stream the deployment journal
 ```
 
 `labby doctor --json` is the CI-friendly form; the exit code reflects the worst
-severity found.
+severity found. Runtime errors include their command, origin, side-effect
+classification, recovery guidance, and a request ID. `--json` errors remain one
+JSON envelope on stderr; command results stay on stdout. Use `-v` or `-vv` for
+diagnostics. `--quiet` suppresses console logs but never hides the actual error.
 
 > **Removed surfaces.** Earlier releases documented `labby marketplace`,
 > `labby stash`, `labby nodes`, and `labby deploy`, along with ACP chat, the MCP
@@ -618,9 +639,9 @@ just build            # cargo build --workspace --all-features
 just build-release    # release build, bin/labby install, ~/.local/bin symlink
 just service-install  # build and install the native persistent gateway service
 just service-status   # inspect the native service manager state
-labby setup host-service install --install-self -y # install current binary + start system service
-labby setup host-service restart --install-self -y # reinstall current binary + restart service
-labby setup host-service status --json # inspect the host Labby gateway service
+labby host service install --install-self -y # install current binary + start system service
+labby host service restart --install-self -y # reinstall current binary + restart service
+labby host service status --json # inspect the host Labby gateway service
 just host-sync        # repo dev shortcut: rebuild + install binary + restart host service
 just web-build        # cd apps/gateway-admin && pnpm build
 just web-watch        # rebuild web assets when frontend files change
@@ -674,7 +695,7 @@ removed; operators run `labby setup` themselves. Do not reintroduce a `hooks/`
 directory, bundle a binary under `plugins/labby/bin/`, or add
 Docker/systemd bootstrap logic to plugin assets.
 
-`labby setup plugin-hook` remains a CLI command for on-demand audit and settings
+`labby plugin hook` remains a CLI command for on-demand audit and settings
 sync (`--no-repair` for read-only), exercised by `just validate-plugin`.
 
 ## Related Servers

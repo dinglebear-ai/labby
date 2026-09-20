@@ -1,4 +1,3 @@
-use std::io::IsTerminal;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -27,8 +26,10 @@ pub struct OauthArgs {
 #[derive(Debug, Subcommand)]
 pub enum OauthCommand {
     /// Run a local OAuth callback relay that forwards to a machine or explicit target.
+    #[command(name = "local")]
     RelayLocal(RelayLocalArgs),
     /// Manage the public OAuth callback relay sidecar registry.
+    #[command(name = "registry")]
     RelayRegistry(RelayRegistryArgs),
 }
 
@@ -265,7 +266,7 @@ fn confirm_destructive_relay_action(action: &str, detail: &str, yes: bool) -> Re
     if yes {
         return Ok(());
     }
-    if !std::io::stdin().is_terminal() {
+    if !crate::cli::helpers::interactive_allowed() {
         tracing::warn!(
             surface = "cli",
             service = "oauth_relay",
@@ -307,8 +308,9 @@ mod tests {
 
         let cli = Cli::try_parse_from([
             "lab",
-            "oauth",
-            "relay-local",
+            "auth",
+            "relay",
+            "local",
             "--machine",
             "node-a",
             "--port",
@@ -316,7 +318,7 @@ mod tests {
         ])
         .expect("machine target should parse");
 
-        match cli.command {
+        match cli.command.into_operation() {
             crate::cli::Command::Oauth(OauthArgs {
                 command:
                     OauthCommand::RelayLocal(RelayLocalArgs {
@@ -337,8 +339,9 @@ mod tests {
     fn oauth_relay_local_cli_parses_explicit_target() {
         let cli = Cli::try_parse_from([
             "lab",
-            "oauth",
-            "relay-local",
+            "auth",
+            "relay",
+            "local",
             "--forward-base",
             "http://100.64.0.10:38935/callback/node-a",
             "--port",
@@ -346,7 +349,7 @@ mod tests {
         ])
         .expect("explicit target should parse");
 
-        match cli.command {
+        match cli.command.into_operation() {
             crate::cli::Command::Oauth(OauthArgs {
                 command:
                     OauthCommand::RelayLocal(RelayLocalArgs {
@@ -370,8 +373,9 @@ mod tests {
     fn oauth_relay_local_cli_rejects_both_target_flags() {
         let result = Cli::try_parse_from([
             "lab",
-            "oauth",
-            "relay-local",
+            "auth",
+            "relay",
+            "local",
             "--machine",
             "node-a",
             "--forward-base",
@@ -401,15 +405,16 @@ mod tests {
     fn oauth_relay_registry_cli_parses_import() {
         let cli = Cli::try_parse_from([
             "lab",
-            "oauth",
-            "relay-registry",
+            "auth",
+            "relay",
+            "registry",
             "import",
             "--file",
             "/tmp/registry.json",
         ])
         .expect("relay registry import should parse");
 
-        match cli.command {
+        match cli.command.into_operation() {
             crate::cli::Command::Oauth(OauthArgs {
                 command:
                     OauthCommand::RelayRegistry(RelayRegistryArgs {
@@ -427,8 +432,9 @@ mod tests {
     fn oauth_relay_registry_cli_parses_import_yes_flag() {
         let cli = Cli::try_parse_from([
             "lab",
-            "oauth",
-            "relay-registry",
+            "auth",
+            "relay",
+            "registry",
             "import",
             "--file",
             "/tmp/registry.json",
@@ -436,7 +442,7 @@ mod tests {
         ])
         .expect("relay registry import with --yes should parse");
 
-        match cli.command {
+        match cli.command.into_operation() {
             crate::cli::Command::Oauth(OauthArgs {
                 command:
                     OauthCommand::RelayRegistry(RelayRegistryArgs {
@@ -453,8 +459,9 @@ mod tests {
     fn oauth_relay_registry_cli_parses_remove_yes_flag() {
         let cli = Cli::try_parse_from([
             "lab",
-            "oauth",
-            "relay-registry",
+            "auth",
+            "relay",
+            "registry",
             "remove",
             "--machine",
             "devhost",
@@ -462,7 +469,7 @@ mod tests {
         ])
         .expect("relay registry remove with -y should parse");
 
-        match cli.command {
+        match cli.command.into_operation() {
             crate::cli::Command::Oauth(OauthArgs {
                 command:
                     OauthCommand::RelayRegistry(RelayRegistryArgs {
@@ -480,8 +487,9 @@ mod tests {
     fn oauth_relay_registry_cli_parses_register() {
         let cli = Cli::try_parse_from([
             "lab",
-            "oauth",
-            "relay-registry",
+            "auth",
+            "relay",
+            "registry",
             "register",
             "--machine",
             "devhost",
@@ -490,7 +498,7 @@ mod tests {
         ])
         .expect("relay registry register should parse");
 
-        match cli.command {
+        match cli.command.into_operation() {
             crate::cli::Command::Oauth(OauthArgs {
                 command:
                     OauthCommand::RelayRegistry(RelayRegistryArgs {

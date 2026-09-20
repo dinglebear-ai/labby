@@ -1123,13 +1123,17 @@ async fn handle_mcp_actions(
         }
         "gateway.mcp.restart" => {
             let params: GatewayMcpRestartParams = parse_params(params_value)?;
+            let wait_ms = params.wait_ms.unwrap_or(20_000);
+            if wait_ms > 300_000 {
+                return Err(ToolError::InvalidParam { param: "wait_ms".into(), message: "Restart wait_ms must be between 0 and 300000 milliseconds. No restart was started.".into() });
+            }
             manager
                 .restart_mcp_upstream(
                     &params.name,
                     params.aggressive,
                     enrichment_scope,
                     params.owner.map(Into::into),
-                    std::time::Duration::from_secs(20),
+                    std::time::Duration::from_millis(wait_ms),
                 )
                 .await
         }
@@ -1243,7 +1247,7 @@ async fn handle_skills_list(
         return Err(ToolError::Sdk {
             sdk_kind: "not_found".to_string(),
             message: format!(
-                "gateway upstream `{filter}` was not found; run `labby gateway skills list` or `labby gateway list` to discover valid upstream names"
+                "gateway upstream `{filter}` was not found; run `labby skill source list` or `labby server list` to discover valid upstream names"
             ),
         });
     }

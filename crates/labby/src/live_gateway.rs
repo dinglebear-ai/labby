@@ -90,6 +90,8 @@ enum TargetSet {
 enum ExplicitSource {
     Plugin,
     Operator,
+    Argument,
+    Context,
 }
 
 impl ExplicitSource {
@@ -97,6 +99,8 @@ impl ExplicitSource {
         match self {
             Self::Plugin => "CLAUDE_PLUGIN_OPTION_SERVER_URL",
             Self::Operator => "LABBY_SERVER_URL",
+            Self::Argument => "--server",
+            Self::Context => "CLI connection context",
         }
     }
 }
@@ -126,6 +130,15 @@ fn resolve_target_set_from(
     port_env: Option<String>,
     config: &LabConfig,
 ) -> Result<TargetSet, ToolError> {
+    if let Some(selected) = &config.cli_target {
+        return Ok(TargetSet::Explicit {
+            base_url: normalize_explicit_target(&selected.server)?,
+            source: match selected.source {
+                crate::config::cli::TargetSource::Argument => ExplicitSource::Argument,
+                crate::config::cli::TargetSource::Context => ExplicitSource::Context,
+            },
+        });
+    }
     for (source, value) in [
         (ExplicitSource::Plugin, plugin_url),
         (ExplicitSource::Operator, server_url),
@@ -274,7 +287,7 @@ pub async fn detect(
     if token.is_none()
         && let TargetSet::Explicit {
             base_url,
-            source: ExplicitSource::Operator,
+            source: ExplicitSource::Operator | ExplicitSource::Argument | ExplicitSource::Context,
         } = &targets
     {
         // Keep the OAuth refresh future out of every CLI command's stack frame.
@@ -282,7 +295,7 @@ pub async fn detect(
             .await
             .map_err(|_| ToolError::Sdk {
                 sdk_kind: "auth_failed".to_owned(),
-                message: "Saved CLI sign-in is unavailable; run labby login for this server"
+                message: "Saved CLI sign-in is unavailable; run labby auth login for this server"
                     .to_owned(),
             })?;
     }
@@ -299,6 +312,12 @@ fn token_for_target_from(
             source: ExplicitSource::Plugin,
             ..
         } => plugin_token,
+        // Explicit CLI destinations must not borrow an unrelated environment token.
+        // The authority-bound existing OAuth profile is consulted below instead.
+        TargetSet::Explicit {
+            source: ExplicitSource::Argument | ExplicitSource::Context,
+            ..
+        } => None,
         TargetSet::Explicit {
             source: ExplicitSource::Operator,
             ..
@@ -388,6 +407,47 @@ async fn detect_targets(
                 .unwrap_or(None))
         }
     }
+}
+
+/// Compute an offline cache binding using the same explicit destination and
+/// credential precedence as live dispatch. Never refreshes OAuth or probes a server.
+pub(crate) fn completion_authority(
+    config: &LabConfig,
+    team_id: Option<&str>,
+) -> Result<Option<(Url, String)>, ToolError> {
+    use sha2::{Digest as _, Sha256};
+    let targets = resolve_target_set_from(
+        std::env::var("CLAUDE_PLUGIN_OPTION_SERVER_URL")
+            .ok()
+            .as_deref(),
+        std::env::var("LABBY_SERVER_URL").ok().as_deref(),
+        None,
+        None,
+        config,
+    )?;
+    let token = token_for_target_from(
+        &targets,
+        std::env::var("CLAUDE_PLUGIN_OPTION_API_TOKEN").ok(),
+        std::env::var("LABBY_MCP_HTTP_TOKEN").ok(),
+    );
+    let TargetSet::Explicit { base_url, source } = targets else {
+        return Ok(None);
+    };
+    let identity = match token {
+        Some(token) => format!("bearer:{}", hex::encode(Sha256::digest(token.as_bytes()))),
+        None if matches!(source, ExplicitSource::Plugin) => "anonymous".to_owned(),
+        None => crate::oauth::cli_session::stored_identity(&base_url)
+            .map_err(|_| ToolError::Sdk { sdk_kind:"auth_required".into(), message:"The selected saved session could not be read. Completion data was not reused across credential identities.".into() })?
+            .unwrap_or_else(|| "anonymous".to_owned()),
+    };
+    let binding = serde_json::to_vec(&(
+        "labby-cli-completions-v1",
+        base_url.as_str(),
+        team_id,
+        identity,
+    ))
+    .map_err(|_| ToolError::internal_message("Cannot serialize completion authority"))?;
+    Ok(Some((base_url, hex::encode(Sha256::digest(binding)))))
 }
 
 async fn probe_target(
@@ -736,6 +796,19 @@ impl LiveGateway {
     pub fn with_team_id(mut self, team_id: Option<String>) -> Self {
         self.team_id = team_id;
         self
+    }
+
+    /// Bound the transport wait for an operation with an explicit completion budget.
+    #[must_use]
+    pub fn with_dispatch_timeout(mut self, timeout: Duration) -> Self {
+        self.dispatch_timeout = timeout.min(Duration::from_secs(305));
+        self
+    }
+
+    /// Normalized destination without userinfo, queries, or fragments.
+    #[must_use]
+    pub fn server_url(&self) -> &str {
+        self.base_url.as_str()
     }
 
     /// The Team authority selected with [`Self::with_team_id`], if any.
