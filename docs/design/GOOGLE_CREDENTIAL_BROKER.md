@@ -1,7 +1,7 @@
 ---
 title: "Google Credential Broker"
 created: "2026-08-04"
-updated: "2026-08-05"
+updated: "2026-09-16"
 status: "implemented"
 ---
 
@@ -122,7 +122,7 @@ The broker does not:
 The implementation follows these primary sources:
 
 - Workspace MCP servers and scopes:
-  https://developers.google.com/workspace/mcp/configure-mcp
+  https://developers.google.com/workspace/guides/configure-mcp-servers
 - OAuth web-server flow and incremental authorization:
   https://developers.google.com/identity/protocols/oauth2/web-server
 - OpenID Connect and stable `sub`:
@@ -134,7 +134,7 @@ The implementation follows these primary sources:
 - Workspace API user-data policy:
   https://developers.google.com/workspace/workspace-api-user-data-developer-policy
 - Workspace MCP security guidance:
-  https://developers.google.com/workspace/mcp/security
+  https://developers.google.com/workspace/guides/configure-mcp-security
 
 Key constraints:
 
@@ -454,6 +454,11 @@ client_secret_env = "LABBY_GOOGLE_CLIENT_SECRET"
 be explicit in multi-account or future multi-account deployments.
 
 ### Credential-source JSON Schema
+
+The `$id` below is a stable schema identifier for the inline contract. It does
+not imply that `dinglebear.ai` serves the schema as a dereferenceable HTTP
+resource; the canonical text is this checked-in document and the compiled
+configuration types named above.
 
 ```json
 {

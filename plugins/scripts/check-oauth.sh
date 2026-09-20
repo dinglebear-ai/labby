@@ -2,7 +2,7 @@
 # check-oauth.sh — verify OAuth/auth configuration and endpoint security
 #
 # Usage:
-#   ./scripts/check-oauth.sh [BASE_URL]
+#   ./plugins/scripts/check-oauth.sh [BASE_URL]
 #
 # Environment variables (override auto-detection from ~/.labby/.env):
 #   LAB_BASE_URL          — server base URL (default: http://localhost:8080)

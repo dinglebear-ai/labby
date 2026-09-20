@@ -2,7 +2,7 @@
 title: "Access Control Implementation Plan"
 created: "2026-08-22"
 updated: "2026-08-22"
-status: "planned"
+status: "historical-plan"
 ---
 
 # Access Control Implementation Plan

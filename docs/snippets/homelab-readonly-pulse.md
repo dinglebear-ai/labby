@@ -2,8 +2,8 @@
 name: homelab-readonly-pulse
 title: "Homelab Read-Only Pulse"
 created: "2026-07-30"
-updated: "2026-07-30"
-description: Read-only homelab pulse across time, containers, Cortex, Gotify, and Synapse
+updated: "2026-09-16"
+description: Read-only homelab pulse across time, Docker, Cortex, and Synapse
 tags: [homelab, readonly, ops]
 inputs:
   timezone:
@@ -26,74 +26,39 @@ inputs:
     default: 12
     required: false
     description: Maximum containers to sample
-  identity_hosts:
-    type: array
-    default: ["node-a", "node-b"]
-    required: false
-    description: Host aliases for read-only identity checks
 ---
 
 # Homelab Read-Only Pulse
 
-Use this snippet for a small health pulse across the homelab. It avoids notification-send and state-changing actions. The Synapse `scout exec` checks use allowlisted read-only commands and require the local Labby upstream env override `SYNAPSE_MCP_ALLOW_DESTRUCTIVE=true`.
+Use this snippet for a compact, read-only infrastructure pulse using upstreams
+that are currently discoverable through Labby. It intentionally avoids historical
+alias namespaces such as `rustify`, `rustscale`, `rustifi`, and `unrust`.
+Add optional services only after rediscovering and inspecting their live schemas.
 
-## Tutorial: How This Snippet Is Built
+## Current Calls
 
-This snippet is a read-only operations dashboard assembled from existing MCP tools. It does not invent new checks; it chooses safe tool actions and normalizes their outputs into one pulse.
+| Evidence | Tool | Parameters |
+| --- | --- | --- |
+| Timestamp | `time::get_current_time` | `timezone` |
+| Docker hosts | `dozzle::list_hosts` | none |
+| Docker containers | `dozzle::list_containers` | optional server-side `state`; this snippet samples client-side |
+| Recent logs | `cortex::cortex` | `action: "search"`, `query`, `limit` |
+| Synapse nodes | `synapse::scout` | `action: "nodes"` |
+| Synapse host status | `synapse::flux` | `action: "host"`, `subaction: "status"` |
 
-| Step | Tool | Why it is included | Parameters the user fills |
-|---|---|---|---|
-| Timestamp | `time::get_current_time` | Anchors the report in local time | `timezone` |
-| Docker hosts | `dozzle::list_hosts` | Shows which Docker hosts are visible | none |
-| Docker containers | `dozzle::list_containers` | Counts container states and samples names/images | none; snippet input controls sample size |
-| Logs | `cortex::cortex` | Pulls recent matching logs | `action`, `query`, `limit` |
-| Gotify health | `rustify::gotify` | Confirms notification service health without sending | `action` |
-| Synapse nodes | `synapse::scout` | Lists configured Synapse hosts | `action` |
-| Synapse host status | `synapse::flux` | Gets per-host Docker/system status | `action`, `subaction` |
-| Synapse identity | `synapse::scout` | Runs allowlisted `hostname` checks | `action`, `host`, `command` |
+These six calls were rediscovered from the live catalog and smoke-tested through
+Labby on 2026-09-16. They are independent, so the snippet uses
+`codemode.batch` and preserves each call's own failure instead of allowing one
+upstream error to discard the rest of the pulse.
 
-The authoring pattern is still simple: pick read-only tools, fill their schema fields, then decide which result fields are worth keeping. The snippet intentionally drops noisy raw payload fields and returns summaries like container counts, Synapse host status, Gotify health, and per-call timings.
+## Validation Expectations
 
-## Why The Inputs Exist
-
-- `timezone` feeds the timestamp tool.
-- `log_query` and `log_limit` feed the Cortex `search` action.
-- `container_sample` controls how many containers are included in the sample after counting all containers.
-- `identity_hosts` expands into one read-only Synapse `hostname` command per host.
-
-These defaults let the snippet run with no arguments. Users only change inputs when they want to focus the pulse, for example `--param log_query=oauth` or `--param identity_hosts='["node-a","node-b","controller"]'`.
-
-## What Validation Should Catch
-
-The builder should catch type and action-shape mistakes before execution:
-
-- `time::get_current_time.timezone` must be a string.
-- `cortex::cortex.limit` must be an integer.
-- `synapse::scout.host` must be a string when creating per-host exec calls.
-- `identity_hosts` must be an array before expanding it into multiple calls.
-
-This is also where read-only intent should be obvious in the UI. The selected actions should be shown with destructive metadata from the gateway catalog, and the builder should make it clear that this snippet avoids send/delete/mutate actions.
-
-Live smoke-tested tools before authoring:
-
-- `time::get_current_time`
-- `dozzle::list_hosts`
-- `dozzle::list_containers`
-- `cortex::cortex` with `action: "search"`
-- `rustify::gotify` with `action: "health"`
-- `synapse::scout` with `action: "nodes"`
-- `synapse::flux` with `action: "host", subaction: "status"`
-- `synapse::scout` with `action: "exec"` and allowlisted read-only `hostname`
-
-Tools deliberately excluded because they are not currently exposed in the live Code Mode catalog:
-
-- `unrust::unraid`
-
-Actions tested and deliberately excluded because they failed from Code Mode in this session:
-
-- `rustscale::tailscale` with `action: "devices"`
-- `rustifi::unifi` with `action: "health"`
-- `arcane-mcp::arcane` with `action: "environment", subaction: "list"`
+- `time::get_current_time.timezone` is a string.
+- `cortex::cortex.action` is `search`; `query` is a string and `limit` is numeric.
+- `synapse::scout.action` is `nodes`.
+- `synapse::flux.action` is `host` with `subaction: "status"`.
+- The snippet does not claim notification, Tailscale, UniFi, Unraid, or Arcane
+  coverage unless those upstream tools are rediscovered for the active route.
 
 Run with:
 
@@ -104,15 +69,13 @@ labby gateway code exec --json --code "$(awk '/^```js$/{flag=1;next}/^```$/{if(f
 ```js
 async (overrides = {}) => {
   const input = {
-    timezone: "America/New_York",
+    timezone: overrides.timezone ?? "America/New_York",
     logQuery: overrides.log_query ?? "error",
     logLimit: overrides.log_limit ?? 5,
-    containerSample: overrides.container_sample ?? 12,
-    identityHosts: overrides.identity_hosts ?? ["node-a", "node-b"],
-    ...overrides
+    containerSample: overrides.container_sample ?? 12
   };
 
-  const timed = async (label, id, params, transform = (x) => x) => {
+  const timed = async (label, id, params, transform = (value) => value) => {
     const started = Date.now();
     try {
       const result = await callTool(id, params);
@@ -134,13 +97,13 @@ async (overrides = {}) => {
     }
   };
 
-  const calls = await Promise.all([
-    timed("timestamp", "time::get_current_time", { timezone: input.timezone }),
-    timed(
+  const jobs = [
+    () => timed("timestamp", "time::get_current_time", { timezone: input.timezone }),
+    () => timed(
       "docker_hosts",
       "dozzle::list_hosts",
       {},
-      (hosts) => hosts.map((host) => ({
+      (hosts) => (hosts || []).map((host) => ({
         name: host.name,
         available: host.available,
         type: host.type,
@@ -149,22 +112,23 @@ async (overrides = {}) => {
         memTotal: host.memTotal
       }))
     ),
-    timed(
+    () => timed(
       "docker_containers",
       "dozzle::list_containers",
       {},
       (containers) => {
+        const list = containers || [];
         const byState = {};
         const byHost = {};
-        for (const container of containers) {
+        for (const container of list) {
           byState[container.state] = (byState[container.state] || 0) + 1;
           byHost[container.host] = (byHost[container.host] || 0) + 1;
         }
         return {
-          total: containers.length,
+          total: list.length,
           byState,
           byHost,
-          sample: containers.slice(0, input.containerSample).map((container) => ({
+          sample: list.slice(0, input.containerSample).map((container) => ({
             name: container.name,
             image: container.image,
             state: container.state,
@@ -173,7 +137,7 @@ async (overrides = {}) => {
         };
       }
     ),
-    timed(
+    () => timed(
       "recent_logs",
       "cortex::cortex",
       { action: "search", query: input.logQuery, limit: input.logLimit },
@@ -188,74 +152,41 @@ async (overrides = {}) => {
         }))
       })
     ),
-    timed("gotify_health", "rustify::gotify", { action: "health" }),
-    timed(
-      "synapse_nodes",
-      "synapse::scout",
-      { action: "nodes" },
-      (result) => ({
-        total: result.hosts?.length || 0,
-        hosts: (result.hosts || []).map((host) => ({
-          name: host.name,
-          host: host.host,
-          protocol: host.protocol,
-          sshUser: host.sshUser,
-          sshPort: host.sshPort,
-          dockerSocketPath: host.dockerSocketPath
-        }))
-      })
-    ),
-    timed(
+    () => timed("synapse_nodes", "synapse::scout", { action: "nodes" }),
+    () => timed(
       "synapse_host_status",
       "synapse::flux",
-      { action: "host", subaction: "status" },
-      (result) => ({
-        count: result.count,
-        partial: result.partial,
-        errors: result.errors || {},
-        status: (result.status || []).map((host) => ({
-          name: host.name,
-          connected: host.connected,
-          dockerVersion: host.dockerVersion,
-          containerCount: host.containerCount,
-          runningCount: host.runningCount,
-          failedServiceCount: host.failedServiceCount
-        }))
-      })
-    ),
-    ...(input.identityHosts || []).map((host) =>
-      timed(
-        `synapse_identity_${host}`,
-        "synapse::scout",
-        { action: "exec", host, command: "hostname" },
-        (result) => ({
-          host: result.host,
-          command: result.command,
-          exit_code: result.exit_code,
-          stdout: String(result.stdout || "").trim(),
-          stderr: String(result.stderr || "").trim()
-        })
-      )
+      { action: "host", subaction: "status" }
     )
-  ]);
+  ];
+
+  const batch = await codemode.batch(jobs);
+  const calls = batch.ok
+    .sort((a, b) => a.i - b.i)
+    .map((entry) => entry.value);
+  calls.push(...batch.failed.map((entry) => ({
+    label: `batch_job_${entry.i}`,
+    id: "codemode.batch",
+    ok: false,
+    error: String(entry.error)
+  })));
 
   const byLabel = Object.fromEntries(calls.map((call) => [call.label, call]));
-  const synapseStatus = byLabel.synapse_host_status?.result;
-  const dockerContainers = byLabel.docker_containers?.result;
+  const containers = byLabel.docker_containers?.result;
+  const degraded = calls.filter((call) => !call.ok);
 
   return {
     snippet: "homelab_readonly_pulse",
     input,
-    ok: calls.every((call) => call.ok),
+    ok: degraded.length === 0,
+    status: degraded.length === 0 ? "ok" : "degraded",
     summary: {
       docker_hosts: byLabel.docker_hosts?.result?.length,
-      docker_containers: dockerContainers?.total,
-      docker_container_states: dockerContainers?.byState,
-      synapse_hosts: byLabel.synapse_nodes?.result?.total,
-      synapse_partial: synapseStatus?.partial || false,
-      synapse_errors: synapseStatus?.errors || {},
-      gotify_health: byLabel.gotify_health?.result?.health
+      docker_containers: containers?.total,
+      docker_container_states: containers?.byState,
+      recent_log_count: byLabel.recent_logs?.result?.count
     },
+    degraded: degraded.map((call) => ({ label: call.label, id: call.id, error: call.error })),
     calls
   };
 }

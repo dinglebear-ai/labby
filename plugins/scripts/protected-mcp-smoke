@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat >&2 <<'USAGE'
 Usage:
-  scripts/protected-mcp-smoke --app-url https://lab.example.com --mcp-url https://mcp.example.com --route /syslog
+  plugins/scripts/protected-mcp-smoke --app-url https://lab.example.com --mcp-url https://mcp.example.com --route /syslog
 
 Runs the same public protected-MCP reverse-proxy checks as:
   labby doctor proxy --app-url ... --mcp-url ... --route ...

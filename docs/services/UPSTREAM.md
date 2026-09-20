@@ -1,23 +1,23 @@
 ---
 title: "Upstream MCP Proxy"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-09-16"
 ---
 
 # Upstream MCP Proxy
 
-Lab can act as an MCP gateway, proxying tool calls and resource reads to upstream MCP servers. This lets a single `lab` instance aggregate tools from multiple MCP servers behind one authenticated endpoint.
+Labby can act as an MCP gateway, proxying tool calls and resource reads to upstream MCP servers. This lets a single Labby instance aggregate tools from multiple MCP servers behind one authenticated endpoint.
 
-Upstream servers are first-class providers in the merged MCP tool catalog. After discovery, their tools appear in `list_tools()` beside built-in `lab` tools. Callers do not need a separate tool or namespace to invoke proxied upstream tools themselves.
+Upstream servers are first-class providers in the merged MCP tool catalog. After discovery, their tools appear in `list_tools()` beside built-in Labby tools. Callers do not need a separate tool or namespace to invoke proxied upstream tools themselves.
 
 If gateway-wide `[code_mode].enabled = true`, raw upstream tools are hidden from
 `list_tools()` and exposed through the primary synthetic `codemode` tool.
 That mode is documented in [GATEWAY.md](./GATEWAY.md#gateway-code-mode).
 
-`lab` also exposes a separate `gateway` management surface for editing and reloading upstream definitions. That management surface is documented in [GATEWAY.md](./GATEWAY.md).
+Labby also exposes a separate `gateway` management surface for editing and reloading upstream definitions. That management surface is documented in [GATEWAY.md](./GATEWAY.md).
 
 Gateway-managed protected MCP routes are a different mode: they publish an
-inline public MCP route with Lab-owned OAuth protected-resource metadata and
+inline public MCP route with Labby-owned OAuth protected-resource metadata and
 proxy the whole Streamable HTTP MCP route to a backend. Use
 [GATEWAY.md — Gateway-Managed Protected MCP Routes](./GATEWAY.md#gateway-managed-protected-mcp-routes)
 for that setup instead of `[[upstream]]` tool merging.
@@ -36,31 +36,31 @@ launch history preserves known modes without inventing a mode for old receipts.
 
 ## What Operators Configure
 
-To proxy an upstream server through `lab`, prefer `labby gateway add` and
+To proxy an upstream server through Labby, prefer `labby gateway add` and
 `labby gateway update`. For offline editing, first identify the selected
 installation root: `LABBY_HOME` when set, otherwise `~/.labby`. Edit only its
 `config.toml`, optionally provide bearer-token env vars in its `.env`, then
 start `labby serve` normally. Labby does not merge a second XDG or
 current-directory configuration authority.
 
-`lab` will:
+Labby will:
 
 1. seed enabled upstream names into the gateway catalog at startup without opening connections
 2. connect to an upstream lazily on first code mode, exact tool execution, Code Mode call, or explicit gateway test path that needs live discovery
 3. merge discovered tools into its own MCP catalog after that upstream is first contacted
-4. serve the combined catalog through whichever MCP transport you expose from `lab`
+4. serve the combined catalog through whichever MCP transport you expose from Labby
 
-OAuth upstreams are discovered only when Lab has upstream OAuth runtime state
+OAuth upstreams are discovered only when Labby has upstream OAuth runtime state
 and an explicit subject for selecting the token set. Subject-less discovery
 deliberately skips OAuth upstreams so a user-specific token view is not cached
 globally.
 
-That means the client connects only to `lab`:
+That means the client connects only to Labby:
 
 - `labby mcp` for stdio clients such as Claude Desktop
 - `labby serve` for streamable HTTP MCP clients over TCP or a configured Unix-domain socket
 
-The client never connects directly to the upstreams once `lab` is acting as the gateway.
+The client never connects directly to the upstreams once Labby is acting as the gateway.
 
 ## Configuration
 
@@ -179,7 +179,7 @@ When `transport` is omitted, an HTTP/WebSocket `url` or stdio `command` preserve
 
 ### Config File Locations
 
-`lab` loads process environment over the selected installation root's `.env`,
+Labby loads process environment over the selected installation root's `.env`,
 then its `config.toml`, then built-in defaults. `LABBY_HOME` selects that root;
 otherwise it is `~/.labby`.
 
@@ -292,7 +292,7 @@ query or authorization code.
 2. Browser navigates to that URL; the upstream AS authenticates the user.
 3. AS redirects to `/auth/upstream/callback?code=...&state=...&upstream=<name>`
    on the same origin as `LABBY_PUBLIC_URL`.
-4. `lab` validates the authenticated session, atomically takes the pending
+4. Labby validates the authenticated session, atomically takes the pending
    state row (`DELETE ... RETURNING`), exchanges the code for tokens, encrypts
    the token response with chacha20poly1305, and persists it keyed by
    `(upstream_name, "gateway")`.
@@ -313,7 +313,7 @@ labby gateway mcp auth clear chrome-devtools
 
 - **PKCE S256-only.** The AS metadata must advertise `S256` in
   `code_challenge_methods_supported`. Missing or `plain`-only metadata is
-  refused with `oauth_unsupported_method`; `lab` never falls back to `plain`.
+  refused with `oauth_unsupported_method`; Labby never falls back to `plain`.
 - **RFC 8707 `resource`.** The canonical upstream MCP URL (RFC 3986 §6.2.2
   normalized: lowercase scheme + host, normalized percent-encoding, default
   port elided, trailing slash preserved as configured) is sent on **both** the
@@ -331,7 +331,7 @@ labby gateway mcp auth clear chrome-devtools
   (scheme + host + port) must match the issuer origin; any drift surfaces as
   `oauth_issuer_mismatch` (RFC 8414 §3.3). Known provider split endpoints are
   allowed when they are part of the provider's documented OAuth deployment;
-  today Lab allows Google's `https://accounts.google.com` issuer to use the
+  today Labby allows Google's `https://accounts.google.com` issuer to use the
   `https://oauth2.googleapis.com` token endpoint.
 - **Provider credential broker.** Generic upstream OAuth clients remain
   per-upstream and per-subject. Google-backed upstreams may instead use the
@@ -386,7 +386,7 @@ The client refreshes expiring tokens and reacts to upstream authorization challe
 - Google status refresh keeps one account transaction lock through persistence;
   cancelling the status request does not cancel the admitted refresh task.
 
-On `invalid_grant` (refresh token revoked or rotated twice), `lab` returns
+On `invalid_grant` (refresh token revoked or rotated twice), Labby returns
 `oauth_needs_reauth` to the caller. The user re-initiates authorization.
 
 ### `oauth_needs_reauth` Triggers
@@ -406,8 +406,9 @@ Recovery is identical in all cases: start a new authorization via
 Persisted token responses are sealed with chacha20poly1305 AEAD. A fresh 12-byte
 nonce is generated on every `seal()` call; the refresh upsert stores the new
 nonce and must never preserve the previous one. The key is loaded once at
-startup from `LABBY_OAUTH_ENCRYPTION_KEY`; see [CONFIG.md](../runtime/CONFIG.md#environment-variables-2)
-for rotation.
+startup from `LABBY_OAUTH_ENCRYPTION_KEY`; see the
+[Upstream OAuth configuration](../runtime/CONFIG.md#upstream-oauth-authorization_code--pkce)
+for the current key and callback settings.
 
 ### Prior Art
 
@@ -445,10 +446,10 @@ The combined catalog is exposed as one MCP server, but ownership is still resolv
 
 For each incoming MCP tool call:
 
-1. `lab` checks whether the tool name belongs to a built-in local service
+1. Labby checks whether the tool name belongs to a built-in local service
 2. if not, it checks the discovered upstream tool map
 3. if an upstream owns that tool name, the request is proxied there using the original MCP arguments
-4. the upstream result is normalized into `lab`'s usual success/error envelope shape
+4. the upstream result is normalized into Labby's usual success/error envelope shape
 
 This internal precedence rule does not make upstream tools second-class. It is just how collisions are resolved.
 
@@ -705,22 +706,22 @@ disagrees with its frontmatter `name`.
 
 ### MCP
 
-The upstream gateway is active on both MCP transports exposed by `lab`:
+The upstream gateway is active on both MCP transports exposed by Labby:
 
 - stdio
 - streamable HTTP at `/mcp`
 
-If an upstream tool is discovered successfully, MCP clients connected to `lab` can call it as a normal tool.
+If an upstream tool is discovered successfully, MCP clients connected to Labby can call it as a normal tool.
 
 ### HTTP API
 
-The product HTTP API under `/v1/*` does not proxy arbitrary upstream MCP tools. It serves built-in `lab` routes plus `/v1/gateway` for gateway management.
+The product HTTP API under `/v1/*` does not proxy arbitrary upstream MCP tools. It serves built-in Labby routes plus `/v1/gateway` for gateway management.
 
 Keep this distinction explicit in operator docs:
 
 - use MCP when you want the upstream gateway behavior
 - use `/v1/gateway` when you want to manage `[[upstream]]` entries over HTTP
-- use the rest of `/v1/*` for `lab`'s built-in HTTP API surface
+- use the rest of `/v1/*` for Labby's built-in HTTP API surface
 
 ## End-to-End Setup
 
@@ -787,13 +788,13 @@ phase="discovery.lazy" upstream_count=3
 Then trigger a first search or invoke and verify live discovery for only the
 requested upstream, for example `lazy upstream tools connected upstream=remote-lab`.
 
-Then an MCP client connected to `lab` should see the upstream tools in `list_tools()`.
+Then an MCP client connected to Labby should see the upstream tools in `list_tools()`.
 
 ## Operational Notes
 
 - Upstream tool schemas are cached from discovery and reused for MCP tool metadata.
-- Upstream calls preserve the original MCP argument payload rather than forcing it through `lab`'s `action` + `params` wrapper.
-- Upstream errors are normalized into `lab` envelopes and usually surface as `upstream_error`, `network_error`, `server_error`, `decode_error`, or `internal_error`.
+- Upstream calls preserve the original MCP argument payload rather than forcing it through Labby's `action` + `params` wrapper.
+- Upstream errors are normalized into Labby envelopes and usually surface as `upstream_error`, `network_error`, `server_error`, `decode_error`, or `internal_error`.
 - HTTP body, WebSocket message, and stdio line limits apply before MCP deserialization; a
   second capability-specific semantic limit applies after parsing.
 

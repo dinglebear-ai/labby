@@ -44,7 +44,7 @@ await codemode.<upstream>.<tool>(params)
 Tool ids use the live Code Mode catalog shape: `<upstream>::<tool>`. For example, Axon's single MCP tool is:
 
 ```js
-await callTool("axon::axon", { action: "search", query: "mcp-ui rust" })
+await callTool("Axon::axon", { action: "search", query: "mcp-ui rust" })
 ```
 
 Before writing or running a snippet, use `codemode.search()` and `codemode.describe()` to inspect the live catalog. Search returns compact tool and snippet metadata; describe returns focused docs for the exact target. A snippet should be written against returned ids and schemas, not against guessed tool names.
@@ -57,7 +57,7 @@ The snippet builder should make authoring feel like assembling a small checklist
 
 The gateway already knows every connected upstream tool. Each catalog entry includes:
 
-- `id`, such as `time::get_current_time` or `axon::axon`
+- `id`, such as `time::get_current_time` or `Axon::axon`
 - `upstream`, such as `time` or `axon`
 - `name`, such as `get_current_time` or `axon`
 - `description`
@@ -88,7 +88,7 @@ Every call step should be validated against the same upstream schema that Code M
 Example validation failures should be concrete:
 
 ```text
-axon::axon.params.action is required
+Axon::axon.params.action is required
 time::get_current_time.params.timezone must be a string
 github::search_repositories.params.perPage must be an integer
 ```
@@ -133,7 +133,7 @@ Snippets turn repeated agent behavior into a durable workflow. Instead of asking
 
 They are powerful because they can:
 
-- Fan out independent calls in parallel with `Promise.all`.
+- Fan out independent calls with `codemode.batch`, so one failed upstream does not discard unrelated results.
 - Chain results from one tool into follow-up calls.
 - Query several upstream MCP servers in one execution.
 - Normalize messy tool outputs into a consistent result object.
@@ -315,7 +315,7 @@ async () => {
     maxEvidenceUrls: 4
   };
 
-  const axon = (args) => callTool("axon::axon", args);
+  const axon = (args) => callTool("Axon::axon", args);
 
   const timed = async (label, fn) => {
     const started = Date.now();
@@ -336,11 +336,19 @@ async () => {
     }
   };
 
-  const firstPass = await Promise.all([
-    timed("search", () => axon({ action: "search", query: input.topic })),
-    timed("research", () => axon({ action: "research", query: input.topic })),
-    timed("query", () => axon({ action: "query", query: input.topic }))
+  const batch = await codemode.batch([
+    () => timed("search", () => axon({ action: "search", query: input.topic })),
+    () => timed("research", () => axon({ action: "research", query: input.topic })),
+    () => timed("query", () => axon({ action: "query", query: input.topic }))
   ]);
+  const firstPass = batch.ok
+    .sort((a, b) => a.i - b.i)
+    .map((entry) => entry.value);
+  firstPass.push(...batch.failed.map((entry) => ({
+    label: "batch_job_" + entry.i,
+    ok: false,
+    error: String(entry.error)
+  })));
 
   return {
     input,
@@ -354,11 +362,11 @@ async () => {
 
 Use these rules when creating snippets:
 
-- Discover first with `codemode.search()` / `codemode.describe()`; use returned ids such as `axon::axon`.
+- Discover first with `codemode.search()` / `codemode.describe()`; use returned ids such as `Axon::axon`.
 - Keep the top-level snippet as an async arrow function.
 - Put all user-editable parameters in a single `input` object near the top.
 - Bound fan-out with limits like `maxEvidenceUrls`, `maxResults`, or `maxToolCalls`.
-- Use `Promise.all` only for independent calls.
+- Use `codemode.batch` for independent calls; preserve and report per-call failures. Use ordinary sequential `await` when later parameters depend on earlier results.
 - Chain calls when later params depend on earlier results.
 - Wrap each tool call with timing and error capture.
 - Return structured JSON, not prose-only text.
@@ -390,21 +398,35 @@ Use stable field names. Avoid hiding important data inside long prose. The agent
 Fan-out is for independent calls:
 
 ```js
-const results = await Promise.all([
-  callTool("axon::axon", { action: "search", query }),
-  callTool("axon::axon", { action: "query", query }),
-  callTool("axon::axon", { action: "research", query })
+const batch = await codemode.batch([
+  () => callTool("Axon::axon", { action: "search", query }),
+  () => callTool("Axon::axon", { action: "query", query }),
+  () => callTool("Axon::axon", { action: "research", query })
 ]);
+const results = batch.ok
+  .sort((a, b) => a.i - b.i)
+  .map((entry) => entry.value);
+const failures = batch.failed.map((entry) => ({
+  index: entry.i,
+  error: String(entry.error)
+}));
 ```
 
 Chaining is for dependent calls:
 
 ```js
-const search = await callTool("axon::axon", { action: "search", query });
+const search = await callTool("Axon::axon", { action: "search", query });
 const urls = selectUrls(search);
-const pages = await Promise.all(
-  urls.map((url) => callTool("axon::axon", { action: "scrape", url }))
+const pageBatch = await codemode.batch(
+  urls.map((url) => () => callTool("Axon::axon", { action: "scrape", url }))
 );
+const pages = pageBatch.ok
+  .sort((a, b) => a.i - b.i)
+  .map((entry) => entry.value);
+const pageFailures = pageBatch.failed.map((entry) => ({
+  url: urls[entry.i],
+  error: String(entry.error)
+}));
 ```
 
 Most useful snippets combine both: a broad first pass, a scoring or selection step, then targeted second-pass calls.
@@ -440,6 +462,6 @@ A snippet is ready to reuse when:
 
 - [`axon-fanout.md`](./axon-fanout.md) defines reusable Axon research fan-out workflows for Code Mode.
 - [`cross-server-docs-brief.md`](./cross-server-docs-brief.md) combines Context7, SearXNG, Cloudflare docs, GitHub, Axon, and time into a compact documentation brief.
-- [`repo-context-triage.md`](./repo-context-triage.md) combines local file reads, Lumen semantic search, Octocode local search, and GitHub issue/file lookups for repo orientation.
+- [`repo-context-triage.md`](./repo-context-triage.md) combines local file reads, current Octocode lexical search, and GitHub issue/file lookups for repo orientation.
 - [`repo-status-gh-pulse.md`](./repo-status-gh-pulse.md) collects the GitHub PR/CI side of a repo-status evidence sweep and returns equivalent `gh` commands for shell parity.
 - [`homelab-readonly-pulse.md`](./homelab-readonly-pulse.md) combines Dozzle, Cortex, Gotify, Synapse, and time for a read-only homelab status pulse.

@@ -52,12 +52,13 @@ If bearer auth is needed, prefer an env-var reference:
 labby gateway add \
   --name private-tool \
   --url https://example.invalid/mcp \
-  --bearer-token-env LABBY_GW_PRIVATE_TOOL_AUTH_HEADER \
+  --bearer-token-env PRIVATE_TOOL_BEARER_TOKEN \
   --json
 ```
 
 `bearer_token_env` must be an environment variable name, not the raw token
-value. Use `LABBY_GW_<NAME>_AUTH_HEADER` style for gateway auth headers.
+value. The name is operator-controlled; `PRIVATE_TOOL_BEARER_TOKEN` above is an
+example, not a built-in Labby variable.
 
 When a public HTTP/SSE upstream requires no auth, omit `bearer_token_env` and
 OAuth config. Labby supports no-auth HTTP upstreams.
@@ -66,7 +67,7 @@ OAuth config. Labby supports no-auth HTTP upstreams.
 
 ```bash
 labby gateway update <name> --url https://new.example.invalid/mcp --json
-labby gateway update <name> --bearer-token-env LABBY_GW_NEW_AUTH_HEADER --json
+labby gateway update <name> --bearer-token-env NEW_GATEWAY_BEARER_TOKEN --json
 labby gateway remove <name> --json
 labby gateway reload --json
 ```
