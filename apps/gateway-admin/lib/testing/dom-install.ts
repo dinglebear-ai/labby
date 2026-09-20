@@ -27,6 +27,8 @@ export function installTestDom() {
   Object.defineProperty(globalThis, 'Element', { value: window.Element, configurable: true })
   Object.defineProperty(globalThis, 'HTMLElement', { value: window.HTMLElement, configurable: true })
   Object.defineProperty(globalThis, 'HTMLInputElement', { value: window.HTMLInputElement, configurable: true })
+  Object.defineProperty(globalThis, 'HTMLButtonElement', { value: window.HTMLButtonElement, configurable: true })
+  // Radix portals (Select, AlertDialog) build fragments during layout effects.
   Object.defineProperty(globalThis, 'DocumentFragment', { value: window.DocumentFragment, configurable: true })
   Object.defineProperty(globalThis, 'getComputedStyle', {
     value: window.getComputedStyle.bind(window),

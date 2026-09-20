@@ -168,7 +168,7 @@ impl ServerHandler for StaticCatalogServer {
     }
 }
 
-pub(super) async fn static_catalog_pool(upstream_name: &str) -> Arc<UpstreamPool> {
+pub(crate) async fn static_catalog_pool(upstream_name: &str) -> Arc<UpstreamPool> {
     static_catalog_pool_with_server(upstream_name, StaticCatalogServer::default()).await
 }
 
@@ -526,7 +526,7 @@ impl UpstreamPool {
             .await
             .entry(upstream_name.to_string())
             .or_insert_with(|| healthy_in_process_entry(Arc::from(upstream_name), HashMap::new()));
-        self.connections.write().await.insert(
+        self.install_connection_and_apply_entry(
             upstream_name.to_string(),
             UpstreamConnection {
                 _client_service: client_service.into(),
@@ -535,7 +535,10 @@ impl UpstreamPool {
                 runtime: UpstreamRuntimeMetadata::default(),
                 incarnation: None,
             },
-        );
+            |_| {},
+        )
+        .await
+        .expect("test catalog binds atomically");
     }
 
     /// Register an in-process upstream whose tool call returns a JSON-RPC/MCP error.
@@ -578,7 +581,7 @@ impl UpstreamPool {
             .await
             .entry(upstream_name.to_string())
             .or_insert_with(|| healthy_in_process_entry(Arc::from(upstream_name), HashMap::new()));
-        self.connections.write().await.insert(
+        self.install_connection_and_apply_entry(
             upstream_name.to_string(),
             UpstreamConnection {
                 _client_service: client_service.into(),
@@ -587,7 +590,10 @@ impl UpstreamPool {
                 runtime: UpstreamRuntimeMetadata::default(),
                 incarnation: None,
             },
-        );
+            |_| {},
+        )
+        .await
+        .expect("mutable test catalog binds atomically");
     }
 
     /// Register an in-process upstream whose advertised tool list is backed by a
@@ -652,7 +658,7 @@ impl UpstreamPool {
             .await
             .entry(upstream_name.to_string())
             .or_insert_with(|| healthy_in_process_entry(Arc::from(upstream_name), HashMap::new()));
-        self.connections.write().await.insert(
+        self.install_connection_and_apply_entry(
             upstream_name.to_string(),
             UpstreamConnection {
                 _client_service: client_service.into(),
@@ -661,7 +667,10 @@ impl UpstreamPool {
                 runtime: UpstreamRuntimeMetadata::default(),
                 incarnation: None,
             },
-        );
+            |_| {},
+        )
+        .await
+        .expect("mutable test catalog binds atomically");
     }
 }
 
@@ -698,6 +707,7 @@ pub(super) async fn move_connection_to_subject_cache_with_tools(
     pool.subject_connections.write().await.insert(
         (upstream.to_string(), subject.to_string()),
         super::SubjectScopedConnection {
+            optional_catalogs: Default::default(),
             _connection: connection,
             peer,
             tools,

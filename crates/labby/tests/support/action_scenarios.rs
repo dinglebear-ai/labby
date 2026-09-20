@@ -423,7 +423,6 @@ fn dedicated_contract(key: &str) -> Option<(&'static str, &'static str)> {
         "bundles:bundles.delete" => {
             Some(("requires_authorized_artifact_project_context", "forbidden"))
         }
-        "gateway:gateway.clients.list" => Some(("catalog_dispatch_mismatch", "unknown_action")),
         "gateway:gateway.enrich.apply" => {
             Some(("requires_live_catalog_suggestion", "stale_suggestion"))
         }
@@ -564,8 +563,7 @@ fn dedicated_contract_for(key: &str, surface: Surface) -> Option<(&'static str, 
     // instead of answering from a local one-shot manager, so the compiled CLI
     // probe cannot reach a live success. The owned gateway CLI workflow runs
     // against a real daemon and supplies that evidence for the actions it
-    // covers; `gateway.clients.list` additionally has no daemon-side dispatch
-    // route at all.
+    // covers.
     if key.starts_with("gateway:") && surface == Surface::Cli {
         return Some((
             "requires_running_daemon_covered_by_owned_workflow",
@@ -802,6 +800,14 @@ mod dedicated_contract_tests {
     #[test]
     fn unmapped_actions_and_arbitrary_errors_are_rejected() {
         assert_eq!(dedicated_contract_reason("gateway:gateway.get"), None);
+        assert_eq!(
+            dedicated_contract_reason("gateway:gateway.clients.list"),
+            None
+        );
+        assert!(!dedicated_contract_accepts(
+            "gateway:gateway.clients.list",
+            "unknown_action"
+        ));
         assert!(!dedicated_contract_accepts(
             "gateway:gateway.get",
             "not_found"

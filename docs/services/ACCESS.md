@@ -21,9 +21,9 @@ the operator guide for it:
 Admission and authority are separate. `LABBY_AUTH_ADMIN_EMAIL`, the allowlist,
 and the domain settings decide who may sign in. Durable Team, Project, and
 platform-administration records decide what a signed-in identity may do. Only
-the browser session of `LABBY_AUTH_ADMIN_EMAIL` receives `lab:admin` from
-configuration; everyone else gets administrative reach only through
-`access.platform_admin.grant`. See
+browser sessions whose email is listed in `LABBY_AUTH_ADMIN_EMAIL` (one address
+or a comma-separated list) receive `lab:admin` from configuration; everyone
+else gets administrative reach only through `access.platform_admin.grant`. See
 [Browser session scopes](../runtime/OAUTH.md#browser-session-scopes-and-domain-admission).
 
 ## Access actions
@@ -90,12 +90,7 @@ asking an administrator to invite the verified email. Signing out and in again
 does not create authority by itself. The steps below are the normal onboarding
 flow.
 
-1. **Admit the identity.** As the configured admin, add the email to the
-   allowlist: the settings UI, or `POST /v1/auth/allowed-emails` with
-   `{"email": "teammate@example.com"}`. The allowlist routes accept only the
-   browser session of `LABBY_AUTH_ADMIN_EMAIL`. Do not rely on
-   `LABBY_AUTH_ALLOWED_EMAIL_DOMAINS` for Google browser access; see the
-   [open issue](../runtime/OAUTH.md#domain-allowlist-behavior-by-provider-and-surface).
+1. **Admit the identity.** As the configured admin, add the email in **Settings → Authentication → Allowed users**, or call `POST /v1/auth/allowed-emails` with `{"email": "teammate@example.com", "role": "member"}`. `role` defaults to `member`; the supported values are `member` and `admin`, enforced by the auth store. Emails are trimmed and Unicode-lowercased through the shared `labby_auth::util::normalize_email` path. Only the configured admin browser session identified by `LABBY_AUTH_ADMIN_EMAIL` may read or mutate the allowlist; ordinary platform-admin authority alone is insufficient. Do not rely on `LABBY_AUTH_ALLOWED_EMAIL_DOMAINS` for Google browser access; see the [open issue](../runtime/OAUTH.md#domain-allowlist-behavior-by-provider-and-surface).
 2. **Create an email-bound invitation.** The normal path is **People → Invite
    someone** in the WebUI: enter the teammate's email and use the recommended
    defaults (Member, seven days). Team, role, and expiry stay available behind
@@ -132,6 +127,7 @@ flow.
 8. **Optional: platform administration.** `access.platform_admin.grant` with
    `principal_id` (requires `lab:admin` and `platform.manage`). The teammate's
    browser session is then elevated to `lab:admin` on `/v1` routes.
+
 
 ### Using a second account (for example work and personal)
 
@@ -209,6 +205,14 @@ credential. Loopback location by itself grants nothing. See
 Owner bootstrap never migrates an existing older-schema store. Upgrading a
 v1–v7 store to v8 is the offline `labby state migrate-access` flow in
 [MIGRATION.md](../access-control/MIGRATION.md).
+
+Because every schema crossing costs the operator an approved offline
+migration, the schema version is bumped only when a shipped feature reads or
+writes the new tables. Tables with no reader or writer outside the migration
+code do not justify a bump. The current v8 schema adds exactly the tables
+consumed by recurring Task schedules (`tasks.schedule_*`) and by dev-container
+image drafts, builds, and publications; the migration test suite pins the
+current schema to that table set.
 
 ## Owner identity link
 
@@ -300,7 +304,7 @@ viewer_project_id = "existing-project-id"
 
 The policy is disabled by default and currently supports Google browser sign-in only. Enabling it with another provider is a configuration error. `LABBY_AUTH_VIEWER_EMAIL_DOMAINS` overrides the domain list; the project remains selected by the host configuration, never by a browser request. This policy is separate from the legacy login/admin allowlist.
 
-After a qualifying verified sign-in, the first authenticated `/v1` request provisions membership using the provider-bound issuer and subject. Email verification must come from the trusted identity provider. Domains match exactly and case-insensitively; subdomains and suffix lookalikes do not qualify. Session email text alone is not evidence of verified domain ownership.
+After a qualifying verified sign-in, the first authenticated `/v1` request provisions membership using the provider-bound issuer and subject. An unprovisioned session otherwise calls only `/auth/session`, so the web UI's no-access screen issues one read-only `GET /v1/catalog` and then reloads the session; the server alone decides admission. Email verification must come from the trusted identity provider. Domains match exactly and case-insensitively; subdomains and suffix lookalikes do not qualify. Session email text alone is not evidence of verified domain ownership.
 
 New memberships receive Viewer, not Member or Admin. Existing active roles remain unchanged. Repeat or concurrent admission is idempotent. Disabled or suspended memberships, principals, projects, organizations, and revoked identity links are never reactivated by this policy.
 

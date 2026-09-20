@@ -111,6 +111,8 @@ pub struct AppState {
     /// startup replaces it after resolving and observing the configured store.
     pub(crate) access_runtime: Arc<crate::access::AccessRuntime>,
     pub(crate) file_stash_runtime: Arc<crate::file_stash::FileStashRuntime>,
+    /// Container-local Codex App Server adapter for Phoenix.
+    pub(crate) phoenix_runtime: Arc<crate::dispatch::phoenix::PhoenixRuntime>,
     /// Subsystems that started degraded. Defaults to the process-wide record
     /// written by `labby serve`; tests inject an isolated instance.
     pub(crate) subsystem_health: Arc<crate::runtime_health::SubsystemHealth>,
@@ -200,6 +202,7 @@ impl AppState {
             http_bind_host: None,
             access_runtime: Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
             file_stash_runtime: Arc::new(crate::file_stash::FileStashRuntime::blocked()),
+            phoenix_runtime: Arc::new(crate::dispatch::phoenix::PhoenixRuntime::default()),
             subsystem_health: crate::runtime_health::SubsystemHealth::process(),
             access_bootstrap_proof: None,
             access_credential_adapter: None,
@@ -297,7 +300,21 @@ impl AppState {
             Default::default(),
             Default::default(),
         ));
+        self.phoenix_runtime = Arc::new(crate::dispatch::phoenix::PhoenixRuntime::new(
+            config.phoenix.clone(),
+        ));
         self.config = Arc::new(config);
+        self
+    }
+
+    /// Point Phoenix's container-local Codex process at this listener's MCP endpoint.
+    #[must_use]
+    pub(crate) fn with_phoenix_mcp_url(mut self, url: impl Into<Arc<str>>) -> Self {
+        self.phoenix_runtime =
+            Arc::new(crate::dispatch::phoenix::PhoenixRuntime::new_with_mcp_url(
+                self.config.phoenix.clone(),
+                url,
+            ));
         self
     }
 
@@ -382,6 +399,20 @@ impl AppState {
     ) -> Self {
         self.static_browser_session_state = Some(Arc::new(state));
         self
+    }
+
+    /// Scopes minted for the static bearer credential and the browser session
+    /// cookie derived from it.
+    ///
+    /// The auth layer takes them from the OAuth configuration when one is
+    /// mounted and otherwise grants the legacy bearer-only pair. Routes that
+    /// run outside the layer, such as `/auth/session`, must project the same
+    /// list, so both read it from here.
+    pub(crate) fn static_token_scopes(&self) -> Vec<String> {
+        self.oauth_state
+            .as_ref()
+            .map(|auth| auth.config.static_token_scopes.clone())
+            .unwrap_or_else(|| vec!["lab:read".to_string(), "lab:admin".to_string()])
     }
 
     #[must_use]

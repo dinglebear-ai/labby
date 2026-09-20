@@ -240,12 +240,11 @@ jobs:
             artifact: lab-x86_64-pc-windows-msvc
             archive: lab-x86_64-pc-windows-msvc.zip
             binary: labby.exe
-          # No macOS leg yet. `build` still builds, smoke-tests and attests
-          # lab-aarch64-apple-darwin.tar.gz, but no published release has
-          # carried it, so there is no N-1 to install and the leg could only
-          # fail closed. Restore it (runner: macos-15, artifact:
-          # lab-aarch64-apple-darwin) once a release with that archive is
-          # published.
+          - deployment: macos
+            runner: macos-15
+            artifact: lab-aarch64-apple-darwin
+            archive: lab-aarch64-apple-darwin.tar.gz
+            binary: labby
           - deployment: incus
             runner: ubuntu-24.04
             artifact: lab-x86_64-unknown-linux-gnu
@@ -384,6 +383,9 @@ jobs:
     secrets: inherit
 
   desktop-candidate:
+    # Advisory: build-desktop.yml marks its build job continue-on-error, so a
+    # missing Apple signing identity or a failed bundle never blocks stable
+    # promotion. Its assets are uploaded when present.
     needs: upgrade-qualification
     permissions:
       contents: read
@@ -497,21 +499,27 @@ jobs:
         env:
           INCUS_SHA256: ${{ needs.incus-candidate.outputs.asset_sha256 }}
           MCP_MANIFEST_SHA256: ${{ needs.mcp-candidate.outputs.manifest_sha256 }}
-        run: >-
-          python3 scripts/ci/create-release-manifest.py
-          --tag "$GITHUB_REF_NAME"
-          --repository "$GITHUB_REPOSITORY"
-          --incus-sha256 "$INCUS_SHA256"
-          --mcp-manifest-sha256 "$MCP_MANIFEST_SHA256"
-          lab-*.tar.gz lab-*.zip lab-*.sha256 lab-*.spdx.json
-          labby-desktop-*.tar.gz labby-desktop-*.AppImage labby-desktop-*.sha256 labby-desktop-*.spdx.json
-          labby-install.*.spdx.json labby-install.sh labby-install.ps1 labby-install.sh.sha256 labby-install.ps1.sha256
+        run: |
+          set -euo pipefail
+          # Desktop assets are additive: the advisory desktop leg may have
+          # produced none of them, and an unmatched glob must not become a
+          # literal "missing subject".
+          shopt -s nullglob
+          python3 scripts/ci/create-release-manifest.py \
+            --tag "$GITHUB_REF_NAME" \
+            --repository "$GITHUB_REPOSITORY" \
+            --incus-sha256 "$INCUS_SHA256" \
+            --mcp-manifest-sha256 "$MCP_MANIFEST_SHA256" \
+            lab-*.tar.gz lab-*.zip lab-*.sha256 lab-*.spdx.json \
+            labby-desktop-*.tar.gz labby-desktop-*.AppImage labby-desktop-*.sha256 labby-desktop-*.spdx.json \
+            labby-install.*.spdx.json labby-install.sh labby-install.ps1 labby-install.sh.sha256 labby-install.ps1.sha256
       - name: Upload qualified assets to draft release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          shopt -s nullglob
           files=(lab-*.tar.gz lab-*.tar.gz.sha256 lab-*.zip lab-*.zip.sha256 lab-*.spdx.json labby-desktop-*.tar.gz labby-desktop-*.AppImage labby-desktop-*.sha256 labby-desktop-*.spdx.json labby-install.sh labby-install.sh.sha256 labby-install.sh.spdx.json labby-install.ps1 labby-install.ps1.sha256 labby-install.ps1.spdx.json release-manifest.json)
           gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft | grep -Fx true
           touch /tmp/labby-release-was-draft
@@ -548,6 +556,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          shopt -s nullglob
           for artifact in lab-*.tar.gz lab-*.zip lab-*.sha256 lab-*.spdx.json labby-desktop-*.tar.gz labby-desktop-*.AppImage labby-desktop-*.sha256 labby-desktop-*.spdx.json labby-install.sh labby-install.ps1 labby-install.*.sha256 labby-install.*.spdx.json release-manifest.json; do
             scripts/ci/verify-release-provenance.sh --repo ${{ github.repository }} --workflow release.yml --ref ${{ github.ref }} --artifact "$artifact"
           done

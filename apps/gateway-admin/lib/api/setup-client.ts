@@ -470,11 +470,13 @@ export const MOCK_SETTINGS_SCHEMA: SettingsSchemaResponse = {
   schema_version: 1,
   sections: [
     { id: 'core', label: 'Core', description: 'Env-backed process defaults.', advanced: false },
+    { id: 'authentication', label: 'Authentication', description: 'Browser sign-in administrators.', advanced: false },
     { id: 'features', label: 'Features', description: 'Runtime feature gates.', advanced: false },
     { id: 'advanced', label: 'Advanced', description: 'Advanced settings.', advanced: true },
   ],
   fields: [
     { key: 'LABBY_LOG', label: 'Log filter', description: 'Tracing filter directive.', section: 'core', backend: 'env', control: 'text', risk: 'restart', write_policy: 'editable', apply_mode: 'restart', secret: false, required: false, env_override: null, min: null, max: null, options: [], example: 'labby=info' },
+    { key: 'LABBY_AUTH_ADMIN_EMAIL', label: 'Administrators', description: 'Emails whose browser sign-in receives full admin access.', section: 'authentication', backend: 'env', control: 'string_list', risk: 'security_sensitive', write_policy: 'editable', apply_mode: 'restart', secret: false, required: true, env_override: null, min: null, max: null, options: [], example: 'owner@example.com' },
     { key: 'services.built_in_upstream_apis_enabled', label: 'Built-in upstream API services', description: 'Enable bundled external API integrations.', section: 'features', backend: 'config_toml', control: 'bool', risk: 'low', write_policy: 'editable', apply_mode: 'immediate', secret: false, required: false, env_override: null, min: null, max: null, options: [], example: 'true' },
     { key: 'auth', label: 'Auth config', description: 'Redacted auth settings.', section: 'advanced', backend: 'config_toml', control: 'read_only', risk: 'security_sensitive', write_policy: 'secret_write_only_future', apply_mode: 'read_only', secret: true, required: false, env_override: null, min: null, max: null, options: [], example: null },
   ],
@@ -488,6 +490,7 @@ export const MOCK_ENV_SCHEMA: EnvSettingSpec[] = [
 function mockSettingsState(section: string, updates: SettingsUpdateEntry[] = []): SettingsState {
   const values: Record<string, unknown> = {
     LABBY_LOG: 'labby=info,labby_apis=warn',
+    LABBY_AUTH_ADMIN_EMAIL: ['owner@example.com'],
     'services.built_in_upstream_apis_enabled': true,
     auth: { google_client_secret: { has_value: true } },
   }
@@ -500,6 +503,7 @@ function mockSettingsState(section: string, updates: SettingsUpdateEntry[] = [])
     values,
     sources: {
       LABBY_LOG: { source: 'env', overridden_by_env: null },
+      LABBY_AUTH_ADMIN_EMAIL: { source: 'env', overridden_by_env: null },
       'services.built_in_upstream_apis_enabled': { source: 'config_toml', overridden_by_env: null },
       auth: { source: 'config_toml', overridden_by_env: null },
     },

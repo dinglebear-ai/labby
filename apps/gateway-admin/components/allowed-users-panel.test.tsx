@@ -49,3 +49,9 @@ test('AllowedUsersPanel includes accessible label for email input', () => {
   assert.match(markup, /Email address to allow/)
   assert.match(markup, /sr-only/)
 })
+
+test('AllowedUsersPanel offers a role choice defaulting to member', () => {
+  const markup = render()
+  assert.match(markup, /Role for new user/)
+  assert.match(markup, /Member/)
+})

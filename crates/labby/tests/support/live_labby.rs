@@ -32,6 +32,10 @@ const DROP_DEADLINE: Duration = Duration::from_secs(3);
 const CLEANUP_MAX_FILES: usize = 4_096;
 const CLEANUP_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const CLEANUP_MAX_DEPTH: usize = 32;
+/// Provider URL exported into every disposable home. Agent creation derives
+/// the immutable harness digest from this URL without contacting it; runs in
+/// the hermetic matrices use the deterministic executor or fail closed.
+const DISPOSABLE_HOME_PROVIDER_URL: &str = "http://127.0.0.1:9/v1";
 
 #[cfg(unix)]
 #[path = "live_labby/guardian.rs"]
@@ -372,6 +376,10 @@ impl LiveLabbyBuilder {
                 .env("TMPDIR", &temp)
                 .env("LABBY_AUTH_MODE", "bearer")
                 .env("LABBY_MCP_HTTP_TOKEN", &credential_canary)
+                .env(
+                    "LABBY_PHOENIX_OPENAI_BASE_URL",
+                    DISPOSABLE_HOME_PROVIDER_URL,
+                )
                 .envs(isolated_runtime_env())
                 .envs(self.extra_env);
             #[cfg(unix)]
@@ -620,6 +628,10 @@ impl LiveLabbyGuard {
             .env("TMPDIR", &recipe.temp)
             .env("LABBY_AUTH_MODE", "bearer")
             .env("LABBY_MCP_HTTP_TOKEN", &self.credential_canary)
+            .env(
+                "LABBY_PHOENIX_OPENAI_BASE_URL",
+                DISPOSABLE_HOME_PROVIDER_URL,
+            )
             .envs(isolated_runtime_env())
             .envs(recipe.extra_env.clone());
         #[cfg(unix)]

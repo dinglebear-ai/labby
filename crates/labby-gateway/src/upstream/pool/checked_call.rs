@@ -58,7 +58,7 @@ impl UpstreamPool {
             self.drain_oauth_client_capacity_evictions().await;
         }
         let oauth_epoch = if config.oauth.is_some() {
-            self.oauth_lifecycle_epoch()
+            oauth_subject.and_then(|subject| self.oauth_lifecycle_epoch(&config.name, subject))
         } else {
             None
         };
@@ -120,7 +120,7 @@ impl UpstreamPool {
         )
         .await
         .map_err(CheckedToolCallError::Capability)?;
-        self.oauth_publication_guard(oauth_epoch)
+        self.oauth_publication_guard(oauth_epoch.as_ref())
             .await
             .map_err(|error| CheckedToolCallError::Connect(error.to_string()))?;
 

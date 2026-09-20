@@ -352,7 +352,7 @@ async fn run_bundle(
             "mode": resolved_auth.as_ref().map(|auth| format!("{:?}", auth.mode).to_lowercase()),
             "provider": resolved_auth.as_ref().and_then(|auth| auth.inbound_provider.as_ref()).map(|provider| format!("{provider:?}").to_lowercase()),
             "public_url_configured": resolved_auth.as_ref().is_some_and(|auth| auth.public_url.is_some()),
-            "admin_identity_configured": resolved_auth.as_ref().is_some_and(|auth| !auth.admin_email.trim().is_empty()),
+            "admin_identity_configured": resolved_auth.as_ref().is_some_and(|auth| !auth.admin_emails.is_empty()),
             "allowed_email_domain_count": resolved_auth.as_ref().map_or(0, |auth| auth.allowed_email_domains.len()),
         },
         "setup": setup_state,

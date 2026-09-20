@@ -8,13 +8,12 @@ import { Cable, Wrench } from 'lucide-react'
  *
  * Two stat groups sit welded to the card's bottom edge — a fleet group
  * (Healthy / Enabled / Total / Disconnected) over a health bar, and an
- * exposure group (Tools / Prompts / Resources / Skills) over an exposure bar. The
+ * exposure group (Tools / Prompts / Resources) over an exposure bar. The
  * fleet cells double as lens filters, which is how the mock boxes the active
  * one, so they carry the same `aria-pressed` contract the old summary cards did.
  *
- * The mock also shows per-stat deltas ("+2", "−1") and a host uptime
- * ("up 14d 6h"). Neither is derivable from the gateway API today, so they are
- * omitted rather than faked.
+ * Per-stat historical deltas are not reported. Host uptime is supplied by
+ * the live health metadata rendered in the actions area.
  */
 
 import type { GatewayPrimaryLens } from './gateway-list-state'
@@ -67,7 +66,7 @@ function StatCell({
       <div
         style={{
           fontFamily: 'var(--font-display)',
-          fontSize: 21,
+          fontSize: 24,
           lineHeight: 1,
           fontWeight: 800,
           fontVariantNumeric: 'tabular-nums',
@@ -141,17 +140,17 @@ function GroupIcon({ label, icon }: { label: string; icon: React.ReactNode }) {
           borderRadius: 9,
           border:
             '1px solid color-mix(in srgb, var(--aurora-border-default) 70%, var(--aurora-page-bg))',
-          background: 'var(--aurora-control-surface)',
-          color: 'var(--aurora-text-muted)',
+          background: 'color-mix(in srgb, var(--aurora-control-surface) 75%, transparent)',
+          color: 'var(--aurora-accent-strong)',
         }}
       >
         {icon}
       </span>
       <span
         style={{
-          fontSize: 9,
+          fontSize: 10,
           fontWeight: 700,
-          letterSpacing: '0.11em',
+          letterSpacing: '0.13em',
           textTransform: 'uppercase',
           color: 'var(--aurora-text-muted)',
           whiteSpace: 'nowrap',
@@ -227,7 +226,7 @@ export function GatewayHero({
   onLensChange: (lens: GatewayLens) => void
   actions?: React.ReactNode
 }) {
-  const attention = disconnected
+  const attention = serverStates.filter((server) => !['healthy', 'disabled'].includes(server.state)).length
   const pulseColor =
     attention > 0 ? 'var(--aurora-warn)' : totalServers > 0 ? 'var(--aurora-success)' : 'var(--aurora-text-muted)'
   const pulseLabel =
@@ -246,7 +245,7 @@ export function GatewayHero({
   const fleetCells: FleetCell[] = [
     { label: 'Healthy', value: healthy, lens: 'healthy' },
     { label: 'Enabled', value: enabled, lens: 'enabled' },
-    { label: 'Total', value: totalServers },
+    { label: 'Total', value: totalServers, lens: 'configured' },
     {
       label: 'Disconnected',
       value: disconnected,
@@ -272,7 +271,7 @@ export function GatewayHero({
           alignItems: 'flex-end',
           justifyContent: 'space-between',
           gap: 16,
-          padding: '22px 24px 18px',
+          padding: '20px 24px 15px',
           flexWrap: 'wrap',
         }}
       >
@@ -289,7 +288,7 @@ export function GatewayHero({
             >
               Gateway Control Plane
             </span>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <button type="button" onClick={() => onLensChange('attention')} aria-label={`Needs attention: ${attention}`} aria-pressed={!toolsViewActive && activeLens === 'attention'} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: 'none', background: activeLens === 'attention' ? 'var(--aurora-hover-bg)' : 'none', padding: '2px 7px', margin: '-2px -7px', borderRadius: 7, cursor: 'pointer' }}>
               <span
                 style={{
                   width: 6,
@@ -303,7 +302,7 @@ export function GatewayHero({
               <span style={{ fontSize: 10.5, fontWeight: 650, color: pulseColor }}>
                 {pulseLabel}
               </span>
-            </span>
+            </button>
           </div>
           <h1
             style={{
@@ -347,7 +346,7 @@ export function GatewayHero({
           padding: '12px 14px',
           borderRadius: '0 0 var(--radius-3) var(--radius-3)',
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 320px), 1fr))',
           gap: '10px 28px',
         }}
       >
@@ -384,22 +383,22 @@ export function GatewayHero({
             <div style={{ display: 'flex' }}>
               <StatCell
                 label="Tools"
+                tone="var(--aurora-accent-pink)"
                 value={`${exposedTools}/${discoveredTools}`}
                 active={toolsViewActive}
                 onClick={() => onLensChange('tools')}
               />
               <StatCell
                 label="Prompts"
+                tone="var(--aurora-accent-strong)"
                 value={`${exposedPrompts}/${discoveredPrompts}`}
               />
               <StatCell
                 label="Resources"
+                tone="var(--aurora-accent-strong)"
                 value={`${exposedResources}/${discoveredResources}`}
               />
-              <StatCell
-                label="Skills"
-                value={`${exposedSkills}/${discoveredSkills}`}
-              />
+
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
               <span
@@ -431,7 +430,7 @@ export function GatewayHero({
                   whiteSpace: 'nowrap',
                 }}
               >
-                {exposedPct}% exposed
+                <span title={`Including ${exposedSkills}/${discoveredSkills} skills`}>{exposedPct}% exposed</span>
               </span>
             </div>
           </div>

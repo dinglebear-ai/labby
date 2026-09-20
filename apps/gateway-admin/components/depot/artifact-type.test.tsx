@@ -9,10 +9,10 @@ import { discoverKindPresentation } from './discover-kind-presentation'
 test('filter categories preserve labels while kind families share their intended colors', () => {
   const definitions = ARTIFACT_TYPES.map(artifactTypeDefinition)
 
-  assert.equal(ARTIFACT_TYPES.length, 8)
+  assert.equal(ARTIFACT_TYPES.length, 10)
   assert.equal(new Set(definitions.map((definition) => definition.icon)).size, ARTIFACT_TYPES.length)
   assert.deepEqual(definitions.map((definition) => definition.label), [
-    'MCP', 'ACP', 'Agents', 'Skills', 'Commands', 'Plugins', 'Marketplaces', 'Prompts',
+    'MCP', 'ACP', 'Agents', 'Skills', 'Commands', 'Plugins', 'Marketplaces', 'Prompts', 'Resources', 'Apps',
   ])
 })
 

@@ -11,7 +11,7 @@ export function ArtifactFrontmatterPreview({ kind, metadata }: { kind: ArtifactK
     try { await navigator.clipboard.writeText(frontmatter); toast.success('Frontmatter copied') }
     catch { toast.error('Could not copy frontmatter') }
   }
-  return <section aria-label="Generated frontmatter" className="mt-3 overflow-hidden rounded-aurora-2 border border-aurora-border-default bg-[linear-gradient(180deg,var(--aurora-panel-strong-top),var(--aurora-panel-strong))] shadow-aurora-medium">
+  return <section aria-label="Generated frontmatter" className="overflow-hidden rounded-aurora-2 border border-aurora-border-default bg-[linear-gradient(180deg,var(--aurora-panel-strong-top),var(--aurora-panel-strong))] shadow-aurora-medium">
     <div className="flex items-center justify-between gap-2 border-b border-aurora-border-default bg-aurora-page-bg/35 px-[15px] py-2.5">
       <h2 className="text-[9.5px] font-bold uppercase tracking-[.13em] text-aurora-text-muted">Frontmatter</h2>
       <button type="button" aria-label="Copy frontmatter" title="Copy frontmatter" onClick={() => void copy()} className="grid size-6 place-items-center rounded-[7px] text-aurora-text-muted hover:bg-aurora-hover-bg hover:text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary"><Clipboard className="size-3" /></button>

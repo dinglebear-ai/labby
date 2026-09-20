@@ -1,4 +1,3 @@
-use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -8,6 +7,10 @@ const BOOTSTRAP_WRITER_DEADLINE: std::time::Duration = std::time::Duration::from
 // Credential admission shares this writer with audit and policy persistence.
 // Give normal concurrent requests the same bounded wait as credential reads.
 const SECURITY_ADMISSION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(1);
+// First-sign-in allowlist admission and its revocation also share the writer.
+// A writer held by an audit or policy commit is ordinary contention, not an
+// outage: wait long enough to ride it out, but keep the session read bounded.
+const ALLOWLIST_ADMISSION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
 
 use super::bootstrap::{BootstrapOutcome, BootstrapOwnerInput};
 use super::credential_verifier::{AccessCredentialAdapter, CredentialReadPool, LiveAuthority};
@@ -101,6 +104,35 @@ pub(crate) enum AccessRuntimeError {
     LifecycleUnavailable,
 }
 
+/// Why a first-sign-in allowlist admission did not provision.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub(crate) enum AllowlistProvisionError {
+    /// The re-check under the access writer no longer admits the identity:
+    /// the entry was removed or changed after the caller's first lookup.
+    #[error("allowlist admission was withdrawn before provisioning")]
+    Withdrawn,
+    /// Durable state refuses the admission — a disabled or suspended
+    /// membership, Principal, link, Project, or Organization. Expected while
+    /// that state stands; retrying cannot help.
+    #[error("existing durable state refuses allowlist admission")]
+    Refused,
+    /// The access writer stayed busy past the admission deadline. The next
+    /// session read retries; sustained occurrences point at writer contention.
+    #[error("access writer stayed busy past the allowlist admission deadline")]
+    WriterBusy,
+    /// The access store or its lifecycle is unavailable.
+    #[error(transparent)]
+    Runtime(AccessRuntimeError),
+}
+
+/// Result of [`AccessRuntime::revoke_allowlisted`]. Dropping it releases the
+/// admission fence, so callers hold it until their allowlist deletion commits.
+#[must_use = "drop only after the allowlist entry has been removed"]
+pub(crate) struct AllowlistRevocation {
+    pub(crate) outcomes: Vec<super::AllowlistRevocationOutcome>,
+    _admission_fence: Option<OwnedSemaphorePermit>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum FileStashPrincipalResolutionError {
     #[error("the verified identity has no active durable principal link")]
@@ -163,50 +195,6 @@ enum RuntimeState {
     Blocked(AccessBlockedReason),
 }
 
-struct DeterministicDevContainerRuntime;
-
-impl labby_runtime::dev_container_runtime::ContainerRuntime for DeterministicDevContainerRuntime {
-    type Error = labby_runtime::dev_container_runtime::DisabledRuntimeError;
-
-    fn create<'a>(
-        &'a self,
-        _: labby_runtime::dev_container_runtime::EngineCreateRequest,
-    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-    fn inspect<'a>(
-        &'a self,
-        _: &'a labby_runtime::dev_container_runtime::EngineHandle,
-    ) -> std::pin::Pin<
-        Box<
-            dyn Future<
-                    Output = Result<labby_runtime::dev_container_runtime::EngineState, Self::Error>,
-                > + Send
-                + 'a,
-        >,
-    > {
-        Box::pin(async { Ok(labby_runtime::dev_container_runtime::EngineState::Running) })
-    }
-    fn start<'a>(
-        &'a self,
-        _: &'a labby_runtime::dev_container_runtime::EngineHandle,
-    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-    fn stop<'a>(
-        &'a self,
-        _: &'a labby_runtime::dev_container_runtime::EngineHandle,
-    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-    fn destroy<'a>(
-        &'a self,
-        _: &'a labby_runtime::dev_container_runtime::EngineHandle,
-    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-}
-
 /// Process-scoped owner of the access-store lifecycle.
 ///
 /// Construction is observational: it never creates or migrates the store. Only the explicit
@@ -218,7 +206,12 @@ pub(crate) struct AccessRuntime {
     bootstrap_writer: Arc<Semaphore>,
     dev_container_runtime: Arc<
         dyn labby_runtime::dev_container_runtime::ContainerRuntime<
-                Error = labby_runtime::dev_container_runtime::DisabledRuntimeError,
+                Error = super::DevContainerEngineError,
+            >,
+    >,
+    dev_container_image_runtime: Arc<
+        dyn labby_runtime::dev_container_image_runtime::ContainerImageRuntime<
+                Error = super::DevContainerEngineError,
             >,
     >,
 }
@@ -252,6 +245,104 @@ impl AccessRuntime {
             .provision_team_viewer(identity, project_id)
             .await
             .map_err(|_| AccessRuntimeError::LifecycleUnavailable)
+    }
+
+    /// Admit an allowlisted identity at first sign-in.
+    ///
+    /// The allowlist lives in the auth database, so `revalidate` re-resolves
+    /// the admission under the access writer; what it returns — not the
+    /// caller's earlier lookup — is what gets provisioned. An entry removed
+    /// between the two lookups therefore admits nothing.
+    pub(crate) async fn provision_allowlisted<F, Fut>(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+        revalidate: F,
+    ) -> Result<super::TeamMemberProvisionOutcome, AllowlistProvisionError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Option<(super::AllowedUserRole, super::AllowlistAdmission)>>,
+    {
+        let _writer = self.acquire_allowlist_writer().await?;
+        let Some((role, admitted_by)) = revalidate().await else {
+            return Err(AllowlistProvisionError::Withdrawn);
+        };
+        self.security_store()
+            .await
+            .map_err(AllowlistProvisionError::Runtime)?
+            .provision_allowlisted(identity, role, admitted_by)
+            .await
+            .map_err(|error| match error {
+                AccessStoreError::NotAuthorized => AllowlistProvisionError::Refused,
+                _ => AllowlistProvisionError::Runtime(AccessRuntimeError::LifecycleUnavailable),
+            })
+    }
+
+    /// Revoke the durable grants allowlist admission created for every
+    /// identity the removed email maps to.
+    ///
+    /// The returned value holds the bootstrap writer: the caller keeps it
+    /// alive through its own allowlist deletion so a concurrent first-sign-in
+    /// admission, which re-validates the allowlist under the same writer,
+    /// cannot slip between the durable revocation and the entry's removal.
+    /// A process without a durable store has nothing to revoke and no
+    /// admission to fence.
+    pub(crate) async fn revoke_allowlisted(
+        &self,
+        identities: Vec<labby_auth::VerifiedIdentity>,
+        revoked_by_fingerprint: String,
+    ) -> Result<AllowlistRevocation, AccessRuntimeError> {
+        let store = match self.security_store().await {
+            Ok(store) => store,
+            Err(
+                AccessRuntimeError::SetupRequired(_)
+                | AccessRuntimeError::Blocked(AccessBlockedReason::Unavailable),
+            ) => {
+                return Ok(AllowlistRevocation {
+                    outcomes: Vec::new(),
+                    _admission_fence: None,
+                });
+            }
+            Err(error) => return Err(error),
+        };
+        let writer = self
+            .acquire_allowlist_writer()
+            .await
+            .map_err(|error| match error {
+                AllowlistProvisionError::Runtime(error) => error,
+                _ => AccessRuntimeError::LifecycleUnavailable,
+            })?;
+        let mut outcomes = Vec::with_capacity(identities.len());
+        for identity in identities {
+            outcomes.push(
+                store
+                    .revoke_allowlisted(identity, revoked_by_fingerprint.clone())
+                    .await
+                    .map_err(|_| AccessRuntimeError::LifecycleUnavailable)?,
+            );
+        }
+        Ok(AllowlistRevocation {
+            outcomes,
+            _admission_fence: Some(writer),
+        })
+    }
+
+    /// The bootstrap writer with the allowlist admission deadline, telling a
+    /// busy writer (retry on the next session read) apart from a closed one.
+    async fn acquire_allowlist_writer(
+        &self,
+    ) -> Result<OwnedSemaphorePermit, AllowlistProvisionError> {
+        match tokio::time::timeout(
+            ALLOWLIST_ADMISSION_DEADLINE,
+            Arc::clone(&self.bootstrap_writer).acquire_owned(),
+        )
+        .await
+        {
+            Ok(Ok(permit)) => Ok(permit),
+            Ok(Err(_)) => Err(AllowlistProvisionError::Runtime(
+                AccessRuntimeError::LifecycleUnavailable,
+            )),
+            Err(_) => Err(AllowlistProvisionError::WriterBusy),
+        }
     }
 
     async fn security_store(&self) -> Result<AccessStore, AccessRuntimeError> {
@@ -392,9 +483,8 @@ impl AccessRuntime {
                 AccessBlockedReason::Unavailable,
             ))),
             bootstrap_writer: Arc::new(Semaphore::new(1)),
-            dev_container_runtime: Arc::new(
-                labby_runtime::dev_container_runtime::DisabledContainerRuntime,
-            ),
+            dev_container_runtime: super::unavailable_dev_container_runtime(),
+            dev_container_image_runtime: super::unavailable_dev_container_image_runtime(),
         }
     }
 
@@ -423,30 +513,48 @@ impl AccessRuntime {
             tracing::warn!(?reason, "access runtime initialization blocked");
             state = RuntimeState::Blocked(reason);
         }
-        let dev_container_runtime: Arc<
-            dyn labby_runtime::dev_container_runtime::ContainerRuntime<
-                    Error = labby_runtime::dev_container_runtime::DisabledRuntimeError,
-                >,
-        > = if cfg!(feature = "proxy-testkit")
-            && std::env::var_os("LABBY_E2E_DETERMINISTIC_EXECUTORS").is_some()
-        {
-            Arc::new(DeterministicDevContainerRuntime)
-        } else {
-            Arc::new(labby_runtime::dev_container_runtime::DisabledContainerRuntime)
-        };
-        Self {
+        let runtime = Self {
             path: Arc::new(path),
             state: Arc::new(Mutex::new(state)),
             bootstrap_writer: Arc::new(Semaphore::new(1)),
-            dev_container_runtime,
+            dev_container_runtime: super::configured_dev_container_runtime(),
+            dev_container_image_runtime: super::configured_dev_container_image_runtime(),
+        };
+        let recovery_store = {
+            let state = runtime.state.lock().await;
+            match &*state {
+                RuntimeState::Ready { store, .. } => Some(store.clone()),
+                _ => None,
+            }
+        };
+        if let Some(store) = recovery_store {
+            tokio::spawn(
+                crate::dispatch::dev_containers::images::recover_interrupted(
+                    store,
+                    Arc::clone(&runtime.dev_container_image_runtime),
+                ),
+            );
         }
+        let schedule_state = Arc::downgrade(&runtime.state);
+        crate::dispatch::tasks::schedules::start(move || {
+            let schedule_state = schedule_state.clone();
+            async move {
+                let state = schedule_state.upgrade()?;
+                let state = state.lock().await;
+                Some(match &*state {
+                    RuntimeState::Ready { store, .. } => Some(store.clone()),
+                    _ => None,
+                })
+            }
+        });
+        runtime
     }
 
     pub(crate) fn with_dev_container_runtime(
         mut self,
         runtime: Arc<
             dyn labby_runtime::dev_container_runtime::ContainerRuntime<
-                    Error = labby_runtime::dev_container_runtime::DisabledRuntimeError,
+                    Error = super::DevContainerEngineError,
                 >,
         >,
     ) -> Self {
@@ -458,18 +566,32 @@ impl AccessRuntime {
         &self,
     ) -> Arc<
         dyn labby_runtime::dev_container_runtime::ContainerRuntime<
-                Error = labby_runtime::dev_container_runtime::DisabledRuntimeError,
+                Error = super::DevContainerEngineError,
             >,
     > {
-        // Test-only hook: compiled in only under `proxy-testkit` (test support,
-        // never a product slice), like the deterministic Agent/Task executor.
-        // Product builds compile the branch out; the variable has no effect.
-        if cfg!(feature = "proxy-testkit")
-            && std::env::var_os("LABBY_E2E_DETERMINISTIC_EXECUTORS").is_some()
-        {
-            return Arc::new(DeterministicDevContainerRuntime);
-        }
         Arc::clone(&self.dev_container_runtime)
+    }
+
+    pub(crate) fn with_dev_container_image_runtime(
+        mut self,
+        runtime: Arc<
+            dyn labby_runtime::dev_container_image_runtime::ContainerImageRuntime<
+                    Error = super::DevContainerEngineError,
+                >,
+        >,
+    ) -> Self {
+        self.dev_container_image_runtime = runtime;
+        self
+    }
+
+    pub(crate) fn dev_container_image_runtime(
+        &self,
+    ) -> Arc<
+        dyn labby_runtime::dev_container_image_runtime::ContainerImageRuntime<
+                Error = super::DevContainerEngineError,
+            >,
+    > {
+        Arc::clone(&self.dev_container_image_runtime)
     }
 
     pub(crate) async fn status(&self) -> AccessRuntimeStatus {
@@ -1102,7 +1224,7 @@ mod tests {
                 .inspect(&handle)
                 .await
                 .is_err(),
-            "product builds must keep the disabled engine (env set: {})",
+            "non-owner runtimes must keep an unavailable engine (env set: {})",
             std::env::var_os("LABBY_E2E_DETERMINISTIC_EXECUTORS").is_some()
         );
     }

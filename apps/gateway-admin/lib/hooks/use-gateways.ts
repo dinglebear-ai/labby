@@ -1,8 +1,7 @@
 'use client'
 
 import useSWR, { useSWRConfig } from 'swr'
-import { toast } from 'sonner'
-import { gatewayApi } from '@/lib/api/gateway-client'
+import { gatewayApi, RELOAD_IN_FLIGHT_MESSAGE } from '@/lib/api/gateway-client'
 import {
   getMockGatewayFallback,
   getMockGatewaysFallback,
@@ -43,8 +42,8 @@ import type {
   DiscoveredMcpServer,
   GatewayImportResult,
 } from '@/lib/types/gateway'
-import { useCallback, useEffect } from 'react'
-import { loadGatewayConfiguration, loadGatewayRuntime } from '@/lib/api/gateway-progressive'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { loadGatewayConfiguration, loadGatewayRuntime, loadGatewayToolInventory } from '@/lib/api/gateway-progressive'
 import { withRequestTiming } from '@/lib/api/request-timing'
 
 // Set NEXT_PUBLIC_MOCK_DATA=true to use mock data for development
@@ -279,6 +278,11 @@ const hydrateGatewayRuntime = async (gateways: Gateway[]): Promise<Gateway[]> =>
     upstreamMcpGateways(await loadGatewayRuntime(gatewayApi, gateways)),
   )
 
+const hydrateGatewayToolInventory = async (gateways: Gateway[]): Promise<Gateway[]> =>
+  withRequestTiming('gateway.tool-inventory', async () =>
+    upstreamMcpGateways(await loadGatewayToolInventory(gatewayApi, gateways)),
+  )
+
 const fetchGateway = async (id: string): Promise<Gateway> => {
   if (USE_MOCK_DATA) {
     await mockDelay()
@@ -384,7 +388,7 @@ export function useGatewaySnapshots(enabled = true) {
   })
 }
 
-export function useGateways(enabled = true) {
+export function useGateways(enabled = true, includeToolInventory = false) {
   const { mutate } = useSWRConfig()
   const configured = useGatewaySnapshots(enabled)
   const catalogWarm = useSWR(
@@ -401,38 +405,62 @@ export function useGateways(enabled = true) {
     () => hydrateGatewayRuntime(configured.data ?? []),
     { revalidateOnFocus: false, shouldRetryOnError: false },
   )
-  const catalogIsStillWarming = (runtime.data ?? configured.data ?? []).some((gateway) => gateway.status?.catalog_warming)
-
+  const runtimeGateways = runtime.data ?? configured.data
+  const toolInventoryRevision = runtimeGateways?.map((gateway) => gateway.id)
+  const toolInventory = useSWR<Gateway[]>(
+    enabled && includeToolInventory && runtimeGateways
+      ? ['/gateways/tool-inventory', JSON.stringify(toolInventoryRevision)]
+      : null,
+    () => hydrateGatewayToolInventory(runtimeGateways ?? []),
+    { revalidateOnFocus: false, shouldRetryOnError: false },
+  )
+  const gateways = useMemo(() => {
+    if (!runtimeGateways || !toolInventory.data) return runtimeGateways
+    const inventoryById = new Map(toolInventory.data.map((gateway) => [gateway.id, gateway]))
+    return runtimeGateways.map((gateway) => {
+      const inventory = inventoryById.get(gateway.id)
+      if (!inventory) return gateway
+      const inventoryWarnings = inventory.warnings.filter((warning) => warning.code === 'tool_inventory_unavailable')
+      return {
+        ...gateway,
+        discovery: { ...gateway.discovery, tools: inventory.discovery.tools },
+        warnings: [
+          ...gateway.warnings.filter((warning) => warning.code !== 'tool_inventory_unavailable'),
+          ...inventoryWarnings,
+        ],
+      }
+    })
+  }, [runtimeGateways, toolInventory.data])
   useEffect(() => {
-    if (!enabled || catalogWarm.isLoading || catalogWarm.error) return
+    if (!enabled || USE_MOCK_DATA) return
     const refreshCatalogView = () => {
+      if (document.visibilityState === 'hidden') return
       void mutate(GATEWAYS_KEY)
       if (runtimeCacheId) void mutate(['/gateways/runtime', runtimeCacheId])
     }
-    refreshCatalogView()
     const interval = window.setInterval(refreshCatalogView, 5_000)
-    const stop = window.setTimeout(() => {
-      if (catalogIsStillWarming) {
-        toast.warning('Tool catalog discovery is still running; updates will continue in the background.')
-      } else {
-        window.clearInterval(interval)
-      }
-    }, 60_000)
+    document.addEventListener('visibilitychange', refreshCatalogView)
     return () => {
       window.clearInterval(interval)
-      window.clearTimeout(stop)
+      document.removeEventListener('visibilitychange', refreshCatalogView)
     }
-  }, [catalogIsStillWarming, catalogWarm.error, catalogWarm.isLoading, enabled, runtimeCacheId, mutate])
+  }, [enabled, runtimeCacheId, mutate])
+
+  useEffect(() => {
+    if (!enabled || USE_MOCK_DATA || catalogWarm.isLoading || catalogWarm.error) return
+    void mutate(GATEWAYS_KEY)
+    if (runtimeCacheId) void mutate(['/gateways/runtime', runtimeCacheId])
+  }, [enabled, catalogWarm.isLoading, catalogWarm.error, runtimeCacheId, mutate])
 
   return {
     ...configured,
-    data: runtime.data ?? configured.data,
+    data: gateways,
     error: configured.error,
     runtimeError: runtime.error,
     catalogWarmError: catalogWarm.error,
     retryCatalogWarm: catalogWarm.mutate,
-    isLoading: configured.isLoading,
-    isValidating: configured.isValidating || runtime.isValidating,
+    isLoading: configured.isLoading || (includeToolInventory && toolInventory.isLoading),
+    isValidating: configured.isValidating || runtime.isValidating || toolInventory.isValidating,
   }
 }
 
@@ -521,7 +549,11 @@ export function useGatewayMutations() {
   const { mutate } = useSWRConfig()
   const refreshGatewayCache = useCallback(async (id?: string, extraKeys: string[] = []) => {
     const keys = [GATEWAYS_KEY, ...(id ? [gatewayKey(id)] : []), ...extraKeys]
-    await Promise.all(keys.map((key) => mutate(key)))
+    await Promise.all([
+      ...keys.map((key) => mutate(key)),
+      mutate((key) => Array.isArray(key) && key[0] === '/gateways/runtime'),
+      mutate((key) => Array.isArray(key) && key[0] === '/gateways/tool-inventory'),
+    ])
   }, [mutate])
 
   const createGateway = useCallback(async (input: CreateGatewayInput): Promise<Gateway> => {
@@ -697,14 +729,34 @@ export function useGatewayMutations() {
     return await gatewayApi.test(id, signal)
   }, [])
 
+  // Reloads in flight from this client, by server id. A second click or a
+  // bulk reload that overlaps a running restart is answered locally instead of
+  // queueing another restart request; the backend deduplicates per upstream
+  // too, so the two layers never disagree about what is running.
+  const reloadsInFlight = useRef<Set<string>>(new Set())
   const reloadGateway = useCallback(async (id: string): Promise<ReloadGatewayResult> => {
     if (USE_MOCK_DATA) {
       await mockDelay(2000) // Longer delay for reload
       return mockReloadResult
     }
-    const result = await gatewayApi.reload(id)
-    await refreshGatewayCache(id)
-    return result
+    if (reloadsInFlight.current.has(id)) {
+      return {
+        success: false,
+        pending: true,
+        message: RELOAD_IN_FLIGHT_MESSAGE,
+        // No request was made, so no counts were observed.
+        previous_tool_count: 0,
+        new_tool_count: 0,
+      }
+    }
+    reloadsInFlight.current.add(id)
+    try {
+      const result = await gatewayApi.reload(id)
+      await refreshGatewayCache(id)
+      return result
+    } finally {
+      reloadsInFlight.current.delete(id)
+    }
   }, [refreshGatewayCache])
 
   const setExposurePolicy = useCallback(async (id: string, policy: ExposurePolicy): Promise<ExposurePolicy> => {

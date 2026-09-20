@@ -75,17 +75,21 @@ pub fn validate_observation(
     }
     let permitted = match (desired, prior, next) {
         (_, current, candidate) if current == candidate => true,
-        (DesiredState::Running, ObservedState::Pending, ObservedState::Starting)
+        (
+            DesiredState::Running,
+            ObservedState::Pending | ObservedState::Stopped,
+            ObservedState::Starting,
+        )
         | (DesiredState::Running, ObservedState::Starting, ObservedState::Running)
         | (
             DesiredState::Stopped | DesiredState::Deleted,
-            ObservedState::Running | ObservedState::Starting,
+            ObservedState::Pending | ObservedState::Running | ObservedState::Starting,
             ObservedState::Stopping,
         )
         | (DesiredState::Stopped, ObservedState::Stopping, ObservedState::Stopped)
         | (
             DesiredState::Deleted,
-            ObservedState::Stopped | ObservedState::Failed,
+            ObservedState::Stopped | ObservedState::Stopping | ObservedState::Failed,
             ObservedState::Deleted,
         )
         | (

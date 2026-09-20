@@ -31,6 +31,7 @@ backups/
 *.temp
 .tmp-*
 *.mutation.lock
+erl_crash.dump
 
 # ── Claude Code / AI tooling ────────────────────────────────────────────────
 .claude/*
@@ -80,6 +81,7 @@ Thumbs.db
 # ── Caches (ALL tool caches go here) ─────────────────────────────────────────
 .cache
 .cache/
+.nix-mix/
 __pycache__/
 *.pyc
 

@@ -37,6 +37,7 @@ import {
   humanizeProbeError,
   normalizeGateway,
   normalizeServerView,
+  matchTool,
   previewExposurePolicy,
   probeStatusFromRuntime,
 } from '../server/gateway-adapter.ts'
@@ -61,6 +62,24 @@ export class GatewayApiError extends Error implements ServiceActionError {
     this.status = status
     this.code = code
   }
+}
+
+/** Shown when a restart for the same server is already running, whether the
+ * backend reported it (`in_flight: true`) or this client never sent a second
+ * request. The backend deduplicates per upstream; the UI must not re-queue. */
+export const RELOAD_IN_FLIGHT_MESSAGE =
+  'Server restart is already in progress; runtime status will update when it reconnects.'
+
+/** The reason a completed restart's replacement did not connect, or undefined
+ * when the returned view reports a connected upstream. The backend's
+ * `connected` verdict wins; a view without it falls back to the same
+ * capability-count heuristic the probe status uses. */
+function reconnectFailureFromView(view: BackendGatewayView): string | undefined {
+  const probe = probeStatusFromRuntime(view.runtime)
+  if (view.runtime.connected ?? probe.connected) {
+    return undefined
+  }
+  return humanizeProbeError(probe.last_error, view.config) ?? probe.last_error ?? 'the upstream did not reconnect'
 }
 
 export async function gatewayAction<T>(
@@ -472,6 +491,50 @@ export const gatewayApi = {
     return hydrated
   },
 
+  async hydrateToolInventory(gateways: Gateway[], signal?: AbortSignal): Promise<Gateway[]> {
+    const results = await safeFanout(
+      gateways,
+      async (gateway) => gateway.source === 'in_process'
+        ? gateway.discovery.tools
+        : (await gatewayAction<Array<string | BackendGatewayToolRow>>(
+            'gateway.discovered_tools',
+            { name: gateway.id },
+            signal,
+          )).map((tool) => ({
+            name: typeof tool === 'string' ? tool : tool.name,
+            description: typeof tool === 'string' ? undefined : tool.description ?? undefined,
+            exposed: matchTool(
+              typeof tool === 'string' ? tool : tool.name,
+              gateway.config.expose_tools,
+            ) !== null,
+            matched_by: matchTool(
+              typeof tool === 'string' ? tool : tool.name,
+              gateway.config.expose_tools,
+            ),
+          })),
+    )
+
+    return results.map((result) => {
+      if (result.ok) {
+        return {
+          ...result.item,
+          discovery: { ...result.item.discovery, tools: result.value },
+        }
+      }
+      if (signal?.aborted) throw result.error
+      const message = result.error instanceof Error
+        ? result.error.message
+        : 'Failed to load this server tool inventory'
+      return {
+        ...result.item,
+        warnings: [
+          ...result.item.warnings.filter((warning) => warning.code !== 'tool_inventory_unavailable'),
+          { code: 'tool_inventory_unavailable', message, timestamp: new Date().toISOString() },
+        ],
+      }
+    })
+  },
+
   async get(id: string, signal?: AbortSignal): Promise<Gateway> {
     let serverView: BackendServerView
     try {
@@ -491,7 +554,7 @@ export const gatewayApi = {
 
     const [view, runtimeRows] = await Promise.all([
       gatewayAction<BackendGatewayView>('gateway.get', { name: id }, signal),
-      gatewayAction<BackendGatewayMcpRuntimeView[]>('gateway.mcp.list', {}, signal),
+      gatewayAction<BackendGatewayMcpRuntimeView[]>('gateway.mcp.list', { name: id }, signal),
     ])
     return normalizeGatewaySnapshotView(
       view,
@@ -557,14 +620,28 @@ export const gatewayApi = {
 
   async reload(id: string, signal?: AbortSignal): Promise<ReloadGatewayResult> {
     const before = await gatewayAction<BackendGatewayView>('gateway.get', { name: id }, signal)
-    await gatewayAction('gateway.reload', confirmGatewayParams({}), signal)
-    const after = await gatewayAction<BackendGatewayView>('gateway.get', { name: id }, signal)
-
+    const result = await gatewayAction<{ completed: boolean; in_flight?: boolean; gateway?: BackendGatewayView }>(
+      'gateway.mcp.restart', confirmGatewayParams({ name: id }), signal,
+    )
+    // A completed restart is the stop/cleanup/reconnect transaction; whether
+    // the replacement connected is reported on the returned view. The operator
+    // asked for a running server, so a completed restart whose replacement did
+    // not connect is reported as a failure with the backend's reason.
+    const reconnectFailure = result.completed && result.gateway
+      ? reconnectFailureFromView(result.gateway)
+      : undefined
     return {
-      success: true,
-      message: 'Gateway reloaded successfully',
+      success: result.completed && !reconnectFailure,
+      pending: !result.completed,
+      message: reconnectFailure
+        ? `Server restarted but did not reconnect: ${reconnectFailure}`
+        : result.completed
+          ? 'Server restarted successfully'
+          : result.in_flight
+            ? RELOAD_IN_FLIGHT_MESSAGE
+            : 'Server restart is still running; runtime status will update when it reconnects.',
       previous_tool_count: before.runtime.tool_count,
-      new_tool_count: after.runtime.tool_count,
+      new_tool_count: result.gateway?.runtime.tool_count ?? before.runtime.tool_count,
     }
   },
 

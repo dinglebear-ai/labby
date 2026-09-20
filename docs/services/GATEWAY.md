@@ -41,6 +41,44 @@ definition. In particular, clearing OAuth tokens, enabling/disabling an
 upstream, and killing restartable upstream processes do not require destructive
 confirmation.
 
+### Restarting An Upstream Connection
+
+`gateway.mcp.restart` replaces one enabled upstream's live connection without
+touching its desired configuration. It is one transaction on that upstream's
+connect gate: the owned connection is shut down, stale runtime processes left by
+earlier gateway generations are reaped with the same process matching as
+`gateway.mcp.cleanup` (`aggressive` widens the match to the upstream name), and
+the replacement connects. The response is `{completed, gateway, cleanup}`: the
+scoped `GatewayView` plus the `GatewayCleanupView` for that reap. When the
+restart is still running after the 20-second wait, the action returns
+`{completed: false}` and the restart finishes in the background; a later
+`gateway.get` or `gateway.mcp.list` shows the reconnected runtime.
+
+Restarts are deduplicated per upstream: a request while one is already in
+flight returns `{completed: false, in_flight: true}` at once and queues
+nothing. A restart writes no configuration and never holds the configuration
+mutation lease, so restarting many upstreams cannot block `gateway.add`,
+`gateway.update`, `gateway.remove`, or `gateway.reload`.
+
+The stop and cleanup phases are the transaction; whether the replacement
+connects is runtime state, not the action's result. A reconnect that fails,
+whether the caller was still waiting or not, is recorded as the upstream's
+runtime `last_error`, and the action still completes with the view reporting
+`connected: false` and that `last_error`, exactly as `gateway.test` reports a
+failed probe. The action fails only when the transaction cannot run: the
+upstream is unknown or disabled, the gateway runtime is not initialized, the
+configuration changed under the connect gate, or the process cleanup failed.
+
+OAuth upstreams are projected per calling subject: `gateway.get`,
+`gateway.list`, and `gateway.mcp.list` report that subject's connection,
+counts, and `last_error`, never another caller's. A subject connection that
+fails stays visible as that view's `last_error` (sanitized, never token
+material) until a connect for the same subject succeeds.
+
+Configuration mutations wait at most two minutes for the shared mutation lease
+and then fail with `service_unavailable`; retry once the running change
+finishes.
+
 ### Stdio Gateways
 
 Stdio upstreams run a configured command on the local host running `lab` when
@@ -428,7 +466,11 @@ The Code Mode Inspector keeps its compatibility switch at
 `code_mode.mcp_ui_enabled`. The other visibility switches are
 `mcp_apps.manager`, `mcp_apps.gateway_status`, `mcp_apps.server_logs`,
 `mcp_apps.add_server`, and `mcp_apps.settings`. Every Labby-owned app surface
-defaults to `false` and must be explicitly enabled. The `mcp_app` control tool
+defaults to `true`, as does `code_mode.enabled`, so a fresh install exposes the
+complete Labby app surface. Existing installs whose `config.toml` has no
+`[code_mode]` or `[mcp_apps]` section inherit those defaults on upgrade; Labby
+logs one startup line naming the defaults in force so the change is visible.
+Set the individual switches to `false` to opt out. The `mcp_app` control tool
 remains available without UI metadata so an administrator can inspect or restore
 any app, including its own manager UI. App-only mutations persist without
 rebuilding the upstream pool and publish both tool and resource list-changed
@@ -531,7 +573,7 @@ Use `codemode` for gateway Code Mode. Discovery happens inside the sandbox with
 
 Rules:
 
-- `code_mode.timeout_ms` is validated in the range `1..=60000`
+- `code_mode.timeout_ms` is validated in the range `1..=300000`
 - `code_mode.result_shape_policy` accepts `"off"` or `"truncate"`
 - `code_mode.max_response_bytes` is validated in the range `1024..=1048576`
 - `code_mode.max_response_tokens` is validated in the range `256..=256000`
@@ -1190,7 +1232,7 @@ ephemeral port. Stdio OAuth always uses the trusted shared subject `gateway`.
 | `POST` | `/v1/gateway/oauth/start` | Begin authorization for the shared gateway subject `gateway`. Body `{ "upstream": "<name>" }`. Returns `{ "authorization_url": "..." }` (JSON only — no browser-redirect mode). |
 | `GET` | `/auth/upstream/callback` | Authorization-code callback. Validates the authenticated session, atomically takes the pending state row (bound to `(upstream, subject)`), exchanges the code, persists encrypted credentials, redirects to `/gateway/oauth/result?upstream=<name>&status=<ok\|fail>`. |
 | `GET` | `/v1/gateway/oauth/status?upstream=<name>` | Returns `{ "authenticated": bool, "upstream": "<name>", "expires_within_5m": bool }`. Deliberately omits subject and raw expiry timestamp to avoid enumeration and fingerprinting. |
-| `POST` | `/v1/gateway/oauth/clear?upstream=<name>` | Requires `upstream` (the upstream name). Deletes persisted credentials and evicts the cached `AuthClient`. In-flight requests complete naturally under the old credential (graceful drain by Rust ownership — not a designed protocol). |
+| `POST` | `/v1/gateway/oauth/clear?upstream=<name>` | Requires `upstream` (the upstream name). Deletes persisted credentials and evicts the cached `AuthClient`. Matching cached clients and live peers are invalidated. Peer cleanup runs asynchronously; active calls may fail and callers must check side effects before retrying. |
 
 ### OAuth Operator Examples
 
@@ -1242,8 +1284,10 @@ Callback security invariants (enforced in code, spec-required):
   It does **not** delete persisted credential rows — `AuthClient`s are rebuilt
   on the next request using whatever credentials are in the store.
 - `clear_credentials` is the only way to invalidate a persisted credential.
-  It evicts the cache entry and deletes the row; in-flight `Arc<AuthClient>`
-  holders complete naturally under the old token.
+  It evicts the cache entry and deletes the row. Matching peers are detached
+  immediately and shut down asynchronously; in-flight calls may be interrupted.
+  Check operation outcomes before retrying a mutation. Late refresh responses
+  cannot restore a deleted or newly authorized credential.
 - Expired access-only credential rows (no refresh token) are pruned by the
   60-second `cleanup_expired` background task, alongside expired PKCE state.
 

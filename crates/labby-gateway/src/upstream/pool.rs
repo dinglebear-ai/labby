@@ -52,6 +52,8 @@ pub mod entries;
 mod health;
 mod helpers;
 mod http_cancellation;
+#[cfg(test)]
+mod http_timeout_tests;
 mod incarnation;
 mod legacy_client;
 mod lifecycle;
@@ -71,6 +73,8 @@ mod prompts_exposure;
 mod prompts_exposure_tests;
 mod prompts_get;
 mod prompts_list;
+mod recovery;
+pub use recovery::UpstreamRestart;
 mod registration;
 mod relay;
 mod relay_cache;
@@ -92,6 +96,7 @@ pub(crate) use skills::OperatorSkillRejection;
 pub(crate) use skills::OperatorSkills;
 #[cfg(all(test, feature = "skills"))]
 pub(crate) use skills_exposure::{SkillExposureDecision, SkillExposureReason};
+mod scoped_summary;
 mod skills_cache;
 mod skills_list;
 #[cfg(feature = "skills")]
@@ -106,7 +111,7 @@ mod subscription_schedule;
 mod task_route;
 mod tasks;
 #[cfg(any(test, feature = "testkit"))]
-mod testsupport;
+pub(crate) mod testsupport;
 mod tool_call_cancel;
 mod tools;
 mod tools_call;
@@ -164,6 +169,7 @@ pub(crate) use tools_call_exact::ExactToolCallError;
 /// See `connection.rs:acquire_or_connect_subject` for the full cache logic
 /// (P-C1 fix).
 pub(super) struct SubjectScopedConnection {
+    pub(super) optional_catalogs: scoped_summary::SubjectOptionalCatalogs,
     /// The full upstream connection (keeps the running service + server task alive).
     pub(super) _connection: UpstreamConnection,
     /// Cloned peer handle — pre-cloned so `acquire_or_connect_subject` can
@@ -343,6 +349,11 @@ pub struct UpstreamPool {
     ///
     /// Keyed by `(upstream_name, subject)`.
     subject_connections: Arc<RwLock<HashMap<(String, String), SubjectScopedConnection>>>,
+    /// Sanitized reason the last connect for an `(upstream, subject)` pair
+    /// failed, kept until a connect for that pair succeeds or the pair is
+    /// evicted. Identity-scoped views read it so an OAuth upstream whose
+    /// subject cannot connect shows why instead of an empty `last_error`.
+    subject_connect_errors: Arc<RwLock<HashMap<(String, String), String>>>,
     /// Per-`(upstream, subject)` single-flight locks so concurrent first-requests
     /// for the same key do not open duplicate OAuth connections (mirrors the
     /// `lazy_connect_locks` gate used by the normal pool path).
@@ -568,7 +579,10 @@ impl UpstreamPool {
         // keep-alive connections are pooled across upstreams (P-M10).
         let shared_http_client = Arc::new(
             reqwest::Client::builder()
-                .timeout(DEFAULT_REQUEST_TIMEOUT)
+                // The operation/relay owner bounds the complete MCP call. A
+                // body deadline here would terminate long-lived SSE responses
+                // before the caller's configured budget expires.
+                .connect_timeout(DEFAULT_REQUEST_TIMEOUT)
                 .build()
                 .unwrap_or_default(),
         );
@@ -605,6 +619,7 @@ impl UpstreamPool {
             skills_refresh_tasks: TaskTracker::new(),
             skills_refresh_cancel: CancellationToken::new(),
             subject_connections: Arc::new(RwLock::new(HashMap::new())),
+            subject_connect_errors: Arc::new(RwLock::new(HashMap::new())),
             subject_connect_locks: Arc::new(RwLock::new(HashMap::new())),
             relay_connections: Arc::new(RwLock::new(HashMap::new())),
             relay_connect_locks: Arc::new(RwLock::new(HashMap::new())),
@@ -644,21 +659,25 @@ impl UpstreamPool {
         self
     }
 
-    fn oauth_lifecycle_epoch(&self) -> Option<u64> {
+    fn oauth_lifecycle_epoch(
+        &self,
+        upstream: &str,
+        subject: &str,
+    ) -> Option<labby_auth::upstream::cache::OAuthLifecycleEpoch> {
         self.oauth_client_cache
             .as_ref()
-            .map(OauthClientCache::lifecycle_epoch)
+            .map(|cache| cache.lifecycle_epoch_for(upstream, subject))
     }
 
     async fn oauth_publication_guard(
         &self,
-        expected_epoch: Option<u64>,
+        expected_epoch: Option<&labby_auth::upstream::cache::OAuthLifecycleEpoch>,
     ) -> anyhow::Result<Option<tokio::sync::OwnedRwLockReadGuard<()>>> {
         let Some(expected_epoch) = expected_epoch else {
             return Ok(None);
         };
         let guard = self.oauth_invalidation_barrier.clone().read_owned().await;
-        if self.oauth_lifecycle_epoch() == Some(expected_epoch) {
+        if expected_epoch.is_current() {
             Ok(Some(guard))
         } else {
             Err(anyhow::anyhow!(

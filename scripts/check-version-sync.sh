@@ -44,6 +44,12 @@ add_json_version ".codex-plugin/plugin.json"
 add_json_version "gemini-extension.json"
 add_json_version "mcpb/manifest.json"
 
+# The desktop shell is a separate Cargo workspace that follows the root
+# workspace release; release-please rewrites all three manifests.
+add_json_version "apps/labby-desktop/package.json"
+add_json_version "apps/labby-desktop/src-tauri/tauri.conf.json"
+add_toml_version "apps/labby-desktop/src-tauri/Cargo.toml"
+
 # server.json carries the version in several places: top level, each entry in
 # packages[], the publisher-provided buildInfo, and the composite
 # distribution.npm ("<name>@<version>"). Check them all — a partial check is
@@ -123,4 +129,5 @@ if [ -f "CHANGELOG.md" ]; then
 fi
 
 echo "[version-sync] OK — all ${#versions[@]} version fields at v${canonical}"
+echo "Files checked: ${files_checked[*]}"
 exit 0

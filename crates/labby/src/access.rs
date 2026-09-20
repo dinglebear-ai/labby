@@ -6,7 +6,11 @@ mod credential_schema;
 mod credential_store;
 mod credential_verifier;
 mod dev_container;
+mod dev_container_engine;
+mod dev_container_image;
 mod domain;
+mod durable_delegation;
+pub(crate) use durable_delegation::DurableIdentityReference;
 mod error;
 #[cfg(feature = "gateway")]
 mod gateway_authority;
@@ -19,6 +23,8 @@ mod integrity;
 mod loadout;
 mod migrations;
 pub(crate) mod offline_migration;
+#[cfg(test)]
+pub(crate) use dev_container_image::DevContainerLaunchManifest;
 pub(crate) use migrations::MigrationEvidenceSource;
 mod outbox;
 #[allow(unused_imports)]
@@ -73,7 +79,9 @@ mod resolver;
 mod runtime;
 mod store;
 mod task;
+pub(crate) mod task_schedule;
 pub(crate) use task::TaskRecord;
+pub(crate) use task_schedule::ScheduleAdmission;
 mod team;
 pub(crate) use team::{ManageTeamProjectInput, ManagedProjectSnapshot};
 mod team_provision;
@@ -146,6 +154,16 @@ pub(crate) use dev_container::{
     create_approved_for_store, lookup_dev_container_for_store, recovery_inventory_for_store,
     set_desired_for_store, set_observed_for_store,
 };
+pub(crate) use dev_container_engine::{
+    DevContainerEngineError, DynDevContainerImageRuntime, configured_dev_container_image_runtime,
+    configured_dev_container_runtime, unavailable_dev_container_image_runtime,
+    unavailable_dev_container_runtime,
+};
+pub(crate) use dev_container_image::{
+    CreateTemplateDraft, DevContainerBuildCatalogSnapshot, DevContainerBuildSource,
+    DevContainerImageBuild, DevContainerLaunchEnvironmentEntry, DevContainerTemplateDraft,
+    EnqueueImageBuild, TemplateEnvironmentEntry, owner_kind_wire,
+};
 #[allow(unused_imports)]
 pub(crate) use domain::{Permission, ProjectRole, TeamRole};
 pub(crate) use error::AccessStoreError;
@@ -168,6 +186,7 @@ pub(crate) use gateway_loadout::{
     project_runtime_mcp_catalog_context,
 };
 pub(crate) use health::{AccessHealth, AccessHealthStatus, inspect_health};
+pub(crate) use labby_auth::AllowedUserRole;
 #[allow(unused_imports)]
 pub(crate) use loadout::{AssignProjectLoadoutInput, AssignProjectLoadoutOutcome};
 #[allow(unused_imports)]
@@ -177,7 +196,10 @@ pub(crate) use runtime::{
     AccessBlockedReason, AccessRuntime, AccessRuntimeError, AccessRuntimeStatus, AccessSetupReason,
     OwnerBootstrapOffer,
 };
-pub(crate) use runtime::{CredentialLifecycleError, TeamMemberProvisionError};
+pub(crate) use runtime::{
+    AllowlistProvisionError, AllowlistRevocation, CredentialLifecycleError,
+    TeamMemberProvisionError,
+};
 #[allow(unused_imports)]
 pub(crate) use runtime::{FileStashOwnerAuthorization, FileStashPrincipalResolutionError};
 #[allow(unused_imports)]
@@ -189,7 +211,9 @@ pub(crate) use team::{
     TeamInvitationSnapshot, TeamMembershipInput, TeamMembershipSnapshot,
     TeamProjectAssignmentSnapshot, TeamSnapshot,
 };
-pub(crate) use team_provision::TeamMemberProvisionOutcome;
+pub(crate) use team_provision::{
+    AllowlistAdmission, AllowlistRevocationOutcome, TeamMemberProvisionOutcome,
+};
 #[allow(unused_imports)]
 pub(crate) use workflow::{
     OwnerBootstrapCaller, OwnerBootstrapError, bootstrap_owner, owner_bootstrap_admission,

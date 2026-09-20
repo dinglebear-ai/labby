@@ -116,9 +116,7 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("scripts/ci/qualify-n-minus-one.sh", workflow)
         release = yaml.load(workflow, Loader=yaml.BaseLoader)
         matrix = release["jobs"]["upgrade-qualification"]["strategy"]["matrix"]["include"]
-        # macOS arm64 has never had a published release, so it has no N-1 to
-        # install yet. Add "macos" back here when the leg is restored.
-        self.assertEqual(["unix", "windows", "incus", "host-service"], [row["deployment"] for row in matrix])
+        self.assertEqual(["unix", "windows", "macos", "incus", "host-service"], [row["deployment"] for row in matrix])
         # Only host-service is advisory, until its v1.16 log-directory bug is fixed.
         self.assertEqual("${{ matrix.advisory == 'true' }}", release["jobs"]["upgrade-qualification"]["continue-on-error"])
         self.assertEqual({"host-service": "true"}, {row["deployment"]: row["advisory"] for row in matrix if "advisory" in row})
@@ -1363,9 +1361,12 @@ if authenticated_action; then exit 93; fi
         paths = ["Cargo.toml", "packages/labby-mcp/package.json", "server.json",
                  "apps/labby-desktop/package.json", "apps/labby-desktop/src-tauri/Cargo.toml",
                  "apps/labby-desktop/src-tauri/tauri.conf.json"]
+        # The verification workspace pins labby-model at the exact release
+        # version; the patch script refuses to run without that manifest.
+        pinned = "verification/hosts/labby/Cargo.toml"
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for path in paths:
+            for path in paths + [pinned]:
                 target = root / path
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(self.text(path))
@@ -1377,6 +1378,7 @@ if authenticated_action; then exit 93; fi
                         self.assertEqual(json.loads(text)["version"], version, path)
                     else:
                         self.assertIn(f'version = "{version}"', text, path)
+                self.assertIn(f'labby-model = {{ version = "={version}"', (root / pinned).read_text(), pinned)
                 first = {path: (root / path).read_bytes() for path in paths}
                 subprocess.run([sys.executable, "-", version], input=code, text=True, cwd=root, check=True)
                 self.assertEqual(first, {path: (root / path).read_bytes() for path in paths})
@@ -1386,6 +1388,67 @@ if authenticated_action; then exit 93; fi
         self.assertIn("apps/labby-desktop/src-tauri/Cargo.lock", staged)
         for path in paths:
             self.assertIn(path, staged)
+
+    def test_stable_promotion_does_not_depend_on_unprovisioned_desktop_signing(self) -> None:
+        # No APPLE_* secret is provisioned for this repository. A stable
+        # release must still promote the binaries, npm launcher, Incus image,
+        # and MCP manifest when the desktop leg cannot sign or notarize; desktop
+        # assets are additive, never a promotion gate.
+        release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
+        desktop = yaml.load(self.text(".github/workflows/build-desktop.yml"), Loader=yaml.BaseLoader)
+        build = desktop["jobs"]["build"]
+        # A `uses:` caller job cannot carry continue-on-error, so the called
+        # build job is where the desktop leg becomes advisory.
+        self.assertEqual("true", build.get("continue-on-error"))
+        preflight = desktop["jobs"]["preflight"]
+        self.assertIn("has_apple_secrets", preflight["outputs"])
+        # The macOS entry joins the matrix only when signing is provisioned.
+        matrix = str(build["strategy"]["matrix"])
+        self.assertIn("fromJSON(needs.preflight.outputs.", matrix)
+        self.assertNotIn("macos-15", matrix)
+        steps = {step.get("name"): step for step in build["steps"]}
+        for name in ("Import Developer ID certificate", "Build notarized macOS desktop app"):
+            self.assertIn("needs.preflight.outputs.has_apple_secrets == 'true'", steps[name]["if"])
+            self.assertNotIn("desktop releases require APPLE_", steps[name]["run"])
+        # Dependents may still list the leg, because it can no longer fail them.
+        for job in ("npm-candidate", "release"):
+            self.assertIn("desktop-candidate", release["jobs"][job]["needs"])
+        # The steps that enumerate desktop assets by glob must tolerate an
+        # absent leg rather than passing the literal pattern to a tool.
+        release_steps = {step.get("name"): step for step in release["jobs"]["release"]["steps"]}
+        for name in (
+            "Create immutable release manifest",
+            "Upload qualified assets to draft release",
+            "Verify release provenance as a consumer",
+        ):
+            self.assertIn("shopt -s nullglob", release_steps[name]["run"], name)
+
+    def test_version_sync_gate_covers_desktop_manifests(self) -> None:
+        # The desktop shell follows the root workspace release, but nothing on
+        # main compared its three manifests to Cargo.toml: they sat at 1.18.2
+        # while the workspace shipped 1.20.1, and the release-please generic
+        # marker on its own line never rewrote src-tauri/Cargo.toml.
+        script = self.text("scripts/check-version-sync.sh")
+        desktop = (
+            "apps/labby-desktop/package.json",
+            "apps/labby-desktop/src-tauri/tauri.conf.json",
+            "apps/labby-desktop/src-tauri/Cargo.toml",
+        )
+        for path in desktop:
+            self.assertIn(path, script)
+        result = subprocess.run(["bash", "scripts/check-version-sync.sh"], cwd=ROOT,
+                                text=True, capture_output=True, check=False)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        for path in desktop:
+            self.assertIn(path, result.stdout)
+        # release-please's generic updater rewrites only the annotated line.
+        cargo = self.text("apps/labby-desktop/src-tauri/Cargo.toml")
+        self.assertRegex(cargo, r'(?m)^version = "[^"]+" # x-release-please-version$')
+        self.assertNotRegex(cargo, r"(?m)^# x-release-please-version$")
+        # The lockfile records the same version for the desktop package.
+        lock = self.text("apps/labby-desktop/src-tauri/Cargo.lock")
+        version = re.search(r'(?m)^version = "([^"]+)"', cargo).group(1)
+        self.assertIn(f'name = "labby-desktop"\nversion = "{version}"', lock)
 
     def test_desktop_release_builds_enforce_the_reviewed_lockfile(self) -> None:
         workflow = yaml.safe_load(self.text(".github/workflows/build-desktop.yml"))

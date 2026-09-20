@@ -525,7 +525,7 @@ async fn connect_unix_socket_upstream<H: ClientHandler + Clone>(
     // HTTP/TCP upstreams.
     drop(rustls::crypto::ring::default_provider().install_default());
     let client = reqwest::Client::builder()
-        .timeout(DEFAULT_REQUEST_TIMEOUT)
+        .connect_timeout(DEFAULT_REQUEST_TIMEOUT)
         .http1_only()
         .unix_socket(unix_socket_connect_path(socket_path))
         .build()
@@ -810,7 +810,7 @@ async fn connect_http_upstream_once<H: ClientHandler>(
         // needed under "rustls-no-provider" -- idempotent, safe to ignore Err.
         drop(rustls::crypto::ring::default_provider().install_default());
         reqwest::Client::builder()
-            .timeout(DEFAULT_REQUEST_TIMEOUT)
+            .connect_timeout(DEFAULT_REQUEST_TIMEOUT)
             .build()?
     };
 

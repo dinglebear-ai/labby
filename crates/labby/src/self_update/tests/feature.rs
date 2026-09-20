@@ -5,6 +5,8 @@ use super::*;
 use sha2::{Digest, Sha256};
 use std::os::unix::{fs::PermissionsExt, process::CommandExt};
 
+const AUTOMATIC_FEATURE_CHILD_TIMEOUT: Duration = Duration::from_mins(1);
+
 fn executable(path: &Path, body: &str) {
     fs::write(path, body).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
@@ -89,11 +91,15 @@ cp "$LABBY_TEST_FEATURE_ROOT/${url##*/}" "$out"
             &root.path().join("tools/gh"),
             r#"#!/bin/sh
 set -eu
+# The installer probes gh for attestation support before any release download.
+# That probe is a prerequisite check, not an attestation request.
 case "$*" in
   "--version") echo "gh version 2.99.0"; exit 0;;
   "attestation verify --help") echo "verify an artifact attestation"; exit 0;;
-  "attestation verify "*"--repo dinglebear-ai/labby --signer-workflow dinglebear-ai/labby/.github/workflows/release.yml --source-ref refs/tags/v1.17.0 --deny-self-hosted-runners")
-    printf '%s\n' "$*" >> "$LABBY_TEST_FEATURE_ROOT/attestations"
+esac
+printf '%s\n' "$*" >> "$LABBY_TEST_FEATURE_ROOT/attestations"
+case "$*" in
+  "attestation verify "*" --hostname github.com --repo dinglebear-ai/labby --signer-workflow dinglebear-ai/labby/.github/workflows/release.yml --source-ref refs/tags/v1.17.0 --deny-self-hosted-runners")
     [ "$LABBY_TEST_FEATURE_CASE" != attestation_failure ]
     ;;
   *) echo 'unexpected attestation request' >&2; exit 92;;
@@ -168,7 +174,7 @@ esac
             if let Some(status) = child.try_wait().unwrap() {
                 break status;
             }
-            if started.elapsed() > Duration::from_secs(20) {
+            if started.elapsed() > AUTOMATIC_FEATURE_CHILD_TIMEOUT {
                 drop(child.kill());
                 drop(child.wait());
                 panic!(

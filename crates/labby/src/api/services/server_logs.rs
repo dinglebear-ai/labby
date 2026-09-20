@@ -56,6 +56,7 @@ pub(crate) fn data_descriptors() -> Vec<crate::api::route_registry::RouteDescrip
 struct ServerLogsQuery {
     limit: Option<u64>,
     level: Option<String>,
+    levels: Option<Vec<String>>,
     target: Option<String>,
     service: Option<String>,
     action: Option<String>,

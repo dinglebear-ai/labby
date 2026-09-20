@@ -580,6 +580,11 @@ pub(super) async fn server_view_from_upstream(
         None => None,
     });
     let dependency_hint = last_error.as_deref().and_then(dependency_hint_from_error);
+    let enabled = upstream.enabled;
+    let runtime = match pool {
+        Some(pool) => pool.upstream_runtime_metadata(&upstream.name).await,
+        None => None,
+    };
     // Health-aware connectivity (mirrors `server_view_from_virtual_server`): an
     // upstream counts as connected when it has no recorded error and is either
     // actively exposing capabilities or healthy. The health term keeps lazily
@@ -592,11 +597,6 @@ pub(super) async fn server_view_from_upstream(
         || summary.exposed_skill_count > 0;
     let health_ok = health.map(|health| health.is_routable()).unwrap_or(false);
     let connected = last_error.is_none() && (exposing_capabilities || health_ok);
-    let enabled = upstream.enabled;
-    let runtime = match pool {
-        Some(pool) => pool.upstream_runtime_metadata(&upstream.name).await,
-        None => None,
-    };
     let pid = runtime.as_ref().and_then(|meta| meta.pid);
     // OAuth upstreams list tools per authenticated subject, so the shared
     // catalog stays empty by design; reporting it as warming would pin them in
@@ -632,6 +632,10 @@ pub(super) async fn server_view_from_upstream(
     let (command, args) = redacted_stdio_command(upstream);
 
     ServerView {
+        notification_incidents: match pool {
+            Some(pool) => pool.notification_incidents(&upstream.name).await,
+            None => Default::default(),
+        },
         id: upstream.name.clone(),
         name: upstream.name.clone(),
         display_name: upstream.display_name.clone(),
@@ -736,6 +740,7 @@ pub(super) fn server_view_from_virtual_server(
     }
 
     ServerView {
+        notification_incidents: Default::default(),
         id: record.id.clone(),
         name: service.clone(),
         display_name: None,
@@ -871,6 +876,81 @@ pub(super) async fn runtime_view(
             retry_failures: header_recovery.retry_failures,
         },
     }
+}
+
+/// Project caller-owned OAuth state without publishing it to the shared catalog.
+pub(super) async fn scoped_server_view(
+    pool: Option<&UpstreamPool>,
+    upstream: &UpstreamConfig,
+    subject: Option<&str>,
+) -> ServerView {
+    let mut view = server_view_from_upstream(pool, upstream).await;
+    if upstream.oauth.is_none() {
+        return view;
+    }
+    let scoped = match pool {
+        Some(pool) => pool.cached_subject_summary(upstream, subject).await,
+        None => Default::default(),
+    };
+    let summary = scoped.summary;
+    view.connected = scoped.connected;
+    view.surfaces.mcp.connected = scoped.connected;
+    view.discovered_tool_count = summary.discovered_tool_count;
+    view.exposed_tool_count = summary.exposed_tool_count;
+    view.discovered_resource_count = summary.discovered_resource_count;
+    view.exposed_resource_count = summary.exposed_resource_count;
+    view.discovered_prompt_count = summary.discovered_prompt_count;
+    view.exposed_prompt_count = summary.exposed_prompt_count;
+    view.discovered_skill_count = summary.discovered_skill_count;
+    view.exposed_skill_count = summary.exposed_skill_count;
+    // A different caller's shared capability failures do not describe this peer;
+    // this subject's own connect failure does.
+    view.warnings.clear();
+    if let Some(message) = &scoped.last_error {
+        view.warnings.push(super::view_models::ServerWarningView {
+            code: upstream_warning_code(message).to_string(),
+            message: message.clone(),
+        });
+    }
+    if !scoped.tools_known || !scoped.resources_known || !scoped.prompts_known {
+        view.warnings.push(super::view_models::ServerWarningView {
+            code: "catalog_warming".to_owned(),
+            message: "This account's capability catalog has not been fully discovered; counts are provisional.".to_owned(),
+        });
+    }
+    view
+}
+
+pub(super) async fn scoped_runtime_view(
+    pool: Option<&UpstreamPool>,
+    upstream: &UpstreamConfig,
+    subject: Option<&str>,
+) -> GatewayRuntimeView {
+    let mut view = runtime_view(pool, &upstream.name, None).await;
+    if upstream.oauth.is_none() {
+        return view;
+    }
+    let scoped = match pool {
+        Some(pool) => pool.cached_subject_summary(upstream, subject).await,
+        None => Default::default(),
+    };
+    view.connected = scoped.connected;
+    view.tool_count = scoped.summary.discovered_tool_count;
+    view.exposed_tool_count = scoped.summary.exposed_tool_count;
+    view.resource_count = scoped.summary.discovered_resource_count;
+    view.exposed_resource_count = scoped.summary.exposed_resource_count;
+    view.prompt_count = scoped.summary.discovered_prompt_count;
+    view.exposed_prompt_count = scoped.summary.exposed_prompt_count;
+    view.skill_count = scoped.summary.discovered_skill_count;
+    view.exposed_skill_count = scoped.summary.exposed_skill_count;
+    // The shared connection's error does not describe this subject's peer;
+    // the subject's own connect failure does.
+    view.dependency_hint = scoped
+        .last_error
+        .as_deref()
+        .and_then(dependency_hint_from_error);
+    view.last_error = scoped.last_error;
+    view
 }
 
 #[cfg(test)]

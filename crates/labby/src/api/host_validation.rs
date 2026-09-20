@@ -13,7 +13,7 @@
 
 use axum::{
     body::Body,
-    http::{Request, Response, StatusCode, header::HOST},
+    http::{HeaderMap, Request, Response, StatusCode, header::HOST},
     middleware::Next,
 };
 
@@ -53,6 +53,26 @@ pub fn is_loopback_host_value(host_value: &str) -> bool {
     normalize_host_value(host_value)
         .as_deref()
         .is_some_and(|host| LOOPBACK_HOSTS.contains(&host))
+}
+
+/// Headers a reverse proxy adds when it forwards a request. Their presence
+/// means the `Host` header describes the proxy's upstream hop, not the
+/// client's transport, so loopback-only routes must not trust it: only a
+/// configured HTTPS public URL proves TLS at the proxy.
+const FORWARDING_HEADERS: &[&str] = &[
+    "forwarded",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "x-real-ip",
+];
+
+/// Returns `true` when any reverse-proxy forwarding header is present.
+#[must_use]
+pub fn has_forwarding_headers(headers: &HeaderMap) -> bool {
+    FORWARDING_HEADERS
+        .iter()
+        .any(|name| headers.contains_key(*name))
 }
 
 fn configured_allowed_hosts(public_url: Option<&str>, extra_hosts: Option<&str>) -> Vec<String> {

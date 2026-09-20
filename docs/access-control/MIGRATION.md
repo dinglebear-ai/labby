@@ -7,6 +7,31 @@ status: "design"
 
 # Multi-user ownership migration and recovery
 
+## Execution schema v8
+
+The current binary targets schema v8 (`labby-access-v8-20260916`). A v7
+installation uses the same offline approval, independent checkpoint and
+verified-reopen workflow below. Its upgrade preserves existing ownership,
+bootstrap generation, authority revisions, definitions and sessions. It adds
+recurring schedule occurrences and retry attempts, and container image
+draft/build/publication records; Agent and Task payloads stay in the
+content-addressed payload store, not in the access schema. It does not
+reclassify existing owners or grant runtime access.
+
+For v7 to v8, retain before/after logical inventories of every existing table
+except the expected schema metadata change, verify the new tables are empty,
+run integrity and foreign-key checks, and reopen twice. Rehearse against an
+independent copy before stopping the live daemon for its final checkpoint and
+migration. Keep the matching previous binary and complete installation restore
+set. Once new execution records have been written, restoring the checkpoint
+would discard those writes; never point a v7 binary at a v8 store.
+
+The ownership classification and failure-injection sections below describe
+the earlier v1–v6 to v7 transition and continue to apply when upgrading those
+older stores through the ownership migration.
+
+## Ownership migration background
+
 This runbook freezes the rehearsal and activation contract for moving an
 existing Labby AccessStore installation (schema v1 through v7) to the current
 multi-user ownership schema v8. The rehearsal proves

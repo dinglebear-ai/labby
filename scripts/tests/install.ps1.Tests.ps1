@@ -29,7 +29,36 @@ Describe 'Labby Windows installer contracts' {
         Assert-MockCalled Install-LabbyFromSource -Times 0
     }
 
+    It 'fails before any release download when gh is missing' {
+        # The prerequisite gate must run before release resolution and before
+        # the archive or its sidecar are fetched, mirroring scripts/install.sh,
+        # so a fresh machine fails fast with the dependency message instead of
+        # downloading an artifact it cannot verify.
+        Mock Get-Command { $null } -ParameterFilter { $Name -eq 'gh' }
+        Mock Invoke-RestMethod { throw 'release resolution ran before the prerequisite gate' }
+        Mock Invoke-WebRequest { throw 'release download ran before the prerequisite gate' }
+        try {
+            Install-LabbyFromRelease -InstallDir (Join-Path $TestDrive 'no-gh') -Version latest -Repo example/labby
+            throw 'release install unexpectedly succeeded without gh'
+        } catch {
+            $_.Exception.Message | Should -BeLike '*GitHub CLI (gh) is required*'
+            $_.Exception.Data['LabbyTrustFailure'] | Should -BeTrue
+        }
+        Assert-MockCalled Invoke-RestMethod -Times 0
+        Assert-MockCalled Invoke-WebRequest -Times 0
+    }
+
+    It 'checks attestation support without requiring GitHub authentication' {
+        Mock Get-Command { [pscustomobject]@{ Source = 'gh' } } -ParameterFilter { $Name -eq 'gh' }
+        Mock Test-LabbyGitHubCliCommand { $true }
+        { Test-LabbyReleasePrerequisite } | Should -Not -Throw
+        Assert-MockCalled Test-LabbyGitHubCliCommand -Times 1 -ParameterFilter {
+            $Arguments -contains 'attestation' -and $Arguments -contains 'verify' -and $Arguments -contains '--help'
+        }
+    }
+
     It 'fails when the required checksum sidecar is unavailable' {
+        Mock Test-LabbyReleasePrerequisite {}
         Mock Invoke-WebRequest {
             param($Uri, $OutFile)
             if ($Uri -like '*.sha256') { throw 'fixture sidecar unavailable' }
@@ -76,7 +105,10 @@ Describe 'Labby Windows installer contracts' {
         Mock Get-Command { [pscustomobject]@{ Source = 'gh' } } -ParameterFilter { $Name -eq 'gh' }
         Mock gh { $global:LASTEXITCODE = 0 }
         { Test-LabbyReleaseProvenance -ArtifactPath $artifact -BundlePath $bundle -Repo example/labby -ResolvedVersion v1.2.3 } | Should -Not -Throw
-        Assert-MockCalled gh -Times 1 -ParameterFilter { $args -contains '--bundle' -and $args -contains $bundle }
+        Assert-MockCalled gh -Times 1 -ParameterFilter {
+            $args -contains '--bundle' -and $args -contains $bundle -and
+            $args -contains '--hostname' -and $args -contains 'github.com'
+        }
     }
 
     It 'accepts named and bare checksum digests for the requested archive' {
@@ -170,6 +202,7 @@ printf source-pinned >"$root/bin/labby.exe"
         Set-Content -NoNewline -Path $prior -Value 'known-good'
         Install-LabbyVerifiedBinary -SourcePath $prior -InstallDir $installDir -Source release `
             -RequestedVersion v1 -ResolvedVersion v1
+        Mock Test-LabbyReleasePrerequisite {}
         Mock Invoke-WebRequest {
             param($Uri, $OutFile)
             $contents = if ($Uri -like '*.sha256') { ('0' * 64) + '  labby.zip' } else { 'untrusted archive' }

@@ -40,7 +40,9 @@ pub async fn create_browser_session(
     let session = BrowserSessionRow {
         session_id: random_token(24)?,
         subject,
-        email,
+        // Stored through the shared fold so SQL-side allowlist and admin
+        // comparisons against `allowed_users.email` match exactly.
+        email: email.as_deref().map(crate::util::normalize_email),
         csrf_token: random_token(18)?,
         created_at,
         expires_at: expires_at(
@@ -64,7 +66,9 @@ pub async fn create_bound_browser_session(
     let session = BrowserSessionRow {
         session_id: random_token(24)?,
         subject,
-        email,
+        // Stored through the shared fold so SQL-side allowlist and admin
+        // comparisons against `allowed_users.email` match exactly.
+        email: email.as_deref().map(crate::util::normalize_email),
         csrf_token: random_token(18)?,
         created_at,
         expires_at: expires_at(
@@ -160,7 +164,7 @@ mod tests {
             Some(url::Url::parse("https://syslog.example.com").expect("public url"));
         config.google.client_id = "client-id".into();
         config.google.client_secret = "client-secret".into();
-        config.admin_email = "admin@example.com".into();
+        config.admin_emails = vec!["admin@example.com".into()];
         config.token_encryption_key = Some(crate::at_rest::TokenEncryptionKey::from_passphrase(
             "session-test-provider-key",
         ));

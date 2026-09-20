@@ -4,10 +4,10 @@ import React, { act } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { SearchParamsContext } from 'next/dist/shared/lib/hooks-client-context.shared-runtime'
 import { installTestDom, renderClient } from '../../lib/testing/dom-test-utils.tsx'
-import { __setBrowserSessionStateForTests } from '../../lib/auth/session-store.ts'
 import { filterArtifacts } from './library-model'
 
 const dom = installTestDom()
+Object.defineProperty(globalThis, 'self', { value: globalThis.window, configurable: true })
 Object.defineProperty(globalThis, 'NodeFilter', { value: dom.NodeFilter, configurable: true })
 Object.defineProperty(globalThis, 'HTMLInputElement', { value: dom.HTMLInputElement, configurable: true })
 let LibraryPageContent: typeof import('./library-page-content.tsx').LibraryPageContent
@@ -53,14 +53,16 @@ test('compact collection table preserves real metadata and single inspection act
     const table = document.querySelector('table')!
     assert.equal(table.getAttribute('aria-label'), 'Library artifacts')
     assert.match(table.className, /table-fixed/)
-    assert.match(table.parentElement!.className, /max-h-\[56vh\]/)
-    assert.deepEqual([...table.querySelectorAll('th')].map(cell => cell.textContent), ['Kind', 'Artifact', 'Tags', 'Visibility', 'Open'])
+    assert.match(table.parentElement!.className, /overflow-auto/)
+    assert.equal(table.parentElement!.style.maxHeight, '55.3vh')
+    assert.deepEqual([...table.querySelectorAll('th')].map(cell => cell.textContent), ['Kind', 'Artifact', 'Tags', 'Visibility', 'Upstream', 'Updated', 'Actions'])
     assert.ok(table.querySelector('[title="actual-owner"]'))
     assert.match(table.textContent ?? '', /automation/)
     assert.match(table.textContent ?? '', /verified-source/)
     assert.match(table.textContent ?? '', /Public/)
-    const inspect = table.querySelector<HTMLButtonElement>('button')!
-    assert.equal(inspect.getAttribute('aria-label'), 'Inspect Real artifact')
+    // The row now leads with a selection control; find the inspect action by name.
+    const inspect = table.querySelector<HTMLButtonElement>('button[aria-label="Inspect Real artifact"]')!
+    assert.ok(inspect)
     await act(async () => inspect.click())
     assert.deepEqual(selected, ['one'])
     await act(async () => table.querySelector<HTMLTableCellElement>('tbody td')!.click())
@@ -113,7 +115,7 @@ test('tag rail shows supplied loaded counts and toggles the selected tag', async
     const active = tags.querySelector<HTMLButtonElement>('[aria-pressed="true"]')!
     await act(async () => active.click())
     assert.deepEqual(selected, [undefined])
-    await act(async () => [...tags.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'tools1')!.click())
+    await act(async () => [...tags.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '#tools1')!.click())
     assert.deepEqual(selected, [undefined, 'tools'])
   } finally { await view.unmount() }
 })
@@ -123,212 +125,150 @@ test('sort menu exposes only supported loaded-result orders', async () => {
   const selected: string[] = []
   const view = await renderClient(<LibrarySortMenu sort="catalog" onSort={sort => selected.push(sort)}/>)
   try {
-    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Sort loaded library results"]')!.click())
-    assert.match(document.body.textContent ?? '', /Sort loaded results/)
-    for (const label of ['Name', 'Kind']) {
-      const button = [...document.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === label)!
-      assert.ok(button)
-      await act(async () => button.click())
-    }
+    const group = document.querySelector('[aria-label="Sort loaded library results"]')!
+    const buttons = [...group.querySelectorAll<HTMLButtonElement>('button')]
+    assert.deepEqual(buttons.map(button => button.textContent), ['Updated', 'Name', 'Kind'])
+    assert.equal(buttons[0].getAttribute('aria-pressed'), 'true')
+    await act(async () => buttons[1].click())
+    await act(async () => buttons[2].click())
     assert.deepEqual(selected, ['name', 'kind'])
-    assert.doesNotMatch(document.body.textContent ?? '', /Updated|Newest/)
   } finally { await view.unmount() }
 })
 
-test('Library section tabs expose existing routes and only supplied counts', async () => {
+test('Library hub matches the four primary mock tabs with stable icon/count geometry', async () => {
   const { LibraryTabs } = await import('./depot-workspace-pages.tsx')
   const unknown = renderToStaticMarkup(<LibraryTabs active="artifacts" attached />)
-  for (const href of ['/library', '/loadouts', '/snippets', '/tools']) assert.ok(unknown.includes(`href="${href}"`))
+  const hrefs = ['/library', '/loadouts', '/snippets', '/tools']
+  for (const href of hrefs) assert.ok(unknown.includes(`href="${href}"`), href)
+  for (const label of ['Artifacts', 'Loadouts', 'Snippets', 'Tools']) assert.match(unknown, new RegExp(`>${label}<`))
   assert.equal((unknown.match(/aria-current="page"/g) ?? []).length, 1)
-  assert.doesNotMatch(unknown, /tabular-nums/)
-  const known = renderToStaticMarkup(<LibraryTabs active="artifacts" attached counts={{ artifacts: 42 }} />)
-  assert.match(known, />42<\/span>/)
-  assert.equal((known.match(/tabular-nums/g) ?? []).length, 1)
+  assert.equal((unknown.match(/tabular-nums/g) ?? []).length, 4)
+  assert.equal((unknown.match(/>—<\/span>/g) ?? []).length, 4)
+  assert.ok((unknown.match(/<svg/g) ?? []).length >= 4)
+  const known = renderToStaticMarkup(<LibraryTabs active="artifacts" attached counts={{ artifacts: 16, loadouts: 3, snippets: 6, tools: 74 }} />)
+  for (const value of ['16', '3', '6', '74']) assert.match(known, new RegExp(`>${value}<`))
 })
-const envelope = (result: unknown) => Response.json(result)
-function deferred() {
-  let resolve!: (response: Response) => void
-  let reject!: (error: Error) => void
-  const promise = new Promise<Response>((yes, no) => { resolve = yes; reject = no })
-  return { promise, resolve, reject }
-}
+const DEPOT_SCHEMA = 'labby.depot-compatibility/v1'
+const envelope = (result: unknown) => Response.json({ schemaVersion: DEPOT_SCHEMA, result })
 const flush = () => act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
-const page = (id: string) => <SearchParamsContext.Provider value={new URLSearchParams({ artifact: id })}><LibraryPageContent /></SearchParamsContext.Provider>
 
-test('initial catalog load preserves an artifact deep link', async () => {
-  const originalFetch = globalThis.fetch
-  const originalUrl = window.location.href
-  dom.happyDOM.setURL('http://localhost/library/?artifact=alpha')
-  const requested: Array<{ url: string; action: string; params: unknown }> = []
-  globalThis.fetch = async (url, init) => {
-    if (url === '/v1/depot/status') return Response.json({ depot: { configured: true, enabled: true, maxResponseBytes: 10000 } })
-    if (url === '/v1/depot/publish') return Response.json({ available: false })
-    const body = JSON.parse(String(init?.body))
-    requested.push({ url: String(url), action: body.action, params: body.params })
-    return envelope(body.action === 'artifacts.get_remote' ? { artifact: { id: 'alpha', title: 'Linked artifact' } } : { artifacts: [] })
+function artifact(id: string, kind: string, title = id) {
+  return {
+    id, kind, namespace: 'tootie.tv', name: id, title, description: title + ' description', revisionCount: 1,
+    descriptor: { id, kind, namespace: 'tootie.tv', name: id, title, description: title + ' description', tags: ['mock'] },
+    currentRevision: { id: id + '-rev', contentDigest: 'sha256:' + id, createdAt: '2026-09-16T00:00:00Z', components: [{ id: id + '-file', kind: 'document', path: 'README.md', mediaType: 'text/markdown', size: 24 }] },
+    publication: { state: 'published', visibility: 'public', distribution: 'catalog' },
   }
-  const view = await renderClient(page('alpha'))
-  try {
-    await flush()
-    assert.equal(new URLSearchParams(window.location.search).get('artifact'), 'alpha')
-    assert.match(document.querySelector('[role="dialog"]')?.textContent ?? '', /Linked artifact/)
-    const deepLink = requested.find(request => request.action === 'artifacts.get_remote')
-    assert.ok(deepLink, 'the deep link must resolve through the artifacts control plane')
-    assert.equal(deepLink.url, '/v1/artifacts')
-    assert.deepEqual(deepLink.params, { id: 'alpha' })
-  } finally {
-    await view.unmount()
-    globalThis.fetch = originalFetch
-    dom.happyDOM.setURL(originalUrl)
-  }
-})
-
-test('detail responses and retained details cannot cross selection or session boundaries', async () => {
-  const originalFetch = globalThis.fetch
-  const reads: ReturnType<typeof deferred>[] = []
-  globalThis.fetch = async (url, init) => {
-    if (url === '/v1/depot/status') return Response.json({ depot: { configured: true, enabled: true, maxResponseBytes: 10000 } })
-    if (url === '/v1/depot/publish') return Response.json({ available: false })
-    const body = JSON.parse(String(init?.body))
-    if (body.action === 'artifacts.get_remote') { const read = deferred(); reads.push(read); return read.promise }
-    return envelope({ artifacts: [] })
-  }
-  const view = await renderClient(page('alpha'))
-  try {
-    await flush()
-    await view.rerender(page('bravo'))
-    await act(async () => reads[1].resolve(envelope({ artifact: { id: 'bravo', title: 'Bravo private details' } })))
-    assert.match(document.body.textContent ?? '', /Bravo private details/)
-    const dialog = document.querySelector('[role="dialog"]')!
-    assert.match(dialog.className, /max-w-\[720px\]/)
-    assert.match(dialog.className, /max-h-\[86vh\]/)
-    const source = dialog.querySelector('details')!
-    assert.equal(source.open, false)
-    assert.match(source.textContent ?? '', /Artifact ID/)
-    assert.ok(dialog.querySelector('button[aria-label="Export JSON"]'))
-    await view.rerender(page('charlie'))
-    assert.doesNotMatch(document.body.textContent ?? '', /Bravo private details/)
-    assert.equal(document.body.querySelector('a[href="/depot?artifact=bravo"]'), null)
-    await act(async () => reads[2].resolve(envelope({ artifact: { id: 'charlie', title: 'Charlie private details' } })))
-    await act(async () => reads[0].resolve(envelope({ artifact: { id: 'alpha', title: 'Alpha stale details' } })))
-    assert.doesNotMatch(document.body.textContent ?? '', /Alpha stale details/)
-    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
-    await view.rerender(page('charlie'))
-    assert.doesNotMatch(document.body.textContent ?? '', /Charlie private details/)
-    await flush()
-    assert.equal(reads.length, 4)
-    await act(async () => reads[3].reject(new Error('new session denied')))
-    assert.doesNotMatch(document.body.textContent ?? '', /Bravo private details|Charlie private details|Alpha stale details/)
-    assert.match(document.body.textContent ?? '', /Artifact details are unavailable/)
-  } finally { await view.unmount(); globalThis.fetch = originalFetch }
-})
-
-test('late page failures and successes cannot overwrite a new query', async () => {
-  const originalFetch = globalThis.fetch
-  const pending: ReturnType<typeof deferred>[] = []
-  globalThis.fetch = async (url, init) => {
-    if (url === '/v1/depot/status') return Response.json({ depot: { configured: true, enabled: true, maxResponseBytes: 10000 } })
-    if (url === '/v1/depot/publish') return Response.json({ available: false })
-    const body = JSON.parse(String(init?.body))
-    if (body.params.cursor) { const read = deferred(); pending.push(read); return read.promise }
-    return envelope({ artifacts: [{ id: body.params.query || 'initial', title: body.params.query || 'Initial item' }], nextCursor: 'next' })
-  }
-  const view = await renderClient(page(''))
-  try {
-    await flush()
-    const more = () => [...view.container.querySelectorAll('button')].find(button => button.textContent?.includes('Load 50 more'))!
-    act(() => more().click())
-    await flush()
-    const input = view.container.querySelector('input')!
-    const key = Object.keys(input).find(key => key.startsWith('__reactProps$'))!
-    const props = (input as unknown as Record<string, { onChange: (event: { target: { value: string } }) => void }>)[key]
-    await act(async () => props.onChange({ target: { value: 'New query' } }))
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 350)) })
-    await act(async () => pending[0].resolve(envelope({ artifacts: [{ id: 'stale', title: 'Stale page' }] })))
-    assert.doesNotMatch(view.container.textContent ?? '', /Stale page/)
-    assert.match(view.container.textContent ?? '', /New query/)
-    act(() => more().click())
-    await flush()
-    await act(async () => props.onChange({ target: { value: 'Final query' } }))
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 350)) })
-    await act(async () => pending[1].reject(new Error('obsolete page failure')))
-    assert.equal(view.container.querySelector('[role="alert"]'), null)
-    assert.match(view.container.textContent ?? '', /Final query/)
-  } finally { await view.unmount(); globalThis.fetch = originalFetch }
-})
-
-// Page-level tests against a fake fetch follow.
-import { AppRouterContext } from 'next/dist/shared/lib/app-router-context.shared-runtime'
-import { PathnameContext } from 'next/dist/shared/lib/hooks-client-context.shared-runtime'
-
-const router = { push: () => {}, replace: () => {}, back: () => {}, forward: () => {}, refresh: () => {}, prefetch: () => {} }
-
-async function waitFor(assertion: () => void, timeoutMs = 2_000) {
-  const deadline = Date.now() + timeoutMs
-  let lastError: unknown
-  while (Date.now() < deadline) {
-    try { assertion(); return } catch (error) { lastError = error }
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 5)) })
-  }
-  throw lastError
 }
 
-const originalFetch = globalThis.fetch
-test.afterEach(() => {
-  globalThis.fetch = originalFetch
-  __setBrowserSessionStateForTests({ status: 'unauthenticated' })
-})
+type DepotRequest = { operation: string; input: Record<string, unknown>; projectId: string | null }
 
-function statValue(container: HTMLElement, label: string) {
-  return container.querySelector(`[data-console-hero-stat="${label}"] [data-console-hero-stat-value="1"]`)?.textContent?.trim()
-}
-
-async function renderLibrary(depot: Record<string, unknown>) {
-  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
-  const requested: string[] = []
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
-    const path = new URL(String(input), 'http://labby.test').pathname
-    requested.push(path)
-    if (path === '/v1/depot/status') return Response.json({ depot })
-    if (path === '/v1/depot/publish') return Response.json({ available: depot.enabled === true && depot.authority === 'write' })
-    return Response.json({ artifacts: [], total: 0 })
+async function renderLibrary(search = new URLSearchParams(), records = [artifact('skill-one', 'skill', 'Skill One')]) {
+  const requested: DepotRequest[] = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const headers = new Headers(init?.headers)
+    const body = JSON.parse(String(init?.body ?? '{}')) as { operation?: string; params?: Record<string, unknown> }
+    if (body.operation) requested.push({ operation: body.operation, input: body.params ?? {}, projectId: headers.get('x-labby-project-id') })
+    if (body.operation === 'depot.artifacts.get') {
+      const id = String(body.params?.artifactId ?? '')
+      return envelope({ artifact: records.find(item => item.id === id) ?? artifact(id, 'skill', 'Deep linked artifact') })
+    }
+    if (body.operation === 'depot.artifacts.list') return envelope({ artifacts: records, total: records.length })
+    return Response.json({ message: 'unexpected request' }, { status: 500 })
   }) as typeof globalThis.fetch
   document.body.replaceChildren()
-  const view = await renderClient(
-    <AppRouterContext.Provider value={router as never}>
-      <PathnameContext.Provider value="/library">
-        <SearchParamsContext.Provider value={new URLSearchParams() as never}>
-          <LibraryPageContent />
-        </SearchParamsContext.Provider>
-      </PathnameContext.Provider>
-    </AppRouterContext.Provider>,
-  )
-  return { view, requested }
+  const view = await renderClient(<SearchParamsContext.Provider value={search as never}><LibraryPageContent /></SearchParamsContext.Provider>)
+  return { view, requested, restore: () => { globalThis.fetch = originalFetch } }
 }
 
-/**
- * The access stat and the live/unavailable pulse must not be rendered from a
- * hardcoded capability or `DepotStatus` literal. They must reflect the
- * server's `/v1/depot/publish` and `/v1/depot/status` projections.
- */
-test('the Library access and pulse come from current server projections', async () => {
-  const write = await renderLibrary({ configured: true, enabled: true, authority: 'write', maxResponseBytes: 1_048_576 })
-  await waitFor(() => assert.equal(statValue(write.view.container, 'Your access'), 'Read + publish'))
-  assert.ok(write.requested.includes('/v1/depot/status'), 'the page must ask the server for the Depot status')
-  assert.match(write.view.container.textContent ?? '', /live catalog/)
-  await write.view.unmount()
-
-  const disabled = await renderLibrary({ configured: true, enabled: false, authority: 'read', maxResponseBytes: 1_048_576 })
-  await waitFor(() => assert.equal(statValue(disabled.view.container, 'Your access'), 'Read only'))
-  assert.match(disabled.view.container.textContent ?? '', /Depot unavailable/)
-  assert.doesNotMatch(disabled.view.container.textContent ?? '', /live catalog/)
-  await disabled.view.unmount()
+test('Library is a user-level hub and loads the generic Depot Artifact authority without a project gate', async () => {
+  const records = [
+    artifact('prompt-one', 'prompt', 'Prompt One'), artifact('resource-one', 'resource', 'Resource One'), artifact('app-one', 'app', 'App One'),
+    artifact('skill-one', 'skill', 'Skill One'), artifact('plugin-one', 'plugin', 'Plugin One'), artifact('market-one', 'marketplace', 'Marketplace One'),
+  ]
+  const { view, requested, restore } = await renderLibrary(new URLSearchParams(), records)
+  try {
+    await flush()
+    assert.doesNotMatch(view.container.textContent ?? '', /Project required|Select an eligible project workspace/)
+    assert.ok(requested.some(request => request.operation === 'depot.artifacts.list'))
+    assert.ok(requested.filter(request => request.operation === 'depot.artifacts.list').every(request => request.projectId === null), 'Library browsing does not require a project header')
+    for (const title of records.map(item => item.title)) assert.match(view.container.textContent ?? '', new RegExp(title))
+    assert.ok(view.container.querySelector('a[href="/library"][aria-current="page"]'))
+    for (const href of ['/loadouts', '/snippets', '/tools']) assert.ok(view.container.querySelector(`a[href="${href}"]`))
+  } finally { await view.unmount(); restore() }
 })
 
-test('a Depot status the browser cannot validate is surfaced as an error instead of a fabricated authority', async () => {
-  const broken = await renderLibrary({ configured: true, enabled: true, authority: 'root', maxResponseBytes: 1 })
-  await waitFor(() => assert.match(broken.view.container.textContent ?? '', /incompatible status response/))
-  assert.notEqual(statValue(broken.view.container, 'Your access'), 'Read + publish')
-  assert.notEqual(statValue(broken.view.container, 'Your access'), 'Read only')
-  await broken.view.unmount()
+test('Library kind routes use one hub surface and activate the requested family', async () => {
+  const params = new URLSearchParams({ kind: 'resource' })
+  const { view, restore } = await renderLibrary(params, [artifact('r1', 'resource', 'Docs Resource'), artifact('s1', 'skill', 'Hidden Skill')])
+  try {
+    await flush()
+    assert.match(view.container.textContent ?? '', /Docs Resource/)
+    assert.doesNotMatch(view.container.textContent ?? '', /Hidden Skill/)
+    assert.ok(view.container.querySelector('a[href="/library"][aria-current="page"]'))
+    assert.equal(view.container.querySelector('a[href="/library?kind=resource"]'), null)
+  } finally { await view.unmount(); restore() }
+})
+
+test('Library deep links open the shared mock-aligned inspection modal with icon-only actions', async () => {
+  const params = new URLSearchParams({ artifact: 'rust-reviewer' })
+  const record = artifact('rust-reviewer', 'agent', 'rust-reviewer')
+  record.descriptor.tags = ['rust', 'review']
+  const { view, requested, restore } = await renderLibrary(params, [record])
+  try {
+    await flush()
+    const dialog = document.querySelector('[role="dialog"]')
+    assert.ok(dialog)
+    assert.match(dialog.textContent ?? '', /rust-reviewer/)
+    assert.ok(requested.some(request => request.operation === 'depot.artifacts.get' && request.input.artifactId === 'rust-reviewer'))
+    for (const label of ['Open upstream and fork options', 'Copy Library link', 'Export artifact']) assert.ok(dialog.querySelector(`button[aria-label="${label}"]`), label)
+    assert.doesNotMatch(dialog.textContent ?? '', /Open upstream and fork options|Copy Library link|Export artifact/)
+  } finally { await view.unmount(); restore() }
+})
+
+test('Library search sends supported semantic queries but still filters loaded results locally', async () => {
+  const { view, requested, restore } = await renderLibrary(new URLSearchParams(), [artifact('alpha', 'skill', 'Alpha Skill'), artifact('beta', 'plugin', 'Beta Plugin')])
+  try {
+    await flush()
+    const input = view.container.querySelector<HTMLInputElement>('input[aria-label="Search library"]')!
+    const key = Object.keys(input).find(key => key.startsWith('__reactProps$'))!
+    const props = (input as unknown as Record<string, { onChange: (event: { target: { value: string } }) => void }>)[key]
+    await act(async () => props.onChange({ target: { value: 'Beta' } }))
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 360)) })
+    assert.match(view.container.textContent ?? '', /Beta Plugin/)
+    assert.doesNotMatch(view.container.textContent ?? '', /Alpha Skill/)
+    const latest = requested.filter(request => request.operation === 'depot.artifacts.list').at(-1)
+    assert.equal(latest?.input.query, 'Beta')
+  } finally { await view.unmount(); restore() }
+})
+
+test('a stale detail response cannot overwrite a newer artifact selection', async () => {
+  const originalFetch = globalThis.fetch
+  const pending = new Map<string, { resolve: (value: Response) => void; promise: Promise<Response> }>()
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? '{}')) as { operation?: string; params?: Record<string, unknown> }
+    if (body.operation === 'depot.artifacts.list') return envelope({ artifacts: [artifact('alpha', 'skill', 'Alpha'), artifact('bravo', 'agent', 'Bravo')], total: 2 })
+    if (body.operation === 'depot.artifacts.get') {
+      const id = String(body.params?.artifactId)
+      let resolve!: (value: Response) => void
+      const promise = new Promise<Response>(yes => { resolve = yes })
+      pending.set(id, { resolve, promise })
+      return promise
+    }
+    return Response.json({ message: 'unexpected request' }, { status: 500 })
+  }) as typeof globalThis.fetch
+  document.body.replaceChildren()
+  const params = new URLSearchParams({ artifact: 'alpha' })
+  const view = await renderClient(<SearchParamsContext.Provider value={params as never}><LibraryPageContent /></SearchParamsContext.Provider>)
+  try {
+    await flush()
+    await view.rerender(<SearchParamsContext.Provider value={new URLSearchParams({ artifact: 'bravo' }) as never}><LibraryPageContent /></SearchParamsContext.Provider>)
+    await flush()
+    await act(async () => pending.get('bravo')!.resolve(envelope({ artifact: artifact('bravo', 'agent', 'Bravo current') })))
+    assert.match(document.body.textContent ?? '', /Bravo current/)
+    await act(async () => pending.get('alpha')!.resolve(envelope({ artifact: artifact('alpha', 'skill', 'Alpha stale') })))
+    assert.doesNotMatch(document.body.textContent ?? '', /Alpha stale/)
+    assert.match(document.body.textContent ?? '', /Bravo current/)
+  } finally { await view.unmount(); globalThis.fetch = originalFetch }
 })

@@ -99,3 +99,19 @@ test('an aborted request from a workspace switch is not rendered as a failure', 
   assert.equal(view.container.querySelector('[role="alert"]') === null, true, 'AbortError must not surface as an operator-facing error')
   await view.unmount()
 })
+
+test('project Tasks action selects that actual workspace before navigation', async () => {
+  document.body.replaceChildren()
+  authenticate({ projects: [{ id: 'owned', role: 'owner' }] })
+  globalThis.fetch = async () => Response.json([rows[0]])
+  const view = await renderClient(<ProjectsPageContent />)
+  try {
+    await waitFor(() => assert.ok(view.container.querySelector('a[aria-label="Tasks for Owned project"]')))
+    const link = view.container.querySelector<HTMLAnchorElement>('a[aria-label="Tasks for Owned project"]')!
+    link.addEventListener('click', event => event.preventDefault(), { once: true })
+    await act(async () => link.click())
+    const { getSessionAuthority } = await import('@/lib/auth/session-store')
+    assert.deepEqual(getSessionAuthority()?.activeOwner, { kind: 'project', id: 'owned' })
+    assert.equal(link.getAttribute('href'), '/tasks/')
+  } finally { await view.unmount() }
+})

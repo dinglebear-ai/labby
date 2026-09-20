@@ -99,7 +99,11 @@ pub(super) async fn run(args: SetupArgs, format: OutputFormat) -> Result<ExitCod
     if requires_root(&plan) && !is_unix_root() {
         elevate_and_apply(&plan)?;
         if plan.install_desktop {
-            install_desktop(&plan)?;
+            // The privileged child already printed the server summary; the
+            // desktop app is the invoking user's, so its outcome is reported
+            // here and never undoes the live server.
+            let desktop = report_desktop_install(&plan, &install_desktop);
+            print(&desktop.summary(&plan), format)?;
         }
         if server_setup {
             clear_resume_draft()?;
@@ -120,10 +124,88 @@ pub(super) async fn apply_plan_file(path: &Path, format: OutputFormat) -> Result
     // The plan may contain provider/client secrets. Remove it as soon as the
     // privileged process has a private in-memory copy.
     drop(std::fs::remove_file(path));
+    // The plan file is user-writable; the identity this process will chown
+    // for comes from sudo's own record, and a plan that disagrees is refused.
+    #[cfg(unix)]
+    let plan = rederive_invoking_identity(
+        plan,
+        std::env::var("SUDO_UID").ok().as_deref(),
+        std::env::var("SUDO_USER").ok().as_deref(),
+        dirs::home_dir(),
+    )?;
     if requires_root(&plan) && !is_unix_root() {
         bail!("native Linux server setup requires root privileges");
     }
     apply(plan, format).await
+}
+
+/// Replace the plan's invoking identity with the one sudo reports and refuse
+/// a plan that disagrees with it.
+///
+/// The privileged child restores ownership of `<invoking_home>/.labby` to
+/// `invoking_user`, so those values must not come from the user-writable plan
+/// file. `SUDO_UID` names the invoking account authoritatively and `SUDO_USER`
+/// must agree with it; without sudo's record nothing was delegated.
+#[cfg(unix)]
+fn rederive_invoking_identity(
+    plan: SetupPlan,
+    sudo_uid: Option<&str>,
+    sudo_user: Option<&str>,
+    ambient_home: Option<PathBuf>,
+) -> Result<SetupPlan> {
+    let (invoking_user, invoking_home) = sudo_invoking_identity(sudo_uid, sudo_user, ambient_home)?;
+    if plan.invoking_user != invoking_user || plan.invoking_home != invoking_home {
+        bail!(
+            "setup plan records invoking user {:?} with home {}, but sudo reports {:?} with home {}; refusing a plan that disagrees with the invoking identity",
+            plan.invoking_user,
+            plan.invoking_home.display(),
+            invoking_user,
+            invoking_home.display()
+        );
+    }
+    Ok(SetupPlan {
+        invoking_home,
+        invoking_user,
+        ..plan
+    })
+}
+
+/// The invoking account as sudo recorded it: `None` plus the process's own
+/// home when nothing was delegated (no sudo, or root invoking sudo).
+#[cfg(unix)]
+fn sudo_invoking_identity(
+    sudo_uid: Option<&str>,
+    sudo_user: Option<&str>,
+    ambient_home: Option<PathBuf>,
+) -> Result<(Option<String>, PathBuf)> {
+    let own_home = |ambient_home: Option<PathBuf>| {
+        ambient_home.context("could not determine the invoking user's home directory")
+    };
+    let Some(uid) = sudo_uid else {
+        if sudo_user.is_some() {
+            bail!("SUDO_USER is set without SUDO_UID; cannot corroborate the invoking identity");
+        }
+        return Ok((None, own_home(ambient_home)?));
+    };
+    let uid: u32 = uid
+        .trim()
+        .parse()
+        .context("SUDO_UID is not a numeric user id")?;
+    let account = nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(uid))
+        .context("resolve the sudo invoking account")?
+        .context("the sudo invoking account does not exist")?;
+    if let Some(name) = sudo_user
+        && name != account.name
+    {
+        bail!(
+            "SUDO_USER {name:?} does not name the account for SUDO_UID {uid} ({})",
+            account.name
+        );
+    }
+    if account.uid.is_root() {
+        return Ok((None, own_home(ambient_home)?));
+    }
+    Ok((Some(account.name), account.dir))
 }
 
 fn collect_plan(args: &SetupArgs, interactive: bool) -> Result<SetupPlan> {
@@ -654,19 +736,36 @@ fn validate_client_browser_mode(auth: ClientAuth, no_browser: bool) -> Result<()
 }
 
 fn desktop_choice(args: &SetupArgs, interactive: bool, theme: &ColorfulTheme) -> Result<bool> {
+    resolve_desktop_choice(args, interactive, desktop_supported(), |default| {
+        Ok(Confirm::with_theme(theme)
+            .with_prompt(
+                "Install the Labby desktop app? (optional; requires a published desktop package)",
+            )
+            .default(default)
+            .interact()?)
+    })
+}
+
+/// Desktop installation is opt-in. The interactive prompt defaults to No
+/// because the desktop package is additive to a release and may not be
+/// published for this platform or version; explicit flags win, and
+/// non-interactive or unsupported hosts never prompt.
+fn resolve_desktop_choice(
+    args: &SetupArgs,
+    interactive: bool,
+    supported: bool,
+    prompt: impl FnOnce(bool) -> Result<bool>,
+) -> Result<bool> {
     if args.desktop {
         return Ok(true);
     }
     if args.no_desktop {
         return Ok(false);
     }
-    if !desktop_supported() || !interactive {
+    if !supported || !interactive {
         return Ok(false);
     }
-    Ok(Confirm::with_theme(theme)
-        .with_prompt("Install the Labby desktop app?")
-        .default(true)
-        .interact()?)
+    prompt(false)
 }
 
 fn desktop_supported() -> bool {
@@ -1090,20 +1189,21 @@ async fn apply_native_server(plan: &SetupPlan) -> Result<serde_json::Value> {
                 .map_err(|e| anyhow::anyhow!("refresh native owner admission: {e}"))?;
         }
         configure_local_client(plan, &token)?;
-        if plan.install_desktop {
-            install_desktop(plan)?;
-        }
-        return Ok(json!({
-            "ok": true,
-            "role": "server",
-            "deployment": "native",
-            "service": outcome.message,
-            "web": advertised_url(plan),
-            "mcp": format!("{}/mcp", advertised_url(plan).trim_end_matches('/')),
-            "client_configured": true,
-            "desktop_requested": plan.install_desktop,
-            "features": "full",
-        }));
+        let desktop = report_desktop_install(plan, &install_desktop);
+        return Ok(with_desktop_summary(
+            json!({
+                "ok": true,
+                "role": "server",
+                "deployment": "native",
+                "service": outcome.message,
+                "web": advertised_url(plan),
+                "mcp": format!("{}/mcp", advertised_url(plan).trim_end_matches('/')),
+                "client_configured": true,
+                "features": "full",
+            }),
+            plan,
+            &desktop,
+        ));
     }
     #[cfg(target_os = "macos")]
     {
@@ -1119,19 +1219,20 @@ async fn apply_native_server(plan: &SetupPlan) -> Result<serde_json::Value> {
         }
         install_macos_service(plan)?;
         configure_local_client(plan, &token)?;
-        if plan.install_desktop {
-            install_desktop(plan)?;
-        }
-        return Ok(json!({
-            "ok": true,
-            "role": "server",
-            "deployment": "native",
-            "persistence": "launch_agent_at_login",
-            "web": advertised_url(plan),
-            "mcp": format!("{}/mcp", advertised_url(plan).trim_end_matches('/')),
-            "desktop_requested": plan.install_desktop,
-            "features": "full",
-        }));
+        let desktop = report_desktop_install(plan, &install_desktop);
+        return Ok(with_desktop_summary(
+            json!({
+                "ok": true,
+                "role": "server",
+                "deployment": "native",
+                "persistence": "launch_agent_at_login",
+                "web": advertised_url(plan),
+                "mcp": format!("{}/mcp", advertised_url(plan).trim_end_matches('/')),
+                "features": "full",
+            }),
+            plan,
+            &desktop,
+        ));
     }
 }
 
@@ -1159,18 +1260,19 @@ async fn apply_incus_server(plan: &SetupPlan, format: OutputFormat) -> Result<se
     let token = configure_incus_server(plan)?;
     converge_incus_publish("labby", &plan.host, plan.port)?;
     configure_local_client(plan, &token)?;
-    if plan.install_desktop {
-        install_desktop(plan)?;
-    }
-    Ok(json!({
-        "ok": true,
-        "role": "server",
-        "deployment": "incus",
-        "web": advertised_url(plan),
-        "mcp": format!("{}/mcp", advertised_url(plan).trim_end_matches('/')),
-        "desktop_requested": plan.install_desktop,
-        "features": "full",
-    }))
+    let desktop = report_desktop_install(plan, &install_desktop);
+    Ok(with_desktop_summary(
+        json!({
+            "ok": true,
+            "role": "server",
+            "deployment": "incus",
+            "web": advertised_url(plan),
+            "mcp": format!("{}/mcp", advertised_url(plan).trim_end_matches('/')),
+            "features": "full",
+        }),
+        plan,
+        &desktop,
+    ))
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -1445,26 +1547,34 @@ fn run_status_path(
 }
 
 async fn apply_client(plan: &SetupPlan) -> Result<serde_json::Value> {
+    apply_client_with(plan, &install_desktop).await
+}
+
+async fn apply_client_with(
+    plan: &SetupPlan,
+    installer: DesktopInstaller<'_>,
+) -> Result<serde_json::Value> {
     let server_url = plan
         .server_url
         .as_deref()
         .context("client setup requires a server URL")?;
     let env_path = plan.invoking_home.join(".labby/.env");
     configure_client_env(&env_path, server_url, plan.client_bearer_token.as_deref())?;
-    if plan.install_desktop {
-        install_desktop(plan)?;
-    }
     if matches!(plan.client_auth, Some(ClientAuth::OAuth)) {
         let server = crate::oauth::cli_session::server_url(server_url)?;
         crate::oauth::cli_session::login(&server, None).await?;
     }
-    Ok(json!({
-        "ok": true,
-        "role": "client",
-        "server": server_url,
-        "auth": match plan.client_auth { Some(ClientAuth::Bearer) => "bearer", _ => "oauth" },
-        "desktop_requested": plan.install_desktop,
-    }))
+    let desktop = report_desktop_install(plan, installer);
+    Ok(with_desktop_summary(
+        json!({
+            "ok": true,
+            "role": "client",
+            "server": server_url,
+            "auth": match plan.client_auth { Some(ClientAuth::Bearer) => "bearer", _ => "oauth" },
+        }),
+        plan,
+        &desktop,
+    ))
 }
 
 fn configure_client_env(path: &Path, server_url: &str, bearer: Option<&str>) -> Result<()> {
@@ -1706,6 +1816,65 @@ fn converge_incus_publish(_name: &str, _host: &str, _port: u16) -> Result<()> {
     bail!("Incus publishing is unavailable")
 }
 
+/// Installs the release-owned desktop app for a completed plan.
+type DesktopInstaller<'a> = &'a (dyn Fn(&SetupPlan) -> Result<()> + Sync);
+
+/// Outcome of the optional desktop installation, reported in every setup
+/// summary as `desktop_requested`, `desktop_installed`, and `desktop_error`.
+struct DesktopOutcome {
+    installed: bool,
+    error: Option<String>,
+}
+
+impl DesktopOutcome {
+    fn summary(&self, plan: &SetupPlan) -> serde_json::Value {
+        with_desktop_summary(json!({ "ok": true }), plan, self)
+    }
+}
+
+fn with_desktop_summary(
+    mut summary: serde_json::Value,
+    plan: &SetupPlan,
+    desktop: &DesktopOutcome,
+) -> serde_json::Value {
+    if let Some(object) = summary.as_object_mut() {
+        object.insert("desktop_requested".into(), json!(plan.install_desktop));
+        object.insert("desktop_installed".into(), json!(desktop.installed));
+        object.insert("desktop_error".into(), json!(desktop.error));
+    }
+    summary
+}
+
+/// Install the optional desktop app once the server or client configuration
+/// is complete. A failure is reported in the summary and on stderr but never
+/// fails setup: the release-owned desktop package is additive and may not be
+/// published for this platform or version, and the configuration it would sit
+/// on top of is already live.
+fn report_desktop_install(plan: &SetupPlan, installer: DesktopInstaller<'_>) -> DesktopOutcome {
+    if !plan.install_desktop {
+        return DesktopOutcome {
+            installed: false,
+            error: None,
+        };
+    }
+    match installer(plan) {
+        Ok(()) => DesktopOutcome {
+            installed: true,
+            error: None,
+        },
+        Err(error) => {
+            let reason = format!("{error:#}");
+            eprintln!(
+                "warning: the Labby desktop app was not installed: {reason}. Setup is otherwise complete."
+            );
+            DesktopOutcome {
+                installed: false,
+                error: Some(reason),
+            }
+        }
+    }
+}
+
 fn install_desktop(plan: &SetupPlan) -> Result<()> {
     // Desktop packaging is release-owned. Setup deliberately refuses to build
     // Tauri from source; it installs only an already-published package. The
@@ -1891,6 +2060,137 @@ mod tests {
         assert!(!elevated.install_desktop);
         assert!(plan.install_desktop);
         assert_eq!(elevated.invoking_home, plan.invoking_home);
+    }
+
+    #[test]
+    fn desktop_choice_defaults_to_no() {
+        // No release publishes a desktop package for every platform, so the
+        // interactive prompt must default to No; explicit flags, non-interactive
+        // runs, and unsupported hosts never prompt at all.
+        let args = SetupArgs::default();
+        let mut asked = None;
+        let chosen = resolve_desktop_choice(&args, true, true, |default| {
+            asked = Some(default);
+            Ok(default)
+        })
+        .unwrap();
+        assert_eq!(asked, Some(false), "the desktop prompt must default to No");
+        assert!(!chosen);
+        let never = |_: bool| -> Result<bool> { bail!("the desktop prompt must not run") };
+        let explicit = SetupArgs {
+            desktop: true,
+            ..SetupArgs::default()
+        };
+        assert!(resolve_desktop_choice(&explicit, true, true, never).unwrap());
+        let declined = SetupArgs {
+            no_desktop: true,
+            ..SetupArgs::default()
+        };
+        assert!(!resolve_desktop_choice(&declined, true, true, never).unwrap());
+        assert!(!resolve_desktop_choice(&args, false, true, never).unwrap());
+        assert!(!resolve_desktop_choice(&args, true, false, never).unwrap());
+    }
+
+    #[tokio::test]
+    async fn desktop_install_failure_is_reported_not_fatal() {
+        let home = tempfile::tempdir().unwrap();
+        let plan = SetupPlan {
+            role: SetupRoleArg::Client,
+            deployment: None,
+            host: DEFAULT_HOST.into(),
+            port: DEFAULT_PORT,
+            server_url: Some("http://127.0.0.1:8765".into()),
+            public_url: None,
+            oauth: None,
+            client_auth: Some(ClientAuth::Bearer),
+            client_bearer_token: Some("client-token".into()),
+            install_desktop: true,
+            no_browser: true,
+            invoking_home: home.path().to_path_buf(),
+            invoking_user: None,
+        };
+        let failing = |_: &SetupPlan| -> Result<()> {
+            bail!("release v9.9.9 does not contain the expected desktop asset")
+        };
+        let result = apply_client_with(&plan, &failing)
+            .await
+            .expect("client setup completes even though the desktop app did not install");
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["desktop_requested"], true);
+        assert_eq!(result["desktop_installed"], false);
+        assert!(
+            result["desktop_error"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("expected desktop asset")),
+            "desktop_error must carry the installer's reason; got {:?}",
+            result["desktop_error"]
+        );
+        // The client configuration itself is complete.
+        assert_eq!(
+            read_env(&home.path().join(".labby/.env"), "LABBY_SERVER_URL").as_deref(),
+            Some("http://127.0.0.1:8765")
+        );
+        let installed = apply_client_with(&plan, &|_: &SetupPlan| Ok(()))
+            .await
+            .unwrap();
+        assert_eq!(installed["desktop_installed"], true);
+        assert!(installed["desktop_error"].is_null());
+    }
+
+    /// The privileged `--apply-plan` child runs `chown -R` over the invoking
+    /// user's `.labby`. Those values come from a plan file the unprivileged
+    /// parent wrote, so the child must take the identity from sudo's own
+    /// record instead and refuse a plan that disagrees with it.
+    #[cfg(unix)]
+    #[test]
+    fn apply_plan_rederives_invoking_identity_from_sudo_user() {
+        let account = nix::unistd::User::from_uid(nix::unistd::Uid::current())
+            .unwrap()
+            .unwrap();
+        if account.uid.is_root() {
+            // A root test process cannot model a delegated invoking account.
+            return;
+        }
+        let uid = account.uid.as_raw().to_string();
+        let mut plan = server_plan(account.dir.clone());
+        plan.invoking_user = Some(account.name.clone());
+
+        // The plan agrees with sudo: the applied identity is sudo's.
+        let verified = rederive_invoking_identity(
+            plan.clone(),
+            Some(&uid),
+            Some(&account.name),
+            Some(PathBuf::from("/root")),
+        )
+        .unwrap();
+        assert_eq!(
+            verified.invoking_user.as_deref(),
+            Some(account.name.as_str())
+        );
+        assert_eq!(verified.invoking_home, account.dir);
+
+        // A plan that points the privileged chown elsewhere is refused.
+        let mut elsewhere = plan.clone();
+        elsewhere.invoking_home = PathBuf::from("/srv/elsewhere");
+        let error = rederive_invoking_identity(elsewhere, Some(&uid), Some(&account.name), None)
+            .unwrap_err();
+        assert!(error.to_string().contains("disagrees"), "{error:#}");
+        let mut other_user = plan.clone();
+        other_user.invoking_user = Some("someone-else".into());
+        assert!(
+            rederive_invoking_identity(other_user, Some(&uid), Some(&account.name), None).is_err()
+        );
+
+        // SUDO_USER must name the SUDO_UID account.
+        assert!(
+            rederive_invoking_identity(plan.clone(), Some(&uid), Some("someone-else"), None)
+                .is_err()
+        );
+
+        // Without sudo's record there is no delegated identity to apply.
+        assert!(
+            rederive_invoking_identity(plan, None, None, Some(PathBuf::from("/root"))).is_err()
+        );
     }
 
     #[cfg(unix)]

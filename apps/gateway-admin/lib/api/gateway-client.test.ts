@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import { __setBrowserSessionStateForTests, getBrowserSessionState } from '../auth/session-store.ts'
-import { GatewayApiError, gatewayApi } from './gateway-client.ts'
+import { GatewayApiError, RELOAD_IN_FLIGHT_MESSAGE, gatewayApi } from './gateway-client.ts'
 import { EXPOSE_NONE_PATTERN } from './tool-exposure-draft.ts'
 
 type RecordedRequest = {
@@ -354,17 +354,19 @@ test('gatewayApi.removeVirtualServer sends confirm=true with virtual-server remo
   )
 })
 
-test('gatewayApi.reload sends confirm=true with destructive gateway reloads', async () => {
+test('gatewayApi.reload restarts only the named upstream and reports completion', async () => {
   await withGatewayFetch(
     {
       'gateway.get': () => standardGatewayView,
-      'gateway.reload': () => ({ ok: true }),
+      'gateway.mcp.restart': () => ({ completed: true, gateway: standardGatewayView }),
     },
     async (requests) => {
-      await gatewayApi.reload('gateway-1')
+      const result = await gatewayApi.reload('gateway-1')
+      assert.equal(result.success, true)
+      assert.equal(requests.find((request) => request.action === 'gateway.mcp.restart')?.params.name, 'gateway-1')
 
       assert.equal(
-        requests.find((request) => request.action === 'gateway.reload')?.params.confirm,
+        requests.find((request) => request.action === 'gateway.mcp.restart')?.params.confirm,
         true,
       )
     },
@@ -868,6 +870,38 @@ test('gatewayApi.hydrateRuntime treats gateway.mcp.list as authoritative runtime
   )
 })
 
+test('gatewayApi.hydrateToolInventory lazily fills tool rows and isolates one server failure', async () => {
+  await withGatewayFetch(
+    {
+      'gateway.discovered_tools': ({ name }) => name === 'broken'
+        ? new Response(JSON.stringify({ message: 'offline' }), { status: 503 })
+        : ['search'],
+    },
+    async (requests) => {
+      const base = {
+        source: 'custom_gateway',
+        config: {},
+        discovery: { tools: [], resources: [], prompts: [] },
+        warnings: [],
+      }
+      const rows = await gatewayApi.hydrateToolInventory([
+        { ...base, id: 'healthy', name: 'healthy' },
+        { ...base, id: 'broken', name: 'broken' },
+      ] as never)
+
+      assert.deepEqual(rows[0]?.discovery.tools, [{
+        name: 'search',
+        description: undefined,
+        exposed: true,
+        matched_by: '*',
+      }])
+      assert.deepEqual(rows[1]?.discovery.tools, [])
+      assert.equal(rows[1]?.warnings.at(-1)?.code, 'tool_inventory_unavailable')
+      assert.deepEqual(requests.map((request) => request.params.name).sort(), ['broken', 'healthy'])
+    },
+  )
+})
+
 test('gatewayApi.list rethrows aborts instead of degrading rows', async () => {
   const originalWarn = console.warn
   const warnings: unknown[][] = []
@@ -950,7 +984,11 @@ test('gatewayApi destructive mutations send confirm=true', async () => {
       )
     }
 
-    if (payload.action === 'gateway.remove' || payload.action === 'gateway.reload') {
+    if (payload.action === 'gateway.mcp.restart') {
+      return Response.json({ completed: true, gateway: standardGatewayView })
+    }
+
+    if (payload.action === 'gateway.remove') {
       return new Response('null', {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -981,7 +1019,7 @@ test('gatewayApi destructive mutations send confirm=true', async () => {
   await gatewayApi.reload('gateway_beta')
 
   const destructiveActions = actions.filter(({ action }) =>
-    ['gateway.add', 'gateway.update', 'gateway.remove', 'gateway.reload'].includes(action),
+    ['gateway.add', 'gateway.update', 'gateway.remove', 'gateway.mcp.restart'].includes(action),
   )
 
   assert.equal(destructiveActions.length, 4)
@@ -1120,4 +1158,79 @@ test('gatewayApi.get preserves side-effect-free runtime diagnostics without test
       )
     },
   )
+})
+
+
+test('gatewayApi.reload reports a running restart as pending', async () => {
+  await withGatewayFetch({
+    'gateway.get': () => standardGatewayView,
+    'gateway.mcp.restart': () => ({ completed: false }),
+  }, async () => {
+    const result = await gatewayApi.reload('gateway-1')
+    assert.equal(result.success, false)
+    assert.equal(result.pending, true)
+  })
+})
+
+test('gatewayApi.reload reports a restart the backend already has in flight', async () => {
+  await withGatewayFetch({
+    'gateway.get': () => standardGatewayView,
+    'gateway.mcp.restart': () => ({ completed: false, in_flight: true }),
+  }, async () => {
+    const result = await gatewayApi.reload('gateway-1')
+    assert.equal(result.success, false)
+    assert.equal(result.pending, true)
+    assert.equal(result.message, RELOAD_IN_FLIGHT_MESSAGE)
+  })
+})
+
+test('gatewayApi.reload reports a completed restart whose replacement did not reconnect', async () => {
+  await withGatewayFetch({
+    'gateway.get': () => standardGatewayView,
+    'gateway.mcp.restart': () => ({
+      completed: true,
+      gateway: {
+        ...standardGatewayView,
+        runtime: {
+          ...standardGatewayView.runtime,
+          connected: false,
+          tool_count: 0,
+          resource_count: 0,
+          prompt_count: 0,
+          last_error: 'upstream restart failed: connection closed: discover response',
+        },
+      },
+      cleanup: { upstream: 'gateway-1', aggressive: false, dry_run: false },
+    }),
+  }, async () => {
+    const result = await gatewayApi.reload('gateway-1')
+    assert.equal(result.success, false)
+    assert.equal(result.pending, false)
+    assert.match(result.message, /did not reconnect/)
+    assert.match(result.message, /discover response/)
+    assert.equal(result.new_tool_count, 0)
+  })
+})
+
+test('gatewayApi.reload trusts the backend connected verdict over capability counts', async () => {
+  await withGatewayFetch({
+    'gateway.get': () => standardGatewayView,
+    'gateway.mcp.restart': () => ({
+      completed: true,
+      gateway: {
+        ...standardGatewayView,
+        runtime: {
+          ...standardGatewayView.runtime,
+          connected: true,
+          tool_count: 0,
+          resource_count: 0,
+          prompt_count: 0,
+        },
+      },
+    }),
+  }, async () => {
+    const result = await gatewayApi.reload('gateway-1')
+    assert.equal(result.success, true)
+    assert.equal(result.message, 'Server restarted successfully')
+  })
 })

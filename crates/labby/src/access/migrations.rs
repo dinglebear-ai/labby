@@ -10,7 +10,7 @@ use super::credential_schema;
 pub(super) const SCHEMA_VERSION: i64 = 8;
 const MAX_MIGRATION_EVIDENCE_BYTES: usize = 128 * 1024;
 pub(super) const APPLICATION_ID: i64 = 0x4c_41_43_31;
-pub(super) const SCHEMA_FINGERPRINT: &str = "labby-access-v8-20260915";
+pub(super) const SCHEMA_FINGERPRINT: &str = "labby-access-v8-20260916";
 pub(super) const V7_SCHEMA_VERSION: i64 = 7;
 pub(super) const V7_SCHEMA_FINGERPRINT: &str = "labby-access-v7-20260905";
 pub(super) const V6_SCHEMA_VERSION: i64 = 6;
@@ -111,6 +111,7 @@ fn migrate_found(connection: &mut Connection, found: i64) -> AccessStoreResult<(
         install_team_schema_and_seed(&transaction)?;
         install_dev_container_schema(&transaction)?;
         install_v7_expansion(&transaction)?;
+        install_v8_expansion(&transaction)?;
         transaction
             .pragma_update(None, "application_id", APPLICATION_ID)
             .map_err(super::store::map_sqlite_error)?;
@@ -131,6 +132,7 @@ fn migrate_found(connection: &mut Connection, found: i64) -> AccessStoreResult<(
         install_team_schema_and_seed(&transaction)?;
         install_dev_container_schema(&transaction)?;
         install_v7_expansion(&transaction)?;
+        install_v8_expansion(&transaction)?;
         transaction
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(super::store::map_sqlite_error)?;
@@ -148,6 +150,7 @@ fn migrate_found(connection: &mut Connection, found: i64) -> AccessStoreResult<(
         install_team_schema_and_seed(&transaction)?;
         install_dev_container_schema(&transaction)?;
         install_v7_expansion(&transaction)?;
+        install_v8_expansion(&transaction)?;
         transaction
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(super::store::map_sqlite_error)?;
@@ -202,6 +205,7 @@ fn migrate_found(connection: &mut Connection, found: i64) -> AccessStoreResult<(
         install_team_schema_and_seed(&transaction)?;
         install_dev_container_schema(&transaction)?;
         install_v7_expansion(&transaction)?;
+        install_v8_expansion(&transaction)?;
         transaction
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(super::store::map_sqlite_error)?;
@@ -222,6 +226,7 @@ fn migrate_found(connection: &mut Connection, found: i64) -> AccessStoreResult<(
         install_team_schema_and_seed(&transaction)?;
         install_dev_container_schema(&transaction)?;
         install_v7_expansion(&transaction)?;
+        install_v8_expansion(&transaction)?;
         transaction
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(super::store::map_sqlite_error)?;
@@ -266,6 +271,7 @@ fn migrate_found(connection: &mut Connection, found: i64) -> AccessStoreResult<(
         install_team_schema_and_seed(&transaction)?;
         install_dev_container_schema(&transaction)?;
         install_v7_expansion(&transaction)?;
+        install_v8_expansion(&transaction)?;
         transaction
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(super::store::map_sqlite_error)?;
@@ -314,6 +320,7 @@ fn migrate_found(connection: &mut Connection, found: i64) -> AccessStoreResult<(
             .map_err(super::store::map_sqlite_error)?;
         install_dev_container_schema(&transaction)?;
         install_v7_expansion(&transaction)?;
+        install_v8_expansion(&transaction)?;
         transaction
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(super::store::map_sqlite_error)?;
@@ -326,92 +333,89 @@ fn migrate_found(connection: &mut Connection, found: i64) -> AccessStoreResult<(
             .transaction_with_behavior(TransactionBehavior::Exclusive)
             .map_err(super::store::map_sqlite_error)?;
         validate_v7_before_migration(&transaction)?;
-        let bootstrap_trigger = transaction
-            .query_row(
-                "SELECT sql FROM sqlite_schema WHERE type='trigger' AND name='seed_bootstrap_team_authority'",
-                [],
-                |row| row.get::<_, String>(0),
-            )
+        let bootstrap_trigger: String = transaction.query_row(
+            "SELECT sql FROM sqlite_schema WHERE type='trigger' AND name='seed_bootstrap_team_authority'",
+            [], |row| row.get(0)).map_err(super::store::map_sqlite_error)?;
+        transaction.execute_batch("DROP TRIGGER seed_bootstrap_team_authority; ALTER TABLE access_metadata RENAME TO access_metadata_v7;")
+            .map_err(super::store::map_sqlite_error)?;
+        // Reuse only the metadata table; credential tables already exist.
+        let metadata = SCHEMA_V2_METADATA
+            .split("STRICT;")
+            .next()
+            .ok_or(AccessStoreError::MalformedVocabulary)?;
+        transaction
+            .execute_batch(&format!("{metadata}STRICT;"))
+            .map_err(super::store::map_sqlite_error)?;
+        transaction.execute("INSERT INTO access_metadata SELECT singleton,?1,?2,global_revision,updated_at,bootstrap_generation,bootstrap_identity_fingerprint FROM access_metadata_v7",params![SCHEMA_VERSION,SCHEMA_FINGERPRINT])
             .map_err(super::store::map_sqlite_error)?;
         transaction
-            .execute_batch("DROP TRIGGER seed_bootstrap_team_authority;")
+            .execute_batch("DROP TABLE access_metadata_v7;")
             .map_err(super::store::map_sqlite_error)?;
-        transaction
-            .execute_batch(
-                "ALTER TABLE access_metadata RENAME TO access_metadata_v7;
-                 CREATE TABLE access_metadata (
-                    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-                    schema_version INTEGER NOT NULL CHECK(schema_version = 8),
-                    schema_fingerprint TEXT NOT NULL,
-                    global_revision INTEGER NOT NULL CHECK(global_revision >= 0),
-                    updated_at INTEGER NOT NULL,
-                    bootstrap_generation INTEGER NOT NULL DEFAULT 0 CHECK(bootstrap_generation IN (0, 1)),
-                    bootstrap_identity_fingerprint TEXT,
-                    CHECK ((bootstrap_generation = 0 AND bootstrap_identity_fingerprint IS NULL)
-                      OR (bootstrap_generation = 1 AND bootstrap_identity_fingerprint IS NOT NULL
-                        AND length(trim(bootstrap_identity_fingerprint)) > 0))
-                 ) STRICT;
-                 INSERT INTO access_metadata
-                    SELECT singleton, 8, 'labby-access-v8-20260915', global_revision, updated_at,
-                           bootstrap_generation, bootstrap_identity_fingerprint
-                    FROM access_metadata_v7;
-                 DROP TABLE access_metadata_v7;
-                 DROP INDEX team_invitations_pending;
-                 ALTER TABLE team_invitations RENAME TO team_invitations_v7;
-                 CREATE TABLE team_invitations (
-                    invitation_digest BLOB PRIMARY KEY CHECK(length(invitation_digest) = 32),
-                    organization_id TEXT NOT NULL,
-                    team_id TEXT NOT NULL,
-                    role TEXT NOT NULL CHECK(role IN ('owner', 'admin', 'member')),
-                    invited_principal_id TEXT,
-                    invited_email TEXT,
-                    inviter_principal_id TEXT NOT NULL,
-                    team_membership_epoch INTEGER NOT NULL CHECK(team_membership_epoch > 0),
-                    status TEXT NOT NULL CHECK(status IN ('pending', 'accepted', 'revoked', 'expired')),
-                    accepted_principal_id TEXT,
-                    created_at INTEGER NOT NULL,
-                    expires_at INTEGER NOT NULL CHECK(expires_at > created_at),
-                    accepted_at INTEGER,
-                    revoked_at INTEGER,
-                    updated_at INTEGER NOT NULL,
-                    CHECK ((invited_principal_id IS NOT NULL) != (invited_email IS NOT NULL)),
-                    CHECK (invited_email IS NULL OR (length(trim(invited_email)) > 3 AND invited_email = lower(trim(invited_email)))),
-                    CHECK ((status = 'accepted') =
-                      (accepted_principal_id IS NOT NULL AND accepted_at IS NOT NULL)),
-                    CHECK ((status = 'revoked') = (revoked_at IS NOT NULL)),
-                    FOREIGN KEY (organization_id, team_id)
-                      REFERENCES groups(organization_id, group_id) ON DELETE RESTRICT,
-                    FOREIGN KEY (organization_id, inviter_principal_id)
-                      REFERENCES principals(organization_id, principal_id) ON DELETE RESTRICT,
-                    FOREIGN KEY (organization_id, invited_principal_id)
-                      REFERENCES principals(organization_id, principal_id) ON DELETE RESTRICT,
-                    FOREIGN KEY (organization_id, accepted_principal_id)
-                      REFERENCES principals(organization_id, principal_id) ON DELETE RESTRICT
-                 ) STRICT;
-                 INSERT INTO team_invitations(
-                    invitation_digest,organization_id,team_id,role,invited_principal_id,invited_email,
-                    inviter_principal_id,team_membership_epoch,status,accepted_principal_id,
-                    created_at,expires_at,accepted_at,revoked_at,updated_at)
-                 SELECT invitation_digest,organization_id,team_id,role,invited_principal_id,NULL,
-                    inviter_principal_id,team_membership_epoch,status,accepted_principal_id,
-                    created_at,expires_at,accepted_at,revoked_at,updated_at
-                 FROM team_invitations_v7;
-                 DROP TABLE team_invitations_v7;
-                 CREATE INDEX team_invitations_pending
-                    ON team_invitations(organization_id, team_id, status, expires_at);",
-            )
-            .map_err(super::store::map_sqlite_error)?;
+        migrate_v7_team_invitations(&transaction)?;
         transaction
             .execute_batch(&bootstrap_trigger)
             .map_err(super::store::map_sqlite_error)?;
+        install_v8_expansion(&transaction)?;
         transaction
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(super::store::map_sqlite_error)?;
+        super::integrity::validate(&transaction)?;
         transaction
             .commit()
             .map_err(super::store::map_sqlite_error)?;
     }
+
     Ok(())
+}
+
+fn migrate_v7_team_invitations(transaction: &rusqlite::Transaction<'_>) -> AccessStoreResult<()> {
+    transaction
+        .execute_batch(
+            "DROP INDEX team_invitations_pending;
+             ALTER TABLE team_invitations RENAME TO team_invitations_v7;
+             CREATE TABLE team_invitations (
+                invitation_digest BLOB PRIMARY KEY CHECK(length(invitation_digest) = 32),
+                organization_id TEXT NOT NULL,
+                team_id TEXT NOT NULL,
+                role TEXT NOT NULL CHECK(role IN ('owner', 'admin', 'member')),
+                invited_principal_id TEXT,
+                invited_email TEXT,
+                inviter_principal_id TEXT NOT NULL,
+                team_membership_epoch INTEGER NOT NULL CHECK(team_membership_epoch > 0),
+                status TEXT NOT NULL CHECK(status IN ('pending', 'accepted', 'revoked', 'expired')),
+                accepted_principal_id TEXT,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL CHECK(expires_at > created_at),
+                accepted_at INTEGER,
+                revoked_at INTEGER,
+                updated_at INTEGER NOT NULL,
+                CHECK ((invited_principal_id IS NOT NULL) != (invited_email IS NOT NULL)),
+                CHECK (invited_email IS NULL OR (length(trim(invited_email)) > 3 AND invited_email = lower(trim(invited_email)))),
+                CHECK ((status = 'accepted') =
+                  (accepted_principal_id IS NOT NULL AND accepted_at IS NOT NULL)),
+                CHECK ((status = 'revoked') = (revoked_at IS NOT NULL)),
+                FOREIGN KEY (organization_id, team_id)
+                  REFERENCES groups(organization_id, group_id) ON DELETE RESTRICT,
+                FOREIGN KEY (organization_id, inviter_principal_id)
+                  REFERENCES principals(organization_id, principal_id) ON DELETE RESTRICT,
+                FOREIGN KEY (organization_id, invited_principal_id)
+                  REFERENCES principals(organization_id, principal_id) ON DELETE RESTRICT,
+                FOREIGN KEY (organization_id, accepted_principal_id)
+                  REFERENCES principals(organization_id, principal_id) ON DELETE RESTRICT
+             ) STRICT;
+             INSERT INTO team_invitations(
+                invitation_digest,organization_id,team_id,role,invited_principal_id,invited_email,
+                inviter_principal_id,team_membership_epoch,status,accepted_principal_id,
+                created_at,expires_at,accepted_at,revoked_at,updated_at)
+             SELECT invitation_digest,organization_id,team_id,role,invited_principal_id,NULL,
+                inviter_principal_id,team_membership_epoch,status,accepted_principal_id,
+                created_at,expires_at,accepted_at,revoked_at,updated_at
+             FROM team_invitations_v7;
+             DROP TABLE team_invitations_v7;
+             CREATE INDEX team_invitations_pending
+                ON team_invitations(organization_id, team_id, status, expires_at);",
+        )
+        .map_err(super::store::map_sqlite_error)
 }
 
 #[derive(Debug, Deserialize)]
@@ -1666,6 +1670,187 @@ fn install_v7_expansion(connection: &Connection) -> AccessStoreResult<()> {
         .map_err(super::store::map_sqlite_error)
 }
 
+pub(super) const TASK_SCHEDULE_SCHEMA: &str = r#"
+CREATE TABLE agent_task_schedules (
+ schedule_id TEXT PRIMARY KEY CHECK(length(schedule_id) BETWEEN 1 AND 256),
+ owner_kind TEXT NOT NULL CHECK(owner_kind IN ('personal','team','project','installation')),
+ owner_id TEXT NOT NULL,
+ creator_principal_id TEXT NOT NULL REFERENCES principals(principal_id),
+ name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 200),
+ task_template_json TEXT NOT NULL CHECK(json_valid(task_template_json) AND length(CAST(task_template_json AS BLOB)) <= 2097152),
+ retry_policy_json TEXT NOT NULL DEFAULT '{"max_retries":0,"backoff_ms":300000}' CHECK(json_valid(retry_policy_json) AND length(retry_policy_json)<=1024),
+ schedule_spec_json TEXT NOT NULL CHECK(json_valid(schedule_spec_json) AND length(schedule_spec_json) <= 4096),
+ identity_ref_json TEXT NOT NULL CHECK(json_valid(identity_ref_json) AND length(identity_ref_json) <= 16384),
+ ceiling_json TEXT NOT NULL CHECK(json_valid(ceiling_json) AND length(ceiling_json) <= 16384),
+ armed INTEGER NOT NULL CHECK(armed IN (0,1)),
+ next_run_at INTEGER NOT NULL CHECK(next_run_at >= 0),
+ revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0),
+ last_task_id TEXT,
+ last_error_kind TEXT,
+ created_at INTEGER NOT NULL,
+ updated_at INTEGER NOT NULL
+) STRICT;
+CREATE INDEX agent_task_schedules_due ON agent_task_schedules(armed,next_run_at);
+CREATE TABLE agent_task_schedule_occurrences (
+ schedule_id TEXT NOT NULL REFERENCES agent_task_schedules(schedule_id) ON DELETE CASCADE,
+ occurrence_key TEXT NOT NULL,
+ task_id TEXT NOT NULL UNIQUE,
+ due_at INTEGER NOT NULL,
+ schedule_revision INTEGER NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('pending','submitted','skipped')),
+ claim_token TEXT,
+ claim_expires_at INTEGER,
+ error_kind TEXT,
+ PRIMARY KEY(schedule_id,occurrence_key)
+) STRICT;
+CREATE INDEX agent_task_schedule_occurrences_pending ON agent_task_schedule_occurrences(state,claim_expires_at);
+CREATE TABLE agent_task_schedule_attempts (
+ schedule_id TEXT NOT NULL,
+ occurrence_key TEXT NOT NULL,
+ attempt_number INTEGER NOT NULL CHECK(attempt_number BETWEEN 0 AND 10),
+ task_id TEXT NOT NULL UNIQUE,
+ next_attempt_at INTEGER NOT NULL CHECK(next_attempt_at>=0),
+ state TEXT NOT NULL CHECK(state IN ('pending','submitted','succeeded','failed','cancelled','skipped')),
+ claim_token TEXT,
+ claim_expires_at INTEGER,
+ error_kind TEXT,
+ PRIMARY KEY(schedule_id,occurrence_key,attempt_number),
+ FOREIGN KEY(schedule_id,occurrence_key) REFERENCES agent_task_schedule_occurrences(schedule_id,occurrence_key) ON DELETE CASCADE
+) STRICT;
+CREATE INDEX agent_task_schedule_attempts_due ON agent_task_schedule_attempts(state,next_attempt_at,claim_expires_at);
+"#;
+
+pub(super) const CONTAINER_IMAGE_SCHEMA: &str = r"
+CREATE TABLE dev_container_template_drafts (
+    template_id TEXT PRIMARY KEY CHECK(length(trim(template_id)) BETWEEN 1 AND 256),
+    owner_kind TEXT NOT NULL CHECK(owner_kind IN ('installation','team','project','personal')),
+    owner_id TEXT NOT NULL CHECK(length(trim(owner_id)) BETWEEN 1 AND 256),
+    base_template_id TEXT NOT NULL,
+    definition_json TEXT NOT NULL CHECK(json_valid(definition_json) AND length(definition_json) <= 65536),
+    max_active_instances INTEGER NOT NULL CHECK(max_active_instances > 0),
+    cpu_millis INTEGER NOT NULL CHECK(cpu_millis > 0),
+    memory_bytes INTEGER NOT NULL CHECK(memory_bytes > 0),
+    disk_bytes INTEGER NOT NULL CHECK(disk_bytes > 0),
+    max_lifetime_seconds INTEGER NOT NULL CHECK(max_lifetime_seconds > 0),
+    revision INTEGER NOT NULL CHECK(revision > 0),
+    authority_fingerprint TEXT NOT NULL CHECK(length(trim(authority_fingerprint)) > 0),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY(base_template_id) REFERENCES dev_container_templates(template_id) ON DELETE RESTRICT
+) STRICT;
+CREATE INDEX dev_container_template_drafts_owner
+    ON dev_container_template_drafts(owner_kind, owner_id, template_id);
+
+CREATE TABLE dev_container_template_environment (
+    template_id TEXT NOT NULL,
+    name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 128),
+    value_kind TEXT NOT NULL CHECK(value_kind IN ('literal','secret_reference')),
+    literal_value TEXT CHECK(literal_value IS NULL OR length(literal_value) <= 4096),
+    secret_reference TEXT CHECK(secret_reference IS NULL OR length(secret_reference) BETWEEN 1 AND 256),
+    PRIMARY KEY(template_id, name),
+    CHECK (
+        (value_kind = 'literal' AND literal_value IS NOT NULL AND secret_reference IS NULL)
+        OR
+        (value_kind = 'secret_reference' AND literal_value IS NULL AND secret_reference IS NOT NULL)
+    ),
+    FOREIGN KEY(template_id) REFERENCES dev_container_template_drafts(template_id) ON DELETE CASCADE
+) STRICT;
+
+CREATE TABLE dev_container_image_builds (
+    build_id TEXT PRIMARY KEY CHECK(length(trim(build_id)) BETWEEN 1 AND 128),
+    request_id TEXT NOT NULL CHECK(length(trim(request_id)) BETWEEN 1 AND 256),
+    actor_principal_id TEXT NOT NULL CHECK(length(trim(actor_principal_id)) BETWEEN 1 AND 256),
+    identity_ref_json TEXT NOT NULL CHECK(json_valid(identity_ref_json) AND length(identity_ref_json) <= 16384),
+    ceiling_json TEXT NOT NULL CHECK(json_valid(ceiling_json) AND length(ceiling_json) <= 16384),
+    template_id TEXT NOT NULL,
+    source_revision INTEGER NOT NULL CHECK(source_revision > 0),
+    source_digest TEXT NOT NULL CHECK(length(source_digest) = 71 AND substr(source_digest,1,7) = 'sha256:' AND substr(source_digest,8) NOT GLOB '*[^0-9a-f]*'),
+    source_snapshot_json TEXT NOT NULL CHECK(json_valid(source_snapshot_json) AND length(source_snapshot_json) <= 65536),
+    lifecycle_nonce TEXT NOT NULL UNIQUE CHECK(length(lifecycle_nonce) BETWEEN 32 AND 128),
+    builder_instance_name TEXT NOT NULL UNIQUE CHECK(length(trim(builder_instance_name)) BETWEEN 1 AND 63),
+    request_kind TEXT NOT NULL CHECK(request_kind IN ('build','rebuild')),
+    state TEXT NOT NULL CHECK(state IN ('queued','building','succeeded','failed','paused')),
+    step TEXT NOT NULL CHECK(step IN ('queued','launching','provisioning','publishing','cleanup','complete')),
+    progress INTEGER NOT NULL CHECK(progress BETWEEN 0 AND 100),
+    engine_operation_id TEXT CHECK(engine_operation_id IS NULL OR length(engine_operation_id) BETWEEN 1 AND 256),
+    output_image_digest TEXT CHECK(output_image_digest IS NULL OR (length(output_image_digest) = 71 AND substr(output_image_digest,1,7) = 'sha256:' AND substr(output_image_digest,8) NOT GLOB '*[^0-9a-f]*')),
+    error_kind TEXT CHECK(error_kind IS NULL OR length(error_kind) <= 64),
+    error_summary TEXT CHECK(error_summary IS NULL OR length(error_summary) <= 1024),
+    authority_fingerprint TEXT NOT NULL CHECK(length(trim(authority_fingerprint)) > 0),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    started_at INTEGER,
+    completed_at INTEGER,
+    UNIQUE(actor_principal_id, request_id),
+    CHECK (
+        (state = 'succeeded' AND output_image_digest IS NOT NULL AND error_kind IS NULL AND completed_at IS NOT NULL)
+        OR
+        (state = 'failed' AND output_image_digest IS NULL AND error_kind IS NOT NULL AND completed_at IS NOT NULL)
+        OR
+        (state IN ('queued','building','paused') AND output_image_digest IS NULL AND completed_at IS NULL)
+    ),
+    FOREIGN KEY(template_id) REFERENCES dev_container_template_drafts(template_id) ON DELETE RESTRICT,
+    FOREIGN KEY(actor_principal_id) REFERENCES principals(principal_id) ON DELETE RESTRICT
+) STRICT;
+CREATE UNIQUE INDEX dev_container_image_builds_one_active
+    ON dev_container_image_builds(template_id)
+    WHERE state IN ('queued','building','paused');
+CREATE INDEX dev_container_image_builds_template_created
+    ON dev_container_image_builds(template_id, created_at DESC, build_id);
+
+CREATE TABLE dev_container_published_images (
+    template_id TEXT NOT NULL,
+    publication_revision INTEGER NOT NULL CHECK(publication_revision > 0),
+    source_revision INTEGER NOT NULL CHECK(source_revision > 0),
+    source_digest TEXT NOT NULL CHECK(length(source_digest) = 71 AND substr(source_digest,1,7) = 'sha256:' AND substr(source_digest,8) NOT GLOB '*[^0-9a-f]*'),
+    image_digest TEXT NOT NULL CHECK(length(image_digest) = 71 AND substr(image_digest,1,7) = 'sha256:' AND substr(image_digest,8) NOT GLOB '*[^0-9a-f]*'),
+    build_id TEXT NOT NULL UNIQUE,
+    is_current INTEGER NOT NULL CHECK(is_current IN (0,1)),
+    published_at INTEGER NOT NULL,
+    PRIMARY KEY(template_id, publication_revision),
+    FOREIGN KEY(template_id) REFERENCES dev_container_template_drafts(template_id) ON DELETE RESTRICT,
+    FOREIGN KEY(build_id) REFERENCES dev_container_image_builds(build_id) ON DELETE RESTRICT
+) STRICT;
+CREATE UNIQUE INDEX dev_container_published_images_one_current
+    ON dev_container_published_images(template_id)
+    WHERE is_current = 1;
+
+CREATE TABLE dev_container_launch_manifests (
+    manifest_digest TEXT PRIMARY KEY CHECK(length(manifest_digest) = 71 AND substr(manifest_digest,1,7) = 'sha256:' AND substr(manifest_digest,8) NOT GLOB '*[^0-9a-f]*'),
+    template_id TEXT NOT NULL,
+    source_revision INTEGER NOT NULL CHECK(source_revision > 0),
+    source_digest TEXT NOT NULL CHECK(length(source_digest) = 71 AND substr(source_digest,1,7) = 'sha256:' AND substr(source_digest,8) NOT GLOB '*[^0-9a-f]*'),
+    source_build_id TEXT NOT NULL UNIQUE,
+    image_digest TEXT NOT NULL CHECK(length(image_digest) = 71 AND substr(image_digest,1,7) = 'sha256:' AND substr(image_digest,8) NOT GLOB '*[^0-9a-f]*'),
+    catalog_generation TEXT NOT NULL CHECK(length(catalog_generation) BETWEEN 1 AND 256),
+    catalog_digest TEXT NOT NULL CHECK(length(catalog_digest) = 71 AND substr(catalog_digest,1,7) = 'sha256:' AND substr(catalog_digest,8) NOT GLOB '*[^0-9a-f]*'),
+    network_mask INTEGER NOT NULL CHECK(network_mask BETWEEN 0 AND 15),
+    profiles_json TEXT NOT NULL CHECK(json_valid(profiles_json) AND json_type(profiles_json) = 'array'),
+    environment_json TEXT NOT NULL CHECK(json_valid(environment_json) AND json_type(environment_json) = 'array'),
+    created_at INTEGER NOT NULL CHECK(created_at >= 0),
+    FOREIGN KEY(source_build_id) REFERENCES dev_container_image_builds(build_id) ON DELETE RESTRICT
+) STRICT;
+ALTER TABLE dev_container_templates ADD COLUMN launch_manifest_digest TEXT
+    REFERENCES dev_container_launch_manifests(manifest_digest) ON DELETE RESTRICT;
+ALTER TABLE dev_container_instances ADD COLUMN launch_manifest_digest TEXT
+    REFERENCES dev_container_launch_manifests(manifest_digest) ON DELETE RESTRICT;
+CREATE INDEX dev_container_instances_launch_manifest_idx
+    ON dev_container_instances(launch_manifest_digest);
+";
+
+/// v8 adds only tables a shipped feature consumes: recurring Task schedules
+/// (`tasks.schedule_*`) and dev-container image drafts, builds, and
+/// publications. Session evidence and Task-input tables are not part of v8;
+/// Agent and Task payloads live in the content-addressed payload store.
+fn install_v8_expansion(connection: &Connection) -> AccessStoreResult<()> {
+    connection
+        .execute_batch(TASK_SCHEDULE_SCHEMA)
+        .map_err(super::store::map_sqlite_error)?;
+    connection
+        .execute_batch(CONTAINER_IMAGE_SCHEMA)
+        .map_err(super::store::map_sqlite_error)
+}
+
 /// In-memory connection holding the exact current schema. Both integrity
 /// validation and migration tests compare manifests against this.
 pub(super) fn canonical_current_schema() -> AccessStoreResult<Connection> {
@@ -1681,6 +1866,7 @@ pub(super) fn canonical_current_schema() -> AccessStoreResult<Connection> {
             .map_err(super::store::map_sqlite_error)?;
     }
     install_v7_expansion(&connection)?;
+    install_v8_expansion(&connection)?;
     Ok(connection)
 }
 
@@ -1806,6 +1992,203 @@ mod credential_migration_tests {
     use super::*;
     use labby_auth::{Authenticator, VerifiedIdentity};
     use sha2::{Digest, Sha256};
+
+    fn legacy_v7() -> Connection {
+        let connection = canonical_v7_schema().unwrap();
+        connection
+            .execute(
+                "INSERT INTO access_metadata VALUES(1,7,'labby-access-v7-20260905',23,100,0,NULL)",
+                [],
+            )
+            .unwrap();
+        connection
+            .pragma_update(None, "application_id", APPLICATION_ID)
+            .unwrap();
+        connection.pragma_update(None, "user_version", 7).unwrap();
+        connection.execute_batch("INSERT INTO agent_definitions VALUES('agent-a','personal','principal-a',1,'{}','active',1,1,100);
+            INSERT INTO agent_sessions VALUES('session-a','agent-a',1,'principal-a','authority-a','completed',200,100);").unwrap();
+        connection
+    }
+
+    #[test]
+    fn v7_migration_preserves_sessions_and_adds_only_consumed_tables() {
+        let mut connection = legacy_v7();
+        migrate_with_evidence(&mut connection, &MigrationEvidenceSource::UnitFixture).unwrap();
+        super::super::integrity::validate(&connection).unwrap();
+        let actual: (i64, i64, String) = connection.query_row(
+            "SELECT schema_version,global_revision,(SELECT status FROM agent_sessions WHERE session_id='session-a') FROM access_metadata", [],
+            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap();
+        assert_eq!(actual, (8, 23, "completed".into()));
+        for table in [
+            "agent_task_schedules",
+            "agent_task_schedule_occurrences",
+            "agent_task_schedule_attempts",
+            "dev_container_image_builds",
+            "dev_container_launch_manifests",
+            "dev_container_published_images",
+            "dev_container_template_drafts",
+            "dev_container_template_environment",
+        ] {
+            let rows: i64 = connection
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(rows, 0, "{table} must start empty");
+        }
+        for table in [
+            "agent_session_evidence",
+            "agent_session_requests",
+            "agent_task_inputs",
+        ] {
+            let present: i64 = connection
+                .query_row(
+                    "SELECT count(*) FROM sqlite_schema WHERE name=?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(present, 0, "{table} has no consumer and must not exist");
+        }
+        migrate_with_evidence(&mut connection, &MigrationEvidenceSource::UnitFixture).unwrap();
+        assert_eq!(
+            connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            8
+        );
+    }
+
+    #[test]
+    fn v7_container_migration_preserves_existing_instances_without_inventing_launch_manifests() {
+        let mut connection = legacy_v7();
+        let image = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        connection.execute(
+            "INSERT INTO dev_container_templates VALUES('base-a',?1,4,1000,1048576,1048576,3600,'[]','approved',1,100,100)",
+            [image],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO dev_container_instances VALUES('instance-a','personal','principal-a','base-a',?1,'0123456789abcdef0123456789abcdef','stopped','stopped',1000,1048576,1048576,3600,'[]','authority-a',3,100,200,NULL)",
+            [image],
+        ).unwrap();
+        migrate_with_evidence(&mut connection, &MigrationEvidenceSource::UnitFixture).unwrap();
+        let retained: (String, i64, Option<String>) = connection.query_row(
+            "SELECT image_digest,revision,launch_manifest_digest FROM dev_container_instances WHERE instance_id='instance-a'", [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
+        assert_eq!(retained, (image.to_owned(), 3, None));
+        assert_eq!(connection.query_row(
+            "SELECT launch_manifest_digest FROM dev_container_templates WHERE template_id='base-a'", [],
+            |row| row.get::<_, Option<String>>(0),
+        ).unwrap(), None);
+        assert!(connection.execute(
+            "UPDATE dev_container_instances SET launch_manifest_digest=?1 WHERE instance_id='instance-a'", [image],
+        ).is_err());
+        assert!(connection.execute(
+            "UPDATE dev_container_templates SET launch_manifest_digest=?1 WHERE template_id='base-a'", [image],
+        ).is_err());
+        super::super::integrity::validate(&connection).unwrap();
+    }
+
+    /// The v8 manifest is the current production schema. A bump past it is a
+    /// product change: it needs a feature that reads or writes the new tables
+    /// and an owner-approved offline migration. v8 is consumed by recurring
+    /// Task schedules and dev-container image builds, so the tables the store
+    /// creates stay pinned to exactly that set.
+    #[test]
+    fn schema_version_is_eight_for_task_schedules_and_container_images() {
+        assert_eq!(SCHEMA_VERSION, 8);
+        assert_eq!(SCHEMA_FINGERPRINT, "labby-access-v8-20260916");
+        let canonical = canonical_current_schema().unwrap();
+        let tables = schema_manifest(&canonical)
+            .unwrap()
+            .into_iter()
+            .filter(|(kind, ..)| kind == "table")
+            .map(|(_, name, ..)| name)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            tables,
+            [
+                "access_admission_buckets",
+                "access_audit",
+                "access_installations",
+                "access_metadata",
+                "access_security_events",
+                "access_tombstones",
+                "agent_definition_audit",
+                "agent_definitions",
+                "agent_sessions",
+                "agent_task_audit",
+                "agent_task_schedule_attempts",
+                "agent_task_schedule_occurrences",
+                "agent_task_schedules",
+                "agent_tasks",
+                "authority_outbox_sequences",
+                "authority_projection_outbox",
+                "bootstrap_proofs",
+                "credential_idempotency",
+                "dev_container_image_builds",
+                "dev_container_instances",
+                "dev_container_launch_manifests",
+                "dev_container_ledger",
+                "dev_container_owner_quotas",
+                "dev_container_published_images",
+                "dev_container_template_drafts",
+                "dev_container_template_environment",
+                "dev_container_templates",
+                "gateway_team_credential_bindings",
+                "groups",
+                "organizations",
+                "platform_administrators",
+                "principal_epochs",
+                "principal_links",
+                "principals",
+                "project_credentials",
+                "project_loadouts",
+                "project_membership_epochs",
+                "project_memberships",
+                "project_policy_publications",
+                "projects",
+                "team_invitations",
+                "team_memberships",
+                "team_project_assignments",
+            ]
+        );
+    }
+
+    #[test]
+    fn v7_execution_migration_rejects_tampering_without_changing_version() {
+        let mut connection = legacy_v7();
+        connection
+            .execute_batch("CREATE TABLE unexpected(value TEXT);")
+            .unwrap();
+        assert!(
+            migrate_with_evidence(&mut connection, &MigrationEvidenceSource::UnitFixture).is_err()
+        );
+        assert_eq!(
+            connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            7
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM sqlite_schema WHERE name='agent_task_schedules'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT status FROM agent_sessions", [], |row| row
+                    .get::<_, String>(0))
+                .unwrap(),
+            "completed"
+        );
+    }
 
     #[test]
     fn legacy_metadata_reader_preserves_operational_sqlite_errors() {
@@ -2112,11 +2495,12 @@ mod credential_migration_tests {
     fn every_legacy_version_is_gated_and_the_gate_runs_end_to_end() {
         // Each supported legacy version is refused without evidence, before
         // any transform runs; nothing crosses implicitly.
-        let fixtures: [(i64, fn() -> Connection); 4] = [
+        let fixtures: [(i64, fn() -> Connection); 5] = [
             (V2_SCHEMA_VERSION, canonical_v2),
             (V3_SCHEMA_VERSION, canonical_v3),
             (V4_SCHEMA_VERSION, canonical_v4),
             (V5_SCHEMA_VERSION, canonical_v5),
+            (V7_SCHEMA_VERSION, legacy_v7),
         ];
         for (version, fixture) in fixtures {
             let mut connection = fixture();

@@ -16,6 +16,17 @@ every referenced artifact byte already exists in R2.
    `/srv/team-labby`.
 3. Copy `.env.example` to `.env`, `team-depot.env.example` to
    `team-depot.env`, and `catalog-depot.env.example` to `catalog-depot.env`.
+   Create the private Git credential mount used only by Team Depot:
+
+   ```sh
+   install -d -m 0700 secrets
+   install -m 0600 team-depot-git-credentials.json.example secrets/team-depot-git-credentials.json
+   ```
+
+   Replace the placeholder token with a read-only GitHub credential that can
+   clone `unraid/unmarket`, `unraid/limetech-ai-skills`, and
+   `unraid/limetech-elixir-skills`. Never put the credential in a repository
+   URL or source record.
 4. Create the deployment-owned Labby state directory, then seed its mutable
    configuration and secret file:
 
@@ -29,12 +40,22 @@ every referenced artifact byte already exists in R2.
    control. Give the team and catalog Depots different R2 credentials scoped to
    different prefixes (or different buckets); neither credential may access
    the other Depot's objects.
-6. Set `public_host` to the exact host clients use. Keep `/mcp/linear` as the
-   public path when preserving the existing client URL. Set the route target's
-   `project_id` to the same bound project configured for Depot delegation.
-7. Set `LABBY_AUTH_ALLOWED_EMAIL_DOMAINS` in `state/labby/.env` to the verified
-   company domain. If domain-wide admission is not intended, leave it empty and
-   add each employee to Labby's persisted allowlist before cutover.
+6. Set `public_host` on both protected routes to the exact host clients use.
+   Keep `/mcp/linear` as the Linear route path when preserving the existing
+   client URL. Keep `team-depot-publish` bound to `/mcp/team-depot`, and set its
+   target `project_id` plus `[depot.publish].project_id` to the same project.
+   `[depot.publish].route_id` must remain `team-depot-publish`; this is the
+   server-owned target used for browser publishing and Administration writes.
+7. Keep `LABBY_AUTH_ALLOWED_EMAIL_DOMAINS=lime-technology.com` for the Lime
+   team deployment. If domain-wide admission is intentionally disabled, leave it
+   empty and add each employee to Labby's persisted allowlist before cutover.
+
+This Compose topology is intentionally Linux/Unraid-specific. Labby uses host
+networking but binds its own MCP listener to host loopback. Team and Catalog
+Depot remain on the backend bridge and publish ports 4100/4101 to host loopback
+only. That gives Labby genuine `127.0.0.1` Depot endpoints, which is required
+for immutable host-managed Discover providers, without exposing either Depot to
+the LAN. Do not widen these binds to `0.0.0.0`.
 
 Render the deployment before creating anything:
 
@@ -55,23 +76,126 @@ docker compose --env-file .env exec catalog-depot \
   /app/bin/depot rpc 'Depot.Auth.Token.create("team-labby", ["skills:read"]) |> elem(1) |> IO.puts()'
 ```
 
-Put the resulting values in `TEAM_DEPOT_TOKEN` and `CATALOG_DEPOT_TOKEN` in
-`state/labby/.env`. Copy the team read token into `LABBY_DEPOT_TOKEN` there as
-well, then start the complete stack:
+Put the Team value in `LABBY_DEPOT_PROVIDER_TEAM_LOCAL_TOKEN` and the Catalog
+value in `LABBY_DEPOT_PROVIDER_CATALOG_LOCAL_TOKEN` in `state/labby/.env`. Copy
+the Team read token into `LABBY_DEPOT_TOKEN` there as well. These provider env
+references back both the immutable Discover providers and the corresponding MCP
+upstreams. Then start the complete stack:
 
 ```sh
 docker compose --env-file .env up -d
 docker compose --env-file .env ps
 ```
 
+## Bootstrap the shared Team Depot sources
+
+Team Depot is the authority for Lime-owned Skills. Catalog Depot does not import
+these private repositories, and starting a fresh Team Depot does not infer them.
+After the Team Depot Git credential mount is configured, register all three
+required sources through Depot's canonical local operator CLI:
+
+```sh
+./bootstrap-team-sources.sh
+```
+
+The bootstrap is safe to rerun. Depot derives a deterministic source id from
+the normalized repository arguments, so a repeat updates the existing source
+instead of creating a second schedule. Each repository source refreshes hourly
+by default and persists only the `github-private` credential reference, never
+the token.
+
+For the current systemd release layout, the credential has to be installed by a
+host/root operator before the unprivileged Labby account can bootstrap sources.
+The live service runs as `team-depot`, reads
+`/etc/team-labby/team-depot.env`, and keeps mutable state under
+`/var/lib/team-labby/team-depot`. Run these steps from an authorized root
+session on the Team Labby VM:
+
+```sh
+install -d -m 0750 -o root -g team-depot /var/lib/team-labby/team-depot/secrets
+install -m 0640 -o root -g team-depot \
+  /secure/operator-input/team-depot-git-credentials.json \
+  /var/lib/team-labby/team-depot/secrets/git-credentials.json
+```
+
+Set this exact value in `/etc/team-labby/team-depot.env` without putting the
+GitHub token itself in the environment file:
+
+```text
+DEPOT_GIT_CREDENTIALS_FILE=/var/lib/team-labby/team-depot/secrets/git-credentials.json
+```
+
+The current systemd unit deliberately shipped with a bearer-mode bootstrap
+default. The Team Depot production contract is OAuth with fresh Labby delegation,
+so install a drop-in rather than editing the packaged unit in place:
+
+```sh
+install -d -m 0755 /etc/systemd/system/team-depot.service.d
+printf '%s\n' '[Service]' 'Environment=DEPOT_AUTH_MODE=oauth' \
+  > /etc/systemd/system/team-depot.service.d/30-auth-mode.conf
+systemctl daemon-reload
+```
+
+Do not replace the unit's live-specific `DEPOT_DEPLOYMENT_ID=team-depot` or
+`DEPOT_BACKEND_ID` value. The OAuth issuer, audience, JWKS URI, delegation
+actor, organization/project binding, and policy epochs stay in
+`/etc/team-labby/team-depot.env`; confirm they are populated before restart.
+
+Restart Team Depot and prove both health and the effective auth mode before
+starting any ingest:
+
+```sh
+systemctl restart team-depot
+systemctl is-active --quiet team-depot
+/opt/team-labby/team-depot/bin/depotctl --json status
+```
+
+The status response must report `"authMode": "oauth"`.
+
+The credential file must contain the same `github-private` map shown in
+`team-depot-git-credentials.json.example`. Validate the reference against all
+three repositories without printing the secret:
+
+```sh
+/opt/team-labby/team-depot/bin/depot rpc '
+for url <- [
+  "https://github.com/unraid/unmarket",
+  "https://github.com/unraid/limetech-ai-skills",
+  "https://github.com/unraid/limetech-elixir-skills"
+] do
+  IO.inspect({url, Depot.Ingest.GitCredential.validate("github-private", url)})
+end'
+```
+
+Every tuple must end in `:ok`. Only then run the same bootstrap contract by
+pointing the script at the installed operator CLI instead of Compose:
+
+```sh
+TEAM_DEPOTCTL=/opt/team-labby/team-depot/bin/depotctl ./bootstrap-team-sources.sh
+```
+
+After bootstrap, `depotctl --json sources list` must contain exactly one enabled
+repo source for each of:
+
+- `https://github.com/unraid/unmarket` with namespace `unmarket`;
+- `https://github.com/unraid/limetech-ai-skills` with namespace
+  `limetech-ai-skills`; and
+- `https://github.com/unraid/limetech-elixir-skills` with namespace
+  `limetech-elixir-skills`.
+
+Compare Team Depot's indexed Skills against the repositories' current
+`SKILL.md` census before cutover. A successful initial ingest must leave all
+three sources enabled with zero consecutive failures; the next scheduled refresh
+must also succeed.
+
 ## Configure delegated team publishing
 
 The service bearer remains read-only. For each write, Labby revalidates the
 employee's bound grant and signs a fresh, single-operation assertion lasting no
 more than 60 seconds. Depot verifies that assertion and consumes its `jti` once.
-Do not add `skills:write` to `TEAM_DEPOT_TOKEN` and do not enable
-`DEPOT_CONTROL_PLANE_SERVICE_WRITES`; either change would bypass the delegated
-employee authority.
+Do not add `skills:write` to `LABBY_DEPOT_PROVIDER_TEAM_LOCAL_TOKEN` or
+`LABBY_DEPOT_TOKEN`, and do not enable `DEPOT_CONTROL_PLANE_SERVICE_WRITES`; any
+of those changes would bypass the delegated employee authority.
 
 The mappings in `state/labby/.env` and `team-depot.env` are one exact contract:
 
@@ -185,6 +309,11 @@ image digests:
 - both Depot health endpoints become ready and authenticated discovery reports
   the configured account, distinct tenant, and distinct deployment ids;
 - each Depot can read a known R2-backed artifact from its own prefix;
+- Team Depot has one healthy, enabled hourly repo source for `unraid/unmarket`,
+  `unraid/limetech-ai-skills`, and `unraid/limetech-elixir-skills`, and a forced
+  refresh of each source succeeds without changing its credential reference;
+- Team Discover returns Skills from all three namespaces for an admitted Lime
+  member while Catalog Depot remains free of those private Lime sources;
 - neither Depot can write with its read-only service token;
 - the team Depot accepts one delegated publish for the authenticated employee,
   records that employee as the principal and the Labby installation as actor,

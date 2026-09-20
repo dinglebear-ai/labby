@@ -73,7 +73,7 @@ impl Harness {
             sqlite_path: tmp.path().join("auth.db"),
             key_path: tmp.path().join("auth-jwt.pem"),
             bootstrap_secret: Some("secret".to_string()),
-            admin_email: admin_email.clone(),
+            admin_emails: vec![admin_email.clone()],
             token_encryption_key: Some(
                 TokenEncryptionKey::from_encoded(
                     "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
@@ -160,7 +160,7 @@ impl Harness {
             sqlite_path: self._tmp.path().join("auth.db"),
             key_path: self._tmp.path().join("auth-jwt.pem"),
             bootstrap_secret: Some("secret".to_string()),
-            admin_email: self.admin_email.clone(),
+            admin_emails: vec![self.admin_email.clone()],
             token_encryption_key: Some(
                 TokenEncryptionKey::from_encoded(
                     "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
@@ -481,7 +481,7 @@ async fn delete_admin_session_removes_email_returns_204() {
     // First add an entry.
     h.auth_state
         .store
-        .add_allowed_user("bob@example.com", "admin", 1)
+        .add_allowed_user("bob@example.com", "admin", "member", 1)
         .await
         .unwrap();
     let app = h.router();
@@ -524,7 +524,7 @@ async fn delete_allowed_email_revokes_subject_session_and_refresh_grants() {
     };
     h.auth_state
         .store
-        .add_allowed_user(removed_email, "admin", 1)
+        .add_allowed_user(removed_email, "admin", "member", 1)
         .await
         .unwrap();
     h.auth_state
@@ -684,7 +684,7 @@ async fn delete_allowed_email_without_gateway_manager_does_not_commit_removal() 
     let removed_email = "runtime-required@example.com";
     h.auth_state
         .store
-        .add_allowed_user(removed_email, "admin", 1)
+        .add_allowed_user(removed_email, "admin", "member", 1)
         .await
         .unwrap();
 
@@ -825,7 +825,7 @@ async fn post_duplicate_email_returns_422() {
     // Pre-seed the email so the second add is a duplicate.
     h.auth_state
         .store
-        .add_allowed_user("dup@example.com", "admin", 1)
+        .add_allowed_user("dup@example.com", "admin", "member", 1)
         .await
         .unwrap();
     let session = h.seed_admin_session().await;
@@ -940,7 +940,7 @@ async fn list_shows_added_emails() {
     let h = Harness::new().await;
     h.auth_state
         .store
-        .add_allowed_user("carol@example.com", "admin", 1)
+        .add_allowed_user("carol@example.com", "admin", "member", 1)
         .await
         .unwrap();
     let session = h.seed_admin_session().await;
@@ -959,6 +959,93 @@ async fn list_shows_added_emails() {
 }
 
 // ── email normalization ───────────────────────────────────────────────────────
+
+// ── role handling ─────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn post_admin_session_adds_email_with_role_and_lists_it() {
+    let h = Harness::new().await;
+    let session = h.seed_admin_session().await;
+    let app = h.router();
+    let response = app
+        .clone()
+        .oneshot(Harness::post_with_session(
+            "/v1/auth/allowed-emails",
+            &session,
+            r#"{"email":"eli@example.com","role":"admin"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let json = body_json(response).await;
+    assert_eq!(json["entry"]["role"], "admin");
+
+    let response = app
+        .oneshot(Harness::get_with_session(
+            "/v1/auth/allowed-emails",
+            &session,
+        ))
+        .await
+        .unwrap();
+    let json = body_json(response).await;
+    let entry = json["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["email"] == "eli@example.com")
+        .unwrap();
+    assert_eq!(entry["role"], "admin");
+}
+
+#[tokio::test]
+async fn post_without_role_defaults_to_member() {
+    let h = Harness::new().await;
+    let session = h.seed_admin_session().await;
+    let response = h
+        .router()
+        .oneshot(Harness::post_with_session(
+            "/v1/auth/allowed-emails",
+            &session,
+            r#"{"email":"bob@example.com"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(body_json(response).await["entry"]["role"], "member");
+}
+
+#[tokio::test]
+async fn post_owner_role_returns_422() {
+    let h = Harness::new().await;
+    let session = h.seed_admin_session().await;
+    let response = h
+        .router()
+        .oneshot(Harness::post_with_session(
+            "/v1/auth/allowed-emails",
+            &session,
+            r#"{"email":"bob@example.com","role":"owner"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+/// Role parsing is exact: the UI's display casing is not an accepted value.
+#[tokio::test]
+async fn post_capitalised_role_returns_422() {
+    let h = Harness::new().await;
+    let session = h.seed_admin_session().await;
+    let response = h
+        .router()
+        .oneshot(Harness::post_with_session(
+            "/v1/auth/allowed-emails",
+            &session,
+            r#"{"email":"bob@example.com","role":"Admin"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
 
 #[tokio::test]
 async fn post_normalizes_email_to_lowercase() {

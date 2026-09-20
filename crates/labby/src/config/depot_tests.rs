@@ -259,6 +259,36 @@ bearer_token_env = "LABBY_DEPOT_CATALOG_READ_TOKEN"
                 .is_err()
         );
     }
+    // The same secret under a different variable name is the same credential.
+    let mut reused_value = valid.clone();
+    let mut alias = valid.artifacts.sources[0].clone();
+    alias.id = "catalog-alias".into();
+    alias.bearer_token_env = Some("LABBY_DEPOT_ALIAS_TOKEN".into());
+    reused_value.artifacts.sources.push(alias);
+    let same_value = |name: &str| {
+        matches!(
+            name,
+            "LABBY_DEPOT_CATALOG_READ_TOKEN" | "LABBY_DEPOT_ALIAS_TOKEN"
+        )
+        .then(|| std::ffi::OsString::from("one-shared-secret-value"))
+    };
+    assert_eq!(
+        reused_value
+            .depot
+            .validate_public_acquisition_with_env(&reused_value.artifacts, &same_value),
+        Err("Public Depot credential cannot be reused by another acquisition source")
+    );
+    let distinct = |name: &str| match name {
+        "LABBY_DEPOT_CATALOG_READ_TOKEN" => Some(std::ffi::OsString::from("public-secret")),
+        "LABBY_DEPOT_ALIAS_TOKEN" => Some(std::ffi::OsString::from("alias-secret")),
+        _ => None,
+    };
+    assert!(
+        reused_value
+            .depot
+            .validate_public_acquisition_with_env(&reused_value.artifacts, &distinct)
+            .is_ok()
+    );
     for change in 0..5 {
         let mut invalid = valid.clone();
         match change {

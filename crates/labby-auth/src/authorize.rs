@@ -589,9 +589,10 @@ pub async fn callback(
         .viewer_domain_for_verified_email(google.email.as_deref(), google.email_verified)
         .is_some()
         && !google.email.as_deref().is_some_and(|email| {
+            let email = crate::util::normalize_email(email);
             allowed
                 .iter()
-                .any(|entry| entry.eq_ignore_ascii_case(email.trim()))
+                .any(|entry| crate::util::normalize_email(entry) == email)
         });
     let admission = if domain_only_viewer {
         Err(AuthError::AuthFailed(
@@ -2089,7 +2090,7 @@ pub mod tests {
         // resolve_allowed_emails() now returns 2 entries.
         state
             .store
-            .add_allowed_user("second-admin@example.com", "admin", now_unix())
+            .add_allowed_user("second-admin@example.com", "admin", "member", now_unix())
             .await
             .unwrap();
         // One allowed account already has a provider credential, but the
@@ -2800,7 +2801,7 @@ pub mod tests {
         }
         if viewer {
             let config = std::sync::Arc::make_mut(&mut state.config);
-            config.admin_email = "admin@elsewhere.example".into();
+            config.admin_emails = vec!["admin@elsewhere.example".into()];
             config.viewer_email_domains = vec!["example.com".into()];
         }
         let app =
@@ -3192,7 +3193,7 @@ pub mod tests {
     #[tokio::test]
     async fn oauth_client_callback_redirects_with_access_denied_when_email_not_in_allowlist() {
         let mut config = test_auth_config();
-        config.admin_email = "allowed@example.com".to_string();
+        config.admin_emails = vec!["allowed@example.com".to_string()];
         let base_state = test_auth_state_with_config(config).await;
         base_state
             .store
@@ -3300,7 +3301,7 @@ pub mod tests {
         let mut config = test_auth_config();
         // "allowed@example.com" is permitted; the mock id_token returns
         // "user@example.com" → callback must be denied with 401.
-        config.admin_email = "allowed@example.com".to_string();
+        config.admin_emails = vec!["allowed@example.com".to_string()];
         let base_state = test_auth_state_with_config(config).await;
         base_state
             .store
@@ -3667,7 +3668,7 @@ pub mod tests {
             allowed_client_redirect_uris: Vec::new(),
             // Matches the mock id_token email returned by signed_test_id_token,
             // so happy-path callback tests pass the allowlist check.
-            admin_email: "user@example.com".to_string(),
+            admin_emails: vec!["user@example.com".to_string()],
             google: GoogleConfig {
                 client_id: "client-id".to_string(),
                 client_secret: "client-secret".to_string(),
@@ -3998,13 +3999,13 @@ pub mod tests {
         async fn browser_login_succeeds_for_allowlisted_non_admin_email() {
             let mut config = test_auth_config();
             // Set admin to something other than the id_token email.
-            config.admin_email = "admin@example.com".to_string();
+            config.admin_emails = vec!["admin@example.com".to_string()];
             let base_state = test_auth_state_with_config(config).await;
 
             // Insert id_token email into allowed_users.
             base_state
                 .store
-                .add_allowed_user("user@example.com", "admin", now_unix())
+                .add_allowed_user("user@example.com", "admin", "member", now_unix())
                 .await
                 .unwrap();
 
@@ -4087,7 +4088,7 @@ pub mod tests {
 
         async fn oauth_client_callback_location(codex_issuer_compatibility: bool) -> Url {
             let mut config = test_auth_config();
-            config.admin_email = "admin@example.com".to_string();
+            config.admin_emails = vec!["admin@example.com".to_string()];
             config.codex_issuer_compatibility = codex_issuer_compatibility;
             let base_state = test_auth_state_with_config(config).await;
 
@@ -4109,7 +4110,7 @@ pub mod tests {
             // Add id_token email to allowed_users.
             base_state
                 .store
-                .add_allowed_user("user@example.com", "admin", now_unix())
+                .add_allowed_user("user@example.com", "admin", "member", now_unix())
                 .await
                 .unwrap();
 
@@ -4222,7 +4223,7 @@ pub mod tests {
         async fn browser_login_rejects_email_absent_from_both_admin_and_db() {
             let mut config = test_auth_config();
             // Neither admin nor allowed_users contains "user@example.com" (the id_token email).
-            config.admin_email = "admin@example.com".to_string();
+            config.admin_emails = vec!["admin@example.com".to_string()];
             let base_state = test_auth_state_with_config(config).await;
 
             let state = state_with_mock_google_from(&base_state).await;
@@ -4264,7 +4265,7 @@ pub mod tests {
             // Also add the admin email to allowed_users — this is the duplicate.
             base_state
                 .store
-                .add_allowed_user("user@example.com", "self", now_unix())
+                .add_allowed_user("user@example.com", "self", "member", now_unix())
                 .await
                 .unwrap();
 

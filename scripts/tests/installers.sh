@@ -160,22 +160,42 @@ test_root_installer_is_self_contained_when_piped_from_arbitrary_cwd() {
     [ "$("$home/bin/labby")" = release-v1 ] || fail "piped root installer was not self-contained"
 }
 
-test_release_install_fails_before_network_without_gh() {
+# A PATH made of every system executable except gh. Removing the fake gh is
+# not enough: GitHub-hosted runners ship a real /usr/bin/gh, which the
+# installer would find next and then fail one probe later with a different
+# message than the missing-tool one this case verifies.
+make_path_without_gh() {
+    local sysbin=$1 dir entry
+    mkdir -p "$sysbin"
+    for dir in /usr/bin /bin /usr/sbin /sbin; do
+        [ -d "$dir" ] || continue
+        for entry in "$dir"/*; do
+            [ -x "$entry" ] || continue
+            [ "$(basename "$entry")" != gh ] || continue
+            [ -e "$sysbin/$(basename "$entry")" ] || ln -s "$entry" "$sysbin/"
+        done
+    done
+}
+
+test_release_install_fails_before_download_without_gh() {
     local case_root="$test_root/missing-gh"
     local fixtures="$case_root/fixtures" fake_bin="$case_root/fake-bin" home="$case_root/home"
+    local sysbin="$case_root/sysbin"
     mkdir -p "$fixtures" "$home"
     make_release "$fixtures" v1.0.0 release-v1
     make_fake_tools "$fake_bin" "$fixtures"
     rm "$fake_bin/gh"
-    if run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v1.0.0 \
+    make_path_without_gh "$sysbin"
+    if run_installer "$home" "$fixtures" "$fake_bin" PATH="$fake_bin:$sysbin" \
+        LABBY_INSTALL_VERSION=v1.0.0 \
         LABBY_TEST_CURL_LOG="$case_root/curl.log" >"$case_root/out" 2>"$case_root/err"; then
         fail "release installer succeeded without GitHub CLI"
     fi
     assert_contains "$case_root/err" "GitHub CLI (gh) is required to verify Labby release provenance"
-    [ ! -s "$case_root/curl.log" ] || fail "installer performed network I/O before reporting the missing trust dependency"
+    [ ! -s "$case_root/curl.log" ] || fail "installer started a release download before reporting the missing trust dependency"
 }
 
-test_release_install_fails_before_network_without_gh_attestation_support() {
+test_release_install_fails_before_download_without_gh_attestation_support() {
     local case_root="$test_root/old-gh"
     local fixtures="$case_root/fixtures" fake_bin="$case_root/fake-bin" home="$case_root/home"
     mkdir -p "$fixtures" "$home"
@@ -191,7 +211,7 @@ EOF
         fail "release installer succeeded with a GitHub CLI lacking attestation support"
     fi
     assert_contains "$case_root/err" "GitHub CLI (gh) with attestation support is required"
-    [ ! -s "$case_root/curl.log" ] || fail "installer performed network I/O before reporting unsupported GitHub CLI"
+    [ ! -s "$case_root/curl.log" ] || fail "installer started a release download before reporting unsupported GitHub CLI"
 }
 
 test_release_install_uses_published_provenance_bundle_without_gh_authentication() {
@@ -204,6 +224,7 @@ test_release_install_uses_published_provenance_bundle_without_gh_authentication(
         LABBY_TEST_CURL_LOG="$case_root/curl.log" LABBY_TEST_GH_LOG="$case_root/gh.log" >/dev/null 2>&1
     assert_contains "$case_root/curl.log" "/v1.0.0/release-provenance.sigstore.json"
     assert_contains "$case_root/gh.log" "--bundle"
+    assert_contains "$case_root/gh.log" "--hostname github.com"
     if grep -Fq "auth status" "$case_root/gh.log"; then
         fail "installer required GitHub CLI authentication despite a published provenance bundle"
     fi
@@ -1010,8 +1031,8 @@ test_artifact_retention_keeps_only_current_and_rollback
 test_durability_barrier_failure_prevents_activation
 test_launchd_integrates_updates_after_health_check
 test_root_installer_is_self_contained_when_piped_from_arbitrary_cwd
-test_release_install_fails_before_network_without_gh
-test_release_install_fails_before_network_without_gh_attestation_support
+test_release_install_fails_before_download_without_gh
+test_release_install_fails_before_download_without_gh_attestation_support
 test_release_install_uses_published_provenance_bundle_without_gh_authentication
 test_latest_api_failure_never_uses_mutable_latest_download
 test_release_failure_matrix_preserves_existing_binary

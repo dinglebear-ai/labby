@@ -4,16 +4,17 @@ import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { LibraryTabs } from './depot-workspace-pages'
 
-test('attached library tabs preserve routes and show only known counts', () => {
+test('attached library tabs preserve routes and reserve mock-aligned count pills', () => {
   const html = renderToStaticMarkup(<LibraryTabs active="snippets" attached counts={{ snippets: 0 }} />)
-  assert.match(html, /h-\[38px\]/)
+  assert.match(html, /height:56px/)
   assert.match(html, /rounded-b-aurora-3/)
   assert.match(html, /href="\/library"/)
   assert.match(html, /href="\/loadouts"/)
   assert.match(html, /href="\/snippets" aria-current="page"/)
   assert.match(html, /href="\/tools"/)
-  // Sections without a supplied count show no badge at all rather than a placeholder.
-  assert.doesNotMatch(html, />—</)
-  assert.equal((html.match(/tabular-nums/g) ?? []).length, 1)
+  // The mock reserves one pill per tab. Unknown live counts keep that geometry
+  // with an em dash instead of disappearing or inventing a value.
+  assert.equal((html.match(/tabular-nums/g) ?? []).length, 4)
+  assert.equal((html.match(/>—<\/span>/g) ?? []).length, 3)
   assert.match(html, />0<\/span>/)
 })

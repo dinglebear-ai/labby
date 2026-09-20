@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import {
   AlertTriangle,
+  ArrowLeft,
   BookOpen,
   Cable,
   ChevronDown,
@@ -21,6 +22,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ConsoleHero, type ConsoleHeroStat } from '@/components/console/console-hero'
+import { LibraryTabs } from '@/components/depot/depot-workspace-pages'
 import { DashboardPanel } from '@/components/dashboard/panel'
 import { PrimitiveExposureTable } from '@/components/gateway/primitive-exposure-table'
 import {
@@ -225,28 +227,31 @@ export function SkillsPageContent({ upstream, embedded = false }: { upstream?: s
           {/* Hero — the mock's eyebrow + title + action cluster with the stat
               strip welded to the card's bottom edge, not floating cards. */}
           <ConsoleHero
-            eyebrow={upstream ? "Upstream Skills" : "Catalog"}
+            eyebrow={upstream ? "Labby · Library · Upstream" : "Labby · Library"}
             pulse={pulse}
-            title={upstream ?? "Agent Skills"}
+            title={upstream ?? "Skills"}
+            footer={<LibraryTabs active="skills" attached counts={{ skills: rows ? totalSkillCount(rows) : undefined }} />}
             actions={
               <div className="flex items-center gap-2">
                 {upstream ? (
-                  <Button variant="outline" size="sm" onClick={() => router.push('/skills')}>
-                    All skills
+                  <Button variant="outline" size="icon" aria-label="All skills" title="All skills" className="size-9 rounded-[10px]" onClick={() => router.push('/skills')}>
+                    <ArrowLeft className="size-[15px]" />
                   </Button>
                 ) : null}
                 <Button
                   variant="outline"
-                  size="sm"
+                  size="icon"
+                  aria-label="Refresh skills"
+                  title="Refresh skills"
+                  className="size-9 rounded-[10px]"
                   onClick={() => void load()}
                   disabled={state.kind === 'loading'}
                 >
                   {state.kind === 'loading' ? (
-                    <Loader2 className="size-4 animate-spin" />
+                    <Loader2 className="size-[15px] animate-spin" />
                   ) : (
-                    <RefreshCw className="size-4" />
+                    <RefreshCw className="size-[15px]" />
                   )}
-                  Refresh
                 </Button>
               </div>
             }

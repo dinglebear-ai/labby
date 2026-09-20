@@ -72,6 +72,7 @@ pub use middleware::{
     ProjectSessionRevalidator, RequiredScopes, browser_session_scopes, is_configured_admin_email,
     parse_bearer_token, tokens_equal,
 };
+pub use types::AllowedUserRole;
 pub use types::ProjectSessionBinding;
 
 #[cfg(test)]

@@ -82,6 +82,9 @@ require_command() {
     command -v "$1" >/dev/null 2>&1 || fail "$2"
 }
 
+# Fail fast before release resolution and before any release download when
+# this machine cannot verify the published-bundle trust path. No GitHub login
+# or personal token is required.
 require_release_prerequisites() {
     require_command curl "curl is required for release installation"
     require_command tar "tar is required to unpack the Labby release archive"
@@ -175,8 +178,11 @@ verify_release_provenance() {
     command -v gh >/dev/null 2>&1 \
         || fail "GitHub CLI (gh) is required to verify release provenance"
     [ -f "$bundle" ] || fail "release provenance bundle is missing"
+    # Pin the trust root: GH_HOST or a gh config default must not redirect
+    # attestation verification to another host.
     gh attestation verify "$artifact" \
         --bundle "$bundle" \
+        --hostname github.com \
         --repo "$REPO" \
         --signer-workflow "$REPO/.github/workflows/release.yml" \
         --source-ref "refs/tags/$resolved" \

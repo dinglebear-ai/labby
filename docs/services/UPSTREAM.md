@@ -364,19 +364,23 @@ subject-scoped auth client cache.
 Refresh is single-flight per `(upstream_name, subject)` using a `tokio::sync::Mutex`
 keyed on the pair. Lock entries are retained for the lifetime of the process.
 
-Today the manager runs **proactive refresh only**:
+The client refreshes expiring tokens and reacts to upstream authorization challenges:
 
-- **Proactive:** before dispatching a request, if the cached access token is
-  less than 30 seconds from expiry, refresh under the per-key lock first.
-- **Reactive (401):** **deferred.** MCP traffic flows through rmcp's
-  `StreamableHttpClientWorker`, which hides the raw HTTP response from the
-  gateway, so a 401 on an MCP call currently surfaces as a generic transport
-  error rather than `oauth_needs_reauth`. Operators recover by calling
-  `POST /v1/gateway/oauth/start` to re-authorize. When this is wired, only
-  idempotent methods (`GET`/`HEAD`/`OPTIONS`) will retry after refresh;
-  non-idempotent methods (`POST`, including MCP `tool_call`) will surface
-  the original 401 as `oauth_needs_reauth` without retry, because a retry
-  could double-execute a destructive tool call.
+- **Proactive:** rmcp refreshes an access token inside its 30-second expiry
+  buffer. Operator status refresh starts inside the five-minute window.
+- **Reactive (401):** the pinned rmcp HTTP auth client attempts one silent
+  refresh after an authenticated request receives an authorization challenge.
+  It retries the request only if a different access token was returned; a
+  repeated challenge remains an authentication failure. This behavior also
+  applies to MCP POST requests. An authentication rejection is expected to
+  precede dispatch, but a transport error or uncertain completed response is
+  not proof that a tool did not run. Do not add another automatic tool replay
+  at the gateway surface; inspect side effects before manual retry.
+- Successful ordinary credential refreshes are persisted only if the encrypted
+  credential loaded for that exchange is still current. Clear or reauthorization
+  prevents an older response from overwriting the new authority.
+- Google status refresh keeps one account transaction lock through persistence;
+  cancelling the status request does not cancel the admitted refresh task.
 
 On `invalid_grant` (refresh token revoked or rotated twice), `lab` returns
 `oauth_needs_reauth` to the caller. The user re-initiates authorization.
@@ -389,8 +393,6 @@ A caller sees `oauth_needs_reauth` in any of these situations:
 - the refresh token was rejected with `invalid_grant`
 - decryption of the stored `token_blob` failed (operator rotated
   `LABBY_OAUTH_ENCRYPTION_KEY`)
-- (future, once reactive 401 is wired) a 401 arrived on a non-idempotent
-  request and retry is not safe
 
 Recovery is identical in all cases: start a new authorization via
 `POST /v1/gateway/oauth/start`.
@@ -531,6 +533,10 @@ Each upstream has independent health tracking.
   bounded exponential backoff after failures.
 - A failed heartbeat removes the stale connection and starts a fresh MCP
   transport. This covers stdio child-process restarts and HTTP reconnects.
+- The heartbeat itself never holds the upstream's connect gate; only the
+  reconnect does, and the prompt/resource cache refresh after a reconnect or a
+  `gateway.mcp.restart` runs once the gate is released, so callers waiting to
+  connect are not parked behind a slow listing.
 - Recovery tasks are disabled by default. Ephemeral `gateway.test` probes never
   create background tasks.
 

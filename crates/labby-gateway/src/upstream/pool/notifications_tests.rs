@@ -380,7 +380,7 @@ fn terminal_subscription_errors_stop_unchanged_retries() {
         0
     ));
 
-    assert!(!super::notifications::terminal_subscription_listen_error(
+    assert!(super::notifications::terminal_subscription_listen_error(
         &ServiceError::TransportClosed,
         9
     ));

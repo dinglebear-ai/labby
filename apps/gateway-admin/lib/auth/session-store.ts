@@ -1,5 +1,5 @@
 import { invalidateAuthorityRequests } from './authority-context.ts'
-import { MalformedAuthorityResponseError, authorityIdentity, parseAuthoritySnapshot, resetAuthorityOpaqueValues, selectAuthorityWorkspace, type AuthorityOwner, type AuthoritySnapshot } from './authority.ts'
+import { MalformedAuthorityResponseError, WorkspaceSelectionError, authorityIdentity, parseAuthoritySnapshot, resetAuthorityOpaqueValues, selectAuthorityWorkspace, type AuthorityOwner, type AuthoritySnapshot } from './authority.ts'
 
 export type SessionAuthority = AuthoritySnapshot
 export type SessionAuthorityState = 'ready' | 'transport' | 'unprovisioned'
@@ -32,6 +32,14 @@ export type BrowserSessionState =
       ownerBootstrapAvailable?: boolean
       /** Compatibility presentation flag derived only from server-projected capabilities. */
       isAdmin?: boolean
+      /**
+       * The server accepts this browser session for the operator-only
+       * administrator list and allowlist routes: its email is listed in
+       * `LABBY_AUTH_ADMIN_EMAIL`. Independent of `isAdmin`, which every
+       * allowlist-admitted admin holds. Absent on older servers, which never
+       * grants those controls.
+       */
+      isConfiguredAdmin?: boolean
       projectId?: string
     }
   | {
@@ -60,6 +68,7 @@ type SessionPayload =
       authority_state?: string | null
       remediation?: string | null
       owner_bootstrap_available?: boolean | null
+      is_configured_admin?: boolean | null
       project_id?: string | null
       principal_id?: string | null
       active_owner?: { kind?: string; id?: string } | null
@@ -183,6 +192,7 @@ function normalizePayload(payload: SessionPayload): BrowserSessionState {
       ownerBootstrapAvailable: payload.owner_bootstrap_available === true,
     }),
     isAdmin: authority?.capabilities.includes('platform.manage') ?? false,
+    isConfiguredAdmin: payload.is_configured_admin === true,
     // Project-bound sessions can carry an explicit server-selected project
     // without the durable authority projection. Preserve that binding without
     // manufacturing authority or choosing from the caller's membership list.
@@ -209,8 +219,30 @@ export function getSessionCsrfToken() {
   return currentState.status === 'authenticated' ? currentState.csrfToken : undefined
 }
 
+/** An authenticated session that carries a project, so project-scoped requests can be issued. */
+export type ProjectBoundSession = Extract<BrowserSessionState, { status: 'authenticated' }> & { projectId: string }
+
+/**
+ * Whether a session is bound to a project. Project-scoped pages mount their
+ * content only for such a session; the server refuses every `artifacts.*`
+ * action that arrives without `x-labby-project-id`.
+ */
+export function isProjectBoundSession(state: BrowserSessionState): state is ProjectBoundSession {
+  return state.status === 'authenticated' && typeof state.projectId === 'string' && state.projectId.length > 0
+}
+
 export function getSessionProjectId() {
-  return currentState.status === 'authenticated' ? currentState.projectId : undefined
+  return isProjectBoundSession(currentState) ? currentState.projectId : undefined
+}
+
+/**
+ * The session context identity while the session is project-bound, or `''`.
+ * A primitive snapshot for `useSyncExternalStore`: project-scoped pages key
+ * their content on it, and a transport-only refresh (CSRF token, expiry)
+ * leaves it unchanged so nothing re-renders.
+ */
+export function getProjectBoundSessionScope(): string {
+  return isProjectBoundSession(currentState) ? sessionIdentity(currentState) : ''
 }
 
 export function getSessionAuthority() {
@@ -222,7 +254,7 @@ export function sessionHasCapability(capability: string) {
 }
 
 export function selectSessionWorkspace(selection: { teamId?: string | null; projectId?: string | null }) {
-  if (currentState.status !== 'authenticated' || !currentState.authority) throw new Error('Authority is unavailable')
+  if (currentState.status !== 'authenticated' || !currentState.authority) throw new WorkspaceSelectionError('Authority is unavailable')
   const authority = selectAuthorityWorkspace(currentState.authority, selection)
   setState({ ...currentState, authority, projectId: authority.activeProjectId })
   if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(AUTHORITY_WORKSPACE_CHANGED_EVENT))

@@ -14,13 +14,14 @@ import {
   Activity,
   Cog,
   FileSearch,
+  KeyRound,
   Layers,
   PlugZap,
   Server,
   Shield,
   Warehouse,
 } from 'lucide-react'
-import { useBrowserSession } from '@/lib/auth/session'
+import { useBrowserSession, type BrowserSessionState } from '@/lib/auth/session'
 
 import { settingsSegmentStyle, SETTINGS_CONTROL_STYLE } from './SettingsChrome'
 
@@ -40,13 +41,28 @@ const ENTRIES: RailEntry[] = [
   { href: '/settings/advanced/', label: 'Advanced', icon: Shield },
 ]
 
+/**
+ * The panels a session may open. Depot needs platform administration; the
+ * Authentication panel (administrator list and sign-in allowlist) is
+ * accepted by the server only from a configured admin's browser session, so
+ * `isAdmin` alone does not offer it.
+ */
+export function settingsRailEntries(session: BrowserSessionState): RailEntry[] {
+  if (session.status !== 'authenticated' || !session.isAdmin) return ENTRIES
+  return [
+    ...ENTRIES,
+    ...(session.isConfiguredAdmin
+      ? [{ href: '/settings/authentication/', label: 'Authentication', icon: KeyRound }]
+      : []),
+    { href: '/settings/depot/', label: 'Labby', icon: Warehouse },
+  ]
+}
+
 export function SettingsRail(): React.ReactElement {
   const pathname = usePathname() ?? ''
   const router = useRouter()
   const session = useBrowserSession()
-  const entries = session.status === 'authenticated' && session.isAdmin
-    ? [...ENTRIES, { href: '/settings/depot/', label: 'Depot', icon: Warehouse }]
-    : ENTRIES
+  const entries = settingsRailEntries(session)
   const activeEntry = entries.find((entry) => pathname.startsWith(entry.href)) ?? entries[0]
   const activeHref = activeEntry?.href ?? ENTRIES[0]?.href ?? ''
 

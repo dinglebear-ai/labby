@@ -163,10 +163,19 @@ fn bootstrap_skill_library(
     let snapshot = store
         .library_snapshot()
         .context("load Skill Library metadata")?;
-    let imports = configure_skill_library_imports(config, &artifacts_root)?;
+    // Admit `[[artifacts.sources]]` once so the import coordinator and the
+    // control plane project exactly the same sources and each disabled source
+    // is warned about exactly once.
+    let sources = crate::dispatch::artifact_sources::admit_host_sources(
+        &config.artifacts,
+        &config.depot,
+        &|name| std::env::var_os(name),
+    );
+    sources.warn_rejections();
+    let imports = configure_skill_library_imports(&sources, config, &artifacts_root)?;
     let controls = Arc::new(
-        crate::dispatch::artifact_control::ArtifactControlPlane::from_configs(
-            &config.artifacts,
+        crate::dispatch::artifact_control::ArtifactControlPlane::from_admitted_sources(
+            &sources,
             &config.depot,
         )
         .map_err(|error| anyhow::anyhow!(error.to_string()))?,
@@ -223,12 +232,15 @@ fn bootstrap_skill_library(
 
 #[cfg(feature = "skills")]
 fn configure_skill_library_imports(
+    sources: &crate::dispatch::artifact_sources::HostArtifactSources<'_>,
     config: &LabConfig,
     artifacts_root: &Path,
 ) -> Result<Arc<crate::dispatch::skill_library::import::ImportCoordinator>> {
-    crate::dispatch::skill_library::import::ImportCoordinator::from_host_config(
+    crate::dispatch::skill_library::import::ImportCoordinator::from_admitted_sources(
+        sources,
         config,
         &artifacts_root.join("acquisition"),
+        &|name| std::env::var_os(name),
     )
     .map(Arc::new)
     .context("configure Skill Library exact-source adapters")
@@ -353,6 +365,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         requested_service_count = args.services.len(),
         "starting labby serve bootstrap"
     );
+    log_inherited_app_surface_defaults(&config_path, config);
 
     crate::registry::set_runtime_built_in_upstream_apis_enabled(
         config.services.built_in_upstream_apis_enabled,
@@ -694,7 +707,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     let oauth_enabled = matches!(auth_config.mode, AuthMode::OAuth);
     config
         .depot
-        .validate_public_acquisition(&config.artifacts)
+        .validate_public_acquisition_with_env(&config.artifacts, &|name| std::env::var_os(name))
         .map_err(anyhow::Error::msg)?;
     let depot_secrets = crate::dispatch::depot::manager::SecretSnapshot::capture(&config.depot);
     depot_secrets
@@ -977,6 +990,39 @@ fn resolve_web_ui_auth_disabled(
     Ok(false)
 }
 
+/// Name the Labby-owned app surfaces whose `config.toml` section is absent
+/// and which therefore run at their on-by-default posture. One INFO line at
+/// startup, only when something is inherited, so an install upgraded from a
+/// release where Code Mode and the MCP App UIs defaulted off can see why they
+/// appeared. A missing file inherits everything; an unreadable one is the
+/// loader's error to report.
+fn log_inherited_app_surface_defaults(config_path: &Path, config: &LabConfig) {
+    let raw = match std::fs::read_to_string(config_path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(_) => return,
+    };
+    let inherited = crate::config::inherited_app_surface_sections(&raw);
+    if inherited.is_empty() {
+        return;
+    }
+    tracing::info!(
+        subsystem = "startup",
+        phase = "bootstrap.app_surface_defaults",
+        inherited_sections = ?inherited,
+        code_mode_enabled = config.code_mode.enabled,
+        code_mode_ui_enabled = config.code_mode.mcp_ui_enabled,
+        mcp_apps_manager = config.mcp_apps.manager,
+        mcp_apps_add_server = config.mcp_apps.add_server,
+        mcp_apps_server_logs = config.mcp_apps.server_logs,
+        mcp_apps_gateway_status = config.mcp_apps.gateway_status,
+        mcp_apps_settings = config.mcp_apps.settings,
+        "config.toml declares no [code_mode] or [mcp_apps] section; Code Mode and \
+         the Labby-owned MCP App UIs default to enabled — set the switches to \
+         false to opt out"
+    );
+}
+
 #[cfg(unix)]
 fn resolve_unix_listener_config(
     transport: Transport,
@@ -1248,6 +1294,15 @@ async fn run_http(
     };
     // ── end single-master lock ────────────────────────────────────────────────
 
+    // Bind once before the router captures AppState. Port zero and hostname
+    // resolution must use the socket the server will actually serve.
+    let (state, tcp_listener) = if matches!(transport, Transport::Http) {
+        let (listener, destination) = bind_http_listener(host, port).await?;
+        (state.with_phoenix_mcp_url(destination), Some(listener))
+    } else {
+        (state, None)
+    };
+
     let web_assets_enabled = state.web_assets_enabled();
     let bearer_token_configured = bearer_token.is_some();
     let resource_registry = auth_state
@@ -1305,7 +1360,12 @@ async fn run_http(
     };
     let hosted_listener = async move {
         match transport {
-            Transport::Http => serve_tcp_listener(host, port, router, listener_status).await,
+            Transport::Http => {
+                let listener = tcp_listener.ok_or_else(|| {
+                    anyhow::anyhow!("HTTP transport resolved without a bound listener")
+                })?;
+                serve_tcp_listener(listener, router, listener_status).await
+            }
             Transport::UnixSocket => {
                 let unix_config = unix_listener_config.ok_or_else(|| {
                     anyhow::anyhow!("unix_socket transport resolved without listener configuration")
@@ -1549,19 +1609,7 @@ mod update_shutdown_tests {
     }
 }
 
-async fn serve_tcp_listener(
-    host: &str,
-    port: u16,
-    router: axum::Router,
-    status: HostedListenerStatus,
-) -> Result<()> {
-    let HostedListenerStatus {
-        web_assets_enabled,
-        bearer_token_configured,
-        mount_http_mcp,
-        ..
-    } = status;
-    // Parse and validate the address at bind time, not at CLI parse time.
+async fn bind_http_listener(host: &str, port: u16) -> Result<(tokio::net::TcpListener, String)> {
     let addr = bind_addr(host, port);
     tracing::info!(
         subsystem = "api_server",
@@ -1571,6 +1619,48 @@ async fn serve_tcp_listener(
         "binding HTTP listener"
     );
     let listener = bind_or_reclaim(&addr, port).await?;
+    let destination = crate::dispatch::phoenix::listener_mcp_url(listener.local_addr()?);
+    Ok((listener, destination))
+}
+
+#[cfg(test)]
+mod phoenix_listener_binding_tests {
+    #[tokio::test]
+    async fn ephemeral_binding_supplies_a_reachable_phoenix_endpoint() {
+        for host in ["127.0.0.1", "::1"] {
+            let (listener, url) = super::bind_http_listener(host, 0).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            assert_ne!(address.port(), 0);
+            assert_eq!(url, format!("http://{address}/mcp"));
+            let destination = url
+                .strip_prefix("http://")
+                .unwrap()
+                .strip_suffix("/mcp")
+                .unwrap();
+            let stream = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                tokio::net::TcpStream::connect(destination),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(stream.peer_addr().unwrap(), address);
+        }
+    }
+}
+
+async fn serve_tcp_listener(
+    listener: tokio::net::TcpListener,
+    router: axum::Router,
+    status: HostedListenerStatus,
+) -> Result<()> {
+    let HostedListenerStatus {
+        web_assets_enabled,
+        bearer_token_configured,
+        mount_http_mcp,
+        ..
+    } = status;
+    let addr = listener.local_addr()?.to_string();
     notify_systemd_ready("http");
     tracing::info!(
         subsystem = "api_server",
@@ -2311,12 +2401,15 @@ fn build_mcp_service(
     mcp_config: &crate::config::McpPreferences,
     notifier: PeerNotifier,
 ) -> Result<StreamableHttpService<LabMcpServer, NeverSessionManager>> {
+    // Admit only this bound endpoint for the native Phoenix client. Keep the
+    // additional host scoped to root MCP, not protected upstream routes.
+    let local_host: Vec<_> = state.phoenix_runtime.local_mcp_host().into_iter().collect();
     build_mcp_service_with_scope(
         state,
         mcp_config,
         notifier,
         crate::mcp::route_scope::McpRouteScope::Root,
-        &[],
+        &local_host,
     )
 }
 
@@ -2917,7 +3010,7 @@ mod tests {
 
     #[cfg(feature = "skills")]
     #[test]
-    fn failed_import_construction_can_retry_before_runtime_publication() {
+    fn invalid_import_source_isolated_before_runtime_publication() {
         use crate::config::{ArtifactPreferences, ArtifactSourceConfig, ArtifactSourceKind};
 
         let root = tempfile::tempdir().unwrap();
@@ -2934,10 +3027,20 @@ mod tests {
             },
             ..LabConfig::default()
         };
-        assert!(configure_skill_library_imports(&config, root.path()).is_err());
+        let sources = crate::dispatch::artifact_sources::admit_host_sources(
+            &config.artifacts,
+            &config.depot,
+            &|_| None,
+        );
+        assert!(configure_skill_library_imports(&sources, &config, root.path()).is_ok());
 
         config.artifacts = ArtifactPreferences::default();
-        assert!(configure_skill_library_imports(&config, root.path()).is_ok());
+        let sources = crate::dispatch::artifact_sources::admit_host_sources(
+            &config.artifacts,
+            &config.depot,
+            &|_| None,
+        );
+        assert!(configure_skill_library_imports(&sources, &config, root.path()).is_ok());
     }
 
     #[test]
@@ -3088,6 +3191,41 @@ mod tests {
         assert!(origins.contains(&"https://public.example".to_string()));
         assert!(!origins.contains(&"http://public.example".to_string()));
         assert!(!origins.contains(&"http://public.example:8765".to_string()));
+    }
+
+    #[tokio::test]
+    async fn phoenix_listener_host_is_admitted_without_other_hosts() {
+        for (url, accepted) in [
+            ("http://192.0.2.42:9123/mcp", "192.0.2.42:9123"),
+            ("http://192.0.2.42:80/mcp", "192.0.2.42"),
+            ("http://192.0.2.42:80/mcp", "192.0.2.42:80"),
+            ("http://[2001:db8::42]:9123/mcp", "[2001:db8::42]:9123"),
+        ] {
+            let state = AppState::new().with_phoenix_mcp_url(url);
+            let service = super::build_mcp_service(
+                &state,
+                &McpPreferences::default(),
+                PeerNotifier::default(),
+            )
+            .unwrap();
+            for (host, expected) in [
+                (accepted, StatusCode::OK),
+                ("192.0.2.43:9123", StatusCode::FORBIDDEN),
+                ("unrelated.example:9123", StatusCode::FORBIDDEN),
+            ] {
+                let response = service.clone().oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("host", host)
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json, text/event-stream")
+                    .body(Body::from(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2026-07-28","capabilities":{},"clientInfo":{"name":"phoenix-host-test","version":"1"}}}"#))
+                    .unwrap()
+            ).await.unwrap();
+                assert_eq!(response.status(), expected, "Host {host}");
+            }
+        }
     }
 
     #[tokio::test]

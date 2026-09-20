@@ -1639,7 +1639,8 @@
     "applicable_surfaces": [
       "cli",
       "mcp",
-      "api"
+      "api",
+      "web_ui"
     ],
     "applicable_features": [
       "all",
@@ -2281,8 +2282,7 @@
     "applicable_surfaces": [
       "cli",
       "mcp",
-      "api",
-      "web_ui"
+      "api"
     ],
     "applicable_features": [
       "all",
@@ -6030,7 +6030,8 @@
     "fixture_params": {
       "fixture": "synthetic_external",
       "parameters": {
-        "id": "$fixture.id"
+        "id": "$fixture.id",
+        "expected_version": "$fixture.expected_version"
       }
     },
     "required": false,
@@ -6092,7 +6093,8 @@
     "fixture_params": {
       "fixture": "synthetic_external",
       "parameters": {
-        "id": "$fixture.id"
+        "id": "$fixture.id",
+        "expected_version": "$fixture.expected_version"
       }
     },
     "required": false,
@@ -6122,7 +6124,8 @@
     "fixture_params": {
       "fixture": "synthetic_external",
       "parameters": {
-        "id": "$fixture.id"
+        "id": "$fixture.id",
+        "expected_version": "$fixture.expected_version"
       }
     },
     "required": false,

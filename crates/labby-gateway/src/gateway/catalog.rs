@@ -326,6 +326,24 @@ pub const ACTIONS: &[ActionSpec] = &[
                 description: "Restrict to one actor subject",
             },
             ParamSpec {
+                name: "client_name",
+                ty: "string",
+                required: false,
+                description: "Restrict to one exact self-reported MCP client name",
+            },
+            ParamSpec {
+                name: "client_version",
+                ty: "string",
+                required: false,
+                description: "Restrict to one exact self-reported MCP client version",
+            },
+            ParamSpec {
+                name: "agent_id",
+                ty: "string",
+                required: false,
+                description: "Restrict to one exact trusted Agent definition ID",
+            },
+            ParamSpec {
                 name: "outcome",
                 ty: "string",
                 required: false,
@@ -417,6 +435,24 @@ pub const ACTIONS: &[ActionSpec] = &[
                 ty: "string",
                 required: false,
                 description: "Restrict to one actor subject",
+            },
+            ParamSpec {
+                name: "client_name",
+                ty: "string",
+                required: false,
+                description: "Restrict to one exact self-reported MCP client name",
+            },
+            ParamSpec {
+                name: "client_version",
+                ty: "string",
+                required: false,
+                description: "Restrict to one exact self-reported MCP client version",
+            },
+            ParamSpec {
+                name: "agent_id",
+                ty: "string",
+                required: false,
+                description: "Restrict to one exact trusted Agent definition ID",
             },
             ParamSpec {
                 name: "outcome",
@@ -1374,6 +1410,14 @@ pub const ACTIONS: &[ActionSpec] = &[
         requires_admin: true,
         returns: "GatewayMcpRuntimeView[]",
         params: &[OPTIONAL_NAME_PARAM],
+    },
+    ActionSpec {
+        name: "gateway.host.metrics",
+        description: "Sample daemon-visible host CPU, memory, root filesystem usage and network rates; unsupported fields are null",
+        destructive: false,
+        requires_admin: true,
+        returns: "HostMetrics",
+        params: &[],
     },
     ActionSpec {
         name: "gateway.clients.list",

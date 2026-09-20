@@ -3,7 +3,8 @@
 //! Runs the same config loader and the same startup validations that can make
 //! `labby serve` exit or start with degraded subsystems, without starting
 //! listeners or performing network I/O. Shared by `setup check` and
-//! `doctor system.checks` so both report the failure class that stops startup.
+//! `doctor system.checks` so both report the failure class that stops startup,
+//! and every Artifact source that startup would disable on all paths.
 
 use std::path::PathBuf;
 
@@ -55,23 +56,25 @@ pub(crate) fn check_installed_config() -> (Option<PathBuf>, Vec<ConfigProblem>) 
 /// Run the startup validations `labby serve` performs on an already-loaded config.
 pub(crate) fn validate_startup_config(config: &LabConfig) -> Vec<ConfigProblem> {
     let mut problems = Vec::new();
-    // Fatal at startup, in the order `labby serve` runs them.
-    if let Err(error) = fatal_depot_checks(config) {
+    // Fatal at startup, in the order `labby serve` runs them. Once a fatal
+    // validation fails the process exits before any degraded subsystem is
+    // constructed, so later non-fatal checks would only duplicate or invent
+    // diagnostics for startup work that never runs.
+    let fatal = if let Err(error) = fatal_depot_checks(config) {
         problems.push(ConfigProblem {
             fatal: true,
             message: error_chain(error.as_ref()),
         });
-    }
-    // Non-fatal: failure starts serve with Artifact services unavailable.
+        true
+    } else {
+        false
+    };
+    // Non-fatal: a rejected source starts serve with that source disabled on
+    // every Artifact path; a construction failure starts serve with Artifact
+    // services unavailable.
     #[cfg(feature = "skills")]
-    if let Err(error) = skill_library_checks(config) {
-        problems.push(ConfigProblem {
-            fatal: false,
-            message: format!(
-                "Artifact services would be unavailable: {}",
-                error_chain(error.as_ref())
-            ),
-        });
+    if !fatal {
+        problems.extend(skill_library_checks(config));
     }
     problems
 }
@@ -79,7 +82,7 @@ pub(crate) fn validate_startup_config(config: &LabConfig) -> Vec<ConfigProblem> 
 fn fatal_depot_checks(config: &LabConfig) -> Result<()> {
     config
         .depot
-        .validate_public_acquisition(&config.artifacts)
+        .validate_public_acquisition_with_env(&config.artifacts, &|name| std::env::var_os(name))
         .map_err(anyhow::Error::msg)
         .context("validate Public Depot acquisition")?;
     crate::dispatch::depot::manager::SecretSnapshot::capture(&config.depot)
@@ -92,10 +95,45 @@ fn fatal_depot_checks(config: &LabConfig) -> Result<()> {
     Ok(())
 }
 
+/// Admit `[[artifacts.sources]]` exactly as `labby serve` does and report every
+/// source it would disable, then prove both Artifact adapters construct.
 #[cfg(feature = "skills")]
-fn skill_library_checks(config: &LabConfig) -> Result<()> {
-    crate::dispatch::artifact_control::ArtifactControlPlane::from_configs(
+fn skill_library_checks(config: &LabConfig) -> Vec<ConfigProblem> {
+    let sources = crate::dispatch::artifact_sources::admit_host_sources(
         &config.artifacts,
+        &config.depot,
+        &|name| std::env::var_os(name),
+    );
+    let mut problems = sources
+        .rejected
+        .iter()
+        .map(|rejected| ConfigProblem {
+            fatal: false,
+            message: format!(
+                "Artifact source `{}` would be disabled: {}",
+                rejected.id, rejected.reason
+            ),
+        })
+        .collect::<Vec<_>>();
+    if let Err(error) = skill_library_adapters(&sources, config) {
+        problems.push(ConfigProblem {
+            fatal: false,
+            message: format!(
+                "Artifact services would be unavailable: {}",
+                error_chain(error.as_ref())
+            ),
+        });
+    }
+    problems
+}
+
+#[cfg(feature = "skills")]
+fn skill_library_adapters(
+    sources: &crate::dispatch::artifact_sources::HostArtifactSources<'_>,
+    config: &LabConfig,
+) -> Result<()> {
+    crate::dispatch::artifact_control::ArtifactControlPlane::from_admitted_sources(
+        sources,
         &config.depot,
     )
     .map_err(|error| anyhow::anyhow!(error.to_string()))
@@ -103,9 +141,11 @@ fn skill_library_checks(config: &LabConfig) -> Result<()> {
     // Adapter construction creates per-source staging directories. Point it at
     // a throwaway directory so the check never writes into LABBY_HOME.
     let staging = tempfile::tempdir().context("create temporary staging directory")?;
-    crate::dispatch::skill_library::import::ImportCoordinator::from_host_config(
+    crate::dispatch::skill_library::import::ImportCoordinator::from_admitted_sources(
+        sources,
         config,
         &staging.path().join("acquisition"),
+        &|name| std::env::var_os(name),
     )
     .map(drop)
     .context("configure Skill Library exact-source adapters")
@@ -157,11 +197,13 @@ mod tests {
         );
     }
 
-    /// The production incident: a private pinned address on an Artifact
-    /// authority source degraded the Skill Library while `setup check` passed.
+    /// One unauthorized private pin disables that source on every path when
+    /// `labby serve` starts. `setup check` and `doctor` must say so, as a
+    /// non-fatal problem naming the source and the parameter, instead of
+    /// reporting a clean start.
     #[cfg(feature = "skills")]
     #[test]
-    fn private_artifact_authority_pin_degrades_artifacts() {
+    fn disabled_artifact_source_is_reported_non_fatal() {
         use crate::config::{ArtifactPreferences, ArtifactSourceConfig, ArtifactSourceKind};
 
         let config = LabConfig {
@@ -181,9 +223,12 @@ mod tests {
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(!problems[0].fatal);
         assert!(
-            problems[0]
-                .message
-                .contains("Artifact authority pin must be a public address"),
+            problems[0].message.contains("depot"),
+            "{}",
+            problems[0].message
+        );
+        assert!(
+            problems[0].message.contains("pinned_addresses"),
             "{}",
             problems[0].message
         );

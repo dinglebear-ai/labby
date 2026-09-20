@@ -6,6 +6,7 @@ export const WINDOW_LABELS: Record<MetricsWindow, string> = {
   '1h': 'Last hour',
   '24h': 'Last 24 hours',
   '7d': 'Last 7 days',
+  '30d': 'Last 30 days',
 }
 
 /** Live (point-in-time) fleet counts derived from gateways. */
@@ -20,7 +21,7 @@ export interface LiveFleetStats {
 
 export function buildLiveFleetStats(gateways: Gateway[]): LiveFleetStats {
   const connectedServers = gateways.filter(
-    (g) => g.status.connected && g.status.healthy,
+    (g) => g.enabled !== false && g.status.connected,
   ).length
 
   return {
@@ -30,13 +31,13 @@ export function buildLiveFleetStats(gateways: Gateway[]): LiveFleetStats {
     // as outages made the overview disagree with the Gateway status facets and
     // inflated the attention count whenever an operator parked a server.
     offlineServers: gateways.filter(
-      (g) => g.enabled && (!g.status.connected || !g.status.healthy),
+      (g) => g.enabled !== false && !g.status.connected,
     ).length,
     discoveredTools: gateways.reduce(
       (sum, g) => sum + g.status.discovered_tool_count,
       0,
     ),
-    exposedTools: gateways.reduce(
+    exposedTools: gateways.filter((gateway) => gateway.enabled !== false).reduce(
       (sum, g) => sum + g.status.exposed_tool_count,
       0,
     ),

@@ -105,7 +105,12 @@ test('tool browser renders hostile catalog text literally and clears it on sessi
 
     await act(async () => { await loadBrowserSession() })
     assert.doesNotMatch(view.container.textContent ?? '', /github\.hostile|alert\(2\)/)
-    assert.equal(view.container.querySelector('[aria-pressed="true"]'), null)
+    // Compare booleans, not nodes: a failed `assert.equal(node, null)` makes
+    // Node inspect the happy-dom element and never returns. The layout toggle
+    // legitimately stays pressed; no result or detail may survive the change.
+    assert.equal(view.container.querySelector('[aria-label="Tool details"]') === null, true)
+    const pressed = [...view.container.querySelectorAll('button[aria-pressed="true"]')].map(button => button.getAttribute('aria-label'))
+    assert.deepEqual(pressed, ['Table view'])
   } finally {
     await view.unmount()
   }

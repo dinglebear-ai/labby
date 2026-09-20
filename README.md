@@ -101,6 +101,7 @@ curl -fSLO "$base/labby-install.sh.sha256"
 curl -fSLO "$base/release-provenance.sigstore.json"
 gh attestation verify labby-install.sh \
   --bundle release-provenance.sigstore.json \
+  --hostname github.com \
   --repo dinglebear-ai/labby \
   --signer-workflow dinglebear-ai/labby/.github/workflows/release.yml \
   --source-ref "refs/tags/$version" \
@@ -114,6 +115,13 @@ MCP clients that prefer npm launchers can run Labby through the Node wrapper:
 ```bash
 npx -y @dinglebear/labby mcp
 ```
+
+The npm launcher is a weaker trust path than the installer scripts. It
+downloads the release archive for the current platform and verifies only the
+`.sha256` sidecar (or the `SHA256SUMS` manifest) published next to it on the
+same release; it does not require `gh` and does not verify GitHub build
+provenance. Use `labby-install.sh` or `labby-install.ps1` when provenance
+verification matters.
 
 Windows PowerShell:
 
@@ -143,10 +151,14 @@ user PATH. On Linux and macOS the shell installer then runs `labby setup`, which
 asks whether this machine should run a server or connect to an existing one.
 Server setup configures authentication and a managed native service, or an Incus
 container on supported Linux hosts. Client setup saves the explicit gateway URL
-and configures browser sign-in or a bearer token. Desktop installation is optional.
+and configures browser sign-in or a bearer token. Desktop installation is optional
+and off by default; if the published desktop package is unavailable, setup reports
+that and still completes.
 For Labby's supported ChatGPT web connection, configure the server in OAuth mode
 and expose it through a publicly reachable HTTPS `LABBY_PUBLIC_URL`; bearer-only
-mode is for local/CLI clients and is not the supported ChatGPT web path.
+mode is for local/CLI clients and is not the supported ChatGPT web path. The web
+UI offers bearer token sign-in only over HTTPS or a direct loopback connection;
+behind a TLS-terminating proxy, set `LABBY_PUBLIC_URL=https://...` to unlock it.
 The PowerShell installer installs the binary; run setup separately as shown above.
 
 For unattended shell installs, set `LABBY_SETUP_ROLE=server` or `client` and the

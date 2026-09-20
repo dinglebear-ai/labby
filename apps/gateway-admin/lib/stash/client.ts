@@ -48,7 +48,8 @@ export async function listFiles(cursor?: string, signal?: AbortSignal, search?: 
   const query = new URLSearchParams()
   if (cursor) query.set('cursor', cursor)
   if (search) query.set('query', search)
-  return parse(await request(`/?${query}`, { signal }))
+  const suffix = query.size > 0 ? `?${query}` : ''
+  return parse(await request(suffix, { signal }))
 }
 
 export async function getStats(signal?: AbortSignal): Promise<StashStats> {

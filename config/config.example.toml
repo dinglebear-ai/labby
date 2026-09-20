@@ -120,6 +120,29 @@
 # No env var override; config-file only.
 # root = "~/.labby/workspace"              # default: ~/.labby/workspace
 
+# ── Phoenix Assistant ────────────────────────────────────────────────────────
+#
+# Phoenix can launch a container-local Codex App Server (the default) or use
+# an operator-configured OpenAI-compatible HTTP endpoint. Provider endpoints
+# and API keys belong in $LABBY_HOME/.env and are never accepted from the
+# browser. Codex mode forces a read-only sandbox.
+
+[phoenix]
+# enabled = true
+# provider = "codex_app_server"           # default
+# command = "/home/labby/.local/bin/codex"
+# codex_home = "/home/labby/.codex"
+# workspace_root = "/home/labby"
+# model = "gpt-5.6-sol"
+#
+# ExGPT / OpenAI-compatible example:
+# provider = "openai_compatible"
+# model = "chatgpt-browser-medium"
+# Set LABBY_PHOENIX_OPENAI_BASE_URL=http://host:port/v1 in $LABBY_HOME/.env.
+# Full Assistant session lifecycle also requires the provider to expose the ExGPT-style
+# /v1/sessions create, rename, cancel, and close extensions used by this adapter.
+# Set LABBY_PHOENIX_OPENAI_API_KEY there too if the endpoint requires auth.
+
 # ── Gateway Spawn Guard ───────────────────────────────────────────────────────
 #
 # The gateway only allows known-safe runtimes and transports (npx, uvx, docker,
@@ -353,6 +376,24 @@
 # Enabled providers grant instance-shared read access; they do not grant writes.
 [depot]
 public_enabled = true
+
+# When the authoritative catalog runs beside Labby in the same Incus system
+# container, bind the reserved public provider to that loopback service. This
+# replaces the anonymous public catalog; it does not add a second copy whose
+# totals would be summed with the authoritative index.
+# read_project_id = "replace-with-bound-project-id"
+#
+# [depot.public_read_binding]
+# endpoint = "http://127.0.0.1:4101/"
+# bearer_token_env = "LABBY_DEPOT_CATALOG_READ_TOKEN"
+# deployment_id = "catalog-depot"
+#
+# [[artifacts.sources]]
+# id = "public"
+# kind = "depot"
+# endpoint = "https://depot.example.com/api/artifacts/exact"
+# control_plane_url = "https://depot.example.com"
+# bearer_token_env = "LABBY_DEPOT_CATALOG_READ_TOKEN"
 
 # [[depot.providers]]
 # id = "team"

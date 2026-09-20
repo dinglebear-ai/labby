@@ -1,9 +1,14 @@
 'use client'
 
 import * as React from 'react'
+import Link from 'next/link'
+import { Bot, Server, Wrench } from 'lucide-react'
+import { useBrowserSession } from '@/lib/auth/session'
+import { authorityIdentity } from '@/lib/auth/authority'
 
-import { GatewayApiError, gatewayAction } from '@/lib/api/gateway-client'
+import { GatewayApiError, gatewayAction, gatewayApi } from '@/lib/api/gateway-client'
 import { isAbortError } from '@/lib/api/service-action-client'
+import type { GatewayNotification } from '@/lib/notification-acknowledgements'
 import type { BackendGatewayMcpRuntimeView } from '@/lib/server/gateway-adapter'
 
 export interface GatewayClientView {
@@ -44,7 +49,7 @@ export function upstreamMetricColor(snapshot: Pick<ConsoleStatusSnapshot, 'conne
 
 export type ConsoleStatusState =
   | { kind: 'loading' }
-  | { kind: 'ready'; snapshot: ConsoleStatusSnapshot }
+  | { kind: 'ready'; snapshot: ConsoleStatusSnapshot; attention?: string[]; disconnectedOccurrences?: Record<string, string>; alerts?: GatewayNotification[] }
   /** The viewer lacks gateway admin scope: expected, so no chrome is shown. */
   | { kind: 'unauthorized' }
   | { kind: 'unavailable'; reason: string }
@@ -64,14 +69,17 @@ export function classifyStatusFailure(error: unknown): ConsoleStatusState {
 }
 
 async function loadConsoleStatus(signal: AbortSignal): Promise<ConsoleStatusState> {
-  const [runtimeResult, clientsResult] = await Promise.allSettled([
+  const [runtimeResult, clientsResult, gatewayResult] = await Promise.allSettled([
     gatewayAction<BackendGatewayMcpRuntimeView[]>('gateway.mcp.list', {}, signal),
     gatewayAction<GatewayClientView[]>('gateway.clients.list', {}, signal),
+    gatewayApi.list(signal),
   ])
   if (runtimeResult.status !== 'fulfilled') return classifyStatusFailure(runtimeResult.reason)
   const snapshot = deriveConsoleStatus(runtimeResult.value, clientsResult.status === 'fulfilled' ? clientsResult.value : undefined)
   if (clientsResult.status === 'rejected' && !isAbortError(clientsResult.reason)) snapshot.sessionsUnavailable = failureReason(clientsResult.reason)
-  return { kind: 'ready', snapshot }
+  const alerts = gatewayResult.status === 'fulfilled' ? gatewayResult.value.flatMap(gateway => (gateway.warnings ?? []).map(warning => ({ key: `gateway:${gateway.name}:warning:${warning.code}`, fingerprint: warning.occurrence_id ?? `${warning.code}:${warning.message}`, gatewayName: gateway.name, message: warning.message }))) : undefined
+  if (alerts) for (const runtime of runtimeResult.value) if ((runtime.likely_stale_count ?? 0) > 0) alerts.push({ key: `gateway:${runtime.name}:stale`, fingerprint: runtime.notification_incidents?.stale ?? String(runtime.likely_stale_count), gatewayName: runtime.name, message: `${runtime.likely_stale_count} likely stale processes` })
+  return { kind: 'ready', snapshot, alerts, disconnectedOccurrences: Object.fromEntries(runtimeResult.value.flatMap(row => row.notification_incidents?.tools ? [[row.name, row.notification_incidents.tools]] : [])), attention: runtimeResult.value.filter(row => row.enabled !== false && row.connected !== true).map(row => row.name) }
 }
 
 function Metric({
@@ -79,20 +87,31 @@ function Metric({
   label,
   color,
   title,
+  href,
+  icon: Icon,
 }: {
   value: React.ReactNode
   label: string
   color: string
   /** Explains an unavailable value; also exposed as the accessible name. */
   title?: string
+  href: string
+  icon: React.ComponentType<{ size?: number; strokeWidth?: number }>
 }) {
   return (
-    <span
+    <Link
+      href={href}
+      data-menurow="1"
       title={title}
-      aria-label={title}
+      aria-label={title ?? `${value} ${label}`}
       style={{
         display: 'inline-flex',
-        alignItems: 'baseline',
+        alignItems: 'center',
+        height: 26,
+        padding: '0 9px',
+        border: '1px solid transparent',
+        borderRadius: 8,
+        textDecoration: 'none',
         gap: 5,
         color: 'var(--aurora-text-muted)',
         fontSize: 12.5,
@@ -101,9 +120,9 @@ function Metric({
         whiteSpace: 'nowrap',
       }}
     >
+      <span aria-hidden="true" style={{ color }}><Icon size={13} strokeWidth={1.8} /></span>
       <span style={{ color, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{value}</span>
-      <span>{label}</span>
-    </span>
+    </Link>
   )
 }
 
@@ -132,48 +151,67 @@ export function ConsoleStatusContent({ state }: { state: ConsoleStatusState }): 
         <>
           <Metric
             value={`${state.snapshot.connected}/${state.snapshot.total}`}
+            href="/gateways"
             label="up"
             color={upstreamMetricColor(state.snapshot)}
+            icon={Server}
           />
           {state.snapshot.sessions !== undefined ? (
             <Metric
               value={state.snapshot.sessions}
+              href="/agents"
               label="sessions"
               color="var(--aurora-accent-pink)"
+              icon={Bot}
             />
           ) : state.snapshot.sessionsUnavailable ? (
             <Metric
               value="—"
+              href="/agents"
               label="sessions"
               color="var(--aurora-text-muted)"
               title={`Session count is unavailable: ${state.snapshot.sessionsUnavailable}`}
+              icon={Bot}
             />
           ) : null}
           <Metric
             value={state.snapshot.tools}
+            href="/tools"
             label="tools"
             color="var(--aurora-accent-strong)"
+            icon={Wrench}
           />
         </>
       )
   }
 }
 
-export function ConsoleStatusStrip() {
-  const [state, setState] = React.useState<ConsoleStatusState>({ kind: 'loading' })
+export function useConsoleStatus() {
+  const session = useBrowserSession()
+  const identity = session.status === 'authenticated' ? authorityIdentity(session.authority) : session.status
+  const [result, setResult] = React.useState<{ identity: string; state: ConsoleStatusState }>({ identity, state: { kind: 'loading' } })
 
   React.useEffect(() => {
     const controller = new AbortController()
-    loadConsoleStatus(controller.signal)
-      .then((next) => {
-        if (!controller.signal.aborted) setState(next)
-      })
-      .catch((error: unknown) => {
-        if (controller.signal.aborted) return
-        setState(classifyStatusFailure(error))
-      })
-    return () => controller.abort()
-  }, [])
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const refresh = async () => {
+      try {
+        const state = await loadConsoleStatus(controller.signal)
+        if (!controller.signal.aborted) setResult({ identity, state })
+      } catch (error: unknown) {
+        if (!controller.signal.aborted) setResult({ identity, state: classifyStatusFailure(error) })
+      } finally {
+        if (!controller.signal.aborted) timer = setTimeout(() => { void refresh() }, 30_000)
+      }
+    }
+    void refresh()
+    return () => { controller.abort(); clearTimeout(timer) }
+  }, [identity])
+
+  return result.identity === identity ? result.state : { kind: 'loading' } as ConsoleStatusState
+}
+
+export function ConsoleStatusStrip({ state }: { state: ConsoleStatusState }) {
 
   return (
     <div
@@ -182,9 +220,11 @@ export function ConsoleStatusStrip() {
       style={{
         display: 'flex',
         alignItems: 'center',
-        gap: 20,
+        gap: 0,
         minWidth: 0,
-        marginLeft: 6,
+        marginLeft: 14,
+        paddingLeft: 8,
+        borderLeft: '1px solid color-mix(in srgb, var(--aurora-border-default) 70%, transparent)',
         flexShrink: 0,
       }}
     >

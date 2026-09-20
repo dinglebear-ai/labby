@@ -14,6 +14,7 @@ import { accessApi, AccessApiError } from '../../lib/api/access-client.ts'
 import { bootstrapOwner, describeOwnerBootstrapError } from '../../lib/auth/owner-bootstrap.ts'
 import { LogoutRevocationError, loadBrowserSession, logoutBrowserSession } from '../../lib/auth/session.ts'
 import { ORGANIZATION_PROFILE_OFFER_SESSION_KEY } from '../../lib/auth/organization-profile-handoff.ts'
+import { requestTeamAdmission } from '../../lib/auth/team-admission.ts'
 import {
   normalizeTeamInvitationToken,
   TEAM_INVITATION_TOKEN_SESSION_KEY,
@@ -71,6 +72,15 @@ export function OwnerSetupScreen({ authorityState, bootstrapAvailable, remediati
     : authorityState === 'unprovisioned'
       ? NO_ACCESS_REMEDIATION.unprovisioned
       : NO_ACCESS_REMEDIATION.transport
+
+  // Give the server's team admission policy one `/v1` request to act on; a
+  // qualifying identity reloads as `ready` and this screen unmounts.
+  const admissionRequested = React.useRef(false)
+  React.useEffect(() => {
+    if (authorityState !== 'unprovisioned' || bootstrapAvailable || admissionRequested.current) return
+    admissionRequested.current = true
+    void requestTeamAdmission()
+  }, [authorityState, bootstrapAvailable])
 
   return (
     <div className={cn(AURORA_PAGE_SHELL, 'flex min-h-screen items-center justify-center px-6')}>

@@ -1,7 +1,7 @@
 ---
 title: "Environment Variables"
 created: "2026-07-30"
-updated: "2026-08-01"
+updated: "2026-09-16"
 ---
 
 # Environment Variables
@@ -39,6 +39,32 @@ The access store has no independent environment override.
 `access.db`. A standalone stdio fallback uses its own resolved state root, so
 configure an explicit remote daemon target when stdio must share the daemon's
 project and membership state.
+
+## Dev Container Runtime
+
+Production Dev Containers require one complete restricted Incus HTTPS
+configuration:
+
+```env
+LABBY_DEV_CONTAINER_INCUS_URL=https://tootie:8443
+LABBY_DEV_CONTAINER_INCUS_PROJECT=labby-dev-containers
+LABBY_DEV_CONTAINER_INCUS_CLIENT_CERT=/home/labby/.labby/incus/client.crt
+LABBY_DEV_CONTAINER_INCUS_CLIENT_KEY=/home/labby/.labby/incus/client.key
+LABBY_DEV_CONTAINER_INCUS_SERVER_CERT=/home/labby/.labby/incus/server.crt
+```
+
+The URL must be an HTTPS origin with no credentials, query, fragment, or path.
+The project is always added by Labby and cannot be overridden in the URL. All
+three credential paths must be absolute, regular, non-symlink files of at most
+64 KiB. The client key must have no group or world permissions. Labby disables
+proxy discovery and built-in certificate roots for this client, pins the Incus
+server certificate, and presents the configured client certificate and key.
+
+Leaving all five variables unset makes the runtime unavailable. Setting only a
+subset or supplying invalid values also fails closed; there is no local-socket,
+default-project, or unauthenticated fallback. The test-only deterministic
+runtime remains gated by the `proxy-testkit` feature and
+`LABBY_E2E_DETERMINISTIC_EXECUTORS`.
 
 ## Depot Discovery Credentials
 
@@ -142,7 +168,7 @@ Rules:
 - bearer mode keeps using `LABBY_MCP_HTTP_TOKEN`
 - oauth mode requires `LABBY_PUBLIC_URL`, `LABBY_AUTH_ADMIN_EMAIL`, and exactly one complete Google or Authelia provider configuration
 - Authelia support is open beta and pinned in CI to 4.39.10. Register only the exact `/auth/oidc/callback`, `client_secret_basic`, authorization code flow, and PKCE S256 with `openid email profile`; do not grant `offline_access`.
-- `LABBY_AUTH_ADMIN_EMAIL` is the provider-neutral bootstrap admin email; startup fails closed if unset under oauth mode so no identity can authenticate without explicit permission. Only the browser session whose verified email equals this value receives the configured static-token scopes (default `lab:read lab:admin`).
+- `LABBY_AUTH_ADMIN_EMAIL` is the provider-neutral administrator email, or a comma-separated list of them (for example `owner@example.com,second-admin@example.com`); startup fails closed if it is empty under oauth mode so no identity can authenticate without explicit permission. Only browser sessions whose verified email is in this list receive the configured static-token scopes (default `lab:read lab:admin`). The list is also editable in the web UI under **Settings → Authentication → Administrators** (`setup` action `settings.env.update`); only the operator — a listed administrator's browser session, a loopback caller, or an operator transport credential — may save it; an empty or malformed list is refused on every setup write path (`settings.env.update`, `draft.set`, `draft.commit`); and the change applies after restart. Because the process environment takes precedence over `.env`, a variable the service manager sets cannot be changed from Settings: `settings.state` reports the effective value with `overridden_by_env`, the UI shows it read-only, and `settings.env.update` refuses the write.
 - The SQLite-backed allowlist admits additional users. It is admission, not an administrative grant: other allowlisted browser sessions receive the static-token scopes with each `<prefix>:admin` lowered to `<prefix>` (default `lab:read lab`). Grant administrative reach with `access.platform_admin.grant`; see [Browser session scopes](./OAUTH.md#browser-session-scopes-and-domain-admission).
 - `LABBY_AUTH_ALLOWED_EMAIL_DOMAINS` admits verified identities in the configured domains, but the match differs by provider and by surface. At the login callback, Google matches the provider-asserted `hd` (hosted domain) claim and Authelia matches the domain of the verified email claim. After login, the per-request browser-session re-check honors the domain list only for Authelia, and project-bound MCP team auto-provision matches the email address suffix for both providers. This inconsistency is an open issue; see the [per-surface table](./OAUTH.md#domain-allowlist-behavior-by-provider-and-surface). Empty (the default) disables domain-based access.
 - `LABBY_GOOGLE_CALLBACK_URL` optionally sends the browser callback to a webapp host that differs from the stable OAuth issuer in `LABBY_PUBLIC_URL`
@@ -255,6 +281,27 @@ LABBY_CODE_MODE_MICROSANDBOX_MAX_RUNNERS=4
 The host must separately provide working KVM access plus compatible `msb` and
 `libkrunfw` installations. See [CODE_MODE.md](../dev/CODE_MODE.md#microsandbox-runner-isolation-opt-in).
 
+### Agent execution provider
+
+Product Agents and Agent Tasks execute through one OpenAI-compatible provider
+configured in Labby's private environment file:
+
+```env
+LABBY_PHOENIX_OPENAI_BASE_URL=http://127.0.0.1:43871/v1
+# LABBY_PHOENIX_OPENAI_API_KEY=<labby_phoenix_openai_api_key>
+```
+
+- `LABBY_PHOENIX_OPENAI_BASE_URL` must be an absolute `http(s)` URL reachable
+  from the Labby process, with no embedded credentials, query, or fragment. The
+  immutable Agent harness digest is derived from it, so changing the provider
+  changes which revisions may run.
+- `LABBY_PHOENIX_OPENAI_API_KEY` is optional and secret; it is sent as bearer
+  authentication and never logged.
+
+Both variables are listed under the `agents` service in the generated
+reference and in the settings environment schema. See
+[AGENT_TASKS.md](../services/AGENT_TASKS.md).
+
 Supported environment variables are generated from current product metadata.
 Gateway upstream secrets are referenced indirectly by environment-variable name;
 for example, a persisted upstream may point at
@@ -266,12 +313,12 @@ required/optional environment-variable matrix, secret flags, and examples.
 ### Access-store migration approval
 
 Opening an existing access schema older than the binary's schema (any of v1
-through v6 with a schema-v7 binary) is denied unless the operator supplies an
+through v7 with a schema-v8 binary) is denied unless the operator supplies an
 approval document bound to an independent rollback checkpoint, the exact
 source and target, and an explicit activation:
 
 ```env
-LABBY_ACCESS_MIGRATION_EVIDENCE=/run/labby/access-migration-v7.json
+LABBY_ACCESS_MIGRATION_EVIDENCE=/run/labby/access-migration-v8.json
 ```
 
 The JSON document uses schema `labby.access-migration-approval/v1` and contains

@@ -248,7 +248,7 @@ Plugin lifecycle and other local host mutations are additionally constrained by 
 
 ### Config validation
 
-`setup check` and `setup repair` include a blocking `config` check. It loads `config.toml` through the same loader as `labby serve` and runs the startup validations that can stop serve or start it with a subsystem unavailable: Public Depot acquisition binding, local Depot credentials, Depot host policy, the Artifact control plane, and Skill Library exact-source adapter construction. It starts no listeners and makes no network calls. Adapter staging uses a temporary directory, never `LABBY_HOME`. On failure, `message` lists each problem as `fatal: <error chain>` (serve exits) or `degraded: <error chain>` (serve starts with Artifact services unavailable). `doctor system.checks` reports the same validation as `config:startup-validation`.
+`setup check` and `setup repair` include a blocking `config` check. It loads `config.toml` through the same loader as `labby serve` and runs the startup validations that can stop serve or start it with a subsystem unavailable: Public Depot acquisition binding, local Depot credentials, Depot host policy, the Artifact control plane, and Skill Library exact-source adapter construction. It starts no listeners and makes no network calls. Adapter staging uses a temporary directory, never `LABBY_HOME`. On failure, `message` lists each problem as `fatal: <error chain>` (serve exits) or `degraded: <error chain>` (serve starts with Artifact services unavailable, or with the named `[[artifacts.sources]]` entry disabled on every Artifact path, for example because its `pinned_addresses` are not authorized for its host). `doctor system.checks` reports the same validation as `config:startup-validation`.
 
 ### Access-store projection
 
@@ -365,8 +365,14 @@ three choices: **Personal / local**, **Browser + ChatGPT**, or **Customize**.
 
 Resumable setup keeps staged host, port, and authentication choices, so an
 interrupted run continues instead of silently starting over. Client setup saves
-the selected gateway URL and uses browser OAuth or a bearer token. Published
-desktop packages remain provenance-verified before installation.
+the selected gateway URL and uses browser OAuth or a bearer token. The two
+recommended server experiences select the desktop app automatically when this
+platform supports it; Customize and client setup keep the explicit desktop
+choice, whose interactive prompt defaults to No. Published desktop packages
+remain provenance-verified before installation. A missing, failed, or unverifiable
+desktop package never rolls back an otherwise-complete server/client setup; the
+summary reports `desktop_installed: false` and includes the reason.
+
 
 For a fresh bearer-only server, explicit setup creates the durable first owner
 for its static credential. It preserves an existing owner and refuses a blocked
@@ -374,7 +380,13 @@ access store. OAuth deployments retain their authenticated owner-bootstrap flow.
 Browser token sign-in exchanges the configured bearer for an HttpOnly session
 cookie; the bearer is not retained by the browser, and restarting Labby invalidates
 those derived sessions. Mixed browser identities must be signed out before
-switching authentication methods.
+switching authentication methods. Browser token sign-in is offered only over
+HTTPS or a direct loopback connection: a bearer-only server reached over plain
+HTTP from another host, or through a reverse proxy that does not terminate TLS,
+does not show the token form and refuses the exchange with `forbidden`. When a
+TLS-terminating proxy fronts Labby, set `LABBY_PUBLIC_URL=https://labby.example.com`
+so the exchange is accepted behind it. Bearer tokens presented directly in the
+`Authorization` header by CLI and MCP clients are unaffected.
 
 Run setup as your ordinary user. Native Linux setup requests elevation for the
 service portion, then installs an optional desktop app as the original user.

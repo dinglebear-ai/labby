@@ -74,6 +74,15 @@ pub async fn dispatch_with_manager_scoped(
         return result;
     }
     match action {
+        "gateway.host.metrics" => to_json(
+            super::host_metrics::sample(
+                manager
+                    .path
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new(".")),
+            )
+            .await,
+        ),
         "gateway.skills.list" => handle_skills_list(manager, params_value, enrichment_scope).await,
         "gateway.code_mode.get" | "gateway.code_mode.set" => {
             handle_tool_actions(manager, action, params_value).await
@@ -195,7 +204,7 @@ pub async fn dispatch_with_manager_scoped(
         action if action.starts_with("gateway.oauth.") => {
             handle_oauth_actions(manager, action, params_value, enrichment_scope).await
         }
-        action if action.starts_with("gateway.mcp.") => {
+        action if action == "gateway.clients.list" || action.starts_with("gateway.mcp.") => {
             handle_mcp_actions(manager, action, params_value, enrichment_scope).await
         }
         unknown => unknown_action(unknown),
@@ -1114,61 +1123,15 @@ async fn handle_mcp_actions(
         }
         "gateway.mcp.restart" => {
             let params: GatewayMcpRestartParams = parse_params(params_value)?;
-            enrichment_scope.ensure_visible(&params.name)?;
-            let upstream =
-                manager
-                    .upstream_config(&params.name)
-                    .await
-                    .ok_or_else(|| ToolError::Sdk {
-                        sdk_kind: "not_found".to_string(),
-                        message: format!("upstream MCP server '{}' was not found", params.name),
-                    })?;
-            if !upstream.enabled {
-                return Err(ToolError::InvalidParam {
-                    message: format!(
-                        "upstream MCP server '{}' is disabled; enable it before restarting its connection",
-                        params.name
-                    ),
-                    param: "name".to_string(),
-                });
-            }
-
             manager
-                .update(
+                .restart_mcp_upstream(
                     &params.name,
-                    GatewayUpdatePatch {
-                        enabled: Some(false),
-                        ..GatewayUpdatePatch::default()
-                    },
-                    None,
-                    params.origin.as_deref(),
-                    params.owner.clone().map(Into::into),
-                )
-                .await?;
-
-            let cleanup = manager
-                .cleanup_upstream_processes(&params.name, params.aggressive, false)
-                .await;
-            let gateway = manager
-                .update(
-                    &params.name,
-                    GatewayUpdatePatch {
-                        enabled: Some(true),
-                        ..GatewayUpdatePatch::default()
-                    },
-                    None,
-                    params.origin.as_deref(),
+                    params.aggressive,
+                    enrichment_scope,
                     params.owner.map(Into::into),
+                    std::time::Duration::from_secs(20),
                 )
-                .await;
-
-            match (cleanup, gateway) {
-                (Ok(cleanup), Ok(gateway)) => to_json(serde_json::json!({
-                    "gateway": gateway,
-                    "cleanup": cleanup,
-                })),
-                (Err(error), Ok(_)) | (_, Err(error)) => Err(error),
-            }
+                .await
         }
         "gateway.mcp.cleanup" => {
             let params: GatewayMcpCleanupParams = parse_params(params_value)?;

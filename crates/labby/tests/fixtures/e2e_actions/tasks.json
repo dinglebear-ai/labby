@@ -6,15 +6,22 @@
   "success_action": "tasks.list",
   "invalid_action": "schema",
   "policy_action": "tasks.cancel",
-  "workflow": ["tasks.create", "tasks.queue", "tasks.cancel"],
+  "workflow": [
+    "tasks.create",
+    "tasks.queue",
+    "tasks.cancel"
+  ],
   "parameters": {
     "action": "tasks.list",
     "agent_id": "matrix-agent",
     "idempotency_key": "matrix-idempotency-key",
-    "input_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "input": "matrix task input",
     "owner_id": "bootstrap-owner",
     "owner_kind": "personal",
-    "task_id": "matrix-task"
+    "task_id": "matrix-task",
+    "name": "Matrix schedule",
+    "schedule": "invalid-schedule",
+    "schedule_id": "matrix-schedule"
   },
   "action_params": {}
 }

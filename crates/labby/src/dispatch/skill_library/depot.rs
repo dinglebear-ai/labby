@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use labby_runtime::artifacts::provider::{
     ArtifactFetchPolicy, ArtifactRequestHeaderProvider, ArtifactSourceCredential,
-    ExactArtifactRequest, ExactArtifactSource, GuardedExactArtifactProvider,
+    ExactArtifactRequest, ExactArtifactSource, GuardedExactArtifactProvider, GuardedHttpTransport,
 };
 use labby_runtime::artifacts::{ArtifactAcquisition, ArtifactError};
 use url::Url;
@@ -36,6 +36,7 @@ struct RuntimeDepot {
     endpoint: Url,
     credential_origin: Option<Url>,
     pinned_addresses: BTreeSet<IpAddr>,
+    trusted_private_addresses: BTreeSet<IpAddr>,
     source: ExactArtifactSource,
 }
 
@@ -57,6 +58,7 @@ impl DepotExactProvider for RuntimeDepot {
                         endpoint: self.endpoint.clone(),
                         credential_origin: self.credential_origin.clone(),
                         pinned_addresses: self.pinned_addresses.clone(),
+                        trusted_private_addresses: self.trusted_private_addresses.clone(),
                     },
                     headers.as_deref(),
                 )
@@ -82,17 +84,29 @@ impl DepotConnection {
         endpoint: Url,
         credential: Option<ArtifactSourceCredential>,
         pinned_addresses: BTreeSet<IpAddr>,
+        trusted_private_addresses: BTreeSet<IpAddr>,
         staging_root: impl Into<std::path::PathBuf>,
         policy: ArtifactFetchPolicy,
     ) -> Result<Self, ArtifactError> {
         let source_id = source_id.into();
-        let provider = GuardedExactArtifactProvider::configured_http(
+        let transport = GuardedHttpTransport::new(
             endpoint.clone(),
             pinned_addresses.clone(),
+            trusted_private_addresses.clone(),
             credential,
-            staging_root,
-            policy,
+            &policy,
         )?;
+        // Only a validated connection gets a staging directory, so a rejected
+        // source leaves nothing under the acquisition root. The provider
+        // requires the directory to be private before it accepts it.
+        let staging_root = staging_root.into();
+        std::fs::create_dir_all(&staging_root)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&staging_root, std::fs::Permissions::from_mode(0o700))?;
+        }
+        let provider = GuardedExactArtifactProvider::new(transport, staging_root, policy)?;
         // ExactArtifactRequest performs the authoritative URL/DNS/credential validation before IO.
         let credential_origin = Some(endpoint.clone());
         let runtime = RuntimeDepot {
@@ -101,6 +115,7 @@ impl DepotConnection {
             endpoint,
             credential_origin,
             pinned_addresses,
+            trusted_private_addresses,
             source,
         };
         Ok(Self {
@@ -129,12 +144,14 @@ impl DepotConnection {
         binding: &crate::config::depot::PublicReadBinding,
         acquisition_endpoint: &str,
         token: &str,
+        policy: crate::dispatch::depot::network::NetworkPolicy,
     ) -> Result<(), ArtifactError> {
         self.catalog_binding = Some(Arc::new(
             crate::dispatch::depot::catalog_binding::CatalogBinding::new(
                 binding,
                 acquisition_endpoint,
                 token,
+                policy,
             )
             .map_err(ArtifactError::Conflict)?,
         ));

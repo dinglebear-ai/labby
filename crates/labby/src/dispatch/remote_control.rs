@@ -31,6 +31,12 @@ const ID: ParamSpec = ParamSpec {
     required: true,
     description: "Stable item identifier",
 };
+const EXPECTED_VERSION: ParamSpec = ParamSpec {
+    name: "expected_version",
+    ty: "string",
+    required: true,
+    description: "Current Artifact state version required for optimistic concurrency",
+};
 const SLUG: ParamSpec = ParamSpec {
     name: "slug",
     ty: "string",
@@ -207,7 +213,7 @@ pub(crate) const UPLOAD_ACTIONS: &[ActionSpec] = &[
 pub(crate) const BUNDLE_ACTIONS: &[ActionSpec] = &[
     spec(
         "bundles.list",
-        "List curated Artifact bundles with publication drift",
+        "List curated Skill bundles with publication drift",
         false,
         false,
         "Bundle[]",
@@ -223,7 +229,7 @@ pub(crate) const BUNDLE_ACTIONS: &[ActionSpec] = &[
     ),
     spec(
         "bundles.create",
-        "Create an empty curated Artifact bundle",
+        "Create an empty curated Skill bundle",
         false,
         true,
         "Bundle",
@@ -246,7 +252,7 @@ pub(crate) const BUNDLE_ACTIONS: &[ActionSpec] = &[
     ),
     spec(
         "bundles.add",
-        "Add an Artifact to a bundle draft",
+        "Add an ingested Skill to a bundle draft",
         false,
         true,
         "Bundle",
@@ -257,19 +263,19 @@ pub(crate) const BUNDLE_ACTIONS: &[ActionSpec] = &[
                 name: "namespace",
                 ty: "string",
                 required: true,
-                description: "Artifact namespace",
+                description: "Skill namespace",
             },
             ParamSpec {
                 name: "name",
                 ty: "string",
                 required: true,
-                description: "Artifact name",
+                description: "Skill name",
             },
         ],
     ),
     spec(
         "bundles.remove",
-        "Remove an Artifact from a bundle draft",
+        "Remove an ingested Skill from a bundle draft",
         false,
         true,
         "Bundle",
@@ -280,13 +286,13 @@ pub(crate) const BUNDLE_ACTIONS: &[ActionSpec] = &[
                 name: "namespace",
                 ty: "string",
                 required: true,
-                description: "Artifact namespace",
+                description: "Skill namespace",
             },
             ParamSpec {
                 name: "name",
                 ty: "string",
                 required: true,
-                description: "Artifact name",
+                description: "Skill name",
             },
         ],
     ),
@@ -363,6 +369,7 @@ pub(crate) const REMOTE_ARTIFACT_ACTIONS: &[ActionSpec] = &[
         &[
             CONNECTION,
             ID,
+            EXPECTED_VERSION,
             ParamSpec {
                 name: "upstream_artifact_id",
                 ty: "string",
@@ -432,6 +439,7 @@ pub(crate) const REMOTE_ARTIFACT_ACTIONS: &[ActionSpec] = &[
         &[
             CONNECTION,
             ID,
+            EXPECTED_VERSION,
             ParamSpec {
                 name: "state",
                 ty: "draft|listed|published|withdrawn",
@@ -461,6 +469,7 @@ pub(crate) const REMOTE_ARTIFACT_ACTIONS: &[ActionSpec] = &[
         &[
             CONNECTION,
             ID,
+            EXPECTED_VERSION,
             ParamSpec {
                 name: "declared",
                 ty: "string|null",
@@ -761,6 +770,7 @@ fn normalize_provider_params(
             ("revision_id", "revisionId"),
             ("upstream_artifact_id", "upstreamArtifactId"),
             ("upstream_revision_id", "upstreamRevisionId"),
+            ("expected_version", "expectedVersion"),
             ("review_state", "reviewState"),
             ("takedown_state", "takedownState"),
             ("evidence_at", "evidenceAt"),
@@ -933,6 +943,7 @@ mod tests {
 
         let mut lifecycle = json!({
             "id": "artifact-1",
+            "expected_version": "sha256:state",
             "upstream_artifact_id": "source-1",
             "upstream_revision_id": "sha256:abc",
             "review_state": "reviewed",
@@ -944,9 +955,45 @@ mod tests {
         .clone();
         normalize_provider_params("artifacts", "artifacts.set_license", &mut lifecycle).unwrap();
         assert_eq!(lifecycle["artifactId"], "artifact-1");
+        assert_eq!(lifecycle["expectedVersion"], "sha256:state");
         assert_eq!(lifecycle["upstreamArtifactId"], "source-1");
         assert_eq!(lifecycle["reviewState"], "reviewed");
         assert!(lifecycle.get("review_state").is_none());
+        assert!(lifecycle.get("expected_version").is_none());
+    }
+
+    #[test]
+    fn lifecycle_actions_require_the_public_optimistic_concurrency_parameter() {
+        for name in [
+            "artifacts.follow",
+            "artifacts.set_publication",
+            "artifacts.set_license",
+        ] {
+            let action = REMOTE_ARTIFACT_ACTIONS
+                .iter()
+                .find(|action| action.name == name)
+                .unwrap();
+            assert!(action.params.iter().any(|param| {
+                param.name == "expected_version" && param.ty == "string" && param.required
+            }));
+        }
+    }
+
+    #[test]
+    fn remote_artifact_listing_exposes_provider_query_and_kind_filters() {
+        let action = REMOTE_ARTIFACT_ACTIONS
+            .iter()
+            .find(|action| action.name == "artifacts.list_remote")
+            .unwrap();
+        for name in ["query", "kind"] {
+            assert!(
+                action
+                    .params
+                    .iter()
+                    .any(|param| param.name == name && !param.required),
+                "missing optional {name} filter"
+            );
+        }
     }
 
     #[test]

@@ -983,6 +983,246 @@
         ]
       }
     },
+    "/v1/auth/allowed-emails": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "List allowlisted sign-in emails",
+        "description": "OAuth-mode only. Accepted only from a browser session (cookie plus x-csrf-token on mutations) whose email is listed in LABBY_AUTH_ADMIN_EMAIL; bearer tokens and platform administration alone are refused with `forbidden`. Responses are private, no-store.",
+        "responses": {
+          "200": {
+            "description": "Every allowlist entry, oldest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AllowedEmailListResponseDoc"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid browser session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not a configured admin browser session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Allowlist management is only available in OAuth mode",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browser_session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Allow an email to sign in with a first-sign-in role",
+        "description": "OAuth-mode only. Accepted only from a browser session (cookie plus x-csrf-token on mutations) whose email is listed in LABBY_AUTH_ADMIN_EMAIL; bearer tokens and platform administration alone are refused with `forbidden`. Responses are private, no-store.",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "CSRF token issued with the authenticated browser session.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AllowedEmailAddRequestDoc"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The stored entry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AllowedEmailAddResponseDoc"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid browser session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not a configured admin browser session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Allowlist management is only available in OAuth mode",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Missing CSRF token, malformed JSON, invalid email, unknown role, or duplicate email (`validation_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browser_session": []
+          }
+        ]
+      }
+    },
+    "/v1/auth/allowed-emails/{email}": {
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Remove an allowlisted email and revoke what it granted",
+        "description": "Idempotent. Revokes, in the access store, the Initial Team membership, default-Project membership, and platform administrator grant that allowlist admission created for every verified identity of the email (audited as `access.allowlist.revoke`), then removes the entry and revokes the identity's browser sessions and renewable credentials. The Principal row is kept; Team owner authority is never touched.",
+        "parameters": [
+          {
+            "name": "email",
+            "in": "path",
+            "description": "The allowlisted address; trimmed and lowercased before matching.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "CSRF token issued with the authenticated browser session.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed, or was not present"
+          },
+          "401": {
+            "description": "No valid browser session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not a configured admin browser session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Allowlist management is only available in OAuth mode",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Missing CSRF token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Gateway runtime invalidation is unavailable; the entry was not removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Access store busy or unavailable; durable authority was not revoked and the entry was not removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browser_session": []
+          }
+        ]
+      }
+    },
     "/v1/browser": {
       "post": {
         "tags": [
@@ -5283,7 +5523,8 @@
               "agents.suspend",
               "agents.delete",
               "agents.run",
-              "agents.session.status"
+              "agents.session.status",
+              "agents.session.cancel"
             ]
           },
           "params": {
@@ -5297,12 +5538,7 @@
           "agent_id",
           "owner_kind",
           "owner_id",
-          "content_digest",
-          "repository_digest",
-          "image_digest",
-          "harness_digest",
-          "loadout_digest",
-          "catalog_generation"
+          "instructions"
         ],
         "properties": {
           "agent_id": {
@@ -5320,7 +5556,13 @@
           "image_digest": {
             "type": "string"
           },
+          "instructions": {
+            "type": "string"
+          },
           "loadout_digest": {
+            "type": "string"
+          },
+          "model": {
             "type": "string"
           },
           "owner_id": {
@@ -5375,6 +5617,24 @@
         "properties": {
           "agent_id": {
             "type": "string"
+          },
+          "input": {
+            "type": "string"
+          }
+        }
+      },
+      "AgentsAgentsSessionCancelParams": {
+        "type": "object",
+        "required": [
+          "agent_id",
+          "session_id"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
           }
         }
       },
@@ -5412,8 +5672,125 @@
         "properties": {
           "agent_id": {
             "type": "string"
+          },
+          "catalog_generation": {
+            "type": "string"
+          },
+          "content_digest": {
+            "type": "string"
+          },
+          "harness_digest": {
+            "type": "string"
+          },
+          "image_digest": {
+            "type": "string"
+          },
+          "instructions": {
+            "type": "string"
+          },
+          "loadout_digest": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "repository_digest": {
+            "type": "string"
           }
         }
+      },
+      "AllowedEmailAddRequestDoc": {
+        "type": "object",
+        "required": [
+          "email"
+        ],
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "role": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "description": "Wire form of `labby_auth::AllowedUserRole`: what an allowlist entry grants\nat first sign-in.",
+                "enum": [
+                  "member",
+                  "admin"
+                ]
+              }
+            ],
+            "description": "Defaults to `member` when omitted."
+          }
+        }
+      },
+      "AllowedEmailAddResponseDoc": {
+        "type": "object",
+        "required": [
+          "entry"
+        ],
+        "properties": {
+          "entry": {
+            "$ref": "#/components/schemas/AllowedEmailEntryDoc"
+          }
+        }
+      },
+      "AllowedEmailEntryDoc": {
+        "type": "object",
+        "description": "One allowlist entry as `GET`/`POST /v1/auth/allowed-emails` return it.",
+        "required": [
+          "email",
+          "added_by",
+          "created_at",
+          "role"
+        ],
+        "properties": {
+          "added_by": {
+            "type": "string",
+            "description": "Provider subject of the administrator who added the entry."
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix seconds."
+          },
+          "email": {
+            "type": "string",
+            "description": "Normalized (trimmed, lowercased) address."
+          },
+          "role": {
+            "type": "string",
+            "description": "Wire form of `labby_auth::AllowedUserRole`: what an allowlist entry grants\nat first sign-in.",
+            "enum": [
+              "member",
+              "admin"
+            ]
+          }
+        }
+      },
+      "AllowedEmailListResponseDoc": {
+        "type": "object",
+        "required": [
+          "entries"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AllowedEmailEntryDoc"
+            }
+          }
+        }
+      },
+      "AllowedEmailRoleDoc": {
+        "type": "string",
+        "description": "Wire form of `labby_auth::AllowedUserRole`: what an allowlist entry grants\nat first sign-in.",
+        "enum": [
+          "member",
+          "admin"
+        ]
       },
       "ArtifactsActionRequest": {
         "type": "object",
@@ -5563,10 +5940,14 @@
       "ArtifactsArtifactsFollowParams": {
         "type": "object",
         "required": [
-          "id"
+          "id",
+          "expected_version"
         ],
         "properties": {
           "connection_id": {
+            "type": "string"
+          },
+          "expected_version": {
             "type": "string"
           },
           "following": {
@@ -5782,8 +6163,14 @@
           "cursor": {
             "type": "string"
           },
+          "kind": {
+            "type": "string"
+          },
           "limit": {
             "type": "integer"
+          },
+          "query": {
+            "type": "string"
           }
         }
       },
@@ -5972,7 +6359,8 @@
       "ArtifactsArtifactsSet_licenseParams": {
         "type": "object",
         "required": [
-          "id"
+          "id",
+          "expected_version"
         ],
         "properties": {
           "connection_id": {
@@ -5995,6 +6383,9 @@
             }
           },
           "evidence_at": {
+            "type": "string"
+          },
+          "expected_version": {
             "type": "string"
           },
           "id": {
@@ -6034,7 +6425,8 @@
       "ArtifactsArtifactsSet_publicationParams": {
         "type": "object",
         "required": [
-          "id"
+          "id",
+          "expected_version"
         ],
         "properties": {
           "connection_id": {
@@ -6046,6 +6438,9 @@
               "metadata",
               "bytes"
             ]
+          },
+          "expected_version": {
+            "type": "string"
           },
           "id": {
             "type": "string"
@@ -6825,6 +7220,15 @@
           "action": {
             "type": "string",
             "enum": [
+              "dev_containers.templates.list",
+              "dev_containers.templates.get",
+              "dev_containers.draft.create",
+              "dev_containers.draft.update",
+              "dev_containers.environment.replace",
+              "dev_containers.build",
+              "dev_containers.rebuild",
+              "dev_containers.build.get",
+              "dev_containers.launch_reference",
               "dev_containers.create",
               "dev_containers.list",
               "dev_containers.start",
@@ -6835,6 +7239,36 @@
           },
           "params": {
             "type": "object"
+          }
+        }
+      },
+      "Dev_containersDev_containersBuildGetParams": {
+        "type": "object",
+        "required": [
+          "build_id"
+        ],
+        "properties": {
+          "build_id": {
+            "type": "string"
+          }
+        }
+      },
+      "Dev_containersDev_containersBuildParams": {
+        "type": "object",
+        "required": [
+          "template_id",
+          "expected_revision",
+          "request_id"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "template_id": {
+            "type": "string"
           }
         }
       },
@@ -6884,6 +7318,88 @@
           }
         }
       },
+      "Dev_containersDev_containersDraftCreateParams": {
+        "type": "object",
+        "required": [
+          "template_id",
+          "base_template_id",
+          "owner_kind",
+          "owner_id",
+          "definition"
+        ],
+        "properties": {
+          "base_template_id": {
+            "type": "string"
+          },
+          "definition": {
+            "type": "object"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "owner_kind": {
+            "type": "string",
+            "enum": [
+              "installation",
+              "team",
+              "project",
+              "personal"
+            ]
+          },
+          "template_id": {
+            "type": "string"
+          }
+        }
+      },
+      "Dev_containersDev_containersDraftUpdateParams": {
+        "type": "object",
+        "required": [
+          "template_id",
+          "expected_revision",
+          "definition"
+        ],
+        "properties": {
+          "definition": {
+            "type": "object"
+          },
+          "expected_revision": {
+            "type": "integer"
+          },
+          "template_id": {
+            "type": "string"
+          }
+        }
+      },
+      "Dev_containersDev_containersEnvironmentReplaceParams": {
+        "type": "object",
+        "required": [
+          "template_id",
+          "expected_revision",
+          "environment"
+        ],
+        "properties": {
+          "environment": {
+            "type": "string"
+          },
+          "expected_revision": {
+            "type": "integer"
+          },
+          "template_id": {
+            "type": "string"
+          }
+        }
+      },
+      "Dev_containersDev_containersLaunch_referenceParams": {
+        "type": "object",
+        "required": [
+          "template_id"
+        ],
+        "properties": {
+          "template_id": {
+            "type": "string"
+          }
+        }
+      },
       "Dev_containersDev_containersListParams": {
         "type": "object",
         "properties": {
@@ -6891,6 +7407,25 @@
             "type": "string"
           },
           "limit": {
+            "type": "string"
+          }
+        }
+      },
+      "Dev_containersDev_containersRebuildParams": {
+        "type": "object",
+        "required": [
+          "template_id",
+          "expected_revision",
+          "request_id"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "template_id": {
             "type": "string"
           }
         }
@@ -6925,6 +7460,44 @@
         "properties": {
           "instance_id": {
             "type": "string"
+          }
+        }
+      },
+      "Dev_containersDev_containersTemplatesGetParams": {
+        "type": "object",
+        "required": [
+          "template_id"
+        ],
+        "properties": {
+          "template_id": {
+            "type": "string"
+          }
+        }
+      },
+      "Dev_containersDev_containersTemplatesListParams": {
+        "type": "object",
+        "required": [
+          "owner_kind",
+          "owner_id"
+        ],
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "string"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "owner_kind": {
+            "type": "string",
+            "enum": [
+              "installation",
+              "team",
+              "project",
+              "personal"
+            ]
           }
         }
       },
@@ -7209,6 +7782,7 @@
               "gateway.oauth.wait",
               "gateway.mcp.enable",
               "gateway.mcp.list",
+              "gateway.host.metrics",
               "gateway.clients.list",
               "gateway.mcp.disable",
               "gateway.mcp.restart",
@@ -7999,7 +8573,16 @@
           "actor": {
             "type": "string"
           },
+          "agent_id": {
+            "type": "string"
+          },
           "capability": {
+            "type": "string"
+          },
+          "client_name": {
+            "type": "string"
+          },
+          "client_version": {
             "type": "string"
           },
           "cursor": {
@@ -8043,10 +8626,19 @@
           "actor": {
             "type": "string"
           },
+          "agent_id": {
+            "type": "string"
+          },
           "bucket_count": {
             "type": "integer"
           },
           "capability": {
+            "type": "string"
+          },
+          "client_name": {
+            "type": "string"
+          },
+          "client_version": {
             "type": "string"
           },
           "include_facets": {
@@ -8546,6 +9138,12 @@
           },
           "level": {
             "type": "string"
+          },
+          "levels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           },
           "limit": {
             "type": "integer"
@@ -9717,7 +10315,15 @@
               "tasks.get",
               "tasks.queue",
               "tasks.cancel",
-              "tasks.result"
+              "tasks.result",
+              "tasks.schedule_create",
+              "tasks.schedule_list",
+              "tasks.schedule_get",
+              "tasks.schedule_edit",
+              "tasks.schedule_arm",
+              "tasks.schedule_pause",
+              "tasks.schedule_run_now",
+              "tasks.schedule_delete"
             ]
           },
           "params": {
@@ -9744,13 +10350,16 @@
           "owner_kind",
           "owner_id",
           "agent_id",
-          "input_digest"
+          "input"
         ],
         "properties": {
           "agent_id": {
             "type": "string"
           },
           "idempotency_key": {
+            "type": "string"
+          },
+          "input": {
             "type": "string"
           },
           "input_digest": {
@@ -9807,6 +10416,143 @@
         ],
         "properties": {
           "task_id": {
+            "type": "string"
+          }
+        }
+      },
+      "TasksTasksSchedule_armParams": {
+        "type": "object",
+        "required": [
+          "schedule_id"
+        ],
+        "properties": {
+          "schedule_id": {
+            "type": "string"
+          }
+        }
+      },
+      "TasksTasksSchedule_createParams": {
+        "type": "object",
+        "required": [
+          "schedule_id",
+          "name",
+          "owner_kind",
+          "owner_id",
+          "agent_id",
+          "input",
+          "schedule"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "armed": {
+            "type": "string"
+          },
+          "input": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "owner_kind": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "retry_policy": {
+            "type": "string"
+          },
+          "schedule": {
+            "type": "string"
+          },
+          "schedule_id": {
+            "type": "string"
+          }
+        }
+      },
+      "TasksTasksSchedule_deleteParams": {
+        "type": "object",
+        "required": [
+          "schedule_id"
+        ],
+        "properties": {
+          "schedule_id": {
+            "type": "string"
+          }
+        }
+      },
+      "TasksTasksSchedule_editParams": {
+        "type": "object",
+        "required": [
+          "schedule_id"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "input": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "retry_policy": {
+            "type": "string"
+          },
+          "schedule": {
+            "type": "string"
+          },
+          "schedule_id": {
+            "type": "string"
+          }
+        }
+      },
+      "TasksTasksSchedule_getParams": {
+        "type": "object",
+        "required": [
+          "schedule_id"
+        ],
+        "properties": {
+          "schedule_id": {
+            "type": "string"
+          }
+        }
+      },
+      "TasksTasksSchedule_listParams": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string"
+          }
+        }
+      },
+      "TasksTasksSchedule_pauseParams": {
+        "type": "object",
+        "required": [
+          "schedule_id"
+        ],
+        "properties": {
+          "schedule_id": {
+            "type": "string"
+          }
+        }
+      },
+      "TasksTasksSchedule_run_nowParams": {
+        "type": "object",
+        "required": [
+          "schedule_id",
+          "idempotency_key"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "schedule_id": {
             "type": "string"
           }
         }

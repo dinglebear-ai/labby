@@ -2,7 +2,7 @@
 title: Depot control-plane compatibility contract
 status: active
 created: 2026-09-03
-updated: 2026-09-07
+updated: 2026-09-15
 ---
 
 # Depot control-plane compatibility contract
@@ -69,10 +69,12 @@ render `incompatible`; Labby never invents an unadvertised operation.
   mutation and import routes.
 - `none`, `web_ui_auth_disabled`, synthetic development identity, and the
   static-bearer browser shell do not establish a Depot actor.
-- A shared Depot service credential may mutate only when the browser principal
-  currently holds `lab:admin`, the request carries valid session CSRF, and the
-  credential itself carries Depot's required write authority. Depot remains the
-  final scope and resource-policy authority.
+- The configured shared Depot service credential is bootstrap/read authority only.
+  It may discover session state and the complete control catalog but is never
+  forwarded for a write. A browser mutation requires current `lab:admin`, valid
+  session CSRF, and a fresh Labby-signed Depot delegation bound to the exact
+  operation and canonical parameter digest. Depot remains the final scope and
+  resource-policy authority.
 - Effective permission is the intersection of current Labby permission,
   configured connection ACL, Depot delegated scope, and Depot resource policy.
 
@@ -94,10 +96,15 @@ reauthorizes at the final Depot resource boundary.
 ## Delegated request profile
 
 The delegated assertion is signed and pins issuer, audience, subject Principal,
-typed owner context, method, normalized operation, exact resource or creation
-intent, authority vector, issue/expiry times, key ID, and unique assertion ID.
-Depot pins its algorithm/key profile, rejects key-location indirection and
-unknown required semantics, and supports bounded overlapping key rotation.
+typed owner context, normalized operation, the SHA-256 of canonical parameters,
+authority vector, issue/expiry times, key ID, and unique assertion ID. Depot
+rejects a partial binding or a mismatch before execution. Ordinary mutations use
+`skills:read skills:write`. Privileged maintenance uses the distinct
+`skills:read depot:operator` scope, which is accepted only when the assertion is
+delegated to the exact configured Depot deployment/tenant authority. A generic
+OAuth token or Depot bearer carrying that scope is insufficient. Depot pins its
+algorithm/key profile, rejects key-location indirection and unknown required
+semantics, and supports bounded overlapping key rotation.
 
 Mutation assertions carry a durable intent key. Depot atomically records
 consumption and the result, returns the same result for an identical retry, and
@@ -122,11 +129,24 @@ host-supplied header provider and never signs anything itself.
 
 ## Operational surface
 
-The Administration surface consumes Depot's authorization-filtered canonical
-operation catalog. It covers Artifact and Skill lifecycle, sources, ingestion,
-uploads, bundles, token administration, and privileged maintenance. Labby keeps
-provider connection management beside those operations while Depot remains the
-authority for the operation schemas, visibility, revisions, and execution.
+The Administration surface consumes Depot's authenticated complete control
+catalog (`GET /api/operations/catalog`), not only the operations authorized to
+the shared read bearer. Every entry carries its canonical `requiredScope`,
+transport set, current bootstrap authorization, and whether the API transport is
+available. Labby uses that metadata to choose read, write-delegated, or
+operator-delegated execution without hard-coding Depot operation names. A
+`destructiveHint: true` entry always executes as at least a write delegation
+(operator scope is preserved when the entry requires it), so destructive intent
+never travels under the shared read bearer plus an actor header, and the
+browser route applies the same admin mutation gate it applies to writes.
+
+Administration gives repository sources and durable ingest jobs a dedicated
+Sources workspace and reuses Labby's Artifact Control Plane for discovery,
+archive/manifest byte uploads, publication/license lifecycle, and bundles. The
+canonical operation catalog remains the complete schema-driven fallback for
+Artifact and Skill lifecycle, sources, ingestion, uploads, bundles, token
+administration, and maintenance. Depot remains the authority for schemas,
+visibility, revisions, authorization, and execution.
 
 Discovery's **Send to Labby** action resolves the selected provider to an
 Artifact acquisition connection with the same ID, requests the exact selected

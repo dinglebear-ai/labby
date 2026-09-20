@@ -17,6 +17,10 @@ const INSTALL_CONTROL_VARIABLES: &[&str] = &[
     "LABBY_INSTALL_LOCAL_BINARY",
     "LABBY_INSTALL_LOCAL_SHA256",
 ];
+/// GitHub CLI overrides that would let the service environment select the
+/// host, credential store, or enterprise token the installer verifies release
+/// provenance against. Releases are attested on github.com only.
+const GITHUB_HOST_OVERRIDES: &[&str] = &["GH_HOST", "GH_ENTERPRISE_TOKEN", "GH_CONFIG_DIR"];
 
 #[derive(Deserialize)]
 struct Asset {
@@ -83,7 +87,10 @@ fn installer_command(script: &Path, tag: &str, directory: &Path) -> Command {
             command.env_remove(key);
         }
     }
-    for key in INSTALL_CONTROL_VARIABLES {
+    for key in INSTALL_CONTROL_VARIABLES
+        .iter()
+        .chain(GITHUB_HOST_OVERRIDES)
+    {
         command.env_remove(key);
     }
     command

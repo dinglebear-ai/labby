@@ -114,6 +114,7 @@ export interface GatewayDiscovery {
 }
 
 export interface GatewayWarning {
+  occurrence_id?: string
   code: string
   message: string
   timestamp: string
@@ -223,6 +224,7 @@ export interface TestGatewayResult {
 
 export interface ReloadGatewayResult {
   success: boolean
+  pending?: boolean
   message: string
   previous_tool_count: number
   new_tool_count: number

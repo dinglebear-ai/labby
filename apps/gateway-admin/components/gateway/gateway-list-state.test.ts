@@ -182,3 +182,11 @@ test('tool rows sort alphabetically by tool name', () => {
   const rows = sortToolRows(aggregateToolsFromGateways(fixtures))
   assert.deepEqual(rows.map((row) => row.toolName), ['gateway', 'search', 'unifi'])
 })
+
+test('attention lens includes enabled unhealthy and warning servers but excludes disabled servers', () => {
+  const healthy = buildGateway({ id: 'healthy' })
+  const unhealthy = buildGateway({ id: 'unhealthy', status: { ...healthy.status, healthy: false } })
+  const warning = buildGateway({ id: 'warning', warnings: [{ code: 'stale', message: 'Stale', timestamp: '2026-09-13T00:00:00Z' }] })
+  const disabled = buildGateway({ ...unhealthy, id: 'disabled', enabled: false })
+  assert.deepEqual(filterGateways([healthy, unhealthy, warning, disabled], { primaryLens: 'attention', search: '', status: [], source: [], transport: [] }).map((gateway) => gateway.id), ['unhealthy', 'warning'])
+})

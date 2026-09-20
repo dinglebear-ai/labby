@@ -8,10 +8,10 @@
 
 use std::collections::BTreeSet;
 use std::collections::HashMap;
+#[cfg(test)]
 use std::sync::Arc;
 
 use futures::StreamExt;
-use futures::stream::FuturesUnordered;
 use rmcp::model::Prompt;
 
 use super::super::types::UpstreamCapability;
@@ -20,6 +20,12 @@ use super::catalog_pagination;
 use super::helpers::merge_upstream_prompts;
 use super::logging::is_capability_unsupported;
 use super::tools::MAX_UPSTREAM_PROMPTS;
+
+/// Number of prompt serializations performed while bounding the merged
+/// envelope; tests assert each prompt is measured once.
+#[cfg(test)]
+pub(super) static MERGED_PROMPT_MEASUREMENTS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 /// One regular non-OAuth upstream Prompt with exact pre-namespace provenance.
 /// This is observational listing metadata, not prompt execution authority.
@@ -77,37 +83,29 @@ impl UpstreamPool {
         //
         // Issue RPCs in parallel. merge_upstream_prompts sorts internally,
         // so completion order does not affect the final result.
-        let mut futures = FuturesUnordered::new();
-        let shared_budget = Arc::new(catalog_pagination::SharedCatalogBudget::new(
-            MAX_UPSTREAM_PROMPTS,
-            super::helpers::max_response_bytes(),
-        ));
-        for observed in observed_peers {
-            let peer = observed.peer.clone();
-            let shared_budget = Arc::clone(&shared_budget);
-            futures.push(async move {
-                let remaining = deadline_at.saturating_duration_since(tokio::time::Instant::now());
-                if remaining.is_zero() {
-                    return (
-                        observed,
-                        Err(catalog_pagination::CatalogPaginationError::Deadline {
-                            deadline_ms: 0,
-                        }),
-                    );
+        let mut futures = futures::stream::iter(observed_peers)
+            .map(|observed| {
+                let peer = observed.peer.clone();
+                async move {
+                    let remaining =
+                        deadline_at.saturating_duration_since(tokio::time::Instant::now());
+                    if remaining.is_zero() {
+                        return (
+                            observed,
+                            Err(catalog_pagination::CatalogPaginationError::Deadline {
+                                deadline_ms: 0,
+                            }),
+                        );
+                    }
+                    let result =
+                        catalog_pagination::list_prompts(&peer, remaining, MAX_UPSTREAM_PROMPTS)
+                            .await;
+                    (observed, result)
                 }
-                let result = catalog_pagination::list_prompts_with_budget(
-                    &peer,
-                    remaining,
-                    MAX_UPSTREAM_PROMPTS,
-                    &shared_budget,
-                )
-                .await;
-                (observed, result)
-            });
-        }
+            })
+            .buffer_unordered(super::helpers::upstream_discovery_concurrency(None));
 
         let mut upstream_prompts = Vec::new();
-        let mut prompt_name_updates = HashMap::new();
         let mut prompt_policies = HashMap::new();
         while let Some((observed, result)) = futures.next().await {
             let name = observed.upstream().to_string();
@@ -122,6 +120,16 @@ impl UpstreamPool {
                                 UpstreamCapability::Prompts,
                             );
                             entry.prompt_count = prompts.len();
+                            entry.prompt_names = prompts
+                                .iter()
+                                .map(|prompt| {
+                                    super::helpers::prefixed_upstream_prompt_name(
+                                        &name,
+                                        &prompt.name,
+                                    )
+                                })
+                                .filter(|name| !builtin_names.contains(&name.as_str()))
+                                .collect();
                             let policy = entry.prompt_exposure_policy.clone();
                             catalog.set_prompt_source(&name, observed.incarnation(), &prompts);
                             policy
@@ -132,7 +140,6 @@ impl UpstreamPool {
                         continue;
                     };
                     prompt_policies.insert(name.clone(), policy);
-                    prompt_name_updates.insert(name.clone(), (observed, Vec::new()));
                     upstream_prompts.push((name, prompts));
                 }
                 Err(catalog_pagination::CatalogPaginationError::Service(e))
@@ -151,6 +158,7 @@ impl UpstreamPool {
                                 UpstreamCapability::Prompts,
                             );
                             entry.prompt_count = 0;
+                            entry.prompt_names.clear();
                             catalog.set_prompt_source(&name, observed.incarnation(), &[]);
                         })
                         .await
@@ -158,7 +166,6 @@ impl UpstreamPool {
                         tracing::debug!(upstream = %name, "discarding stale unsupported prompts/list result");
                         continue;
                     };
-                    prompt_name_updates.insert(name.clone(), (observed, Vec::new()));
                     tracing::debug!(
                         upstream = %name,
                         error = %e,
@@ -177,6 +184,7 @@ impl UpstreamPool {
                                 format!("failed to list prompts from upstream: {error_text}"),
                             );
                             entry.prompt_count = 0;
+                            entry.prompt_names.clear();
                             catalog.remove_prompt_source(&name);
                         })
                         .await;
@@ -206,6 +214,20 @@ impl UpstreamPool {
             }
         }
 
+        // Bound only the merged envelope, after every server's complete,
+        // independently validated snapshot has been published above. One
+        // pass in upstream-name order keeps the result independent of
+        // completion order and measures each prompt exactly once.
+        super::helpers::bound_merged_catalog(
+            &mut upstream_prompts,
+            MAX_UPSTREAM_PROMPTS,
+            super::helpers::max_response_bytes(),
+            |prompt| {
+                #[cfg(test)]
+                MERGED_PROMPT_MEASUREMENTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                serde_json::to_vec(prompt).map_or(usize::MAX, |body| body.len() + 1)
+            },
+        );
         let (mut prompts, owners) = merge_upstream_prompts(builtin_names, upstream_prompts);
         if prompts.len() > MAX_UPSTREAM_PROMPTS {
             prompts.truncate(MAX_UPSTREAM_PROMPTS);
@@ -214,27 +236,6 @@ impl UpstreamPool {
                 "upstream prompt catalog exceeds limit — truncating to cap"
             );
         }
-        if !prompt_name_updates.is_empty() {
-            for prompt in &prompts {
-                if let Some(upstream_name) = owners.get(prompt.name.as_str())
-                    && let Some((_, names)) = prompt_name_updates.get_mut(upstream_name)
-                {
-                    names.push(prompt.name.to_string());
-                }
-            }
-            for (upstream_name, (observed, names)) in prompt_name_updates {
-                if self
-                    .apply_to_observed_entry(&observed, |entry| {
-                        entry.prompt_names = names;
-                    })
-                    .await
-                    .is_none()
-                {
-                    tracing::debug!(upstream = %upstream_name, "discarding stale prompt ownership cache update");
-                }
-            }
-        }
-
         // Filter *after* the cache write, not before: the cached `prompt_names`
         // snapshot deliberately stays unfiltered because it is what
         // `gateway.discovered_prompts` shows the operator who is editing
@@ -411,7 +412,6 @@ impl UpstreamPool {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use rmcp::model::{
@@ -487,6 +487,48 @@ mod tests {
             .await
             .expect("prompt connection identity");
         assert!(previous.is_none());
+    }
+
+    /// Every upstream publishes 600 prompts. Bounding the merged envelope
+    /// must measure each prompt once, not re-sort and re-serialize the whole
+    /// merged list every time one more upstream completes.
+    #[derive(Clone, Default)]
+    struct ManyPromptsServer;
+
+    impl ServerHandler for ManyPromptsServer {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_prompts().build())
+        }
+
+        async fn list_prompts(
+            &self,
+            _request: Option<PaginatedRequestParams>,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<ListPromptsResult, ErrorData> {
+            Ok(ListPromptsResult::with_all_items(
+                (0..600)
+                    .map(|index| Prompt::new(format!("p{index}"), None::<String>, None))
+                    .collect(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn merged_prompt_cap_serializes_each_prompt_once() {
+        let pool = catalog_pool_with_server("many-0", ManyPromptsServer).await;
+        for index in 1..5 {
+            attach_prompt_server(&pool, &format!("many-{index}"), ManyPromptsServer).await;
+        }
+        MERGED_PROMPT_MEASUREMENTS.store(0, Ordering::SeqCst);
+
+        let prompts = pool.list_upstream_prompts(&[]).await;
+
+        assert_eq!(prompts.len(), 3000.min(MAX_UPSTREAM_PROMPTS));
+        let measurements = MERGED_PROMPT_MEASUREMENTS.load(Ordering::SeqCst);
+        assert!(
+            measurements <= 3000,
+            "each prompt must be measured once while bounding the merged envelope; measured {measurements} times"
+        );
     }
 
     #[tokio::test]

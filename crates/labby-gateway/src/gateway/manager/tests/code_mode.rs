@@ -2842,6 +2842,15 @@ async fn one_shot_cli_catalog_names_unattempted_upstreams_when_stalled_probes_fi
         }
         other => panic!("expected upstream_connect_error, got {other:?}"),
     }
+    let second = tokio::time::timeout(
+        BUDGET_GUARD,
+        manager.code_mode_catalog_tools_cached(None, None),
+    )
+    .await
+    .expect("second bounded run completes")
+    .expect("omega gets the next admission turn");
+    assert_eq!(tool_ids(&second), vec!["omega::ping"]);
+    assert_eq!(responder.list_tools_requests(), 1);
 }
 
 /// A fresh cache entry with zero tools (a resource- or prompt-only upstream)

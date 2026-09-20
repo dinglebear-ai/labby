@@ -61,3 +61,16 @@ binary must be deployed and rolled back as one versioned unit.
 Do not mark Phabby superseded until a real-transport qualification, canary, and
 rollback rehearsal have produced retained evidence. A local build is not that
 evidence.
+
+
+## Library is the user Artifact hub
+
+The Labby Library is intentionally broader than Agent Skills and intentionally independent of a selected project workspace for browsing. Its primary authority is the Depot `depot.artifacts.list` operation, which combines hosted artifacts, provider-discovered virtual artifacts, and live local projections under the authenticated visibility policy. A project may still affect downstream actions, but a project selector must never gate the user's ability to see their Library.
+
+The Library navigation exposes these first-class families from one visual system: Artifacts, Loadouts, Snippets, Tools, Prompts, Resources, Apps, Skills, Plugins, and Marketplaces. Prompts, Resources, Apps, Plugins, and Marketplaces are filtered views of the same Artifact catalog. Skills may use its specialized management surface while retaining the same Library tabs. Tools use a conventional table/list/card catalog with the same hero and navigation grammar as Loadouts; the user-facing Tools page must not expose Code Mode's internal discovery ergonomics.
+
+Artifact inspection reuses the same modal used by Discover so metadata, file structure, README treatment, upstream provenance, and actions stay visually and behaviorally identical. Library-specific actions remain icon-only at rest and surface their meaning through labels/tooltips.
+
+### Visual contract
+
+The approved mock is the visual source of truth for typography, spacing, panel radii, borders, tokens, table density, icons, hover treatment, and modal composition. Shared components are preferred over one-off lookalikes so Library, Discover, Loadouts, and related screens cannot drift independently. Hero actions are icon-only across the application; visible titles and content hierarchy own the horizontal space.
