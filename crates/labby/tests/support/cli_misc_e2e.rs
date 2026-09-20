@@ -74,8 +74,9 @@ async fn run_setup_mutations(root: &Path) {
     let proxy = execute(
         &proxy_home,
         &[
-            "setup",
+            "config",
             "proxy",
+            "set",
             "--exposure",
             "local",
             "--auth",
@@ -117,8 +118,8 @@ async fn run_snippet_workflow(root: &Path) {
     let create = execute(
         &snippet_home,
         &[
-            "snippets",
-            "create",
+            "snippet",
+            "add",
             name,
             "--code",
             "async () => ({ ok: true })",
@@ -136,19 +137,19 @@ async fn run_snippet_workflow(root: &Path) {
     for (action, argv) in [
         (
             "snippets:snippets.get",
-            vec!["snippets", "get", name, "--json"],
+            vec!["snippet", "get", name, "--json"],
         ),
         (
             "snippets:snippets.validate",
-            vec!["snippets", "validate", name, "--json"],
+            vec!["snippet", "validate", name, "--json"],
         ),
         (
             "snippets:snippets.exec",
-            vec!["snippets", "exec", name, "--json"],
+            vec!["snippet", "run", name, "--json"],
         ),
         (
             "snippets:snippets.test",
-            vec!["snippets", "test", name, "--json"],
+            vec!["snippet", "test", name, "--json"],
         ),
     ] {
         let output = execute(&snippet_home, &argv, &[]).await;
@@ -157,7 +158,7 @@ async fn run_snippet_workflow(root: &Path) {
 
     let remove = execute(
         &snippet_home,
-        &["snippets", "remove", name, "--yes", "--json"],
+        &["snippet", "remove", name, "--yes", "--json"],
         &[],
     )
     .await;
@@ -166,7 +167,7 @@ async fn run_snippet_workflow(root: &Path) {
         &remove,
         EvidenceLevel::LiveStateTransition,
     );
-    let absent = execute(&snippet_home, &["snippets", "get", name, "--json"], &[]).await;
+    let absent = execute(&snippet_home, &["snippet", "get", name, "--json"], &[]).await;
     assert!(
         !absent.status.success(),
         "removed owned snippet remained readable"

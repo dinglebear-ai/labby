@@ -932,7 +932,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         description: "Scan the machine for MCP server configs from known editors and tools (cursor, claude-code, claude-desktop, codex, windsurf, opencode, vscode, gemini). Read-only — does not modify config.",
         destructive: false,
         requires_admin: true,
-        returns: "DiscoveredServerView[]",
+        returns: "DiscoveredServerView[] or ExplainedDiscoveryView when explain=true",
         params: &[
             ParamSpec {
                 name: "clients",
@@ -945,6 +945,12 @@ pub const ACTIONS: &[ActionSpec] = &[
                 ty: "boolean",
                 required: false,
                 description: "Also return servers already present in the gateway config",
+            },
+            ParamSpec {
+                name: "explain",
+                ty: "boolean",
+                required: false,
+                description: "Return redacted scan diagnostics with the discovered servers",
             },
         ],
     },
@@ -972,6 +978,12 @@ pub const ACTIONS: &[ActionSpec] = &[
                 ty: "string[]",
                 required: false,
                 description: "Limit discovery to these client kinds. Empty means scan all.",
+            },
+            ParamSpec {
+                name: "dry_run",
+                ty: "boolean",
+                required: false,
+                description: "Preview the exact import selection without changing gateway configuration",
             },
         ],
     },
@@ -1462,6 +1474,12 @@ pub const ACTIONS: &[ActionSpec] = &[
                 ty: "boolean",
                 required: false,
                 description: "When true, use broader host-wide process matching during cleanup",
+            },
+            ParamSpec {
+                name: "wait_ms",
+                ty: "integer",
+                required: false,
+                description: "Wait for completion for 0..=300000 milliseconds (default 20000). Zero returns acceptance without waiting; completed=false never means the restart finished.",
             },
         ],
     },

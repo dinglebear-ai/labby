@@ -75,8 +75,8 @@ image and run `labby setup --provision --yes --skip-deps`.
 The default service is a hardened system unit:
 
 ```bash
-labby setup host-service unit
-labby setup host-service install --install-self -y
+labby host service unit
+labby host service install --install-self -y
 systemctl status labby --no-pager
 ```
 
@@ -94,7 +94,7 @@ A successful `--install-self` upgrade retains the verified prior binary and its
 exact service state. Roll it back through the same host-service transaction:
 
 ```bash
-labby setup host-service rollback -y
+labby host service rollback -y
 ```
 
 Set `LABBY_HOST_WATCHDOG=1` during installation to opt into an external bounded
@@ -169,9 +169,9 @@ the operator's `~/.ssh/config`, Labby can bootstrap the gateway container with a
 separate Ed25519 key and authorize that key on the same reachable hosts:
 
 ```bash
-labby setup incus-ssh bootstrap --dry-run
-labby setup incus-ssh bootstrap --yes
-labby setup incus-ssh verify
+labby host incus ssh bootstrap --dry-run
+labby host incus ssh bootstrap --yes
+labby host incus ssh verify
 ```
 
 The bootstrap command:
@@ -202,7 +202,7 @@ install the binary into `/usr/local/bin`, then restart the service:
 ```bash
 cargo build --workspace --all-features --bin labby
 sudo install -D -m 755 target/debug/labby /usr/local/bin/labby
-sudo labby setup host-service restart -y
+sudo labby host service restart -y
 ```
 
 Do not rely on `systemd --user`, linger, or `XDG_RUNTIME_DIR` for the supported
@@ -215,7 +215,7 @@ asset directory that `labby serve` prefers over embedded fallback assets:
 ```bash
 just web-build
 cargo build --workspace --all-features --profile release-fast --bin labby
-target/release-fast/labby incus sync --binary target/release-fast/labby
+target/release-fast/labby host incus sync --binary target/release-fast/labby
 ```
 
 The web asset target is `/home/labby/.labby/web-assets`. Pass
@@ -229,7 +229,7 @@ Roll back the most recent successful Incus sync through its retained,
 transactional prior-release snapshot:
 
 ```bash
-labby incus sync --container labby --rollback
+labby host incus sync --container labby --rollback
 ```
 
 ## Dependency Diagnostics

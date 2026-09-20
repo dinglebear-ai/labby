@@ -31,7 +31,7 @@ to the registered machine target. Codex or the MCP client still owns PKCE,
 - Current upstream: Labby on Dookie, `http://10.1.0.6:40100`.
 - Rollback upstream: `callback-relay:39001`.
 - Public relay health path: `/healthz`.
-- Deep registry/target check: `labby doctor oauth-relay --probe-targets`.
+- Deep registry/target check: `labby doctor relay --probe-targets`.
 
 The checked-in Labby implementation owns the public relay registry, forwarding
 policy, admin surface, and doctor checks. SWAG owns only the public reverse-proxy
@@ -85,7 +85,7 @@ Run the deep registry and target check from an authenticated Labby operator
 context when reachability matters:
 
 ```bash
-labby doctor oauth-relay --probe-targets --json
+labby doctor relay --probe-targets --json
 ```
 
 A failing public check and a failing direct-upstream check indicate a Labby or
@@ -98,7 +98,7 @@ points toward relay registry entries or per-machine callback listeners.
 Inspect current registry state before mutating it:
 
 ```bash
-labby oauth relay-registry list --json
+labby auth relay registry list --json
 ```
 
 The CLI also supports add/update, enable/disable, remove, and whole-registry
@@ -110,7 +110,7 @@ The original migration used this one-time export/import path:
 
 ```bash
 ssh squirts 'docker exec callback-relay cat /app/.cache/callback-relay/registry.json' > /tmp/callback-relay-registry.json
-labby oauth relay-registry import --file /tmp/callback-relay-registry.json --json
+labby auth relay registry import --file /tmp/callback-relay-registry.json --json
 ```
 
 Use that only for an intentional rebuild/recovery when the legacy registry is
@@ -150,5 +150,5 @@ back to the Python relay, that relay's own health behavior is authoritative unti
 traffic is cut back to Labby.
 
 After Labby is healthy again, re-qualify the direct upstream, public `/healthz`,
-and `labby doctor oauth-relay --probe-targets --json` before returning the
+and `labby doctor relay --probe-targets --json` before returning the
 public proxy to Labby.

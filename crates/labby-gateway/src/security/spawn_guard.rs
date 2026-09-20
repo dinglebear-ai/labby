@@ -2,7 +2,7 @@
 //!
 //! These guards are applied at `validate_upstream` write-time so that every
 //! persisted stdio config is already clean before it reaches `connect_stdio`.
-//! Both the gateway add/update/import path and the marketplace install path
+//! Both the server add/set/import path and the marketplace install path
 //! call these same functions — there is exactly one copy of each rule.
 //!
 //! # Allowlists
@@ -86,7 +86,7 @@ pub const DANGEROUS_DENO_FLAGS: &[&str] = &["eval", "--allow-all", "-A"];
 ///
 /// This is the primary S1/S6 guard: only known safe runtimes may be persisted
 /// as the `command` of a stdio upstream. Callers that receive a raw command
-/// string from the operator (gateway add/update/import, marketplace install)
+/// string from the operator (server add/set/import, marketplace install)
 /// must call this before writing to config.
 ///
 /// Pass `extra` to extend the built-in list with operator-configured commands

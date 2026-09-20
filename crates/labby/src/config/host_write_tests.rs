@@ -39,7 +39,7 @@ fn separate_process_writer_preserves_update_made_while_waiting() {
 #[test]
 fn root_hands_files_in_another_accounts_directory_to_that_account() {
     use super::host_write::ownership_handoff;
-    // `sudo labby setup host-service install` writing /home/labby/.labby.
+    // `sudo labby host service install` writing /home/labby/.labby.
     assert_eq!(Some((998, 997)), ownership_handoff((998, 997), (0, 0)));
     // Root writing its own directory, or a user writing theirs: unchanged.
     assert_eq!(None, ownership_handoff((0, 0), (0, 0)));

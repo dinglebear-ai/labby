@@ -7875,6 +7875,9 @@
               "type": "string"
             }
           },
+          "explain": {
+            "type": "boolean"
+          },
           "include_existing": {
             "type": "boolean"
           }
@@ -7977,6 +7980,9 @@
             "items": {
               "type": "string"
             }
+          },
+          "dry_run": {
+            "type": "boolean"
           },
           "names": {
             "type": "array",
@@ -8222,6 +8228,9 @@
           },
           "name": {
             "type": "string"
+          },
+          "wait_ms": {
+            "type": "integer"
           }
         }
       },

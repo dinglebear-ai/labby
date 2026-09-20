@@ -303,7 +303,7 @@ and a client must not call `resources/directory/read` against it.
 
 Labby does not register a duplicate `skills` action tool. Agents use the native
 `skills/list`, `skills/get`, and `resources/read` protocol methods. The local
-CLI offers `labby skills list|search|get|read` for operator inspection. Managed
+CLI offers `labby skill list|search|get|read` for operator inspection. Managed
 Artifact lifecycle operations are separate and are exposed through the
 authenticated `artifacts` tool and `POST /v1/artifacts`.
 

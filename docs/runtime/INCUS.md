@@ -110,7 +110,7 @@ Override the snapshot policy with `--backup-config PATH` or
 `--no-backup-config`. The backup YAML maps directly to Incus `snapshots.*`
 instance config keys, so Incus owns scheduling and expiry; Labby does not run a
 cron or timer for normal snapshot retention. Bootstrap prefers the Rust-backed
-`labby setup incusbackup apply --name <container> --config <path>` validator
+`labby host incus backup apply --name <container> --config <path>` validator
 when a new enough host `labby` is on `PATH`, and falls back to the constrained
 shell parser only for older hosts.
 
@@ -129,21 +129,21 @@ For PR validation before a release exists, push a local binary instead:
 
 ```bash
 cargo build --workspace --all-features --bin labby
-target/debug/labby incus setup --local-binary target/debug/labby
+target/debug/labby host incus setup --local-binary target/debug/labby
 ```
 
 By default, `labby setup` installs the latest Labby release. Use the explicit
-`labby incus setup --version vX.Y.Z` form when you need reproducibility, or set
+`labby host incus setup --version vX.Y.Z` form when you need reproducibility, or set
 `LABBY_INSTALL_VERSION` for the checkout-local bootstrap script.
 
 The checkout-local `scripts/incus-bootstrap.sh` remains available for
 contributor debugging and CI image smoke tests, but the supported operator entry
 point is the binary-owned `labby setup` command. The explicit
-`labby incus setup` subcommand owns advanced bootstrap flags such as
+`labby host incus setup` subcommand owns advanced bootstrap flags such as
 `--local-binary`, `--skip-install`, and storage overrides. For day-to-day local
-binary deploys into an existing container, use `labby incus sync`.
+binary deploys into an existing container, use `labby host incus sync`.
 
-`labby incus sync` updates both runtime surfaces that affect the web UI:
+`labby host incus sync` updates both runtime surfaces that affect the web UI:
 
 - `/usr/local/bin/labby` — the executable, including embedded fallback assets
 - `/home/labby/.labby/web-assets` — the filesystem static export preferred by
@@ -158,7 +158,7 @@ Restore that binary, web assets, and supported systemd state through the same
 transactional path with:
 
 ```bash
-labby incus sync --container labby --rollback
+labby host incus sync --container labby --rollback
 ```
 
 The retained release is removed only after a successful rollback and is
@@ -178,7 +178,7 @@ For a checkout-local UI or Rust change:
 ```bash
 just web-build
 cargo build --workspace --all-features --profile release-fast --bin labby
-target/release-fast/labby incus sync \
+target/release-fast/labby host incus sync \
   --binary target/release-fast/labby \
   --check-url https://labby.dinglebear.ai/gateways/
 ```
@@ -330,8 +330,8 @@ labby setup --provision --yes --skip-deps
 The converged service is a hardened system unit:
 
 ```bash
-labby setup host-service unit
-labby setup host-service install --install-self -y
+labby host service unit
+labby host service install --install-self -y
 systemctl status labby --no-pager
 ```
 

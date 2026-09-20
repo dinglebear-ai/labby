@@ -73,7 +73,7 @@ impl PublicRelayRegistryStore {
     /// Backups are capped at `MAX_REGISTRY_BACKUPS` by design
     /// (`prune_old_backups` runs after every save), so a count exceeding
     /// that cap can only mean pruning has been persistently failing —
-    /// `labby doctor oauth-relay` uses this to surface that otherwise
+    /// `labby doctor relay` uses this to surface that otherwise
     /// invisible failure mode. Best-effort: returns 0 if the directory
     /// can't be listed, matching `prune_old_backups`'s own fail-open
     /// behavior for the same listing.

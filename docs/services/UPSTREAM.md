@@ -36,8 +36,8 @@ launch history preserves known modes without inventing a mode for old receipts.
 
 ## What Operators Configure
 
-To proxy an upstream server through Labby, prefer `labby gateway add` and
-`labby gateway update`. For offline editing, first identify the selected
+To proxy an upstream server through Labby, prefer `labby server add` and
+`labby server set`. For offline editing, first identify the selected
 installation root: `LABBY_HOME` when set, otherwise `~/.labby`. Edit only its
 `config.toml`, optionally provide bearer-token env vars in its `.env`, then
 start `labby serve` normally. Labby does not merge a second XDG or
@@ -303,10 +303,10 @@ query or authorization code.
 CLI examples:
 
 ```bash
-labby gateway mcp auth start chrome-devtools
-labby gateway mcp auth open chrome-devtools --wait
-labby gateway mcp auth status chrome-devtools
-labby gateway mcp auth clear chrome-devtools
+labby server auth login --no-browser chrome-devtools
+labby server auth login chrome-devtools --wait
+labby server auth status chrome-devtools
+labby server auth logout chrome-devtools
 ```
 
 ### Spec-Aligned Invariants
@@ -627,7 +627,7 @@ expose_skills = ["refunds"]   # omit to expose all
 Enable it from the CLI with:
 
 ```bash
-labby gateway add --name acme --command acme-mcp-server --proxy-skills true
+labby server add acme --command acme-mcp-server --proxy-skills true
 ```
 
 ### Per-origin namespacing
@@ -727,7 +727,7 @@ Keep this distinction explicit in operator docs:
 
 ### 1. Configure upstreams
 
-Prefer `labby gateway add`/`update`. For offline editing, add `[[upstream]]`
+Prefer `labby server add`/`set`. For offline editing, add `[[upstream]]`
 entries to the selected `$LABBY_HOME/config.toml` (normally
 `~/.labby/config.toml`).
 

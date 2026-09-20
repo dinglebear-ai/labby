@@ -87,7 +87,7 @@ impl GatewayManager {
             .ok_or_else(|| ToolError::Sdk {
                 sdk_kind: "not_found".to_string(),
                 message: format!(
-                    "loadout `{name}` not found in desired config; run `gateway.loadout.list_state` or `labby gateway loadout list` to inspect pending restart state"
+                    "loadout `{name}` not found in desired config; run `gateway.loadout.list_state` or `labby loadout list` to inspect pending restart state"
                 ),
             })
     }

@@ -4,7 +4,7 @@
 //!   labby doctor              — full audit (system + auth + gateway + relay)
 //!   labby doctor system       — local system checks only
 //!   labby doctor auth         — auth/OAuth configuration checks
-//!   labby doctor oauth-relay  — public OAuth callback relay registry checks
+//!   labby doctor relay  — public OAuth callback relay registry checks
 //!
 //! Exit codes: 0 = ok, 1 = warnings, 2 = failures.
 
@@ -32,6 +32,7 @@ pub enum DoctorCheck {
     /// Check auth/OAuth configuration (env vars, files, permissions)
     Auth(DoctorAuthArgs),
     /// Check public OAuth callback relay registry and optionally target sockets
+    #[command(name = "relay")]
     OauthRelay(DoctorOauthRelayArgs),
     /// Check public Lab and protected MCP proxy endpoints from caller-visible URLs
     Proxy(DoctorProxyArgs),
@@ -478,10 +479,10 @@ mod tests {
 
     #[test]
     fn doctor_oauth_relay_cli_parses_probe_targets() {
-        let cli = Cli::try_parse_from(["lab", "doctor", "oauth-relay", "--probe-targets"])
+        let cli = Cli::try_parse_from(["lab", "doctor", "relay", "--probe-targets"])
             .expect("oauth relay doctor command should parse");
 
-        match cli.command {
+        match cli.command.into_operation() {
             Command::Doctor(super::DoctorArgs {
                 check: Some(super::DoctorCheck::OauthRelay(args)),
             }) => assert!(args.probe_targets),

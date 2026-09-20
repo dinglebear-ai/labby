@@ -904,7 +904,7 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
         let cli_get = action_scenarios::run_cli_in_install(
             &cli_home,
             &labby_home,
-            &["snippets", "get", "api-cli-owned", "--json"],
+            &["snippet", "get", "api-cli-owned", "--json"],
         )
         .await
         .unwrap();
@@ -922,7 +922,7 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
         let cli_absent = action_scenarios::run_cli_in_install(
             &cli_home,
             &labby_home,
-            &["snippets", "get", "api-cli-owned", "--json"],
+            &["snippet", "get", "api-cli-owned", "--json"],
         )
         .await
         .unwrap();
@@ -936,8 +936,8 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
             &cli_home,
             &labby_home,
             &[
-                "snippets",
-                "create",
+                "snippet",
+                "add",
                 "cli-api-owned",
                 "--code",
                 "async () => ({ ok: true })",
@@ -964,7 +964,7 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
         let cli_remove = action_scenarios::run_cli_in_install(
             &cli_home,
             &labby_home,
-            &["snippets", "remove", "cli-api-owned", "--yes", "--json"],
+            &["snippet", "remove", "cli-api-owned", "--yes", "--json"],
         )
         .await
         .unwrap();

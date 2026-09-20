@@ -1039,7 +1039,7 @@ mod tests {
         let help = super::super::render::cli_help();
         for heading in [
             "## `labby proxy`",
-            "## `labby setup proxy`",
+            "## `labby config proxy set`",
             "## `labby doctor proxy`",
         ] {
             assert!(

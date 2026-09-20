@@ -65,7 +65,7 @@ fn installation_command(root: &std::path::Path) -> std::process::Command {
 
 fn prepare(root: &std::path::Path) -> serde_json::Value {
     let output = installation_command(root)
-        .args(["setup", "access-bootstrap", "prepare", "--proof-file"])
+        .args(["auth", "bootstrap", "prepare", "--proof-file"])
         .arg(root.join("proof.json"))
         .arg("--credential-file")
         .arg(root.join("credential.txt"))

@@ -685,7 +685,9 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
                     env_path.display()
                 );
                 if matches!(transport, Transport::Http) {
-                    eprintln!("  Open http://{host}:{port}/setup to finish configuration.");
+                    eprintln!(
+                        "  Open the configured HTTP /setup endpoint to finish configuration."
+                    );
                 } else {
                     eprintln!(
                         "  Connect through the configured Unix socket to finish configuration."

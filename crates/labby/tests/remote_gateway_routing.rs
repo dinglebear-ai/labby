@@ -127,7 +127,7 @@ async fn local_gateway_list_fits_a_one_mebibyte_main_stack() {
     let output = tokio::time::timeout(
         Duration::from_secs(30),
         small_stack_command(home.path())
-            .args(["gateway", "list", "--json"])
+            .args(["server", "list", "--json"])
             .output(),
     )
     .await
@@ -151,7 +151,7 @@ async fn local_code_mode_execution_fits_a_one_mebibyte_main_stack() {
     let output = tokio::time::timeout(
         Duration::from_secs(30),
         small_stack_command(home.path())
-            .args(["gateway", "code", "exec", "--code", "return 7;", "--json"])
+            .args(["code", "run", "--code", "return 7;", "--json"])
             .output(),
     )
     .await
@@ -196,7 +196,7 @@ enabled = true
     let output = tokio::time::timeout(
         Duration::from_secs(30),
         local_command(home.path())
-            .args(["gateway", "code", "exec", "--json", "--code", "return 1"])
+            .args(["code", "run", "--json", "--code", "return 1"])
             .output(),
     )
     .await
@@ -216,7 +216,7 @@ enabled = true
     let envelope: serde_json::Value =
         serde_json::from_slice(&output.stderr).expect("stderr must be one JSON error envelope");
     assert_eq!(envelope["ok"], false);
-    assert_eq!(envelope["command"], "gateway");
+    assert_eq!(envelope["command"], "code run");
     assert_eq!(envelope["error"]["contract_version"], 1);
     assert_eq!(envelope["error"]["kind"], "invalid_param");
     assert_eq!(envelope["error"]["origin"], "validation");
@@ -369,7 +369,7 @@ async fn explicit_malformed_gateway_list_never_falls_back_locally() {
         .await;
 
     let output = isolated_command(home.path(), &server)
-        .args(["gateway", "list", "--json"])
+        .args(["server", "list", "--json"])
         .output()
         .await
         .unwrap();
@@ -391,9 +391,8 @@ async fn explicit_code_mode_mcp_failure_never_executes_locally() {
 
     let output = isolated_command(home.path(), &server)
         .args([
-            "gateway",
             "code",
-            "exec",
+            "run",
             "--code",
             "return await codemode.search({ query: 'tidewave' });",
         ])
@@ -404,7 +403,7 @@ async fn explicit_code_mode_mcp_failure_never_executes_locally() {
     assert!(!output.status.success());
     assert!(
         String::from_utf8_lossy(&output.stderr)
-            .contains("Code Mode execution through configured Labby server")
+            .contains("Code Mode execution through the selected Labby server")
     );
     assert_no_local_gateway_state(home.path());
 }
@@ -445,7 +444,7 @@ async fn opportunistic_malformed_gateway_list_preserves_local_fallback() {
         .await;
 
     let output = opportunistic_command(home.path(), &server)
-        .args(["gateway", "list", "--json"])
+        .args(["server", "list", "--json"])
         .output()
         .await
         .unwrap();
@@ -462,7 +461,7 @@ async fn opportunistic_malformed_gateway_list_preserves_local_fallback() {
 }
 
 #[tokio::test]
-async fn opportunistic_code_mode_failure_preserves_trusted_local_fallback() {
+async fn opportunistic_code_mode_failure_never_replays_locally() {
     let home = tempfile::tempdir().unwrap();
     let server = mock_detectable_daemon().await;
     Mock::given(method("POST"))
@@ -482,17 +481,27 @@ async fn opportunistic_code_mode_failure_preserves_trusted_local_fallback() {
     let output = tokio::time::timeout(
         harness_deadline,
         opportunistic_command(home.path(), &server)
-            .args(["gateway", "code", "exec", "--code", "return 7;"])
+            .args(["code", "run", "--json", "--code", "return 7;"])
             .output(),
     )
     .await
-    .expect("opportunistic Code Mode fallback must finish promptly")
+    .expect("opportunistic Code Mode failure must finish promptly")
     .unwrap();
 
+    assert_eq!(output.status.code(), Some(1));
     assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+        output.stdout.is_empty(),
+        "a remote failure must not return a local execution result"
     );
-    assert!(String::from_utf8_lossy(&output.stdout).contains('7'));
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["command"], "code run");
+    assert_eq!(error["error"]["kind"], "bridge_transport_error");
+    assert_eq!(error["error"]["side_effects"], "unknown");
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("not retried locally")
+    );
+    assert_no_local_gateway_state(home.path());
 }

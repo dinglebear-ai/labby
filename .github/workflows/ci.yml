@@ -807,7 +807,7 @@ jobs:
       - name: Execute sandbox through the CLI-hosted runner
         run: |
           set -euo pipefail
-          cargo run -p labby --bin labby --all-features --locked -- --json gateway code exec \
+          cargo run -p labby --bin labby --all-features --locked -- --json code run \
             --code 'async () => ({ ok: true, sum: 1 + 1 })' \
             | grep -q '"sum":2'
 

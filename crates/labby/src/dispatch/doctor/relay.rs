@@ -381,7 +381,7 @@ mod tests {
         // Backups are capped at `MAX_REGISTRY_BACKUPS` by design (pruned
         // after every save), so more than that on disk can only mean
         // pruning has been persistently failing -- this should be visible
-        // in `labby doctor oauth-relay`, not just in swallowed prune logs.
+        // in `labby doctor relay`, not just in swallowed prune logs.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("registry.json");
         let store = PublicRelayRegistryStore::new(path.clone());

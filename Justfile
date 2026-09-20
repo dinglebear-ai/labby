@@ -69,7 +69,7 @@ docs-check:
     python3 scripts/check-product-docs.py
     python3 -m unittest discover -s scripts/ci -p 'test_product_docs.py'
     python3 scripts/check-depot-control-plane-contract.py
-    python3 -m unittest scripts/ci/test_depot_control_plane_contract.py
+    python3 -m unittest scripts/ci/test_depot_control_plane_contract.py scripts/ci/test_product_doc_cli_options.py
 
 # Inspect an item from the canonical standalone Aurora shadcn registry.
 aurora-view item="aurora-base":
@@ -208,8 +208,8 @@ host-sync:
     sudo mkdir -p /usr/local/bin
     sudo install -m 755 "$LABBY_BIN" /usr/local/bin/labby
     if systemctl is-active --quiet labby.service; then
-      sudo /usr/local/bin/labby setup host-service restart -y
-      sudo /usr/local/bin/labby setup host-service status --json
+      sudo /usr/local/bin/labby host service restart -y
+      sudo /usr/local/bin/labby host service status --json
     else
       echo "error: labby.service is not active; run: just host-service-install" >&2
       exit 1
@@ -241,17 +241,17 @@ host-service-install:
     esac
     sudo mkdir -p /usr/local/bin
     sudo install -m 755 "$LABBY_BIN" /usr/local/bin/labby
-    sudo /usr/local/bin/labby setup host-service install -y
+    sudo /usr/local/bin/labby host service install -y
 
 host-service-restart:
-    sudo /usr/local/bin/labby setup host-service restart -y
-    sudo /usr/local/bin/labby setup host-service status --json
+    sudo /usr/local/bin/labby host service restart -y
+    sudo /usr/local/bin/labby host service status --json
 
 host-service-status:
-    sudo /usr/local/bin/labby setup host-service status --json
+    sudo /usr/local/bin/labby host service status --json
 
 host-service-uninstall:
-    sudo /usr/local/bin/labby setup host-service uninstall -y
+    sudo /usr/local/bin/labby host service uninstall -y
 
 # Install release binary to ~/.local/bin/labby (updates the host CLI)
 install: build-release
@@ -400,7 +400,7 @@ smoke-setup:
 # Validate the Labby plugin setup lifecycle against a throw-away LABBY_HOME.
 validate-plugin:
     rm -rf /tmp/labby-plugin-validate
-    LABBY_HOME=/tmp/labby-plugin-validate cargo run --bin labby --all-features -- setup plugin-hook --no-repair --json
+    LABBY_HOME=/tmp/labby-plugin-validate cargo run --bin labby --all-features -- setup check --json
 
 # Report the currently installed Labby host-service runtime.
 runtime-current:

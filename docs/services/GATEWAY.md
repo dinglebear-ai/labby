@@ -143,12 +143,11 @@ Labby needs no spawn-guard override:
 ```bash
 claude doctor
 command -v claude
-labby gateway add \
-  --name claude-local \
+labby server add claude-local \
   --command /absolute/path/to/claude \
   --arg=mcp \
   --arg=serve
-labby gateway test --name claude-local
+labby server test claude-local
 ```
 
 For a Claude Code MCP on another machine, use `ssh` as the local stdio command
@@ -181,10 +180,10 @@ proxy_prompts = true
 proxy_skills = false
 ```
 
-The same definition can be created with `labby gateway add --command /usr/bin/ssh`
+The same definition can be created with `labby server add --command /usr/bin/ssh`
 and repeated `--arg` options. Validate the raw non-interactive SSH command as
-the Labby service account first, then run `labby gateway test --name
-claude-remote`. After the upstream is reachable, use one safe Claude MCP tool
+the Labby service account first, then run `labby server test claude-remote`.
+After the upstream is reachable, use one safe Claude MCP tool
 to verify `hostname`, `whoami`, platform, and current working directory so a
 Windows, WSL, macOS, or Linux target cannot be silently confused with a
 similarly named machine.
@@ -273,10 +272,10 @@ max_log_bytes = 65536
 CLI:
 
 ```bash
-labby gateway code status
-labby gateway code enable
-labby gateway code disable
-labby gateway code exec --code 'async () => (await codemode.search("GitHub issues")).total'
+labby code status
+labby code enable
+labby code disable
+labby code run --code 'async () => (await codemode.search("GitHub issues")).total'
 ```
 
 HTTP/MCP gateway management actions:
@@ -530,7 +529,7 @@ Observability requirements for that reconcile:
 
 The reconcile model above describes what happens *inside one process*. The
 CLI and the running `labby serve` daemon are separate processes, each with
-their own in-memory `GatewayManager` -- a `labby gateway add` invocation
+their own in-memory `GatewayManager` -- a `labby server add` invocation
 that builds its own throwaway manager would write `config.toml` correctly
 but leave an already-running daemon (and the WebUI/MCP clients it serves)
 unaware of the change until restarted or sent `SIGUSR1`.
@@ -540,7 +539,7 @@ explicit client target (`CLAUDE_PLUGIN_OPTION_SERVER_URL`, then
 `LABBY_SERVER_URL`) or probes opportunistically (local bind address, then
 `LABBY_MCP_GATEWAY_URL`/`LABBY_PUBLIC_URL`). If one responds, it dispatches
 through the daemon's real HTTP API
-(`POST /v1/gateway`, or the `codemode` MCP tool for `gateway code exec`) --
+(`POST /v1/gateway`, or the `codemode` MCP tool for `code run`) --
 the same path the WebUI itself uses, since the WebUI is served *by* the live
 daemon and shares its manager directly. Explicit targets remain authoritative
 through dispatch, response decoding, Code Mode, and stdio MCP initialization;
@@ -556,7 +555,7 @@ Running the CLI from a different machine than the daemon should use
 `LABBY_MCP_HTTP_TOKEN` and `LABBY_SERVER_URL`; see `docs/runtime/ENV.md` §
 "Remote Gateway CLI Usage" for the exact precedence and fallback behavior.
 
-When `gateway code exec` falls back to the local manager (and for
+When `code run` falls back to the local manager (and for
 `snippets.exec`, which runs on the same CLI-surface catalog path), the
 `codemode.*` proxy is built from the on-disk catalog cache
 (`$LABBY_HOME/cache/codemode-catalog.json`, `~/.labby/cache/codemode-catalog.json`
@@ -615,17 +614,17 @@ unreachable explicit targets fail closed instead.
 ### CLI
 
 ```bash
-labby gateway list
-labby gateway get remote-lab
-labby gateway test --name remote-lab
-labby gateway add --name remote-lab --url https://lab2.example.com/mcp --bearer-token-env LABBY_UPSTREAM_TOKEN
-labby gateway add --name deepwiki --url https://mcp.deepwiki.com/mcp
-labby gateway add --name local-tools --command local-mcp-server
-labby gateway update remote-lab --proxy-resources true
-labby gateway update remote-lab --command local-mcp-server --arg=--stdio
-labby gateway update local-tools --url https://lab2.example.com/mcp
-labby gateway update remote-lab --clear-bearer-token-env
-labby gateway remove remote-lab
+labby server list
+labby server get remote-lab
+labby server test remote-lab
+labby server add remote-lab --url https://lab2.example.com/mcp --bearer-token-env LABBY_UPSTREAM_TOKEN
+labby server add deepwiki --url https://mcp.deepwiki.com/mcp
+labby server add local-tools --command local-mcp-server
+labby server set remote-lab --proxy-resources true
+labby server set remote-lab --command local-mcp-server --arg=--stdio
+labby server set local-tools --url https://lab2.example.com/mcp
+labby server set remote-lab --clear-bearer-token-env
+labby server remove remote-lab
 labby gateway reload
 ```
 
@@ -765,53 +764,47 @@ Management actions:
 CLI equivalents:
 
 ```bash
-labby gateway protected-route list
-labby gateway protected-route get syslog
-labby gateway protected-route test \
-  --name syslog \
+labby route list
+labby route get syslog
+labby route test syslog \
   --public-host mcp.example.com \
   --public-path /syslog \
   --backend-url http://node.internal.example:3100/mcp
-labby gateway protected-route test \
-  --name axon \
+labby route test axon \
   --public-host mcp.example.com \
   --public-path /axon \
   --upstream axon
-labby gateway protected-route add \
-  --name syslog \
+labby route add syslog \
   --public-host mcp.example.com \
   --public-path /syslog \
   --backend-url http://node.internal.example:3100/mcp \
   --scope mcp:read \
   --scope mcp:write
-labby gateway protected-route add \
-  --name axon \
+labby route add axon \
   --public-host mcp.example.com \
   --public-path /axon \
   --upstream axon \
   --scope mcp:read \
   --scope mcp:write
-labby gateway protected-route test \
-  --name project-ops \
+labby route test project-ops \
   --public-host mcp.example.com \
   --public-path /project-ops \
   --gateway-subset \
   --project-id project-42 \
   --loadout operations
-labby gateway protected-route add \
-  --name project-ops \
+labby route add project-ops \
   --public-host mcp.example.com \
   --public-path /project-ops \
   --gateway-subset \
   --project-id project-42 \
   --loadout operations \
   --stage-for-restart
-labby gateway protected-route update syslog \
+labby route replace syslog \
   --public-host mcp.example.com \
   --public-path /syslog \
   --backend-url http://node.internal.example:3100/mcp \
   --enabled false
-labby gateway protected-route remove syslog
+labby route remove syslog
 ```
 
 For a gateway-subset update, omitting `--project-id` preserves the existing
@@ -822,7 +815,7 @@ the same rules as other gateway-subset routes.
 
 Route testing has two layers:
 
-- `labby gateway protected-route test ...` validates the route config and
+- `labby route test ...` validates the route config and
   backend health path before saving or updating the Labby config.
 - `just protected-mcp-smoke -- --app-url https://lab.example.com --mcp-url
   https://mcp.example.com --route /syslog` verifies the deployed public flow:
@@ -865,8 +858,7 @@ MCP_SYSLOG_BACKEND=http://node.internal.example:3100/mcp
 with:
 
 ```bash
-labby gateway protected-route add \
-  --name syslog \
+labby route add syslog \
   --public-host mcp.example.com \
   --public-path /syslog \
   --backend-url http://node.internal.example:3100/mcp
@@ -1130,10 +1122,10 @@ ephemeral port. Stdio OAuth always uses the trusted shared subject `gateway`.
 CLI:
 
 ```bash
-labby gateway mcp auth start chrome-devtools
-labby gateway mcp auth open chrome-devtools --wait
-labby gateway mcp auth status chrome-devtools
-labby gateway mcp auth clear chrome-devtools
+labby server auth login --no-browser chrome-devtools
+labby server auth login chrome-devtools --wait
+labby server auth status chrome-devtools
+labby server auth logout chrome-devtools
 ```
 
 MCP tool calls:

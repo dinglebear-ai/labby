@@ -10,7 +10,19 @@ source "$repo_root/scripts/ci/n-minus-one-token.sh"
 read_current_token() { sudo sed -n 's/^LABBY_MCP_HTTP_TOKEN=//p' "$LABBY_HOME/.env" | tr -d '\r'; }
 
 # `status` takes no -y (v1.13.3 rejects it); the mutating subcommands need it.
-service() { if [[ "$1" == status ]]; then sudo /usr/local/bin/labby setup host-service status; else sudo /usr/local/bin/labby setup host-service "$1" -y; fi; }
+service() {
+  # The qualification driver runs both a historical baseline and the candidate.
+  # Probe help only; never retry a failed mutation using another command path.
+  local prefix=(host service)
+  if ! /usr/local/bin/labby host service --help >/dev/null 2>&1; then
+    prefix=(setup host-service)
+  fi
+  if [[ "$1" == status ]]; then
+    sudo /usr/local/bin/labby "${prefix[@]}" status
+  else
+    sudo /usr/local/bin/labby "${prefix[@]}" "$1" -y
+  fi
+}
 version() { /usr/local/bin/labby --version | grep -Fq "${1#v}"; }
 # Service-manager start/restart completion does not imply HTTP readiness.
 wait_ready() {
@@ -60,12 +72,12 @@ case "${1:-}" in
   seed-state) capture_baseline_token; mkdir -p "$state_root"; sudo install -d -m 0700 -o labby -g labby "$LABBY_HOME"; call snippets '{"action":"snippets.create","params":{"name":"n-minus-one-state","body":"async () => ({ value: \"preserved-state\" })","description":"release qualification state","force":true}}' >/dev/null; sudo systemctl stop labby.service; sudo sh -c "[ -f '$LABBY_HOME/config.toml' ] || printf 'config_version = 1\\n' > '$LABBY_HOME/config.toml'"; sudo python3 "$repo_root/scripts/ci/n-minus-one-durable-state.py" seed "$LABBY_HOME"; if ! sudo tar -C /home/labby -czf "$state_root/full-durable-state.tar.gz" .labby; then sudo systemctl start labby.service; exit 1; fi; sudo chown -R labby:labby "$LABBY_HOME"; sudo systemctl start labby.service; sudo chown "$(id -u):$(id -g)" "$state_root/full-durable-state.tar.gz"; state_digest >"$state_root/state.sha256" ;;
   verify-previous) version "$LABBY_PREVIOUS_VERSION"; service status >/dev/null; state_digest | cmp - "$state_root/state.sha256"; customized_state; test -s "$state_root/full-durable-state.tar.gz" ;;
   verify-provenance) "$repo_root/scripts/ci/verify-and-activate-release.sh" --repo "$GITHUB_REPOSITORY" --workflow release.yml --ref "$GITHUB_REF" --artifact "${LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE:?candidate archive required}" -- true ;;
-  upgrade) candidate="${LABBY_N_MINUS_ONE_CANDIDATE_BINARY:?candidate binary required}"; if sudo env LABBY_HOST_SERVICE_FAIL_AFTER=restart "$candidate" setup host-service install --install-self -y; then echo 'host upgrade fault unexpectedly succeeded' >&2; exit 1; fi; begin_candidate_phase; "$repo_root/scripts/ci/verify-and-activate-release.sh" --repo "$GITHUB_REPOSITORY" --workflow release.yml --ref "$GITHUB_REF" --artifact "${LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE:?candidate archive required}" -- sudo "$candidate" setup host-service install --install-self -y ;;
+  upgrade) candidate="${LABBY_N_MINUS_ONE_CANDIDATE_BINARY:?candidate binary required}"; if sudo env LABBY_HOST_SERVICE_FAIL_AFTER=restart "$candidate" host service install --install-self -y; then echo 'host upgrade fault unexpectedly succeeded' >&2; exit 1; fi; begin_candidate_phase; "$repo_root/scripts/ci/verify-and-activate-release.sh" --repo "$GITHUB_REPOSITORY" --workflow release.yml --ref "$GITHUB_REF" --artifact "${LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE:?candidate archive required}" -- sudo "$candidate" host service install --install-self -y ;;
   verify-candidate) version "$LABBY_CANDIDATE_VERSION"; service status >/dev/null; state_digest | cmp - "$state_root/state.sha256"; customized_state ;;
   authenticated-action) authenticated_action ;;
   restart) service restart ;;
   verify-restart) version "$LABBY_CANDIDATE_VERSION"; service status >/dev/null; authenticated_action; customized_state ;;
-  rollback) sudo /usr/local/bin/labby setup host-service rollback -y ;;
+  rollback) service rollback ;;
   verify-rollback) version "$LABBY_PREVIOUS_VERSION"; service status >/dev/null; state_digest | cmp - "$state_root/state.sha256"; customized_state; test -s "$state_root/full-durable-state.tar.gz" ;;
   *) echo "unknown stage: ${1:-}" >&2; exit 64 ;;
 esac

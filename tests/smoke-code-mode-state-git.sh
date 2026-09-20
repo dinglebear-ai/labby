@@ -9,7 +9,7 @@ export LABBY_HOME="$TMP/lab-home"
 mkdir -p "$LABBY_HOME"
 
 cd "$ROOT"
-cargo run --all-features -- --json gateway code exec --code '
+cargo run --all-features -- --json code run --code '
 async () => {
   await state.writeFile({ path: "/src/app.rs", content: "fn main() { println!(\"hi\"); }\n" });
   const read = await state.readFile({ path: "/src/app.rs" });
