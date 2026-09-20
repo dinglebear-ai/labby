@@ -253,12 +253,14 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         // when the gate passes AND the host has ≥1 loaded spec. The host-less
         // early-return path has no registry, so the shim would only ever error
         // there (M11).
-        let openapi_provider_js =
-            if local_providers_allowed(caller, scope) && !host.openapi_registry().is_empty() {
-                super::preamble::generate_openapi_provider_js()
-            } else {
-                ""
-            };
+        let openapi_registry = host.openapi_registry();
+        let openapi_provider_js = if openapi_provider_allowed(caller, scope, &openapi_registry)
+            && !openapi_registry.is_empty()
+        {
+            super::preamble::generate_openapi_provider_js()
+        } else {
+            ""
+        };
         Ok(format!(
             "{local_provider_js}\n{openapi_provider_js}\n{discovery_js}\n{namespace_js}"
         ))
@@ -746,6 +748,25 @@ fn execution_allowed(caller: &CodeModeCaller, scope: &ToolScope) -> bool {
 #[must_use]
 pub fn local_providers_allowed(caller: &CodeModeCaller, scope: &ToolScope) -> bool {
     caller.is_admin() && !scope.is_scoped()
+}
+
+/// Whether the OpenAPI local provider may be present for this execution.
+/// Static/no-auth operations retain the operator-only boundary at dispatch;
+/// authenticated non-admin callers gain access only when at least one loaded
+/// operation is explicitly backed by subject-scoped OAuth.
+#[must_use]
+pub(crate) fn openapi_provider_allowed(
+    caller: &CodeModeCaller,
+    scope: &ToolScope,
+    registry: &labby_openapi::OpenApiRegistry,
+) -> bool {
+    if scope.is_scoped() {
+        return false;
+    }
+    local_providers_allowed(caller, scope)
+        || (caller.can_execute()
+            && caller.subject().is_some_and(|subject| !subject.is_empty())
+            && registry.has_subject_scoped_operations())
 }
 
 /// Truncate a semantic query to at most [`MAX_SEMANTIC_QUERY_BYTES`], cutting
@@ -1744,6 +1765,85 @@ mod tests {
             .await;
         let value = result.expect("oversized query must be truncated, not errored");
         assert_eq!(value, json!({ "ranked": [] }));
+    }
+
+    async fn subject_scoped_registry() -> labby_openapi::OpenApiRegistry {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("openapi.json");
+        std::fs::write(
+            &path,
+            r#"{"openapi":"3.0.0","info":{"title":"Fixture","version":"1.0.0"},"paths":{"/me":{"get":{"operationId":"getMe","responses":{"200":{"description":"ok"}}}}}}"#,
+        )
+        .expect("write spec");
+        let cfg = labby_openapi::OpenApiProviderConfig {
+            specs: vec![labby_openapi::OpenApiSpecConfig {
+                label: "vendor".into(),
+                spec_source: labby_openapi::SpecSource::Path(path),
+                base_url: "https://api.example.com".parse().unwrap(),
+                allowed_operations: vec!["getMe".into()],
+                credential: None,
+                oauth_upstream: Some("vendor-oauth".into()),
+            }],
+        };
+        let registry = labby_openapi::OpenApiRegistry::load(cfg, Duration::from_secs(2)).await;
+        drop(dir);
+        registry
+    }
+
+    #[tokio::test]
+    async fn subject_scoped_openapi_allows_authenticated_executor_but_not_missing_subject_or_scoped_route()
+     {
+        let registry = subject_scoped_registry().await;
+        assert!(registry.has_subject_scoped_operations());
+        let user = CodeModeCaller::Scoped {
+            capabilities: CodeModeCallerCapabilities {
+                can_read: true,
+                can_execute: true,
+                can_use_snippets: false,
+                is_admin: false,
+            },
+            sub: Some("alice".into()),
+        };
+        assert!(openapi_provider_allowed(
+            &user,
+            &ToolScope::default(),
+            &registry
+        ));
+
+        let missing_subject = CodeModeCaller::Scoped {
+            capabilities: CodeModeCallerCapabilities {
+                can_read: true,
+                can_execute: true,
+                can_use_snippets: false,
+                is_admin: false,
+            },
+            sub: None,
+        };
+        assert!(!openapi_provider_allowed(
+            &missing_subject,
+            &ToolScope::default(),
+            &registry
+        ));
+
+        let empty_subject = CodeModeCaller::Scoped {
+            capabilities: CodeModeCallerCapabilities {
+                can_read: true,
+                can_execute: true,
+                can_use_snippets: false,
+                is_admin: false,
+            },
+            sub: Some(String::new()),
+        };
+        assert!(!openapi_provider_allowed(
+            &empty_subject,
+            &ToolScope::default(),
+            &registry
+        ));
+        assert!(!openapi_provider_allowed(
+            &user,
+            &ToolScope::scoped_namespaces(vec!["vendor".into()], vec![]),
+            &registry
+        ));
     }
 
     #[test]

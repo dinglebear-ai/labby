@@ -683,6 +683,18 @@ impl UpstreamOauthManager {
         Ok(manager)
     }
 
+    /// Resolve the current bearer token for one authenticated subject.
+    ///
+    /// This reuses the canonical stored-credential initialization and proactive
+    /// refresh path. Callers must treat the returned string as a secret and must
+    /// never log, persist, or expose it across a sandbox boundary.
+    pub async fn access_token_for_subject(&self, subject: &str) -> Result<String, OauthError> {
+        let manager = self
+            .prepare_stored_authorization_manager(subject, AuthClientTransport::Default)
+            .await?;
+        manager.get_access_token().await.map_err(map_auth_error)
+    }
+
     /// Force a refresh for stored credentials.
     ///
     /// `AuthorizationManager::get_access_token()` only refreshes inside rmcp's
@@ -1587,10 +1599,15 @@ mod url_tests {
         discover_published_metadata, google_offline_access_url, map_auth_error, map_refresh_error,
         missing_identity_message,
     };
+    use crate::upstream::store::SqliteCredentialStore;
     use crate::upstream::types::OauthError;
     use labby_runtime::gateway_config::{
         UpstreamConfig, UpstreamOauthConfig, UpstreamOauthCredentialSource, UpstreamOauthMode,
         UpstreamOauthRegistration,
+    };
+    use oauth2::{AccessToken, RefreshToken, basic::BasicTokenType};
+    use rmcp_client::transport::auth::{
+        CredentialStore, OAuthTokenResponse, StoredCredentials, VendorExtraTokenFields,
     };
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1884,6 +1901,112 @@ mod url_tests {
 
         assert_eq!(default_error.kind(), "oauth_needs_reauth");
         assert_eq!(supplied_error.kind(), default_error.kind());
+    }
+
+    #[tokio::test]
+    async fn access_token_for_subject_never_crosses_subject_credentials() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sqlite = crate::sqlite::SqliteStore::open(dir.path().join("auth.db"))
+            .await
+            .expect("sqlite store");
+        let key = crate::upstream::encryption::load_key(&base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            [7_u8; 32],
+        ))
+        .expect("encryption key");
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issuer": format!("{}/mcp", server.uri()),
+                "authorization_endpoint": format!("{}/authorize", server.uri()),
+                "token_endpoint": format!("{}/token", server.uri()),
+                "code_challenge_methods_supported": ["S256"]
+            })))
+            .mount(&server)
+            .await;
+        let manager = UpstreamOauthManager::new(
+            sqlite.clone(),
+            key.clone(),
+            UpstreamConfig {
+                display_name: None,
+                lifecycle: None,
+                enabled: true,
+                name: "subject-openapi".to_string(),
+                url: Some(format!("{}/mcp", server.uri())),
+                transport: None,
+                socket_path: None,
+                headers: Default::default(),
+                command: None,
+                args: vec![],
+                bearer_token_env: None,
+                env: Default::default(),
+                proxy_resources: false,
+                proxy_prompts: false,
+                proxy_skills: false,
+                expose_tools: None,
+                expose_resources: None,
+                expose_prompts: None,
+                expose_skills: None,
+                code_mode_hint: None,
+                oauth: Some(UpstreamOauthConfig {
+                    mode: UpstreamOauthMode::AuthorizationCodePkce,
+                    registration: UpstreamOauthRegistration::Preregistered {
+                        client_id: "client-id".to_string(),
+                        client_secret_env: None,
+                    },
+                    scopes: None,
+                    credential: Default::default(),
+                    prefer_client_metadata_document: None,
+                }),
+                imported_from: None,
+                priority: 1.0,
+            },
+            "http://127.0.0.1:12345/auth/upstream/callback".to_string(),
+        );
+
+        let now = crate::util::now_unix().max(0) as u64;
+        for (subject, access) in [("alice", "alice-access"), ("bob", "bob-access")] {
+            let mut token = OAuthTokenResponse::new(
+                AccessToken::new(access.to_string()),
+                BasicTokenType::Bearer,
+                VendorExtraTokenFields::default(),
+            );
+            token.set_refresh_token(Some(RefreshToken::new(format!("{subject}-refresh"))));
+            token.set_expires_in(Some(&std::time::Duration::from_hours(1)));
+            let credentials =
+                StoredCredentials::new("client-id".to_string(), Some(token), Vec::new(), Some(now));
+            CredentialStore::save(
+                &SqliteCredentialStore::new(
+                    sqlite.clone(),
+                    key.clone(),
+                    "subject-openapi",
+                    subject,
+                ),
+                credentials,
+            )
+            .await
+            .expect("save subject credential");
+        }
+
+        let alice = manager
+            .access_token_for_subject("alice")
+            .await
+            .expect("alice token");
+        let bob = manager
+            .access_token_for_subject("bob")
+            .await
+            .expect("bob token");
+        assert_eq!(alice, "alice-access");
+        assert_eq!(bob, "bob-access");
+        assert_ne!(alice, bob);
+        assert_eq!(
+            manager
+                .access_token_for_subject("charlie")
+                .await
+                .unwrap_err()
+                .kind(),
+            "oauth_needs_reauth"
+        );
     }
 
     #[tokio::test]

@@ -8,6 +8,7 @@ fn spec(base: &str) -> OpenApiSpecConfig {
         base_url: base.parse().unwrap(),
         allowed_operations: vec![],
         credential: None,
+        oauth_upstream: None,
     }
 }
 

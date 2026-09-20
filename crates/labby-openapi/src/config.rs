@@ -97,8 +97,12 @@ pub struct OpenApiSpecConfig {
     pub base_url: url::Url,
     /// Deny-by-default allowlist of raw operationIds that may be dispatched.
     pub allowed_operations: Vec<String>,
-    /// Optional server-side credential.
+    /// Optional server-side static credential.
     pub credential: Option<OpenApiCredential>,
+    /// Optional OAuth-enabled gateway upstream whose credential is resolved
+    /// per authenticated caller subject at dispatch time. Mutually exclusive
+    /// with the static credential; the registry stores only this non-secret reference.
+    pub oauth_upstream: Option<String>,
 }
 
 /// All configured specs for the `openapi` provider.

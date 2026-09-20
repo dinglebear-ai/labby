@@ -29,6 +29,7 @@ async fn petstore_live_load_and_dispatch() {
             // Deny-by-default: only this one GET operation is dispatchable.
             allowed_operations: vec!["findPetsByStatus".into()],
             credential: None,
+            oauth_upstream: None,
         }],
     };
 
@@ -92,6 +93,7 @@ async fn private_base_url_is_rejected_without_network() {
             base_url: "https://10.0.0.5/api".parse().unwrap(),
             allowed_operations: vec!["anything".into()],
             credential: None,
+            oauth_upstream: None,
         }],
     };
     // Load must omit the RFC1918 spec (degraded boot) — never register it.

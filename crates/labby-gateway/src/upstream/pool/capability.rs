@@ -18,7 +18,9 @@ pub(super) fn peer_declares_prompts(peer: &Peer<RoleClient>) -> bool {
         .is_some_and(|info| info.capabilities.prompts.is_some())
 }
 use super::helpers::DISCOVERY_TIMEOUT;
-use super::logging::is_capability_unsupported;
+use super::logging::{
+    UpstreamRequestLog, is_capability_unsupported, log_upstream_capability_skipped,
+};
 
 pub(super) async fn discover_capability_counts(
     name: &str,
@@ -62,11 +64,7 @@ pub(super) async fn discover_capability_counts(
         }
     } else {
         if proxy_resources {
-            tracing::debug!(
-                upstream = %name,
-                capability = "resources",
-                "initialize did not advertise resources; skipping resources/list discovery"
-            );
+            log_upstream_capability_skipped(UpstreamRequestLog::resources_list(name, false));
         }
         (0, None, UpstreamHealth::Healthy)
     };
@@ -100,11 +98,7 @@ pub(super) async fn discover_capability_counts(
         }
     } else {
         if proxy_prompts {
-            tracing::debug!(
-                upstream = %name,
-                capability = "prompts",
-                "initialize did not advertise prompts; skipping prompts/list discovery"
-            );
+            log_upstream_capability_skipped(UpstreamRequestLog::prompts_list(name, false));
         }
         (0, None, UpstreamHealth::Healthy)
     };

@@ -391,6 +391,18 @@ pub trait CodeModeHost: Send + Sync {
     /// The host-owned hardened `reqwest` client for `openapi` dispatch. REQUIRED
     /// (no default). Tests return `labby_openapi::http::build_dispatch_client()`.
     fn openapi_http_client(&self) -> reqwest::Client;
+
+    /// Resolve a per-caller OpenAPI credential after the sandbox boundary.
+    /// Hosts return no credential for specs that do not use caller-bound auth.
+    fn resolve_openapi_credential(
+        &self,
+        _label: &str,
+        _operation_id: &str,
+        _caller: &CodeModeCaller,
+    ) -> impl Future<Output = Result<Option<labby_openapi::OpenApiCredential>, ToolError>> + Send
+    {
+        std::future::ready(Ok(None))
+    }
 }
 
 /// A no-op host used by tests that drive the runner kernel directly without a

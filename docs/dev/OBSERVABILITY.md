@@ -209,8 +209,13 @@ while all counts are zero. Never emit tool arguments or synthesized
 Resource catalog fan-out uses `operation = "resources.list"`. Each upstream
 emits `upstream.request.start` followed by `upstream.request.finish` or
 `upstream.request.error`, including `subject_scoped = true` for OAuth resource
-passes. This makes a slow catalog refresh attributable to the exact upstream
-and distinguishes connection acquisition, timeout, upstream error, and success.
+passes. When proxy policy permits an optional capability that the upstream did
+not advertise during initialize, the gateway does not probe the missing method;
+it emits a DEBUG upstream.request.skipped event with
+kind = capability_not_advertised instead. Prompt discovery follows the same
+negotiated-capability rule. This makes a slow catalog refresh attributable to
+the exact upstream while keeping unsupported optional capabilities out of
+upstream error-rate signals.
 Each shared or subject-scoped fan-out phase has a 10-second ceiling (or the
 smaller configured upstream request timeout), and preserves partial results.
 The combined MCP `prompts/list` path is stricter: raw and subject-scoped OAuth

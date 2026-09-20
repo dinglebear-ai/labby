@@ -85,13 +85,29 @@ development. Bearer and OAuth setup, exact-port resource audiences, safe Serve
 ownership, configuration precedence, output modes, and recovery are covered in
 the [stdio MCP proxy guide](./docs/guides/STDIO_MCP_PROXY.md).
 
-### Install A Release
+### Install Labby with `$install-labby`
+
+The first-class guided install path is the checked-in `install-labby` Agent Skill. Install that one skill, then ask a skill-aware agent to run it:
+
+```bash
+npx skills add https://github.com/dinglebear-ai/labby --skill install-labby
+```
+
+```text
+$install-labby
+```
+
+The skill inspects the machine, asks for authentication/listener/deployment choices, drives the verified release installer plus `labby setup`, configures supported persistence and HTTPS exposure, helps register Labby in installed agents, and does not declare success until `labby doctor` plus a live MCP smoke pass. Security-sensitive durable writes remain owned by the Labby binary rather than duplicated in skill prose.
+
+See [`plugins/labby/skills/install-labby/SKILL.md`](./plugins/labby/skills/install-labby/SKILL.md) for the orchestration contract and [`docs/adr/0001-install-labby-first-class-install-orchestrator.md`](./docs/adr/0001-install-labby-first-class-install-orchestrator.md) for the architecture decision.
+
+#### Manual Verified Release
 
 Prerequisites for the verified release path are `curl`, `tar`, a SHA-256 tool (`sha256sum` or `shasum`), and an authenticated GitHub CLI (`gh`) build that supports `gh attestation verify`. The installer checks all of these before resolving or downloading any Labby release, so a fresh machine fails fast with an actionable dependency message rather than downloading an artifact it cannot verify (the `gh auth status` probe itself contacts GitHub, so the guarantee is about release downloads, not all network use). Ubuntu 26.04's distro package currently ships `gh 2.46.0`, which is too old for this trust path; install or upgrade GitHub CLI from GitHub's current official packages/releases, verify `gh attestation verify --help`, then run `gh auth login` (or provide `GH_TOKEN` for headless automation).
 
 Linux/macOS:
 
-> **Release compatibility gate:** this installer-bearing flow starts with a qualified release that publishes `labby-install.sh` and contains the first-run `labby setup --role ...` interface. The public `v1.13.3` release predates that contract, so do not use it with this runbook. Confirm the selected tag exposes `labby-install.sh` before continuing.
+> **Release compatibility gate:** select a release that publishes `labby-install.sh` and contains the documented first-run `labby setup --role ...` interface. Confirm the selected tag exposes the installer and checksum before continuing; do not assume an older release matches the current setup contract.
 
 ```bash
 version=vX.Y.Z

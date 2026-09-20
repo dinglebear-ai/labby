@@ -844,24 +844,91 @@ class ReleaseHelperTests(unittest.TestCase):
             self.assertEqual("manual_reconciliation_required", result["mcp_version"]["status"])
     def test_release_incident_is_idempotently_created_updated_and_closed(self) -> None:
         script = ROOT / "scripts/ci/manage-release-incident.sh"
-        for complete, existing, expected in (
-            ("false", "", "issue create"),
-            ("false", "17", "issue edit 17"),
-            ("true", "17", "issue close 17"),
-            ("true", "", "issue list"),
-        ):
-            with self.subTest(complete=complete, existing=existing), tempfile.TemporaryDirectory() as tmp:
-                work = Path(tmp); log = work / "calls"; gh = work / "gh"
+        cases = (
+            (
+                "update exact issue",
+                "false",
+                '[{"number":9,"title":"Release publication is incomplete soon"}]\n[{"number":17,"title":"Release publication is incomplete"}]',
+                ("api|--method|PATCH|repos/acme/labby/issues/17", "FIELD|body=The aggregate release reconciler found a mismatch."),
+                ("api|--method|POST|repos/acme/labby/issues",),
+            ),
+            (
+                "close exact issue",
+                "true",
+                '[{"number":17,"title":"Release publication is incomplete"}]',
+                (
+                    "api|--method|POST|repos/acme/labby/issues/17/comments",
+                    "api|--method|PATCH|repos/acme/labby/issues/17",
+                    "FIELD|body=All release distributions now match the immutable manifest.",
+                    "FIELD|state=closed",
+                ),
+                ("api|--method|POST|repos/acme/labby/issues|",),
+            ),
+            (
+                "create when only fuzzy issue and exact-title pull request exist",
+                "false",
+                '[{"number":21,"title":"Release publication is incomplete soon"},{"number":22,"title":"Release publication is incomplete","pull_request":{"url":"https://example.test/pr/22"}}]',
+                (
+                    "api|--method|POST|repos/acme/labby/issues",
+                    "FIELD|title=Release publication is incomplete",
+                    "FIELD|body=The aggregate release reconciler found a mismatch.",
+                ),
+                ("api|--method|PATCH|repos/acme/labby/issues/21", "api|--method|PATCH|repos/acme/labby/issues/22"),
+            ),
+            (
+                "complete with no exact issue",
+                "true",
+                '[{"number":21,"title":"Release publication is incomplete soon"}]',
+                (),
+                ("api|--method|POST|", "api|--method|PATCH|"),
+            ),
+        )
+        for name, complete, issues, expected, forbidden in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                work = Path(tmp)
+                log = work / "calls"
+                gh = work / "gh"
                 gh.write_text(
                     "#!/bin/sh\n"
-                    "printf '%s\\n' \"$*\" >> \"$CALL_LOG\"\n"
-                    "case \"$1 $2\" in 'issue list') printf '%s\\n' \"$ISSUE_NUMBER\";; esac\n"
-                ); gh.chmod(0o755)
+                    "printf '%s|%s|%s|%s\\n' \"$1\" \"$2\" \"$3\" \"$4\" >> \"$CALL_LOG\"\n"
+                    "for arg in \"$@\"; do\n"
+                    "  case \"$arg\" in state=*|title=*|body=*) printf 'FIELD|%s\\n' \"$arg\" >> \"$CALL_LOG\";; esac\n"
+                    "done\n"
+                    "if [ \"$1\" = api ] && [ \"$2\" = --paginate ]; then\n"
+                    "  printf '%s\\n' \"$GH_ISSUES_JSON\"\n"
+                    "fi\n"
+                )
+                gh.chmod(0o755)
                 (work / "reconciliation.json").write_text('{"complete":false}')
-                env = os.environ | {"PATH": f"{work}:{os.environ['PATH']}", "CALL_LOG": str(log), "ISSUE_NUMBER": existing, "GITHUB_SERVER_URL": "https://github.test", "GITHUB_REPOSITORY": "acme/labby", "GITHUB_RUN_ID": "1"}
-                result = subprocess.run(["bash", str(script), complete], cwd=work, env=env, check=False)
-                self.assertEqual(0, result.returncode)
-                self.assertIn(expected, log.read_text())
+                env = os.environ | {
+                    "PATH": f"{work}:{os.environ['PATH']}",
+                    "CALL_LOG": str(log),
+                    "GH_ISSUES_JSON": issues,
+                    "GITHUB_SERVER_URL": "https://github.test",
+                    "GITHUB_REPOSITORY": "acme/labby",
+                    "GITHUB_RUN_ID": "1",
+                }
+                result = subprocess.run(
+                    ["bash", str(script), complete],
+                    cwd=work,
+                    env=env,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+                calls = log.read_text()
+                self.assertIn("api|--paginate|repos/acme/labby/issues?state=open&per_page=100|", calls)
+                for fragment in expected:
+                    self.assertIn(fragment, calls)
+                for fragment in forbidden:
+                    self.assertNotIn(fragment, calls)
+
+        helper = script.read_text()
+        self.assertNotIn("gh issue", helper)
+        self.assertNotIn("head -1", helper)
+        self.assertIn("gh api --paginate", helper)
+        self.assertIn('has("pull_request") | not', helper)
 
     def test_cache_boundary_denies_pr_credentials_and_partial_capabilities(self) -> None:
         script = str(ROOT / "scripts/ci/check-cache-boundary.py")
