@@ -10,7 +10,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use crate::error::AuthError;
-use crate::util::{fingerprint, oauth_state_diagnostic_id};
+use crate::util::{fingerprint, oauth_state_diagnostic_id, secret_diagnostic_id};
 
 const GOOGLE_AUTHORIZE_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
@@ -699,7 +699,7 @@ impl GoogleProvider {
         let trace = GoogleRequestTrace::start("code_exchange", "POST", &token_endpoint);
         info!(
             provider = "google",
-            oauth_code_id = %fingerprint(code),
+            oauth_code_id = %secret_diagnostic_id("google.oauth_code.v1", code),
             redirect_uri_id = %fingerprint(self.redirect_uri.as_str()),
             "oauth upstream code exchange started"
         );
@@ -762,7 +762,7 @@ impl GoogleProvider {
         let trace = GoogleRequestTrace::start("refresh", "POST", &token_endpoint);
         info!(
             provider = "google",
-            refresh_token_id = %fingerprint(refresh_token),
+            refresh_token_id = %secret_diagnostic_id("google.refresh_token.v1", refresh_token),
             "oauth upstream refresh started"
         );
         let payload: GoogleTokenResponse = read_json_response(

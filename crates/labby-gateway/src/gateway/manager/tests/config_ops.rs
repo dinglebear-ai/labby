@@ -904,6 +904,7 @@ async fn mcp_app_visibility_setting_persists_notifies_and_skips_pool_rebuild() {
     let mut initial = GatewayConfig::default();
     initial.code_mode.mcp_ui_enabled = true;
     initial.mcp_apps.manager = true;
+    initial.mcp_apps.skill_library = true;
     initial.mcp_apps.gateway_status = true;
     initial.mcp_apps.server_logs = true;
     initial.mcp_apps.add_server = true;
@@ -922,6 +923,7 @@ async fn mcp_app_visibility_setting_persists_notifies_and_skips_pool_rebuild() {
 
     assert!(!updated.mcp_apps.manager);
     assert!(!updated.code_mode.mcp_ui_enabled);
+    assert!(!updated.mcp_apps.skill_library);
     assert!(!updated.mcp_apps.gateway_status);
     assert!(!updated.mcp_apps.server_logs);
     assert!(!updated.mcp_apps.add_server);
@@ -951,6 +953,7 @@ async fn mcp_app_visibility_setting_persists_notifies_and_skips_pool_rebuild() {
     let persisted = load_gateway_config(&path).expect("load persisted config");
     assert!(!persisted.mcp_apps.manager);
     assert!(!persisted.code_mode.mcp_ui_enabled);
+    assert!(!persisted.mcp_apps.skill_library);
     assert!(!persisted.mcp_apps.gateway_status);
     assert!(!persisted.mcp_apps.server_logs);
     assert!(!persisted.mcp_apps.add_server);
@@ -961,6 +964,7 @@ async fn mcp_app_visibility_setting_persists_notifies_and_skips_pool_rebuild() {
     assert!(!restarted.code_mode_app_state().is_enabled());
     let restarted_apps = restarted.mcp_apps_config().await;
     assert!(!restarted_apps.manager);
+    assert!(!restarted_apps.skill_library);
     assert!(!restarted_apps.gateway_status);
     assert!(!restarted_apps.server_logs);
     assert!(!restarted_apps.add_server);

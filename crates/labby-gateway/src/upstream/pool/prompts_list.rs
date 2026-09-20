@@ -16,9 +16,12 @@ use rmcp::model::Prompt;
 
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
+use super::capability::peer_declares_prompts;
 use super::catalog_pagination;
 use super::helpers::merge_upstream_prompts;
-use super::logging::is_capability_unsupported;
+use super::logging::{
+    UpstreamRequestLog, is_capability_unsupported, log_upstream_capability_skipped,
+};
 use super::tools::MAX_UPSTREAM_PROMPTS;
 
 /// One regular non-OAuth upstream Prompt with exact pre-namespace provenance.
@@ -91,9 +94,16 @@ impl UpstreamPool {
                             }),
                         );
                     }
-                    let result =
+                    let result = if peer_declares_prompts(&peer) {
                         catalog_pagination::list_prompts(&peer, remaining, MAX_UPSTREAM_PROMPTS)
-                            .await;
+                            .await
+                    } else {
+                        log_upstream_capability_skipped(UpstreamRequestLog::prompts_list(
+                            observed.upstream(),
+                            false,
+                        ));
+                        Ok(Vec::new())
+                    };
                     (observed, result)
                 }
             })

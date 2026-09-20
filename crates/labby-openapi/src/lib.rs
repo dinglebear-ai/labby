@@ -13,7 +13,7 @@ pub mod ssrf;
 pub use config::{
     OpenApiCredential, OpenApiProviderConfig, OpenApiSpecConfig, RESERVED_NAMESPACES, SpecSource,
 };
-pub use dispatch::dispatch_openapi_call;
+pub use dispatch::{dispatch_openapi_call, dispatch_openapi_call_with_credential};
 pub use error::OpenApiError;
 pub use registry::{OpenApiRegistry, OperationHandle, SpecEntry};
 

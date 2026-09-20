@@ -30,6 +30,11 @@ the full history) — the rules that keep it correct:
 5. **`force_consent`, provider-credential presence, invalidation generation,
    and revoked dependent counts are logged without raw subjects, emails, or
    tokens.** Keep those fields if this logic moves.
+6. **Never log an unkeyed hash of credential material.** Stable `util::fingerprint`
+   is for non-secret configuration/public metadata only. Authorization codes,
+   refresh tokens, OAuth state, passwords, and other secrets use the process-local,
+   domain-separated HMAC `util::secret_diagnostic_id`; if its random key cannot be
+   created, diagnostics degrade to `unavailable` rather than an offline-verifiable hash.
 
 ## Structure
 

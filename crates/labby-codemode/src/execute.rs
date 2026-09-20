@@ -43,8 +43,8 @@ const LAB_INTERNAL_NAMESPACE: &str = "__lab_internal";
 /// pattern (FAIL-OPEN invariant).
 const MAX_SEMANTIC_QUERY_BYTES: usize = 8 * 1024;
 
-/// Maximum URI size accepted by the reserved resource-read bridge.
-const MAX_RESOURCE_URI_BYTES: usize = 8 * 1024;
+/// Maximum identifier/URI size accepted by progressive-disclosure bridges.
+const MAX_CAPABILITY_IDENTIFIER_BYTES: usize = 8 * 1024;
 
 /// Reserve time for the host to serialize and return the final MCP result.
 ///
@@ -253,12 +253,14 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         // when the gate passes AND the host has ≥1 loaded spec. The host-less
         // early-return path has no registry, so the shim would only ever error
         // there (M11).
-        let openapi_provider_js =
-            if local_providers_allowed(caller, scope) && !host.openapi_registry().is_empty() {
-                super::preamble::generate_openapi_provider_js()
-            } else {
-                ""
-            };
+        let openapi_registry = host.openapi_registry();
+        let openapi_provider_js = if openapi_provider_allowed(caller, scope, &openapi_registry)
+            && !openapi_registry.is_empty()
+        {
+            super::preamble::generate_openapi_provider_js()
+        } else {
+            ""
+        };
         Ok(format!(
             "{local_provider_js}\n{openapi_provider_js}\n{discovery_js}\n{namespace_js}"
         ))
@@ -477,7 +479,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                         message: "list_resources requires a non-empty `upstream`".to_string(),
                         param: "upstream".to_string(),
                     })?;
-                if upstream.len() > MAX_RESOURCE_URI_BYTES {
+                if upstream.len() > MAX_CAPABILITY_IDENTIFIER_BYTES {
                     return Err(ToolError::Sdk {
                         sdk_kind: "invalid_param".to_string(),
                         message: "resource upstream name is too long".to_string(),
@@ -495,15 +497,86 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                         message: "read_resource requires a non-empty `uri`".to_string(),
                         param: "uri".to_string(),
                     })?;
-                if uri.len() > MAX_RESOURCE_URI_BYTES {
+                if uri.len() > MAX_CAPABILITY_IDENTIFIER_BYTES {
                     return Err(ToolError::Sdk {
                         sdk_kind: "invalid_param".to_string(),
                         message: format!(
-                            "resource URI exceeds max length {MAX_RESOURCE_URI_BYTES} bytes"
+                            "resource URI exceeds max length {MAX_CAPABILITY_IDENTIFIER_BYTES} bytes"
                         ),
                     });
                 }
                 host.read_resource(uri.to_string(), caller, surface, scope)
+                    .await
+            }
+            "get_prompt" => {
+                let prompt = params
+                    .get("prompt")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| ToolError::MissingParam {
+                        message: "get_prompt requires a non-empty `prompt`".to_string(),
+                        param: "prompt".to_string(),
+                    })?;
+                if prompt.len() > MAX_CAPABILITY_IDENTIFIER_BYTES {
+                    return Err(ToolError::InvalidParam {
+                        message: format!(
+                            "prompt identifier exceeds max length {MAX_CAPABILITY_IDENTIFIER_BYTES} bytes"
+                        ),
+                        param: "prompt".to_string(),
+                    });
+                }
+                let arguments = params
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or_else(|| Value::Object(Default::default()));
+                if !arguments.is_object() {
+                    return Err(ToolError::InvalidParam {
+                        message: "get_prompt `arguments` must be an object".to_string(),
+                        param: "arguments".to_string(),
+                    });
+                }
+                host.get_prompt(prompt.to_string(), arguments, caller, surface, scope)
+                    .await
+            }
+            "list_skills" => host.list_skills(caller, surface, scope).await,
+            "get_skill" => {
+                let uri = params
+                    .get("uri")
+                    .and_then(Value::as_str)
+                    .filter(|uri| !uri.trim().is_empty())
+                    .ok_or_else(|| ToolError::MissingParam {
+                        message: "get_skill requires a non-empty `uri`".to_string(),
+                        param: "uri".to_string(),
+                    })?;
+                if uri.len() > MAX_CAPABILITY_IDENTIFIER_BYTES {
+                    return Err(ToolError::Sdk {
+                        sdk_kind: "invalid_param".to_string(),
+                        message: format!(
+                            "Skill URI exceeds max length {MAX_CAPABILITY_IDENTIFIER_BYTES} bytes"
+                        ),
+                    });
+                }
+                host.get_skill(uri.to_string(), caller, surface, scope)
+                    .await
+            }
+            "read_skill" => {
+                let uri = params
+                    .get("uri")
+                    .and_then(Value::as_str)
+                    .filter(|uri| !uri.trim().is_empty())
+                    .ok_or_else(|| ToolError::MissingParam {
+                        message: "read_skill requires a non-empty `uri`".to_string(),
+                        param: "uri".to_string(),
+                    })?;
+                if uri.len() > MAX_CAPABILITY_IDENTIFIER_BYTES {
+                    return Err(ToolError::Sdk {
+                        sdk_kind: "invalid_param".to_string(),
+                        message: format!(
+                            "Skill URI exceeds max length {MAX_CAPABILITY_IDENTIFIER_BYTES} bytes"
+                        ),
+                    });
+                }
+                host.read_skill(uri.to_string(), caller, surface, scope)
                     .await
             }
             "semantic_rank" => {
@@ -675,6 +748,25 @@ fn execution_allowed(caller: &CodeModeCaller, scope: &ToolScope) -> bool {
 #[must_use]
 pub fn local_providers_allowed(caller: &CodeModeCaller, scope: &ToolScope) -> bool {
     caller.is_admin() && !scope.is_scoped()
+}
+
+/// Whether the OpenAPI local provider may be present for this execution.
+/// Static/no-auth operations retain the operator-only boundary at dispatch;
+/// authenticated non-admin callers gain access only when at least one loaded
+/// operation is explicitly backed by subject-scoped OAuth.
+#[must_use]
+pub(crate) fn openapi_provider_allowed(
+    caller: &CodeModeCaller,
+    scope: &ToolScope,
+    registry: &labby_openapi::OpenApiRegistry,
+) -> bool {
+    if scope.is_scoped() {
+        return false;
+    }
+    local_providers_allowed(caller, scope)
+        || (caller.can_execute()
+            && caller.subject().is_some_and(|subject| !subject.is_empty())
+            && registry.has_subject_scoped_operations())
 }
 
 /// Truncate a semantic query to at most [`MAX_SEMANTIC_QUERY_BYTES`], cutting
@@ -1147,6 +1239,66 @@ mod tests {
             Ok(json!({ "contents": [{ "uri": uri }] }))
         }
 
+        async fn get_prompt(
+            &self,
+            prompt: String,
+            arguments: Value,
+            _caller: &CodeModeCaller,
+            _surface: CodeModeSurface,
+            _scope: &ToolScope,
+        ) -> Result<Value, ToolError> {
+            Ok(json!({
+                "prompt": prompt,
+                "arguments": arguments,
+                "messages": [{ "role": "user", "content": "fixture prompt" }],
+            }))
+        }
+
+        async fn list_skills(
+            &self,
+            _caller: &CodeModeCaller,
+            _surface: CodeModeSurface,
+            _scope: &ToolScope,
+        ) -> Result<Value, ToolError> {
+            Ok(json!({
+                "skills": [{
+                    "uri": "skill://labby/fixture",
+                    "name": "fixture",
+                    "description": "fixture skill",
+                }],
+            }))
+        }
+
+        async fn get_skill(
+            &self,
+            uri: String,
+            _caller: &CodeModeCaller,
+            _surface: CodeModeSurface,
+            _scope: &ToolScope,
+        ) -> Result<Value, ToolError> {
+            Ok(json!({
+                "skill": {
+                    "uri": uri,
+                    "name": "fixture",
+                },
+            }))
+        }
+
+        async fn read_skill(
+            &self,
+            uri: String,
+            _caller: &CodeModeCaller,
+            _surface: CodeModeSurface,
+            _scope: &ToolScope,
+        ) -> Result<Value, ToolError> {
+            Ok(json!({
+                "contents": [{
+                    "uri": uri,
+                    "text": "fixture body",
+                }],
+            }))
+        }
+
         async fn resolve_snippet(
             &self,
             _name: &str,
@@ -1272,7 +1424,7 @@ mod tests {
             json!({}),
             json!({"upstream": 42}),
             json!({"upstream": ""}),
-            json!({"upstream": "x".repeat(MAX_RESOURCE_URI_BYTES + 1)}),
+            json!({"upstream": "x".repeat(MAX_CAPABILITY_IDENTIFIER_BYTES + 1)}),
         ] {
             assert!(
                 broker
@@ -1311,6 +1463,125 @@ mod tests {
             result["contents"][0]["uri"],
             "lab://upstream/qa-vm-service/qa-vm-service://skill"
         );
+    }
+
+    #[tokio::test]
+    async fn dispatch_internal_prompt_and_skill_calls_round_trip_validated_inputs() {
+        let host = FixtureHost::new(Vec::new());
+        let broker = CodeModeBroker::new(Some(&host));
+        let scope = ToolScope::default();
+
+        let prompt = broker
+            .call_tool_id(
+                "__lab_internal::get_prompt",
+                json!({
+                    "prompt": "prompt::alpha::review",
+                    "arguments": { "tone": "strict", "max_items": 3 },
+                }),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &scope,
+                ExecCtx::none(),
+            )
+            .await
+            .expect("get_prompt must reach the host with validated arguments");
+        assert_eq!(prompt["prompt"], "prompt::alpha::review");
+        assert_eq!(
+            prompt["arguments"],
+            json!({ "tone": "strict", "max_items": 3 })
+        );
+        assert_eq!(prompt["messages"][0]["content"], "fixture prompt");
+
+        let skills = broker
+            .call_tool_id(
+                "__lab_internal::list_skills",
+                json!({}),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &scope,
+                ExecCtx::none(),
+            )
+            .await
+            .expect("list_skills must reach the host");
+        let uri = skills["skills"][0]["uri"]
+            .as_str()
+            .expect("fixture Skill URI")
+            .to_string();
+        assert_eq!(uri, "skill://labby/fixture");
+
+        let skill = broker
+            .call_tool_id(
+                "__lab_internal::get_skill",
+                json!({ "uri": uri }),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &scope,
+                ExecCtx::none(),
+            )
+            .await
+            .expect("get_skill must reach the host with the discovered URI");
+        assert_eq!(skill["skill"]["uri"], "skill://labby/fixture");
+
+        let read = broker
+            .call_tool_id(
+                "__lab_internal::read_skill",
+                json!({ "uri": "skill://labby/fixture/SKILL.md" }),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &scope,
+                ExecCtx::none(),
+            )
+            .await
+            .expect("read_skill must reach the host with the requested file URI");
+        assert_eq!(read["contents"][0]["uri"], "skill://labby/fixture/SKILL.md");
+        assert_eq!(read["contents"][0]["text"], "fixture body");
+
+        let invalid_prompt = broker
+            .call_tool_id(
+                "__lab_internal::get_prompt",
+                json!({ "prompt": "prompt::alpha::review", "arguments": [] }),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &scope,
+                ExecCtx::none(),
+            )
+            .await
+            .expect_err("non-object prompt arguments must fail before host dispatch");
+        assert_eq!(invalid_prompt.kind(), "invalid_param");
+
+        let oversized_prompt = broker
+            .call_tool_id(
+                "__lab_internal::get_prompt",
+                json!({
+                    "prompt": "x".repeat(MAX_CAPABILITY_IDENTIFIER_BYTES + 1),
+                    "arguments": {},
+                }),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &scope,
+                ExecCtx::none(),
+            )
+            .await
+            .expect_err("oversized prompt identifier must fail before host dispatch");
+        assert_eq!(oversized_prompt.kind(), "invalid_param");
+        assert!(
+            oversized_prompt
+                .to_string()
+                .contains("prompt identifier exceeds max length")
+        );
+
+        let missing_skill_uri = broker
+            .call_tool_id(
+                "__lab_internal::get_skill",
+                json!({ "uri": "   " }),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &scope,
+                ExecCtx::none(),
+            )
+            .await
+            .expect_err("blank Skill URI must fail before host dispatch");
+        assert_eq!(missing_skill_uri.kind(), "missing_param");
     }
 
     #[tokio::test]
@@ -1494,6 +1765,85 @@ mod tests {
             .await;
         let value = result.expect("oversized query must be truncated, not errored");
         assert_eq!(value, json!({ "ranked": [] }));
+    }
+
+    async fn subject_scoped_registry() -> labby_openapi::OpenApiRegistry {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("openapi.json");
+        std::fs::write(
+            &path,
+            r#"{"openapi":"3.0.0","info":{"title":"Fixture","version":"1.0.0"},"paths":{"/me":{"get":{"operationId":"getMe","responses":{"200":{"description":"ok"}}}}}}"#,
+        )
+        .expect("write spec");
+        let cfg = labby_openapi::OpenApiProviderConfig {
+            specs: vec![labby_openapi::OpenApiSpecConfig {
+                label: "vendor".into(),
+                spec_source: labby_openapi::SpecSource::Path(path),
+                base_url: "https://api.example.com".parse().unwrap(),
+                allowed_operations: vec!["getMe".into()],
+                credential: None,
+                oauth_upstream: Some("vendor-oauth".into()),
+            }],
+        };
+        let registry = labby_openapi::OpenApiRegistry::load(cfg, Duration::from_secs(2)).await;
+        drop(dir);
+        registry
+    }
+
+    #[tokio::test]
+    async fn subject_scoped_openapi_allows_authenticated_executor_but_not_missing_subject_or_scoped_route()
+     {
+        let registry = subject_scoped_registry().await;
+        assert!(registry.has_subject_scoped_operations());
+        let user = CodeModeCaller::Scoped {
+            capabilities: CodeModeCallerCapabilities {
+                can_read: true,
+                can_execute: true,
+                can_use_snippets: false,
+                is_admin: false,
+            },
+            sub: Some("alice".into()),
+        };
+        assert!(openapi_provider_allowed(
+            &user,
+            &ToolScope::default(),
+            &registry
+        ));
+
+        let missing_subject = CodeModeCaller::Scoped {
+            capabilities: CodeModeCallerCapabilities {
+                can_read: true,
+                can_execute: true,
+                can_use_snippets: false,
+                is_admin: false,
+            },
+            sub: None,
+        };
+        assert!(!openapi_provider_allowed(
+            &missing_subject,
+            &ToolScope::default(),
+            &registry
+        ));
+
+        let empty_subject = CodeModeCaller::Scoped {
+            capabilities: CodeModeCallerCapabilities {
+                can_read: true,
+                can_execute: true,
+                can_use_snippets: false,
+                is_admin: false,
+            },
+            sub: Some(String::new()),
+        };
+        assert!(!openapi_provider_allowed(
+            &empty_subject,
+            &ToolScope::default(),
+            &registry
+        ));
+        assert!(!openapi_provider_allowed(
+            &user,
+            &ToolScope::scoped_namespaces(vec!["vendor".into()], vec![]),
+            &registry
+        ));
     }
 
     #[test]

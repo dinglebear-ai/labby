@@ -8,6 +8,7 @@ fn debug_never_prints_credential_value() {
         base_url: "https://api.example.com".parse().unwrap(),
         allowed_operations: vec!["getUser".into()],
         credential: Some(OpenApiCredential::BearerToken("super-secret-token".into())),
+        oauth_upstream: None,
     };
     let dbg = format!("{cfg:?}");
     assert!(

@@ -999,6 +999,7 @@ impl LabMcpServer {
                     target,
                     "manager"
                         | "codemode"
+                        | "skill_library"
                         | "gateway_status"
                         | "server_logs"
                         | "add_server"
@@ -1011,7 +1012,7 @@ impl LabMcpServer {
                         "invalid_param",
                         &format!("unsupported MCP App target `{target}`"),
                         &serde_json::json!({
-                            "valid": ["manager", "codemode", "gateway_status", "server_logs", "add_server", "settings", "all"]
+                            "valid": ["manager", "codemode", "skill_library", "gateway_status", "server_logs", "add_server", "settings", "all"]
                         }),
                     );
                     return Ok(error_result_from_envelope(envelope).into());
@@ -1108,6 +1109,7 @@ impl LabMcpServer {
                 let enabled = match target {
                     "manager" => enabled_apps.manager,
                     "codemode" => enabled_code_mode,
+                    "skill_library" => enabled_apps.skill_library,
                     "gateway_status" => enabled_apps.gateway_status,
                     "server_logs" => enabled_apps.server_logs,
                     "add_server" => enabled_apps.add_server,
@@ -1115,6 +1117,7 @@ impl LabMcpServer {
                     "all" => {
                         enabled_apps.manager
                             && enabled_code_mode
+                            && enabled_apps.skill_library
                             && enabled_apps.gateway_status
                             && enabled_apps.server_logs
                             && enabled_apps.add_server
@@ -1126,6 +1129,9 @@ impl LabMcpServer {
                     && match target {
                         "manager" => previous_apps.manager != enabled_apps.manager,
                         "codemode" => previous_code_mode != enabled_code_mode,
+                        "skill_library" => {
+                            previous_apps.skill_library != enabled_apps.skill_library
+                        }
                         "gateway_status" => {
                             previous_apps.gateway_status != enabled_apps.gateway_status
                         }
@@ -1168,6 +1174,10 @@ impl LabMcpServer {
                             "enabled": enabled_code_mode,
                             "tool": CODE_MODE_UI_TOOL_NAME,
                             "text_tool": CODE_MODE_TOOL_NAME,
+                        },
+                        "skill_library": {
+                            "enabled": enabled_apps.skill_library,
+                            "tool": "artifacts",
                         },
                         "gateway_status": {
                             "enabled": enabled_apps.gateway_status,

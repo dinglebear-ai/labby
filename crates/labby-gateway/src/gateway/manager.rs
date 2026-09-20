@@ -39,6 +39,7 @@ use labby_runtime::gateway_config::GatewayConfig;
 use crate::upstream::pool::{HeaderRecoveryMetricsStore, InProcessConnector};
 
 use super::agent_execution::AgentExecutionStore;
+use super::code_mode::skills::CodeModeSkillProvider;
 use super::code_mode::{CodeModeHistory, CodeModeSourceStore};
 use super::config_store::GatewayConfigStore;
 use super::execution_loadout::{
@@ -152,6 +153,7 @@ pub struct GatewayManager {
     pub(super) execution_capabilities: Arc<ArcSwap<PublishedCapabilityCatalog>>,
     pub(super) execution_capability_publication: Arc<std::sync::RwLock<()>>,
     pub(super) execution_capability_provider: Option<Arc<dyn ExecutionCapabilityCatalogProvider>>,
+    pub(super) code_mode_skill_provider: Option<Arc<dyn CodeModeSkillProvider>>,
     pub(super) agent_executions: Arc<AgentExecutionStore>,
     pub(super) agent_execution_cancellations:
         Arc<dashmap::DashMap<String, tokio_util::sync::CancellationToken>>,

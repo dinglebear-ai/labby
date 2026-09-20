@@ -132,19 +132,74 @@ fn scoped_capability_filter_rejects_disallowed_requested_upstreams() {
     let mut args = serde_json::Map::new();
     args.insert("upstreams".to_string(), json!(["beta"]));
     let allowed = std::collections::BTreeSet::from(["alpha".to_string()]);
+    let available = std::collections::BTreeSet::from(["alpha".to_string(), "beta".to_string()]);
 
-    let err = route_scoped_capability_filter(&args, Some(&allowed))
+    let err = route_scoped_capability_filter(&args, Some(&allowed), &available)
         .expect_err("disallowed explicit upstream must fail");
 
     assert_eq!(err.kind(), "route_scope_denied");
 }
 
 #[test]
+fn scoped_capability_filter_canonicalizes_unique_case_variant() {
+    let mut args = serde_json::Map::new();
+    args.insert("upstreams".to_string(), json!(["axon"]));
+    let allowed = std::collections::BTreeSet::from(["Axon".to_string()]);
+    let available = allowed.clone();
+
+    let filter = route_scoped_capability_filter(&args, Some(&allowed), &available)
+        .expect("unique case variant should canonicalize before authorization");
+
+    assert!(filter.allows("Axon", "axon"));
+    assert!(!filter.allows("axon", "axon"));
+}
+
+#[test]
+fn capability_filter_canonicalizes_namespaced_tool_filter() {
+    let mut args = serde_json::Map::new();
+    args.insert("tools".to_string(), json!(["axon::axon"]));
+    let available = std::collections::BTreeSet::from(["Axon".to_string()]);
+
+    let filter = route_scoped_capability_filter(&args, None, &available)
+        .expect("namespaced tool filter should canonicalize its namespace");
+
+    assert!(filter.allows("Axon", "axon"));
+    assert!(!filter.allows("axon", "axon"));
+}
+
+#[test]
+fn capability_filter_rejects_ambiguous_case_alias() {
+    let mut args = serde_json::Map::new();
+    args.insert("upstreams".to_string(), json!(["aXoN"]));
+    let available = std::collections::BTreeSet::from(["Axon".to_string(), "axon".to_string()]);
+
+    let err = route_scoped_capability_filter(&args, None, &available)
+        .expect_err("ambiguous case-only alias must fail closed");
+
+    assert_eq!(err.kind(), "invalid_param");
+    assert!(err.to_string().contains("ambiguous by case"));
+}
+
+#[test]
+fn capability_filter_prefers_exact_case_over_alias_matching() {
+    let mut args = serde_json::Map::new();
+    args.insert("upstreams".to_string(), json!(["Axon"]));
+    let available = std::collections::BTreeSet::from(["Axon".to_string(), "axon".to_string()]);
+
+    let filter = route_scoped_capability_filter(&args, None, &available)
+        .expect("exact namespace must remain usable even with a case-only sibling");
+
+    assert!(filter.allows("Axon", "axon"));
+    assert!(!filter.allows("axon", "axon"));
+}
+
+#[test]
 fn scoped_capability_filter_defaults_to_route_allowed_upstreams() {
     let args = serde_json::Map::new();
     let allowed = std::collections::BTreeSet::from(["alpha".to_string()]);
+    let available = allowed.clone();
 
-    let filter = route_scoped_capability_filter(&args, Some(&allowed))
+    let filter = route_scoped_capability_filter(&args, Some(&allowed), &available)
         .expect("omitted upstreams should default to route scope");
 
     assert!(filter.allows("alpha", "search"));

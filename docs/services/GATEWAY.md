@@ -75,6 +75,16 @@ counts, and `last_error`, never another caller's. A subject connection that
 fails stays visible as that view's `last_error` (sanitized, never token
 material) until a connect for the same subject succeeds.
 
+Unix-socket upstreams use the same runtime health projection. If a local socket
+is absent, refuses a connection, times out, or exceeds the configured response
+budget, that upstream becomes degraded/unhealthy without suppressing healthy
+peers. `gateway.get`, `gateway.list`, `gateway.mcp.list`, and the Gateway Status
+MCP App surface the resulting connection state and sanitized `last_error`.
+Structured gateway logs identify `transport = "unix_socket"` and a classified
+failure `kind` while redacting the filesystem socket path from the target.
+When `auto_reconnect` is enabled, normal reprobe scheduling/backoff performs the
+recovery; there is no socket-specific recovery loop.
+
 Configuration mutations wait at most two minutes for the shared mutation lease
 and then fail with `service_unavailable`; retry once the running change
 finishes.
@@ -335,15 +345,14 @@ disabled, but the text-only control tool remains available on the root gateway.
 
 The Code Mode Inspector keeps its compatibility switch at
 `code_mode.mcp_ui_enabled`. The other visibility switches are
-`mcp_apps.manager`, `mcp_apps.gateway_status`, `mcp_apps.server_logs`,
-`mcp_apps.add_server`, and `mcp_apps.settings`. Every Labby-owned app surface
-defaults to `true`, as does `code_mode.enabled`, so a fresh install exposes the
-complete Labby app surface. Existing installs whose `config.toml` has no
-`[code_mode]` or `[mcp_apps]` section inherit those defaults on upgrade; Labby
-logs one startup line naming the defaults in force so the change is visible.
-Set the individual switches to `false` to opt out. The `mcp_app` control tool
-remains available without UI metadata so an administrator can inspect or restore
-any app, including its own manager UI. App-only mutations persist without
+`mcp_apps.manager`, `mcp_apps.skill_library`, `mcp_apps.gateway_status`,
+`mcp_apps.server_logs`, `mcp_apps.add_server`, and `mcp_apps.settings`. Labby-owned MCP App UIs default
+to `false` and are opt-in on a fresh install; `code_mode.enabled` remains `true`
+so the text-only Code Mode execution surface stays available. Existing installs
+with explicit visibility settings keep those values, while configs that omit the
+UI switches inherit the off defaults. Enable only the app surfaces a client
+actually needs. The `mcp_app` control tool remains available without UI metadata
+so an administrator can inspect or restore any app, including its own manager UI. App-only mutations persist without
 rebuilding the upstream pool and publish both tool and resource list-changed
 notifications. Upstream MCP Apps are not governed by these switches. Their app
 tools/callbacks pass through only when an allowed upstream exposes a real

@@ -405,6 +405,8 @@ pub(super) fn upstream_warning_code(message: &str) -> &'static str {
         "auth_required"
     } else if lower.contains("timed out") || lower.contains("timeout") {
         "timeout"
+    } else if lower.contains("response_too_large") {
+        "response_too_large"
     } else if lower.contains("dns") || lower.contains("name or service not known") {
         "dns_error"
     } else if lower.contains("connection refused") {
@@ -956,6 +958,14 @@ pub(super) async fn scoped_runtime_view(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upstream_warning_code_preserves_response_limit_kind() {
+        assert_eq!(
+            upstream_warning_code("response_too_large: received more than 10485760 bytes"),
+            "response_too_large"
+        );
+    }
 
     #[tokio::test]
     async fn runtime_view_projects_header_recovery_metrics() {

@@ -84,7 +84,11 @@ over `config.toml` with mode `0600`, and restarting before running doctor again.
   `~/.labby/workspace`.
 - `[gateway]`: upstream recovery, stdio spawn guard, and extra allowed commands.
 - `[code_mode]`: sandbox execution and result-envelope limits.
-- `[[openapi.specs]]`: allowlisted local Code Mode OpenAPI providers.
+- `[[openapi.specs]]`: allowlisted local Code Mode OpenAPI providers. Each spec
+  may use a process-global static `OPENAPI_<LABEL>_TOKEN`/`_API_KEY`, or
+  `oauth_upstream = "<gateway-upstream>"` for caller-subject-scoped OAuth.
+  These auth modes are mutually exclusive; subject-scoped tokens are resolved
+  only at dispatch and are never stored in the OpenAPI registry.
 - `[oauth]`: callback relay targets.
 - `[auth]`: bearer/OAuth mode and auth-store preferences.
 - `[admin]`: runtime opt-in for `lab_admin`.
@@ -431,7 +435,7 @@ omitted and remove it only when `--clear-project-id` is explicit.
 
 ## Gateway Upstreams
 
-An upstream is HTTP, stdio, or a Unix-domain socket. HTTP credentials reference
+An upstream is HTTP, WebSocket, stdio, or a Unix-domain socket. HTTP credentials reference
 environment variable names; secret values never belong in TOML. Stdio commands
 pass through the spawn guard unless the operator explicitly extends or disables
 it. A Unix-socket upstream requires `transport = "unix_socket"`, a `socket_path`
@@ -451,8 +455,11 @@ auto_reconnect = true
 ```
 
 Labby probes each enabled non-OAuth upstream every 30 seconds, backs off after
-failures, and replaces stale stdio or HTTP transports when they recover. The
-default is `false`; ephemeral connection tests never start recovery tasks.
+failures, and replaces stale stdio, HTTP, WebSocket, or Unix-socket transports
+when they recover. Failed upstreams remain visible through gateway status as
+unhealthy/degraded entries with sanitized `last_error`; they do not remove tools
+from healthy peers. The default is `false`; ephemeral connection tests never
+start recovery tasks.
 
 ### Upstream OAuth (authorization_code + PKCE)
 

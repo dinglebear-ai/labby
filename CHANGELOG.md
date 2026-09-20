@@ -93,6 +93,51 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [1.21.0](https://github.com/dinglebear-ai/labby/compare/v1.20.1...v1.21.0) (2026-09-20)
+
+
+### Added
+
+* **access:** allowlisted emails get access at first sign-in ([#665](https://github.com/dinglebear-ai/labby/issues/665)) ([685b698](https://github.com/dinglebear-ai/labby/commit/685b698c3bbbdad9528c439a520bfff0e851feea))
+* **agents:** wire LLM execution and tasks ([#670](https://github.com/dinglebear-ai/labby/issues/670)) ([9d4c924](https://github.com/dinglebear-ai/labby/commit/9d4c924a0bfb5545e895099b4606e020ed9351a5))
+* **auth:** allow Antigravity OAuth redirect URI by default ([#698](https://github.com/dinglebear-ai/labby/issues/698)) ([65ffb2a](https://github.com/dinglebear-ai/labby/commit/65ffb2a272cd87911ee0c8524ffdcbfcbcbb3ea0))
+* **codemode:** discover prompts resources and skills ([#699](https://github.com/dinglebear-ai/labby/issues/699)) ([09eddd0](https://github.com/dinglebear-ai/labby/commit/09eddd0222603ee74b20084851c2fa48ee0716d1))
+* **codemode:** generalize capability catalog ([#693](https://github.com/dinglebear-ai/labby/issues/693)) ([f38d18d](https://github.com/dinglebear-ai/labby/commit/f38d18d879422413656a6eb84105236087ee8624))
+* **codemode:** scope OpenAPI OAuth by caller ([#703](https://github.com/dinglebear-ai/labby/issues/703)) ([e530772](https://github.com/dinglebear-ai/labby/commit/e530772f296b6ac6faf8080528dacb2db336248f))
+* **console:** add public Codex setup shell ([#684](https://github.com/dinglebear-ai/labby/issues/684)) ([aa0f3bd](https://github.com/dinglebear-ai/labby/commit/aa0f3bd2d76ff83d48da7d249748a2cdfab305f0))
+* **console:** align Labby with the Gateway Console mock ([#630](https://github.com/dinglebear-ai/labby/issues/630)) ([df0026d](https://github.com/dinglebear-ai/labby/commit/df0026d0d728a1dbca86546971e300bfe4e89a6f))
+* **discover:** display bounded revision file counts ([#655](https://github.com/dinglebear-ai/labby/issues/655)) ([dc9c520](https://github.com/dinglebear-ai/labby/commit/dc9c520263dd9d254df1dc9cd459baf2532174e4))
+* **gateway:** use rmcp Unix socket transport ([#700](https://github.com/dinglebear-ai/labby/issues/700)) ([6bf6d7b](https://github.com/dinglebear-ai/labby/commit/6bf6d7b71911be72120960fee6037beab72adbf9))
+* **setup:** add first-class install-labby skill ([#694](https://github.com/dinglebear-ai/labby/issues/694)) ([e4e6de2](https://github.com/dinglebear-ai/labby/commit/e4e6de280e65ce050d240dd72420e5dd2f1173b1))
+* **ux:** seamless first-run, desktop application shell, and setup onboarding ([#646](https://github.com/dinglebear-ai/labby/issues/646)) ([25c50d3](https://github.com/dinglebear-ai/labby/commit/25c50d30cb6f8ccca39b672978d49c2d972c7581))
+
+
+### Fixed
+
+* **access:** close the allowlist review findings from [#665](https://github.com/dinglebear-ai/labby/issues/665)/[#659](https://github.com/dinglebear-ai/labby/issues/659) ([#678](https://github.com/dinglebear-ai/labby/issues/678)) ([e1b54a4](https://github.com/dinglebear-ai/labby/commit/e1b54a4e500daa66c94d0fa08788144ff080c386))
+* **access:** reconcile superseded v8 stores safely ([#692](https://github.com/dinglebear-ai/labby/issues/692)) ([f99c60b](https://github.com/dinglebear-ai/labby/commit/f99c60b68a33243e0cf92304fcb2e1269e317e2e))
+* **agents:** close the agents/tasks, depot and Code Mode review findings from [#670](https://github.com/dinglebear-ai/labby/issues/670)/[#671](https://github.com/dinglebear-ai/labby/issues/671)/[#669](https://github.com/dinglebear-ai/labby/issues/669) ([#679](https://github.com/dinglebear-ai/labby/issues/679)) ([fe7de3c](https://github.com/dinglebear-ai/labby/commit/fe7de3c20f809713c71ebf6e9f38f7131808bfe2))
+* **agents:** harden LLM task execution and provider cleanup ([#676](https://github.com/dinglebear-ai/labby/issues/676)) ([5cc929d](https://github.com/dinglebear-ai/labby/commit/5cc929d3705d78b2119fa3609b47511a6de57336))
+* **ci:** manage release incidents through GitHub REST ([#707](https://github.com/dinglebear-ai/labby/issues/707)) ([3631d86](https://github.com/dinglebear-ai/labby/commit/3631d86b224a9a31ce2d91ab092fe592d1f1c90e))
+* **codemode:** canonicalize namespace filters safely ([#688](https://github.com/dinglebear-ai/labby/issues/688)) ([1ac8e62](https://github.com/dinglebear-ai/labby/commit/1ac8e628c49f6298b62228175e2fa4b99fcd81e2))
+* **codemode:** harden saved snippet execution ([#682](https://github.com/dinglebear-ai/labby/issues/682)) ([79f10df](https://github.com/dinglebear-ai/labby/commit/79f10df8fbd187e777316db68c361b9080f5196f))
+* **container:** keep Docker workspace cache in sync ([#674](https://github.com/dinglebear-ai/labby/issues/674)) ([d2cc606](https://github.com/dinglebear-ai/labby/commit/d2cc60638e6735612aaccba4b8034ebe602cf47e))
+* **depot:** preserve operator scope for destructive calls ([#671](https://github.com/dinglebear-ai/labby/issues/671)) ([e6310c3](https://github.com/dinglebear-ai/labby/commit/e6310c3ce53942c2ed22f386aff4e1349ad9e3f4))
+* **gateway:** close the gateway hardening review findings from [#652](https://github.com/dinglebear-ai/labby/issues/652) ([#680](https://github.com/dinglebear-ai/labby/issues/680)) ([412f743](https://github.com/dinglebear-ai/labby/commit/412f743947e832cab5469f4ec69ec24087ef1ab0))
+* **gateway:** harden negotiated capability handling ([#701](https://github.com/dinglebear-ai/labby/issues/701)) ([e29610b](https://github.com/dinglebear-ai/labby/commit/e29610b59598e64b17dfa8378f054559fe7f0aab))
+* **gateway:** raise the Code Mode timeout ceiling to match upstream requests ([#669](https://github.com/dinglebear-ai/labby/issues/669)) ([b3f4b91](https://github.com/dinglebear-ai/labby/commit/b3f4b91147e9978c575c0ad36d81f2addb3a80af))
+* **gateway:** reject uncorrelated HTTP JSON-RPC errors ([#689](https://github.com/dinglebear-ai/labby/issues/689)) ([b313a86](https://github.com/dinglebear-ai/labby/commit/b313a861b8ed5df9adae79cc598a56d2f8f3cbb6))
+* **mcp:** enforce transport lifecycle contracts and document oracle workflows ([#650](https://github.com/dinglebear-ai/labby/issues/650)) ([53305c3](https://github.com/dinglebear-ai/labby/commit/53305c32d96e43a5e2d606dec0f1e7e9cb2dcdbf))
+* **setup:** close the first-run, installer and desktop review findings from [#646](https://github.com/dinglebear-ai/labby/issues/646) ([#681](https://github.com/dinglebear-ai/labby/issues/681)) ([180ba9d](https://github.com/dinglebear-ai/labby/commit/180ba9d281386e5b08b1ae9b997e43c677380cb5))
+* **skill-library:** honor depot.private_hosts for exact-source peers ([#639](https://github.com/dinglebear-ai/labby/issues/639)) ([e3d0830](https://github.com/dinglebear-ai/labby/commit/e3d08306564d23b40472ae78e9f41fb40dcad387))
+* **skills:** accept interoperable allowed-tools forms ([#687](https://github.com/dinglebear-ai/labby/issues/687)) ([8bcabdb](https://github.com/dinglebear-ai/labby/commit/8bcabdbdb9678b1f41f683d531c290d29b10dc76))
+* **web:** accept nullable Depot component media types ([#690](https://github.com/dinglebear-ai/labby/issues/690)) ([e145524](https://github.com/dinglebear-ai/labby/commit/e14552487ec483bc90f94f38e765fd04f291b2c2))
+* **web:** align Library hero scale with console ([#695](https://github.com/dinglebear-ai/labby/issues/695)) ([fe3dc65](https://github.com/dinglebear-ai/labby/commit/fe3dc65e2ee326ca1c90455ea5f560fb929144ab))
+* **web:** gate the Library on a project-bound session ([#668](https://github.com/dinglebear-ai/labby/issues/668)) ([0c94087](https://github.com/dinglebear-ai/labby/commit/0c940873b650c4838d9ea5ee24394b9fef70bbd8))
+* **web:** keep hero stat values compact ([#675](https://github.com/dinglebear-ai/labby/issues/675)) ([5874909](https://github.com/dinglebear-ai/labby/commit/5874909cbbc176dccd176ec6377869516411ef33))
+* **web:** make gateway state display consistent ([#697](https://github.com/dinglebear-ai/labby/issues/697)) ([0d7d504](https://github.com/dinglebear-ai/labby/commit/0d7d504895c084d67c7e10794f21070b6c334ff0))
+* **web:** prime Depot catalog before Library calls ([#685](https://github.com/dinglebear-ai/labby/issues/685)) ([a1019c3](https://github.com/dinglebear-ai/labby/commit/a1019c37ebac4f2abb38436b935f7ad9087cbceb))
+
 ## [1.20.1](https://github.com/dinglebear-ai/labby/compare/v1.20.0...v1.20.1) (2026-09-15)
 
 

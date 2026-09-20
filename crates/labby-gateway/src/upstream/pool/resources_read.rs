@@ -20,6 +20,7 @@ use labby_runtime::gateway_config::UpstreamConfig;
 use super::super::types::UpstreamCapability;
 use super::ResourceCatalogGeneration;
 use super::UpstreamPool;
+use super::capability::peer_declares_resources;
 use super::capability_call::{CapabilityCallError, timed_capability_call};
 use super::capability_call::{
     RawCallOutcome, classify_timeout_result, service_error_affects_connection_health,
@@ -53,7 +54,10 @@ pub(crate) struct PreparedExactResourceRead {
     gateway_uri: String,
     outcome: RawCallOutcome<ReadResourceResult>,
 }
-use super::logging::{UpstreamRequestLog, log_upstream_request_error, log_upstream_request_start};
+use super::logging::{
+    UpstreamRequestLog, log_upstream_capability_skipped, log_upstream_request_error,
+    log_upstream_request_start,
+};
 use super::tools::mcp_tool_owns_mcp_app_resource;
 
 impl UpstreamPool {
@@ -594,6 +598,15 @@ impl UpstreamPool {
                 });
             }
         };
+        if !peer_declares_resources(&peer) {
+            log_upstream_capability_skipped(event);
+            return Err(CapabilityCallError::Other {
+                message: format!(
+                    "upstream {} does not advertise the MCP resources capability",
+                    config.name
+                ),
+            });
+        }
         let timeout_ms = self.request_timeout.as_millis();
 
         timed_capability_call(

@@ -651,6 +651,10 @@ impl LabMcpServer {
         let server_logs_app_enabled = mcp_apps_config.server_logs;
         #[cfg(not(feature = "gateway"))]
         let server_logs_app_enabled = true;
+        #[cfg(all(feature = "skills", feature = "gateway"))]
+        let skill_library_app_enabled = mcp_apps_config.skill_library;
+        #[cfg(all(feature = "skills", not(feature = "gateway")))]
+        let skill_library_app_enabled = false;
         let mut page_collector = match PageCollector::new(request) {
             Ok(collector) => collector,
             Err(error) => {
@@ -858,6 +862,7 @@ impl LabMcpServer {
 
         #[cfg(feature = "skills")]
         if !resources.finished()
+            && skill_library_app_enabled
             && self.route_scope.exposes_skills()
             && code_mode_read_scope_allowed(auth)
             && self.route_scope.allows_service("artifacts")
@@ -1600,6 +1605,19 @@ impl LabMcpServer {
 
         #[cfg(feature = "skills")]
         if uri.starts_with(SKILL_LIBRARY_APP_URI_PREFIX) {
+            let app_enabled = {
+                #[cfg(feature = "gateway")]
+                {
+                    self.mcp_apps_config().await.skill_library
+                }
+                #[cfg(not(feature = "gateway"))]
+                {
+                    false
+                }
+            };
+            if !app_enabled {
+                return Err(unknown_resource_error(&uri, true));
+            }
             return self
                 .read_skill_library_app_resource_impl(&uri, &subject, start, &context)
                 .await
@@ -3480,6 +3498,7 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
                     },
                     mcp_apps: crate::config::McpAppsConfig {
                         manager: true,
+                        skill_library: true,
                         add_server: true,
                         server_logs: true,
                         gateway_status: true,

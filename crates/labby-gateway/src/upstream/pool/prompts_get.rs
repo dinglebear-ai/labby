@@ -22,6 +22,7 @@ use labby_runtime::gateway_config::UpstreamConfig;
 use super::super::types::UpstreamCapability;
 use super::PromptCatalogGeneration;
 use super::UpstreamPool;
+use super::capability::peer_declares_prompts;
 use super::capability_call::{CapabilityCallError, timed_capability_call};
 use super::capability_call::{
     RawCallOutcome, classify_timeout_result, service_error_affects_connection_health,
@@ -32,7 +33,10 @@ use super::helpers::{
     bare_upstream_prompt_name, estimate_prompt_result_size, merge_upstream_prompts,
     prefixed_upstream_prompt_name, upstream_transport,
 };
-use super::logging::{UpstreamRequestLog, log_upstream_request_error, log_upstream_request_start};
+use super::logging::{
+    UpstreamRequestLog, log_upstream_capability_skipped, log_upstream_request_error,
+    log_upstream_request_start,
+};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub(crate) enum ExactPromptCallError {
@@ -295,6 +299,12 @@ impl UpstreamPool {
                     continue;
                 }
             };
+            if !peer_declares_prompts(&peer) {
+                self.record_subject_optional_catalog(&name, subject, &peer, None, Some(Vec::new()))
+                    .await;
+                log_upstream_capability_skipped(UpstreamRequestLog::prompts_list(&name, true));
+                continue;
+            }
             let remaining = deadline_at.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
                 tracing::warn!(
@@ -340,6 +350,23 @@ impl UpstreamPool {
                         true,
                     );
                     upstream_prompts.push((name, exposed));
+                }
+                Err(catalog_pagination::CatalogPaginationError::Service(error))
+                    if super::logging::is_capability_unsupported(&error) =>
+                {
+                    self.record_subject_optional_catalog(
+                        &name,
+                        subject,
+                        &peer,
+                        None,
+                        Some(Vec::new()),
+                    )
+                    .await;
+                    tracing::debug!(
+                        upstream = %name,
+                        phase = "oauth_pagination",
+                        "subject-scoped upstream does not implement prompts/list — capability absent"
+                    );
                 }
                 Err(error) => {
                     tracing::warn!(
@@ -397,6 +424,12 @@ impl UpstreamPool {
             let Ok(peer) = result else {
                 continue;
             };
+            if !peer_declares_prompts(&peer) {
+                self.record_subject_optional_catalog(&name, subject, &peer, None, Some(Vec::new()))
+                    .await;
+                log_upstream_capability_skipped(UpstreamRequestLog::prompts_list(&name, true));
+                continue;
+            }
             match catalog_pagination::list_prompts(
                 &peer,
                 self.request_timeout,
@@ -582,6 +615,15 @@ impl UpstreamPool {
                 });
             }
         };
+        if !peer_declares_prompts(&peer) {
+            log_upstream_capability_skipped(event);
+            return Err(CapabilityCallError::Other {
+                message: format!(
+                    "upstream {} does not advertise the MCP prompts capability",
+                    config.name
+                ),
+            });
+        }
         let timeout_ms = self.request_timeout.as_millis();
         timed_capability_call(
             self,
