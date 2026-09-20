@@ -1,6 +1,6 @@
 [package]
 name = "labby-desktop"
-version = "1.20.1" # x-release-please-version
+version = "1.21.0" # x-release-please-version
 description = "Native desktop shell for the Labby Control Plane"
 edition = "2024"
 rust-version = "1.97.1"
