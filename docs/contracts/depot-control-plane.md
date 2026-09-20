@@ -2,7 +2,7 @@
 title: Depot control-plane compatibility contract
 status: active
 created: 2026-09-03
-updated: 2026-09-15
+updated: 2026-09-20
 ---
 
 # Depot control-plane compatibility contract
@@ -44,24 +44,35 @@ until snapshot resynchronization succeeds. Envelopes are signed over the
 canonical JSON of every field except `signature` (sorted keys, compact,
 integers only); see the authority contract for the profile.
 
+The product ownership decision is [ADR 0002](../adr/0002-labby-product-contracts-over-private-depot.md).
+The [2026-09-20 source audit](../design/depot-capability-audit.md) distinguishes
+the existing generic browser adapter from curated Labby action shims.
+
 The release denominator is the joint pair of checked manifests:
 [`compatibility-v1.json`](fixtures/depot-control-plane/compatibility-v1.json)
 defines the authenticated exact-import and Administration contract, while
 [`compatibility-v2.json`](fixtures/depot-control-plane/compatibility-v2.json)
-defines federated discovery. Both must pass `just docs-check`. A UI action is available only when its required
-operation and contract fingerprint are present. Every public operation carries
+defines federated discovery. Both must pass `just docs-check`. The required
+contract makes a UI action available only when its required operation and
+contract fingerprint are present. Every public operation carries
 `contractVersion` (integer `1`) and `schemaFingerprint`: 64 lowercase hex
 characters, the SHA-256 of the canonical JSON of that operation's
 `inputSchema` alone (sorted keys, no insignificant whitespace, UTF-8 without
-ASCII escaping). Labby checks three-way agreement before executing: the
+ASCII escaping). The curated `ArtifactControlClient` checks three-way agreement before executing: the
 declared fingerprint, the fingerprint it recomputes from the served
 `inputSchema`, and the constant it was built against
 (`docs/contracts/fixtures/depot-control-plane/operations-v1.json` is the
-golden catalog). Administration renders Depot's
+golden catalog). The generic Administration execution path currently parses
+operation policy without performing that three-way fingerprint check; browser
+metadata parsing accepts an optional fingerprint but does not verify its hash.
+This is an implementation gap against the required compatibility contract,
+not equivalent validation. Administration renders Depot's
 published `labby.depot-operation-schema/v1` subset as typed controls. The subset,
 cardinality limits, authority states, fingerprint binding, and fail-closed
-`incompatible` behavior are machine-readable in compatibility-v1. Missing, oversized, or unknown required contracts
-render `incompatible`; Labby never invents an unadvertised operation.
+`incompatible` behavior are machine-readable in compatibility-v1. Under that
+contract, missing, oversized, or unknown required contracts must render
+`incompatible`; the generic fingerprint gap above remains to be closed.
+Labby never invents an unadvertised operation.
 
 ## Actor and mount policy
 
