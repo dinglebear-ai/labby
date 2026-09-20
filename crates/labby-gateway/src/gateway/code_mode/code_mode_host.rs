@@ -308,6 +308,88 @@ impl GatewayManager {
     }
 }
 
+async fn lazy_skill_provider_upstreams(manager: &GatewayManager, scope: &ToolScope) -> Vec<String> {
+    let Some(pool) = manager.current_pool().await else {
+        return Vec::new();
+    };
+    let mut capabilities = BTreeMap::<String, u8>::new();
+    for upstream_tool in pool.healthy_tools_allowed(scope.allowed_namespaces()).await {
+        let bit = match upstream_tool.tool.name.as_ref() {
+            "depot.skills.search" => 0b001,
+            "depot.skills.load" => 0b010,
+            "depot.skills.read" => 0b100,
+            _ => continue,
+        };
+        *capabilities
+            .entry(upstream_tool.upstream_name.to_string())
+            .or_default() |= bit;
+    }
+    capabilities
+        .into_iter()
+        .filter_map(|(upstream, bits)| (bits == 0b111).then_some(upstream))
+        .collect()
+}
+
+fn lazy_skill_descriptor(upstream: &str, value: &Value) -> Option<CatalogDescriptor> {
+    let uri = value.get("uri")?.as_str()?.trim();
+    let name = value.get("name")?.as_str()?.trim();
+    if uri.is_empty() || name.is_empty() || !uri.starts_with("skill://") {
+        return None;
+    }
+    let namespace = value
+        .get("namespace")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            uri.strip_prefix("skill://")
+                .and_then(|rest| rest.split('/').next())
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or("skills");
+    let description = value
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or("Agent Skill");
+    Some(CatalogDescriptor::metadata(
+        CodeModeCatalogKind::Skill,
+        namespace,
+        &format!("skill::{uri}"),
+        name,
+        description,
+        vec![
+            format!("uri:{uri}"),
+            format!("lazy-provider:{upstream}"),
+            "lazy:true".to_string(),
+        ],
+    ))
+}
+
+async fn call_lazy_skill_provider(
+    manager: &GatewayManager,
+    upstream: &str,
+    tool: &str,
+    params: Value,
+    caller: &CodeModeCaller,
+    surface: CodeModeSurface,
+    scope: &ToolScope,
+) -> Result<Value, ToolError> {
+    CodeModeHost::call_tool(
+        manager,
+        &format!("{upstream}::{tool}"),
+        params,
+        caller,
+        surface,
+        scope,
+        labby_codemode::ExecCtx::none(),
+    )
+    .await
+    .map(|outcome| outcome.value)
+    .map_err(|error| ToolError::Sdk {
+        sdk_kind: error.kind,
+        message: error.message,
+    })
+}
+
 impl CodeModeHost for GatewayManager {
     async fn list_tools(
         &self,
@@ -693,38 +775,187 @@ impl CodeModeHost for GatewayManager {
         })
     }
 
+    async fn search_skills(
+        &self,
+        query: String,
+        limit: usize,
+        caller: &CodeModeCaller,
+        surface: CodeModeSurface,
+        scope: &ToolScope,
+    ) -> Result<Vec<CatalogDescriptor>, ToolError> {
+        let mut entries = BTreeMap::<String, CatalogDescriptor>::new();
+        for upstream in lazy_skill_provider_upstreams(self, scope).await {
+            let id = format!("{upstream}::depot.skills.search");
+            let outcome = match CodeModeHost::call_tool(
+                self,
+                &id,
+                serde_json::json!({ "query": query, "limit": limit }),
+                caller,
+                surface,
+                scope,
+                labby_codemode::ExecCtx::none(),
+            )
+            .await
+            {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    tracing::warn!(
+                        surface = "dispatch",
+                        service = "code_mode",
+                        action = "skills.lazy_search",
+                        upstream,
+                        error = %error,
+                        "lazy Skill provider search failed open"
+                    );
+                    continue;
+                }
+            };
+            let Some(results) = outcome.value.get("results").and_then(Value::as_array) else {
+                tracing::warn!(
+                    surface = "dispatch",
+                    service = "code_mode",
+                    action = "skills.lazy_search",
+                    upstream,
+                    "lazy Skill provider returned no results array"
+                );
+                continue;
+            };
+            for result in results {
+                if let Some(descriptor) = lazy_skill_descriptor(&upstream, result) {
+                    entries.entry(descriptor.id.clone()).or_insert(descriptor);
+                    if entries.len() >= limit {
+                        break;
+                    }
+                }
+            }
+            if entries.len() >= limit {
+                break;
+            }
+        }
+        Ok(entries.into_values().collect())
+    }
+
     async fn get_skill(
         &self,
         uri: String,
         caller: &CodeModeCaller,
-        _surface: CodeModeSurface,
+        surface: CodeModeSurface,
         scope: &ToolScope,
     ) -> Result<Value, ToolError> {
-        let provider = self
-            .code_mode_skill_provider
-            .as_ref()
-            .ok_or_else(|| ToolError::Sdk {
-                sdk_kind: "not_found".to_string(),
-                message: "Code Mode Skill provider is unavailable".to_string(),
-            })?;
-        provider.get(&uri, caller, scope).await
+        if let Some(provider) = self.code_mode_skill_provider.as_ref() {
+            match provider.get(&uri, caller, scope).await {
+                Ok(value) => return Ok(value),
+                Err(error) if error.kind() != "not_found" => return Err(error),
+                Err(_) => {}
+            }
+        }
+        let mut first_error = None;
+        for upstream in lazy_skill_provider_upstreams(self, scope).await {
+            match call_lazy_skill_provider(
+                self,
+                &upstream,
+                "depot.skills.load",
+                serde_json::json!({ "uri": uri, "maxBytes": 1024 }),
+                caller,
+                surface,
+                scope,
+            )
+            .await
+            {
+                Ok(value) => {
+                    let Some(skill) = value.get("skill").and_then(Value::as_object) else {
+                        continue;
+                    };
+                    let mut skill = skill.clone();
+                    skill.insert("origin".to_string(), Value::String(upstream));
+                    return Ok(serde_json::json!({ "skill": skill }));
+                }
+                Err(error) => {
+                    if error.kind() != "not_found" && first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                }
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+        Err(ToolError::Sdk {
+            sdk_kind: "not_found".to_string(),
+            message: format!("Skill {uri} was not found"),
+        })
     }
 
     async fn read_skill(
         &self,
         uri: String,
         caller: &CodeModeCaller,
-        _surface: CodeModeSurface,
+        surface: CodeModeSurface,
         scope: &ToolScope,
     ) -> Result<Value, ToolError> {
-        let provider = self
-            .code_mode_skill_provider
-            .as_ref()
-            .ok_or_else(|| ToolError::Sdk {
-                sdk_kind: "not_found".to_string(),
-                message: "Code Mode Skill provider is unavailable".to_string(),
-            })?;
-        provider.read(&uri, caller, scope).await
+        if let Some(provider) = self.code_mode_skill_provider.as_ref() {
+            match provider.read(&uri, caller, scope).await {
+                Ok(value) => return Ok(value),
+                Err(error) if error.kind() != "not_found" => return Err(error),
+                Err(_) => {}
+            }
+        }
+        let mut first_error = None;
+        for upstream in lazy_skill_provider_upstreams(self, scope).await {
+            match call_lazy_skill_provider(
+                self,
+                &upstream,
+                "depot.skills.read",
+                serde_json::json!({ "uri": uri, "maxBytes": 262_144 }),
+                caller,
+                surface,
+                scope,
+            )
+            .await
+            {
+                Ok(value) => {
+                    let text = value
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    if text.is_empty() {
+                        continue;
+                    }
+                    let skill_uri = value
+                        .get("skill")
+                        .and_then(|skill| skill.get("uri"))
+                        .and_then(Value::as_str)
+                        .unwrap_or(&uri);
+                    return Ok(serde_json::json!({
+                        "uri": value.get("uri").and_then(Value::as_str).unwrap_or(&uri),
+                        "skill_uri": skill_uri,
+                        "origin": upstream,
+                        "mime_type": value
+                            .get("mimeType")
+                            .and_then(Value::as_str)
+                            .unwrap_or("text/markdown"),
+                        "digest": value.get("digest").cloned().unwrap_or(Value::Null),
+                        "text": text,
+                        "blob": Value::Null,
+                        "complete": value.get("complete").cloned().unwrap_or(Value::Bool(true)),
+                        "next_offset": value.get("nextOffset").cloned().unwrap_or(Value::Null),
+                        "size": value.get("size").cloned().unwrap_or(Value::Null),
+                    }));
+                }
+                Err(error) => {
+                    if error.kind() != "not_found" && first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                }
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+        Err(ToolError::Sdk {
+            sdk_kind: "not_found".to_string(),
+            message: format!("Skill {uri} was not found"),
+        })
     }
 
     /// Buffer one `codemode.step` boundary for the run's `execution_id`.
@@ -1858,6 +2089,36 @@ mod tests {
 
         let tools = semantic_candidate_ids(&entries, &scope, &[CodeModeCatalogKind::Tool]);
         assert_eq!(tools, std::collections::BTreeSet::from(["alpha::query"]));
+    }
+
+    #[test]
+    fn lazy_skill_descriptor_preserves_canonical_uri_and_provider_provenance() {
+        let descriptor = lazy_skill_descriptor(
+            "public-depot",
+            &serde_json::json!({
+                "uri": "skill://agent-skills/rust/SKILL.md",
+                "name": "rust",
+                "namespace": "agent-skills",
+                "description": "Rust engineering guidance"
+            }),
+        )
+        .expect("valid lazy Skill descriptor");
+
+        assert_eq!(descriptor.kind, CodeModeCatalogKind::Skill);
+        assert_eq!(descriptor.id, "skill::skill://agent-skills/rust/SKILL.md");
+        assert_eq!(descriptor.namespace, "agent-skills");
+        assert_eq!(descriptor.name, "rust");
+        assert!(
+            descriptor
+                .tags
+                .contains(&"uri:skill://agent-skills/rust/SKILL.md".to_string())
+        );
+        assert!(
+            descriptor
+                .tags
+                .contains(&"lazy-provider:public-depot".to_string())
+        );
+        assert!(descriptor.tags.contains(&"lazy:true".to_string()));
     }
 
     struct FixtureSkillProvider;

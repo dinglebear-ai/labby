@@ -249,6 +249,22 @@ pub trait CodeModeHost: Send + Sync {
         }
     }
 
+    /// Search caller-visible remote/lazy Skill providers without projecting
+    /// their entire catalogs into every sandbox preamble.
+    ///
+    /// Returned descriptors are metadata only. Explicit Skill get/read calls
+    /// remain the authorization and content-retrieval boundaries.
+    fn search_skills(
+        &self,
+        _query: String,
+        _limit: usize,
+        _caller: &CodeModeCaller,
+        _surface: CodeModeSurface,
+        _scope: &ToolScope,
+    ) -> impl Future<Output = Result<Vec<CatalogDescriptor>, ToolError>> + Send {
+        async { Ok(Vec::new()) }
+    }
+
     /// Resolve one caller-visible Skill entry by published URI.
     fn get_skill(
         &self,

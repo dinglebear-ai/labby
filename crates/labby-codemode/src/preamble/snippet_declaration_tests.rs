@@ -136,6 +136,108 @@ fn javy_search_filters_lexical_and_semantic_results_by_kind() {
 }
 
 #[test]
+fn javy_unfiltered_search_does_not_query_lazy_skill_providers() {
+    let entry = CodeModeDiscoveryEntry::from_catalog(&CatalogDescriptor::tool(
+        "alpha",
+        "local_tool",
+        "local rust helper",
+        None,
+        None,
+    ));
+    let preamble = generate_discovery_js(&[entry], 0.5).unwrap();
+    let script = format!(
+        "{preamble}\n\
+         globalThis.lazyCalls = 0;\n\
+         globalThis.callTool = async (id) => {{\n\
+           if (id === '__lab_internal::search_skills') {{ globalThis.lazyCalls++; return {{entries: []}}; }}\n\
+           if (id === '__lab_internal::semantic_rank') return {{ranked: []}};\n\
+           throw new Error('unexpected internal call: ' + id);\n\
+         }};\n\
+         globalThis.result = null;\n\
+         (async () => {{\n\
+           const search = await codemode.search({{query: 'rust'}});\n\
+           globalThis.result = JSON.stringify({{search, lazyCalls: globalThis.lazyCalls}});\n\
+         }})().catch(error => {{ globalThis.result = JSON.stringify({{error: String(error)}}); }});"
+    );
+    let mut config = javy::Config::default();
+    config.memory_limit(8 * 1024 * 1024);
+    let runtime = javy::Runtime::new(config).unwrap();
+    runtime
+        .context()
+        .with(|cx| cx.eval::<(), _>(script))
+        .unwrap();
+    runtime.resolve_pending_jobs().unwrap();
+    let result: String = runtime
+        .context()
+        .with(|cx| cx.globals().get("result"))
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_str(&result).unwrap();
+    assert!(value.get("error").is_none(), "{value}");
+    assert_eq!(value["lazyCalls"], 0);
+    assert_eq!(value["search"]["results"].as_array().unwrap().len(), 1);
+    assert_eq!(value["search"]["results"][0]["kind"], "tool");
+}
+
+#[test]
+fn javy_search_merges_lazy_skill_provider_results_into_discovery() {
+    let preamble = generate_discovery_js(&[], 0.5).unwrap();
+    let script = format!(
+        "{preamble}\n\
+         globalThis.calls = [];\n\
+         globalThis.callTool = async (id, params) => {{\n\
+           globalThis.calls.push({{id, params}});\n\
+           if (id === '__lab_internal::search_skills') return {{entries: [{{\n\
+             kind: 'skill',\n\
+             id: 'skill::skill://remote/rust/SKILL.md',\n\
+             path: 'skill.remote.rust',\n\
+             namespace: 'remote',\n\
+             name: 'rust',\n\
+             helper: 'codemode.getSkill(\"skill://remote/rust/SKILL.md\")',\n\
+             description: 'remote rust engineering skill',\n\
+             signature: '',\n\
+             tags: ['uri:skill://remote/rust/SKILL.md', 'lazy-provider:public-depot'],\n\
+             inputs: []\n\
+           }}]}};\n\
+           if (id === '__lab_internal::semantic_rank') return {{ranked: []}};\n\
+           if (id === '__lab_internal::describe_types') return {{dts: null}};\n\
+           throw new Error('unexpected internal call: ' + id);\n\
+         }};\n\
+         globalThis.result = null;\n\
+         (async () => {{\n\
+           const search = await codemode.search({{query: 'remote rust', kinds: ['skill']}});\n\
+           const description = await codemode.describe(search.results[0].path);\n\
+           globalThis.result = JSON.stringify({{search, description, calls: globalThis.calls}});\n\
+         }})().catch(error => {{ globalThis.result = JSON.stringify({{error: String(error)}}); }});"
+    );
+    let mut config = javy::Config::default();
+    config.memory_limit(8 * 1024 * 1024);
+    let runtime = javy::Runtime::new(config).unwrap();
+    runtime
+        .context()
+        .with(|cx| cx.eval::<(), _>(script))
+        .unwrap();
+    runtime.resolve_pending_jobs().unwrap();
+    let result: String = runtime
+        .context()
+        .with(|cx| cx.globals().get("result"))
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_str(&result).unwrap();
+    assert!(value.get("error").is_none(), "{value}");
+    assert_eq!(value["search"]["results"].as_array().unwrap().len(), 1);
+    assert_eq!(value["search"]["results"][0]["kind"], "skill");
+    assert_eq!(
+        value["search"]["results"][0]["id"],
+        "skill::skill://remote/rust/SKILL.md"
+    );
+    assert_eq!(
+        value["description"]["helper"],
+        "codemode.getSkill(\"skill://remote/rust/SKILL.md\")"
+    );
+    assert_eq!(value["calls"][0]["id"], "__lab_internal::search_skills");
+    assert_eq!(value["calls"][0]["params"]["query"], "remote rust");
+}
+
+#[test]
 fn javy_prompt_and_skill_helpers_dispatch_exact_internal_calls() {
     let preamble = generate_discovery_js(&[], 0.5).unwrap();
     let script = format!(
