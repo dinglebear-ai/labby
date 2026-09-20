@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -22,6 +23,7 @@ TOP_LEVEL_DOCS = {
     "docs/PLUGINS.md",
     "docs/RUST.md",
     "docs/TECH.md",
+    "docs/depot-unified-frontend.md",
     "apps/README.md",
     "apps/gateway-admin/README.md",
     "apps/gateway-admin/components/aurora/README.md",
@@ -34,6 +36,8 @@ TOP_LEVEL_DOCS = {
 }
 
 CANONICAL_DIRS = (
+    "docs/access-control/",
+    "docs/artifacts/",
     "docs/services/",
     "docs/surfaces/",
     "docs/runtime/",
@@ -51,10 +55,17 @@ CANONICAL_DEV = {
     "docs/dev/DISPATCH.md",
     "docs/dev/ERRORS.md",
     "docs/dev/OBSERVABILITY.md",
+    "docs/dev/RUSTDOC.md",
     "docs/dev/SERVICE_ONBOARDING.md",
     "docs/dev/SERVICES.md",
     "docs/dev/TESTING.md",
+    "docs/dev/VERIFICATION.md",
 }
+
+MAINTAINED_NONCANONICAL_DIRS = (
+    "docs/features/",
+    "docs/plans/",
+)
 
 IGNORED_PREFIXES = (
     "docs/references/",
@@ -108,6 +119,17 @@ def canonical_docs() -> list[Path]:
     return sorted(paths)
 
 
+def maintained_noncanonical_docs() -> list[Path]:
+    paths = [
+        p
+        for p in ROOT.rglob("*")
+        if p.is_file()
+        and p.suffix.lower() in {".md", ".mdx"}
+        and rel(p).startswith(MAINTAINED_NONCANONICAL_DIRS)
+    ]
+    return sorted(paths)
+
+
 def strip_link_target(raw: str) -> str:
     target = raw.strip()
     if target.startswith("<") and target.endswith(">"):
@@ -157,6 +179,55 @@ def validate_duplicates(paths: list[Path], failures: list[str]) -> None:
     for names in groups.values():
         if len(names) > 1:
             failures.append("duplicate canonical product docs: " + ", ".join(sorted(names)))
+
+
+def service_names_from_table(text: str, heading: str | None = None) -> set[str]:
+    """Return backticked service ids from the first column of one Markdown table."""
+    if heading is not None:
+        match = re.search(rf"(?m)^## {re.escape(heading)}\s*$", text)
+        if match is None:
+            return set()
+        text = text[match.end() :]
+
+    names: set[str] = set()
+    in_table = False
+    for line in text.splitlines():
+        if not line.startswith("|"):
+            if in_table:
+                break
+            continue
+        in_table = True
+        cells = line.split("|")
+        if len(cells) < 3:
+            continue
+        names.update(re.findall(r"`([a-z][a-z0-9_]*)`", cells[1]))
+    return names
+
+
+def validate_service_index_coverage(failures: list[str]) -> None:
+    catalog = json.loads(
+        (ROOT / "docs/generated/service-catalog.json").read_text(encoding="utf-8")
+    )
+    service_names = {entry["name"] for entry in catalog}
+    indexes = (
+        ("docs/README.md", "Current Product Services"),
+        ("docs/services/README.md", None),
+    )
+    for relative_path, heading in indexes:
+        text = (ROOT / relative_path).read_text(encoding="utf-8")
+        indexed = service_names_from_table(text, heading)
+        missing = sorted(service_names - indexed)
+        unknown = sorted(indexed - service_names)
+        if missing:
+            failures.append(
+                f"{relative_path}: registered services missing from documentation index table: "
+                + ", ".join(missing)
+            )
+        if unknown:
+            failures.append(
+                f"{relative_path}: unknown or retired services present in documentation index table: "
+                + ", ".join(unknown)
+            )
 
 
 def validate_instruction_symlinks(failures: list[str]) -> None:
@@ -284,16 +355,18 @@ def validate_shipped_skill_cli_examples(failures: list[str]) -> None:
 def main() -> int:
     failures: list[str] = []
     paths = canonical_docs()
+    maintained_noncanonical = maintained_noncanonical_docs()
 
     for retired in RETIRED_PATHS:
         if (ROOT / retired).exists() or (ROOT / retired).is_symlink():
             failures.append(f"retired product doc still present: {retired}")
 
-    for path in paths:
+    for path in [*paths, *maintained_noncanonical]:
         validate_links(path, failures)
         validate_stale_tokens(path, failures)
 
     validate_duplicates(paths, failures)
+    validate_service_index_coverage(failures)
     validate_instruction_symlinks(failures)
     validate_auth_bypass_guidance(failures)
     validate_install_config_deployment_contracts(failures)
@@ -305,7 +378,11 @@ def main() -> int:
             print(f"  - {failure}", file=sys.stderr)
         return 1
 
-    print(f"product docs check passed: {len(paths)} canonical docs; instruction symlinks valid")
+    print(
+        "product docs check passed: "
+        f"{len(paths)} canonical docs, {len(maintained_noncanonical)} maintained planning/feature docs; "
+        "service indexes and instruction symlinks valid"
+    )
     return 0
 
 

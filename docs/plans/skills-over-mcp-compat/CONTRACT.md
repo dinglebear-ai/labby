@@ -1,6 +1,6 @@
 # Compatibility contract: Skills projection
 
-Status: normative for this implementation
+Status: historical implementation contract; compatibility facade merged in PR #456 (`ea07f3609`)
 Created: 2026-08-18
 Last updated: 2026-08-18
 

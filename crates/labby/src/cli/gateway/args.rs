@@ -20,9 +20,9 @@ pub enum GatewayCommand {
     Update(GatewayUpdateArgs),
     /// Remove a gateway and reconcile runtime state.
     Remove(GatewayRemoveArgs),
-    /// Manage Lab-backed virtual servers quarantined during config migration.
+    /// Manage Labby-backed virtual servers quarantined during config migration.
     Quarantine(GatewayQuarantineArgs),
-    /// Manage public MCP routes protected by Lab OAuth.
+    /// Manage public MCP routes protected by Labby OAuth.
     ProtectedRoute(GatewayProtectedRouteArgs),
     /// Manage reusable gateway capability loadouts.
     Loadout(GatewayLoadoutArgs),
@@ -91,7 +91,7 @@ pub struct GatewayLoadoutCreateArgs {
     /// Upstream names selected by this Loadout. Repeat or comma-separate.
     #[arg(long = "upstream", value_delimiter = ',')]
     pub upstreams: Vec<String>,
-    /// Built-in Lab services selected by this Loadout. Repeat or comma-separate.
+    /// Built-in Labby services selected by this Loadout. Repeat or comma-separate.
     #[arg(long = "service", value_delimiter = ',')]
     pub services: Vec<String>,
     /// Hide direct MCP Tools on this Loadout.
@@ -528,9 +528,9 @@ pub struct GatewayQuarantineArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum GatewayQuarantineCommand {
-    /// List Lab-backed virtual servers quarantined during config migration.
+    /// List Labby-backed virtual servers quarantined during config migration.
     List,
-    /// Restore a quarantined Lab-backed virtual server into the active gateway list.
+    /// Restore a quarantined Labby-backed virtual server into the active gateway list.
     Restore(GatewayQuarantineRestoreArgs),
 }
 
@@ -547,7 +547,7 @@ pub struct GatewayProtectedRouteArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum GatewayProtectedRouteCommand {
-    /// List Gateway-managed public MCP routes protected by Lab OAuth.
+    /// List Gateway-managed public MCP routes protected by Labby OAuth.
     List,
     /// Get one Gateway-managed protected MCP route.
     Get(GatewayProtectedRouteNameArgs),
@@ -595,7 +595,7 @@ pub struct GatewayProtectedRouteUpdateArgs {
     pub scopes: Vec<String>,
     #[arg(long)]
     pub health_path: Option<String>,
-    /// Expose a scoped Lab gateway MCP surface instead of proxying one backend.
+    /// Expose a scoped Labby gateway MCP surface instead of proxying one backend.
     #[arg(long)]
     pub gateway_subset: bool,
     /// Bind this gateway subset to an access-control project.
@@ -610,7 +610,7 @@ pub struct GatewayProtectedRouteUpdateArgs {
     /// Upstream names to expose for --gateway-subset. Repeat or comma-separate.
     #[arg(long, value_delimiter = ',')]
     pub target_upstream: Vec<String>,
-    /// Built-in Lab service names to expose for --gateway-subset. Repeat or comma-separate.
+    /// Built-in Labby service names to expose for --gateway-subset. Repeat or comma-separate.
     #[arg(long, value_delimiter = ',')]
     pub target_service: Vec<String>,
     /// Expose codemode on this gateway subset.
@@ -641,7 +641,7 @@ pub struct GatewayProtectedRouteUpsertArgs {
     pub scopes: Vec<String>,
     #[arg(long)]
     pub health_path: Option<String>,
-    /// Expose a scoped Lab gateway MCP surface instead of proxying one backend.
+    /// Expose a scoped Labby gateway MCP surface instead of proxying one backend.
     #[arg(long)]
     pub gateway_subset: bool,
     /// Bind this gateway subset to an access-control project.
@@ -653,7 +653,7 @@ pub struct GatewayProtectedRouteUpsertArgs {
     /// Upstream names to expose for --gateway-subset. Repeat or comma-separate.
     #[arg(long, value_delimiter = ',')]
     pub target_upstream: Vec<String>,
-    /// Built-in Lab service names to expose for --gateway-subset. Repeat or comma-separate.
+    /// Built-in Labby service names to expose for --gateway-subset. Repeat or comma-separate.
     #[arg(long, value_delimiter = ',')]
     pub target_service: Vec<String>,
     /// Expose codemode on this gateway subset.

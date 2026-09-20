@@ -47,6 +47,7 @@ export type SafeMarkdownProps = {
   text: string
   isStreaming?: boolean
   className?: string
+  transformUrl?: (url: string) => string | null
 }
 
 function StreamingCursor() {
@@ -62,7 +63,17 @@ export function SafeMarkdown({
   text,
   isStreaming = false,
   className,
+  transformUrl,
 }: SafeMarkdownProps) {
+  const urlTransform = React.useCallback<UrlTransform>(
+    (url, key, node) => {
+      const transformed = transformUrl ? transformUrl(url) : url
+      if (transformed === null) return null
+      return safeMarkdownUrlTransform(transformed, key, node)
+    },
+    [transformUrl],
+  )
+
   return (
     <div
       className={cn(
@@ -76,7 +87,7 @@ export function SafeMarkdown({
         rehypePlugins={NO_REHYPE_PLUGINS}
         disallowedElements={SAFE_MARKDOWN_IMAGE_ELEMENTS}
         allowElement={allowSafeMarkdownElement}
-        urlTransform={safeMarkdownUrlTransform}
+        urlTransform={urlTransform}
         controls={false}
         linkSafety={DISABLED_LINK_SAFETY}
         lineNumbers={false}

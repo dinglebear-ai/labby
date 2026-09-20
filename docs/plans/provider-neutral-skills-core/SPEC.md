@@ -1,6 +1,6 @@
 # Specification: provider-neutral Skills core
 
-Status: active
+Status: implemented historical specification; provider-neutral core merged in PR #486 (`625ccf300`)
 Created: 2026-08-22
 
 ## Problem

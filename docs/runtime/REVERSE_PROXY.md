@@ -1,7 +1,7 @@
 ---
 title: "Reverse Proxy Deployment"
 created: "2026-07-30"
-updated: "2026-09-05"
+updated: "2026-09-16"
 ---
 
 # Reverse Proxy Deployment
@@ -173,15 +173,17 @@ Run the built-in proxy doctor from any environment that resolves the public
 hosts:
 
 ```bash
-just protected-mcp-smoke -- \
+labby doctor proxy \
   --app-url https://lab.example.com \
   --mcp-url https://mcp.example.com \
   --route /tools
 ```
 
-The `just` target wraps `scripts/protected-mcp-smoke`, which delegates to
-`labby doctor proxy`. Use `LABBY_BIN=/path/to/labby` or `--labby-bin
-/path/to/labby` when testing a specific binary.
+The repository also ships `plugins/scripts/protected-mcp-smoke` as a thin
+compatibility wrapper around the same command. Use `LABBY_BIN=/path/to/labby`
+or `--labby-bin /path/to/labby` with that wrapper when testing a specific
+binary. There is no `just protected-mcp-smoke` target and no
+`scripts/protected-mcp-smoke` path in the current repository.
 
 The check verifies app health, route-specific protected-resource metadata, and
 the expected unauthenticated OAuth bearer challenge on the protected route.

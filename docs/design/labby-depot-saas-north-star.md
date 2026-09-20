@@ -2,7 +2,7 @@
 title: "Labby and Depot SaaS North Star"
 status: accepted-target
 created: "2026-09-07"
-updated: "2026-09-07"
+updated: "2026-09-20"
 ---
 
 # Labby and Depot SaaS North Star
@@ -22,11 +22,19 @@ Labby is the user-facing runtime, MCP gateway, and workspace control plane.
 Depot is the Artifact registry, publication authority, and immutable content
 source. They remain independently deployable and fully self-hostable.
 
-The hosted product has four related surfaces:
+[ADR 0002](../adr/0002-labby-product-contracts-over-private-depot.md) refines
+this boundary: Labby owns all integrated user and agent experiences, including
+discovery, publishing, and administration. Depot stays in its separate private
+repository and is not intended to be open source. Independent deployment and
+self-hosting do not imply source redistribution. References below to Public
+Depot or Lime Depot identify backend authorities, not separate user products.
 
-1. **Public Depot** provides public Artifact discovery, public Artifact detail,
-   creation and publication for authenticated users, Depot account libraries,
-   and policy-permitted forks of exact immutable revisions.
+The hosted product has four related experiences, all presented through Labby:
+
+1. **Labby discovery and publishing** provides public Artifact discovery and
+   detail, creation and publication for authenticated users, account libraries,
+   and policy-permitted forks of exact immutable revisions. Public Depot
+   implements the registry and enforcement behind these Labby workflows.
 2. **Personal Labby** runs for one user on a laptop, workstation, server, or
    other user-controlled environment. It can use remote Artifacts, materialize
    managed copies, or own explicit forks according to distribution policy.
@@ -40,9 +48,10 @@ The hosted product has four related surfaces:
    Artifact integrity or authorization rules.
 
 ```text
-                         public discovery and publication
+                      Labby discovery and publishing UI/API
+                                        |
                    +-----------------------------------------+
-                   |              Public Depot               |
+                   |      Public Depot (private backend)     |
                    | metadata, revisions, lineage, policies  |
                    +--------------------+--------------------+
                                         |

@@ -1,12 +1,17 @@
 # Progress: Skills over MCP compatibility
 
-Status: in progress
-Branch: feat/skills-over-mcp
-Worktree: /home/jmagar/workspace/labby-skills-over-mcp
+Status: completed and merged in PR #456 (`ea07f3609`) on 2026-08-19; later transport hardening merged in PR #571 (`b6ad22385`) on 2026-09-08
+Historical branch: feat/skills-over-mcp
+Historical worktree: /home/jmagar/workspace/labby-skills-over-mcp
 Started: 2026-08-18
-Last updated: 2026-08-19 16:04 America/New_York
+Historical snapshot last updated: 2026-08-19 16:04 America/New_York
 
-This file is the living tracker. Update it whenever implementation state, decisions, verification, or rebase risk changes.
+> **Historical progress record.** The implementation and verification ledger
+> below records the state of the delivery branch before merge. Branch/worktree,
+> open-PR, and upstream-SEP statements inside the dated ledger are preserved as
+> historical evidence, not current status. Current behavior is documented in
+> [Artifacts And Agent Skills](../../services/SKILLS.md), and current SEP status
+> is owned by the [Skills extension contract](../../contracts/skills-extension.md).
 
 ## Current state
 

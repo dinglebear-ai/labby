@@ -4,15 +4,17 @@ This directory is the canonical documentation entrypoint for the current Labby p
 
 The live Rust/TypeScript implementation and the generated catalogs under [generated/](./generated/README.md) are the ground truth for what is compiled, registered, and exposed. Product prose should explain that implementation rather than preserve old product shapes.
 
-Historical material that still has durable value lives under `docs/archive/` and is explicitly non-canonical. Transient research caches, session logs, generated smoke output, and completed implementation plans are not committed as product documentation; Git history retains them when historical archaeology is needed.
+Historical material that still has durable value lives under `docs/archive/` and is explicitly non-canonical. Durable implementation-plan packets may remain under `docs/plans/` when they retain useful engineering evidence, but completed packets must say that they are historical and point back to the current canonical product docs. Transient research caches, session logs, and generated smoke output are not product documentation; Git history retains them when historical archaeology is needed.
 
 ## Start Here
 
 - [Architecture](./ARCH.md) — workspace boundaries, runtime flow, and product surfaces.
+- [Architecture decisions](./adr/README.md) — accepted and proposed durable architecture choices, their boundaries, and alternatives.
+- [Labby product contracts over private Depot](./adr/0002-labby-product-contracts-over-private-depot.md) — accepted ownership and shared-shim decision, with a [current capability audit](./design/depot-capability-audit.md).
 - [Technology](./TECH.md) — toolchain, dependencies, build posture, Rustdoc, and release model.
 - [Conventions](./CONVENTIONS.md) — engineering rules that current code is expected to follow.
-- [Service model](./dev/SERVICES.md) — the current registered service inventory and onboarding rules.
-- [CLI](./surfaces/CLI.md), [MCP](./surfaces/MCP.md), [MCP conformance](./surfaces/MCP_CONFORMANCE.md), and [Transport](./surfaces/TRANSPORT.md) — public surface behavior and protocol contracts.
+- [Service documentation index](./services/README.md) and [service model](./dev/SERVICES.md) — product behavior plus the current registered-service and onboarding contracts.
+- [CLI](./surfaces/CLI.md), [HTTP API](./surfaces/HTTP_API.md), [MCP](./surfaces/MCP.md), [MCP conformance](./surfaces/MCP_CONFORMANCE.md), and [Transport](./surfaces/TRANSPORT.md) — public surface behavior and protocol contracts.
 - [Skills and Loadouts](./guides/SKILLS_AND_LOADOUTS.md) — Agent Skills trust/exposure and route Loadout projections.
 - [Claude and Codex Artifact authoring](./artifacts/provider-authoring-reference.md) — official provider formats/frontmatter, sidecars, manifests, validation rules, and Creator mapping.
 - [Phoenix Assistant](./services/PHOENIX_ASSISTANT.md) — App Server chronology, reasoning/tool event timeline, attachments, context usage, and verification oracles.
@@ -35,6 +37,7 @@ The generated [service catalog](./generated/service-catalog.md) is authoritative
 | `agents` | [services/AGENT_TASKS.md](./services/AGENT_TASKS.md) | Immutable Agent definitions executed through the shared Assistant LLM provider, bounded sessions, and revocation |
 | `tasks` | [services/AGENT_TASKS.md](./services/AGENT_TASKS.md) and [services/TASKS.md](./services/TASKS.md) | Durable Agent Tasks, schedules, timezones, retries, and recovery |
 | `browser` | [services/BROWSER.md](./services/BROWSER.md) | Rust-native WebMCP browser bridge, pairing, discovery, consent, and bounded invocation |
+| `depot_publish` | [services/DEPOT_PROVIDERS.md](./services/DEPOT_PROVIDERS.md) | Bounded publication/provider projection into configured Depot authority |
 | `dev_containers` | [services/DEV_CONTAINERS.md](./services/DEV_CONTAINERS.md) | Owner-scoped development-container definitions, leases, recovery, and lifecycle |
 | `doctor` | [services/DOCTOR.md](./services/DOCTOR.md) | Always-on system, auth, OAuth relay, and proxy diagnostics |
 | `gateway` | [services/GATEWAY.md](./services/GATEWAY.md) | Upstream catalog, protected routes, virtual servers, OAuth, Code Mode host |
@@ -47,7 +50,7 @@ The generated [service catalog](./generated/service-catalog.md) is authoritative
 | `artifacts`, `bundles`, `jobs`, `sources`, `uploads` | [services/SKILLS.md](./services/SKILLS.md) and [artifacts/](./artifacts/) | Durable Artifact library, provider-backed control-plane projections, and native Agent Skills projection |
 | `lab_admin` | [services/LAB_ADMIN.md](./services/LAB_ADMIN.md) | Runtime-conditional onboarding audit surface |
 | access owner bootstrap | [services/ACCESS.md](./services/ACCESS.md#owner-bootstrap) | Explicit creation of the first access-control owner (browser or offline proof); distinct from the registered `access` service |
-| direct stdio proxy | [guides/STDIO_MCP_PROXY.md](./guides/STDIO_MCP_PROXY.md) | One selected stdio MCP server exposed over Streamable HTTP |
+| `proxy` | [guides/STDIO_MCP_PROXY.md](./guides/STDIO_MCP_PROXY.md) | Direct stdio proxy service: one selected stdio MCP server exposed over Streamable HTTP |
 
 Do not hand-maintain a duplicate action inventory in prose. Use the generated [action catalog](./generated/action-catalog.md) for exact action names, parameters, scopes, destructive classification, and surfaces.
 
@@ -57,6 +60,7 @@ HTTP route, not a registered multi-surface service.
 ## Public Surfaces
 
 - [CLI](./surfaces/CLI.md) — command grammar, output modes, confirmation behavior, and operator commands.
+- [HTTP API](./surfaces/HTTP_API.md) — hand-authored HTTP transport contracts that supplement the generated route inventory.
 - [MCP](./surfaces/MCP.md) — tool/resource/prompt behavior, Code Mode, MCP Apps, and capability exposure.
 - [MCP conformance](./surfaces/MCP_CONFORMANCE.md) — current protocol-version and conformance contract.
 - [RMCP](./surfaces/RMCP.md) — how Labby integrates the Rust MCP SDK.
@@ -87,6 +91,7 @@ HTTP route, not a registered multi-surface service.
 - [Errors](./dev/ERRORS.md) — stable error taxonomy and surface mapping.
 - [Observability](./dev/OBSERVABILITY.md) — required fields, correlation, redaction, and verification.
 - [Testing](./dev/TESTING.md) — local and CI verification expectations.
+- [Verification and compliance](./dev/VERIFICATION.md) — qualification denominator, evidence classes, formal methods, and release verification ownership.
 - [Rustdoc](./dev/RUSTDOC.md) — comprehensive Rust API documentation, doctest, and CI artifact contract.
 - [Serialization](./design/SERIALIZATION.md) — output and wire-shape ownership.
 
@@ -118,7 +123,19 @@ Normative cross-surface contracts live under [contracts/](./contracts/):
 - [Claude Code Aurora theme](./design/CLAUDE_CODE_AURORA_THEME.md)
 - [Google credential broker](./design/GOOGLE_CREDENTIAL_BROKER.md)
 - [Remote gateway target](./design/REMOTE_GATEWAY_TARGET.md)
+- [Unified Labby and Depot frontend](./depot-unified-frontend.md) — implemented frontend/runtime boundary and rollback contract for optional Depot integration.
 - [Brand assets](./assets/brand/README.md)
+
+## Maintained Plans And Implementation Records
+
+These are useful engineering records, not substitutes for current product contracts:
+
+- [Feature docs](./features/README.md) — proposed or in-flight behavior that must state explicitly when it is not shipped.
+- [W19 Artifact Gateway record](./artifacts/progress.md) — historical Phase 1/2 lifecycle/provider milestone; current lifecycle behavior is [Artifacts And Agent Skills](./services/SKILLS.md).
+- [Skills-over-MCP compatibility](./plans/skills-over-mcp-compat/README.md) — completed implementation record for PR #456; current protocol contract is [Skills extension](./contracts/skills-extension.md).
+- [Provider-neutral Skills core](./plans/provider-neutral-skills-core/README.md) — completed implementation record for PR #486; current runtime behavior is projected through [Artifacts And Agent Skills](./services/SKILLS.md).
+- [First-class usage metrics](./plans/usage-metrics-first-class/README.md) — shipped dimensional analytics record with its remaining long-window policy decision called out explicitly.
+- [Verification and compliance](./dev/VERIFICATION.md) — current correctness-engineering architecture, qualification boundaries, and evidence contracts; operational usage lives in the [verification workspace](../tools/verification/README.md).
 
 ## Plugins And Snippets
 

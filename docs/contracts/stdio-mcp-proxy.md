@@ -1,7 +1,7 @@
 ---
 title: "Contract: Stdio MCP Proxy"
 created: "2026-07-31"
-updated: "2026-08-18"
+updated: "2026-09-16"
 ---
 
 # Contract: Stdio MCP Proxy
@@ -15,7 +15,7 @@ This contract pins the stable CLI grammar, configuration vocabulary, output shap
 ## CLI grammar
 
 ```text
-labby proxy [LABBY_OPTIONS] <PROGRAM_OR_SCRIPT> [CHILD_ARGUMENTS...]
+labby proxy [OPTIONS] <PROGRAM_OR_SCRIPT> [CHILD_ARGUMENTS...]
 ```
 
 Stable options:

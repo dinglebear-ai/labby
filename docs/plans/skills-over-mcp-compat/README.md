@@ -1,44 +1,46 @@
 # Skills over MCP compatibility implementation
 
-Status: active implementation
-Owner: Labby gateway / MCP surface
-Started: 2026-08-18
-Worktree: /home/jmagar/workspace/labby-skills-over-mcp
-Branch: feat/skills-over-mcp
+**Status:** Completed and merged. The shared compatibility facade landed in PR
+#456 as `ea07f3609` on 2026-08-19. Transport-preservation hardening later
+landed in PR #571 as `b6ad22385` on 2026-09-08.
 
-## Purpose
+This directory is a historical implementation record. It is not the source of
+truth for current Skills behavior. Use:
 
-This folder is the living implementation package for making Labby-hosted Agent Skills usable by the widest practical set of MCP clients without forking the skill model per client.
+- [Artifacts And Agent Skills](../../services/SKILLS.md) for current Labby
+  lifecycle and operator behavior;
+- [Skills extension contract](../../contracts/skills-extension.md) for the
+  accepted SEP-2640 wire contract and pinned upstream revision;
+- the generated [service](../../generated/service-catalog.md) and
+  [action](../../generated/action-catalog.md) catalogs for current compiled
+  surface availability.
 
-Labby already implements the draft SEP-2640 native Skills extension: capability advertisement, skills/list, skills/get, first-party skills, local operator skills, upstream aggregation, manifest validation, digest verification, URI relabelling, route scoping, and resource reads. This project does not rebuild that foundation.
+## Historical purpose
 
-The missing layer is compatibility projection for clients that support MCP but do not natively understand SEP-2640.
+This work made Labby-hosted Agent Skills usable by MCP clients that do not
+natively understand the Skills extension without creating a second Skill model.
+It extracted shared Skills semantics, added one fixed compatibility service, and
+projected the same caller-scoped registry through CLI, HTTP API, MCP, and Code
+Mode adapters.
 
-## Artifacts
+The core decision remains part of the shipped design: one canonical Skill
+registry, multiple projections. Native Skills clients use `skills/list`,
+`skills/get`, and manifest-bound `resources/read`; compatibility callers use
+the fixed read-only `skills.list`, `skills.search`, `skills.get`, and
+`skills.read` actions. Skill cardinality does not increase MCP tool cardinality.
 
-- SPEC.md: product and architecture specification.
-- CONTRACT.md: normative compatibility and behavior contract.
-- IMPLEMENTATION_PLAN.md: phased code, test, documentation, and rollout plan.
-- PROGRESS.md: living status, decisions, verification log, and rebase watch. Keep this updated during every implementation session.
-- ../../contracts/skills-extension.md: existing normative SEP-2640 protocol contract. Do not duplicate its wire-level requirements here.
+## Historical artifacts
 
-## Core decision
+- [Specification](./SPEC.md) — implementation-time product and architecture
+  specification.
+- [Compatibility contract](./CONTRACT.md) — invariants used while landing the
+  compatibility projection.
+- [Implementation plan](./IMPLEMENTATION_PLAN.md) — phased delivery plan.
+- [Progress log](./PROGRESS.md) — dated implementation, verification, review,
+  and rebase evidence.
 
-One canonical skill registry, multiple projections.
-
-1. Native SEP-2640 clients use skills/list, skills/get, and resources/read.
-2. Tool-capable clients use one fixed Labby skills service with action-based list, search, get, and read operations.
-3. Code Mode clients discover and invoke the same fixed skills service through the Code Mode catalog.
-4. Filesystem-native clients may later receive an explicit local projection generated from the same registry.
-
-Labby must never expose one MCP tool per skill. Skill count must not increase the MCP tool count.
-
-## Adjacent work
-
-The existing feature/skills-ui-config branch contains substantial work for first-class gateway Skills configuration, operator views, and loadouts. This project must not overwrite or independently reinvent those features. Integration should occur through shared types and dispatch boundaries after both branches are reviewed.
-
-## Current upstream reference
-
-On 2026-08-18, the modelcontextprotocol/experimental-ext-skills main branch resolves docs/sep-draft-skills-extension.md at repository snapshot f1f66fa7f8c75d6094dff1fd4a5e83f058ec8692 with file blob SHA 6b535330430f55170bab488dde661f8909fb947b. SEP-2640 remains an open Extensions Track draft in modelcontextprotocol/modelcontextprotocol PR 2640, updated 2026-08-15.
-
-The existing Labby protocol contract intentionally pins a known revision. Any wire-level change must first update and re-run that conformance contract; compatibility projection must not silently change the native SEP surface.
+The branch/worktree references and upstream status snapshots in those records
+are historical evidence from August 2026. They must not be interpreted as live
+branch state or current SEP status. SEP-2640 was accepted on 2026-09-03; the
+current accepted pin is maintained only in
+[the Skills extension contract](../../contracts/skills-extension.md).
