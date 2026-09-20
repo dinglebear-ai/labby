@@ -493,6 +493,10 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         &crate::runtime_health::SubsystemHealth::process(),
         || bootstrap_skill_library(config),
     );
+    #[cfg(feature = "skills")]
+    if let Some(runtime) = skill_library_runtime.as_ref() {
+        crate::dispatch::skill_library::follow_reconciler::start(&access_runtime, runtime);
+    }
     #[cfg(feature = "gateway")]
     let gateway_manager = build_gateway_runtime(
         config,

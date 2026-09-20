@@ -34,8 +34,9 @@ use super::params::{
     ImportBatchParams, ImportParams, SourceSelector, validate_idempotency_key,
 };
 use crate::dispatch::artifact_distribution::{
-    ManagedArtifactCoordinator, ManagedArtifactFollowUpdateRequest, ManagedArtifactInstallOutcome,
-    ManagedArtifactInstallRequest, PersonalArtifactForkOutcome, PersonalArtifactForkRequest,
+    ManagedArtifactAuthorization, ManagedArtifactCoordinator, ManagedArtifactFollowUpdateRequest,
+    ManagedArtifactInstallOutcome, ManagedArtifactInstallRequest, PersonalArtifactForkOutcome,
+    PersonalArtifactForkRequest,
 };
 
 pub(crate) async fn dispatch_authorized_action(
@@ -340,6 +341,15 @@ async fn install_managed(
     action: SkillLibraryAction,
     correlation: &SkillLibraryCorrelationId,
 ) -> Result<Value, ToolError> {
+    if mode == ManagedArtifactMirrorMode::Followed
+        && update_policy != Some(ArtifactSubscriptionUpdatePolicy::Pinned)
+        && source.depot_connection_id().is_none()
+    {
+        return Err(ToolError::Sdk {
+            sdk_kind: "source_unavailable".to_owned(),
+            message: "Automatic follow observation requires a configured Depot source".to_owned(),
+        });
+    }
     let provider_authority = source.provider_authority();
     let artifact_id = source.artifact_id().to_owned();
     let (decision, acquisition) = acquire_distribution(
@@ -353,6 +363,17 @@ async fn install_managed(
     )
     .await?;
     let revision_id = acquisition.interchange.revision.id.clone();
+    let authorization = ManagedArtifactAuthorization {
+        identity_ref_json: serde_json::to_string(
+            &crate::access::DurableIdentityReference::capture(caller.identity()),
+        )
+        .map_err(|_| ToolError::Sdk {
+            sdk_kind: "internal_error".to_owned(),
+            message: "Managed Artifact identity could not be serialized".to_owned(),
+        })?,
+        project_id: project_id.to_owned(),
+        selected_team_id: caller.selected_team_id().map(str::to_owned),
+    };
     let ArtifactDistributionAuthorizationDecision { authority, audit } = decision;
     audited_distribution_mutation(&audit, &revision_id, async {
         let store = access_store(access_runtime).await?;
@@ -407,6 +428,7 @@ async fn install_managed(
                 mode,
                 policy_epoch: authority.global_revision,
                 update_policy,
+                authorization,
                 now,
                 acquisition,
             })

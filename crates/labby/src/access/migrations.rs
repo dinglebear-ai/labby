@@ -10,7 +10,7 @@ use super::credential_schema;
 pub(super) const SCHEMA_VERSION: i64 = 9;
 const MAX_MIGRATION_EVIDENCE_BYTES: usize = 128 * 1024;
 pub(super) const APPLICATION_ID: i64 = 0x4c_41_43_31;
-pub(super) const SCHEMA_FINGERPRINT: &str = "labby-access-v9-20260917";
+pub(super) const SCHEMA_FINGERPRINT: &str = "labby-access-v9-20260918";
 pub(super) const V8_SCHEMA_VERSION: i64 = 8;
 pub(super) const V8_SCHEMA_FINGERPRINT: &str = "labby-access-v8-20260916";
 pub(super) const V7_SCHEMA_VERSION: i64 = 7;
@@ -2112,6 +2112,56 @@ mod credential_migration_tests {
                 .unwrap();
             assert_eq!(rows, 0, "{table} must start empty after v8 migration");
         }
+
+        let mirror_columns = connection
+            .prepare("PRAGMA table_info(artifact_mirrors)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        for required in [
+            "identity_ref_json",
+            "authorization_project_id",
+            "authorization_team_id",
+            "last_checked_at",
+        ] {
+            assert!(
+                mirror_columns.iter().any(|column| column == required),
+                "artifact_mirrors missing {required}"
+            );
+        }
+
+        let subscription_columns = connection
+            .prepare("PRAGMA table_info(artifact_subscriptions)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        for required in [
+            "last_observed_revision_id",
+            "last_applied_revision_id",
+            "last_checked_at",
+        ] {
+            assert!(
+                subscription_columns.iter().any(|column| column == required),
+                "artifact_subscriptions missing {required}"
+            );
+        }
+        for index in [
+            "artifact_mirrors_reconcile",
+            "artifact_subscriptions_reconcile",
+        ] {
+            let present: i64 = connection
+                .query_row(
+                    "SELECT count(*) FROM sqlite_schema WHERE type='index' AND name=?1",
+                    [index],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(present, 1, "{index}");
+        }
     }
 
     #[test]
@@ -2199,7 +2249,7 @@ mod credential_migration_tests {
     #[test]
     fn schema_version_is_nine_for_local_artifact_distribution_state() {
         assert_eq!(SCHEMA_VERSION, 9);
-        assert_eq!(SCHEMA_FINGERPRINT, "labby-access-v9-20260917");
+        assert_eq!(SCHEMA_FINGERPRINT, "labby-access-v9-20260918");
         let canonical = canonical_current_schema().unwrap();
         let tables = schema_manifest(&canonical)
             .unwrap()

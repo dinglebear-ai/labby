@@ -32,6 +32,13 @@ pub(crate) enum ManagedArtifactDistributionError {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct ManagedArtifactAuthorization {
+    pub(crate) identity_ref_json: String,
+    pub(crate) project_id: String,
+    pub(crate) selected_team_id: Option<String>,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct ManagedArtifactInstallRequest {
     pub(crate) mirror_id: String,
     pub(crate) operation_id: String,
@@ -43,6 +50,7 @@ pub(crate) struct ManagedArtifactInstallRequest {
     pub(crate) mode: ManagedArtifactMirrorMode,
     pub(crate) policy_epoch: u64,
     pub(crate) update_policy: Option<ArtifactSubscriptionUpdatePolicy>,
+    pub(crate) authorization: ManagedArtifactAuthorization,
     pub(crate) now: i64,
     pub(crate) acquisition: ArtifactAcquisition,
 }
@@ -123,6 +131,9 @@ impl ManagedArtifactCoordinator {
                 mirror_id: request.mirror_id.clone(),
                 operation_id: request.operation_id.clone(),
                 owner_principal_id: request.owner_principal_id,
+                identity_ref_json: request.authorization.identity_ref_json,
+                authorization_project_id: request.authorization.project_id,
+                authorization_team_id: request.authorization.selected_team_id,
                 destination_id: request.destination_id,
                 source_provider_authority: request.source_provider_authority,
                 source_assignment_id: request.source_assignment_id,
@@ -308,12 +319,8 @@ impl ManagedArtifactCoordinator {
     /// Apply one exact revision under an `auto_approved` follow subscription.
     ///
     /// Reauthorization is re-run per revision, so following never becomes standing permission for
-    /// future arbitrary revisions. No caller exists yet: the background follow-observation loop that
-    /// drives this path is the next distribution slice, so the behavior is covered by tests only.
-    #[allow(
-        dead_code,
-        reason = "awaiting the follow-observation loop that drives it"
-    )]
+    /// future arbitrary revisions. The durable follow reconciler invokes this only after restoring
+    /// the subscription's trusted identity reference and rechecking current source policy.
     pub(crate) async fn apply_auto_approved_follow_update(
         &self,
         request: ManagedArtifactFollowUpdateRequest,
@@ -425,14 +432,10 @@ impl ManagedArtifactCoordinator {
         })
     }
 
-    /// Move an active managed mirror into a terminal restricted state and purge its managed bytes.
+    /// Move a managed mirror into a terminal restricted state and purge its managed bytes.
     ///
-    /// No caller exists yet: revocation reconciliation (access revoked / source withdrawn) is the
-    /// next distribution slice, so the behavior is covered by tests only.
-    #[allow(
-        dead_code,
-        reason = "awaiting revocation reconciliation that drives it"
-    )]
+    /// The durable follow reconciler uses this when current access is revoked or the source is
+    /// withdrawn/restricted. Retries remain idempotent after the local bytes are already absent.
     pub(crate) async fn restrict_and_purge_managed_mirror(
         &self,
         mirror_id: String,
@@ -498,6 +501,23 @@ mod tests {
     use labby_runtime::artifacts::{
         ArtifactImportRequest, ArtifactProvider, ArtifactProviderRequest, LocalArtifactProvider,
     };
+
+    fn managed_authorization() -> ManagedArtifactAuthorization {
+        let identity = VerifiedIdentity::external(
+            Authenticator::BrowserSession,
+            "https://accounts.google.com",
+            "owner",
+        )
+        .unwrap();
+        ManagedArtifactAuthorization {
+            identity_ref_json: serde_json::to_string(
+                &crate::access::DurableIdentityReference::capture(&identity),
+            )
+            .unwrap(),
+            project_id: "bootstrap-default".into(),
+            selected_team_id: None,
+        }
+    }
 
     async fn bootstrapped_access() -> (tempfile::TempDir, AccessStore) {
         let directory = crate::access::test_support::secure_tempdir();
@@ -624,6 +644,7 @@ mod tests {
             mode: ManagedArtifactMirrorMode::Pinned,
             policy_epoch,
             update_policy: None,
+            authorization: managed_authorization(),
             now: 20,
             acquisition,
         };
@@ -735,6 +756,7 @@ mod tests {
                 mode: ManagedArtifactMirrorMode::Followed,
                 policy_epoch,
                 update_policy: Some(ArtifactSubscriptionUpdatePolicy::Notify),
+                authorization: managed_authorization(),
                 now: 20,
                 acquisition,
             })
@@ -809,6 +831,7 @@ mod tests {
                 mode: ManagedArtifactMirrorMode::Followed,
                 policy_epoch,
                 update_policy: Some(ArtifactSubscriptionUpdatePolicy::Notify),
+                authorization: managed_authorization(),
                 now: 20,
                 acquisition: first_acquisition,
             })
@@ -909,6 +932,7 @@ mod tests {
                 mode: ManagedArtifactMirrorMode::Followed,
                 policy_epoch,
                 update_policy: Some(ArtifactSubscriptionUpdatePolicy::Pinned),
+                authorization: managed_authorization(),
                 now: 20,
                 acquisition: first_acquisition,
             })
@@ -984,6 +1008,7 @@ mod tests {
                 mode: ManagedArtifactMirrorMode::Followed,
                 policy_epoch,
                 update_policy: Some(ArtifactSubscriptionUpdatePolicy::AutoApproved),
+                authorization: managed_authorization(),
                 now: 20,
                 acquisition: first_acquisition,
             })

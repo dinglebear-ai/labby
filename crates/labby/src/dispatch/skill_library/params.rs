@@ -206,6 +206,13 @@ impl SourceSelector {
             Self::Depot { revision_id, .. } | Self::Repository { revision_id, .. } => revision_id,
         }
     }
+
+    pub(crate) fn depot_connection_id(&self) -> Option<&str> {
+        match self {
+            Self::Depot { connection_id, .. } => Some(connection_id),
+            Self::Repository { .. } => None,
+        }
+    }
 }
 
 pub(crate) fn page_limit(value: Option<usize>) -> Result<usize, &'static str> {

@@ -75,6 +75,9 @@ CREATE TABLE artifact_mirrors (
     mirror_id TEXT PRIMARY KEY CHECK(length(trim(mirror_id)) BETWEEN 1 AND 256),
     operation_id TEXT NOT NULL UNIQUE CHECK(length(trim(operation_id)) BETWEEN 1 AND 256),
     owner_principal_id TEXT NOT NULL,
+    identity_ref_json TEXT NOT NULL CHECK(json_valid(identity_ref_json) AND length(identity_ref_json) <= 16384),
+    authorization_project_id TEXT NOT NULL CHECK(length(trim(authorization_project_id)) BETWEEN 1 AND 256),
+    authorization_team_id TEXT CHECK(length(trim(authorization_team_id)) BETWEEN 1 AND 256),
     destination_id TEXT,
     source_provider_authority TEXT NOT NULL,
     source_assignment_id TEXT NOT NULL,
@@ -87,6 +90,7 @@ CREATE TABLE artifact_mirrors (
     mode TEXT NOT NULL CHECK(mode IN ('pinned','followed')),
     status TEXT NOT NULL CHECK(status IN ('pending','committing','active','access_revoked','source_withdrawn','removed','failed')),
     last_authorized_policy_epoch INTEGER NOT NULL CHECK(last_authorized_policy_epoch > 0),
+    last_checked_at INTEGER,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     CHECK(destination_id IS NULL OR length(trim(destination_id)) BETWEEN 1 AND 256),
@@ -99,6 +103,8 @@ CREATE INDEX artifact_mirrors_owner_status
     ON artifact_mirrors(owner_principal_id, status);
 CREATE INDEX artifact_mirrors_source
     ON artifact_mirrors(source_provider_authority, source_artifact_id, source_revision_id);
+CREATE INDEX artifact_mirrors_reconcile
+    ON artifact_mirrors(status, last_checked_at, mirror_id);
 
 CREATE TABLE artifact_subscriptions (
     mirror_id TEXT PRIMARY KEY,
@@ -112,6 +118,8 @@ CREATE TABLE artifact_subscriptions (
     CHECK(last_applied_revision_id IS NULL OR length(trim(last_applied_revision_id)) BETWEEN 1 AND 2048),
     FOREIGN KEY(mirror_id) REFERENCES artifact_mirrors(mirror_id) ON DELETE CASCADE
 ) STRICT;
+CREATE INDEX artifact_subscriptions_reconcile
+    ON artifact_subscriptions(status, update_policy, last_checked_at, mirror_id);
 ";
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -598,6 +606,9 @@ pub(crate) struct StageManagedArtifactMirror {
     pub(crate) mirror_id: String,
     pub(crate) operation_id: String,
     pub(crate) owner_principal_id: String,
+    pub(crate) identity_ref_json: String,
+    pub(crate) authorization_project_id: String,
+    pub(crate) authorization_team_id: Option<String>,
     pub(crate) destination_id: Option<String>,
     pub(crate) source_provider_authority: String,
     pub(crate) source_assignment_id: String,
@@ -625,6 +636,9 @@ pub(crate) struct ManagedArtifactMirror {
     pub(crate) mirror_id: String,
     pub(crate) operation_id: String,
     pub(crate) owner_principal_id: String,
+    pub(crate) identity_ref_json: String,
+    pub(crate) authorization_project_id: String,
+    pub(crate) authorization_team_id: Option<String>,
     pub(crate) destination_id: Option<String>,
     pub(crate) source_provider_authority: String,
     pub(crate) source_assignment_id: String,
@@ -636,6 +650,7 @@ pub(crate) struct ManagedArtifactMirror {
     pub(crate) mode: ManagedArtifactMirrorMode,
     pub(crate) status: ManagedArtifactMirrorStatus,
     pub(crate) last_authorized_policy_epoch: u64,
+    pub(crate) last_checked_at: Option<i64>,
     pub(crate) created_at: i64,
     pub(crate) updated_at: i64,
 }
@@ -726,6 +741,9 @@ struct RawMirror {
     mirror_id: String,
     operation_id: String,
     owner_principal_id: String,
+    identity_ref_json: String,
+    authorization_project_id: String,
+    authorization_team_id: Option<String>,
     destination_id: Option<String>,
     source_provider_authority: String,
     source_assignment_id: String,
@@ -738,6 +756,7 @@ struct RawMirror {
     mode: String,
     status: String,
     last_authorized_policy_epoch: i64,
+    last_checked_at: Option<i64>,
     created_at: i64,
     updated_at: i64,
 }
@@ -748,6 +767,9 @@ impl RawMirror {
             mirror_id: self.mirror_id,
             operation_id: self.operation_id,
             owner_principal_id: self.owner_principal_id,
+            identity_ref_json: self.identity_ref_json,
+            authorization_project_id: self.authorization_project_id,
+            authorization_team_id: self.authorization_team_id,
             destination_id: self.destination_id,
             source_provider_authority: self.source_provider_authority,
             source_assignment_id: self.source_assignment_id,
@@ -760,6 +782,7 @@ impl RawMirror {
             status: ManagedArtifactMirrorStatus::from_wire(&self.status)?,
             last_authorized_policy_epoch: u64::try_from(self.last_authorized_policy_epoch)
                 .map_err(|_| AccessStoreError::MalformedVocabulary)?,
+            last_checked_at: self.last_checked_at,
             created_at: self.created_at,
             updated_at: self.updated_at,
         })
@@ -810,15 +833,16 @@ fn query_mirror(
 ) -> AccessStoreResult<Option<ManagedArtifactMirror>> {
     let raw = connection
         .query_row(
-            "SELECT mirror_id,operation_id,owner_principal_id,destination_id,source_provider_authority,source_assignment_id,source_scope_kind,source_scope_id,source_artifact_id,source_revision_id,local_artifact_id,local_revision_id,mode,status,last_authorized_policy_epoch,created_at,updated_at FROM artifact_mirrors WHERE mirror_id=?1",
+            "SELECT mirror_id,operation_id,owner_principal_id,identity_ref_json,authorization_project_id,authorization_team_id,destination_id,source_provider_authority,source_assignment_id,source_scope_kind,source_scope_id,source_artifact_id,source_revision_id,local_artifact_id,local_revision_id,mode,status,last_authorized_policy_epoch,last_checked_at,created_at,updated_at FROM artifact_mirrors WHERE mirror_id=?1",
             [mirror_id],
             |row| {
                 Ok(RawMirror {
                     mirror_id: row.get(0)?, operation_id: row.get(1)?, owner_principal_id: row.get(2)?,
-                    destination_id: row.get(3)?, source_provider_authority: row.get(4)?, source_assignment_id: row.get(5)?,
-                    source_scope_kind: row.get(6)?, source_scope_id: row.get(7)?, source_artifact_id: row.get(8)?, source_revision_id: row.get(9)?,
-                    local_artifact_id: row.get(10)?, local_revision_id: row.get(11)?, mode: row.get(12)?, status: row.get(13)?,
-                    last_authorized_policy_epoch: row.get(14)?, created_at: row.get(15)?, updated_at: row.get(16)?,
+                    identity_ref_json: row.get(3)?, authorization_project_id: row.get(4)?, authorization_team_id: row.get(5)?,
+                    destination_id: row.get(6)?, source_provider_authority: row.get(7)?, source_assignment_id: row.get(8)?,
+                    source_scope_kind: row.get(9)?, source_scope_id: row.get(10)?, source_artifact_id: row.get(11)?, source_revision_id: row.get(12)?,
+                    local_artifact_id: row.get(13)?, local_revision_id: row.get(14)?, mode: row.get(15)?, status: row.get(16)?,
+                    last_authorized_policy_epoch: row.get(17)?, last_checked_at: row.get(18)?, created_at: row.get(19)?, updated_at: row.get(20)?,
                 })
             },
         )
@@ -1252,6 +1276,36 @@ impl AccessStore {
         }).await
     }
 
+    pub(crate) async fn managed_artifact_policy_decision(
+        &self,
+        provider_authority: String,
+        artifact_id: String,
+        assignment_id: String,
+        grants: ArtifactDistributionGrants,
+        mode: ArtifactTransferMode,
+    ) -> AccessStoreResult<ArtifactTransferDecision> {
+        let publication = ArtifactPublication {
+            state: PublicationState::Published,
+            distribution: Distribution::Bytes,
+            ..ArtifactPublication::default()
+        };
+        let license = ArtifactLicenseState {
+            redistribution: Redistribution::Redistributable,
+            ..ArtifactLicenseState::default()
+        };
+        self.artifact_transfer_options(
+            provider_authority,
+            artifact_id,
+            Some(assignment_id),
+            grants,
+            publication,
+            license,
+            Some(ArtifactDestinationPolicy::local_personal()),
+        )
+        .await
+        .map(|options| options.decision(mode))
+    }
+
     pub(crate) async fn stage_managed_artifact_mirror(
         &self,
         input: StageManagedArtifactMirror,
@@ -1259,6 +1313,15 @@ impl AccessStore {
         validate_text(&input.mirror_id, 256)?;
         validate_text(&input.operation_id, 256)?;
         validate_text(&input.owner_principal_id, 256)?;
+        validate_text(&input.authorization_project_id, 256)?;
+        if let Some(team_id) = input.authorization_team_id.as_deref() {
+            validate_text(team_id, 256)?;
+        }
+        if input.identity_ref_json.is_empty() || input.identity_ref_json.len() > 16_384 {
+            return Err(AccessStoreError::InvalidArtifactDistributionInput);
+        }
+        serde_json::from_str::<super::DurableIdentityReference>(&input.identity_ref_json)
+            .map_err(|_| AccessStoreError::InvalidArtifactDistributionInput)?;
         if let Some(destination) = input.destination_id.as_deref() {
             validate_text(destination, 256)?;
         }
@@ -1297,6 +1360,9 @@ impl AccessStore {
                 let same = existing.mirror_id == input.mirror_id
                     && existing.operation_id == input.operation_id
                     && existing.owner_principal_id == input.owner_principal_id
+                    && existing.identity_ref_json == input.identity_ref_json
+                    && existing.authorization_project_id == input.authorization_project_id
+                    && existing.authorization_team_id == input.authorization_team_id
                     && existing.destination_id == input.destination_id
                     && existing.source_provider_authority == input.source_provider_authority
                     && existing.source_assignment_id == input.source_assignment_id
@@ -1310,8 +1376,8 @@ impl AccessStore {
                 return Ok(existing);
             }
             transaction.execute(
-                "INSERT INTO artifact_mirrors(mirror_id,operation_id,owner_principal_id,destination_id,source_provider_authority,source_assignment_id,source_scope_kind,source_scope_id,source_artifact_id,source_revision_id,local_artifact_id,local_revision_id,mode,status,last_authorized_policy_epoch,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,NULL,?12,'pending',?13,?14,?14)",
-                params![input.mirror_id,input.operation_id,input.owner_principal_id,input.destination_id,input.source_provider_authority,input.source_assignment_id,scope_kind,scope_id,input.source_artifact_id,input.source_revision_id,input.local_artifact_id,input.mode.as_wire(),epoch,input.now],
+                "INSERT INTO artifact_mirrors(mirror_id,operation_id,owner_principal_id,identity_ref_json,authorization_project_id,authorization_team_id,destination_id,source_provider_authority,source_assignment_id,source_scope_kind,source_scope_id,source_artifact_id,source_revision_id,local_artifact_id,local_revision_id,mode,status,last_authorized_policy_epoch,last_checked_at,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,NULL,?15,'pending',?16,NULL,?17,?17)",
+                params![input.mirror_id,input.operation_id,input.owner_principal_id,input.identity_ref_json,input.authorization_project_id,input.authorization_team_id,input.destination_id,input.source_provider_authority,input.source_assignment_id,scope_kind,scope_id,input.source_artifact_id,input.source_revision_id,input.local_artifact_id,input.mode.as_wire(),epoch,input.now],
             ).map_err(map_sqlite_error)?;
             let mirror = query_mirror(&transaction, &input.mirror_id)?.ok_or(AccessStoreError::ArtifactMirrorUnavailable)?;
             transaction.commit().map_err(map_sqlite_error)?;
@@ -1326,6 +1392,92 @@ impl AccessStore {
         validate_text(&mirror_id, 256)?;
         self.with_connection(move |connection| query_mirror(connection, &mirror_id))
             .await
+    }
+
+    pub(crate) async fn managed_artifact_mirrors_for_reconciliation(
+        &self,
+        checked_before: i64,
+        limit: usize,
+    ) -> AccessStoreResult<Vec<ManagedArtifactMirror>> {
+        if !(1..=64).contains(&limit) {
+            return Err(AccessStoreError::InvalidArtifactDistributionInput);
+        }
+        let limit =
+            i64::try_from(limit).map_err(|_| AccessStoreError::InvalidArtifactDistributionInput)?;
+        self.with_connection(move |connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT mirror_id,operation_id,owner_principal_id,identity_ref_json,authorization_project_id,authorization_team_id,destination_id,source_provider_authority,source_assignment_id,source_scope_kind,source_scope_id,source_artifact_id,source_revision_id,local_artifact_id,local_revision_id,mode,status,last_authorized_policy_epoch,last_checked_at,created_at,updated_at
+                     FROM artifact_mirrors
+                     WHERE status IN ('active','committing')
+                       AND (last_checked_at IS NULL OR last_checked_at<=?1)
+                     ORDER BY COALESCE(last_checked_at,-9223372036854775808),mirror_id
+                     LIMIT ?2",
+                )
+                .map_err(map_sqlite_error)?;
+            let rows = statement
+                .query_map(params![checked_before, limit], |row| {
+                    Ok(RawMirror {
+                        mirror_id: row.get(0)?,
+                        operation_id: row.get(1)?,
+                        owner_principal_id: row.get(2)?,
+                        identity_ref_json: row.get(3)?,
+                        authorization_project_id: row.get(4)?,
+                        authorization_team_id: row.get(5)?,
+                        destination_id: row.get(6)?,
+                        source_provider_authority: row.get(7)?,
+                        source_assignment_id: row.get(8)?,
+                        source_scope_kind: row.get(9)?,
+                        source_scope_id: row.get(10)?,
+                        source_artifact_id: row.get(11)?,
+                        source_revision_id: row.get(12)?,
+                        local_artifact_id: row.get(13)?,
+                        local_revision_id: row.get(14)?,
+                        mode: row.get(15)?,
+                        status: row.get(16)?,
+                        last_authorized_policy_epoch: row.get(17)?,
+                        last_checked_at: row.get(18)?,
+                        created_at: row.get(19)?,
+                        updated_at: row.get(20)?,
+                    })
+                })
+                .map_err(map_sqlite_error)?;
+            let mut mirrors = Vec::new();
+            for row in rows {
+                mirrors.push(row.map_err(map_sqlite_error)?.into_record()?);
+            }
+            Ok(mirrors)
+        })
+        .await
+    }
+
+    pub(crate) async fn mark_managed_artifact_mirror_checked(
+        &self,
+        mirror_id: String,
+        checked_at: i64,
+    ) -> AccessStoreResult<ManagedArtifactMirror> {
+        validate_text(&mirror_id, 256)?;
+        self.with_connection(move |connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(map_sqlite_error)?;
+            let changed = transaction
+                .execute(
+                    "UPDATE artifact_mirrors
+                     SET last_checked_at=?2
+                     WHERE mirror_id=?1 AND status IN ('active','committing')",
+                    params![mirror_id, checked_at],
+                )
+                .map_err(map_sqlite_error)?;
+            if changed != 1 {
+                return Err(AccessStoreError::ArtifactMirrorStateConflict);
+            }
+            let mirror = query_mirror(&transaction, &mirror_id)?
+                .ok_or(AccessStoreError::ArtifactMirrorUnavailable)?;
+            transaction.commit().map_err(map_sqlite_error)?;
+            Ok(mirror)
+        })
+        .await
     }
 
     pub(crate) async fn mark_managed_artifact_mirror_committing(
@@ -1487,11 +1639,141 @@ impl AccessStore {
             connection.query_row(
                 "SELECT update_policy,last_observed_revision_id,last_applied_revision_id,last_checked_at,status,updated_at FROM artifact_subscriptions WHERE mirror_id=?1",
                 [&mirror_id],
-                |row| Ok((row.get::<_, String>(0)?,row.get::<_, Option<String>>(1)?,row.get::<_, Option<String>>(2)?,row.get::<_, Option<i64>>(3)?,row.get::<_, String>(4)?,row.get::<_, i64>(5)?)),
+                |row| Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                )),
             ).optional().map_err(map_sqlite_error)?.map(|(policy,observed,applied,checked,status,updated_at)| {
-                Ok(ManagedArtifactSubscription { mirror_id, update_policy: ArtifactSubscriptionUpdatePolicy::from_wire(&policy)?, last_observed_revision_id: observed, last_applied_revision_id: applied, last_checked_at: checked, active: status == "active", updated_at })
+                Ok(ManagedArtifactSubscription {
+                    mirror_id,
+                    update_policy: ArtifactSubscriptionUpdatePolicy::from_wire(&policy)?,
+                    last_observed_revision_id: observed,
+                    last_applied_revision_id: applied,
+                    last_checked_at: checked,
+                    active: status == "active",
+                    updated_at,
+                })
             }).transpose()
         }).await
+    }
+
+    pub(crate) async fn auto_approved_artifact_subscriptions_due(
+        &self,
+        checked_before: i64,
+        limit: usize,
+    ) -> AccessStoreResult<Vec<ManagedArtifactSubscription>> {
+        if !(1..=64).contains(&limit) {
+            return Err(AccessStoreError::InvalidArtifactDistributionInput);
+        }
+        let limit =
+            i64::try_from(limit).map_err(|_| AccessStoreError::InvalidArtifactDistributionInput)?;
+        self.with_connection(move |connection| {
+            let mut statement = connection.prepare(
+                "SELECT s.mirror_id,s.update_policy,s.last_observed_revision_id,s.last_applied_revision_id,s.last_checked_at,s.status,s.updated_at
+                 FROM artifact_subscriptions s
+                 JOIN artifact_mirrors m ON m.mirror_id=s.mirror_id
+                 WHERE s.status='active'
+                   AND s.update_policy='auto_approved'
+                   AND m.mode='followed'
+                   AND m.status IN ('active','committing')
+                   AND (s.last_checked_at IS NULL OR s.last_checked_at<=?1)
+                 ORDER BY COALESCE(s.last_checked_at,-9223372036854775808),s.mirror_id
+                 LIMIT ?2",
+            ).map_err(map_sqlite_error)?;
+            let rows = statement.query_map(params![checked_before,limit], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, i64>(6)?,
+                ))
+            }).map_err(map_sqlite_error)?;
+            let mut subscriptions = Vec::new();
+            for row in rows {
+                let (mirror_id,policy,observed,applied,checked,status,updated_at) = row.map_err(map_sqlite_error)?;
+                subscriptions.push(ManagedArtifactSubscription {
+                    mirror_id,
+                    update_policy: ArtifactSubscriptionUpdatePolicy::from_wire(&policy)?,
+                    last_observed_revision_id: observed,
+                    last_applied_revision_id: applied,
+                    last_checked_at: checked,
+                    active: status == "active",
+                    updated_at,
+                });
+            }
+            Ok(subscriptions)
+        }).await
+    }
+
+    pub(crate) async fn observe_artifact_subscription(
+        &self,
+        mirror_id: String,
+        observed_revision_id: Option<String>,
+        checked_at: i64,
+    ) -> AccessStoreResult<ManagedArtifactSubscription> {
+        validate_text(&mirror_id, 256)?;
+        if let Some(revision_id) = observed_revision_id.as_deref() {
+            validate_text(revision_id, 2048)?;
+        }
+        self.with_connection(move |connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(map_sqlite_error)?;
+            let mirror = query_mirror(&transaction, &mirror_id)?
+                .ok_or(AccessStoreError::ArtifactMirrorUnavailable)?;
+            if mirror.mode != ManagedArtifactMirrorMode::Followed
+                || mirror.status != ManagedArtifactMirrorStatus::Active
+            {
+                return Err(AccessStoreError::ArtifactMirrorStateConflict);
+            }
+            let changed = transaction
+                .execute(
+                    "UPDATE artifact_subscriptions
+                     SET last_observed_revision_id=COALESCE(?2,last_observed_revision_id),
+                         last_checked_at=?3,
+                         updated_at=?3
+                     WHERE mirror_id=?1 AND status='active'",
+                    params![mirror_id, observed_revision_id, checked_at],
+                )
+                .map_err(map_sqlite_error)?;
+            if changed != 1 {
+                return Err(AccessStoreError::ArtifactMirrorStateConflict);
+            }
+            let row = transaction
+                .query_row(
+                    "SELECT update_policy,last_observed_revision_id,last_applied_revision_id,last_checked_at,status,updated_at FROM artifact_subscriptions WHERE mirror_id=?1",
+                    [&mirror_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, Option<i64>>(3)?,
+                            row.get::<_, String>(4)?,
+                            row.get::<_, i64>(5)?,
+                        ))
+                    },
+                )
+                .map_err(map_sqlite_error)?;
+            transaction.commit().map_err(map_sqlite_error)?;
+            Ok(ManagedArtifactSubscription {
+                mirror_id,
+                update_policy: ArtifactSubscriptionUpdatePolicy::from_wire(&row.0)?,
+                last_observed_revision_id: row.1,
+                last_applied_revision_id: row.2,
+                last_checked_at: row.3,
+                active: row.4 == "active",
+                updated_at: row.5,
+            })
+        })
+        .await
     }
 }
 
@@ -1650,7 +1932,19 @@ async fn transition_mirror(
 
 #[cfg(test)]
 mod tests {
+    use labby_auth::Authenticator;
+
     use super::*;
+
+    fn durable_identity_json() -> String {
+        let identity = VerifiedIdentity::external(
+            Authenticator::BrowserSession,
+            "https://accounts.google.com",
+            "artifact-owner",
+        )
+        .unwrap();
+        serde_json::to_string(&crate::access::DurableIdentityReference::capture(&identity)).unwrap()
+    }
 
     fn transferable() -> (ArtifactPublication, ArtifactLicenseState) {
         let publication = ArtifactPublication {
@@ -1910,7 +2204,7 @@ mod tests {
 
     fn external_identity(subject: &str) -> VerifiedIdentity {
         VerifiedIdentity::external(
-            labby_auth::Authenticator::BrowserSession,
+            Authenticator::BrowserSession,
             "https://accounts.google.com",
             subject,
         )
@@ -2044,6 +2338,9 @@ mod tests {
             mirror_id: mirror_id.into(),
             operation_id: operation_id.into(),
             owner_principal_id: "bootstrap-owner".into(),
+            identity_ref_json: durable_identity_json(),
+            authorization_project_id: "bootstrap-default".into(),
+            authorization_team_id: None,
             destination_id: None,
             source_provider_authority: "depot".into(),
             source_assignment_id: "assignment-a".into(),
@@ -2509,6 +2806,225 @@ mod tests {
         assert!(matches!(
             invalid,
             Err(AccessStoreError::ArtifactMirrorStateConflict)
+        ));
+    }
+
+    #[tokio::test]
+    async fn auto_follow_due_scan_is_bounded_filters_policy_and_recovers_committing_work() {
+        let (_directory, store) = bootstrapped_store().await;
+        install_source_policy(&store).await;
+        install_assignment(&store).await;
+        let policy_epoch = current_policy_epoch(&store).await;
+
+        for (mirror_id, operation_id, policy) in [
+            (
+                "mirror-auto-active",
+                "operation-auto-active",
+                ArtifactSubscriptionUpdatePolicy::AutoApproved,
+            ),
+            (
+                "mirror-notify",
+                "operation-notify",
+                ArtifactSubscriptionUpdatePolicy::Notify,
+            ),
+            (
+                "mirror-auto-recover",
+                "operation-auto-recover",
+                ArtifactSubscriptionUpdatePolicy::AutoApproved,
+            ),
+        ] {
+            store
+                .stage_managed_artifact_mirror(stage_input(
+                    mirror_id,
+                    operation_id,
+                    ManagedArtifactMirrorMode::Followed,
+                    policy_epoch,
+                ))
+                .await
+                .unwrap();
+            store
+                .mark_managed_artifact_mirror_committing(mirror_id.into(), operation_id.into(), 21)
+                .await
+                .unwrap();
+            store
+                .activate_managed_artifact_mirror(
+                    mirror_id.into(),
+                    operation_id.into(),
+                    "revision-a".into(),
+                    policy_epoch,
+                    22,
+                )
+                .await
+                .unwrap();
+            store
+                .put_artifact_subscription(ManagedArtifactSubscription {
+                    mirror_id: mirror_id.into(),
+                    update_policy: policy,
+                    last_observed_revision_id: Some("revision-a".into()),
+                    last_applied_revision_id: Some("revision-a".into()),
+                    last_checked_at: Some(5),
+                    active: true,
+                    updated_at: 5,
+                })
+                .await
+                .unwrap();
+        }
+
+        store
+            .stage_managed_artifact_mirror(stage_input(
+                "mirror-pin-reconcile",
+                "operation-pin-reconcile",
+                ManagedArtifactMirrorMode::Pinned,
+                policy_epoch,
+            ))
+            .await
+            .unwrap();
+        store
+            .mark_managed_artifact_mirror_committing(
+                "mirror-pin-reconcile".into(),
+                "operation-pin-reconcile".into(),
+                21,
+            )
+            .await
+            .unwrap();
+        store
+            .activate_managed_artifact_mirror(
+                "mirror-pin-reconcile".into(),
+                "operation-pin-reconcile".into(),
+                "revision-a".into(),
+                policy_epoch,
+                22,
+            )
+            .await
+            .unwrap();
+
+        store
+            .begin_managed_artifact_mirror_update(BeginManagedArtifactMirrorUpdate {
+                mirror_id: "mirror-auto-recover".into(),
+                operation_id: "operation-auto-recover-b".into(),
+                source_revision_id: "revision-b".into(),
+                expected_local_revision_id: "revision-a".into(),
+                policy_epoch,
+                now: 23,
+            })
+            .await
+            .unwrap();
+
+        let mirrors = store
+            .managed_artifact_mirrors_for_reconciliation(10, 64)
+            .await
+            .unwrap();
+        assert_eq!(mirrors.len(), 4);
+        for expected in [
+            "mirror-auto-active",
+            "mirror-notify",
+            "mirror-auto-recover",
+            "mirror-pin-reconcile",
+        ] {
+            assert!(mirrors.iter().any(|mirror| mirror.mirror_id == expected));
+        }
+        assert!(mirrors.iter().all(|mirror| {
+            mirror.authorization_project_id == "bootstrap-default"
+                && mirror.authorization_team_id.is_none()
+                && !mirror.identity_ref_json.is_empty()
+                && mirror.last_checked_at.is_none()
+        }));
+        let checked_pin = store
+            .mark_managed_artifact_mirror_checked("mirror-pin-reconcile".into(), 30)
+            .await
+            .unwrap();
+        assert_eq!(checked_pin.last_checked_at, Some(30));
+        let remaining_due = store
+            .managed_artifact_mirrors_for_reconciliation(10, 64)
+            .await
+            .unwrap();
+        assert_eq!(remaining_due.len(), 3);
+        assert!(
+            remaining_due
+                .iter()
+                .all(|mirror| mirror.mirror_id != "mirror-pin-reconcile")
+        );
+        assert!(matches!(
+            store
+                .managed_artifact_mirrors_for_reconciliation(10, 0)
+                .await,
+            Err(AccessStoreError::InvalidArtifactDistributionInput)
+        ));
+        assert!(matches!(
+            store
+                .managed_artifact_mirrors_for_reconciliation(10, 65)
+                .await,
+            Err(AccessStoreError::InvalidArtifactDistributionInput)
+        ));
+
+        let due = store
+            .auto_approved_artifact_subscriptions_due(10, 64)
+            .await
+            .unwrap();
+        assert_eq!(
+            due.iter()
+                .map(|subscription| subscription.mirror_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["mirror-auto-active", "mirror-auto-recover"]
+        );
+        for subscription in &due {
+            let mirror = store
+                .managed_artifact_mirror(subscription.mirror_id.clone())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(mirror.authorization_project_id, "bootstrap-default");
+            assert!(mirror.authorization_team_id.is_none());
+            assert!(!mirror.identity_ref_json.is_empty());
+        }
+
+        let observed = store
+            .observe_artifact_subscription(
+                "mirror-auto-active".into(),
+                Some("revision-c".into()),
+                30,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            observed.last_observed_revision_id.as_deref(),
+            Some("revision-c")
+        );
+        assert_eq!(
+            observed.last_applied_revision_id.as_deref(),
+            Some("revision-a")
+        );
+        assert_eq!(observed.last_checked_at, Some(30));
+        let observed_mirror = store
+            .managed_artifact_mirror("mirror-auto-active".into())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            observed_mirror.authorization_project_id,
+            "bootstrap-default"
+        );
+        assert!(!observed_mirror.identity_ref_json.is_empty());
+
+        let due_after_observation = store
+            .auto_approved_artifact_subscriptions_due(10, 64)
+            .await
+            .unwrap();
+        assert_eq!(
+            due_after_observation
+                .iter()
+                .map(|subscription| subscription.mirror_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["mirror-auto-recover"]
+        );
+
+        assert!(matches!(
+            store.auto_approved_artifact_subscriptions_due(10, 0).await,
+            Err(AccessStoreError::InvalidArtifactDistributionInput)
+        ));
+        assert!(matches!(
+            store.auto_approved_artifact_subscriptions_due(10, 65).await,
+            Err(AccessStoreError::InvalidArtifactDistributionInput)
         ));
     }
 }
