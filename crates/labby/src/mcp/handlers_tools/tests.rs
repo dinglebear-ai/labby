@@ -1348,6 +1348,30 @@ fn code_mode_trace_output_schema_advertises_structured_trace_kinds() {
         .filter_map(|variant| variant["properties"]["kind"]["const"].as_str())
         .collect::<Vec<_>>();
     assert_eq!(kinds, vec!["code_mode_execute_trace"]);
+
+    let trace = variants
+        .iter()
+        .find(|variant| {
+            variant["properties"]["kind"]["const"].as_str() == Some("code_mode_execute_trace")
+        })
+        .expect("execute trace variant");
+    let artifact = &trace["properties"]["artifacts"]["items"];
+    assert!(
+        artifact["properties"].get("absolute_path").is_none(),
+        "MCP output schema must not advertise the execution-host absolute path that trace serialization intentionally redacts"
+    );
+    let required = artifact["required"]
+        .as_array()
+        .expect("artifact receipt required fields");
+    assert_eq!(
+        required,
+        &vec![
+            serde_json::json!("path"),
+            serde_json::json!("content_type"),
+            serde_json::json!("bytes"),
+            serde_json::json!("sha256"),
+        ]
+    );
 }
 
 #[tokio::test]

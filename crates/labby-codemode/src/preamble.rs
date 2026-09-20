@@ -393,7 +393,12 @@ codemode.describe = async function(target) {{
     }}).join("\n");
     var toolDeclaration = entry.tools === undefined ? "omitted (caller policy unchanged)" : (entry.tools.length ? entry.tools.join(", ") : "[] (intended deny-all)");
     markdown = "# " + entry.name + "\n\nKind: snippet\n\nName: `" + entry.name + "`\n\nDescription: " + entry.description + "\n\nRun: `codemode.run(" + JSON.stringify(entry.name) + ", input)`\n" + (inputLines ? "\nInputs:\n" + inputLines + "\n" : "\nInputs: none\n");
-    markdown += "\nDeclared upstream tools: " + toolDeclaration + "\nMetadata only: declarations do not currently restrict execution.\n";
+    var toolAuthority = entry.tools === undefined
+      ? "Execution authority: no declaration; caller scope is inherited unchanged."
+      : (entry.tools.length
+          ? "Execution authority: declarations are intersected with caller scope; only the exact declared tools can remain eligible."
+          : "Execution authority: explicit empty declaration denies all upstream tool calls.");
+    markdown += "\nDeclared upstream tools: " + toolDeclaration + "\n" + toolAuthority + "\n";
   }} else {{
     markdown = "# " + entry.path + "\n\n" + entry.description + "\n\n- kind: `tool`\n- id: `" + entry.id + "`\n- helper: `" + entry.helper + "`\n- signature: `" + entry.signature + "`\n";
     // Fetched from the host on demand rather than embedded in the sandbox

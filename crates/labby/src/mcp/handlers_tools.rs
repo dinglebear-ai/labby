@@ -1093,7 +1093,6 @@ pub(crate) fn code_mode_trace_output_schema() -> Arc<serde_json::Map<String, Val
                             "type": "object",
                             "properties": {
                                 "path": { "type": "string" },
-                                "absolute_path": { "type": "string" },
                                 "content_type": {
                                     "type": "string",
                                     "maxLength": 256,
@@ -1106,7 +1105,7 @@ pub(crate) fn code_mode_trace_output_schema() -> Arc<serde_json::Map<String, Val
                                     "pattern": "^[a-f0-9]{64}$"
                                 }
                             },
-                            "required": ["path", "absolute_path", "content_type", "bytes", "sha256"],
+                            "required": ["path", "content_type", "bytes", "sha256"],
                             "additionalProperties": false
                         }
                     },

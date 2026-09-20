@@ -5,17 +5,24 @@ use crate::types::{CodeModeDiscoveryEntry, ToolDescriptor};
 
 #[test]
 fn javy_search_and_describe_preserve_declaration_presence() {
-    for (tools, expected, description) in [
-        (None, None, "omitted (caller policy unchanged)"),
+    for (tools, expected, description, authority) in [
+        (
+            None,
+            None,
+            "omitted (caller policy unchanged)",
+            "Execution authority: no declaration; caller scope is inherited unchanged.",
+        ),
         (
             Some(vec![]),
             Some(serde_json::json!([])),
             "[] (intended deny-all)",
+            "Execution authority: explicit empty declaration denies all upstream tool calls.",
         ),
         (
             Some(vec!["alpha::read".to_owned(), "beta::list".to_owned()]),
             Some(serde_json::json!(["alpha::read", "beta::list"])),
             "alpha::read, beta::list",
+            "Execution authority: declarations are intersected with caller scope; only the exact declared tools can remain eligible.",
         ),
     ] {
         let info = SnippetInfo {
@@ -62,8 +69,10 @@ fn javy_search_and_describe_preserve_declaration_presence() {
         }
         let rendered = value["description"]["markdown"].as_str().unwrap();
         assert!(rendered.contains(description), "{rendered}");
+        assert!(rendered.contains(authority), "{rendered}");
         assert!(
-            rendered.contains("Metadata only: declarations do not currently restrict execution.")
+            !rendered.contains("Metadata only: declarations do not currently restrict execution."),
+            "{rendered}"
         );
     }
 }
