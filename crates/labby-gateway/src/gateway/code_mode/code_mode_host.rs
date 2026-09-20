@@ -926,6 +926,39 @@ impl CodeModeHost for GatewayManager {
     fn openapi_http_client(&self) -> reqwest::Client {
         self.openapi_http_client.clone()
     }
+
+    async fn resolve_openapi_credential(
+        &self,
+        label: &str,
+        operation_id: &str,
+        caller: &CodeModeCaller,
+    ) -> Result<Option<labby_openapi::OpenApiCredential>, ToolError> {
+        let operation = self
+            .openapi_registry
+            .operation(label, operation_id)
+            .map_err(ToolError::from)?;
+        let Some(upstream) = operation.oauth_upstream.as_deref() else {
+            return Ok(None);
+        };
+        let subject = caller
+            .subject()
+            .filter(|subject| !subject.is_empty())
+            .ok_or_else(|| ToolError::Forbidden {
+                message: "subject-scoped OpenAPI requires an authenticated caller".into(),
+                required_scopes: vec!["lab".into()],
+            })?;
+        let manager = self
+            .upstream_oauth_manager(upstream)
+            .ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "not_found".into(),
+                message: format!("OAuth upstream '{upstream}' is not configured"),
+            })?;
+        let token = manager
+            .access_token_for_subject(subject)
+            .await
+            .map_err(crate::gateway::oauth_lifecycle::tool_error_from_oauth)?;
+        Ok(Some(labby_openapi::OpenApiCredential::BearerToken(token)))
+    }
 }
 
 pub(super) fn tool_is_explicitly_read_only(tool: &UpstreamTool) -> bool {

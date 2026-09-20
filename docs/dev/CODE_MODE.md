@@ -234,23 +234,35 @@ either query params (GET/HEAD/DELETE) or a JSON body (POST/PUT/PATCH). The JS
 snippet never sees the credential — it is injected server-side after the sandbox
 boundary.
 
-**Config.** Non-secret fields in `config.toml`; credentials in `.env`
-(`OPENAPI_<LABEL>_TOKEN` → `Authorization: Bearer`, or `OPENAPI_<LABEL>_API_KEY`
-→ a header named by `api_key_header`, default `X-API-Key`). `base_url` is
-**mandatory** — `rmcp-openapi` never reads the spec's `servers[]`.
+**Config.** Non-secret fields live in `config.toml`. A spec may use either a
+process-global static credential from `.env` (`OPENAPI_<LABEL>_TOKEN` →
+`Authorization: Bearer`, or `OPENAPI_<LABEL>_API_KEY` → the header named by
+`api_key_header`, default `X-API-Key`) **or** `oauth_upstream = "<name>"` to
+resolve an OAuth bearer token for the authenticated caller's `sub` at dispatch
+time. Static credentials and `oauth_upstream` are mutually exclusive.
+`base_url` is **mandatory** — `rmcp-openapi` never reads the spec's `servers[]`.
 
 ```toml
 [[openapi.specs]]
 label = "vendor"
-base_url = "https://api.vendor.example.com"     # MANDATORY, SSRF-validated
-spec_url = "https://api.vendor.example.com/openapi.json"  # or spec_path = "..."
-api_key_header = "X-API-Key"                      # optional
-allowed_operations = ["getUser", "listUsers"]     # deny-by-default allowlist
+base_url = "https://api.vendor.example.com"
+spec_url = "https://api.vendor.example.com/openapi.json"
+oauth_upstream = "vendor-oauth"
+allowed_operations = ["getUser", "listUsers"]
 ```
 
-**Gate.** Three layers, all required: the admin+unscoped local-provider gate
-(same as `state`/`git`), a mandatory deny-by-default per-operation allowlist
-(operations not listed are never dispatched), and SSRF containment.
+`vendor-oauth` must name an OAuth-enabled Labby gateway upstream. Labby resolves
+its credential with the current caller subject using the same encrypted
+per-`(upstream, subject)` store and proactive-refresh path used by normal MCP
+upstream calls. The bearer never enters the OpenAPI registry, Code Mode proxy,
+JavaScript source, call trace, or logs.
+
+**Gate.** The mandatory deny-by-default operation allowlist and SSRF containment
+always apply. Static/no-auth OpenAPI operations retain the unscoped
+`lab:admin`/trusted-local boundary used by `state` and `git`. Operations that
+explicitly configure `oauth_upstream` may be used by an authenticated unscoped
+caller with Code Mode execution authority and a verified `sub`; missing-subject
+and route/tool-scoped executions fail closed.
 
 **SSRF containment.** The base URL is validated at load time via the canonical
 `labby_primitives::ssrf` guard (https-only, rejects loopback / link-local /

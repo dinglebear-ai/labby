@@ -537,6 +537,7 @@ mod tests {
                     path_template: path.into(),
                     base_url: url::Url::parse(base).unwrap(),
                     credential: None,
+                    oauth_upstream: None,
                 };
                 if let Ok((_, resolved)) = build_url_with_params(&op, &serde_json::json!({})) {
                     assert_eq!(resolved.scheme(), "https");
@@ -554,6 +555,7 @@ mod tests {
             path_template: "/users/{id}".into(),
             base_url: url::Url::parse("https://api.example/v1").unwrap(),
             credential: None,
+            oauth_upstream: None,
         };
         assert_eq!(
             build_url_with_params(&op, &serde_json::json!({"id":"a"}))

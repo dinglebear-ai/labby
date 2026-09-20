@@ -84,7 +84,11 @@ over `config.toml` with mode `0600`, and restarting before running doctor again.
   `~/.labby/workspace`.
 - `[gateway]`: upstream recovery, stdio spawn guard, and extra allowed commands.
 - `[code_mode]`: sandbox execution and result-envelope limits.
-- `[[openapi.specs]]`: allowlisted local Code Mode OpenAPI providers.
+- `[[openapi.specs]]`: allowlisted local Code Mode OpenAPI providers. Each spec
+  may use a process-global static `OPENAPI_<LABEL>_TOKEN`/`_API_KEY`, or
+  `oauth_upstream = "<gateway-upstream>"` for caller-subject-scoped OAuth.
+  These auth modes are mutually exclusive; subject-scoped tokens are resolved
+  only at dispatch and are never stored in the OpenAPI registry.
 - `[oauth]`: callback relay targets.
 - `[auth]`: bearer/OAuth mode and auth-store preferences.
 - `[admin]`: runtime opt-in for `lab_admin`.

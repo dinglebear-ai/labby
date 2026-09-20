@@ -25,11 +25,33 @@ pub async fn dispatch_openapi_call(
     operation_id: &str,
     params: serde_json::Value,
 ) -> Result<serde_json::Value, OpenApiError> {
-    let handle = registry.operation(label, operation_id)?;
+    dispatch_openapi_call_with_credential(registry, client, label, operation_id, params, None).await
+}
+
+/// Dispatch one OpenAPI call with an optional caller-resolved credential.
+/// The override exists for subject-scoped OAuth and is never persisted in the
+/// registry or exposed to the JavaScript sandbox.
+pub async fn dispatch_openapi_call_with_credential(
+    registry: &OpenApiRegistry,
+    client: &reqwest::Client,
+    label: &str,
+    operation_id: &str,
+    params: serde_json::Value,
+    credential: Option<crate::config::OpenApiCredential>,
+) -> Result<serde_json::Value, OpenApiError> {
+    let mut handle = registry.operation(label, operation_id)?.clone();
+    if handle.oauth_upstream.is_some() {
+        handle.credential =
+            Some(
+                credential.ok_or_else(|| OpenApiError::CallerCredentialRequired {
+                    label: label.to_string(),
+                })?,
+            );
+    }
     let host = handle.base_url.host_str().unwrap_or_default().to_string();
     let method = handle.method.clone();
     let started = std::time::Instant::now();
-    let result = crate::http::execute_operation(client, handle, params).await;
+    let result = crate::http::execute_operation(client, &handle, params).await;
     log_dispatch(label, operation_id, &host, &method, started, &result);
     result
 }
