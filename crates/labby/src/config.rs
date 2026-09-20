@@ -129,8 +129,7 @@ pub(crate) fn process_code_mode_enabled() -> bool {
 /// (`1` / `true` / `TRUE` / `yes` / `YES`). Absent or any other value is false.
 pub(crate) fn env_flag_enabled(name: &str) -> bool {
     std::env::var(name)
-        .ok()
-        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
 }
 
 fn parse_bounded_ms(raw: &str, max: u64) -> Option<u64> {

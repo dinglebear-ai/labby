@@ -8,7 +8,7 @@ import type { DepotSource } from '@/lib/api/depot-client'
 
 test('administration uses compact attached workspace navigation and visible header actions', () => {
   const html = renderToStaticMarkup(<DepotAdministrationPage />)
-  const nav = html.match(/<nav aria-label="Labby administration workspaces"[\s\S]*?<\/nav>/)?.[0]
+  const nav = html.match(/<nav aria-label="Depot administration workspaces"[\s\S]*?<\/nav>/)?.[0]
   assert.ok(nav)
   assert.match(nav, /aurora-scrollbar/)
   assert.match(nav, /h-\[38px\]/)
@@ -19,7 +19,7 @@ test('administration uses compact attached workspace navigation and visible head
   assert.match(nav, /aria-current="page"/)
   assert.match(html, /href="\/settings\/depot\/"/)
   assert.match(html, /aria-label="Discovery providers"/)
-  assert.match(html, /Control target unavailable/)
+  assert.match(html, /Control status unavailable/)
   assert.doesNotMatch(html, /Control target connected/)
   assert.match(html, /Control target/)
   assert.match(html, /Tenant \/ team/)

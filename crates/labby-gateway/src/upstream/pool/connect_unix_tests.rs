@@ -222,9 +222,7 @@ async fn serve_unix_mcp(listener: UnixListener, signals: RequestSignals) -> io::
 
 async fn exercise_unix_socket(socket_path: &str, listener: UnixListener) {
     assert!(
-        std::env::var("HOME")
-            .ok()
-            .is_some_and(|home| !home.trim().is_empty()),
+        std::env::var("HOME").is_ok_and(|home| !home.trim().is_empty()),
         "HOME is required for the bearer-token integration assertion"
     );
 

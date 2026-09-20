@@ -1,6 +1,7 @@
 'use client'
 
 import * as React from 'react'
+import { toast } from 'sonner'
 
 /**
  * Shell coordination for the Gateway Console chrome.
@@ -12,6 +13,15 @@ import * as React from 'react'
  */
 
 const SIDEBAR_STORAGE_KEY = 'labby-sidebar-collapsed-v2'
+let storageWarningShown = false
+
+function warnPreferenceStorageUnavailable() {
+  if (storageWarningShown) return
+  storageWarningShown = true
+  toast.warning('Console preferences cannot be saved in this browser session.', {
+    description: 'Browser storage is unavailable. Labby will keep working, but sidebar and navigation preferences may reset when you reload.',
+  })
+}
 
 type ConsoleShellContextValue = {
   collapsed: boolean
@@ -56,7 +66,7 @@ export function ConsoleShellProvider({ children }: { children: React.ReactNode }
       const saved = window.localStorage.getItem(SIDEBAR_STORAGE_KEY)
       setCollapsed(saved === null ? true : saved === '1')
     } catch {
-      /* storage unavailable — keep the compact default */
+      warnPreferenceStorageUnavailable()
     }
   }, [])
 
@@ -66,7 +76,7 @@ export function ConsoleShellProvider({ children }: { children: React.ReactNode }
       try {
         window.localStorage.setItem(SIDEBAR_STORAGE_KEY, next ? '1' : '0')
       } catch {
-        /* ignore */
+        warnPreferenceStorageUnavailable()
       }
       return next
     })

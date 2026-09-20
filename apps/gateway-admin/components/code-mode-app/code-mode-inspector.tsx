@@ -1,6 +1,7 @@
 'use client'
 
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
+import { toast } from 'sonner'
 import {
   AlertTriangle,
   Check,
@@ -281,8 +282,16 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
     setBridgeState('connecting')
     app
       .connect()
-      .then(() => setBridgeState('connected'))
-      .catch(() => setBridgeState('fallback'))
+      .then(() => {
+        setBridgeState('connected')
+        setBridgeWarning(null)
+      })
+      .catch((error) => {
+        setBridgeState('fallback')
+        setBridgeWarning(
+          `MCP Apps bridge unavailable; waiting for a host-delivered trace instead: ${error instanceof Error ? error.message : 'connection failed'}.`,
+        )
+      })
 
     return () => {
       setResourceReader(null)
@@ -1358,7 +1367,11 @@ function CodeBlock({ value }: { value: string }) {
                 setCopied(false)
               }, 1200)
             })
-            .catch(() => {})
+            .catch((error) => {
+              toast.error('Could not copy Code Mode output', {
+                description: error instanceof Error ? error.message : 'Clipboard access is unavailable in this browser.',
+              })
+            })
         }}
         className="absolute right-1.5 top-1.5 flex size-5 cursor-pointer items-center justify-center rounded border border-transparent text-aurora-text-muted transition-colors hover:border-aurora-border-strong hover:text-aurora-text-primary"
       >

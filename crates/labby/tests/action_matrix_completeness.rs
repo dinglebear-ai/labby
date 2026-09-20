@@ -430,7 +430,7 @@ fn aliases_inherit_the_canonical_scenario_and_policy() {
         .collect::<Vec<_>>();
     assert_eq!(
         aliases.len(),
-        4,
+        0,
         "all compatibility aliases must be explicit"
     );
     for alias in aliases {

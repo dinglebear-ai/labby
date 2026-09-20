@@ -1381,8 +1381,7 @@ pub(crate) fn sweep_stale_runs() -> Vec<String> {
 #[cfg(unix)]
 fn pid_is_alive(pid: u32) -> bool {
     i32::try_from(pid)
-        .ok()
-        .is_some_and(|pid| nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok())
+        .is_ok_and(|pid| nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok())
 }
 
 #[cfg(windows)]

@@ -71,8 +71,8 @@ fn actual_binary_reports_all_formats_and_retains_source_failure() {
         assert!(!result.stdout.is_empty());
         if format == "json" {
             let result: Value = serde_json::from_slice(&result.stdout).unwrap();
-            assert_eq!(result["scenarios"]["total"], 9);
-            assert_eq!(result["scenarios"]["by_status"]["active"], 9);
+            assert_eq!(result["scenarios"]["total"], 13);
+            assert_eq!(result["scenarios"]["by_status"]["active"], 13);
             assert_eq!(result["observations"][0]["sources"][0]["dirty"], true);
             assert_eq!(result["observations"][0]["verdict"], "passed");
         }
@@ -103,7 +103,7 @@ fn actual_binary_reports_all_formats_and_retains_source_failure() {
             .as_array()
             .unwrap()
             .len(),
-        5
+        9
     );
     let mut empty: Value = serde_json::from_slice(&replay.stdout).unwrap();
     empty["reports"] = json!([]);
@@ -131,7 +131,7 @@ fn actual_binary_t1_is_bounded_and_rejects_wrong_catalog() {
     assert_eq!(result["lane"], "model_checking");
     assert_eq!(result["universal_proof"], false);
     let reports = result["reports"].as_array().unwrap();
-    assert_eq!(reports.len(), 5);
+    assert_eq!(reports.len(), 9);
     assert!(
         reports
             .iter()

@@ -50,6 +50,20 @@ export function TextSurface({ path, value, mode, language, dirty = false, diagno
   const initialEditableRef = React.useRef(mode === 'edit')
   const initialDiagnosticsRef = React.useRef(diagnostics ?? [])
   const [resolvedDiagnostics, setResolvedDiagnostics] = React.useState<EditorDiagnostic[]>(diagnostics ?? [])
+  const [enhancementWarnings, setEnhancementWarnings] = React.useState<Record<string, string>>({})
+
+  const setEnhancementWarning = React.useCallback((key: string, message?: string) => {
+    setEnhancementWarnings((current) => {
+      if (message) {
+        if (current[key] === message) return current
+        return { ...current, [key]: message }
+      }
+      if (!(key in current)) return current
+      const next = { ...current }
+      delete next[key]
+      return next
+    })
+  }, [])
 
   React.useEffect(() => {
     onChangeRef.current = onChange
@@ -59,17 +73,28 @@ export function TextSurface({ path, value, mode, language, dirty = false, diagno
     let cancelled = false
     if (diagnostics) {
       setResolvedDiagnostics(diagnostics)
+      setEnhancementWarning('diagnostics')
       return
     }
-    collectEditorDiagnostics(path, value).then((next) => {
-      if (!cancelled) {
-        setResolvedDiagnostics(next)
-      }
-    })
+    collectEditorDiagnostics(path, value)
+      .then((next) => {
+        if (!cancelled) {
+          setResolvedDiagnostics(next)
+          setEnhancementWarning('diagnostics')
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setEnhancementWarning(
+            'diagnostics',
+            `Diagnostics unavailable: ${error instanceof Error ? error.message : 'request failed'}`,
+          )
+        }
+      })
     return () => {
       cancelled = true
     }
-  }, [diagnostics, path, value])
+  }, [diagnostics, path, setEnhancementWarning, value])
 
   React.useEffect(() => {
     if (!hostRef.current || viewRef.current) return
@@ -114,16 +139,33 @@ export function TextSurface({ path, value, mode, language, dirty = false, diagno
 
   React.useEffect(() => {
     let cancelled = false
-    void Promise.all([loadLanguageExtension(language), collectEditorAutocomplete(path, value)]).then(([extensions, completions]) => {
+    void Promise.allSettled([loadLanguageExtension(language), collectEditorAutocomplete(path, value)]).then(([languageResult, autocompleteResult]) => {
       const view = viewRef.current
       if (!view || cancelled) return
-      view.dispatch({ effects: [languageCompartment.reconfigure(extensions as Extension)] })
-      view.dom.dataset.autocompleteCount = String(completions.length)
+      if (languageResult.status === 'fulfilled') {
+        view.dispatch({ effects: [languageCompartment.reconfigure(languageResult.value as Extension)] })
+        setEnhancementWarning('language')
+      } else {
+        setEnhancementWarning(
+          'language',
+          `Syntax support unavailable: ${languageResult.reason instanceof Error ? languageResult.reason.message : 'load failed'}`,
+        )
+      }
+      if (autocompleteResult.status === 'fulfilled') {
+        view.dom.dataset.autocompleteCount = String(autocompleteResult.value.length)
+        setEnhancementWarning('autocomplete')
+      } else {
+        delete view.dom.dataset.autocompleteCount
+        setEnhancementWarning(
+          'autocomplete',
+          `Autocomplete unavailable: ${autocompleteResult.reason instanceof Error ? autocompleteResult.reason.message : 'request failed'}`,
+        )
+      }
     })
     return () => {
       cancelled = true
     }
-  }, [language, path, value])
+  }, [language, path, setEnhancementWarning, value])
 
   return (
     <div className={cn(
@@ -140,6 +182,11 @@ export function TextSurface({ path, value, mode, language, dirty = false, diagno
         onDeploy={onDeploy}
         onCopy={onCopy}
       /> : null}
+      {Object.keys(enhancementWarnings).length > 0 ? (
+        <div role="status" className="border-b border-aurora-warn/30 bg-aurora-warn/8 px-3 py-1.5 text-[11px] text-aurora-warn">
+          Editor partially degraded: {Object.values(enhancementWarnings).join(' · ')}
+        </div>
+      ) : null}
       <div className="min-h-0 flex-1 overflow-hidden bg-aurora-page-bg">
         <div ref={hostRef} className="cm-editor h-full" aria-label="Code editor" />
       </div>

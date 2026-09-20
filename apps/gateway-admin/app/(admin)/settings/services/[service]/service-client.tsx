@@ -11,7 +11,6 @@ import { ArrowLeft, Loader2 } from 'lucide-react'
 
 import { SettingsCard, SettingsRowStrip } from '@/components/settings/SettingsChrome'
 import { ServiceForm, type ProbeOutcome } from '@/components/setup/ServiceForm'
-import { PluginToggle } from '@/components/setup/PluginToggle'
 import { setupApi, type ServiceSchema } from '@/lib/api/setup-client'
 import { doctorApi } from '@/lib/api/doctor-client'
 import { type FieldView } from '@/lib/setup/schemaBuilder'
@@ -34,7 +33,6 @@ export default function ServicePage({
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | undefined>()
   const [saved, setSaved] = useState(false)
-  const [pluginInstalled, setPluginInstalled] = useState(false)
   const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Clear any pending "saved" auto-reset on unmount.
@@ -52,9 +50,8 @@ export default function ServicePage({
     Promise.all([
       setupApi.schemaGet([service], controller.signal),
       setupApi.draftGet(controller.signal),
-      setupApi.servicesStatus(controller.signal),
     ])
-      .then(([schemaResponse, draft, statusResponse]) => {
+      .then(([schemaResponse, draft]) => {
         if (controller.signal.aborted) return
         const schema = schemaResponse.services[service]
         if (!schema) {
@@ -64,9 +61,6 @@ export default function ServicePage({
         const draftMap = draftEntriesToMap(draft.entries)
         const { fields, defaults } = buildServiceFormDefaults(schema.env, draftMap)
         setState({ schema, fields, defaults })
-        setPluginInstalled(
-          statusResponse.services.find((status) => status.name === service)?.plugin_installed ?? false,
-        )
       })
       .catch((err) => {
         if (controller.signal.aborted) return
@@ -128,15 +122,6 @@ export default function ServicePage({
           </Link>
           {state?.schema.display_name ?? service}
         </span>
-      }
-      action={
-        state ? (
-          <PluginToggle
-            service={service}
-            installed={pluginInstalled}
-            onChanged={setPluginInstalled}
-          />
-        ) : null
       }
       description={
         <>

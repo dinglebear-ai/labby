@@ -1,4 +1,9 @@
 #![forbid(unsafe_code)]
+// unused_async_trait_impl is newer than Labby's MSRV. Allow unknown lint names
+// first so older toolchains stay warning-clean while newer Clippy versions can
+// suppress this intentional async-trait fixture pattern.
+#![allow(unknown_lints)]
+#![allow(clippy::result_large_err, clippy::unused_async_trait_impl)]
 
 //! Client-neutral Code Mode JavaScript execution kernel.
 //!
