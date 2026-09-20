@@ -34,8 +34,18 @@ test('Phoenix context usage honors App Server token usage notifications', () => 
   const events = [{ method: 'thread/tokenUsage/updated', params: { tokenUsage: { total: { totalTokens: 4096 }, modelContextWindow: 200_000 } } }]
   assert.equal(phoenixTotalTokens(events), 4096)
   assert.equal(phoenixContextWindow(events), 200_000)
+  assert.equal(phoenixTotalTokens([{ method: 'thread/tokenUsage/updated', params: { tokenUsage: { total: { totalTokens: 50_000 }, last: { totalTokens: 12_000 }, modelContextWindow: 200_000 } } }]), 12_000)
   assert.equal(phoenixTotalTokens([{ method: 'thread/tokenUsage/updated', params: { tokenUsage: { last: { inputTokens: 1200, outputTokens: 42 } } } }]), 1242)
   assert.equal(phoenixContextWindow([{ method: 'usage', params: { usage: { model_context_window: 128_000 } } }]), 128_000)
+})
+
+test('Phoenix context usage ignores later unrelated usage events', () => {
+  const events = [
+    { method: 'thread/tokenUsage/updated', params: { tokenUsage: { total: { totalTokens: 4096 }, modelContextWindow: 200_000 } } },
+    { method: 'account/usage/updated', params: { usage: { remaining: 0.42 } } },
+  ]
+  assert.equal(phoenixTotalTokens(events), 4096)
+  assert.equal(phoenixContextWindow(events), 200_000)
 })
 
 test('Phoenix runtime summary truthfully distinguishes configured and unavailable MCP', () => {

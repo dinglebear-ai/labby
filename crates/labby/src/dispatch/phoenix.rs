@@ -5,7 +5,7 @@ use std::{collections::HashMap, ffi::OsString, sync::Arc, time::Duration};
 use base64::Engine as _;
 use labby_primitives::action::{ActionSpec, ParamSpec};
 use serde_json::{Value, json};
-use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, mpsc};
 
 use crate::{
     config::{PhoenixPreferences, PhoenixProvider},
@@ -22,6 +22,9 @@ const MAX_ATTACHMENTS: usize = 4;
 const MAX_ATTACHMENT_BYTES: usize = 5 * 1024 * 1024;
 const MAX_TEXT_ATTACHMENT_BYTES: usize = 512 * 1024;
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
+const MAX_MESSAGE_HISTORY_BYTES: usize = 4 * 1024 * 1024;
+const MAX_EVENT_BYTES: usize = 64 * 1024;
+const MAX_EVENT_HISTORY_BYTES: usize = 2 * 1024 * 1024;
 const MAX_MESSAGES: usize = 100;
 const MAX_EVENTS: usize = 500;
 const MAX_SESSIONS: usize = 32;
@@ -206,7 +209,9 @@ struct Session {
     closing: bool,
     active_turn_id: Option<String>,
     messages: Vec<Message>,
+    message_bytes: usize,
     events: Vec<Value>,
+    event_bytes: usize,
     next_event_sequence: u64,
     model: Option<String>,
     effort: Option<String>,
@@ -218,7 +223,9 @@ struct Session {
 pub(crate) struct PhoenixRuntime {
     config: PhoenixPreferences,
     local_mcp_url: Arc<str>,
+    runtime_version: Option<Arc<str>>,
     openai: Option<OpenAiBackend>,
+    codex_runtime: Arc<Mutex<Option<AppServerRuntime>>>,
     sessions: Arc<Mutex<HashMap<String, Arc<Mutex<Session>>>>>,
     capacity: Arc<Semaphore>,
 }
@@ -242,10 +249,16 @@ impl PhoenixRuntime {
         local_mcp_url: impl Into<Arc<str>>,
         openai: Option<OpenAiBackend>,
     ) -> Self {
+        let runtime_version = match config.provider {
+            PhoenixProvider::CodexAppServer => detect_runtime_version(&config).map(Arc::from),
+            PhoenixProvider::OpenAiCompatible => None,
+        };
         Self {
             config,
             local_mcp_url: local_mcp_url.into(),
+            runtime_version,
             openai,
+            codex_runtime: Arc::new(Mutex::new(None)),
             sessions: Arc::new(Mutex::new(HashMap::new())),
             capacity: Arc::new(Semaphore::new(MAX_SESSIONS)),
         }
@@ -255,6 +268,19 @@ impl PhoenixRuntime {
     pub(crate) fn local_mcp_host(&self) -> Option<String> {
         let url = url::Url::parse(&self.local_mcp_url).ok()?;
         Some(url.host_str()?.to_owned())
+    }
+
+    async fn app_server(&self) -> Result<AppServerRuntime, ToolError> {
+        let mut cached = self.codex_runtime.lock().await;
+        if let Some(runtime) = cached.as_ref()
+            && runtime.is_running().await
+        {
+            return Ok(runtime.clone());
+        }
+        *cached = None;
+        let runtime = initialized_app_server(&self.config, &self.local_mcp_url).await?;
+        *cached = Some(runtime.clone());
+        Ok(runtime)
     }
 
     pub(crate) async fn dispatch(
@@ -364,7 +390,7 @@ impl PhoenixRuntime {
                 "sandbox": "read-only",
                 "protocol": {
                     "schema": APP_SERVER_PROTOCOL_SCHEMA,
-                    "runtime_version": self.detected_version(),
+                    "runtime_version": self.runtime_version.as_deref(),
                     "adapter": 2,
                     "experimental_api": true,
                 },
@@ -426,27 +452,11 @@ impl PhoenixRuntime {
         }
     }
 
-    fn detected_version(&self) -> Option<String> {
-        let command = self.config.command.as_ref()?;
-        let output = std::process::Command::new(command)
-            .arg("--version")
-            .env_clear()
-            .env("PATH", command_path(command))
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let version = String::from_utf8(output.stdout).ok()?;
-        let version = version.trim();
-        (!version.is_empty() && version.len() <= 128).then(|| version.to_owned())
-    }
-
     async fn models(&self) -> Result<Value, ToolError> {
         self.require_available()?;
         match self.config.provider {
             PhoenixProvider::CodexAppServer => {
-                let runtime = initialized_app_server(&self.config, &self.local_mcp_url).await?;
+                let runtime = self.app_server().await?;
                 let response = runtime
                     .request("model/list", json!({"limit":100,"includeHidden":false}))
                     .await?;
@@ -519,7 +529,7 @@ impl PhoenixRuntime {
         effort: Option<String>,
         capacity: OwnedSemaphorePermit,
     ) -> Result<Value, ToolError> {
-        let runtime = initialized_app_server(&self.config, &self.local_mcp_url).await?;
+        let runtime = self.app_server().await?;
         let workspace_root = self
             .config
             .workspace_root
@@ -553,7 +563,9 @@ impl PhoenixRuntime {
                 closing: false,
                 active_turn_id: None,
                 messages: Vec::new(),
+                message_bytes: 0,
                 events: Vec::new(),
+                event_bytes: 0,
                 next_event_sequence: 0,
                 model: selected_model,
                 effort,
@@ -593,7 +605,9 @@ impl PhoenixRuntime {
                 closing: false,
                 active_turn_id: None,
                 messages: Vec::new(),
+                message_bytes: 0,
                 events: Vec::new(),
+                event_bytes: 0,
                 next_event_sequence: 0,
                 model: Some(selected_model),
                 effort,
@@ -687,10 +701,16 @@ impl PhoenixRuntime {
             state.backend.clone()
         };
         let close_result = match backend {
-            SessionBackend::Codex { thread_id, runtime } => runtime
-                .request("thread/close", json!({"threadId":thread_id}))
-                .await
-                .map(|_| ()),
+            SessionBackend::Codex { thread_id, runtime } => {
+                let result = runtime
+                    .request("thread/close", json!({"threadId":thread_id}))
+                    .await
+                    .map(|_| ());
+                if result.is_ok() {
+                    runtime.forget_thread(&thread_id).await;
+                }
+                result
+            }
             SessionBackend::OpenAi {
                 session_id,
                 backend,
@@ -806,7 +826,7 @@ impl PhoenixRuntime {
         model: Option<String>,
         effort: Option<String>,
     ) -> Result<Value, ToolError> {
-        let mut events = runtime.subscribe();
+        let mut events = runtime.subscribe_thread(&thread_id).await;
         let started = runtime
             .request("turn/start", {
                 let mut params = json!({
@@ -974,15 +994,7 @@ impl PhoenixRuntime {
             .await?;
         {
             let mut state = session.lock().await;
-            state.messages.push(Message {
-                role: "user",
-                text: display_input,
-                created_at_ms: submitted_at_ms,
-            });
-            if state.messages.len() > MAX_MESSAGES {
-                let excess = state.messages.len() - MAX_MESSAGES;
-                state.messages.drain(..excess);
-            }
+            push_message_at(&mut state, "user", display_input, submitted_at_ms);
         }
         Ok(json!({"session_id":session_id,"status":"steered","turn":safe_value(&response)}))
     }
@@ -1034,7 +1046,7 @@ impl PhoenixRuntime {
             state.turn_in_progress = true;
             (runtime, thread_id)
         };
-        let mut events = runtime.subscribe();
+        let mut events = runtime.subscribe_thread(&thread_id).await;
         let response = runtime
             .request(
                 "review/start",
@@ -1085,15 +1097,7 @@ impl PhoenixRuntime {
         state.turn_in_progress = false;
         state.active_turn_id = None;
         if !result.output.is_empty() {
-            state.messages.push(Message {
-                role: "assistant",
-                text: result.output,
-                created_at_ms: now_millis(),
-            });
-        }
-        if state.messages.len() > MAX_MESSAGES {
-            let excess = state.messages.len() - MAX_MESSAGES;
-            state.messages.drain(..excess);
+            push_message(&mut state, "assistant", result.output);
         }
         let mut rendered = render_session(&session_id, &state);
         rendered["review"] = safe_value(&response);
@@ -1107,7 +1111,7 @@ impl PhoenixRuntime {
                 "OpenAI-compatible Phoenix providers do not expose Codex diagnostics",
             ));
         }
-        let runtime = initialized_app_server(&self.config, &self.local_mcp_url).await?;
+        let runtime = self.app_server().await?;
         let workspace_root = self
             .config
             .workspace_root
@@ -1252,14 +1256,48 @@ fn attachments_present(attachments: Option<&Value>) -> bool {
 }
 
 fn push_message(session: &mut Session, role: &'static str, text: String) {
-    session.messages.push(Message {
-        role,
-        text,
-        created_at_ms: now_millis(),
-    });
-    if session.messages.len() > MAX_MESSAGES {
-        let excess = session.messages.len() - MAX_MESSAGES;
-        session.messages.drain(..excess);
+    push_message_at(session, role, text, now_millis());
+}
+
+fn push_message_at(session: &mut Session, role: &'static str, text: String, created_at_ms: u64) {
+    push_bounded_message(
+        &mut session.messages,
+        &mut session.message_bytes,
+        Message {
+            role,
+            text,
+            created_at_ms,
+        },
+    );
+}
+
+fn push_bounded_message(messages: &mut Vec<Message>, message_bytes: &mut usize, message: Message) {
+    *message_bytes = message_bytes.saturating_add(message.text.len());
+    messages.push(message);
+    while messages.len() > MAX_MESSAGES || *message_bytes > MAX_MESSAGE_HISTORY_BYTES {
+        let removed = messages.remove(0);
+        *message_bytes = message_bytes.saturating_sub(removed.text.len());
+    }
+}
+
+fn retained_value_bytes(value: &Value) -> usize {
+    serde_json::to_vec(value).map_or(usize::MAX, |bytes| bytes.len())
+}
+
+fn push_event(session: &mut Session, event: Value) {
+    push_bounded_event(&mut session.events, &mut session.event_bytes, event);
+}
+
+fn push_bounded_event(events: &mut Vec<Value>, event_bytes: &mut usize, event: Value) {
+    let bytes = retained_value_bytes(&event);
+    if bytes > MAX_EVENT_BYTES {
+        return;
+    }
+    *event_bytes = event_bytes.saturating_add(bytes);
+    events.push(event);
+    while events.len() > MAX_EVENTS || *event_bytes > MAX_EVENT_HISTORY_BYTES {
+        let removed = events.remove(0);
+        *event_bytes = event_bytes.saturating_sub(retained_value_bytes(&removed));
     }
 }
 
@@ -1565,9 +1603,7 @@ fn turn_inputs(input: &str, attachments: Option<&Value>) -> Result<Vec<Value>, T
 }
 
 async fn collect_turn(
-    receiver: &mut tokio::sync::broadcast::Receiver<
-        crate::dispatch::phoenix_runtime::AppServerEvent,
-    >,
+    receiver: &mut mpsc::Receiver<crate::dispatch::phoenix_runtime::AppServerEvent>,
     thread_id: &str,
     turn_id: &str,
     session: &Arc<Mutex<Session>>,
@@ -1578,7 +1614,7 @@ async fn collect_turn(
         let event = receiver
             .recv()
             .await
-            .map_err(|_| unavailable("Phoenix missed App Server turn events"))?
+            .ok_or_else(|| unavailable("Phoenix App Server turn event stream stopped"))?
             .0;
         if event.pointer("/params/threadId").and_then(Value::as_str) != Some(thread_id) {
             continue;
@@ -1595,11 +1631,7 @@ async fn collect_turn(
             state.next_event_sequence = state.next_event_sequence.saturating_add(1);
             candidate["sequence"] = json!(state.next_event_sequence);
             candidate["received_at_ms"] = json!(now_millis());
-            state.events.push(candidate);
-            if state.events.len() > MAX_EVENTS {
-                let excess = state.events.len() - MAX_EVENTS;
-                state.events.drain(..excess);
-            }
+            push_event(&mut state, candidate);
         }
         match event.get("method").and_then(Value::as_str) {
             Some("item/agentMessage/delta") => {
@@ -1690,7 +1722,7 @@ fn sanitized_event(event: &Value) -> Option<Value> {
         "params": safe_value(event.get("params").unwrap_or(&Value::Null)),
     });
     serde_json::to_vec(&candidate)
-        .is_ok_and(|bytes| bytes.len() <= MAX_OUTPUT_BYTES)
+        .is_ok_and(|bytes| bytes.len() <= MAX_EVENT_BYTES)
         .then_some(candidate)
 }
 
@@ -1789,6 +1821,22 @@ fn executable(path: &std::path::Path) -> bool {
     }
 }
 
+fn detect_runtime_version(config: &PhoenixPreferences) -> Option<String> {
+    let command = config.command.as_ref()?;
+    let output = std::process::Command::new(command)
+        .arg("--version")
+        .env_clear()
+        .env("PATH", command_path(command))
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let version = String::from_utf8(output.stdout).ok()?;
+    let version = version.trim();
+    (!version.is_empty() && version.len() <= 128).then(|| version.to_owned())
+}
+
 fn command_path(command: &std::path::Path) -> String {
     let inherited =
         std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".to_owned());
@@ -1867,6 +1915,36 @@ mod tests {
             model: None,
         });
         assert!(!runtime.available());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn status_caches_runtime_version_probe() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = tempfile::tempdir().unwrap();
+        let command = root.path().join("codex-version-fixture");
+        let capture = root.path().join("version-probes");
+        fs::write(
+            &command,
+            format!(
+                "#!/bin/sh\nprintf 'probe\n' >> '{}'\nprintf 'codex-cli 9.9.9\n'\n",
+                capture.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&command, fs::Permissions::from_mode(0o700)).unwrap();
+        let runtime = PhoenixRuntime::new(PhoenixPreferences {
+            enabled: true,
+            provider: PhoenixProvider::CodexAppServer,
+            command: Some(command),
+            codex_home: Some(root.path().to_path_buf()),
+            workspace_root: Some(root.path().to_path_buf()),
+            model: None,
+        });
+        assert_eq!(runtime.status()["protocol"]["runtime_version"], "codex-cli 9.9.9");
+        assert_eq!(runtime.status()["protocol"]["runtime_version"], "codex-cli 9.9.9");
+        assert_eq!(fs::read_to_string(capture).unwrap().lines().count(), 1);
     }
 
     #[tokio::test]
@@ -2073,6 +2151,16 @@ done
             .await
             .unwrap();
         let session_id = started["session_id"].as_str().unwrap();
+        let session_runtime = {
+            let session = runtime.session("principal-a", session_id).await.unwrap();
+            let state = session.lock().await;
+            match &state.backend {
+                SessionBackend::Codex { runtime, .. } => runtime.clone(),
+                SessionBackend::OpenAi { .. } => panic!("expected Codex backend"),
+            }
+        };
+        let cached_runtime = runtime.app_server().await.unwrap();
+        assert!(session_runtime.shares_process(&cached_runtime));
         let initial_list = runtime
             .dispatch("principal-a", "phoenix.session.list", json!({}))
             .await
@@ -2472,6 +2560,73 @@ done
         assert!(event.pointer("/params/item/access_token").is_none());
         assert!(event.pointer("/params/email").is_none());
         assert_eq!(event.pointer("/params/item/tokenUsage"), Some(&json!(12)));
+    }
+
+    #[test]
+    fn retained_history_is_bounded_by_bytes_not_only_item_count() {
+        let mut messages = Vec::new();
+        let mut message_bytes = 0usize;
+        for index in 0..8u64 {
+            push_bounded_message(
+                &mut messages,
+                &mut message_bytes,
+                Message {
+                    role: "assistant",
+                    text: format!("{index}{}", "x".repeat(700_000)),
+                    created_at_ms: index,
+                },
+            );
+        }
+        assert!(messages.len() < 8);
+        assert!(message_bytes <= MAX_MESSAGE_HISTORY_BYTES);
+        assert_eq!(
+            message_bytes,
+            messages.iter().map(|message| message.text.len()).sum()
+        );
+        assert_ne!(
+            messages.first().map(|message| message.created_at_ms),
+            Some(0)
+        );
+
+        let mut events = Vec::new();
+        let mut event_bytes = 0usize;
+        for index in 0..200u64 {
+            push_bounded_event(
+                &mut events,
+                &mut event_bytes,
+                json!({"method":"warning","params":{"index":index,"detail":"x".repeat(16_000)}}),
+            );
+        }
+        assert!(events.len() < 200);
+        assert!(event_bytes <= MAX_EVENT_HISTORY_BYTES);
+        assert_eq!(event_bytes, events.iter().map(retained_value_bytes).sum());
+        assert_ne!(
+            events
+                .first()
+                .and_then(|event| event.pointer("/params/index"))
+                .and_then(Value::as_u64),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn oversized_single_event_is_rejected_before_session_retention() {
+        assert!(
+            sanitized_event(&json!({
+                "method":"warning",
+                "params":{"detail":"x".repeat(MAX_EVENT_BYTES + 1)}
+            }))
+            .is_none()
+        );
+        let mut events = Vec::new();
+        let mut event_bytes = 0usize;
+        push_bounded_event(
+            &mut events,
+            &mut event_bytes,
+            json!({"method":"warning","params":{"detail":"x".repeat(MAX_EVENT_BYTES + 1)}}),
+        );
+        assert!(events.is_empty());
+        assert_eq!(event_bytes, 0);
     }
 
     #[test]

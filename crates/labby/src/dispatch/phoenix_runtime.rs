@@ -1,8 +1,8 @@
 //! Persistent JSONL transport for a container-local Codex App Server.
 //!
-//! This module owns one child process per Phoenix session. Requests are
-//! multiplexed by JSON-RPC id while notifications are broadcast to turn
-//! consumers, allowing a turn to be observed and interrupted while it runs.
+//! This module owns a persistent Codex App Server child shared by Phoenix sessions. Requests
+//! are multiplexed by JSON-RPC id while notifications are broadcast to turn consumers,
+//! allowing independent threads to be observed and interrupted without process-per-session churn.
 
 use std::{
     collections::HashMap,
@@ -20,13 +20,14 @@ use serde_json::{Value, json};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, Command},
-    sync::{Mutex, broadcast, oneshot},
+    sync::{Mutex, broadcast, mpsc, oneshot},
     task::JoinHandle,
 };
 
 use crate::dispatch::error::ToolError;
 
 const EVENT_CAPACITY: usize = 256;
+const THREAD_EVENT_CAPACITY: usize = 128;
 const MAX_PROTOCOL_LINE_BYTES: usize = 1024 * 1024;
 #[cfg(not(test))]
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -46,6 +47,28 @@ pub(crate) struct LaunchSpec {
 pub(crate) struct AppServerEvent(pub(crate) Value);
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, ToolError>>>>>;
+type ThreadEventRoutes = Arc<Mutex<HashMap<String, mpsc::Sender<AppServerEvent>>>>;
+
+fn event_thread_id(event: &Value) -> Option<&str> {
+    event
+        .pointer("/params/threadId")
+        .or_else(|| event.pointer("/params/thread/id"))
+        .and_then(Value::as_str)
+}
+
+async fn publish_event(
+    global: &broadcast::Sender<AppServerEvent>,
+    routes: &ThreadEventRoutes,
+    event: AppServerEvent,
+) {
+    if let Some(thread_id) = event_thread_id(&event.0) {
+        let sender = routes.lock().await.get(thread_id).cloned();
+        if let Some(sender) = sender {
+            drop(sender.send(event.clone()).await);
+        }
+    }
+    drop(global.send(event));
+}
 
 /// A persistent App Server connection. Clones share the same process and can
 /// issue requests concurrently.
@@ -55,6 +78,7 @@ pub(crate) struct AppServerRuntime {
     _child: Arc<Mutex<Child>>,
     pending: Pending,
     events: broadcast::Sender<AppServerEvent>,
+    thread_events: ThreadEventRoutes,
     next_id: Arc<AtomicU64>,
     _reader: Arc<JoinHandle<()>>,
 }
@@ -76,11 +100,15 @@ impl AppServerRuntime {
             .map_err(|_| unavailable("Container-local Codex App Server could not be started"))?;
         let stdin = Arc::new(Mutex::new(child.stdin.take().ok_or_else(protocol_error)?));
         let stdout = child.stdout.take().ok_or_else(protocol_error)?;
+        let child = Arc::new(Mutex::new(child));
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
+        let thread_events: ThreadEventRoutes = Arc::new(Mutex::new(HashMap::new()));
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
         let reader_pending = pending.clone();
         let reader_events = events.clone();
+        let reader_thread_events = thread_events.clone();
         let reader_stdin = stdin.clone();
+        let reader_child = child.clone();
         let reader = tokio::spawn(async move {
             let mut output = BufReader::new(stdout);
             loop {
@@ -118,7 +146,8 @@ impl AppServerRuntime {
                         drop(sender.send(result));
                     }
                 } else if value.get("method").is_some() && value.get("id").is_none() {
-                    drop(reader_events.send(AppServerEvent(value)));
+                    publish_event(&reader_events, &reader_thread_events, AppServerEvent(value))
+                        .await;
                 } else if value.get("method").is_some()
                     && let Some(id) = value.get("id").cloned()
                 {
@@ -127,10 +156,23 @@ impl AppServerRuntime {
                         .and_then(Value::as_str)
                         .unwrap_or("unknown");
                     let category = request_category(method);
-                    drop(reader_events.send(AppServerEvent(json!({
-                        "method":"phoenix/serverRequestDeclined",
-                        "params":{"requestMethod":method,"category":category,"decision":"declined"}
-                    }))));
+                    let mut decline_params = json!({
+                        "requestMethod":method,
+                        "category":category,
+                        "decision":"declined"
+                    });
+                    if let Some(thread_id) = event_thread_id(&value) {
+                        decline_params["threadId"] = Value::String(thread_id.to_owned());
+                    }
+                    publish_event(
+                        &reader_events,
+                        &reader_thread_events,
+                        AppServerEvent(json!({
+                            "method":"phoenix/serverRequestDeclined",
+                            "params":decline_params
+                        })),
+                    )
+                    .await;
                     let rejection = json!({
                         "id": id,
                         "error": {
@@ -145,6 +187,7 @@ impl AppServerRuntime {
                     }
                 }
             }
+            drop(reader_child.lock().await.kill().await);
             let waiters = std::mem::take(&mut *reader_pending.lock().await);
             for (_, sender) in waiters {
                 drop(sender.send(Err(unavailable("Container-local Codex App Server stopped"))));
@@ -152,16 +195,46 @@ impl AppServerRuntime {
         });
         Ok(Self {
             stdin,
-            _child: Arc::new(Mutex::new(child)),
+            _child: child,
             pending,
             events,
+            thread_events,
             next_id: Arc::new(AtomicU64::new(1)),
             _reader: Arc::new(reader),
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<AppServerEvent> {
         self.events.subscribe()
+    }
+
+    pub(crate) async fn subscribe_thread(&self, thread_id: &str) -> mpsc::Receiver<AppServerEvent> {
+        let (sender, receiver) = mpsc::channel(THREAD_EVENT_CAPACITY);
+        self.thread_events
+            .lock()
+            .await
+            .insert(thread_id.to_owned(), sender);
+        receiver
+    }
+
+    pub(crate) async fn forget_thread(&self, thread_id: &str) {
+        self.thread_events.lock().await.remove(thread_id);
+    }
+
+    pub(crate) async fn is_running(&self) -> bool {
+        !self._reader.is_finished()
+            && self
+                ._child
+                .lock()
+                .await
+                .try_wait()
+                .is_ok_and(|status| status.is_none())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shares_process(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self._child, &other._child)
     }
 
     pub(crate) async fn notify(&self, method: &str, params: Value) -> Result<(), ToolError> {
@@ -283,7 +356,7 @@ while read request; do
   id=$(printf '%s' "$request" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
   case "$request" in
     *turn/start*)
-      printf '%s\n' '{{"method":"item/started","params":{{"turnId":"turn-1"}}}}'
+      printf '%s\n' '{{"method":"item/started","params":{{"threadId":"thread-1","turnId":"turn-1"}}}}'
       printf '{{"id":%s,"result":{{"turn":{{"id":"turn-1"}}}}}}\n' "$id" ;;
     *turn/interrupt*) printf '{{"id":%s,"result":{{}}}}\n' "$id" ;;
     *trigger/request*)
@@ -307,13 +380,20 @@ done
         .await
         .unwrap();
         let mut events = runtime.subscribe();
+        let mut thread_events = runtime.subscribe_thread("thread-1").await;
+        let mut other_thread_events = runtime.subscribe_thread("thread-2").await;
         let (first, second) = tokio::join!(
             runtime.request("first", json!({})),
-            runtime.request("turn/start", json!({}))
+            runtime.request("turn/start", json!({"threadId":"thread-1"}))
         );
         assert_eq!(first.unwrap()["ok"], true);
         assert_eq!(second.unwrap()["turn"]["id"], "turn-1");
         assert_eq!(events.recv().await.unwrap().0["method"], "item/started");
+        assert_eq!(
+            thread_events.recv().await.unwrap().0["method"],
+            "item/started"
+        );
+        assert!(other_thread_events.try_recv().is_err());
         runtime.interrupt("thread-1", "turn-1").await.unwrap();
         runtime.request("trigger/request", json!({})).await.unwrap();
         let declined = events.recv().await.unwrap().0;
@@ -384,5 +464,6 @@ done
             matches!(error, ToolError::Sdk { ref sdk_kind, .. } if sdk_kind == "executor_unavailable")
         );
         assert!(runtime.pending.lock().await.is_empty());
+        assert!(!runtime.is_running().await);
     }
 }

@@ -75,29 +75,37 @@ function containsType(value: unknown, wanted: string, depth = 0): boolean {
   return Object.values(source).some((entry) => entry !== null && typeof entry === 'object' && containsType(entry, wanted, depth + 1))
 }
 
-function latestTokenUsage(events: PhoenixEvent[]): Record<string, unknown> | undefined {
-  const latest = [...events].reverse().find((event) => event.method === 'thread/tokenUsage/updated' || event.method.toLowerCase().includes('usage'))
-  if (!latest) return undefined
-  const params = record(latest.params)
+function tokenUsage(event: PhoenixEvent): Record<string, unknown> | undefined {
+  if (event.method !== 'thread/tokenUsage/updated' && !event.method.toLowerCase().includes('usage')) return undefined
+  const params = record(event.params)
   return record(params.tokenUsage ?? params.usage ?? params)
 }
 
 export function phoenixTotalTokens(events: PhoenixEvent[]): number | undefined {
-  const usage = latestTokenUsage(events)
-  if (!usage) return undefined
-  const total = record(usage.total ?? usage.totalUsage ?? usage.total_usage)
-  const direct = numberAt(total, ['totalTokens', 'total_tokens']) ?? numberAt(usage, ['totalTokens', 'total_tokens'])
-  if (direct !== undefined) return direct
-  const last = record(usage.last ?? usage.lastUsage ?? usage.last_usage)
-  const input = numberAt(last, ['inputTokens', 'input_tokens']) ?? numberAt(usage, ['inputTokens', 'input_tokens']) ?? 0
-  const output = numberAt(last, ['outputTokens', 'output_tokens']) ?? numberAt(usage, ['outputTokens', 'output_tokens']) ?? 0
-  return input + output || undefined
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const usage = tokenUsage(events[index])
+    if (!usage) continue
+    const last = record(usage.last ?? usage.lastUsage ?? usage.last_usage)
+    const activeContext = numberAt(last, ['totalTokens', 'total_tokens'])
+    if (activeContext !== undefined) return activeContext
+    const input = numberAt(last, ['inputTokens', 'input_tokens']) ?? numberAt(usage, ['inputTokens', 'input_tokens'])
+    const output = numberAt(last, ['outputTokens', 'output_tokens']) ?? numberAt(usage, ['outputTokens', 'output_tokens'])
+    if (input !== undefined || output !== undefined) return (input ?? 0) + (output ?? 0)
+    const total = record(usage.total ?? usage.totalUsage ?? usage.total_usage)
+    const legacyTotal = numberAt(total, ['totalTokens', 'total_tokens']) ?? numberAt(usage, ['totalTokens', 'total_tokens'])
+    if (legacyTotal !== undefined) return legacyTotal
+  }
+  return undefined
 }
 
 export function phoenixContextWindow(events: PhoenixEvent[]): number | undefined {
-  const usage = latestTokenUsage(events)
-  if (!usage) return undefined
-  return numberAt(usage, ['modelContextWindow', 'model_context_window', 'contextWindow', 'context_window'])
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const usage = tokenUsage(events[index])
+    if (!usage) continue
+    const value = numberAt(usage, ['modelContextWindow', 'model_context_window', 'contextWindow', 'context_window'])
+    if (value !== undefined) return value
+  }
+  return undefined
 }
 
 function summarize(event: PhoenixEvent): EventView | undefined {

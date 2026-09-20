@@ -11,7 +11,7 @@ import { authorityIdentity } from '@/lib/auth/authority'
 import { skillLibrary } from '@/lib/api/skill-library-client'
 import { gatewayApi, gatewayAction } from '@/lib/api/gateway-client'
 import { snippetsApi } from '@/lib/api/snippets-client'
-import { phoenixApi, phoenixSupports, type PhoenixAttachment, type PhoenixEvent, type PhoenixMessage, type PhoenixModel, type PhoenixSessionSummary, type PhoenixStatus } from '@/lib/api/phoenix-client'
+import { phoenixApi, phoenixSupports, type PhoenixAttachment, type PhoenixEvent, type PhoenixMessage, type PhoenixModel, type PhoenixSession, type PhoenixSessionSummary, type PhoenixStatus } from '@/lib/api/phoenix-client'
 import { Textarea } from '@/components/ui/textarea'
 import type { BackendGatewayMcpRuntimeView } from '@/lib/server/gateway-adapter'
 import { deriveConsoleStatus } from './console-status-strip'
@@ -26,6 +26,32 @@ const TRAY_DESTINATIONS = [
 
 type TrayCounts = Partial<Record<(typeof TRAY_DESTINATIONS)[number][0], number>>
 type PhoenixWindowRect = { x: number; y: number; width: number; height: number }
+
+export function phoenixSessionFingerprint(session: PhoenixSession): string {
+  const lastMessage = session.messages.at(-1)
+  const lastEvent = session.events?.at(-1)
+  const eventParams = lastEvent ? JSON.stringify(lastEvent.params) : ''
+  return [
+    session.messages.length,
+    lastMessage?.role ?? '',
+    lastMessage?.text.length ?? 0,
+    lastMessage?.text.slice(-96) ?? '',
+    session.events?.length ?? 0,
+    lastEvent?.sequence ?? '',
+    lastEvent?.received_at_ms ?? '',
+    lastEvent?.method ?? '',
+    eventParams,
+  ].join('|')
+}
+
+export function phoenixPollDelay(stableReads: number, hidden = false): number {
+  if (hidden) return 2_500
+  if (stableReads <= 0) return 500
+  if (stableReads === 1) return 700
+  if (stableReads === 2) return 1_000
+  if (stableReads === 3) return 1_400
+  return 1_800
+}
 
 function useTrayCounts() {
   const session = useBrowserSession()
@@ -167,23 +193,43 @@ export function PhoenixAvailability() {
     if (!sending || !sessionId) return
     const controller = new AbortController()
     let reading = false
+    let stableReads = 0
+    let lastFingerprint: string | undefined
+    let timer: number | undefined
+    const schedule = () => {
+      if (controller.signal.aborted) return
+      timer = window.setTimeout(() => { void refresh() }, phoenixPollDelay(stableReads, document.hidden))
+    }
     const refresh = async () => {
-      if (reading) return
+      if (reading || controller.signal.aborted) return
       reading = true
       try {
         const current = await phoenixApi.read(sessionId, controller.signal)
         if (!controller.signal.aborted) {
-          setMessages(current.messages)
-          setEvents(current.events ?? [])
+          const fingerprint = phoenixSessionFingerprint(current)
+          if (fingerprint !== lastFingerprint) {
+            lastFingerprint = fingerprint
+            stableReads = 0
+            setMessages(current.messages)
+            setEvents(current.events ?? [])
+          } else {
+            stableReads += 1
+          }
         }
       } catch {
         // The pending turn request owns terminal errors; polling only streams progress.
+        // Back off failed reads too so a transient backend outage cannot create a 2 Hz retry loop.
+        stableReads += 1
       } finally {
         reading = false
+        schedule()
       }
     }
-    const timer = window.setInterval(() => { void refresh() }, 400)
-    return () => { controller.abort(); window.clearInterval(timer) }
+    void refresh()
+    return () => {
+      controller.abort()
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
   }, [sending, sessionId])
 
   useEffect(() => {

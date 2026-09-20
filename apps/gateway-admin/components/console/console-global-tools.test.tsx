@@ -81,6 +81,29 @@ test('Phoenix uses one control to dock right and return to a draggable resizable
   } finally { await view.unmount() }
 })
 
+test('Phoenix polling fingerprints avoid redundant renders and back off when stable', async () => {
+  const { phoenixPollDelay, phoenixSessionFingerprint } = await import('./console-global-tools.tsx')
+  const first = {
+    session_id: 'phoenix-fingerprint',
+    status: 'ready' as const,
+    messages: [{ role: 'assistant' as const, text: 'Working' }],
+    events: [{ method: 'item/agentMessage/delta', params: { delta: 'a' }, sequence: 1 }],
+  }
+  const sameShapeNewObjects = {
+    ...first,
+    messages: first.messages.map((message) => ({ ...message })),
+    events: first.events.map((event) => ({ ...event, params: { delta: 'a' } })),
+  }
+  const changed = {
+    ...first,
+    events: [{ method: 'item/agentMessage/delta', params: { delta: 'b' }, sequence: 2 }],
+  }
+  assert.equal(phoenixSessionFingerprint(first), phoenixSessionFingerprint(sameShapeNewObjects))
+  assert.notEqual(phoenixSessionFingerprint(first), phoenixSessionFingerprint(changed))
+  assert.deepEqual([0, 1, 2, 3, 4].map((stable) => phoenixPollDelay(stable)), [500, 700, 1_000, 1_400, 1_800])
+  assert.equal(phoenixPollDelay(0, true), 2_500)
+})
+
 test('Phoenix sends a real turn through the container-local service and renders the reply', async () => {
   __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
   const originalFetch = globalThis.fetch
@@ -92,7 +115,7 @@ test('Phoenix sends a real turn through the container-local service and renders 
     if (body.action === 'phoenix.models.list') return new Response(JSON.stringify({ models: [{ id: 'gpt', model: 'gpt', displayName: 'GPT', description: 'Fast model', isDefault: true, defaultReasoningEffort: 'medium', supportedReasoningEfforts: [{ reasoningEffort: 'medium', description: 'Balanced reasoning' }] }] }), { status: 200 })
     if (body.action === 'phoenix.session.list') return new Response(JSON.stringify({ sessions: [] }), { status: 200 })
     if (body.action === 'phoenix.session.start') return new Response(JSON.stringify({ session_id: 'phoenix-1', status: 'ready', messages: [] }), { status: 200 })
-    return new Response(JSON.stringify({ session_id: 'phoenix-1', status: 'ready', messages: [{ role: 'user', text: 'Is Labby healthy?' }, { role: 'assistant', text: 'The gateway is healthy.' }], events: [{ method: 'thread/tokenUsage/updated', params: { tokenUsage: { total: { totalTokens: 4096 }, modelContextWindow: 200_000 } } }] }), { status: 200 })
+    return new Response(JSON.stringify({ session_id: 'phoenix-1', status: 'ready', messages: [{ role: 'user', text: 'Is Labby healthy?' }, { role: 'assistant', text: 'The gateway is healthy.' }], events: [{ method: 'thread/tokenUsage/updated', params: { tokenUsage: { total: { totalTokens: 50_000 }, last: { totalTokens: 4096 }, modelContextWindow: 200_000 } } }] }), { status: 200 })
   }) as typeof fetch
   const { PhoenixAvailability } = await import('./console-global-tools.tsx')
   const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
@@ -168,7 +191,7 @@ test('Phoenix exposes a Stop control that interrupts an in-flight turn', async (
     await act(async () => { input.form!.requestSubmit(); await new Promise((resolve) => setTimeout(resolve, 0)) })
     const stop = document.querySelector<HTMLButtonElement>('button[aria-label="Stop Phoenix"]'); assert.ok(stop)
     await act(async () => { stop.click(); await new Promise((resolve) => setTimeout(resolve, 0)) })
-    assert.deepEqual(actions.filter((action) => action !== 'phoenix.session.list'), ['phoenix.status', 'phoenix.models.list', 'phoenix.session.start', 'phoenix.turn.send', 'phoenix.turn.interrupt'])
+    assert.deepEqual(actions.filter((action) => action !== 'phoenix.session.list'), ['phoenix.status', 'phoenix.models.list', 'phoenix.session.start', 'phoenix.turn.send', 'phoenix.session.read', 'phoenix.turn.interrupt'])
     resolveSend?.(new Response(JSON.stringify({ session_id: 'phoenix-stop', status: 'ready', messages: [{ role: 'user', text: 'Keep working' }, { role: 'assistant', text: 'Stopped.' }] }), { status: 200 }))
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
   } finally {
