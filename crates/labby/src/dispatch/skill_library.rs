@@ -8,6 +8,7 @@ pub(crate) mod catalog;
 pub(crate) mod client;
 pub(crate) mod depot;
 pub(crate) mod dispatch;
+pub(crate) mod follow_reconciler;
 pub(crate) mod import;
 pub(crate) mod params;
 pub(crate) mod surface;

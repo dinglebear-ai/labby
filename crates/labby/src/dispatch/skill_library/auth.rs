@@ -149,10 +149,11 @@ pub(crate) enum SkillLibrarySurface {
     CodeMode,
     AppCallback,
     Resource,
+    DurableWork,
 }
 
 impl SkillLibrarySurface {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::ApiCookie,
         Self::ApiBearer,
         Self::Mcp,
@@ -160,6 +161,7 @@ impl SkillLibrarySurface {
         Self::CodeMode,
         Self::AppCallback,
         Self::Resource,
+        Self::DurableWork,
     ];
 
     pub(crate) const fn as_str(self) -> &'static str {
@@ -171,6 +173,7 @@ impl SkillLibrarySurface {
             Self::CodeMode => "mcp",
             Self::AppCallback => "mcp",
             Self::Resource => "mcp",
+            Self::DurableWork => "durable",
         }
     }
 }
@@ -500,6 +503,66 @@ pub(crate) async fn authorize_distribution_at_boundary(
         ));
     })?;
 
+    authorize_distribution_identity_at_boundary(
+        runtime,
+        caller.identity().clone(),
+        project_id,
+        caller.selected_team_id().map(str::to_owned),
+        action,
+        target_id,
+        correlation_id,
+        surface,
+    )
+    .await
+}
+
+pub(crate) async fn authorize_durable_distribution_at_boundary(
+    runtime: &AccessRuntime,
+    identity_ref_json: &str,
+    project_id: &str,
+    selected_team_id: Option<String>,
+    action: SkillLibraryAction,
+    target_id: &CanonicalArtifactId,
+    correlation_id: &SkillLibraryCorrelationId,
+) -> Result<
+    (VerifiedIdentity, ArtifactDistributionAuthorizationDecision),
+    SkillLibraryAuthorizationError,
+> {
+    if !action.is_distribution() {
+        return Err(SkillLibraryAuthorizationError::Unavailable);
+    }
+    let identity_ref =
+        serde_json::from_str::<crate::access::DurableIdentityReference>(identity_ref_json)
+            .map_err(|_| SkillLibraryAuthorizationError::Unavailable)?;
+    let identity = identity_ref
+        .restore()
+        .map_err(|_| SkillLibraryAuthorizationError::Unavailable)?;
+    let decision = authorize_distribution_identity_at_boundary(
+        runtime,
+        identity.clone(),
+        project_id,
+        selected_team_id,
+        action,
+        target_id,
+        correlation_id,
+        SkillLibrarySurface::DurableWork,
+    )
+    .await?;
+    Ok((identity, decision))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn authorize_distribution_identity_at_boundary(
+    runtime: &AccessRuntime,
+    identity: VerifiedIdentity,
+    project_id: &str,
+    selected_team_id: Option<String>,
+    action: SkillLibraryAction,
+    target_id: &CanonicalArtifactId,
+    correlation_id: &SkillLibraryCorrelationId,
+    surface: SkillLibrarySurface,
+) -> Result<ArtifactDistributionAuthorizationDecision, SkillLibraryAuthorizationError> {
+    let audit_sink = skill_library_audit_sink();
     let store = runtime.store().await.map_err(|_| {
         audit_sink.record(SkillLibraryAuditEvent::new(
             correlation_id.clone(),
@@ -512,11 +575,7 @@ pub(crate) async fn authorize_distribution_at_boundary(
         SkillLibraryAuthorizationError::Unavailable
     })?;
     let snapshot = store
-        .artifact_distribution_authority(
-            caller.identity().clone(),
-            project_id.to_owned(),
-            caller.selected_team_id().map(str::to_owned),
-        )
+        .artifact_distribution_authority(identity, project_id.to_owned(), selected_team_id)
         .await
         .map_err(|error| {
             let (outcome, mapped) = match error {
@@ -551,8 +610,7 @@ pub(crate) async fn authorize_distribution_at_boundary(
             mapped
         })?;
 
-    let action_allowed = distribution_action_allowed(action, snapshot.grants);
-    if !action_allowed {
+    if !distribution_action_allowed(action, snapshot.grants) {
         audit_sink.record(SkillLibraryAuditEvent::new(
             correlation_id.clone(),
             target_id,
@@ -1120,6 +1178,7 @@ fn validate_transport(
                 && scope_allowed
         }
         SkillLibrarySurface::Cli => identity_transport == Authenticator::UnixPeer,
+        SkillLibrarySurface::DurableWork => false,
     };
     valid
         .then_some(())
@@ -2268,6 +2327,58 @@ mod tests {
             "revoked",
             SkillLibraryTarget::SharedActive,
             "request-revoked",
+        )
+        .await;
+        assert!(matches!(
+            denied,
+            Err(SkillLibraryAuthorizationError::Denied)
+        ));
+    }
+
+    #[tokio::test]
+    async fn durable_distribution_reauthorizes_and_link_revocation_wins() {
+        let (_directory, runtime, owner) = fixture().await;
+        let durable =
+            serde_json::to_string(&crate::access::DurableIdentityReference::capture(&owner))
+                .unwrap();
+        let target = CanonicalArtifactId::parse("durable-follow").unwrap();
+        let correlation = SkillLibraryCorrelationId::server("durable-follow-test");
+
+        let (_restored, allowed) = authorize_durable_distribution_at_boundary(
+            &runtime,
+            &durable,
+            "bootstrap-default",
+            None,
+            SkillLibraryAction::FollowUpdate,
+            &target,
+            &correlation,
+        )
+        .await
+        .unwrap();
+        assert_eq!(allowed.authority.principal_id, "bootstrap-owner");
+        assert!(allowed.authority.grants.sync);
+        assert!(allowed.authority.grants.follow);
+
+        runtime
+            .store()
+            .await
+            .unwrap()
+            .execute_test_statement(
+                "UPDATE principal_links
+                 SET status='revoked',link_generation=link_generation+1,updated_at=2
+                 WHERE principal_id='bootstrap-owner'",
+            )
+            .await
+            .unwrap();
+
+        let denied = authorize_durable_distribution_at_boundary(
+            &runtime,
+            &durable,
+            "bootstrap-default",
+            None,
+            SkillLibraryAction::FollowUpdate,
+            &target,
+            &correlation,
         )
         .await;
         assert!(matches!(
