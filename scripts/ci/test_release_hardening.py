@@ -844,24 +844,93 @@ class ReleaseHelperTests(unittest.TestCase):
             self.assertEqual("manual_reconciliation_required", result["mcp_version"]["status"])
     def test_release_incident_is_idempotently_created_updated_and_closed(self) -> None:
         script = ROOT / "scripts/ci/manage-release-incident.sh"
-        for complete, existing, expected in (
-            ("false", "", "issue create"),
-            ("false", "17", "issue edit 17"),
-            ("true", "17", "issue close 17"),
-            ("true", "", "issue list"),
-        ):
-            with self.subTest(complete=complete, existing=existing), tempfile.TemporaryDirectory() as tmp:
-                work = Path(tmp); log = work / "calls"; gh = work / "gh"
+        exact_issue = {
+            "number": 17,
+            "title": "Release publication is incomplete",
+        }
+        wrong_title_issue = {
+            "number": 11,
+            "title": "Release publication is incomplete - old",
+        }
+        pull_request = {
+            "number": 19,
+            "title": "Release publication is incomplete",
+            "pull_request": {"url": "https://github.test/acme/labby/pull/19"},
+        }
+        cases = (
+            (
+                "false",
+                [[wrong_title_issue]],
+                ("api --method POST repos/acme/labby/issues -f title=Release publication is incomplete",),
+                ("repos/acme/labby/issues/11",),
+            ),
+            (
+                "false",
+                [[wrong_title_issue, pull_request], [exact_issue]],
+                ("api --method PATCH repos/acme/labby/issues/17 -f body=",),
+                ("api --method POST repos/acme/labby/issues -f title=", "repos/acme/labby/issues/11", "repos/acme/labby/issues/19"),
+            ),
+            (
+                "true",
+                [[wrong_title_issue, exact_issue]],
+                (
+                    "api --method POST repos/acme/labby/issues/17/comments -f body=All release distributions now match the immutable manifest.",
+                    "api --method PATCH repos/acme/labby/issues/17 -f state=closed -f state_reason=completed",
+                ),
+                ("repos/acme/labby/issues/11",),
+            ),
+            (
+                "true",
+                [[wrong_title_issue]],
+                (),
+                ("--method POST", "--method PATCH"),
+            ),
+        )
+        for complete, issues, expected, forbidden in cases:
+            with self.subTest(complete=complete, issues=issues), tempfile.TemporaryDirectory() as tmp:
+                work = Path(tmp)
+                log = work / "calls"
+                gh = work / "gh"
                 gh.write_text(
                     "#!/bin/sh\n"
+                    "set -eu\n"
                     "printf '%s\\n' \"$*\" >> \"$CALL_LOG\"\n"
-                    "case \"$1 $2\" in 'issue list') printf '%s\\n' \"$ISSUE_NUMBER\";; esac\n"
-                ); gh.chmod(0o755)
+                    "if [ \"$1\" != api ]; then exit 90; fi\n"
+                    "case \"$*\" in\n"
+                    "  *'--paginate --slurp repos/acme/labby/issues?state=open&per_page=100'*) printf '%s\\n' \"$ISSUES_JSON\";;\n"
+                    "  *) printf '%s\\n' '{}';;\n"
+                    "esac\n"
+                )
+                gh.chmod(0o755)
                 (work / "reconciliation.json").write_text('{"complete":false}')
-                env = os.environ | {"PATH": f"{work}:{os.environ['PATH']}", "CALL_LOG": str(log), "ISSUE_NUMBER": existing, "GITHUB_SERVER_URL": "https://github.test", "GITHUB_REPOSITORY": "acme/labby", "GITHUB_RUN_ID": "1"}
-                result = subprocess.run(["bash", str(script), complete], cwd=work, env=env, check=False)
+                env = os.environ | {
+                    "PATH": f"{work}:{os.environ['PATH']}",
+                    "CALL_LOG": str(log),
+                    "ISSUES_JSON": json.dumps(issues),
+                    "GITHUB_SERVER_URL": "https://github.test",
+                    "GITHUB_REPOSITORY": "acme/labby",
+                    "GITHUB_RUN_ID": "1",
+                }
+                result = subprocess.run(
+                    ["bash", str(script), complete],
+                    cwd=work,
+                    env=env,
+                    check=False,
+                )
                 self.assertEqual(0, result.returncode)
-                self.assertIn(expected, log.read_text())
+                calls = log.read_text()
+                self.assertIn(
+                    "api --paginate --slurp repos/acme/labby/issues?state=open&per_page=100",
+                    calls,
+                )
+                for fragment in expected:
+                    self.assertIn(fragment, calls)
+                for fragment in forbidden:
+                    self.assertNotIn(fragment, calls)
+                self.assertNotIn("issue list", calls)
+                self.assertNotIn("issue edit", calls)
+                self.assertNotIn("issue close", calls)
+                self.assertNotIn("issue create", calls)
 
     def test_cache_boundary_denies_pr_credentials_and_partial_capabilities(self) -> None:
         script = str(ROOT / "scripts/ci/check-cache-boundary.py")
