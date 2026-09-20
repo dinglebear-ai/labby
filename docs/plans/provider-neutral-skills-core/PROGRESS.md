@@ -1,9 +1,14 @@
 # Provider-neutral Skills core progress
 
-Last updated: 2026-08-23
-Branch: `codex/provider-neutral-skills-core`
-Worktree: `/home/jmagar/workspace/labby/.worktrees/codex/provider-neutral-skills-core`
-Tracking: `lab-27juw`
+Status: completed and merged in PR #486 (`625ccf300`) on 2026-08-23
+Historical snapshot last updated: 2026-08-23
+Historical branch: `codex/provider-neutral-skills-core`
+Historical worktree: `/home/jmagar/workspace/labby/.worktrees/codex/provider-neutral-skills-core`
+Historical tracking item: `lab-27juw`
+
+> **Historical progress record.** The ledger below is retained as implementation
+> evidence from the delivery branch. Current behavior is documented in
+> [Artifacts And Agent Skills](../../services/SKILLS.md).
 
 ## Verified baseline
 

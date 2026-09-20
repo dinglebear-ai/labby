@@ -2,7 +2,7 @@
 name: axon-fanout
 title: "Axon Fanout"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-09-16"
 description: Axon fan-out research workflows for briefs and smoke tests
 tags: [axon, research, docs]
 inputs:
@@ -38,23 +38,23 @@ Reusable Axon workflow snippets. Treat these as the source of truth. MCP prompts
 
 ## Tutorial: How This Snippet Is Built
 
-This snippet uses one upstream tool, `axon::axon`, several times with different `action` values. That is common for action-dispatched MCP servers: the selected tool is the same, but the parameters choose the operation.
+This snippet uses one upstream tool, `Axon::axon`, several times with different `action` values. That is common for action-dispatched MCP servers: the selected tool is the same, but the parameters choose the operation.
 
 | Step | Tool | Action | Why it is included | Parameters the user fills |
 |---|---|---|---|---|
-| Fresh search | `axon::axon` | `search` | Finds current web results and starts passive indexing | `query` |
-| Research synthesis | `axon::axon` | `research` | Runs search, extraction, and an evidence summary | `query` |
-| Vector search | `axon::axon` | `query` | Searches already indexed knowledge | `query` |
-| Seed scrape | `axon::axon` | `scrape` | Reads one known URL when supplied | `url` |
-| Seed summary | `axon::axon` | `summarize` | Summarizes one known URL when supplied | `url` |
-| RAG answer | `axon::axon` | `ask` | Optional slower synthesis over indexed context | `query` |
-| Evidence scrape | `axon::axon` | `scrape` | Reads selected high-score URLs | `url` |
-| Evidence summary | `axon::axon` | `summarize` | Produces compact notes for selected URLs | `url` |
+| Fresh search | `Axon::axon` | `search` | Finds current web results and starts passive indexing | `query` |
+| Research synthesis | `Axon::axon` | `research` | Runs search, extraction, and an evidence summary | `query` |
+| Vector search | `Axon::axon` | `query` | Searches already indexed knowledge | `query` |
+| Seed scrape | `Axon::axon` | `scrape` | Reads one known URL when supplied | `url` |
+| Seed summary | `Axon::axon` | `summarize` | Summarizes one known URL when supplied | `url` |
+| RAG answer | `Axon::axon` | `ask` | Optional slower synthesis over indexed context | `query` |
+| Evidence scrape | `Axon::axon` | `scrape` | Reads selected high-score URLs | `url` |
+| Evidence summary | `Axon::axon` | `summarize` | Produces compact notes for selected URLs | `url` |
 
 The snippet has two phases:
 
-1. **Fan-out:** run independent first-pass Axon actions in parallel.
-2. **Chaining:** score URLs from the first pass, then scrape/summarize the selected evidence URLs.
+1. **Fan-out:** run independent first-pass Axon actions through `codemode.batch`, preserving per-call failures.
+2. **Chaining:** score URLs from the first pass, then scrape/summarize the selected evidence URLs through the same failure-isolated batch helper.
 
 This is the most advanced built-in snippet because it shows both shapes. The builder can still make it understandable by presenting the first phase as selected tool calls and the second phase as "use URLs from step 1 as the `url` field for step 2."
 
@@ -70,7 +70,7 @@ Defaults are intentionally useful. A user can run the snippet unchanged for a sm
 
 ## What Validation Should Catch
 
-Because every call uses `axon::axon`, validation has to look at the `action` field and the action-specific parameters:
+Because every call uses the live `Axon::axon` tool, validation has to look at the `action` field and the action-specific parameters. The tool id and these action shapes were reverified from Labby on 2026-09-16:
 
 - `action: "search"` requires a string `query`.
 - `action: "research"` requires a string `query`.
@@ -130,7 +130,7 @@ async (overrides = {}) => {
     ...overrides
   };
 
-  const axon = (args) => callTool("axon::axon", args);
+  const axon = (args) => callTool("Axon::axon", args);
 
   const parseTool = (result) => {
     const text = result?.content?.[0]?.text;
@@ -179,6 +179,22 @@ async (overrides = {}) => {
     }
   };
 
+  const runBatch = async (entries) => {
+    const batch = await codemode.batch(
+      entries.map(([label, args]) => () => timed(label, args))
+    );
+    const results = new Array(entries.length);
+    for (const entry of batch.ok) results[entry.i] = entry.value;
+    for (const entry of batch.failed) {
+      results[entry.i] = {
+        label: entries[entry.i]?.[0] ?? ("batch_job_" + entry.i),
+        ok: false,
+        error: String(entry.error)
+      };
+    }
+    return results.filter(Boolean);
+  };
+
   const firstPass = [
     ["search", { action: "search", query: input.topic }],
     ["research", { action: "research", query: input.topic }],
@@ -203,7 +219,7 @@ async (overrides = {}) => {
   }
 
   const started = Date.now();
-  const firstPassResults = await Promise.all(firstPass.map(([label, args]) => timed(label, args)));
+  const firstPassResults = await runBatch(firstPass);
 
   const sourceCandidates = [];
   const isUsableUrl = (url) =>
@@ -294,9 +310,7 @@ async (overrides = {}) => {
     ]
   ]);
 
-  const evidenceResults = await Promise.all(
-    evidenceCalls.map(([label, args]) => timed(label, args))
-  );
+  const evidenceResults = await runBatch(evidenceCalls);
 
   const facts = evidenceResults
     .filter((result) => result.ok && result.key_fields?.summary)
@@ -336,7 +350,7 @@ async (overrides = {}) => {
     2
   )};
 
-  const axon = (args) => callTool("axon::axon", args);
+  const axon = (args) => callTool("Axon::axon", args);
   const parseTool = (result) => {
     const text = result?.content?.[0]?.text;
     if (typeof text !== "string") return result;
@@ -363,13 +377,29 @@ async (overrides = {}) => {
     }
   };
 
+  const runBatch = async (entries) => {
+    const batch = await codemode.batch(
+      entries.map(([label, args]) => () => timed(label, args))
+    );
+    const results = new Array(entries.length);
+    for (const entry of batch.ok) results[entry.i] = entry.value;
+    for (const entry of batch.failed) {
+      results[entry.i] = {
+        label: entries[entry.i]?.[0] ?? ("batch_job_" + entry.i),
+        ok: false,
+        error: String(entry.error)
+      };
+    }
+    return results.filter(Boolean);
+  };
+
   const discoveryCalls = input.queries.flatMap((query, index) => [
     ["search." + (index + 1), { action: "search", query }],
     ["query." + (index + 1), { action: "query", query }]
   ]);
 
   const started = Date.now();
-  const discovery = await Promise.all(discoveryCalls.map(([label, args]) => timed(label, args)));
+  const discovery = await runBatch(discoveryCalls);
 
   const candidates = [];
   const isUsableUrl = (url) =>
@@ -434,7 +464,7 @@ async (overrides = {}) => {
     ["evidence." + (index + 1) + ".summarize", { action: "summarize", url: candidate.url }]
   ]);
 
-  const evidence = await Promise.all(evidenceCalls.map(([label, args]) => timed(label, args)));
+  const evidence = await runBatch(evidenceCalls);
 
   return {
     workflow: "axon_research_brief_followup",

@@ -1,13 +1,13 @@
 ---
 title: "Access Control, Workspaces, and Artifact Distribution"
 created: "2026-08-22"
-updated: "2026-09-13"
-status: "design"
+updated: "2026-09-16"
+status: "mixed-current-and-design"
 ---
 
 # Access Control, Workspaces, and Artifact Distribution
 
-> **Status (2026-09-13).** This packet mixes the original design with parts
+> **Status (2026-09-16).** This packet mixes the original design with parts
 > that are now implemented. Implemented today: the access store at schema v7
 > ([DATA_MODEL.md](./DATA_MODEL.md#schema-v7-current)), owner bootstrap (browser
 > and offline proof), Teams, invitations, platform administration, Project

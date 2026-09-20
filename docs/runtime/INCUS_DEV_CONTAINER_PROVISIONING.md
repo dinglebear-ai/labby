@@ -1,7 +1,7 @@
 ---
 title: "Restricted Incus Dev Container Provisioning"
 created: "2026-09-13"
-updated: "2026-09-13"
+updated: "2026-09-16"
 ---
 
 # Restricted Incus Dev Container Provisioning
@@ -231,4 +231,4 @@ client contracts:
 - <https://linuxcontainers.org/incus/docs/main/reference/projects/>
 - <https://linuxcontainers.org/incus/docs/main/howto/projects_confine/>
 - <https://linuxcontainers.org/incus/docs/main/profiles/>
-- <https://linuxcontainers.org/incus/docs/main/reference/instance_options/>
+- <https://linuxcontainers.org/incus/docs/main/config-options/>

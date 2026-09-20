@@ -1,13 +1,20 @@
 ---
 title: W19 Artifact Gateway Progress
 created: 2026-08-19
-updated: 2026-08-24
+updated: 2026-09-16
 ---
 
 # W19 Artifact Gateway Progress
 
-Last updated: 2026-08-24
-Status: Phase 2 lifecycle/provider slice merged as PR #464 (`636f35bb4`) on 2026-08-21 and shipped in release 1.14.0; Phase 3 (thin CLI/API/MCP projections) has not started
+Last updated: 2026-09-16
+Status: historical W19 Phase 1/2 record. Phase 2 merged as PR #464 (`636f35bb4`) on 2026-08-21 and shipped in release 1.14.0. The later Artifact control plane landed in PR #525 (`4607a7c79`) on 2026-09-04, so this file must not be used to infer current surface availability.
+
+> **Current behavior:** use [Artifacts And Agent Skills](../services/SKILLS.md)
+> for lifecycle/operator semantics and the generated
+> [service](../generated/service-catalog.md) and
+> [action](../generated/action-catalog.md) catalogs for compiled CLI, MCP, API,
+> and WebUI availability. The remainder of this file preserves W19 delivery and
+> review evidence.
 
 ## Lane identity
 
@@ -186,4 +193,4 @@ Final verification: focused hardened Artifact tests passed 27/27; the full `labb
 
 Phase 2 PR: #464, `feat(artifacts): add lifecycle planning and provider seam`. The branch integrated current `main` `c17e6f50b` on 2026-08-21 without rebasing or force-pushing. The mandatory PR review additionally found that a deserialized `ArtifactRevisionDiff` could represent invalid ordering or kind/payload combinations even though locally generated diffs were canonical. Diff validation now bounds the change count, validates revision IDs, paths and components, requires strict path order, and enforces added/removed/modified payload invariants. The review fix landed at `08ded3643`; focused tests, full `labby-runtime`, Clippy, Cargo Deny, generated docs, link checks, rustfmt, and diff hygiene passed after the fix, and remote CI revalidation completed with 28 successful checks, 10 skipped, and none failed.
 
-PR #464 squash-merged into `main` as `636f35bb4` on 2026-08-21 with the review fix `08ded3643` included, and the `codex/w19-artifact-lifecycle-20260819` remote branch was deleted after the merge. The Phase 2 slice shipped in release 1.14.0 (#455). No Phase 3 work has landed; the next planned slice is Phase 3 thin CLI/API/MCP projections in [implementation-plan.md](implementation-plan.md).
+PR #464 squash-merged into `main` as `636f35bb4` on 2026-08-21 with the review fix `08ded3643` included, and the `codex/w19-artifact-lifecycle-20260819` remote branch was deleted after the merge. The Phase 2 slice shipped in release 1.14.0 (#455). At the close of W19, Phase 3 thin surface projections were still only the next planned slice in [implementation-plan.md](./implementation-plan.md). That statement is historical: the later Artifact control plane merged in PR #525 (`4607a7c79`) on 2026-09-04, and current generated catalogs now report the Artifact-family services across CLI, MCP, API, and WebUI.

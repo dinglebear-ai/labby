@@ -6,7 +6,7 @@ updated: 2026-08-19
 
 # W19 Artifact Gateway Implementation Plan
 
-Status: active
+Status: historical W19 plan; Phase 1/2 completed in PRs #462/#464, and later Artifact control-plane surfaces shipped in PR #525
 Branch: `codex/w19-artifact-lifecycle-20260819`
 Worktree: `/home/jmagar/workspace/labby-w19-artifact-gateway`
 Baseline: `origin/main` at `0e21d0474` when W19 implementation began

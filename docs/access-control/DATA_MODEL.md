@@ -1,8 +1,8 @@
 ---
 title: "Access Control Data Model"
 created: "2026-08-22"
-updated: "2026-09-13"
-status: "design"
+updated: "2026-09-16"
+status: "mixed-current-and-design"
 ---
 
 # Access Control Data Model

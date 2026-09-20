@@ -1,7 +1,8 @@
 ---
 title: "Discover alignment"
 created: "2026-09-08"
-updated: "2026-09-15"
+updated: "2026-09-16"
+status: "implemented-baseline-with-open-contract-gaps"
 ---
 
 # Discover alignment
@@ -50,12 +51,13 @@ secondary filtering moves into a popover. Cards collapse to one column. The moda
 fits the viewport, scrolls its content, traps focus, and closes on Escape or outside
 interaction. Light mode, keyboard focus, and reduced motion use Aurora primitives.
 
-## Completion evidence still required
+## Current backing gaps
 
-Implementation and testing of a subset do not complete the goal. Final acceptance
-requires comparing the actual route against every structural item above, testing
-all represented operations with real authority, checking desktop/mobile and
-dark/light states, and verifying the qualified deployed revision and persistence.
+The reference-aligned console implementation is on current `main` in PR #630
+(`df0026d0d`, 2026-09-16). Remaining acceptance work is therefore about
+server-backed semantics and release qualification, not whether the UI branch landed.
+Real-authority operations, desktop/mobile and dark/light states, and production
+persistence still need to stay qualified as the backing contracts evolve.
 
 Current backing gaps: inspected Labby/Depot code still has no canonical popularity,
 co-install recommendation, or verified-publisher feed contract. Existing remote
@@ -77,20 +79,13 @@ semantics are backed by the active mode and authority.
 | Centered inspection modal | Mock preview matches the reference desktop/mobile geometry, README/install/upstream content, expandable contents, format menu, and action strip; live mode retains the real provenance/revision/readme/import inspector | Generic live Fork/Send semantics remain intentionally unexposed until authority contracts are exact |
 | States | Loading, empty, partial-provider, expired-window, all-failed coverage, and unavailable-feed behavior have explicit render/model tests | End-to-end failed-Depot UI requires an authenticated live gateway session |
 | Responsive interactions | Desktop/mobile, grid/list/compact, search/filters, Escape/outside close, focus restoration, no horizontal overflow, and dark/light themes verified in-browser | Re-verify after production deployment |
-| Deployment | Branch implementation is committed but not production-verified by this document | Push/integrate onto the qualified native/auth base, deploy, then verify the same state matrix |
+| Deployment | PR #630 (`df0026d0d`) is on current `main` as of 2026-09-16 | Qualify the released/deployed revision through the normal production state matrix; do not infer deployment from Git integration alone |
 
-### Verification notes, 2026-09-08
+### Historical verification notes, 2026-09-08
 
 The production static export succeeds on the declared Node 22 runtime, including
 route bundle budgets and static navigation build-ID checks. This build was run
 after mock-mode browser QA so the generated export is not the mock-data export.
-
-The full Node 22 unit run reports 581 passing and 2 failing tests (583 total).
-Both failures reproduce in isolation in the unchanged gateway OAuth dialog tests:
-`renaming a gateway invalidates an in-flight OAuth start` and
-`switching away from OAuth invalidates an in-flight OAuth start`. The same isolated
-tests pass on Node 24. That comparison is diagnostic evidence, not a replacement
-for the package's declared Node 22 gate; the Node 22 full-suite gate remains open.
 
 A follow-up contract regression reproduces the rejection of Depot's existing
 `license.declared` detail field. The parser now accepts a nullable string bounded
@@ -130,6 +125,14 @@ The repository's broad gateway-detail browser harness was also attempted separat
 it exceeded the execution window and left a Node 24 test-runner child despite an
 explicit Node 22 parent, so that harness is not counted as passing evidence here.
 The Discover-specific Playwright state matrix described above completed directly.
+
+### Current verification, 2026-09-16
+
+Fresh verification runs the complete Gateway Admin unit harness under the declared
+Node 22.18.0 runtime: all 219 discovered unit-test files exit cleanly, and the full
+ESLint gate also passes. The two gateway OAuth dialog failures recorded by the older
+September 8 worktree no longer reproduce, so that historical Node 22 gate is closed
+on current `main`.
 
 A disposable non-mock standalone preview was also started from an isolated app copy.
 It reached Labby's authentication boundary and rendered the authentication-error

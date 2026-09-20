@@ -1,8 +1,8 @@
 ---
 title: "Multi-user authority contract"
 created: "2026-09-05"
-updated: "2026-09-07"
-status: "design"
+updated: "2026-09-16"
+status: "implemented-contract"
 ---
 
 # Multi-user authority contract

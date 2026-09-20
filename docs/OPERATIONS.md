@@ -1,7 +1,7 @@
 ---
 title: "Operations"
 created: "2026-07-30"
-updated: "2026-08-18"
+updated: "2026-09-16"
 ---
 
 # Operations
@@ -17,7 +17,7 @@ The Justfile is the source of truth for repo-local operator/developer helpers. H
 - `just validate-plugin` — validate the checked-in Labby plugin setup lifecycle against a temporary `LABBY_HOME`
 - `just host-sync` — rebuild/reinstall/restart the source checkout on the supported system-container host path
 
-For health/auth verification, use the shipped `labby health` and `labby doctor ...` commands plus focused integration tests. The repository does not currently ship `bin/health-check` or `scripts/check-oauth.sh`; do not document them as supported operator interfaces.
+For health/auth verification, use the shipped `labby health` and `labby doctor ...` commands plus focused integration tests. The repository does not currently ship `bin/health-check` or a top-level `scripts/check-oauth.sh` product interface. A legacy compatibility probe remains at `plugins/scripts/check-oauth.sh`, but it is not the canonical operator contract; do not substitute it for the built-in doctor surfaces in deployment guidance.
 
 ## OAuth Auth State
 
