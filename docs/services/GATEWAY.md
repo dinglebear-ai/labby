@@ -1,7 +1,7 @@
 ---
 title: "Gateway Management"
 created: "2026-07-30"
-updated: "2026-09-15"
+updated: "2026-09-17"
 ---
 
 # Gateway Management
@@ -328,7 +328,7 @@ or a hard storage quota until the backend history-cap follow-up lands.
 Root-gateway clients with `lab` or `lab:admin` also receive the always-on
 `mcp_app` tool bound to `ui://lab/apps/manage`. Its UI is the recovery
 switchboard for Labby's own app surfaces: Code Mode Inspector, Gateway Status,
-Server Logs, and Add Server. Status reads require `lab` or `lab:admin`;
+Server Logs, Add Server, and Settings. Status reads require `lab` or `lab:admin`;
 enable/disable mutations require `lab:admin`. The `mcp_app` control tool is
 intentionally omitted from protected subset routes. Its own manager UI can be
 disabled, but the text-only control tool remains available on the root gateway.
@@ -351,6 +351,16 @@ resource-backed app owner, `proxy_resources` is enabled, and the bound `ui://`
 URI passes `expose_resources`. Callback markers without such an owner and
 ambiguous tool names fail closed. Destructive app tools require execute scope,
 and OAuth app resources remain subject-bound on read.
+
+Disabled synthetic Labby app tools are removed from `tools/list`; hosts should
+honor the list-changed notification or reconnect to refresh a cached catalog. If
+a host retains a stale `codemode_ui` binding, or a stale admin binding for
+`gateway_status`, `add_server`, or `settings`, Labby resolves the name locally
+and returns a deterministic `app_disabled` error that points back to the
+root-gateway `mcp_app` control tool instead of falling through to hidden or
+upstream tool resolution. `server_logs` is intentionally different: disabling
+its app hides only UI metadata/resources while its built-in text service remains
+callable.
 
 ### Add Server MCP App
 

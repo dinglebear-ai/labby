@@ -949,6 +949,79 @@ async fn hidden_add_server_name_is_reserved_from_discovery_but_legacy_call_still
 }
 
 #[tokio::test]
+async fn disabled_owned_app_stale_admin_bindings_never_route_to_colliding_upstreams() {
+    let upstream_name: Arc<str> = Arc::from("apps");
+    let upstream_tools = HashMap::from([
+        (
+            ADD_SERVER_TOOL_NAME.to_string(),
+            fixture_upstream_tool(&upstream_name, ADD_SERVER_TOOL_NAME, None),
+        ),
+        (
+            GATEWAY_STATUS_TOOL_NAME.to_string(),
+            fixture_upstream_tool(&upstream_name, GATEWAY_STATUS_TOOL_NAME, None),
+        ),
+        (
+            SETTINGS_TOOL_NAME.to_string(),
+            fixture_upstream_tool(&upstream_name, SETTINGS_TOOL_NAME, None),
+        ),
+    ]);
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_entry_for_test("apps", fixture_upstream_entry("apps", upstream_tools))
+        .await;
+    let manager = code_mode_manager_with_pool(false, fixture_upstream_config("apps"), pool).await;
+    for target in ["add_server", "gateway_status", "settings"] {
+        manager
+            .set_mcp_app_visibility(target, false, None)
+            .await
+            .unwrap_or_else(|error| panic!("disable {target} app: {error}"));
+    }
+    let server = test_server(
+        crate::registry::build_default_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(128 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let context = scoped_context(running.peer().clone(), &["lab:admin"]);
+
+    let tools = running
+        .service()
+        .list_tools_impl(None, context.clone())
+        .await
+        .expect("admin tools with owned apps disabled");
+    for stale_tool in [
+        ADD_SERVER_TOOL_NAME,
+        GATEWAY_STATUS_TOOL_NAME,
+        SETTINGS_TOOL_NAME,
+    ] {
+        assert!(
+            tools
+                .tools
+                .iter()
+                .all(|tool| tool.name.as_ref() != stale_tool),
+            "disabled {stale_tool} remains absent from discovery"
+        );
+
+        let result = running
+            .service()
+            .call_tool_impl(CallToolRequestParams::new(stale_tool), context.clone())
+            .await
+            .unwrap_or_else(|error| panic!("stale {stale_tool} binding result: {error}"));
+        assert!(result.is_error.unwrap_or(false), "{stale_tool}");
+        let text = result.content[0].as_text().expect("text").text.as_str();
+        assert!(text.contains("app_disabled"), "{stale_tool}: {text}");
+        assert!(text.contains(MCP_APP_TOOL_NAME), "{stale_tool}: {text}");
+        assert!(
+            !text.contains("upstream_error"),
+            "stale Labby-owned binding must not fall through to a colliding upstream: {stale_tool}: {text}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn call_tool_blocks_destructive_builtin_when_elicitation_is_not_supported() {
     DESTRUCTIVE_DISPATCH_COUNT_NO_ELICITATION.store(0, Ordering::SeqCst);
     let server = test_server(
@@ -2155,6 +2228,79 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
             .await
             .expect_err("disabled app resource must be unreadable");
         assert!(stale.message.contains("unknown UI resource"), "{stale:?}");
+    }
+
+    let server_logs_help = running
+        .service()
+        .call_tool_impl(
+            CallToolRequestParams::new(SERVER_LOGS_TOOL_NAME).with_arguments(
+                serde_json::Map::from_iter([(
+                    "action".to_string(),
+                    Value::String("help".to_string()),
+                )]),
+            ),
+            scoped_context(peer.clone(), &["lab:admin"]),
+        )
+        .await
+        .expect("disabled Server Logs app must preserve its text service");
+    assert!(
+        !server_logs_help.is_error.unwrap_or(false),
+        "disabling Server Logs UI must not disable the builtin text service"
+    );
+
+    for stale_tool in [
+        CODE_MODE_UI_TOOL_NAME,
+        GATEWAY_STATUS_TOOL_NAME,
+        ADD_SERVER_TOOL_NAME,
+        SETTINGS_TOOL_NAME,
+    ] {
+        let stale = running
+            .service()
+            .call_tool_impl(
+                CallToolRequestParams::new(stale_tool),
+                scoped_context(peer.clone(), &["lab:admin"]),
+            )
+            .await
+            .expect("disabled stale binding must resolve deterministically");
+        assert!(stale.is_error.unwrap_or(false), "{stale_tool}");
+        let text = stale.content[0].as_text().expect("text").text.as_str();
+        assert!(
+            text.contains("app_disabled"),
+            "disabled stale binding must not fall through to generic routing: {stale_tool}: {text}"
+        );
+        assert!(
+            text.contains(MCP_APP_TOOL_NAME),
+            "disabled stale binding should identify the recovery control: {stale_tool}: {text}"
+        );
+    }
+
+    for (stale_tool, destructive_action) in [
+        (ADD_SERVER_TOOL_NAME, "create"),
+        (SETTINGS_TOOL_NAME, "config.update"),
+    ] {
+        let mutation =
+            CallToolRequestParams::new(stale_tool).with_arguments(serde_json::Map::from_iter([(
+                "action".to_string(),
+                Value::String(destructive_action.to_string()),
+            )]));
+        let admin_context = scoped_context(peer.clone(), &["lab:admin"]);
+        assert!(
+            !running
+                .service()
+                .tool_request_is_destructive(&mutation, &admin_context)
+                .await,
+            "disabled {stale_tool} stale binding must not enter destructive elicitation"
+        );
+        let result = running
+            .service()
+            .call_tool_impl(mutation, admin_context)
+            .await
+            .unwrap_or_else(|error| {
+                panic!("disabled {stale_tool} mutation must resolve deterministically: {error}")
+            });
+        assert!(result.is_error.unwrap_or(false), "{stale_tool}");
+        let text = result.content[0].as_text().expect("text").text.as_str();
+        assert!(text.contains("app_disabled"), "{stale_tool}: {text}");
     }
 
     let enable = running

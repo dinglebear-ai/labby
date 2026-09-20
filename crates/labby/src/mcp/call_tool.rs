@@ -779,6 +779,53 @@ impl LabMcpServer {
         }
     }
 
+    /// Recognize a stale binding for a disabled Labby-owned synthetic MCP App.
+    ///
+    /// Only treat the visibility switch as authoritative when the caller and
+    /// route would otherwise be eligible for the app. This preserves ordinary
+    /// auth/policy denials and legacy upstream fallback for callers that never
+    /// had access to the Labby-owned app in the first place.
+    #[cfg(feature = "gateway")]
+    async fn disabled_owned_mcp_app_binding(
+        &self,
+        service: &str,
+        context: &RequestContext<RoleServer>,
+    ) -> Option<&'static str> {
+        if !matches!(
+            service,
+            ADD_SERVER_TOOL_NAME | GATEWAY_STATUS_TOOL_NAME | SETTINGS_TOOL_NAME
+        ) || !admin_app_resources_visible(auth_context_from_extensions(&context.extensions))
+        {
+            return None;
+        }
+
+        let apps = self.mcp_apps_config().await;
+        match service {
+            ADD_SERVER_TOOL_NAME if !apps.add_server => {
+                let mut enabled = apps;
+                enabled.add_server = true;
+                self.add_server_app_available_on_mcp_with(enabled)
+                    .await
+                    .then_some("add_server")
+            }
+            GATEWAY_STATUS_TOOL_NAME if !apps.gateway_status => {
+                let mut enabled = apps;
+                enabled.gateway_status = true;
+                self.gateway_status_app_available_on_mcp_with(enabled)
+                    .await
+                    .then_some("gateway_status")
+            }
+            SETTINGS_TOOL_NAME
+                if !apps.settings
+                    && self.route_scope.allows_service("setup")
+                    && self.service_visible_on_mcp("setup").await =>
+            {
+                Some("settings")
+            }
+            _ => None,
+        }
+    }
+
     async fn call_tool_response_impl_inner(
         &self,
         request: CallToolRequestParams,
@@ -1237,6 +1284,25 @@ impl LabMcpServer {
                     .call_tool_codemode_impl(&service, &args, &context)
                     .await
                     .map(Into::into);
+            }
+
+            if let Some(target) = self
+                .disabled_owned_mcp_app_binding(&service, &context)
+                .await
+            {
+                let envelope = build_error_extra(
+                    &service,
+                    "call_tool",
+                    "app_disabled",
+                    &format!(
+                        "the Labby {target} MCP App is disabled; use {MCP_APP_TOOL_NAME} on the root gateway to inspect or re-enable it"
+                    ),
+                    &serde_json::json!({
+                        "target": target,
+                        "control_tool": MCP_APP_TOOL_NAME,
+                    }),
+                );
+                return Ok(error_result_from_envelope(envelope).into());
             }
 
             let handles_add_server = service == ADD_SERVER_TOOL_NAME
@@ -2397,6 +2463,14 @@ impl LabMcpServer {
 
         #[cfg(feature = "gateway")]
         {
+            if self
+                .disabled_owned_mcp_app_binding(service, context)
+                .await
+                .is_some()
+            {
+                return false;
+            }
+
             if service == ADD_SERVER_TOOL_NAME {
                 let gateway_action = match action {
                     "test" => Some("gateway.test"),
