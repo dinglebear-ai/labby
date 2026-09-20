@@ -1,4 +1,7 @@
 ---
+title: "Labby Aurora Design System"
+created: "2026-08-18"
+updated: "2026-09-20"
 version: alpha
 name: Labby Aurora
 description: "Dark-first, operator-focused design system for Labby's Gateway Admin control plane and its thin native shells."
