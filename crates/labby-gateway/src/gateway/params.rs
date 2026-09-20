@@ -428,6 +428,9 @@ pub(crate) struct GatewayMcpToggleParams {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct GatewayMcpRestartParams {
     pub name: String,
+    /// Time to wait for the existing detached restart; zero only acknowledges acceptance.
+    #[serde(default)]
+    pub wait_ms: Option<u64>,
     #[serde(default)]
     pub aggressive: bool,
     #[serde(default)]

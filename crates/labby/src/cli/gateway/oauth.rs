@@ -106,7 +106,7 @@ pub(super) async fn run_gateway_oauth_start(
             eprintln!(
                 "{}",
                 theme.warn(&format!(
-                    "Timed out waiting for OAuth completion for `{}` after {}s. The browser callback may still succeed later; re-run `labby gateway mcp auth status {}` to check.",
+                    "Timed out waiting for OAuth completion for `{}` after {}s. The browser callback may still succeed later; re-run `labby server auth status {}` to check.",
                     args.name, args.wait_timeout_secs, args.name
                 ))
             );

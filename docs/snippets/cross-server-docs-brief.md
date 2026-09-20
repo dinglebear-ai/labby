@@ -83,7 +83,7 @@ Live smoke-tested tools before authoring:
 Run with:
 
 ```bash
-labby gateway code exec --json --code "$(awk '/^```js$/{flag=1;next}/^```$/{if(flag){exit}}flag' docs/snippets/cross-server-docs-brief.md)"
+labby code run --json --code "$(awk '/^```js$/{flag=1;next}/^```$/{if(flag){exit}}flag' docs/snippets/cross-server-docs-brief.md)"
 ```
 
 ```js

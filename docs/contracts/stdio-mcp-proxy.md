@@ -221,7 +221,7 @@ after verifying ownership in `tailscale serve status --json`.
 
 ## Setup and doctor
 
-`labby setup proxy` owns comment-preserving preference writes and secret-safe
+`labby config proxy set` owns comment-preserving preference writes and secret-safe
 `.env` storage. On Unix the Labby home and secret file are mode `0700` and
 `0600`. `labby doctor proxy` with no route parameters runs local proxy
 preflight. Supplying app/MCP URLs and a route retains the routed public

@@ -104,6 +104,11 @@ fn build_artifacts(projection: &DocsProjection) -> Result<Vec<Artifact>> {
         ),
         artifact("docs/generated/cli-help.md", render::cli_help()),
         artifact(
+            "docs/generated/cli-help.json",
+            render::json(&crate::cli::help::inventory())?,
+        ),
+        artifact("docs/generated/cli-migration.md", render::cli_migration()),
+        artifact(
             "docs/generated/mcp-help.md",
             render::mcp_help(&projection.mcp_help),
         ),

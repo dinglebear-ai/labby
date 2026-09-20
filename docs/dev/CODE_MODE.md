@@ -462,7 +462,7 @@ When search results do not match live execution, check the layers in order:
 1. Gateway runtime:
 
    ```bash
-   labby gateway list --json
+   labby server list --json
    ```
 
    Confirm the upstream reports the expected discovered tool count and is not

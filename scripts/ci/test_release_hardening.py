@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import os
@@ -205,7 +206,10 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         # The unit runs as User=labby, and no release creates that user.
         self.assertIn("sudo useradd --system", host_install)
         # v1.13.3's `setup host-service status` rejects -y.
-        self.assertIn("sudo /usr/local/bin/labby setup host-service status;", host_service)
+        self.assertIn("local prefix=(host service)", host_service)
+        self.assertIn("prefix=(setup host-service)", host_service)
+        self.assertIn('sudo /usr/local/bin/labby "${prefix[@]}" status', host_service)
+        self.assertIn('"$candidate" host service install --install-self -y', host_service)
         # v1.13.3's unit refuses to start unless every ReadWritePaths entry exists.
         self.assertIn("/home/labby/{.labby,.local,.cache,.config,.npm,.codex,.claude,.gemini,downloads}", host_install)
         incus = self.text("scripts/ci/n-minus-one/incus")
@@ -1212,7 +1216,7 @@ if authenticated_action; then exit 93; fi
                 "usage.db": "CREATE TABLE upstream_calls(id INTEGER PRIMARY KEY AUTOINCREMENT,ts_unix INTEGER NOT NULL,upstream_name TEXT NOT NULL,tool_name TEXT NOT NULL,capability TEXT NOT NULL,operation TEXT NOT NULL,subject_scoped INTEGER NOT NULL,actor TEXT NOT NULL,outcome TEXT NOT NULL,elapsed_ms INTEGER NOT NULL,response_bytes INTEGER)",
             }
             for name, schema in schemas.items():
-                with sqlite3.connect(Path(tmp) / name) as database:
+                with closing(sqlite3.connect(Path(tmp) / name)) as database, database:
                     database.execute(schema)
             subprocess.run(["python3", str(helper), "seed", tmp], check=True)
             self.assertEqual(0, subprocess.run(["python3", str(helper), "verify", tmp]).returncode)
@@ -1221,7 +1225,7 @@ if authenticated_action; then exit 93; fi
                 ("access.db", "DELETE FROM access_security_events"),
                 ("usage.db", "DELETE FROM upstream_calls"),
             ):
-                with sqlite3.connect(Path(tmp) / database) as connection:
+                with closing(sqlite3.connect(Path(tmp) / database)) as connection, connection:
                     connection.execute(statement)
                 self.assertNotEqual(0, subprocess.run(["python3", str(helper), "verify", tmp], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode, database)
                 subprocess.run(["python3", str(helper), "seed", tmp], check=True)
@@ -1238,7 +1242,7 @@ if authenticated_action; then exit 93; fi
         # v1.13.3 in bearer mode: no auth.db, no access.db, and an older usage schema.
         old_usage = "CREATE TABLE upstream_calls(id INTEGER PRIMARY KEY AUTOINCREMENT,ts_unix INTEGER NOT NULL,upstream_name TEXT NOT NULL,tool_name TEXT NOT NULL,actor TEXT NOT NULL DEFAULT 'unattributed',outcome TEXT NOT NULL,elapsed_ms INTEGER NOT NULL)"
         with tempfile.TemporaryDirectory() as tmp:
-            with sqlite3.connect(Path(tmp) / "usage.db") as database:
+            with closing(sqlite3.connect(Path(tmp) / "usage.db")) as database, database:
                 database.execute(old_usage)
             seed = subprocess.run([sys.executable, str(helper), "seed", tmp], text=True, capture_output=True, check=False)
             self.assertEqual(0, seed.returncode, seed.stderr)
@@ -1249,14 +1253,14 @@ if authenticated_action; then exit 93; fi
             self.assertEqual(0, subprocess.run([sys.executable, str(helper), "verify", tmp], capture_output=True).returncode)
             # The usage store prunes rows older than its retention window, so
             # the seeded row must carry a current timestamp.
-            with sqlite3.connect(Path(tmp) / "usage.db") as database:
+            with closing(sqlite3.connect(Path(tmp) / "usage.db")) as database, database:
                 database.execute("DELETE FROM upstream_calls WHERE ts_unix < CAST(strftime('%s','now') AS INTEGER) - 86400")
             self.assertEqual(0, subprocess.run([sys.executable, str(helper), "verify", tmp], capture_output=True).returncode)
             # The candidate migrates usage.db in place; the seeded row must survive that.
-            with sqlite3.connect(Path(tmp) / "usage.db") as database:
+            with closing(sqlite3.connect(Path(tmp) / "usage.db")) as database, database:
                 database.execute("ALTER TABLE upstream_calls ADD COLUMN response_bytes INTEGER")
             self.assertEqual(0, subprocess.run([sys.executable, str(helper), "verify", tmp], capture_output=True).returncode)
-            with sqlite3.connect(Path(tmp) / "usage.db") as database:
+            with closing(sqlite3.connect(Path(tmp) / "usage.db")) as database, database:
                 database.execute("DELETE FROM upstream_calls")
             self.assertNotEqual(0, subprocess.run([sys.executable, str(helper), "verify", tmp], capture_output=True).returncode)
             (Path(tmp) / "n-minus-one-seeded.json").unlink()
@@ -1266,7 +1270,7 @@ if authenticated_action; then exit 93; fi
             self.assertNotEqual(0, none.returncode)
             self.assertIn("created none of the durable databases", none.stderr)
         with tempfile.TemporaryDirectory() as tmp:
-            with sqlite3.connect(Path(tmp) / "usage.db") as database:
+            with closing(sqlite3.connect(Path(tmp) / "usage.db")) as database, database:
                 database.execute(old_usage.replace("elapsed_ms INTEGER NOT NULL)", "elapsed_ms INTEGER NOT NULL,unknown_required TEXT NOT NULL)"))
             unknown = subprocess.run([sys.executable, str(helper), "seed", tmp], text=True, capture_output=True, check=False)
             self.assertNotEqual(0, unknown.returncode)

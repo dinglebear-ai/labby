@@ -211,8 +211,8 @@ host-sync:
     sudo mkdir -p /usr/local/bin
     sudo install -m 755 "$LABBY_BIN" /usr/local/bin/labby
     if systemctl is-active --quiet labby.service; then
-      sudo /usr/local/bin/labby setup host-service restart -y
-      sudo /usr/local/bin/labby setup host-service status --json
+      sudo /usr/local/bin/labby host service restart -y
+      sudo /usr/local/bin/labby host service status --json
     else
       echo "error: labby.service is not active; run: just host-service-install" >&2
       exit 1
@@ -244,17 +244,17 @@ host-service-install:
     esac
     sudo mkdir -p /usr/local/bin
     sudo install -m 755 "$LABBY_BIN" /usr/local/bin/labby
-    sudo /usr/local/bin/labby setup host-service install -y
+    sudo /usr/local/bin/labby host service install -y
 
 host-service-restart:
-    sudo /usr/local/bin/labby setup host-service restart -y
-    sudo /usr/local/bin/labby setup host-service status --json
+    sudo /usr/local/bin/labby host service restart -y
+    sudo /usr/local/bin/labby host service status --json
 
 host-service-status:
-    sudo /usr/local/bin/labby setup host-service status --json
+    sudo /usr/local/bin/labby host service status --json
 
 host-service-uninstall:
-    sudo /usr/local/bin/labby setup host-service uninstall -y
+    sudo /usr/local/bin/labby host service uninstall -y
 
 # Explicit container compatibility path. Prefer host-sync for normal gateway
 # development; this remains useful for prod-like image smoke and Docker-specific
@@ -535,7 +535,7 @@ smoke-setup:
 # Validate the Labby plugin setup lifecycle against a throw-away LABBY_HOME.
 validate-plugin:
     rm -rf /tmp/labby-plugin-validate
-    LABBY_HOME=/tmp/labby-plugin-validate cargo run --bin labby --all-features -- setup plugin-hook --no-repair --json
+    LABBY_HOME=/tmp/labby-plugin-validate cargo run --bin labby --all-features -- plugin hook --no-repair --json
 
 # Report the currently installed Labby host-service runtime.
 runtime-current:

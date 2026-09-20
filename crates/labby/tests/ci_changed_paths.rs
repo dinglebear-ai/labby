@@ -995,7 +995,7 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
     let incus_smoke = fs::read_to_string(repo_root().join("scripts/ci/smoke-incus-image.sh"))
         .expect("read Incus smoke script");
     assert!(
-        incus_smoke.contains("labby skills --help")
+        incus_smoke.contains("labby skill --help")
             && incus_smoke.contains("Read Agent Skills visible to the local CLI"),
         "the baked Incus binary must prove the compiled Skills surface"
     );

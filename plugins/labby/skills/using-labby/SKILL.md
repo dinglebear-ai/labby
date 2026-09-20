@@ -14,7 +14,7 @@ For a new installation or first-run onboarding, use `$install-labby`. This skill
 ```bash
 labby help                 # CLI command help
 labby doctor               # Full health/config audit
-labby health               # Quick availability check
+labby gateway status               # Quick availability check
 labby --json doctor        # Machine-readable output
 labby completions bash     # Generate shell completions
 ```
@@ -32,17 +32,17 @@ use service `help`/`schema` actions through MCP/API dispatch.
 | `labby mcp` | Start the MCP server over stdio |
 | `labby serve` | Start the HTTP/API server |
 | `labby doctor` | Audit config, auth, and runtime health |
-| `labby health` | Quick availability check |
+| `labby gateway status` | Quick availability check |
 | `labby setup` | First-run/setup and plugin install flows |
 | `labby gateway ...` | Manage proxied upstream MCP gateways and Code Mode |
-| `labby gateway discover` | Scan local MCP client configs for upstream servers |
-| `labby gateway import [-y]` | Import discovered MCP servers into the gateway |
+| `labby server discover` | Scan local MCP client configs for upstream servers |
+| `labby server import [-y]` | Import discovered MCP servers into the gateway |
 | `labby logs ...` | Read or follow Labby service logs |
-| `labby incus ...` | Manage the supported Incus gateway container |
-| `labby update ...` | Install a selected or latest Labby release |
+| `labby host incus ...` | Manage the supported Incus gateway container |
+| `labby host update ...` | Install a selected or latest Labby release |
 | `labby state ...` | Export, verify, or restore complete durable installation state |
-| `labby snippets ...` | Manage Code Mode snippets |
-| `labby skills ...` | Inspect Agent Skills visible to the local CLI |
+| `labby snippet ...` | Manage Code Mode snippets |
+| `labby skill ...` | Inspect Agent Skills visible to the local CLI |
 | `labby proxy ...` | Proxy a stdio MCP server to Streamable HTTP |
 | `labby docs ...` | Generate and verify code-owned catalogs |
 

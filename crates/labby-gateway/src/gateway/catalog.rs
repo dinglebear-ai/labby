@@ -1463,6 +1463,12 @@ pub const ACTIONS: &[ActionSpec] = &[
                 required: false,
                 description: "When true, use broader host-wide process matching during cleanup",
             },
+            ParamSpec {
+                name: "wait_ms",
+                ty: "integer",
+                required: false,
+                description: "Wait for completion for 0..=300000 milliseconds (default 20000). Zero returns acceptance without waiting; completed=false never means the restart finished.",
+            },
         ],
     },
     ActionSpec {

@@ -1,7 +1,7 @@
 ---
 title: "Runtime Configuration"
 created: "2026-07-30"
-updated: "2026-09-13"
+updated: "2026-09-20"
 ---
 
 # Runtime Configuration
@@ -68,8 +68,41 @@ run `labby doctor system --json`, preserve the newest
 older verified copies. Restore by stopping Labby, copying the selected backup
 over `config.toml` with mode `0600`, and restarting before running doctor again.
 
+## CLI Connection Contexts
+
+Named destinations are non-secret entries in the existing host configuration:
+
+```toml
+[cli]
+current_context = "homelab"
+
+[cli.contexts.homelab]
+server = "https://example.invalid/"
+team_id = "personal"
+```
+
+Manage these through `labby context add`, `set`, `use`, `clear`, and `remove`.
+Mutations reuse the host lock and atomic writer and preserve unrelated tables.
+Context names are limited to 64 ASCII identifier characters, with at most 128
+contexts. The server URL cannot contain credentials, queries, or fragments;
+plaintext HTTP is restricted to loopback. OAuth credentials remain in the
+existing destination-bound CLI session store, never in `[cli]`.
+
+For daemon-backed commands, `--server` or `--context` selects the invocation
+explicitly. These flags override target environment variables, which override
+`current_context`. `--team-id` overrides a context's optional Team selector
+without granting authority. An unavailable explicit destination never falls
+back locally. Host-local operations reject explicit remote selectors and ignore
+the saved default context. See [CLI contracts](../surfaces/CLI.md) for the
+complete targeting, completion-cache, and migration behavior.
+
+`labby config show --json` emits a redacted host snapshot; `labby config check`
+validates that snapshot without writes. These commands do not apply environment
+overrides or authenticate to a server.
+
 ## Supported Sections
 
+- `[cli]` and `[cli.contexts.<name>]`: non-secret operator destination preferences.
 - `[output]`: CLI rendering defaults.
 - `[log]` and `[local_logs]`: tracing and local server-log storage.
 - `[mcp]`: default transport (`stdio`, `http`, or `unix_socket`), HTTP/TCP bind
@@ -439,7 +472,7 @@ it. A Unix-socket upstream requires `transport = "unix_socket"`, a `socket_path`
 request path and `Host` authority; a custom `Authorization` header is rejected so
 credentials stay in `bearer_token_env` or `[upstream.oauth]`.
 
-Use `labby gateway add`, `update`, `remove`, `reload`, and related
+Use `labby server add`, `update`, `remove`, `reload`, and related
 commands rather than editing active gateway state concurrently by hand.
 
 To recover disconnected upstream MCP servers automatically, enable the
@@ -485,7 +518,7 @@ tokens, authorization codes, or client secrets in TOML.
 
 ## Direct Stdio Proxy
 
-`labby setup proxy` writes all ten non-secret `[proxy]` keys to
+`labby config proxy set` writes all ten non-secret `[proxy]` keys to
 `$LABBY_HOME/config.toml`. Bearer material is stored separately in
 `$LABBY_HOME/.env` under the configured `proxy.bearer_token_env` key. The
 default key is `LABBY_PROXY_BEARER_TOKEN`; it is separate from the daemon

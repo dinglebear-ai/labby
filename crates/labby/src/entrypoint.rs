@@ -30,16 +30,21 @@ use std::process::ExitCode;
 
 use crate::cli::Cli;
 use crate::log_fmt::formatter::PremiumEventFormatter;
-use crate::output::{ColorPolicy, OutputFormat, RenderEnv, human_output_styling_enabled};
+use crate::output::{ColorPolicy, RenderEnv, human_output_styling_enabled};
 use crate::{cli, config};
 use clap::error::ErrorKind as ClapErrorKind;
 use clap::{ColorChoice, CommandFactory, FromArgMatches};
 use labby_runtime::agent_error::{AgentErrorContext, build_agent_error_value};
 use serde_json::{Value, json};
+use tracing::Instrument as _;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{EnvFilter, filter::filter_fn, fmt, prelude::*};
 
 fn human_console_target_enabled(target: &str) -> bool {
+    // Boundary records are persisted, not printed a second time above the result.
+    if matches!(target, "labby::cli::audit" | "labby::cli::helpers") {
+        return false;
+    }
     target == "labby"
         || target.starts_with("labby::")
         || target == "labby_auth"
@@ -56,6 +61,7 @@ fn init_tracing(
     log: &config::LogPreferences,
     color_policy: ColorPolicy,
     filter_override: Option<&str>,
+    console_enabled: bool,
 ) -> tracing_appender::non_blocking::WorkerGuard {
     // Priority: explicit CLI override > LABBY_LOG env var > config.toml > default.
     let filter = if let Some(directive) = filter_override {
@@ -80,17 +86,29 @@ fn init_tracing(
             |dir| dir.display().to_string(),
         )
     });
-    std::fs::create_dir_all(&log_dir).ok();
-
-    let file_appender = RollingFileAppender::builder()
-        .rotation(Rotation::DAILY)
-        .filename_prefix("lab")
-        .filename_suffix("log")
-        .max_log_files(7)
-        .build(&log_dir)
-        .expect("failed to create lab log file appender");
-
-    let (non_blocking_file, _log_guard) = tracing_appender::non_blocking(file_appender);
+    // The dependency prints retention-scan failures directly to stderr. Validate
+    // the directory first so an unavailable sink cannot corrupt JSON diagnostics.
+    let directory_ready = std::fs::create_dir_all(&log_dir)
+        .and_then(|()| std::fs::read_dir(&log_dir).map(drop))
+        .is_ok();
+    let file_appender = directory_ready
+        .then(|| {
+            RollingFileAppender::builder()
+                .rotation(Rotation::DAILY)
+                .filename_prefix("lab")
+                .filename_suffix("log")
+                .max_log_files(7)
+                .build(&log_dir)
+                .ok()
+        })
+        .flatten();
+    let file_logging_available = file_appender.is_some();
+    // A read-only/full log directory must not panic before a useful CLI diagnostic.
+    let writer: Box<dyn std::io::Write + Send> = match file_appender {
+        Some(appender) => Box::new(appender),
+        None => Box::new(std::io::sink()),
+    };
+    let (non_blocking_file, _log_guard) = tracing_appender::non_blocking(writer);
 
     let use_json = match std::env::var("LABBY_LOG_FORMAT").ok() {
         Some(v) => v.eq_ignore_ascii_case("json"),
@@ -103,7 +121,14 @@ fn init_tracing(
     if use_json {
         tracing_subscriber::registry()
             .with(filter)
-            .with(fmt::layer().json().with_writer(std::io::stderr)) // console
+            .with(
+                fmt::layer()
+                    .json()
+                    .with_writer(std::io::stderr)
+                    .with_filter(filter_fn(move |metadata| {
+                        console_enabled && human_console_target_enabled(metadata.target())
+                    })),
+            ) // console
             .with(fmt::layer().json().with_writer(non_blocking_file)) // file
             .init();
     } else {
@@ -115,8 +140,8 @@ fn init_tracing(
             .with_target(false)
             .event_format(PremiumEventFormatter)
             .with_writer(std::io::stderr)
-            .with_filter(filter_fn(|metadata| {
-                human_console_target_enabled(metadata.target())
+            .with_filter(filter_fn(move |metadata| {
+                console_enabled && human_console_target_enabled(metadata.target())
             }));
         tracing_subscriber::registry()
             .with(filter)
@@ -125,29 +150,15 @@ fn init_tracing(
             .init();
     }
 
+    if !file_logging_available && console_enabled {
+        #[allow(clippy::print_stderr)]
+        {
+            eprintln!(
+                "Warning: file logging is unavailable. Continuing with console diagnostics. Check LABBY_LOG_DIR and directory permissions."
+            );
+        }
+    }
     _log_guard
-}
-
-/// Global flags that may appear *before* a subcommand and must be skipped when
-/// the pre-parse shim scans for the root `help` / `-h` / `--help` tokens.
-///
-/// These mirror the `#[arg(global = true)]` flags on [`Cli`]. **If you add a new
-/// global flag to `Cli`, add it here too** — otherwise the catalog shim will
-/// mistake its value for a subcommand. A missed flag degrades to clap's own
-/// help (it never crashes), but the root catalog would stop firing.
-mod global_flags {
-    /// Boolean global flags (no value follows).
-    pub const BOOLEAN: &[&str] = &["--json"];
-    /// Value-taking global flags in `--flag VALUE` form. The `--flag=VALUE`
-    /// form is handled separately by prefix match.
-    pub const VALUED: &[&str] = &["--color"];
-}
-
-/// A global flag's captured value, used by the catalog shim.
-#[derive(Default)]
-struct GlobalFlags {
-    json: bool,
-    color: Option<ColorPolicy>,
 }
 
 /// Parse a `--color` value string (`auto`/`plain`/`color`) into a [`ColorPolicy`].
@@ -200,126 +211,8 @@ const fn color_choice_for(policy: ColorPolicy) -> ColorChoice {
     }
 }
 
-/// If the invocation is a *root-level* help request, return the captured global
-/// flags so the caller can render the Aurora catalog instead of clap help.
-///
-/// Returns `Some` only when, after skipping leading global flags, the first
-/// positional token is:
-/// - bare `help`, optionally followed by any mix of global flags (`--json`,
-///   `--color`) and `--all`, or
-/// - `-h` / `--help` at the root (no preceding subcommand).
-///
-/// Global flags are accepted on *both* sides of the trigger because they are
-/// `global = true` on [`Cli`] — `labby help --json` and `labby --json help` must
-/// both reach the catalog (scripts consume `help --json`). Their values are
-/// folded into the returned flags regardless of position.
-///
-/// `help <subcommand>` (e.g. `help gateway`) returns `None` and falls through to
-/// clap's native, now-themed `help` subcommand.
-fn root_help_request<I, T>(args: I) -> Option<GlobalFlags>
-where
-    I: IntoIterator<Item = T>,
-    T: AsRef<OsStr>,
-{
-    let mut flags = GlobalFlags::default();
-    let mut iter = args.into_iter();
-    // Skip argv[0] (program name).
-    iter.next();
-
-    let mut iter = iter.peekable();
-    while let Some(arg) = iter.peek() {
-        let arg = arg.as_ref().to_string_lossy().into_owned();
-        if global_flags::BOOLEAN.contains(&arg.as_str()) {
-            if arg == "--json" {
-                flags.json = true;
-            }
-            iter.next();
-        } else if let Some(rest) = arg.strip_prefix("--color=") {
-            flags.color = Some(parse_color_value(rest));
-            iter.next();
-        } else if global_flags::VALUED.contains(&arg.as_str()) {
-            // `--color VALUE` — consume the flag, then its value (if present).
-            iter.next();
-            if let Some(value) = iter.next() {
-                if arg == "--color" {
-                    flags.color = Some(parse_color_value(&value.as_ref().to_string_lossy()));
-                }
-            }
-        } else {
-            break;
-        }
-    }
-
-    // First non-global token must be the help trigger.
-    let first = iter.next()?;
-    let first = first.as_ref().to_string_lossy().into_owned();
-    match first.as_str() {
-        "-h" | "--help" => {
-            // Root `-h`/`--help` with no preceding subcommand → catalog. Fold any
-            // trailing global flags (`-h --json`) into the captured flags; a
-            // foreign token after a terminal help flag is ignored, mirroring
-            // clap's treatment of `--help` as short-circuiting.
-            trailing_globals_only(&mut iter, &mut flags);
-            Some(flags)
-        }
-        "help" => {
-            // Bare `help` plus any trailing global flags / `--all` is the root
-            // catalog; `help <subcommand>` (a foreign trailing token) falls
-            // through to clap's native help subcommand.
-            if trailing_globals_only(&mut iter, &mut flags) {
-                Some(flags)
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
-}
-
-/// Consume the tokens trailing a root help trigger, folding recognized global
-/// flag values (`--json`, `--color VALUE`, `--color=VALUE`) into `flags` and
-/// tolerating `--all`. Returns `true` if every remaining token was a global
-/// flag or `--all`, or `false` on the first foreign token (e.g. a subcommand
-/// name) — which marks the invocation as `help <subcommand>`.
-fn trailing_globals_only<I, T>(iter: &mut I, flags: &mut GlobalFlags) -> bool
-where
-    I: Iterator<Item = T>,
-    T: AsRef<OsStr>,
-{
-    while let Some(arg) = iter.next() {
-        let arg = arg.as_ref().to_string_lossy().into_owned();
-        if arg == "--all" || global_flags::BOOLEAN.contains(&arg.as_str()) {
-            if arg == "--json" {
-                flags.json = true;
-            }
-        } else if let Some(rest) = arg.strip_prefix("--color=") {
-            flags.color = Some(parse_color_value(rest));
-        } else if global_flags::VALUED.contains(&arg.as_str()) {
-            // `--color VALUE` — the value (if present) is the next token.
-            if let Some(value) = iter.next() {
-                if arg == "--color" {
-                    flags.color = Some(parse_color_value(&value.as_ref().to_string_lossy()));
-                }
-            }
-        } else {
-            return false;
-        }
-    }
-    true
-}
-
-/// Whether the (already-skipped) help invocation requested `--all`.
-fn help_wants_all<I, T>(args: I) -> bool
-where
-    I: IntoIterator<Item = T>,
-    T: AsRef<OsStr>,
-{
-    args.into_iter()
-        .any(|a| a.as_ref().to_string_lossy() == "--all")
-}
-
-/// Scan the whole argv for a `--color` value (the flag is `global = true`, so
-/// it may appear before or after the subcommand). Returns the last occurrence's
+/// Scan argv before the end-of-options delimiter for a `--color` value (the
+/// flag is global, so it may follow a subcommand). Returns the last occurrence's
 /// policy, or `None` if `--color` is absent. Used only to pick clap's
 /// `ColorChoice`; clap itself still performs full validation afterwards.
 fn scan_color_flag<I, T>(args: I) -> Option<ColorPolicy>
@@ -331,6 +224,10 @@ where
     let mut iter = args.into_iter();
     while let Some(arg) = iter.next() {
         let arg = arg.as_ref().to_string_lossy().into_owned();
+        // Arguments after this boundary belong to the invoked program, not Labby.
+        if arg == "--" {
+            break;
+        }
         if let Some(rest) = arg.strip_prefix("--color=") {
             found = Some(parse_color_value(rest));
         } else if arg == "--color" {
@@ -343,36 +240,91 @@ where
 }
 
 fn argv_requests_json(args: &[OsString]) -> bool {
-    args.iter().any(|arg| arg == "--json")
+    args.iter()
+        .take_while(|arg| arg.as_os_str() != OsStr::new("--"))
+        .any(|arg| arg == "--json")
 }
 
+/// Resolve only command names from the Clap tree, never resource names or parameter values.
 fn argv_command_label(args: &[OsString]) -> String {
-    let mut skip_value = false;
-    for arg in args.iter().skip(1) {
-        if skip_value {
-            skip_value = false;
+    let mut command = Cli::command();
+    command.build();
+    let mut labels = Vec::new();
+    let mut args = args.iter().skip(1);
+    while let Some(token) = args.next() {
+        let token = token.to_string_lossy();
+        if token == "--" {
+            break;
+        }
+        if let Some(flag) = token.strip_prefix("--") {
+            let (name, inline) = flag
+                .split_once('=')
+                .map_or((flag, false), |(name, _)| (name, true));
+            let takes_value = command
+                .get_arguments()
+                .find(|arg| arg.get_long() == Some(name))
+                .is_some_and(|arg| arg.get_action().takes_values());
+            if takes_value && !inline {
+                args.next();
+            }
             continue;
         }
-        let arg = arg.to_string_lossy();
-        if arg == "--json" {
+        if token.starts_with('-') {
+            if token.len() == 2
+                && command
+                    .get_arguments()
+                    .find(|arg| arg.get_short() == token.chars().nth(1))
+                    .is_some_and(|arg| arg.get_action().takes_values())
+            {
+                args.next();
+            }
             continue;
         }
-        if arg == "--color" {
-            skip_value = true;
-            continue;
+        let next = command
+            .get_subcommands()
+            .find(|child| child.get_name() == token.as_ref())
+            .cloned();
+        if let Some(next) = next {
+            labels.push(next.get_name().to_string());
+            command = next;
+        } else {
+            if labels.is_empty() {
+                // Preserve the rejected root spelling in user-facing parser diagnostics only.
+                return labby_runtime::agent_error::sanitize_log_text(&token, 128);
+            }
+            break;
         }
-        if arg.starts_with("--color=") || arg.starts_with('-') {
-            continue;
-        }
-        return arg.into_owned();
     }
-    "cli".to_string()
+    if labels.is_empty() {
+        "cli".to_string()
+    } else {
+        labels.join(" ")
+    }
 }
 
 fn parse_cli_args(args: &[OsString]) -> Result<Cli, clap::Error> {
     let pre = scan_color_flag(args.iter()).unwrap_or_default();
     let choice = color_choice_for(resolve_color_policy(pre, None));
-    let matches = Cli::command().color(choice).try_get_matches_from(args)?;
+    let matches = Cli::command()
+        .color(choice)
+        .try_get_matches_from(args)
+        .map_err(|error| {
+            if matches!(
+                error.kind(),
+                ClapErrorKind::DisplayHelp | ClapErrorKind::DisplayVersion
+            ) {
+                return error;
+            }
+            if let Some(hint) = cli::migration::hint(args) {
+                let message = format!(
+                    "{}\n{hint}",
+                    error.to_string().trim_start_matches("error: ")
+                );
+                clap::Error::raw(error.kind(), message).with_cmd(&Cli::command())
+            } else {
+                error
+            }
+        })?;
     Cli::from_arg_matches(&matches)
 }
 
@@ -457,7 +409,8 @@ fn cli_error_value(command: &str, error: &anyhow::Error, fallback_kind: &str) ->
                 4096,
             ));
         }
-        let extra = tool_error.extra_fields();
+        let mut extra = cli::helpers::diagnostic_value(&tool_error.extra_fields(), 16 * 1024);
+        sanitize_json_string_values(&mut extra);
         build_agent_error_value(tool_error.kind(), &message, Some(&extra), &context)
     } else {
         // One of three best-effort structured-error recovery seams — keep
@@ -484,7 +437,7 @@ fn cli_error_value(command: &str, error: &anyhow::Error, fallback_kind: &str) ->
                     .and_then(|value| value.as_str().map(ToOwned::to_owned))
                     .map(|message| labby_runtime::agent_error::sanitize_error_text(&message, 4096))
                     .unwrap_or_else(|| rendered.clone());
-                let mut extra = Value::Object(object);
+                let mut extra = cli::helpers::diagnostic_value(&Value::Object(object), 16 * 1024);
                 sanitize_json_string_values(&mut extra);
                 (kind, message, Some(extra))
             }
@@ -506,35 +459,18 @@ fn emit_cli_failure(
     command: &str,
     error: &anyhow::Error,
     fallback_kind: &str,
-    tracing_ready: bool,
+    _tracing_ready: bool,
 ) {
-    #[allow(clippy::print_stderr)]
-    if json_output {
-        eprintln!("{}", cli_error_value(command, error, fallback_kind));
-    } else if tracing_ready {
-        tracing::error!("{error:#}");
-    } else {
-        eprintln!("{error:#}");
-    }
+    let value = cli_error_value(command, error, fallback_kind);
+    emit_failure_value(json_output, &value);
 }
 
-/// Render the Aurora service + action catalog for the root help path.
-fn run_root_catalog(flags: &GlobalFlags) -> ExitCode {
-    // The env-filtered catalog needs config + .env (unlike the metadata-only
-    // Docs fast-path). Failures are non-fatal — fall back to defaults.
-    config::load_dotenv().ok();
-    // This fast path intentionally skips config.toml, so only the env var can
-    // override here — the config.toml `[log].color` fallback only applies on
-    // the main dispatch path below, where config is already loaded.
-    let policy = resolve_color_policy(flags.color.unwrap_or_default(), None);
-    let format = OutputFormat::from_json_flag(flags.json, policy, RenderEnv::stdout());
-    let all = help_wants_all(std::env::args_os());
-    match cli::help::run(cli::help::HelpArgs { all }, format) {
-        Ok(code) => code,
-        Err(err) => {
-            emit_cli_failure(flags.json, "help", &err, "internal_error", false);
-            ExitCode::from(1)
-        }
+#[allow(clippy::print_stderr)]
+fn emit_failure_value(json_output: bool, value: &Value) {
+    if json_output {
+        eprintln!("{value}");
+    } else {
+        eprintln!("{}", cli::diagnostics::render_failure(value));
     }
 }
 
@@ -552,14 +488,6 @@ pub async fn run() -> ExitCode {
     rustls::crypto::ring::default_provider()
         .install_default()
         .expect("no rustls crypto provider should be installed yet");
-
-    // Pre-parse shim: root `help` / `--help` / `-h` renders the Aurora catalog,
-    // which clap cannot express via derive (it would auto-handle `--help` and
-    // panics on a duplicate `help`). Every *non-root* help path (`gateway help`,
-    // `gateway --help`, `help gateway`) falls through to clap's themed output.
-    if let Some(flags) = root_help_request(argv.iter()) {
-        return run_root_catalog(&flags);
-    }
 
     // Build the parser with an explicit ColorChoice so themed clap help obeys
     // our `--color` policy (clap's `color` feature otherwise ignores it). We
@@ -591,8 +519,16 @@ pub async fn run() -> ExitCode {
     };
 
     let json_output = cli.json;
-    let command_label = cli.command.label();
-    let uses_default_config = matches!(cli.command, cli::Command::Docs(_) | cli::Command::State(_))
+    let command_path = argv_command_label(&argv);
+    let command_label = command_path.as_str();
+    let uses_default_config = matches!(
+        cli.command,
+        cli::Command::Help(_)
+            | cli::Command::Context(_)
+            | cli::Command::Docs(_)
+            | cli::Command::State(_)
+    ) || matches!(&cli.command, cli::Command::Completions(args) if args.metadata_only())
+        || matches!(&cli.command, cli::Command::Config(args) if matches!(args.command, cli::operator::ConfigCommand::Show | cli::operator::ConfigCommand::Check))
         || {
             #[cfg(feature = "gateway")]
             {
@@ -629,6 +565,12 @@ pub async fn run() -> ExitCode {
     // by default — upstream connect/discovery events would otherwise flood
     // ordinary commands like `gateway list`. LABBY_LOG still wins when set.
     let log_filter_override: Option<String> = match &cli.command {
+        _ if cli.verbose > 1 => {
+            Some("labby=trace,labby_gateway=trace,labby_auth=debug,rmcp=warn".to_string())
+        }
+        _ if cli.verbose > 0 => {
+            Some("labby=debug,labby_gateway=debug,labby_auth=debug,rmcp=warn".to_string())
+        }
         cli::Command::Serve(args) => args
             .log_level
             .as_ref()
@@ -637,11 +579,11 @@ pub async fn run() -> ExitCode {
             .log_level
             .as_ref()
             .map(|level| format!("labby={level},warn")),
-        _ if std::env::var_os("LABBY_LOG").is_none() => {
+        _ if std::env::var_os("LABBY_LOG").is_none() && config.log.filter.is_none() => {
             // Silence upstream connect/discovery warnings — failures are surfaced
             // inline in command output (e.g. `gateway list`); raw events just leak
             // above the human-readable result. Set LABBY_LOG=labby=warn to see them.
-            Some("labby=warn,labby::dispatch::upstream=error,rmcp=warn".to_string())
+            Some("labby=warn,labby::cli::audit=info,labby::cli::helpers=info,labby::dispatch::upstream=error,rmcp=warn".to_string())
         }
         _ => None,
     };
@@ -654,7 +596,12 @@ pub async fn run() -> ExitCode {
     let color_policy = resolve_color_policy(cli.color, config.log.color.as_deref());
 
     // _log_guard MUST live for the entire process — dropping it stops file logging.
-    let _log_guard = init_tracing(&config.log, color_policy, log_filter_override.as_deref());
+    let _log_guard = init_tracing(
+        &config.log,
+        color_policy,
+        log_filter_override.as_deref(),
+        !cli.quiet && !json_output,
+    );
 
     // 3. Load .env files (secrets + URL env vars) for runtime paths.
     // Static docs generation is intentionally metadata-only and must not
@@ -668,10 +615,30 @@ pub async fn run() -> ExitCode {
     // preferences read by deep call sites without direct config access.
     config::install_resolved_preferences(&config);
 
-    match cli::dispatch(cli, config).await {
-        Ok(code) => code,
+    let request_id = ulid::Ulid::new().to_string();
+    let started = std::time::Instant::now();
+    let span = tracing::info_span!(target: "labby::cli::audit", "cli.command", surface = "cli", command = command_label, request_id = %request_id);
+    let result = cli::helpers::REQUEST_ID
+        .scope(request_id.clone(), cli::dispatch(cli, config))
+        .instrument(span)
+        .await;
+    let elapsed_ms = started.elapsed().as_millis();
+    match result {
+        Ok(code) => {
+            tracing::info!(target: "labby::cli::audit", surface = "cli", command = command_label, request_id = %request_id, elapsed_ms, success = code == ExitCode::SUCCESS, "command finished");
+            code
+        }
         Err(err) => {
-            emit_cli_failure(json_output, command_label, &err, "internal_error", true);
+            let mut value = cli_error_value(command_label, &err, "internal_error");
+            value["request_id"] = json!(request_id);
+            let error = &value["error"];
+            // Persist correlation and recovery metadata, never argv, payloads, or raw error text.
+            tracing::warn!(target: "labby::cli::audit", surface = "cli", command = command_label, request_id = %request_id, elapsed_ms,
+                kind = error["kind"].as_str().unwrap_or("unknown"),
+                origin = error["origin"].as_str().unwrap_or("unknown"),
+                recovery = error["recovery"]["action"].as_str().unwrap_or("inspect_and_escalate"),
+                side_effects = error["side_effects"].as_str().unwrap_or("unknown"), "command failed");
+            emit_failure_value(json_output, &value);
             ExitCode::from(1)
         }
     }

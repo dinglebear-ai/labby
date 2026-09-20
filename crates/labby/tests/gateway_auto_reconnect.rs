@@ -107,7 +107,7 @@ async fn published_recovery(
         loop {
             // This public action reads cached runtime state; it never starts
             // discovery. A fixture response precedes publication in the owner.
-            last = cli(server, &["gateway", "mcp", "list"]).await;
+            last = cli(server, &["server", "status"]).await;
             if last.as_array().is_some_and(|rows| {
                 rows.iter().any(|row| {
                     row["name"] == name
@@ -136,7 +136,7 @@ async fn call_recovered_tool(
         "return await callTool('owned-recovery::recovered', {{probe: {}}});",
         serde_json::to_string(phase).expect("phase JSON")
     );
-    let output = cli(server, &["gateway", "code", "exec", "--code", &code]).await;
+    let output = cli(server, &["code", "run", "--code", &code]).await;
     assert_eq!(output["result"], json!({"reply": phase}), "{output}");
     assert_eq!(calls.load(Ordering::SeqCst), before + 1);
 }
@@ -211,7 +211,7 @@ async fn public_gateway_recovers_without_requests_and_after_cleanup() {
     // exercise the complete public cleanup request in this server fixture.
     #[cfg(not(target_os = "linux"))]
     {
-        cli(&server, &["gateway", "mcp", "cleanup", "owned-recovery"]).await;
+        cli(&server, &["server", "cleanup", "owned-recovery"]).await;
         let after_cleanup = catalogs.load(Ordering::SeqCst);
         advances(
             &mut server,
@@ -319,9 +319,8 @@ async fn public_gateway_replaces_dead_stdio_process_without_requests() {
     let response = cli(
         &server,
         &[
-            "gateway",
             "code",
-            "exec",
+            "run",
             "--code",
             "return await callTool('owned-stdio::forge.safe', {query:'after-process-recovery'});",
         ],

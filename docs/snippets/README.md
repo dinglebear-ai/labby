@@ -145,7 +145,7 @@ The prompt can stay simple: name the snippet, collect arguments, and tell the mo
 
 ## Execution Contract
 
-`labby snippets exec` and the MCP/API `snippets.exec` action expect snippet code to evaluate to an async arrow function:
+`labby snippet run` and the MCP/API `snippets.exec` action expect snippet code to evaluate to an async arrow function:
 
 ```js
 async (input) => {
@@ -158,7 +158,7 @@ The returned value must be JSON-serializable. The sandbox has `callTool` and, wh
 CLI execution passes repeated `--param key=value` flags as the `input` object:
 
 ```bash
-labby snippets exec homelab-readonly-pulse --param host=node-a
+labby snippet run homelab-readonly-pulse --param host=node-a
 ```
 
 MCP and API callers pass the same shape through `params`:
@@ -199,17 +199,17 @@ inputs:
     required: false
 ```
 
-`labby snippets create` validates the body before saving. User-created Markdown gets frontmatter automatically when the input body does not already include it.
+`labby snippet add` validates the body before saving. User-created Markdown gets frontmatter automatically when the input body does not already include it.
 
-Use `labby snippets validate <name>` to validate an existing snippet without
+Use `labby snippet validate <name>` to validate an existing snippet without
 executing it, or pass `--file` / `--code` to validate an unsaved body:
 
 ```bash
-labby snippets validate draft --file draft-snippet.md
+labby snippet validate draft --file draft-snippet.md
 ```
 
-Use `labby snippets test <name>` to execute one snippet as a smoke test, or
-`labby snippets test --all` to run every listed snippet with its declared
+Use `labby snippet test <name>` to execute one snippet as a smoke test, or
+`labby snippet test --all` to run every listed snippet with its declared
 defaults. MCP/API callers use `snippets.test` with `{ "all": true }` for the
 same all-snippet check.
 

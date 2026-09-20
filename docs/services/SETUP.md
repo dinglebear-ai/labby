@@ -129,8 +129,8 @@ Automatic updates are opt-in. Without `LABBY_SERVICE_AUTO_UPDATE=1`, installatio
 does not enable them. Run `serve --auto-update` only under a supervisor configured
 to restart the process after a successful exit. It is unsupported for stdio MCP.
 
-For CLI-only installations, `labby update --auto-update enable` installs a separate
-daily LaunchAgent instead. Use `labby update --auto-update disable` to remove it.
+For CLI-only installations, `labby host update auto enable` installs a separate
+daily LaunchAgent instead. Use `labby host update auto disable` to remove it.
 macOS can retain old labels in Login Items after their LaunchAgent files are removed;
 the remaining service files determine what can start at login.
 

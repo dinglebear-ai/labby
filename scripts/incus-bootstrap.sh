@@ -391,7 +391,7 @@ validate_backup_key() {
 }
 
 host_labby_supports_incus_backup() {
-    command -v labby >/dev/null 2>&1 && labby setup incusbackup --help >/dev/null 2>&1
+    command -v labby >/dev/null 2>&1 && labby host incus backup --help >/dev/null 2>&1
 }
 
 apply_backup_config_with_shell() {
@@ -430,11 +430,11 @@ apply_backup_config() {
 
     if [ "$DRY_RUN" -eq 1 ]; then
         if host_labby_supports_incus_backup; then
-            labby setup incusbackup validate --config "$BACKUP_CONFIG_FILE" >/dev/null
+            labby host incus backup validate --config "$BACKUP_CONFIG_FILE" >/dev/null
         else
             validate_backup_config_with_shell
         fi
-        say "+ labby setup incusbackup apply --name $(quote "$NAME") --config $(quote "$BACKUP_CONFIG_FILE") --dry-run"
+        say "+ labby host incus backup apply --name $(quote "$NAME") --config $(quote "$BACKUP_CONFIG_FILE") --dry-run"
         return
     fi
 
@@ -453,7 +453,7 @@ $(parse_backup_config)
 EOF
 
     if host_labby_supports_incus_backup; then
-        run labby setup incusbackup apply --name "$NAME" --config "$BACKUP_CONFIG_FILE" --yes
+        run labby host incus backup apply --name "$NAME" --config "$BACKUP_CONFIG_FILE" --yes
     else
         apply_backup_config_with_shell
     fi

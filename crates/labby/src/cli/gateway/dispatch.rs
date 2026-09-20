@@ -45,7 +45,7 @@ pub(super) async fn dispatch_gateway_action(
 fn gateway_daemon_unavailable() -> ToolError {
     ToolError::Sdk {
         sdk_kind: "daemon_unavailable".to_owned(),
-        message: "Gateway CLI actions require an authoritative Labby daemon".to_owned(),
+        message: "No authoritative Labby daemon could be reached. No gateway action was dispatched. Check the configured server URL and use `labby auth login --server URL` for a remote gateway, or start the local gateway with `labby serve`. Local installation state was not used as a fallback.".to_owned(),
     }
 }
 
@@ -254,6 +254,24 @@ pub(super) async fn dispatch_command(
         "raw": cli_origin,
     });
     match args.command {
+        GatewayCommand::Lifecycle(request) => {
+            return crate::cli::server_lifecycle::run(request, config, manager.team_id(), format)
+                .await;
+        }
+        GatewayCommand::Status => {
+            return run_action_command(
+                "gateway",
+                "gateway.mcp.list".to_string(),
+                json!({}),
+                format,
+                |action, params| async move {
+                    let upstreams =
+                        dispatch_gateway_action(manager, config, action, params).await?;
+                    Ok(json!({ "daemon_reachable": true, "upstreams": upstreams }))
+                },
+            )
+            .await;
+        }
         GatewayCommand::Mcp(args) => match args.command {
             GatewayMcpCommand::Auth(args) => match args.command {
                 GatewayMcpAuthCommand::Start(args) => {
@@ -390,30 +408,35 @@ pub(super) async fn dispatch_command(
             let mut confirmed = true;
             let mut dry_run = false;
             let (action, params) = match command {
-                GatewayCommand::List => unreachable!("handled above"),
+                GatewayCommand::List | GatewayCommand::Status | GatewayCommand::Lifecycle(_) => {
+                    unreachable!("handled above")
+                }
                 GatewayCommand::Get(args) => {
                     ("gateway.get".to_string(), json!({ "name": args.name }))
                 }
                 GatewayCommand::Test(args) => {
                     ("gateway.test".to_string(), json!({ "name": args.name }))
                 }
-                GatewayCommand::Add(args) => (
-                    "gateway.add".to_string(),
-                    json!({
-                        "origin": cli_origin,
-                        "owner": cli_owner,
-                        "spec": {
-                            "name": args.name,
-                            "url": args.url,
-                            "command": args.command,
-                            "args": args.args,
-                            "bearer_token_env": args.bearer_token_env,
-                            "proxy_resources": args.proxy_resources,
-                            "proxy_skills": args.proxy_skills,
-                            "expose_skills": if args.expose_skills.is_empty() { None } else { Some(args.expose_skills) },
-                        }
-                    }),
-                ),
+                GatewayCommand::Add(args) => {
+                    dry_run = args.dry_run;
+                    (
+                        "gateway.add".to_string(),
+                        json!({
+                            "origin": cli_origin,
+                            "owner": cli_owner,
+                            "spec": {
+                                "name": args.name,
+                                "url": args.url,
+                                "command": args.command,
+                                "args": args.args,
+                                "bearer_token_env": args.bearer_token_env,
+                                "proxy_resources": args.proxy_resources,
+                                "proxy_skills": args.proxy_skills,
+                                "expose_skills": if args.expose_skills.is_empty() { None } else { Some(args.expose_skills) },
+                            }
+                        }),
+                    )
+                }
                 GatewayCommand::Update(args) => {
                     let name = args.name.clone();
                     (
@@ -687,7 +710,7 @@ pub(super) async fn dispatch_command(
             };
 
             if dry_run {
-                crate::cli::helpers::print_dry_run("gateway", &action, &params, format);
+                crate::cli::helpers::print_dry_run("gateway", &action, &params, format)?;
                 return Ok(ExitCode::SUCCESS);
             }
 
@@ -792,7 +815,7 @@ mod tests {
 
     fn parsed_update(args: &[&str]) -> GatewayUpdateArgs {
         let cli = Cli::try_parse_from(args).expect("parse gateway update args");
-        let Command::Gateway(gateway) = cli.command else {
+        let Command::Gateway(gateway) = cli.command.into_operation() else {
             panic!("expected gateway command");
         };
         let GatewayCommand::Update(update) = gateway.command else {
@@ -803,7 +826,7 @@ mod tests {
 
     fn parsed_protected_route(args: &[&str]) -> GatewayProtectedRouteCommand {
         let cli = Cli::try_parse_from(args).expect("parse protected-route args");
-        let Command::Gateway(gateway) = cli.command else {
+        let Command::Gateway(gateway) = cli.command.into_operation() else {
             panic!("expected gateway command");
         };
         let GatewayCommand::ProtectedRoute(route) = gateway.command else {
@@ -824,10 +847,8 @@ mod tests {
         for operation in ["add", "test"] {
             let command = parsed_protected_route(&[
                 "labby",
-                "gateway",
-                "protected-route",
+                "route",
                 operation,
-                "--name",
                 "ops",
                 "--public-host",
                 "mcp.example.com",
@@ -851,9 +872,8 @@ mod tests {
     fn protected_route_update_preserves_or_explicitly_clears_project() {
         let base = [
             "labby",
-            "gateway",
-            "protected-route",
-            "update",
+            "route",
+            "replace",
             "ops",
             "--public-host",
             "mcp.example.com",
@@ -871,9 +891,8 @@ mod tests {
 
         let GatewayProtectedRouteCommand::Update(args) = parsed_protected_route(&[
             "labby",
-            "gateway",
-            "protected-route",
-            "update",
+            "route",
+            "replace",
             "ops",
             "--public-host",
             "mcp.example.com",
@@ -893,8 +912,8 @@ mod tests {
     fn gateway_update_command_transport_clears_url_side() {
         let update = parsed_update(&[
             "lab",
-            "gateway",
-            "update",
+            "server",
+            "set",
             "fixture",
             "--command",
             "local-mcp-server",
@@ -915,8 +934,8 @@ mod tests {
     fn gateway_update_url_transport_clears_stdio_side() {
         let update = parsed_update(&[
             "lab",
-            "gateway",
-            "update",
+            "server",
+            "set",
             "fixture",
             "--url",
             "https://example.test/mcp",
@@ -936,8 +955,8 @@ mod tests {
     fn gateway_update_explicit_clear_flags_emit_nullable_patch_fields() {
         let update = parsed_update(&[
             "lab",
-            "gateway",
-            "update",
+            "server",
+            "set",
             "fixture",
             "--clear-url",
             "--clear-command",
@@ -958,8 +977,8 @@ mod tests {
     fn gateway_update_proxy_resources_omits_nullable_transport_fields() {
         let update = parsed_update(&[
             "lab",
-            "gateway",
-            "update",
+            "server",
+            "set",
             "fixture",
             "--proxy-resources",
             "false",
@@ -975,7 +994,7 @@ mod tests {
 
     fn parsed_usage(args: &[&str]) -> GatewayUsageCommand {
         let cli = Cli::try_parse_from(args).expect("parse gateway usage args");
-        let Command::Gateway(gateway) = cli.command else {
+        let Command::Gateway(gateway) = cli.command.into_operation() else {
             panic!("expected gateway command");
         };
         let GatewayCommand::Usage(usage) = gateway.command else {

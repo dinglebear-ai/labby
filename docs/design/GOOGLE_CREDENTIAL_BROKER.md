@@ -734,10 +734,10 @@ Response contains counts only:
 ### CLI
 
 ```console
-labby gateway mcp auth start google-calendar --open --wait
-labby gateway mcp auth status google-calendar --json
-labby gateway mcp auth clear dedicated-upstream
-labby gateway mcp auth revoke-google google-calendar --confirm
+labby server auth login --no-browser google-calendar --open --wait
+labby server auth status google-calendar --json
+labby server auth logout dedicated-upstream
+labby server auth revoke-google google-calendar --confirm
 ```
 
 Without `--confirm`, shared revoke returns `confirmation_required`.

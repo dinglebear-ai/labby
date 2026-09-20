@@ -51,7 +51,7 @@ ssh edgehost 'docker exec callback-relay cat /app/.cache/callback-relay/registry
 Import it into Labby's sidecar registry:
 
 ```bash
-labby oauth relay-registry import --file /tmp/callback-relay-registry.json --json
+labby auth relay registry import --file /tmp/callback-relay-registry.json --json
 ```
 
 The import is all-or-nothing. If any machine id or target URL is quarantined,
@@ -89,7 +89,7 @@ Run an explicit deep check from an operator shell when target reachability
 matters:
 
 ```bash
-labby doctor oauth-relay --probe-targets --json
+labby doctor relay --probe-targets --json
 ```
 
 ## Rollback

@@ -1,12 +1,17 @@
-//! Top-level CLI — clap derive definitions and dispatch router.
+//! Public CLI grammar and thin dispatch adapters.
 //!
-//! Every subcommand is a thin shim that parses args, calls into a
-//! `labby-apis` client (or a Labby-local subsystem), and formats output.
-//! See `crates/labby/src/cli/CLAUDE.md` for the rulebook.
+//! The Clap tree is the source of truth for parsing, help, documentation, and completion.
 
+pub mod completion_cache;
 pub mod completions;
+pub mod config_inspect;
+pub mod context;
+#[cfg(feature = "gateway")]
+pub mod create_server;
+pub mod diagnostics;
 pub mod docs;
 pub mod doctor;
+pub mod duration;
 #[cfg(feature = "gateway")]
 pub mod gateway;
 pub mod health;
@@ -17,11 +22,20 @@ pub mod incus;
 pub mod internal;
 pub mod login;
 pub mod logs;
+pub mod migration;
 pub mod oauth;
+pub mod operator;
 pub mod params;
 pub mod proxy;
 pub mod serve;
+#[cfg(feature = "gateway")]
+pub mod server;
+#[cfg(feature = "gateway")]
+pub mod server_lifecycle;
+pub mod session;
 pub mod setup;
+#[cfg(any(feature = "skills", feature = "gateway"))]
+pub mod skill;
 #[cfg(feature = "skills")]
 pub mod skills;
 #[cfg(feature = "gateway")]
@@ -31,60 +45,55 @@ pub mod style;
 pub mod update;
 // [lab-scaffold: cli-modules]
 
-use std::process::ExitCode;
-
-use anyhow::Result;
-use clap::{Parser, Subcommand};
-
 use crate::config::LabConfig;
 use crate::output::{ColorPolicy, OutputFormat, RenderEnv};
+use anyhow::Result;
+use clap::{Parser, Subcommand};
+use std::process::ExitCode;
 
-/// `lab` — pluggable homelab CLI + MCP server SDK.
+/// Manage Labby gateways, upstream servers, and local installations.
 #[derive(Debug, Parser)]
-#[command(name = "labby", version, about, long_about = None, styles = style::AURORA_STYLES)]
+#[command(name = "labby", version, about, long_about = None, styles = style::AURORA_STYLES, disable_help_subcommand = true, arg_required_else_help = true, after_help = "Examples:\n  labby help --all\n  labby help --search oauth\n  labby host service status\n\nHelp is offline and never starts services. Use labby help <resource> --all for a complete subtree.")]
 pub struct Cli {
-    /// Emit JSON instead of human-readable tables.
+    /// Emit machine-readable JSON. Diagnostics never enter stdout.
     #[arg(long, global = true)]
     pub json: bool,
-
     /// Control human-readable CLI styling.
     #[arg(long, global = true, value_enum, default_value_t = ColorPolicy::Auto)]
     pub color: ColorPolicy,
-
-    /// Select the Team authority context for team-scoped actions (sent as the
-    /// x-labby-team-id header to the Labby daemon).
-    //
-    // The `LABBY_E2E_TEAM_ID` environment fallback exists only in
-    // `proxy-testkit` (test-support) builds so the live test harness keeps
-    // working while it migrates to `--team-id`; product builds never consult
-    // that variable (see `team_id_env_fallback_is_compiled_out_of_product_builds`).
-    // `hide_env` keeps the hook out of `--help` and the generated
-    // `docs/generated/cli-help.md`, which is rendered with `--all-features`.
+    /// Include diagnostic events on stderr. Repeat for trace-level detail.
+    #[arg(short = 'v', long, global = true, action = clap::ArgAction::Count, conflicts_with = "quiet")]
+    pub verbose: u8,
+    /// Suppress console logs, but always report command errors.
+    #[arg(short = 'q', long, global = true, conflicts_with = "verbose")]
+    pub quiet: bool,
+    /// Never prompt for missing input or confirmation.
+    #[arg(long, global = true)]
+    pub no_input: bool,
+    /// Select a saved destination for a daemon-backed command. Never falls back locally.
+    #[arg(long, global = true, conflicts_with = "server")]
+    pub context: Option<String>,
+    /// Explicit Labby server URL; uses credentials bound to that destination.
+    #[arg(long, global = true, conflicts_with = "context")]
+    pub server: Option<String>,
+    /// Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
     #[arg(long, global = true, value_name = "TEAM_ID", value_parser = parse_team_id)]
     #[cfg_attr(
         feature = "proxy-testkit",
         arg(env = "LABBY_E2E_TEAM_ID", hide_env = true)
     )]
     pub team_id: Option<String>,
-
-    /// Subcommand to run.
     #[command(subcommand)]
     pub command: Command,
 }
 
 impl Cli {
-    /// Resolved output format based on the `--json` flag.
     #[must_use]
     pub fn format(&self) -> OutputFormat {
         OutputFormat::from_json_flag(self.json, self.color, RenderEnv::stdout())
     }
 }
 
-/// Validate a `--team-id` value at parse time.
-///
-/// The value travels verbatim as the `x-labby-team-id` HTTP header, so it must
-/// be a non-empty ASCII string without control characters. The daemon decides
-/// whether the Team exists and whether the caller may act within it.
 fn parse_team_id(value: &str) -> Result<String, String> {
     if value.is_empty() {
         return Err("team id must not be empty".to_owned());
@@ -95,51 +104,82 @@ fn parse_team_id(value: &str) -> Result<String, String> {
     Ok(value.to_owned())
 }
 
-/// Every top-level subcommand. Service subcommands are added in later
-/// plans as each service comes online.
+/// Public resource groups. Skipped variants are internal adapter targets, not aliases.
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Sign in to an explicit remote Labby server with your operator account.
-    Login(login::LoginArgs),
-    /// Start the MCP server (stdio or HTTP transport).
-    Serve(serve::ServeArgs),
-    /// Start the MCP server over stdio.
-    Mcp(serve::McpServeArgs),
-    /// Audit configured services and report problems.
-    Doctor(doctor::DoctorArgs),
-    /// Generate and verify code-owned documentation artifacts.
-    Docs(docs::DocsArgs),
-    /// Quick reachability check for configured services.
-    Health,
-    /// Tail the active Labby service journal.
-    Logs(logs::LogsArgs),
-    /// Bootstrap the supported Incus Labby gateway container.
-    Setup(setup::SetupArgs),
-    /// Manage the supported Incus Labby gateway container.
-    Incus(incus::IncusArgs),
-    /// Update labby from the latest GitHub release.
-    Update(update::UpdateArgs),
-    /// Export, verify, or restore the complete durable installation state offline.
-    State(state::StateArgs),
-    /// Generate shell completions.
-    Completions(completions::CompletionsArgs),
-    /// Manage proxied upstream MCP gateways.
+    /// Discover commands, expand an entire subtree, or search offline help.
+    Help(help::HelpArgs),
+    /// Save and select non-secret destinations in the existing host configuration.
+    Context(context::ContextArgs),
+    /// Authenticate to Labby and manage credential bootstrap or OAuth relays.
+    Auth(operator::AuthArgs),
+    /// Inspect the selected Labby gateway, its sessions, URLs, and usage.
     #[cfg(feature = "gateway")]
     Gateway(gateway::GatewayArgs),
-    /// Manage executable Code Mode snippets.
+    /// Manage upstream MCP servers: configuration, testing, lifecycle, and authentication.
     #[cfg(feature = "gateway")]
+    Server(server::ServerArgs),
+    /// Manage public protected MCP routes. Use replace for full configuration replacement.
+    #[cfg(feature = "gateway")]
+    Route(gateway::GatewayProtectedRouteArgs),
+    /// Manage reusable capability loadouts. set patches supplied fields only.
+    #[cfg(feature = "gateway")]
+    Loadout(gateway::GatewayLoadoutArgs),
+    /// Execute Code Mode and manage its settings, UI, and upstream hints.
+    #[cfg(feature = "gateway")]
+    Code(server::CodeArgs),
+    /// Manage saved executable snippets in the local installation.
+    #[cfg(feature = "gateway")]
+    #[command(name = "snippet")]
     Snippets(snippets::SnippetsArgs),
-    /// Read Agent Skills visible to the local CLI.
+    /// Read locally visible skills and manage daemon-backed upstream skill policy.
+    #[cfg(any(feature = "skills", feature = "gateway"))]
     #[command(
-        long_about = "Read Agent Skills visible to the local CLI. Artifact-backed shared and private Skills are not available on this surface; use an authenticated HTTP or MCP client instead."
+        long_about = "Read locally visible skills and manage daemon-backed upstream skill policy. Local reads do not grant access to shared or private artifact-backed skills; use an authenticated HTTP or MCP client for those."
     )]
-    #[cfg(feature = "skills")]
-    Skills(skills::SkillsArgs),
-    /// Run local OAuth callback relay helpers.
-    Oauth(oauth::OauthArgs),
-    /// Proxy a stdio MCP server to Streamable HTTP.
+    Skill(skill::SkillArgs),
+    /// Audit configuration and dependencies without automatically repairing them.
+    Doctor(doctor::DoctorArgs),
+    /// Query bounded local process logs, or explicitly select the deployment journal.
+    Logs(logs::LogsArgs),
+    /// Guide onboarding, check prerequisites, or explicitly repair local setup.
+    Setup(setup::SetupArgs),
+    /// Install, update, or operate the host service and its Incus deployment.
+    Host(operator::HostArgs),
+    /// Manage installed plugins and their configuration.
+    Plugin(operator::PluginArgs),
+    /// Inspect setup state and manage drafts or proxy defaults.
+    Config(operator::ConfigArgs),
+    /// Migrate, export, verify, or restore durable installation state offline.
+    State(state::StateArgs),
+    /// Run the Labby HTTP runtime in the foreground.
+    Serve(serve::ServeArgs),
+    /// Run the Labby stdio MCP transport. stdout contains protocol bytes only.
+    Mcp(serve::McpServeArgs),
+    /// Proxy a stdio upstream to Streamable HTTP.
     Proxy(proxy::ProxyArgs),
-    /// Hidden internal process helpers.
+    /// Generate shell completions offline from the same command tree.
+    Completions(completions::CompletionsArgs),
+    /// Repository documentation generator. Not an operator command.
+    #[command(hide = true)]
+    Docs(docs::DocsArgs),
+    #[command(skip)]
+    Session(session::Operation),
+    #[command(skip)]
+    ConfigInspect(config_inspect::Operation),
+    #[command(skip)]
+    Login(login::LoginArgs),
+    #[command(skip)]
+    Health,
+    #[command(skip)]
+    Incus(incus::IncusArgs),
+    #[command(skip)]
+    Update(update::UpdateArgs),
+    #[command(skip)]
+    Oauth(oauth::OauthArgs),
+    #[cfg(feature = "skills")]
+    #[command(skip)]
+    Skills(skills::SkillsArgs),
     #[cfg(feature = "gateway")]
     #[command(hide = true)]
     Internal(internal::InternalArgs),
@@ -147,10 +187,56 @@ pub enum Command {
 }
 
 impl Command {
-    /// Stable command label used by machine-readable CLI errors.
+    /// Lower the public grammar into the established typed operations. No I/O occurs here.
+    #[must_use]
+    pub fn into_operation(self) -> Self {
+        match self {
+            Self::Auth(args) => args.operation(),
+            Self::Host(args) => args.operation(),
+            Self::Plugin(args) => args.operation(),
+            Self::Config(args) => args.operation(),
+            #[cfg(feature = "gateway")]
+            Self::Server(args) => Self::Gateway(gateway::GatewayArgs {
+                command: args.operation(),
+            }),
+            #[cfg(feature = "gateway")]
+            Self::Route(args) => Self::Gateway(gateway::GatewayArgs {
+                command: gateway::GatewayCommand::ProtectedRoute(args),
+            }),
+            #[cfg(feature = "gateway")]
+            Self::Loadout(args) => Self::Gateway(gateway::GatewayArgs {
+                command: gateway::GatewayCommand::Loadout(args),
+            }),
+            #[cfg(feature = "gateway")]
+            Self::Code(args) => Self::Gateway(gateway::GatewayArgs {
+                command: args.operation(),
+            }),
+            #[cfg(any(feature = "skills", feature = "gateway"))]
+            Self::Skill(args) => args.operation(),
+            Self::State(state::StateArgs {
+                command:
+                    state::StateCommand::Access(state::StateAccessArgs {
+                        command: state::StateAccessCommand::Migrate,
+                    }),
+            }) => Self::State(state::StateArgs {
+                command: state::StateCommand::MigrateAccess,
+            }),
+            operation => operation,
+        }
+    }
+
+    /// Resource label for contexts that have no parsed full command path.
     #[must_use]
     pub const fn label(&self) -> &'static str {
         match self {
+            Self::Session(_) => "auth",
+            Self::ConfigInspect(_) => "config",
+            Self::Help(_) => "help",
+            Self::Context(_) => "context",
+            Self::Auth(_) => "auth",
+            Self::Host(_) => "host",
+            Self::Plugin(_) => "plugin",
+            Self::Config(_) => "config",
             Self::Serve(_) => "serve",
             Self::Mcp(_) => "mcp",
             Self::Doctor(_) => "doctor",
@@ -166,7 +252,17 @@ impl Command {
             #[cfg(feature = "gateway")]
             Self::Gateway(_) => "gateway",
             #[cfg(feature = "gateway")]
-            Self::Snippets(_) => "snippets",
+            Self::Server(_) => "server",
+            #[cfg(feature = "gateway")]
+            Self::Route(_) => "route",
+            #[cfg(feature = "gateway")]
+            Self::Loadout(_) => "loadout",
+            #[cfg(feature = "gateway")]
+            Self::Code(_) => "code",
+            #[cfg(feature = "gateway")]
+            Self::Snippets(_) => "snippet",
+            #[cfg(any(feature = "skills", feature = "gateway"))]
+            Self::Skill(_) => "skill",
             #[cfg(feature = "skills")]
             Self::Skills(_) => "skills",
             Self::Oauth(_) => "oauth",
@@ -177,30 +273,71 @@ impl Command {
     }
 }
 
-/// Dispatch a parsed [`Cli`] to the correct handler.
+/// Route parsed inputs into the established operations without duplicating policy.
 pub fn dispatch(cli: Cli, config: LabConfig) -> impl Future<Output = Result<ExitCode>> {
-    // Allocate the selected CLI future before returning it to the entrypoint.
-    // Otherwise its large state is copied into the entrypoint and runtime
-    // construction frames, exhausting a one-mebibyte main-thread stack.
+    Box::pin(helpers::INTERACTIVE.scope(!cli.no_input && !cli.json, dispatch_inner(cli, config)))
+}
+
+fn dispatch_inner(mut cli: Cli, mut config: LabConfig) -> impl Future<Output = Result<ExitCode>> {
     Box::pin(async move {
         let format = cli.format();
-        // Only daemon-backed gateway commands consume the selected Team; the
-        // binding stays here so unrelated subcommands never grow a Team axis.
+        context::prepare(&mut cli, &mut config)?;
         #[cfg(feature = "gateway")]
+        if let Command::Server(server::ServerArgs {
+            command: server::ServerCommand::Add(args),
+        }) = &mut cli.command
+        {
+            create_server::prepare(
+                args,
+                helpers::interactive_allowed(),
+                config.cli_target.as_ref(),
+                cli.team_id.as_deref(),
+            )?;
+        }
         let team_id = cli.team_id;
-        match cli.command {
+        let server = cli.server;
+        let context = cli.context;
+        match cli.command.into_operation() {
+            Command::Session(operation) => session::run(operation, &config, format).await,
+            Command::ConfigInspect(operation) => config_inspect::run(operation, format),
+            Command::Help(args) => help::run(args, format),
+            Command::Context(args) => context::run(args, server, team_id, format).await,
+            Command::Auth(_) | Command::Host(_) | Command::Plugin(_) | Command::Config(_) => Err(
+                anyhow::anyhow!("internal CLI lowering failure; no operation was dispatched"),
+            ),
+            #[cfg(feature = "gateway")]
+            Command::Server(_) | Command::Route(_) | Command::Loadout(_) | Command::Code(_) => {
+                Err(anyhow::anyhow!(
+                    "internal gateway CLI lowering failure; no operation was dispatched"
+                ))
+            }
+            #[cfg(any(feature = "skills", feature = "gateway"))]
+            Command::Skill(_) => Err(anyhow::anyhow!(
+                "internal skill CLI lowering failure; no operation was dispatched"
+            )),
             Command::Serve(args) => serve::run(args, &config).await,
             Command::Mcp(args) => serve::run_mcp(args, &config).await,
             Command::Doctor(args) => doctor::run(args, format, &config).await,
             Command::Docs(args) => docs::run(args, format),
             Command::Health => health::run(format).await,
-            Command::Logs(args) => logs::run(args).await,
-            Command::Login(args) => login::run(args, format).await,
+            Command::Logs(args) => logs::run(args, format).await,
+            Command::Login(mut args) => {
+                if args.server.is_none() {
+                    args.server = config
+                        .cli_target
+                        .as_ref()
+                        .map(|target| target.server.clone())
+                        .or(server);
+                }
+                login::run(args, format).await
+            }
             Command::Setup(args) => setup::run(args, format).await,
             Command::Incus(args) => incus::run(args, format).await,
             Command::Update(args) => update::run(args, format).await,
             Command::State(args) => state::run(args, format).await,
-            Command::Completions(args) => completions::run(&args),
+            Command::Completions(args) => {
+                completions::run(args, &config, server, context, team_id, format).await
+            }
             #[cfg(feature = "gateway")]
             Command::Gateway(args) => gateway::run(args, format, &config, team_id.as_deref()).await,
             #[cfg(feature = "gateway")]
@@ -225,7 +362,10 @@ mod tests {
 
     #[test]
     fn cli_accepts_operator_login_for_an_explicit_server() {
-        assert!(Cli::try_parse_from(["labby", "login", "--server", "https://lab.example"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["labby", "auth", "login", "--server", "https://lab.example"])
+                .is_ok()
+        );
     }
 
     #[test]
@@ -244,7 +384,7 @@ mod tests {
                 "CLI_SECRET",
             ],
         ] {
-            assert!(Cli::try_parse_from([vec!["labby", "login"], flags].concat()).is_ok());
+            assert!(Cli::try_parse_from([vec!["labby", "auth", "login"], flags].concat()).is_ok());
         }
         for flags in [
             vec!["--client-secret-env", "CLI_SECRET"],
@@ -261,7 +401,7 @@ mod tests {
                 "https://client.example/id",
             ],
         ] {
-            assert!(Cli::try_parse_from([vec!["labby", "login"], flags].concat()).is_err());
+            assert!(Cli::try_parse_from([vec!["labby", "auth", "login"], flags].concat()).is_err());
         }
     }
 
@@ -269,21 +409,21 @@ mod tests {
     fn cli_parses_global_color_flag() {
         let cli = Cli::parse_from(["lab", "--color", "plain", "doctor"]);
         assert_eq!(cli.color, ColorPolicy::Plain);
-        assert!(matches!(cli.command, Command::Doctor(_)));
+        assert!(matches!(cli.command.into_operation(), Command::Doctor(_)));
     }
 
     #[test]
     fn cli_defaults_color_policy_to_auto() {
         let cli = Cli::parse_from(["lab", "doctor"]);
         assert_eq!(cli.color, ColorPolicy::Auto);
-        assert!(matches!(cli.command, Command::Doctor(_)));
+        assert!(matches!(cli.command.into_operation(), Command::Doctor(_)));
     }
 
     #[test]
     fn cli_parses_global_team_id_flag() {
         let cli = Cli::parse_from(["labby", "--team-id", "team-alpha", "doctor"]);
         assert_eq!(cli.team_id.as_deref(), Some("team-alpha"));
-        assert!(matches!(cli.command, Command::Doctor(_)));
+        assert!(matches!(cli.command.into_operation(), Command::Doctor(_)));
 
         // `global = true` means the flag is accepted after the subcommand too.
         let cli = Cli::parse_from(["labby", "doctor", "--team-id", "team-beta"]);
@@ -387,7 +527,7 @@ mod tests {
     fn cli_doctor_accepts_auth_subcommand() {
         let cli = Cli::parse_from(["lab", "doctor", "auth"]);
         assert!(matches!(
-            cli.command,
+            cli.command.into_operation(),
             Command::Doctor(doctor::DoctorArgs {
                 check: Some(doctor::DoctorCheck::Auth(_))
             })
@@ -398,7 +538,7 @@ mod tests {
     fn cli_doctor_accepts_system_subcommand() {
         let cli = Cli::parse_from(["lab", "doctor", "system"]);
         assert!(matches!(
-            cli.command,
+            cli.command.into_operation(),
             Command::Doctor(doctor::DoctorArgs {
                 check: Some(doctor::DoctorCheck::System)
             })
@@ -407,9 +547,9 @@ mod tests {
 
     #[test]
     fn cli_accepts_top_level_incus_sync() {
-        let cli = Cli::parse_from(["labby", "incus", "sync"]);
+        let cli = Cli::parse_from(["labby", "host", "incus", "sync"]);
         assert!(matches!(
-            cli.command,
+            cli.command.into_operation(),
             Command::Incus(incus::IncusArgs {
                 command: incus::IncusCommand::Sync(_)
             })
@@ -419,7 +559,7 @@ mod tests {
     #[test]
     fn cli_accepts_server_owned_updates() {
         let cli = Cli::try_parse_from(["labby", "serve", "--auto-update"]).unwrap();
-        let Command::Serve(args) = cli.command else {
+        let Command::Serve(args) = cli.command.into_operation() else {
             panic!("expected serve");
         };
         assert!(args.auto_update);
@@ -428,19 +568,34 @@ mod tests {
     #[test]
     fn cli_accepts_native_automatic_update_modes() {
         for args in [
-            vec!["labby", "update", "--automatic"],
-            vec!["labby", "update", "--automatic", "--dry-run"],
-            vec!["labby", "update", "--auto-update", "enable"],
-            vec!["labby", "update", "--auto-update", "disable"],
-            vec!["labby", "update", "--auto-update", "status"],
+            vec!["labby", "host", "update", "--automatic"],
+            vec!["labby", "host", "update", "--automatic", "--dry-run"],
+            vec!["labby", "host", "update", "--auto-update", "enable"],
+            vec!["labby", "host", "update", "--auto-update", "disable"],
+            vec!["labby", "host", "update", "--auto-update", "status"],
         ] {
             assert!(Cli::try_parse_from(args).is_ok());
         }
         for args in [
-            vec!["labby", "update", "--automatic", "--version", "v1.0.0"],
-            vec!["labby", "update", "--automatic", "--auto-update", "enable"],
             vec![
                 "labby",
+                "host",
+                "update",
+                "--automatic",
+                "--version",
+                "v1.0.0",
+            ],
+            vec![
+                "labby",
+                "host",
+                "update",
+                "--automatic",
+                "--auto-update",
+                "enable",
+            ],
+            vec![
+                "labby",
+                "host",
                 "update",
                 "--auto-update",
                 "enable",
@@ -454,9 +609,9 @@ mod tests {
 
     #[test]
     fn cli_accepts_update_default() {
-        let cli = Cli::parse_from(["labby", "update"]);
+        let cli = Cli::parse_from(["labby", "host", "update"]);
         assert!(matches!(
-            cli.command,
+            cli.command.into_operation(),
             Command::Update(update::UpdateArgs { .. })
         ));
     }
@@ -483,7 +638,7 @@ mod tests {
     #[test]
     fn cli_accepts_proxy_command_with_js_file() {
         let cli = Cli::parse_from(["labby", "proxy", "/path/to/dist.js"]);
-        assert!(matches!(cli.command, Command::Proxy(_)));
+        assert!(matches!(cli.command.into_operation(), Command::Proxy(_)));
     }
 
     #[test]
@@ -495,7 +650,9 @@ mod tests {
             "--workspace",
             "/srv/data",
         ]);
-        assert!(matches!(cli.command, Command::Proxy(args) if args.command.len() == 3));
+        assert!(
+            matches!(cli.command.into_operation(), Command::Proxy(args) if args.command.len() == 3)
+        );
     }
 
     #[test]
@@ -508,14 +665,14 @@ mod tests {
             "-y",
             "@modelcontextprotocol/server-filesystem",
         ]);
-        assert!(matches!(cli.command, Command::Proxy(_)));
+        assert!(matches!(cli.command.into_operation(), Command::Proxy(_)));
     }
 
     #[test]
     fn cli_proxy_accepts_port_override() {
         let cli = Cli::parse_from(["labby", "proxy", "--port", "52177", "server"]);
         assert!(matches!(
-            cli.command,
+            cli.command.into_operation(),
             Command::Proxy(args) if args.port == Some(52177)
         ));
     }
@@ -524,7 +681,7 @@ mod tests {
     fn cli_proxy_accepts_bearer_token() {
         let cli = Cli::parse_from(["labby", "proxy", "--bearer-token", "secret", "server"]);
         assert!(matches!(
-            cli.command,
+            cli.command.into_operation(),
             Command::Proxy(args) if args.bearer_token == Some("secret".to_string())
         ));
     }
@@ -532,59 +689,62 @@ mod tests {
     #[test]
     fn replacement_setup_commands_parse() {
         let cli = Cli::try_parse_from(["labby", "setup"]).expect("setup parses");
-        assert!(matches!(cli.command, Command::Setup(_)));
+        assert!(matches!(cli.command.into_operation(), Command::Setup(_)));
 
-        let cli = Cli::try_parse_from(["labby", "setup", "install-plugin", "gateway", "-y"])
+        let cli = Cli::try_parse_from(["labby", "plugin", "install", "gateway", "-y"])
             .expect("setup install-plugin parses");
-        assert!(matches!(cli.command, Command::Setup(_)));
+        assert!(matches!(cli.command.into_operation(), Command::Setup(_)));
     }
 
     #[test]
     fn cli_parses_completions_subcommand() {
         let cli = Cli::parse_from(["labby", "completions", "bash"]);
-        assert!(matches!(cli.command, Command::Completions(_)));
+        assert!(matches!(
+            cli.command.into_operation(),
+            Command::Completions(_)
+        ));
     }
 
     #[cfg(feature = "gateway")]
     #[test]
     fn cli_parses_snippets_subcommands() {
-        let cli = Cli::parse_from(["labby", "snippets", "list"]);
-        assert!(matches!(cli.command, Command::Snippets(_)));
+        let cli = Cli::parse_from(["labby", "snippet", "list"]);
+        assert!(matches!(cli.command.into_operation(), Command::Snippets(_)));
 
         let cli = Cli::parse_from([
             "labby",
-            "snippets",
-            "exec",
+            "snippet",
+            "run",
             "homelab-readonly-pulse",
             "--param",
             "host=node-a",
         ]);
-        assert!(matches!(cli.command, Command::Snippets(_)));
+        assert!(matches!(cli.command.into_operation(), Command::Snippets(_)));
 
         let cli = Cli::parse_from([
             "labby",
-            "snippets",
-            "create",
+            "snippet",
+            "add",
             "daily",
             "--file",
             "daily.md",
             "--description",
             "Daily check",
         ]);
-        assert!(matches!(cli.command, Command::Snippets(_)));
+        assert!(matches!(cli.command.into_operation(), Command::Snippets(_)));
 
-        let cli = Cli::parse_from(["labby", "snippets", "remove", "daily", "-y"]);
-        assert!(matches!(cli.command, Command::Snippets(_)));
+        let cli = Cli::parse_from(["labby", "snippet", "remove", "daily", "-y"]);
+        assert!(matches!(cli.command.into_operation(), Command::Snippets(_)));
 
         let cli = Cli::parse_from([
-            "labby", "snippets", "validate", "daily", "--file", "daily.md",
+            "labby", "snippet", "validate", "daily", "--file", "daily.md",
         ]);
-        assert!(matches!(cli.command, Command::Snippets(_)));
+        assert!(matches!(cli.command.into_operation(), Command::Snippets(_)));
 
-        let cli = Cli::parse_from(["labby", "snippets", "test", "daily", "--param", "limit=3"]);
-        assert!(matches!(cli.command, Command::Snippets(_)));
+        let cli = Cli::parse_from(["labby", "snippet", "test", "daily", "--param", "limit=3"]);
+        assert!(matches!(cli.command.into_operation(), Command::Snippets(_)));
 
-        let cli = Cli::parse_from(["labby", "snippets", "test", "--all"]);
-        assert!(matches!(cli.command, Command::Snippets(_)));
+        let cli = Cli::parse_from(["labby", "snippet", "test", "--all"]);
+        assert!(matches!(cli.command.into_operation(), Command::Snippets(_)));
     }
 }

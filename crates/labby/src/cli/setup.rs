@@ -16,7 +16,7 @@
 //! `--no-browser` requires bearer client authentication instead.
 
 use std::future::Future;
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -199,32 +199,42 @@ pub enum SetupCommand {
     /// Open the web-based first-run wizard or settings flow.
     Wizard(WizardArgs),
     /// Manage the local setup draft.
+    #[command(skip)]
     Draft(DraftArgs),
     /// Prepare and operate the local project-credential bootstrap flow.
+    #[command(skip)]
     AccessBootstrap(AccessBootstrapArgs),
     /// Approve one specific existing-owner identity link while the gateway is stopped.
+    #[command(skip)]
     OwnerLinkPrepare(OwnerLinkPrepareArgs),
     /// Manage the systemd Labby gateway service.
+    #[command(skip)]
     HostService(HostServiceArgs),
     /// List installed Claude Code lab plugins.
+    #[command(skip)]
     InstalledPlugins {
         /// Bypass the short in-process cache.
         #[arg(long)]
         force: bool,
     },
     /// Join service configuration, draft, and Claude plugin state.
+    #[command(skip)]
     ServicesStatus,
     /// Run binary-owned local setup checks for Claude plugin hooks.
+    #[command(skip)]
     PluginHook {
         /// Check only; do not create missing local setup files.
         #[arg(long)]
         no_repair: bool,
     },
     /// Sync CLAUDE_PLUGIN_OPTION_* env vars into ~/.labby/.env as LABBY_* vars.
+    #[command(skip)]
     PluginSync(PluginSyncArgs),
     /// Read ~/.labby/.env and print current values keyed by userConfig field name.
+    #[command(skip)]
     PluginExport,
     /// Validate connectivity to the lab MCP server.
+    #[command(skip)]
     PluginConnectivity {
         /// Requested server URL; it must match the active plugin, persisted, or
         /// standard http://127.0.0.1:8765 loopback target.
@@ -236,17 +246,22 @@ pub enum SetupCommand {
     /// Repair missing local setup prerequisites without contacting external services.
     Repair,
     /// Configure defaults for the ephemeral stdio MCP proxy.
+    #[command(skip)]
     Proxy(SetupProxyArgs),
     /// Validate or apply local Incus backup policy.
-    #[command(alias = "incus-backup")]
+    #[command(skip)]
     Incusbackup(IncusBackupArgs),
     /// Bootstrap container SSH trust from the host ~/.ssh/config.
+    #[command(skip)]
     IncusSsh(IncusSshArgs),
     /// Copy the labby binary into ~/.local/bin so it is callable in your own terminal.
+    #[command(skip)]
     Install,
     /// Install the Claude Code plugin for a configured service.
+    #[command(skip)]
     InstallPlugin(PluginMutationArgs),
     /// Uninstall the Claude Code plugin for a service.
+    #[command(skip)]
     UninstallPlugin(PluginMutationArgs),
 }
 
@@ -447,8 +462,8 @@ pub struct SetupProxyArgs {
     /// Ambient environment variable inherited by child servers; repeatable.
     #[arg(long = "inherit-env")]
     pub inherit_env: Vec<String>,
-    /// Grace period before forced child shutdown.
-    #[arg(long)]
+    /// Grace period before forced child shutdown, such as 500ms or 5s.
+    #[arg(long = "shutdown-grace", value_parser = crate::cli::duration::milliseconds)]
     pub shutdown_grace_ms: Option<u64>,
     /// Read a bearer secret from stdin without echoing or persisting it in TOML.
     #[arg(long)]
@@ -718,7 +733,7 @@ async fn run_provision(args: SetupArgs, format: OutputFormat) -> Result<ExitCode
         println!("{plan}");
     }
     if !args.dry_run && !yes {
-        if !io::stdin().is_terminal() {
+        if !crate::cli::helpers::interactive_allowed() {
             anyhow::bail!("setup --provision requires --yes when stdin is not a TTY");
         }
         eprint!("Proceed? [y/N] ");
@@ -852,7 +867,7 @@ async fn run_command(command: SetupCommand, format: OutputFormat) -> Result<Exit
         SetupCommand::PluginSync(args) => {
             let params = json!({ "confirm": true });
             if args.dry_run {
-                crate::cli::helpers::print_dry_run("setup", "plugin_sync", &params, format);
+                crate::cli::helpers::print_dry_run("setup", "plugin_sync", &params, format)?;
                 return Ok(ExitCode::SUCCESS);
             }
             // Route through the shared destructive-action helper so TTY users
@@ -920,8 +935,8 @@ async fn run_command(command: SetupCommand, format: OutputFormat) -> Result<Exit
 }
 
 async fn run_setup_proxy(args: SetupProxyArgs, format: OutputFormat) -> Result<()> {
-    if !args.yes && !args.dry_run && !io::stdin().is_terminal() {
-        anyhow::bail!("setup proxy requires --yes when stdin is not a TTY");
+    if !args.yes && !args.dry_run && !crate::cli::helpers::interactive_allowed() {
+        anyhow::bail!("config proxy set requires --yes when stdin is not a TTY");
     }
 
     let home = crate::dispatch::helpers::lab_home();
@@ -1094,7 +1109,7 @@ fn prompt_value(
     let mut answer = String::new();
     let read = input.read_line(&mut answer)?;
     if read == 0 {
-        anyhow::bail!("setup proxy input ended before configuration was complete");
+        anyhow::bail!("config proxy set input ended before configuration was complete");
     }
     let answer = answer.trim();
     Ok(if answer.is_empty() {
@@ -1373,8 +1388,8 @@ fn require_incus_ssh_confirmation(container: &str, target_count: usize, yes: boo
     if yes {
         return Ok(());
     }
-    if !io::stdin().is_terminal() {
-        anyhow::bail!("setup incus-ssh bootstrap requires --yes when stdin is not a TTY");
+    if !crate::cli::helpers::interactive_allowed() {
+        anyhow::bail!("host incus ssh bootstrap requires --yes when stdin is not a TTY");
     }
     eprintln!(
         "This will generate an SSH key in container `{container}` and update authorized_keys on {target_count} host(s)."
@@ -1386,7 +1401,7 @@ fn require_incus_ssh_confirmation(container: &str, target_count: usize, yes: boo
     if matches!(answer.trim(), "y" | "Y" | "yes" | "YES") {
         Ok(())
     } else {
-        anyhow::bail!("setup incus-ssh bootstrap cancelled");
+        anyhow::bail!("host incus ssh bootstrap cancelled");
     }
 }
 
@@ -1394,8 +1409,8 @@ fn require_incus_backup_confirmation(container: &str, yes: bool) -> Result<()> {
     if yes {
         return Ok(());
     }
-    if !io::stdin().is_terminal() {
-        anyhow::bail!("setup incusbackup apply requires --yes when stdin is not a TTY");
+    if !crate::cli::helpers::interactive_allowed() {
+        anyhow::bail!("host incus backup apply requires --yes when stdin is not a TTY");
     }
     eprintln!("This will apply Incus snapshot policy config to container `{container}`.");
     eprint!("Proceed? [y/N] ");
@@ -1405,7 +1420,7 @@ fn require_incus_backup_confirmation(container: &str, yes: bool) -> Result<()> {
     if matches!(answer.trim(), "y" | "Y" | "yes" | "YES") {
         Ok(())
     } else {
-        anyhow::bail!("setup incusbackup apply cancelled");
+        anyhow::bail!("host incus backup apply cancelled");
     }
 }
 
@@ -1494,7 +1509,9 @@ fn require_host_service_confirmation(action: &str, yes: bool) -> Result<()> {
         return Ok(());
     }
     let error = crate::dispatch::error::ToolError::ConfirmationRequired {
-        message: format!("setup host-service {action} is destructive; pass -y/--yes to confirm"),
+        message: format!(
+            "labby host service {action} was not executed because confirmation is required; review its effects, then pass -y/--yes to confirm"
+        ),
     };
     Err(anyhow::anyhow!(
         "{}",
@@ -1534,7 +1551,7 @@ async fn run_draft_command(args: DraftArgs, format: OutputFormat) -> Result<()> 
         DraftCommand::Discard(args) => {
             let params = json!({});
             if args.dry_run {
-                crate::cli::helpers::print_dry_run("setup", "draft.discard", &params, format);
+                crate::cli::helpers::print_dry_run("setup", "draft.discard", &params, format)?;
                 return Ok(());
             }
             crate::cli::helpers::run_confirmable_action_command(
@@ -1564,7 +1581,7 @@ async fn run_plugin_mutation(
         "confirm": true,
     });
     if args.dry_run {
-        crate::cli::helpers::print_dry_run("setup", action, &params, format);
+        crate::cli::helpers::print_dry_run("setup", action, &params, format)?;
         return Ok(());
     }
     if !args.yes {
@@ -1619,7 +1636,7 @@ mod tests {
     #[test]
     fn bare_setup_parses_as_default_incus_bootstrap() {
         let cli = crate::cli::Cli::try_parse_from(["labby", "setup", "-y"]).unwrap();
-        let crate::cli::Command::Setup(args) = cli.command else {
+        let crate::cli::Command::Setup(args) = cli.command.into_operation() else {
             panic!("expected setup command");
         };
 
@@ -1635,7 +1652,7 @@ mod tests {
             "labby", "setup", "--role", "server", "--auth", "oauth", "--oauth", "google", "--yes",
         ])
         .unwrap();
-        let crate::cli::Command::Setup(args) = cli.command else {
+        let crate::cli::Command::Setup(args) = cli.command.into_operation() else {
             panic!("expected setup command");
         };
         assert_eq!(args.auth, Some(SetupAuthArg::OAuth));
@@ -1644,17 +1661,18 @@ mod tests {
 
     #[test]
     fn owner_link_prepare_requires_an_explicit_approval_file() {
-        assert!(crate::cli::Cli::try_parse_from(["labby", "setup", "owner-link-prepare"]).is_err());
+        assert!(crate::cli::Cli::try_parse_from(["labby", "auth", "owner", "link"]).is_err());
         let cli = crate::cli::Cli::try_parse_from([
             "labby",
-            "setup",
-            "owner-link-prepare",
+            "auth",
+            "owner",
+            "link",
             "--approval-file",
             "/private/owner-approval.json",
         ])
         .unwrap();
         assert!(matches!(
-            cli.command,
+            cli.command.into_operation(),
             crate::cli::Command::Setup(SetupArgs {
                 command: Some(SetupCommand::OwnerLinkPrepare(OwnerLinkPrepareArgs { approval_file })),
                 ..
@@ -1668,7 +1686,7 @@ mod tests {
             "labby", "setup", "wizard", "--mode", "plugin", "--smoke",
         ])
         .unwrap();
-        let crate::cli::Command::Setup(args) = cli.command else {
+        let crate::cli::Command::Setup(args) = cli.command.into_operation() else {
             panic!("expected setup command");
         };
         let Some(SetupCommand::Wizard(args)) = args.command else {
@@ -1681,9 +1699,9 @@ mod tests {
 
     #[test]
     fn parses_plugin_hook_no_repair_subcommand() {
-        let cli = crate::cli::Cli::try_parse_from(["labby", "setup", "plugin-hook", "--no-repair"])
-            .unwrap();
-        let crate::cli::Command::Setup(args) = cli.command else {
+        let cli =
+            crate::cli::Cli::try_parse_from(["labby", "plugin", "hook", "--no-repair"]).unwrap();
+        let crate::cli::Command::Setup(args) = cli.command.into_operation() else {
             panic!("expected setup command");
         };
         let Some(SetupCommand::PluginHook { no_repair }) = args.command else {
@@ -1694,27 +1712,27 @@ mod tests {
 
     #[test]
     fn parses_plugin_sync_export_connectivity_subcommands() {
-        let cli = crate::cli::Cli::try_parse_from(["labby", "setup", "plugin-sync"]).unwrap();
-        let crate::cli::Command::Setup(args) = cli.command else {
+        let cli = crate::cli::Cli::try_parse_from(["labby", "plugin", "sync"]).unwrap();
+        let crate::cli::Command::Setup(args) = cli.command.into_operation() else {
             panic!("expected setup");
         };
         assert!(matches!(args.command, Some(SetupCommand::PluginSync(_))));
 
-        let cli = crate::cli::Cli::try_parse_from(["labby", "setup", "plugin-export"]).unwrap();
-        let crate::cli::Command::Setup(args) = cli.command else {
+        let cli = crate::cli::Cli::try_parse_from(["labby", "plugin", "export"]).unwrap();
+        let crate::cli::Command::Setup(args) = cli.command.into_operation() else {
             panic!("expected setup");
         };
         assert!(matches!(args.command, Some(SetupCommand::PluginExport)));
 
         let cli = crate::cli::Cli::try_parse_from([
             "labby",
-            "setup",
-            "plugin-connectivity",
+            "plugin",
+            "check",
             "--server-url",
             "http://node-a:8765",
         ])
         .unwrap();
-        let crate::cli::Command::Setup(args) = cli.command else {
+        let crate::cli::Command::Setup(args) = cli.command.into_operation() else {
             panic!("expected setup");
         };
         let Some(SetupCommand::PluginConnectivity {
@@ -1730,7 +1748,7 @@ mod tests {
     fn parses_setup_check_and_repair_subcommands() {
         for command in ["check", "repair"] {
             let cli = crate::cli::Cli::try_parse_from(["labby", "setup", command]).unwrap();
-            let crate::cli::Command::Setup(args) = cli.command else {
+            let crate::cli::Command::Setup(args) = cli.command.into_operation() else {
                 panic!("expected setup command");
             };
             match (command, args.command) {
@@ -1751,7 +1769,7 @@ mod tests {
             "--skip-deps",
         ])
         .unwrap();
-        let crate::cli::Command::Setup(args) = cli.command else {
+        let crate::cli::Command::Setup(args) = cli.command.into_operation() else {
             panic!("expected setup command");
         };
 
@@ -1765,8 +1783,9 @@ mod tests {
     fn parses_incusbackup_apply_subcommand() {
         let cli = crate::cli::Cli::try_parse_from([
             "labby",
-            "setup",
-            "incusbackup",
+            "host",
+            "incus",
+            "backup",
             "apply",
             "--name",
             "labby",
@@ -1775,7 +1794,7 @@ mod tests {
             "--dry-run",
         ])
         .unwrap();
-        let crate::cli::Command::Setup(args) = cli.command else {
+        let crate::cli::Command::Setup(args) = cli.command.into_operation() else {
             panic!("expected setup command");
         };
         let Some(SetupCommand::Incusbackup(IncusBackupArgs {
@@ -1788,7 +1807,7 @@ mod tests {
                 },
         })) = args.command
         else {
-            panic!("expected setup incusbackup apply subcommand");
+            panic!("expected host incus backup apply subcommand");
         };
         assert_eq!(name, "labby");
         assert_eq!(config, PathBuf::from("config/incus/labby-backup.yaml"));
@@ -1798,9 +1817,9 @@ mod tests {
 
     #[test]
     fn accepts_hidden_hyphenated_incus_backup_alias() {
-        let cli = crate::cli::Cli::try_parse_from(["labby", "setup", "incus-backup", "validate"])
+        let cli = crate::cli::Cli::try_parse_from(["labby", "host", "incus", "backup", "validate"])
             .unwrap();
-        let crate::cli::Command::Setup(args) = cli.command else {
+        let crate::cli::Command::Setup(args) = cli.command.into_operation() else {
             panic!("expected setup command");
         };
         assert!(matches!(
@@ -1821,6 +1840,7 @@ mod tests {
     fn parses_top_level_incus_setup_subcommand() {
         let cli = crate::cli::Cli::try_parse_from([
             "labby",
+            "host",
             "incus",
             "setup",
             "--version",
@@ -1833,7 +1853,7 @@ mod tests {
             "-y",
         ])
         .unwrap();
-        let crate::cli::Command::Incus(args) = cli.command else {
+        let crate::cli::Command::Incus(args) = cli.command.into_operation() else {
             panic!("expected incus command");
         };
         let crate::cli::incus::IncusCommand::Setup(args) = args.command else {
@@ -1848,9 +1868,9 @@ mod tests {
 
     #[test]
     fn incus_setup_defaults_to_latest_release() {
-        let cli =
-            crate::cli::Cli::try_parse_from(["labby", "incus", "setup", "--dry-run"]).unwrap();
-        let crate::cli::Command::Incus(args) = cli.command else {
+        let cli = crate::cli::Cli::try_parse_from(["labby", "host", "incus", "setup", "--dry-run"])
+            .unwrap();
+        let crate::cli::Command::Incus(args) = cli.command.into_operation() else {
             panic!("expected incus command");
         };
         let crate::cli::incus::IncusCommand::Setup(args) = args.command else {
@@ -1869,8 +1889,8 @@ mod tests {
     #[test]
     fn parses_setup_draft_discard_subcommand() {
         let cli =
-            crate::cli::Cli::try_parse_from(["labby", "setup", "draft", "discard", "-y"]).unwrap();
-        let crate::cli::Command::Setup(args) = cli.command else {
+            crate::cli::Cli::try_parse_from(["labby", "config", "draft", "discard", "-y"]).unwrap();
+        let crate::cli::Command::Setup(args) = cli.command.into_operation() else {
             panic!("expected setup command");
         };
         let Some(SetupCommand::Draft(DraftArgs {
@@ -1922,12 +1942,12 @@ mod tests {
                 },
             ),
         ] {
-            let mut args = vec!["labby", "setup", "host-service", command];
+            let mut args = vec!["labby", "host", "service", command];
             if let Some(flag) = flag {
                 args.push(flag);
             }
             let cli = crate::cli::Cli::try_parse_from(args).unwrap();
-            let crate::cli::Command::Setup(args) = cli.command else {
+            let crate::cli::Command::Setup(args) = cli.command.into_operation() else {
                 panic!("expected setup command");
             };
             let Some(SetupCommand::HostService(HostServiceArgs { command: actual })) = args.command
@@ -1958,14 +1978,14 @@ mod tests {
         ] {
             let cli = crate::cli::Cli::try_parse_from([
                 "labby",
-                "setup",
-                "host-service",
+                "host",
+                "service",
                 subcommand,
                 "--install-self",
                 "-y",
             ])
             .unwrap();
-            let crate::cli::Command::Setup(args) = cli.command else {
+            let crate::cli::Command::Setup(args) = cli.command.into_operation() else {
                 panic!("expected setup command");
             };
             let Some(SetupCommand::HostService(HostServiceArgs { command })) = args.command else {

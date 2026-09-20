@@ -1,7 +1,7 @@
 ---
 title: "Remote Gateway Target Resolution"
 created: "2026-08-15"
-updated: "2026-08-16"
+updated: "2026-09-20"
 ---
 
 # Remote Gateway Target Resolution
@@ -17,6 +17,11 @@ probe failed, they could create a local gateway view and read another
 
 ## Required behavior
 
+- Explicit CLI `--server URL` or `--context NAME` selection takes precedence over
+  environment targets on supported daemon-backed commands. The selectors are
+  mutually exclusive. A saved default context is used only when neither an
+  invocation selector nor an environment target is present. Contexts are
+  non-secret entries in the existing host config, not another credential store.
 - Treat a non-empty `CLAUDE_PLUGIN_OPTION_SERVER_URL` as an explicit remote
   Labby daemon target for plugin-launched processes.
 - Add `LABBY_SERVER_URL` as the product-owned equivalent for ordinary CLI and
@@ -37,8 +42,9 @@ probe failed, they could create a local gateway view and read another
 - Bind credentials to the target authority: the plugin target uses only
   `CLAUDE_PLUGIN_OPTION_API_TOKEN`, while `LABBY_SERVER_URL` and opportunistic
   discovery use `LABBY_MCP_HTTP_TOKEN`. When the explicit operator target has
-  no token override, it may use the OAuth session created by `labby login` for
-  that exact HTTPS origin. Saved sessions never choose a target and are not
+  no token override, it may use the OAuth session created by `labby auth login` for
+  that exact destination. Explicit CLI/context targets also use their saved
+  destination-bound OAuth session and never borrow either environment token. Saved sessions never choose a target and are not
   available to opportunistic or plugin-selected targets. Never let an invocation-scoped target
   inherit the ambient product token, and never send either token to a
   different origin after a redirect.
@@ -69,8 +75,9 @@ probe failed, they could create a local gateway view and read another
   `config.toml` automatically.
 - Do not make `LABBY_PUBLIC_URL` fail closed; it remains both daemon metadata
   and an opportunistic compatibility candidate.
-- Do not add a CLI flag in this change. Environment/plugin configuration covers
-  the reported inconsistency without expanding every command's clap surface.
+- CLI selectors apply only to supported daemon-backed adapters. They must not
+  turn local host administration into implicit remote operations; unsupported
+  explicit selectors fail before dispatch.
 - Do not add response-source metadata to every gateway action envelope; clear
   routing failures and regression coverage are sufficient for this repair.
 - Do not add concurrent public probing, global client caching, metrics,
@@ -79,7 +86,7 @@ probe failed, they could create a local gateway view and read another
 
 ## Acceptance criteria
 
-1. A plugin-launched `labby gateway get tidewave` reaches the configured remote
+1. A plugin-launched `labby server get tidewave` reaches the configured remote
    daemon even if the invoking user's XDG config omits Tidewave.
 2. An unreachable explicit target produces a structured error and does not
    instantiate or read the local gateway manager.

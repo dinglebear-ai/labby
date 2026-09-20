@@ -386,6 +386,28 @@ impl GatewayManager {
         } else {
             update_upstream(&mut cfg, name, patch)?;
         }
+        // State-setting is idempotent only when both durable and currently
+        // published configuration already match. Never skip a credential change
+        // or reconciliation of externally changed state. The mutation lease is held.
+        let credential_changed = bearer_token_value
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty());
+        let candidate_value = serde_json::to_value(&cfg)
+            .map_err(|_| ToolError::internal_message("Cannot compare gateway configuration"))?;
+        let current = self.config.read().await.clone();
+        if !credential_changed
+            && candidate_value
+                == serde_json::to_value(&previous).map_err(|_| {
+                    ToolError::internal_message("Cannot compare durable gateway configuration")
+                })?
+            && candidate_value
+                == serde_json::to_value(&current).map_err(|_| {
+                    ToolError::internal_message("Cannot compare live gateway configuration")
+                })?
+        {
+            tracing::info!(surface="dispatch",service="gateway",action="gateway.update",event="install.update.finish",phase="finish",gateway=%name,changed=false,elapsed_ms=started.elapsed().as_millis(),"requested gateway state is already applied");
+            return self.get(&updated_name).await;
+        }
         let diff = self
             .commit_config_and_reload(_mutation_guard, previous, cfg, origin, owner)
             .await?;
