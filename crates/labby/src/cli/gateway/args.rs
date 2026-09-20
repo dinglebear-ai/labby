@@ -358,6 +358,19 @@ pub struct GatewayCodeArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum GatewayCodeCommand {
+    /// Search the Code Mode catalog without constructing a JavaScript payload.
+    Search {
+        /// Metadata search query.
+        query: String,
+        /// Maximum number of results, from 1 through 50.
+        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u16).range(1..=50))]
+        limit: u16,
+    },
+    /// Inspect a catalog entry's schema before using it.
+    Describe {
+        /// Qualified catalog path returned by code search.
+        path: String,
+    },
     /// Read gateway-wide Code Mode settings.
     Status,
     /// Enable the gateway codemode MCP surface.

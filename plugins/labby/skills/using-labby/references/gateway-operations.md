@@ -103,14 +103,15 @@ Use `--dry-run` on pending approve/reject when available.
 
 ## Runtime MCP Lifecycle
 
-Use `gateway mcp` for runtime lifecycle and process cleanup:
+Use `server` for runtime lifecycle and process cleanup:
 
 ```bash
-labby gateway mcp list --json
-labby gateway mcp enable <name> --json
-labby gateway mcp disable <name> --cleanup --json
-labby gateway mcp cleanup <name> --dry-run --json
-labby gateway mcp cleanup <name> --aggressive --json
+labby server status --json
+labby server enable <name> --json
+labby server restart <name> --json
+labby server disable <name> --cleanup --json
+labby server cleanup <name> --dry-run --json
+labby server cleanup <name> --aggressive --json
 ```
 
 The runtime list includes discovery counts and likely stale process counts. Use
@@ -197,10 +198,11 @@ Backend targets are validated to avoid unsafe local/link-local targets.
 
 ## Config Mutation Actions
 
-Use the current typed gateway commands (`labby gateway add`, `update`,
-`remove`, `import`, and `reload`) for upstream configuration. Discover the
-live action schema before dispatching the equivalent MCP action. Values are
-redacted on reads when fields are marked secret.
+Use `labby server add`, `labby server set`, `labby server remove`, and
+`labby server import` for upstream configuration. Use `labby gateway reload`
+to reconcile configuration with the daemon runtime. Discover the live action
+schema before dispatching the equivalent MCP action. Values are redacted on
+reads when fields are marked secret.
 
 ## Common Failure Routing
 

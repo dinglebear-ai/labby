@@ -4056,7 +4056,7 @@ Options:
           Emit machine-readable JSON. Diagnostics never enter stdout
 
       --limit <LIMIT>
-          Maximum number of results, from 1 through 100
+          Maximum number of results, from 1 through 50
 
           [default: 10]
 

@@ -247,6 +247,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn search_limit_matches_shared_catalog_cap() {
+        use clap::Parser as _;
+        for limit in ["1", "50"] {
+            assert!(
+                crate::cli::Cli::try_parse_from([
+                    "labby", "code", "search", "catalog", "--limit", limit,
+                ])
+                .is_ok()
+            );
+        }
+        for limit in ["0", "51", "100"] {
+            assert!(
+                crate::cli::Cli::try_parse_from([
+                    "labby", "code", "search", "catalog", "--limit", limit,
+                ])
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn cli_source_read_uses_shared_hard_ceiling() {
         let max_source_bytes = labby_codemode::MAX_SOURCE_BYTES;
         let at_limit = "a".repeat(max_source_bytes);

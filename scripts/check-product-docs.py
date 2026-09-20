@@ -314,7 +314,10 @@ def validate_shipped_skill_cli_examples(failures: list[str]) -> None:
         end = sections[index + 1].start() if index + 1 < len(sections) else len(help_text)
         body = help_text[section.end() : end]
         commands[tuple(section.group("command").split())] = set(
-            re.findall(r"(?m)^\s+(--[a-z0-9][a-z0-9-]*)(?:\s|$)", body)
+            re.findall(
+                r"(?m)^[ \t]+(?:-[A-Za-z0-9], )?(--[a-z0-9][a-z0-9-]*)(?:\.\.\.)?(?:\s|$)",
+                body,
+            )
         ) | set(re.findall(r"(?m)^\s+(-[A-Za-z0-9])(?:,|\s|$)", body))
 
     skill_root = ROOT / "plugins/labby/skills/using-labby"

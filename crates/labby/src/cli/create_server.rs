@@ -74,7 +74,9 @@ fn invocation(args: &GatewayAddArgs) -> String {
     for (key, flag) in [("args", "--arg"), ("expose_skills", "--expose-skill")] {
         if let Some(values) = safe[key].as_array() {
             for value in values.iter().filter_map(serde_json::Value::as_str) {
-                words.extend([flag.to_owned(), value.to_owned()]);
+                // Bind flag-like values before shell quoting; `--arg -y`
+                // would be parsed as a new CLI option when replayed.
+                words.push(format!("{flag}={value}"));
             }
         }
     }
@@ -249,5 +251,24 @@ mod tests {
         assert_eq!(quote("abc"), "abc");
         assert_eq!(quote("$(id)"), "'$(id)'");
         assert_eq!(quote("a'b"), "'a'\\''b'");
+    }
+
+    #[test]
+    fn equivalent_command_preserves_flag_like_upstream_arguments() {
+        use clap::Parser as _;
+        let mut input = args();
+        input.name = "docs".into();
+        input.command = Some("npx".into());
+        input.args = vec!["-y".into(), "--version".into()];
+        let command = invocation(&input);
+        let parsed = crate::cli::Cli::try_parse_from(command.split_whitespace()).unwrap();
+        let crate::cli::Command::Server(crate::cli::server::ServerArgs {
+            command: crate::cli::server::ServerCommand::Add(actual),
+        }) = parsed.command
+        else {
+            panic!("expected server add");
+        };
+        assert_eq!(actual.args, input.args);
+        assert_eq!(actual.command, input.command);
     }
 }

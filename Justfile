@@ -69,7 +69,7 @@ docs-check:
     python3 scripts/check-product-docs.py
     python3 -m unittest discover -s scripts/ci -p 'test_product_docs.py'
     python3 scripts/check-depot-control-plane-contract.py
-    python3 -m unittest scripts/ci/test_depot_control_plane_contract.py
+    python3 -m unittest scripts/ci/test_depot_control_plane_contract.py scripts/ci/test_product_doc_cli_options.py
 
 # Inspect an item from the canonical standalone Aurora shadcn registry.
 aurora-view item="aurora-base":

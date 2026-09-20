@@ -39,7 +39,7 @@ pub(super) async fn run_gateway_oauth_start(
         "dispatch ok"
     );
 
-    if format.is_json() {
+    if format.is_json() && !args.wait {
         crate::output::print(&value, format)?;
     }
 
@@ -89,10 +89,8 @@ pub(super) async fn run_gateway_oauth_start(
             )
         })?;
 
-        let authenticated = wait_value
-            .get("authenticated")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let (result, exit_code) = oauth_wait_outcome(value, wait_value)?;
+        let authenticated = exit_code == ExitCode::SUCCESS;
 
         if authenticated {
             eprintln!(
@@ -111,9 +109,35 @@ pub(super) async fn run_gateway_oauth_start(
                 ))
             );
         }
+        if format.is_json() {
+            crate::output::print(&result, format)?;
+        }
+        return Ok(exit_code);
     }
 
     Ok(ExitCode::SUCCESS)
+}
+
+fn oauth_wait_outcome(
+    mut start: serde_json::Value,
+    wait: serde_json::Value,
+) -> Result<(serde_json::Value, ExitCode)> {
+    let authenticated = wait["authenticated"].as_bool().ok_or_else(|| {
+        crate::dispatch::error::ToolError::Sdk {
+            sdk_kind: "decode_error".into(),
+            message: "Gateway OAuth wait response omitted authenticated state. Inspect server auth status before retrying.".into(),
+        }
+    })?;
+    start["authenticated"] = json!(authenticated);
+    start["timed_out"] = json!(!authenticated);
+    Ok((
+        start,
+        if authenticated {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        },
+    ))
 }
 
 fn open_in_browser(url: &str) -> Result<()> {
@@ -141,4 +165,25 @@ fn open_in_browser(url: &str) -> Result<()> {
     Err(anyhow::anyhow!(
         "opening a browser is not supported on this platform"
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oauth_wait_reports_final_state_and_failure_on_timeout() {
+        for authenticated in [true, false] {
+            let (result, exit_code) = oauth_wait_outcome(
+                json!({"authorization_url":"https://example.test/authorize"}),
+                json!({"authenticated":authenticated,"timed_out":!authenticated}),
+            )
+            .unwrap();
+            assert_eq!(result["authenticated"], authenticated);
+            assert_eq!(result["timed_out"], !authenticated);
+            assert_eq!(exit_code == ExitCode::SUCCESS, authenticated);
+            assert!(result["authorization_url"].is_string());
+        }
+        assert!(oauth_wait_outcome(json!({}), json!({})).is_err());
+    }
 }

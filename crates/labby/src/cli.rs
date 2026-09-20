@@ -323,11 +323,7 @@ fn dispatch_inner(mut cli: Cli, mut config: LabConfig) -> impl Future<Output = R
             Command::Logs(args) => logs::run(args, format).await,
             Command::Login(mut args) => {
                 if args.server.is_none() {
-                    args.server = config
-                        .cli_target
-                        .as_ref()
-                        .map(|target| target.server.clone())
-                        .or(server);
+                    args.server = Some(session::selected_server(&config)?);
                 }
                 login::run(args, format).await
             }

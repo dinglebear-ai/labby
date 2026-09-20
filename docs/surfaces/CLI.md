@@ -115,6 +115,11 @@ labby server auth login docs --wait --timeout 2m
 labby server restart docs --timeout 30s
 ```
 
+`server auth login --wait` exits successfully only when authentication completes.
+With `--json`, it writes one final result containing `authenticated` and
+`timed_out`; a timeout returns a nonzero exit status. For URL-only waiting,
+`--no-browser` prints the authorization URL to stderr immediately.
+
 ## Offline cached completion
 
 Static shell completion remains available without configuration. Optional resource-name completion uses an explicitly refreshed local snapshot, never a network call or OAuth refresh from a Tab key.
