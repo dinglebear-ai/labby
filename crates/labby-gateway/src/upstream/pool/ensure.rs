@@ -27,6 +27,7 @@ use super::helpers::{
 use super::resources_list::catalog_listing_timeout;
 use super::skills_list::peer_declares_skills;
 use super::tools::tool_has_mcp_app_ui_resource;
+use super::tools_call::refresh_tool_header_cache_raw;
 use super::validate::validate_upstream_config;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -546,7 +547,8 @@ impl UpstreamPool {
         if config.oauth.is_some()
             && let Some(subject) = oauth_subject
         {
-            self.acquire_or_connect_subject(config, subject).await?;
+            self.refresh_subject_tool_catalog_for_reprobe(config, subject)
+                .await?;
             return Ok(true);
         }
         // The gate is taken inside `reprobe_upstream`, and only for the
@@ -860,6 +862,49 @@ mod tests {
         assert!(pool.healthy_tools().await.is_empty());
         assert!(pool.healthy_tools_for_upstream("oauth").await.is_empty());
         assert_eq!(pool.connection_count_for_tests().await, 0);
+    }
+
+    #[tokio::test]
+    async fn oauth_reprobe_evicts_cached_subject_catalog_before_reconnect() {
+        let pool = UpstreamPool::new();
+        let config = UpstreamConfig {
+            display_name: None,
+            lifecycle: None,
+            oauth: Some(UpstreamOauthConfig {
+                mode: UpstreamOauthMode::AuthorizationCodePkce,
+                registration: UpstreamOauthRegistration::Dynamic,
+                scopes: None,
+                credential: Default::default(),
+                prefer_client_metadata_document: None,
+            }),
+            ..named_test_upstream_config("oauth-refresh")
+        };
+        pool.seed_lazy_upstreams(std::slice::from_ref(&config))
+            .await;
+        pool.install_test_subject_tools_for_upstream(
+            &config,
+            "alice",
+            vec![test_tool("stale_tool")],
+        )
+        .await;
+
+        let before = pool
+            .cached_subject_scoped_tools_bounded(std::slice::from_ref(&config), "alice", 10)
+            .await;
+        assert_eq!(before[0].1.len(), 1);
+        assert_eq!(before[0].1[0].name.as_ref(), "stale_tool");
+
+        let _error = pool
+            .reprobe_tools_for_upstream_as(&config, Some("alice"), None)
+            .await
+            .expect_err("reprobe must reconnect instead of reusing the stale subject catalog");
+
+        assert!(
+            pool.cached_subject_scoped_tools_bounded(std::slice::from_ref(&config), "alice", 10,)
+                .await
+                .is_empty(),
+            "explicit reprobe must not leave the stale subject catalog cached"
+        );
     }
 
     #[tokio::test]
