@@ -12,7 +12,10 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::config::OpenApiCredential;
-use crate::dispatch::dispatch_openapi_call_no_ssrf as dispatch_openapi_call;
+use crate::dispatch::{
+    dispatch_openapi_call as dispatch_openapi_call_hardened,
+    dispatch_openapi_call_no_ssrf as dispatch_openapi_call,
+};
 use crate::registry::{OpenApiRegistry, OperationHandle, SpecEntry};
 
 /// Build a single-op registry whose base_url is `base` (the mock URI) — bypassing
@@ -32,6 +35,7 @@ fn get_user_handle(base: &str, credential: Option<OpenApiCredential>) -> Operati
         path_template: "/users/{id}".into(),
         base_url: base.parse().unwrap(),
         credential,
+        oauth_upstream: None,
     }
 }
 
@@ -100,6 +104,28 @@ async fn credential_injected_server_side() {
     .await
     .unwrap();
     assert_eq!(out["id"], "7");
+}
+
+#[tokio::test]
+async fn subject_scoped_operation_fails_closed_without_resolved_credential() {
+    let server = MockServer::start().await;
+    let mut handle = get_user_handle(&server.uri(), None);
+    handle.oauth_upstream = Some("vendor-oauth".into());
+    let reg = registry_from_handle("vendor", handle);
+    let err = dispatch_openapi_call_hardened(
+        &reg,
+        &loopback_client(),
+        "vendor",
+        "getUser",
+        json!({ "id": "7" }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.kind(), "forbidden");
+    assert!(matches!(
+        err,
+        crate::error::OpenApiError::CallerCredentialRequired { .. }
+    ));
 }
 
 #[tokio::test]
@@ -228,6 +254,7 @@ async fn base_path_prefix_is_preserved_in_request() {
         path_template: "/users/{id}".into(),
         base_url: format!("{}/tenant-A/v1", server.uri()).parse().unwrap(),
         credential: None,
+        oauth_upstream: None,
     };
     let reg = registry_from_handle("vendor", handle);
     let out = dispatch_openapi_call(

@@ -47,6 +47,12 @@ pub enum OpenApiError {
         /// Requested operationId.
         operation_id: String,
     },
+    /// A subject-scoped operation reached dispatch without a caller-resolved credential.
+    #[error("subject-scoped credential required for spec `{label}`")]
+    CallerCredentialRequired {
+        /// Spec label.
+        label: String,
+    },
     /// The request resolved (or redirected) to a private/loopback address.
     #[error("request for spec `{label}` blocked: resolved to a private address")]
     RequestBlockedPrivateAddr {
@@ -107,7 +113,9 @@ impl OpenApiError {
             Self::SsrfRejected { .. } | Self::SpecParse { .. } | Self::SpecTooLarge { .. } => {
                 "config_error"
             }
-            Self::RequestBlockedPrivateAddr { .. } => "forbidden",
+            Self::CallerCredentialRequired { .. } | Self::RequestBlockedPrivateAddr { .. } => {
+                "forbidden"
+            }
             Self::InvalidPathParam { .. } => "invalid_param",
             Self::UnknownInstance { .. } => "unknown_instance",
             Self::UnknownOperation { .. } => "unknown_action",
@@ -132,6 +140,10 @@ impl From<OpenApiError> for ToolError {
                 message: msg,
                 valid: vec![],
                 hint: None,
+            },
+            OpenApiError::CallerCredentialRequired { .. } => ToolError::Forbidden {
+                message: msg,
+                required_scopes: vec!["lab".into()],
             },
             OpenApiError::RequestBlockedPrivateAddr { .. } => ToolError::Forbidden {
                 message: msg,

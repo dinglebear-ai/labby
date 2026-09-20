@@ -28,8 +28,10 @@ pub struct OperationHandle {
     pub path_template: String,
     /// SSRF-validated base URL.
     pub base_url: url::Url,
-    /// Optional server-side credential.
+    /// Optional server-side static credential.
     pub credential: Option<OpenApiCredential>,
+    /// Optional OAuth upstream reference resolved per caller subject by the host.
+    pub oauth_upstream: Option<String>,
 }
 
 /// All operations for one spec, keyed by raw operationId.
@@ -111,6 +113,17 @@ impl OpenApiRegistry {
         self.inner.is_empty()
     }
 
+    /// Whether at least one loaded operation resolves OAuth per caller subject.
+    #[must_use]
+    pub fn has_subject_scoped_operations(&self) -> bool {
+        self.inner.values().any(|entry| {
+            entry
+                .operations
+                .values()
+                .any(|operation| operation.oauth_upstream.is_some())
+        })
+    }
+
     /// Look up one operation. Unknown label → `UnknownInstance`; unknown op →
     /// `UnknownOperation`.
     ///
@@ -150,6 +163,7 @@ async fn load_one_spec(spec: OpenApiSpecConfig) -> Result<SpecEntry, OpenApiErro
                 path_template: d.path_template,
                 base_url: base_url.clone(),
                 credential: spec.credential.clone(),
+                oauth_upstream: spec.oauth_upstream.clone(),
             },
         );
     }
@@ -275,6 +289,7 @@ mod tests {
             base_url: "https://api.example.com".parse().unwrap(),
             allowed_operations: vec!["getUser".into()],
             credential: None,
+            oauth_upstream: None,
         }
     }
 
@@ -285,6 +300,7 @@ mod tests {
             base_url: base.parse().unwrap(),
             allowed_operations: vec![],
             credential: None,
+            oauth_upstream: None,
         }
     }
 

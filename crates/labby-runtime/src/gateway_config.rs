@@ -1588,6 +1588,18 @@ pub enum ConfigError {
         /// Provider label with ambiguous spec source configuration.
         label: String,
     },
+    #[error("openapi spec '{label}' cannot combine oauth_upstream with a static token or API key")]
+    /// An OpenAPI provider mixes subject-scoped OAuth with a process-global secret.
+    ConflictingOpenApiAuth {
+        /// Provider label with conflicting authentication sources.
+        label: String,
+    },
+    #[error("openapi spec '{label}' has an empty oauth_upstream")]
+    /// An OpenAPI provider configured caller-scoped OAuth without naming an upstream.
+    InvalidOpenApiOauthUpstream {
+        /// Provider label with the invalid OAuth upstream reference.
+        label: String,
+    },
 }
 
 // ─── Outbound OAuth ──────────────────────────────────────────────────────────
