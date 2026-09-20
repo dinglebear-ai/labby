@@ -53,6 +53,19 @@ impl ServerHandler for ToolsOnlyPromptProbeServer {
             None,
         ))
     }
+
+    async fn get_prompt(
+        &self,
+        _request: GetPromptRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::GetPromptResponse, rmcp::model::ErrorData> {
+        self.prompt_calls.fetch_add(1, Ordering::SeqCst);
+        Err(rmcp::model::ErrorData::new(
+            rmcp::model::ErrorCode::METHOD_NOT_FOUND,
+            "prompts/get should not be called",
+            None,
+        ))
+    }
 }
 
 fn namespaced(upstream: &str, prompt: &str) -> String {
@@ -283,6 +296,22 @@ async fn subject_scoped_prompts_honor_initialize_and_skip_unadvertised_capabilit
     assert_eq!(
         subject.optional_catalogs.prompts.clone(),
         Some(Vec::<String>::new())
+    );
+    drop(connections);
+
+    let error = pool
+        .subject_scoped_get_prompt(
+            &config,
+            "alice",
+            GetPromptRequestParams::new(namespaced("tools-only", "missing")),
+        )
+        .await
+        .expect_err("prompts/get must fail before RPC when prompts are not advertised");
+    assert!(error.contains("does not advertise the MCP prompts capability"));
+    assert_eq!(
+        prompt_calls.load(Ordering::SeqCst),
+        0,
+        "prompts/get must not be sent when initialize omits prompts"
     );
 }
 

@@ -123,6 +123,18 @@ impl<'a> UpstreamRequestLog<'a> {
         }
     }
 
+    pub(super) fn prompts_list(upstream: &'a str, subject_scoped: bool) -> Self {
+        Self {
+            upstream,
+            capability: "prompts",
+            operation: "prompts.list",
+            subject_scoped,
+            transport: None,
+            item_kind: None,
+            item: None,
+        }
+    }
+
     pub(super) fn prompt(upstream: &'a str, prompt: &'a str, subject_scoped: bool) -> Self {
         Self {
             upstream,
@@ -167,6 +179,22 @@ impl<'a> UpstreamRequestLog<'a> {
         self.transport = Some(transport);
         self
     }
+}
+
+pub(super) fn log_upstream_capability_skipped(event: UpstreamRequestLog<'_>) {
+    tracing::debug!(
+        surface = "dispatch",
+        service = "upstream.pool",
+        action = "upstream.request",
+        event = "skipped",
+        upstream = %event.upstream,
+        capability = event.capability,
+        operation = event.operation,
+        subject_scoped = event.subject_scoped,
+        transport = event.transport,
+        kind = "capability_not_advertised",
+        "upstream.request.skipped"
+    );
 }
 
 pub(super) fn log_upstream_request_start(event: UpstreamRequestLog<'_>) {
@@ -414,6 +442,7 @@ mod tests {
         log_upstream_request_start(event);
         log_upstream_request_finish(event, 7, Some(128));
         log_upstream_request_error(event, 9, "upstream_error", Some(&"boom"), None, None);
+        log_upstream_capability_skipped(UpstreamRequestLog::resources_list("github", true));
 
         drop(_entered);
         drop(_guard);
@@ -430,6 +459,9 @@ mod tests {
             "\"event\":\"start\"",
             "\"event\":\"finish\"",
             "\"event\":\"error\"",
+            "\"event\":\"skipped\"",
+            "\"operation\":\"resources.list\"",
+            "\"kind\":\"capability_not_advertised\"",
             "\"elapsed_ms\":\"7\"",
             "\"elapsed_ms\":\"9\"",
             "\"kind\":\"upstream_error\"",
