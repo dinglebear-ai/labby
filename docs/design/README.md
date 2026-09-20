@@ -19,4 +19,15 @@ These documents describe design contracts that are implemented by, or intentiona
 - [REMOTE_GATEWAY_TARGET.md](./REMOTE_GATEWAY_TARGET.md) — explicit versus opportunistic remote gateway target behavior.
 - [INBOUND_IDENTITY_PROVIDER.md](./INBOUND_IDENTITY_PROVIDER.md) — accepted Google/Authelia inbound identity, migration, renewal, and provider-generation contract.
 
+## Implementation And Alignment Records
+
+These records document implemented UI boundaries or active acceptance work. They
+are maintained because they explain constraints that are not obvious from the
+component code, but they do not override the canonical contracts above.
+
+- [browser-bridge-operator-ui.md](./browser-bridge-operator-ui.md) — implemented `/browsers` operator lifecycle and safety boundary.
+- [team-authority.md](./team-authority.md) — implementation architecture for the normative [multi-user authority contract](../access-control/MULTI_USER_AUTHORITY.md).
+- [discover-mock-alignment.md](./discover-mock-alignment.md) — implemented Discover alignment baseline plus an explicit ledger of the still-missing recommendation/feed contracts.
+- [Unified Labby and Depot frontend](../depot-unified-frontend.md) — implemented optional-Depot frontend/runtime boundary and rollback contract.
+
 Historical proposals and superseded implementation sketches are not indexed here as product documentation.

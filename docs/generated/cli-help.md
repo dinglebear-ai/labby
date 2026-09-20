@@ -2002,8 +2002,8 @@ Commands:
   add              Add a gateway and reconcile runtime state
   update           Update a gateway and reconcile runtime state
   remove           Remove a gateway and reconcile runtime state
-  quarantine       Manage Lab-backed virtual servers quarantined during config migration
-  protected-route  Manage public MCP routes protected by Lab OAuth
+  quarantine       Manage Labby-backed virtual servers quarantined during config migration
+  protected-route  Manage public MCP routes protected by Labby OAuth
   loadout          Manage reusable gateway capability loadouts
   reload           Reload gateways from config and reconcile runtime state
   mcp              Manage upstream MCP server lifecycle and OAuth
@@ -2265,13 +2265,13 @@ Options:
 ## `labby gateway quarantine`
 
 ```text
-Manage Lab-backed virtual servers quarantined during config migration
+Manage Labby-backed virtual servers quarantined during config migration
 
 Usage: quarantine [OPTIONS] <COMMAND>
 
 Commands:
-  list     List Lab-backed virtual servers quarantined during config migration
-  restore  Restore a quarantined Lab-backed virtual server into the active gateway list
+  list     List Labby-backed virtual servers quarantined during config migration
+  restore  Restore a quarantined Labby-backed virtual server into the active gateway list
   help     Print this message or the help of the given subcommand(s)
 
 Options:
@@ -2294,7 +2294,7 @@ Options:
 ## `labby gateway quarantine list`
 
 ```text
-List Lab-backed virtual servers quarantined during config migration
+List Labby-backed virtual servers quarantined during config migration
 
 Usage: list [OPTIONS]
 
@@ -2318,7 +2318,7 @@ Options:
 ## `labby gateway quarantine restore`
 
 ```text
-Restore a quarantined Lab-backed virtual server into the active gateway list
+Restore a quarantined Labby-backed virtual server into the active gateway list
 
 Usage: restore [OPTIONS] <ID>
 
@@ -2358,12 +2358,12 @@ Arguments:
 ## `labby gateway protected-route`
 
 ```text
-Manage public MCP routes protected by Lab OAuth
+Manage public MCP routes protected by Labby OAuth
 
 Usage: protected-route [OPTIONS] <COMMAND>
 
 Commands:
-  list    List Gateway-managed public MCP routes protected by Lab OAuth
+  list    List Gateway-managed public MCP routes protected by Labby OAuth
   get     Get one Gateway-managed protected MCP route
   add     Add a Gateway-managed protected MCP route
   update  Replace a Gateway-managed protected MCP route
@@ -2391,7 +2391,7 @@ Options:
 ## `labby gateway protected-route list`
 
 ```text
-List Gateway-managed public MCP routes protected by Lab OAuth
+List Gateway-managed public MCP routes protected by Labby OAuth
 
 Usage: list [OPTIONS]
 
@@ -2485,7 +2485,7 @@ Options:
 
 
       --gateway-subset
-          Expose a scoped Lab gateway MCP surface instead of proxying one backend
+          Expose a scoped Labby gateway MCP surface instead of proxying one backend
 
       --project-id <PROJECT_ID>
           Bind this gateway subset to an access-control project
@@ -2497,7 +2497,7 @@ Options:
           Upstream names to expose for --gateway-subset. Repeat or comma-separate
 
       --target-service <TARGET_SERVICE>
-          Built-in Lab service names to expose for --gateway-subset. Repeat or comma-separate
+          Built-in Labby service names to expose for --gateway-subset. Repeat or comma-separate
 
       --expose-code-mode
           Expose codemode on this gateway subset
@@ -2558,7 +2558,7 @@ Options:
 
 
       --gateway-subset
-          Expose a scoped Lab gateway MCP surface instead of proxying one backend
+          Expose a scoped Labby gateway MCP surface instead of proxying one backend
 
       --project-id <PROJECT_ID>
           Bind this gateway subset to an access-control project
@@ -2573,7 +2573,7 @@ Options:
           Upstream names to expose for --gateway-subset. Repeat or comma-separate
 
       --target-service <TARGET_SERVICE>
-          Built-in Lab service names to expose for --gateway-subset. Repeat or comma-separate
+          Built-in Labby service names to expose for --gateway-subset. Repeat or comma-separate
 
       --expose-code-mode
           Expose codemode on this gateway subset
@@ -2661,7 +2661,7 @@ Options:
 
 
       --gateway-subset
-          Expose a scoped Lab gateway MCP surface instead of proxying one backend
+          Expose a scoped Labby gateway MCP surface instead of proxying one backend
 
       --project-id <PROJECT_ID>
           Bind this gateway subset to an access-control project
@@ -2673,7 +2673,7 @@ Options:
           Upstream names to expose for --gateway-subset. Repeat or comma-separate
 
       --target-service <TARGET_SERVICE>
-          Built-in Lab service names to expose for --gateway-subset. Repeat or comma-separate
+          Built-in Labby service names to expose for --gateway-subset. Repeat or comma-separate
 
       --expose-code-mode
           Expose codemode on this gateway subset
@@ -2809,7 +2809,7 @@ Options:
           Upstream names selected by this Loadout. Repeat or comma-separate
 
       --service <SERVICES>
-          Built-in Lab services selected by this Loadout. Repeat or comma-separate
+          Built-in Labby services selected by this Loadout. Repeat or comma-separate
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)

@@ -2,7 +2,7 @@
 title: "Access Control Progress"
 created: "2026-08-22"
 updated: "2026-08-23"
-status: "implementation"
+status: "historical-progress"
 ---
 
 # Access Control Progress
@@ -13,11 +13,11 @@ status: "implementation"
 > [DATA_MODEL.md](./DATA_MODEL.md#schema-v7-current)); current operator
 > behavior is in [services/ACCESS.md](../services/ACCESS.md).
 
-## Current state
+## Historical state at the 2026-08-23 snapshot
 
-The design packet and initial authentication/domain/persistence foundation are implemented in this worktree. The AccessStore now has explicit owner bootstrap, an authenticated browser-only bootstrap endpoint, and read-only doctor/setup health projection. Project-bound protected Streamable HTTP requests carry server-owned evidence that composes stable Access, a Loadout-filtered MCP catalog, and protected-route narrowing. Exact regular Prompt/Resource/Tool dispatch and `tools/list` now enforce that Project binding for their bounded supported families; other discovery families still retain their documented shadow-only boundaries. Legacy transports remain unchanged. Startup bootstrap, destructive Tool confirmation/admin authority, personal-Labby pairing, and transfer protocols remain unimplemented.
+At this snapshot, the design packet and initial authentication/domain/persistence foundation were implemented in the delivery worktree. The AccessStore now has explicit owner bootstrap, an authenticated browser-only bootstrap endpoint, and read-only doctor/setup health projection. Project-bound protected Streamable HTTP requests carry server-owned evidence that composes stable Access, a Loadout-filtered MCP catalog, and protected-route narrowing. Exact regular Prompt/Resource/Tool dispatch and `tools/list` now enforce that Project binding for their bounded supported families; other discovery families still retain their documented shadow-only boundaries. Legacy transports remain unchanged. Startup bootstrap, destructive Tool confirmation/admin authority, personal-Labby pairing, and transfer protocols remain unimplemented.
 
-Branch/worktree for the design packet:
+Historical branch/worktree for the design packet:
 
 - branch: codex/access-control-workspaces-docs
 - base at creation: origin/main 176495de6

@@ -17,4 +17,5 @@ next-env.d.ts
 .next
 out/
 out
+public/_docs/
 .DS_Store

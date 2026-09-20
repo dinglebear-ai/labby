@@ -1,5 +1,11 @@
 # Provider-neutral Skills core implementation plan
 
+Status: completed historical plan; provider-neutral core merged in PR #486 (`625ccf300`).
+
+> This file preserves the dependency-ordered implementation plan used in August
+> 2026. Current product behavior is documented in
+> [Artifacts And Agent Skills](../../services/SKILLS.md).
+
 ## Slice 1: explain current availability
 
 - [x] Introduce `SkillExposureDecision` in the gateway runtime.

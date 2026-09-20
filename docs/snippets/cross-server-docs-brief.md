@@ -2,7 +2,7 @@
 name: cross-server-docs-brief
 title: "Cross-Server Docs Brief"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-09-16"
 description: Build a compact docs brief from Context7, web search, GitHub, Axon, and time
 tags: [docs, research, cross-server]
 inputs:
@@ -13,72 +13,57 @@ inputs:
     description: Main research topic
   library_name:
     type: string
-    default: tokio
+    default: Tokio
     required: false
     description: Context7 library search name
   library_id:
     type: string
-    default: /websites/rs_tokio
+    default: /websites/rs_tokio_tokio
     required: false
     description: Concrete Context7 library id
   max_results:
     type: integer
     default: 3
     required: false
-    description: Per-source result limit
+    description: Per-source result limit where the tool supports one
 ---
 
 # Cross-Server Docs Brief
 
-Use this snippet when you want a quick documentation brief from several independent sources. It combines Context7 library docs, SearXNG web search, Cloudflare docs, GitHub repository search, Axon search, and the time server.
+Use this snippet for a compact documentation brief from several independent
+sources. The contracts below were rediscovered and smoke-tested through Labby on
+2026-09-16.
 
-## Tutorial: How This Snippet Is Built
+## Current Tool Contracts
 
-This snippet is a small parallel research checklist. Each selected tool answers a different evidence question:
+| Step | Tool | Current parameters |
+| --- | --- | --- |
+| Timestamp | `time::get_current_time` | `timezone` |
+| Library discovery | `context7::resolve-library-id` | `libraryName`, `query` |
+| Library docs | `context7::query-docs` | `libraryId`, `query` |
+| Web search | `searxng::searxng_web_search` | `query`, `num_results`, optional response controls |
+| Cloudflare docs | `cloudflare-docs::search_cloudflare_documentation` | `query` only |
+| GitHub repos | `github::search_repositories` | `query`, `perPage`, optional projection fields |
+| Axon search | `Axon::axon` | `action: "search"`, `query`, `limit` |
 
-| Step | Tool | Why it is included | Parameters the user fills |
-|---|---|---|---|
-| Timestamp | `time::get_current_time` | Marks when the brief was generated | `timezone` |
-| Library discovery | `context7::resolve-library-id` | Finds matching Context7 library ids | `libraryName`, `query` |
-| Library docs | `context7::query-docs` | Pulls focused docs from a known library id | `libraryId`, `query`, `tokens` |
-| Web search | `searxng::searxng_web_search` | Finds fresh public pages | `query`, `count` |
-| Cloudflare docs | `cloudflare-docs::search_cloudflare_documentation` | Adds a concrete vendor-doc example | `query`, `limit` |
-| GitHub repos | `github::search_repositories` | Finds related code and libraries | `query`, `perPage` |
-| Axon search | `axon::axon` | Searches and indexes through the local RAG stack | `action`, `query`, `limit` |
+Older versions of this snippet used removed parameters such as Context7
+`tokens`, SearXNG `count`, Cloudflare `limit`, and the lowercase
+`axon::axon` tool id. Those shapes are not current.
 
-In the builder, a user should not write these parameter objects manually. They should search for each tool, select it, and get a form generated from that tool's schema. For example, selecting `github::search_repositories` should show `query` and `perPage`; selecting `context7::query-docs` should show `libraryId`, `query`, and `tokens`.
+The calls are independent, so the snippet uses `codemode.batch`. Each call also
+returns its own timing/error envelope, allowing the brief to degrade without
+throwing away healthy evidence.
 
-The calls are independent, so the snippet runs them with `Promise.all`. Nothing in the GitHub query depends on the Context7 result, and nothing in the time call depends on Axon. That is the main authoring decision.
+## Input Notes
 
-## Why The Inputs Exist
-
-- `topic` becomes the generic docs/web/Axon search query.
-- `library_name` is used only for Context7 library discovery.
-- `library_id` is the exact Context7 id used for the docs query. The default is concrete because `query-docs` needs an id, not just a search phrase.
-- `max_results` bounds the web, Cloudflare, GitHub, and Axon result volume.
-
-If a user omits every input, the snippet still runs with defaults. If they only change `topic`, most calls follow that new topic while Context7 still uses the default library until `library_name` / `library_id` are changed.
-
-## What Validation Should Catch
-
-The builder should validate every selected call against its schema before saving:
-
-- `context7::query-docs.libraryId` must be a string.
-- `context7::query-docs.tokens` must be numeric when provided.
-- `searxng::searxng_web_search.count` and `github::search_repositories.perPage` must be integers.
-- `axon::axon.action` must be present because Axon is an action-dispatched tool.
-
-That validation is what makes the workflow approachable: the user picks fields from forms instead of remembering tool-specific argument names.
-
-Live smoke-tested tools before authoring:
-
-- `time::get_current_time`
-- `context7::resolve-library-id`
-- `context7::query-docs`
-- `searxng::searxng_web_search`
-- `cloudflare-docs::search_cloudflare_documentation`
-- `github::search_repositories`
-- `axon::axon` with `action: "search"`
+- `topic` drives the web and Axon searches.
+- `library_name` is used for Context7 discovery.
+- `library_id` is the exact Context7 id for the documentation query. Keep it in
+  sync with the selected library; discovery does not automatically mutate the
+  explicit query target.
+- `max_results` bounds tools that expose a limit. Cloudflare's current search
+  schema has no caller-provided result limit, so the snippet slices its returned
+  results locally.
 
 Run with:
 
@@ -90,13 +75,12 @@ labby gateway code exec --json --code "$(awk '/^```js$/{flag=1;next}/^```$/{if(f
 async (overrides = {}) => {
   const input = {
     topic: overrides.topic ?? "Model Context Protocol Rust SDK",
-    libraryName: overrides.library_name ?? "tokio",
-    libraryId: overrides.library_id ?? "/websites/rs_tokio",
-    libraryQuestion: "spawn blocking task",
-    cloudflareQuery: "workers durable objects",
-    githubRepoQuery: "modelcontextprotocol rust sdk",
-    maxResults: overrides.max_results ?? 3,
-    ...overrides
+    libraryName: overrides.library_name ?? "Tokio",
+    libraryId: overrides.library_id ?? "/websites/rs_tokio_tokio",
+    libraryQuestion: overrides.library_question ?? "spawn blocking task",
+    cloudflareQuery: overrides.cloudflare_query ?? "workers durable objects",
+    githubRepoQuery: overrides.github_repo_query ?? "modelcontextprotocol rust sdk",
+    maxResults: overrides.max_results ?? 3
   };
 
   const preview = (value, limit = 1200) => {
@@ -104,7 +88,7 @@ async (overrides = {}) => {
     return text.length > limit ? `${text.slice(0, limit)}...` : text;
   };
 
-  const timed = async (label, id, params, transform = (x) => x) => {
+  const timed = async (label, id, params, transform = (value) => value) => {
     const started = Date.now();
     try {
       const result = await callTool(id, params);
@@ -126,36 +110,52 @@ async (overrides = {}) => {
     }
   };
 
-  const calls = await Promise.all([
-    timed("timestamp", "time::get_current_time", { timezone: "America/New_York" }),
-    timed(
+  const jobs = [
+    () => timed("timestamp", "time::get_current_time", { timezone: "America/New_York" }),
+    () => timed(
       "context7_library_candidates",
       "context7::resolve-library-id",
-      { libraryName: input.libraryName, query: input.libraryName },
+      { libraryName: input.libraryName, query: input.libraryQuestion },
       (result) => preview(result)
     ),
-    timed(
+    () => timed(
       "context7_docs",
       "context7::query-docs",
-      { libraryId: input.libraryId, query: input.libraryQuestion, tokens: 900 },
+      { libraryId: input.libraryId, query: input.libraryQuestion },
       (result) => preview(result)
     ),
-    timed(
+    () => timed(
       "searxng_web",
       "searxng::searxng_web_search",
-      { query: input.topic, count: input.maxResults },
+      {
+        query: input.topic,
+        num_results: input.maxResults,
+        response_format: "json",
+        result_detail: "compact"
+      },
       (result) => preview(result)
     ),
-    timed(
+    () => timed(
       "cloudflare_docs",
       "cloudflare-docs::search_cloudflare_documentation",
-      { query: input.cloudflareQuery, limit: input.maxResults },
-      (result) => preview(result)
+      { query: input.cloudflareQuery },
+      (result) => ({
+        results: (result.results || []).slice(0, input.maxResults).map((item) => ({
+          title: item.title,
+          url: item.url,
+          similarity: item.similarity,
+          text: preview(item.text, 500)
+        }))
+      })
     ),
-    timed(
+    () => timed(
       "github_repositories",
       "github::search_repositories",
-      { query: input.githubRepoQuery, perPage: input.maxResults },
+      {
+        query: input.githubRepoQuery,
+        perPage: input.maxResults,
+        minimal_output: true
+      },
       (result) => ({
         total_count: result.total_count,
         repositories: (result.items || []).slice(0, input.maxResults).map((repo) => ({
@@ -167,13 +167,24 @@ async (overrides = {}) => {
         }))
       })
     ),
-    timed(
+    () => timed(
       "axon_search",
-      "axon::axon",
+      "Axon::axon",
       { action: "search", query: input.topic, limit: input.maxResults },
       (result) => preview(result)
     )
-  ]);
+  ];
+
+  const batch = await codemode.batch(jobs);
+  const calls = batch.ok
+    .sort((a, b) => a.i - b.i)
+    .map((entry) => entry.value);
+  calls.push(...batch.failed.map((entry) => ({
+    label: `batch_job_${entry.i}`,
+    id: "codemode.batch",
+    ok: false,
+    error: String(entry.error)
+  })));
 
   const requiredLabels = new Set([
     "timestamp",
@@ -199,7 +210,7 @@ async (overrides = {}) => {
     calls,
     notes: [
       "Context7 query_docs needs a concrete libraryId; update input.libraryId when changing libraryName.",
-      "Axon search may enqueue crawls and can return warnings if the running Axon binary is stale."
+      "SearXNG is optional for overall success because public search availability can vary by instance."
     ]
   };
 }
