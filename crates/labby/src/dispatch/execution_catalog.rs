@@ -13,19 +13,11 @@ use labby_runtime::artifacts::{ArtifactStore, PublicationState, Visibility};
 
 pub(crate) struct CanonicalExecutionCatalogProvider {
     artifacts: Arc<ArtifactStore>,
-    include_installed_plugins: bool,
-    #[cfg(test)]
-    test_plugins: Option<Vec<super::setup::claude_plugins::InstalledPlugin>>,
 }
 
 impl CanonicalExecutionCatalogProvider {
     pub(crate) fn new(artifacts: Arc<ArtifactStore>) -> Self {
-        Self {
-            artifacts,
-            include_installed_plugins: true,
-            #[cfg(test)]
-            test_plugins: None,
-        }
+        Self { artifacts }
     }
 
     pub(crate) fn production()
@@ -96,37 +88,6 @@ impl ExecutionCapabilityCatalogProvider for CanonicalExecutionCatalogProvider {
                     member_id: id,
                     expected_revision: revision,
                 });
-            }
-            if self.include_installed_plugins
-                && context
-                    .allowed_providers
-                    .as_ref()
-                    .is_none_or(|allowed| allowed.contains("claude-code"))
-            {
-                #[cfg(test)]
-                let plugins = if let Some(plugins) = &self.test_plugins {
-                    plugins.clone()
-                } else {
-                    super::setup::claude_plugins::installed_plugins(false)
-                        .await
-                        .map_err(catalog_error)?
-                };
-                #[cfg(not(test))]
-                let plugins = super::setup::claude_plugins::installed_plugins(false)
-                    .await
-                    .map_err(catalog_error)?;
-                for (id, version) in plugins
-                    .into_iter()
-                    .filter(|plugin| plugin.enabled)
-                    .filter_map(|plugin| plugin.version.map(|version| (plugin.id, version)))
-                {
-                    members.push(CapabilityRef {
-                        provider: "claude-code".into(),
-                        family: CapabilityFamily::Plugin,
-                        member_id: id,
-                        expected_revision: version,
-                    });
-                }
             }
             Ok(members)
         })
@@ -323,21 +284,7 @@ mod tests {
             directory.path().join("config.toml"),
             GatewayRuntimeHandle::default(),
         );
-        let mut provider = CanonicalExecutionCatalogProvider::new(store);
-        provider.test_plugins = Some(vec![
-            super::super::setup::claude_plugins::InstalledPlugin {
-                id: "versioned@lab".into(),
-                scope: "user".into(),
-                version: Some("1.2.3".into()),
-                enabled: true,
-            },
-            super::super::setup::claude_plugins::InstalledPlugin {
-                id: "unversioned@lab".into(),
-                scope: "user".into(),
-                version: None,
-                enabled: true,
-            },
-        ]);
+        let provider = CanonicalExecutionCatalogProvider::new(store);
         for principal in ["principal-1", "principal-2"] {
             let context = ExecutionLoadoutContext {
                 principal: ExecutionPrincipal::new(principal).unwrap(),
@@ -360,16 +307,6 @@ mod tests {
                 .collect::<BTreeSet<_>>();
             assert_eq!(generic_ids, public_ids);
             assert!(generic_ids.is_disjoint(&private_ids));
-            assert!(members.iter().any(|member| {
-                member.provider == "claude-code"
-                    && member.member_id == "versioned@lab"
-                    && member.expected_revision == "1.2.3"
-            }));
-            assert!(
-                members
-                    .iter()
-                    .all(|member| member.member_id != "unversioned@lab")
-            );
         }
     }
 
@@ -469,8 +406,7 @@ mod tests {
             directory.path().join("config.toml"),
             GatewayRuntimeHandle::default(),
         );
-        let mut provider = CanonicalExecutionCatalogProvider::new(Arc::clone(&store));
-        provider.include_installed_plugins = false;
+        let provider = CanonicalExecutionCatalogProvider::new(Arc::clone(&store));
         let context = ExecutionLoadoutContext {
             principal: ExecutionPrincipal::new("principal-1").unwrap(),
             tenant: ExecutionTenant::new("tenant-1").unwrap(),

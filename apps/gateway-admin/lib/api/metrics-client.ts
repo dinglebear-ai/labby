@@ -662,6 +662,7 @@ export async function fetchDashboardMetrics(
     return aggregateDashboard(buildCallStream(window, now), window, now)
   }
   const now = Date.now()
+  let observabilityError: string | undefined
   const [summary, logResult] = await Promise.all([
     postGatewayUsageAction<GatewayUsageMetrics>(
       'gateway.usage.metrics',
@@ -673,13 +674,19 @@ export async function fetchDashboardMetrics(
       { baseUrl: options?.baseUrl, signal: options?.signal },
     ).catch((error: unknown) => {
       if (options?.signal?.aborted) throw error
+      observabilityError = error instanceof Error ? error.message : 'server log query failed'
       return null
     }),
   ])
   const metrics = aggregateGatewayUsage(window, now, summary)
-  return logResult
-    ? enrichDashboardWithObservability(metrics, logResult.entries, window, now)
-    : metrics
+  if (logResult) return enrichDashboardWithObservability(metrics, logResult.entries, window, now)
+  return {
+    ...metrics,
+    warnings: [
+      ...(metrics.warnings ?? []),
+      `Retained observability is unavailable: ${observabilityError ?? 'server logs could not be queried'}. Token, surface, and Code Mode fan-out dimensions are not available for this view.`,
+    ],
+  }
 }
 
 export async function fetchToolDetail(

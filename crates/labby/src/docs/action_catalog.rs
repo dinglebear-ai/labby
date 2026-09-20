@@ -116,16 +116,8 @@ const CLI_ACTION_BINDINGS: &[(&str, &str)] = &[
     ("server_logs", "server_logs.query"),
     ("setup", "check"),
     ("setup", "draft.discard"),
-    ("setup", "plugin.install"),
-    ("setup", "plugin.uninstall"),
-    ("setup", "plugin_connectivity"),
-    ("setup", "plugin_export"),
-    ("setup", "plugin_hook"),
-    ("setup", "plugin_sync"),
-    ("setup", "plugins.installed"),
     ("setup", "proxy.configure"),
     ("setup", "repair"),
-    ("setup", "services.status"),
     ("setup", "state"),
     #[cfg(feature = "gateway")]
     ("snippets", "snippets.create"),
@@ -322,8 +314,20 @@ mod tests {
 
     #[cfg(feature = "all")]
     #[test]
-    fn all_features_cli_action_denominator_is_exact() {
-        assert_eq!(CLI_ACTION_BINDINGS.len(), 76);
+    fn all_features_cli_action_denominator_excludes_retired_plugin_management() {
+        assert_eq!(CLI_ACTION_BINDINGS.len(), 68);
+
+        let retired = BTreeSet::from([
+            ("setup", "plugin.install"),
+            ("setup", "plugin.uninstall"),
+            ("setup", "plugin_connectivity"),
+            ("setup", "plugin_export"),
+            ("setup", "plugin_hook"),
+            ("setup", "plugin_sync"),
+            ("setup", "plugins.installed"),
+            ("setup", "services.status"),
+        ]);
+        assert!(retired.is_disjoint(&CLI_ACTION_BINDINGS.iter().copied().collect()));
     }
 
     #[test]

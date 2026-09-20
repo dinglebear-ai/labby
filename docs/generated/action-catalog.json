@@ -4154,6 +4154,29 @@
   },
   {
     "service": "doctor",
+    "action": "capabilities.status",
+    "description": "Report configuration and runtime degradations that disable or limit Labby capabilities",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [],
+    "returns": "DoctorReport",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "doctor",
     "action": "help",
     "description": "Show this action catalog",
     "destructive": false,
@@ -8394,280 +8417,6 @@
   },
   {
     "service": "setup",
-    "action": "install_plugin",
-    "description": "Deprecated alias for `plugin.install`",
-    "destructive": true,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
-    "authorization_boundary": "transport_admin",
-    "required_capability": null,
-    "resource_family": null,
-    "params": [
-      {
-        "name": "service",
-        "ty": "string",
-        "required": true,
-        "description": "Registered service name"
-      }
-    ],
-    "returns": "PluginMutationResult",
-    "surface_availability": {
-      "cli": false,
-      "mcp": true,
-      "api": true,
-      "web_ui": true
-    },
-    "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
-    "inventory_scope": "global_inventory_not_active_runtime_exposure",
-    "builtin": false
-  },
-  {
-    "service": "setup",
-    "action": "installed_plugins",
-    "description": "Deprecated alias for `plugins.installed`",
-    "destructive": false,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
-    "authorization_boundary": "transport_admin",
-    "required_capability": null,
-    "resource_family": null,
-    "params": [
-      {
-        "name": "force",
-        "ty": "boolean",
-        "required": false,
-        "description": "Bypass the short in-process cache"
-      }
-    ],
-    "returns": "InstalledPlugin[]",
-    "surface_availability": {
-      "cli": false,
-      "mcp": true,
-      "api": true,
-      "web_ui": true
-    },
-    "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
-    "inventory_scope": "global_inventory_not_active_runtime_exposure",
-    "builtin": false
-  },
-  {
-    "service": "setup",
-    "action": "plugin.install",
-    "description": "Install the Claude Code plugin for one configured service",
-    "destructive": true,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
-    "authorization_boundary": "transport_admin",
-    "required_capability": null,
-    "resource_family": null,
-    "params": [
-      {
-        "name": "service",
-        "ty": "string",
-        "required": true,
-        "description": "Registered service name"
-      }
-    ],
-    "returns": "PluginMutationResult",
-    "surface_availability": {
-      "cli": true,
-      "mcp": true,
-      "api": true,
-      "web_ui": false
-    },
-    "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
-    "inventory_scope": "global_inventory_not_active_runtime_exposure",
-    "builtin": false
-  },
-  {
-    "service": "setup",
-    "action": "plugin.uninstall",
-    "description": "Uninstall the Claude Code plugin for one service",
-    "destructive": true,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
-    "authorization_boundary": "transport_admin",
-    "required_capability": null,
-    "resource_family": null,
-    "params": [
-      {
-        "name": "service",
-        "ty": "string",
-        "required": true,
-        "description": "Registered service name"
-      }
-    ],
-    "returns": "PluginMutationResult",
-    "surface_availability": {
-      "cli": true,
-      "mcp": true,
-      "api": true,
-      "web_ui": false
-    },
-    "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
-    "inventory_scope": "global_inventory_not_active_runtime_exposure",
-    "builtin": false
-  },
-  {
-    "service": "setup",
-    "action": "plugin_connectivity",
-    "description": "Validate connectivity to the lab MCP server at {server_url}/health",
-    "destructive": false,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
-    "authorization_boundary": "transport_admin",
-    "required_capability": null,
-    "resource_family": null,
-    "params": [
-      {
-        "name": "server_url",
-        "ty": "string",
-        "required": false,
-        "description": "Requested server URL; it must match the active target selected from CLAUDE_PLUGIN_OPTION_SERVER_URL, LABBY_SERVER_URL, or the standard http://127.0.0.1:8765 loopback default"
-      }
-    ],
-    "returns": "ConnectivityOutcome",
-    "surface_availability": {
-      "cli": true,
-      "mcp": true,
-      "api": true,
-      "web_ui": false
-    },
-    "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
-    "inventory_scope": "global_inventory_not_active_runtime_exposure",
-    "builtin": false
-  },
-  {
-    "service": "setup",
-    "action": "plugin_export",
-    "description": "Read ~/.labby/.env and return current values keyed by userConfig field name",
-    "destructive": false,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
-    "authorization_boundary": "transport_admin",
-    "required_capability": null,
-    "resource_family": null,
-    "params": [],
-    "returns": "PluginExportOutcome",
-    "surface_availability": {
-      "cli": true,
-      "mcp": true,
-      "api": true,
-      "web_ui": false
-    },
-    "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
-    "inventory_scope": "global_inventory_not_active_runtime_exposure",
-    "builtin": false
-  },
-  {
-    "service": "setup",
-    "action": "plugin_hook",
-    "description": "Run binary-owned local plugin setup checks; in repair mode also syncs CLAUDE_PLUGIN_OPTION_* and probes server connectivity",
-    "destructive": true,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
-    "authorization_boundary": "transport_admin",
-    "required_capability": null,
-    "resource_family": null,
-    "params": [
-      {
-        "name": "repair",
-        "ty": "boolean",
-        "required": false,
-        "description": "Create missing local Lab setup files and sync plugin env; defaults to true"
-      }
-    ],
-    "returns": "PluginHookReport",
-    "surface_availability": {
-      "cli": true,
-      "mcp": true,
-      "api": true,
-      "web_ui": false
-    },
-    "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
-    "inventory_scope": "global_inventory_not_active_runtime_exposure",
-    "builtin": false
-  },
-  {
-    "service": "setup",
-    "action": "plugin_sync",
-    "description": "Sync CLAUDE_PLUGIN_OPTION_* env vars into ~/.labby/.env as LABBY_* vars",
-    "destructive": true,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
-    "authorization_boundary": "transport_admin",
-    "required_capability": null,
-    "resource_family": null,
-    "params": [],
-    "returns": "PluginSyncOutcome",
-    "surface_availability": {
-      "cli": true,
-      "mcp": true,
-      "api": true,
-      "web_ui": false
-    },
-    "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
-    "inventory_scope": "global_inventory_not_active_runtime_exposure",
-    "builtin": false
-  },
-  {
-    "service": "setup",
-    "action": "plugins.installed",
-    "description": "List installed Claude Code lab plugins",
-    "destructive": false,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
-    "authorization_boundary": "transport_admin",
-    "required_capability": null,
-    "resource_family": null,
-    "params": [
-      {
-        "name": "force",
-        "ty": "boolean",
-        "required": false,
-        "description": "Bypass the short in-process cache"
-      }
-    ],
-    "returns": "InstalledPlugin[]",
-    "surface_availability": {
-      "cli": true,
-      "mcp": true,
-      "api": true,
-      "web_ui": false
-    },
-    "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
-    "inventory_scope": "global_inventory_not_active_runtime_exposure",
-    "builtin": false
-  },
-  {
-    "service": "setup",
     "action": "proxy.configure",
     "description": "Persist local stdio-proxy defaults and securely store a bearer secret when required",
     "destructive": true,
@@ -8792,56 +8541,6 @@
     },
     "requires_http_subject": false,
     "auth_posture": "uses the selected transport auth and gateway visibility policy",
-    "inventory_scope": "global_inventory_not_active_runtime_exposure",
-    "builtin": false
-  },
-  {
-    "service": "setup",
-    "action": "services.status",
-    "description": "Join service configuration, draft, and Claude plugin state",
-    "destructive": false,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
-    "authorization_boundary": "transport_admin",
-    "required_capability": null,
-    "resource_family": null,
-    "params": [],
-    "returns": "ServiceStatus[]",
-    "surface_availability": {
-      "cli": true,
-      "mcp": true,
-      "api": true,
-      "web_ui": false
-    },
-    "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
-    "inventory_scope": "global_inventory_not_active_runtime_exposure",
-    "builtin": false
-  },
-  {
-    "service": "setup",
-    "action": "services_status",
-    "description": "Deprecated alias for `services.status`",
-    "destructive": false,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
-    "authorization_boundary": "transport_admin",
-    "required_capability": null,
-    "resource_family": null,
-    "params": [],
-    "returns": "ServiceStatus[]",
-    "surface_availability": {
-      "cli": false,
-      "mcp": true,
-      "api": true,
-      "web_ui": true
-    },
-    "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -9060,38 +8759,6 @@
     "returns": "SetupSnapshot",
     "surface_availability": {
       "cli": true,
-      "mcp": true,
-      "api": true,
-      "web_ui": true
-    },
-    "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
-    "inventory_scope": "global_inventory_not_active_runtime_exposure",
-    "builtin": false
-  },
-  {
-    "service": "setup",
-    "action": "uninstall_plugin",
-    "description": "Deprecated alias for `plugin.uninstall`",
-    "destructive": true,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
-    "authorization_boundary": "transport_admin",
-    "required_capability": null,
-    "resource_family": null,
-    "params": [
-      {
-        "name": "service",
-        "ty": "string",
-        "required": true,
-        "description": "Registered service name"
-      }
-    ],
-    "returns": "PluginMutationResult",
-    "surface_availability": {
-      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true

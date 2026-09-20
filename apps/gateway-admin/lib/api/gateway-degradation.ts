@@ -3,6 +3,9 @@ import type { Gateway } from '../types/gateway'
 export const GATEWAY_DEGRADED_WARNING_CODES = [
   'unknown_service',
   'service_catalog_unavailable',
+  'gateway_discovery_tools_unavailable',
+  'gateway_discovery_resources_unavailable',
+  'gateway_discovery_prompts_unavailable',
 ] as const
 
 export type GatewayDegradedWarningCode = typeof GATEWAY_DEGRADED_WARNING_CODES[number]

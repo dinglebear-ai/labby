@@ -499,10 +499,7 @@ fn collect_client_plan(
             1 => ClientAuth::Bearer,
             _ => ClientAuth::OAuth,
         }
-    } else if std::env::var("LABBY_MCP_HTTP_TOKEN")
-        .ok()
-        .is_some_and(|v| !v.trim().is_empty())
-    {
+    } else if std::env::var("LABBY_MCP_HTTP_TOKEN").is_ok_and(|v| !v.trim().is_empty()) {
         ClientAuth::Bearer
     } else {
         ClientAuth::OAuth

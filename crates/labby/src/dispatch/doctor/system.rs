@@ -4,6 +4,7 @@
 
 use super::types::{Finding, Severity, service_env_checks};
 use futures::StreamExt as _;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -601,6 +602,25 @@ fn command_check(service: &str, label: &str, cmd: &str, cancellation: &AtomicBoo
 // Main entry point
 // ---------------------------------------------------------------------------
 
+/// Return only capability-affecting configuration and runtime degradations.
+///
+/// This is intentionally lightweight and side-effect-free so every operator
+/// surface can surface degraded capabilities without running the full Doctor
+/// probe suite or hiding the actionable reason in server logs.
+pub fn run_capability_checks() -> Vec<Finding> {
+    let mut by_check = BTreeMap::<String, Finding>::new();
+    for finding in config_startup_findings() {
+        by_check.insert(finding.check.clone(), finding);
+    }
+    // Runtime evidence is authoritative when the same capability was also
+    // predictable from static configuration. Replacing by stable check id
+    // avoids showing the operator two warnings for the same broken feature.
+    for finding in subsystem_findings(&crate::runtime_health::SubsystemHealth::process()) {
+        by_check.insert(finding.check.clone(), finding);
+    }
+    by_check.into_values().collect()
+}
+
 /// Run all local system probes: env-var checks, config files, toolchain, and disk.
 ///
 /// Order: env-var checks first (preserves current `labby doctor` output), then
@@ -719,10 +739,7 @@ pub async fn run_system_checks() -> Vec<Finding> {
         )
         .await,
     );
-    findings.extend(config_startup_findings());
-    findings.extend(subsystem_findings(
-        &crate::runtime_health::SubsystemHealth::process(),
-    ));
+    findings.extend(run_capability_checks());
     findings
 }
 
@@ -732,16 +749,16 @@ fn config_startup_findings() -> Vec<Finding> {
     if problems.is_empty() {
         return vec![Finding {
             service: "lab".into(),
-            check: "config:startup-validation".into(),
+            check: "capability:startup_config".into(),
             severity: Severity::Ok,
-            message: "config.toml passes labby serve startup validation".into(),
+            message: "Configuration and runtime guard preflight passed.".into(),
         }];
     }
     problems
         .into_iter()
         .map(|problem| Finding {
             service: "lab".into(),
-            check: "config:startup-validation".into(),
+            check: format!("capability:{}", problem.code),
             severity: if problem.fatal {
                 Severity::Fail
             } else {
@@ -766,9 +783,9 @@ fn subsystem_findings(health: &crate::runtime_health::SubsystemHealth) -> Vec<Fi
         .into_iter()
         .map(|(code, detail)| Finding {
             service: "lab".into(),
-            check: format!("subsystem:{code}"),
+            check: format!("capability:{code}"),
             severity: Severity::Fail,
-            message: format!("subsystem degraded since startup: {detail}"),
+            message: format!("Unavailable since startup: {detail}"),
         })
         .collect()
 }
@@ -787,7 +804,7 @@ mod subsystem_finding_tests {
         );
         let findings = subsystem_findings(&health);
         assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].check, "subsystem:artifacts_unavailable");
+        assert_eq!(findings[0].check, "capability:artifacts_unavailable");
         assert!(matches!(findings[0].severity, Severity::Fail));
         assert!(findings[0].message.contains("pin must be public"));
     }

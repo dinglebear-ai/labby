@@ -7516,6 +7516,7 @@
             "enum": [
               "help",
               "schema",
+              "capabilities.status",
               "system.checks",
               "audit.full",
               "auth.check",
@@ -9194,21 +9195,9 @@
               "settings.update",
               "settings.config.update",
               "settings.env.update",
-              "plugin_hook",
-              "plugin_sync",
-              "plugin_export",
-              "plugin_connectivity",
               "check",
               "repair",
               "proxy.configure",
-              "plugins.installed",
-              "installed_plugins",
-              "services.status",
-              "services_status",
-              "plugin.install",
-              "install_plugin",
-              "plugin.uninstall",
-              "uninstall_plugin",
               "finalize"
             ]
           },
@@ -9240,71 +9229,6 @@
         }
       },
       "SetupFinalizeParams": {
-        "type": "object",
-        "properties": {
-          "force": {
-            "type": "boolean"
-          }
-        }
-      },
-      "SetupInstall_pluginParams": {
-        "type": "object",
-        "required": [
-          "service"
-        ],
-        "properties": {
-          "service": {
-            "type": "string"
-          }
-        }
-      },
-      "SetupInstalled_pluginsParams": {
-        "type": "object",
-        "properties": {
-          "force": {
-            "type": "boolean"
-          }
-        }
-      },
-      "SetupPluginInstallParams": {
-        "type": "object",
-        "required": [
-          "service"
-        ],
-        "properties": {
-          "service": {
-            "type": "string"
-          }
-        }
-      },
-      "SetupPluginUninstallParams": {
-        "type": "object",
-        "required": [
-          "service"
-        ],
-        "properties": {
-          "service": {
-            "type": "string"
-          }
-        }
-      },
-      "SetupPlugin_connectivityParams": {
-        "type": "object",
-        "properties": {
-          "server_url": {
-            "type": "string"
-          }
-        }
-      },
-      "SetupPlugin_hookParams": {
-        "type": "object",
-        "properties": {
-          "repair": {
-            "type": "boolean"
-          }
-        }
-      },
-      "SetupPluginsInstalledParams": {
         "type": "object",
         "properties": {
           "force": {
@@ -9521,17 +9445,6 @@
         "properties": {
           "services.built_in_upstream_apis_enabled": {
             "type": "boolean"
-          }
-        }
-      },
-      "SetupUninstall_pluginParams": {
-        "type": "object",
-        "required": [
-          "service"
-        ],
-        "properties": {
-          "service": {
-            "type": "string"
           }
         }
       },

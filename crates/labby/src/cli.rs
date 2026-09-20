@@ -530,13 +530,19 @@ mod tests {
     }
 
     #[test]
-    fn replacement_setup_commands_parse() {
+    fn replacement_setup_commands_parse_and_retired_plugin_install_is_rejected() {
         let cli = Cli::try_parse_from(["labby", "setup"]).expect("setup parses");
         assert!(matches!(cli.command, Command::Setup(_)));
 
-        let cli = Cli::try_parse_from(["labby", "setup", "install-plugin", "gateway", "-y"])
-            .expect("setup install-plugin parses");
-        assert!(matches!(cli.command, Command::Setup(_)));
+        for command in ["check", "repair"] {
+            let cli = Cli::try_parse_from(["labby", "setup", command])
+                .unwrap_or_else(|error| panic!("setup {command} must parse: {error}"));
+            assert!(matches!(cli.command, Command::Setup(_)));
+        }
+
+        let error = Cli::try_parse_from(["labby", "setup", "install-plugin", "gateway", "-y"])
+            .expect_err("retired setup install-plugin must stay unavailable");
+        assert!(error.to_string().contains("unrecognized subcommand"));
     }
 
     #[test]

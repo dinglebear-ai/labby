@@ -419,11 +419,9 @@ pub fn service_configured_by_env(service: &str) -> bool {
     let Some(meta) = service_meta(service) else {
         return false;
     };
-    meta.required_env.iter().all(|var| {
-        std::env::var(var.name)
-            .ok()
-            .is_some_and(|value| !value.trim().is_empty())
-    })
+    meta.required_env
+        .iter()
+        .all(|var| std::env::var(var.name).is_ok_and(|value| !value.trim().is_empty()))
 }
 
 #[must_use]

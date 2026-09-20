@@ -17,7 +17,7 @@ test('browser client loads the operator lifecycle from the browser endpoint', as
 
   assert.deepEqual(await browserApi.list(), [])
   assert.deepEqual(await browserApi.pairings(), [])
-  assert.deepEqual(await browserApi.sessions(), { sessions: [], next_cursor: null })
+  assert.deepEqual(await browserApi.sessions(), { sessions: [], next_cursor: null, detail_warnings: [] })
   assert.deepEqual(actions, [
     { action: 'browser.list', params: {} },
     { action: 'browser.pairing.list', params: {} },
@@ -38,7 +38,7 @@ test('browser client forwards session cursors without unbounded auto-pagination'
   try {
     const page = await browserApi.sessions(undefined, 'current-page')
     assert.deepEqual(request, { action: 'browser.sessions', params: { cursor: 'current-page' } })
-    assert.deepEqual(page, { sessions: [], next_cursor: 'older-page' })
+    assert.deepEqual(page, { sessions: [], next_cursor: 'older-page', detail_warnings: [] })
   } finally {
     globalThis.fetch = original
   }

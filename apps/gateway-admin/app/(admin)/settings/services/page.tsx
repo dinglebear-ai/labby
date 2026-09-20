@@ -14,45 +14,51 @@ import {
   SettingsRow,
   SettingsRowStrip,
 } from '@/components/settings/SettingsChrome'
-import { PluginToggle } from '@/components/setup/PluginToggle'
-import { setupApi, type ServiceSchema, type SetupSnapshot, type ServiceStatus, type SettingsState } from '@/lib/api/setup-client'
+import { setupApi, type ServiceSchema, type SetupSnapshot, type SettingsState } from '@/lib/api/setup-client'
 
 interface ServiceRow {
   schema: ServiceSchema
-  configured: boolean
-  pluginInstalled: boolean
+  configured: boolean | undefined
 }
 
 export default function ServicesIndex(): React.ReactElement {
   const [services, setServices] = useState<ServiceSchema[]>([])
   const [snapshot, setSnapshot] = useState<SetupSnapshot | undefined>()
   const [settings, setSettings] = useState<SettingsState | undefined>()
-  const [statuses, setStatuses] = useState<ServiceStatus[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | undefined>()
+  const [warning, setWarning] = useState<string | undefined>()
 
   useEffect(() => {
     const controller = new AbortController()
-    Promise.all([
+    Promise.allSettled([
       setupApi.schemaGet(undefined, controller.signal),
       setupApi.state(controller.signal),
-      setupApi.servicesStatus(controller.signal),
       setupApi.settingsState('features', controller.signal),
     ])
-      .then(([schemaResponse, snap, statusResponse, settingsResponse]) => {
+      .then(([schemaResult, stateResult, settingsResult]) => {
         if (controller.signal.aborted) return
+        if (schemaResult.status === 'rejected') {
+          setError(schemaResult.reason instanceof Error ? schemaResult.reason.message : 'Service catalog failed to load')
+          return
+        }
         setServices(
-          Object.values(schemaResponse.services).sort((a, b) =>
+          Object.values(schemaResult.value.services).sort((a, b) =>
             a.display_name.localeCompare(b.display_name),
           ),
         )
-        setSnapshot(snap)
-        setStatuses(statusResponse.services)
-        setSettings(settingsResponse)
-      })
-      .catch((err) => {
-        if (controller.signal.aborted) return
-        setError(err instanceof Error ? err.message : 'load failed')
+        const degraded: string[] = []
+        if (stateResult.status === 'fulfilled') {
+          setSnapshot(stateResult.value)
+        } else {
+          degraded.push(`configuration status unavailable: ${stateResult.reason instanceof Error ? stateResult.reason.message : 'request failed'}`)
+        }
+        if (settingsResult.status === 'fulfilled') {
+          setSettings(settingsResult.value)
+        } else {
+          degraded.push(`feature setting unavailable: ${settingsResult.reason instanceof Error ? settingsResult.reason.message : 'request failed'}`)
+        }
+        setWarning(degraded.length > 0 ? degraded.join('; ') : undefined)
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false)
@@ -68,15 +74,13 @@ export default function ServicesIndex(): React.ReactElement {
           ? snapshot.state.envars ?? []
           : [],
     )
-    const statusByName = new Map(statuses.map((status) => [status.name, status]))
     return services.map((schema) => ({
       schema,
-      configured: statusByName.get(schema.name)?.configured ?? schema.env
-        .filter((e) => e.required)
-        .every((e) => !missing.has(e.name)),
-      pluginInstalled: statusByName.get(schema.name)?.plugin_installed ?? false,
+      configured: snapshot
+        ? schema.env.filter((e) => e.required).every((e) => !missing.has(e.name))
+        : undefined,
     }))
-  }, [services, snapshot, statuses])
+  }, [services, snapshot])
   const builtInsEnabled = settings?.values['services.built_in_upstream_apis_enabled']
 
   return (
@@ -121,8 +125,15 @@ export default function ServicesIndex(): React.ReactElement {
             <span className="text-[11.5px] text-destructive">{error}</span>
           </SettingsRowStrip>
         ) : null}
+        {warning ? (
+          <SettingsRowStrip>
+            <span className="text-[11.5px] text-aurora-warn">
+              Some service status is unavailable, but configuration remains usable: {warning}
+            </span>
+          </SettingsRowStrip>
+        ) : null}
         {!loading && !error
-          ? rows.map(({ schema, configured, pluginInstalled }) => (
+          ? rows.map(({ schema, configured }) => (
               <SettingsRow
                 key={schema.name}
                 label={
@@ -139,20 +150,26 @@ export default function ServicesIndex(): React.ReactElement {
                     className="flex items-center gap-2"
                     style={{ fontSize: 11, color: 'var(--aurora-text-muted)' }}
                   >
-                    <PluginToggle service={schema.name} installed={pluginInstalled} disabled={!configured} />
-                    {configured ? (
+                    {configured === true ? (
                       <span
                         className="inline-flex items-center gap-1"
                         style={{ color: 'var(--aurora-success)' }}
                       >
                         <CircleCheck className="h-3 w-3" /> configured
                       </span>
-                    ) : (
+                    ) : configured === false ? (
                       <span
                         className="inline-flex items-center gap-1"
                         style={{ color: 'var(--aurora-warn)' }}
                       >
                         <CircleAlert className="h-3 w-3" /> incomplete
+                      </span>
+                    ) : (
+                      <span
+                        className="inline-flex items-center gap-1"
+                        style={{ color: 'var(--aurora-warn)' }}
+                      >
+                        <CircleAlert className="h-3 w-3" /> status unavailable
                       </span>
                     )}
                     <Link

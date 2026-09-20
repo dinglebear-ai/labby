@@ -513,26 +513,18 @@ Bootstrap the supported Incus Labby gateway container
 Usage: setup [OPTIONS] [COMMAND]
 
 Commands:
-  wizard               Open the web-based first-run wizard or settings flow
-  draft                Manage the local setup draft
-  access-bootstrap     Prepare and operate the local project-credential bootstrap flow
-  owner-link-prepare   Approve one specific existing-owner identity link while the gateway is stopped
-  host-service         Manage the systemd Labby gateway service
-  installed-plugins    List installed Claude Code lab plugins
-  services-status      Join service configuration, draft, and Claude plugin state
-  plugin-hook          Run binary-owned local setup checks for Claude plugin hooks
-  plugin-sync          Sync CLAUDE_PLUGIN_OPTION_* env vars into ~/.labby/.env as LABBY_* vars
-  plugin-export        Read ~/.labby/.env and print current values keyed by userConfig field name
-  plugin-connectivity  Validate connectivity to the lab MCP server
-  check                Check local setup prerequisites without mutating the filesystem
-  repair               Repair missing local setup prerequisites without contacting external services
-  proxy                Configure defaults for the ephemeral stdio MCP proxy
-  incusbackup          Validate or apply local Incus backup policy
-  incus-ssh            Bootstrap container SSH trust from the host ~/.ssh/config
-  install              Copy the labby binary into ~/.local/bin so it is callable in your own terminal
-  install-plugin       Install the Claude Code plugin for a configured service
-  uninstall-plugin     Uninstall the Claude Code plugin for a service
-  help                 Print this message or the help of the given subcommand(s)
+  wizard              Open the web-based first-run wizard or settings flow
+  draft               Manage the local setup draft
+  access-bootstrap    Prepare and operate the local project-credential bootstrap flow
+  owner-link-prepare  Approve one specific existing-owner identity link while the gateway is stopped
+  host-service        Manage the systemd Labby gateway service
+  check               Check local setup prerequisites without mutating the filesystem
+  repair              Repair missing local setup prerequisites without contacting external services
+  proxy               Configure defaults for the ephemeral stdio MCP proxy
+  incusbackup         Validate or apply local Incus backup policy
+  incus-ssh           Bootstrap container SSH trust from the host ~/.ssh/config
+  install             Copy the labby binary into ~/.local/bin so it is callable in your own terminal
+  help                Print this message or the help of the given subcommand(s)
 
 Options:
       --json
@@ -1156,165 +1148,6 @@ Arguments:
           Print help for the subcommand(s)
 ```
 
-## `labby setup installed-plugins`
-
-```text
-List installed Claude Code lab plugins
-
-Usage: installed-plugins [OPTIONS]
-
-Options:
-      --force
-          Bypass the short in-process cache
-
-      --json
-          Emit JSON instead of human-readable tables
-
-      --color <COLOR>
-          Control human-readable CLI styling
-
-          [default: auto]
-          [possible values: auto, plain, color]
-
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
-
-  -h, --help
-          Print help
-```
-
-## `labby setup services-status`
-
-```text
-Join service configuration, draft, and Claude plugin state
-
-Usage: services-status [OPTIONS]
-
-Options:
-      --json
-          Emit JSON instead of human-readable tables
-
-      --color <COLOR>
-          Control human-readable CLI styling
-
-          [default: auto]
-          [possible values: auto, plain, color]
-
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
-
-  -h, --help
-          Print help
-```
-
-## `labby setup plugin-hook`
-
-```text
-Run binary-owned local setup checks for Claude plugin hooks
-
-Usage: plugin-hook [OPTIONS]
-
-Options:
-      --json
-          Emit JSON instead of human-readable tables
-
-      --no-repair
-          Check only; do not create missing local setup files
-
-      --color <COLOR>
-          Control human-readable CLI styling
-
-          [default: auto]
-          [possible values: auto, plain, color]
-
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
-
-  -h, --help
-          Print help
-```
-
-## `labby setup plugin-sync`
-
-```text
-Sync CLAUDE_PLUGIN_OPTION_* env vars into ~/.labby/.env as LABBY_* vars
-
-Usage: plugin-sync [OPTIONS]
-
-Options:
-      --json
-          Emit JSON instead of human-readable tables
-
-  -y, --yes
-          Skip confirmation for this destructive action
-
-      --color <COLOR>
-          Control human-readable CLI styling
-
-          [default: auto]
-          [possible values: auto, plain, color]
-
-      --dry-run
-          Print what would be dispatched without executing
-
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
-
-  -h, --help
-          Print help
-```
-
-## `labby setup plugin-export`
-
-```text
-Read ~/.labby/.env and print current values keyed by userConfig field name
-
-Usage: plugin-export [OPTIONS]
-
-Options:
-      --json
-          Emit JSON instead of human-readable tables
-
-      --color <COLOR>
-          Control human-readable CLI styling
-
-          [default: auto]
-          [possible values: auto, plain, color]
-
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
-
-  -h, --help
-          Print help
-```
-
-## `labby setup plugin-connectivity`
-
-```text
-Validate connectivity to the lab MCP server
-
-Usage: plugin-connectivity [OPTIONS]
-
-Options:
-      --json
-          Emit JSON instead of human-readable tables
-
-      --server-url <SERVER_URL>
-          Requested server URL; it must match the active plugin, persisted, or standard http://127.0.0.1:8765 loopback target
-
-      --color <COLOR>
-          Control human-readable CLI styling
-
-          [default: auto]
-          [possible values: auto, plain, color]
-
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
-
-  -h, --help
-          Print help
-```
-
 ## `labby setup check`
 
 ```text
@@ -1727,74 +1560,6 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
-
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
-
-  -h, --help
-          Print help
-```
-
-## `labby setup install-plugin`
-
-```text
-Install the Claude Code plugin for a configured service
-
-Usage: install-plugin [OPTIONS] <SERVICE>
-
-Arguments:
-  <SERVICE>
-          Service name, for example `unifi` or `apprise`
-
-Options:
-      --json
-          Emit JSON instead of human-readable tables
-
-  -y, --yes
-          Skip confirmation for destructive actions
-
-      --color <COLOR>
-          Control human-readable CLI styling
-
-          [default: auto]
-          [possible values: auto, plain, color]
-
-      --dry-run
-          Print what would be dispatched without executing
-
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
-
-  -h, --help
-          Print help
-```
-
-## `labby setup uninstall-plugin`
-
-```text
-Uninstall the Claude Code plugin for a service
-
-Usage: uninstall-plugin [OPTIONS] <SERVICE>
-
-Arguments:
-  <SERVICE>
-          Service name, for example `unifi` or `apprise`
-
-Options:
-      --json
-          Emit JSON instead of human-readable tables
-
-  -y, --yes
-          Skip confirmation for destructive actions
-
-      --color <COLOR>
-          Control human-readable CLI styling
-
-          [default: auto]
-          [possible values: auto, plain, color]
-
-      --dry-run
-          Print what would be dispatched without executing
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
