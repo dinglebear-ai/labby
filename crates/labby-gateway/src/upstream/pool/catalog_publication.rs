@@ -6,7 +6,7 @@
 //! Each projection has an independent generation so one catalog family cannot
 //! perturb another family's publication identity.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1205,6 +1205,48 @@ impl UpstreamPool {
         &self,
     ) -> Result<Arc<PublishedResourceCatalogSnapshot>, ResourceCatalogPublicationError> {
         self.catalog.read().await.published_resources.clone()
+    }
+
+    /// Return already-discovered regular upstream resources without peer I/O.
+    /// Discovery surfaces use this cache-only projection so resources/list cannot
+    /// fan out into a fleet-wide refresh.
+    pub async fn cached_upstream_resources_allowed(
+        &self,
+        allowed: Option<&BTreeSet<String>>,
+    ) -> Vec<(String, Resource)> {
+        let catalog = self.catalog.read().await;
+        let mut upstreams = catalog.entries.iter().collect::<Vec<_>>();
+        upstreams.sort_unstable_by_key(|(name, _)| name.as_str());
+        let mut resources = Vec::new();
+        for (name, entry) in upstreams {
+            if allowed.is_some_and(|allowed| !allowed.contains(name))
+                || !entry.proxy_resources
+                || !entry.resource_health.is_routable()
+            {
+                continue;
+            }
+            let Some(ResourceSourceState::Ready(source)) = catalog.resource_sources.get(name)
+            else {
+                continue;
+            };
+            if catalog.incarnation(name) != Some(source.incarnation) {
+                continue;
+            }
+            let mut rows = source
+                .resources
+                .iter()
+                .filter(|resource| entry.resource_exposure_policy.matches(&resource.uri))
+                .cloned()
+                .collect::<Vec<_>>();
+            rows.sort_unstable_by(|left, right| left.uri.cmp(&right.uri));
+            for resource in rows {
+                if resources.len() >= super::tools::MAX_UPSTREAM_RESOURCES {
+                    return resources;
+                }
+                resources.push((name.clone(), resource));
+            }
+        }
+        resources
     }
 
     #[cfg(any(test, feature = "testkit"))]

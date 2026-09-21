@@ -30,8 +30,8 @@ use super::entries::{
     resolve_request_resource_exposure_policy, resource_exposed,
 };
 use super::helpers::{
-    bare_upstream_resource_uri, classify_upstream_error, max_response_bytes, rewrite_resource_uri,
-    upstream_discovery_timeout, upstream_transport,
+    SUBJECT_CONN_IDLE_TTL, bare_upstream_resource_uri, classify_upstream_error, max_response_bytes,
+    rewrite_resource_uri, upstream_discovery_timeout, upstream_transport,
 };
 use super::logging::{
     UpstreamRequestLog, is_capability_unsupported, log_upstream_capability_skipped,
@@ -349,6 +349,29 @@ impl UpstreamPool {
             .into_iter()
             .map(|listed| listed.resource)
             .collect()
+    }
+
+    /// Return the already-discovered regular upstream resource catalog.
+    ///
+    /// This is intentionally cache-only: callers that are merely enumerating
+    /// resources must not turn an MCP resources/list request into fleet-wide I/O.
+    pub async fn cached_upstream_resources_with_provenance_allowed(
+        &self,
+        allowed: Option<&BTreeSet<String>>,
+    ) -> Vec<ListedUpstreamResource> {
+        let mut listed = Vec::new();
+        for (upstream_name, mut resource) in self.cached_upstream_resources_allowed(allowed).await {
+            let native_uri = resource.uri.clone();
+            if !resource.uri.starts_with("ui://") {
+                rewrite_resource_uri(&mut resource, &upstream_name);
+            }
+            listed.push(ListedUpstreamResource {
+                upstream_name,
+                native_uri,
+                resource,
+            });
+        }
+        listed
     }
 
     pub async fn list_upstream_resources_with_provenance_allowed(
@@ -673,6 +696,30 @@ impl UpstreamPool {
             futures.push(async move {
                 let started = Instant::now();
                 let request_timeout = catalog_listing_timeout(pool.request_timeout);
+                let key = (config.name.clone(), subject.clone());
+                let cached = {
+                    let mut cache = pool.subject_connections.write().await;
+                    cache.get_mut(&key).and_then(|entry| {
+                        if entry.peer.is_transport_closed()
+                            || entry.last_used.elapsed() >= SUBJECT_CONN_IDLE_TTL
+                        {
+                            return None;
+                        }
+                        let resources = entry.optional_catalogs.resources.clone()?;
+                        entry.last_used = Instant::now();
+                        Some(resources)
+                    })
+                };
+                // A warm subject catalog is authoritative for this connection.
+                // Do not turn every downstream resources/list into another OAuth
+                // upstream resources/list RPC.
+                if let Some(resources) = cached {
+                    let policy = resolve_request_resource_exposure_policy(
+                        &config.name,
+                        config.expose_resources.clone(),
+                    );
+                    return (config.name, policy, Ok(resources));
+                }
                 // Subject-scoped resources are discovered over a per-(upstream,
                 // subject) connection and never land in `self.catalog`, so
                 // there is no `UpstreamEntry::resource_exposure_policy` to
@@ -804,12 +851,7 @@ impl UpstreamPool {
                         &config.name,
                         &subject,
                         &peer,
-                        Some(
-                            resources
-                                .iter()
-                                .map(|resource| resource.uri.clone())
-                                .collect(),
-                        ),
+                        Some(resources.clone()),
                         None,
                     )
                     .await;
@@ -1922,7 +1964,9 @@ mod tests {
 
     #[tokio::test]
     async fn subject_scoped_resources_reuse_the_cached_subject_connection() {
-        let pool = catalog_pool_with_server("google-drive", StaticCatalogServer::default()).await;
+        let server = StaticCatalogServer::default();
+        let resource_calls = Arc::clone(&server.list_resources_count);
+        let pool = catalog_pool_with_server("google-drive", server).await;
         let peer = pool
             .connections
             .read()
@@ -1950,7 +1994,10 @@ mod tests {
         let mut config = oauth_schema_config("google-drive");
         config.proxy_resources = true;
 
-        let resources = pool.subject_scoped_resources(&[config], "alice").await;
+        let baseline_calls = resource_calls.load(Ordering::SeqCst);
+        let resources = pool
+            .subject_scoped_resources(std::slice::from_ref(&config), "alice")
+            .await;
         let uris = resources
             .iter()
             .map(|resource| resource.uri.as_str())
@@ -1962,6 +2009,26 @@ mod tests {
                 "lab://upstream/google-drive/file:///tmp/upstream-one",
                 "lab://upstream/google-drive/lab://upstream/old-name/file:///tmp/upstream-two",
             ]
+        );
+
+        assert_eq!(
+            resource_calls.load(Ordering::SeqCst),
+            baseline_calls + 1,
+            "the cold subject catalog should perform one resources/list RPC"
+        );
+
+        let cached = pool
+            .subject_scoped_resources(std::slice::from_ref(&config), "alice")
+            .await;
+        let cached_uris = cached
+            .iter()
+            .map(|resource| resource.uri.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(cached_uris, uris);
+        assert_eq!(
+            resource_calls.load(Ordering::SeqCst),
+            baseline_calls + 1,
+            "the warm subject catalog must not repeat resources/list"
         );
     }
 
@@ -2018,7 +2085,7 @@ mod tests {
             .expect("subject connection remains cached");
         assert_eq!(
             subject.optional_catalogs.resources.clone(),
-            Some(Vec::<String>::new())
+            Some(Vec::<Resource>::new())
         );
         drop(connections);
 

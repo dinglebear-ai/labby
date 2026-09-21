@@ -2,7 +2,7 @@
 use std::sync::Arc;
 
 use labby_runtime::gateway_config::UpstreamConfig;
-use rmcp::{RoleClient, service::Peer};
+use rmcp::{RoleClient, model::Resource, service::Peer};
 
 use super::entries::{
     prompt_exposed, resolve_request_exposure_policy, resolve_request_prompt_exposure_policy,
@@ -13,7 +13,7 @@ use super::{UpstreamPool, helpers::UpstreamCachedSummary};
 
 #[derive(Default)]
 pub(crate) struct SubjectOptionalCatalogs {
-    pub resources: Option<Vec<String>>,
+    pub resources: Option<Vec<Resource>>,
     pub prompts: Option<Vec<String>>,
 }
 
@@ -86,7 +86,9 @@ impl UpstreamPool {
                         .map_or(0, |items| {
                             items
                                 .iter()
-                                .filter(|uri| resource_exposed(&resource_policy, uri))
+                                .filter(|resource| {
+                                    resource_exposed(&resource_policy, &resource.uri)
+                                })
                                 .count()
                         })
                 } else {
@@ -117,7 +119,7 @@ impl UpstreamPool {
         name: &str,
         subject: &str,
         peer: &Peer<RoleClient>,
-        resources: Option<Vec<String>>,
+        resources: Option<Vec<Resource>>,
         prompts: Option<Vec<String>>,
     ) {
         // Handshake snapshots are unique to a peer. Reject an awaited reply from

@@ -999,7 +999,7 @@ impl LabMcpServer {
             }
             if !resources.finished() {
                 for listed in pool
-                    .list_upstream_resources_with_provenance_allowed(
+                    .cached_upstream_resources_with_provenance_allowed(
                         self.route_scope.allowed_upstreams(),
                     )
                     .await
