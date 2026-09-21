@@ -709,12 +709,6 @@ impl UpstreamPool {
                 {
                     Ok(Ok((peer, _tools))) => peer,
                     Ok(Err(error)) => {
-                        pool.record_failure_for(
-                            &config.name,
-                            UpstreamCapability::Resources,
-                            format!("upstream connect failed: {error}"),
-                        )
-                        .await;
                         log_upstream_request_error(
                             event,
                             started.elapsed().as_millis(),
@@ -730,12 +724,6 @@ impl UpstreamPool {
                             "subject-scoped upstream connection timed out after {}ms",
                             request_timeout.as_millis()
                         );
-                        pool.record_failure_for(
-                            &config.name,
-                            UpstreamCapability::Resources,
-                            error.clone(),
-                        )
-                        .await;
                         log_upstream_request_error(
                             event,
                             started.elapsed().as_millis(),
