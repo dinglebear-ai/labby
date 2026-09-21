@@ -82,8 +82,7 @@ impl UpstreamPool {
                     crate::gateway::code_mode::catalog_cache::fingerprint(config),
                 );
             } else {
-                self.upstream_config_fingerprints
-                    .insert(upstream_name.clone(), "<removed>".to_string());
+                self.upstream_config_fingerprints.remove(upstream_name);
             }
         }
 

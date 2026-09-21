@@ -1121,6 +1121,7 @@ mod tests {
         let before = init_count.load(Ordering::SeqCst);
         let mut config = test_upstream_config();
         config.name = upstream_name.to_string();
+        pool.register_upstream_config_for_tests(&config);
 
         let r1 = pool
             .subject_scoped_call_tool_classified(

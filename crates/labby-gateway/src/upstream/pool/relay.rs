@@ -2870,6 +2870,7 @@ mod tests {
     {
         let pool = UpstreamPool::new();
         let config = super::super::testsupport::test_upstream_config();
+        pool.register_upstream_config_for_tests(&config);
 
         let (gateway_transport, agent_transport) = tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
         tokio::spawn(async move {
@@ -3713,6 +3714,7 @@ mod tests {
     async fn upstream_prompt_and_resource_input_required_are_preserved_for_downstream() {
         let pool = UpstreamPool::new();
         let config = super::super::testsupport::test_upstream_config();
+        pool.register_upstream_config_for_tests(&config);
         let capabilities = relay_test_capabilities();
         let session_id = 41;
         let (entry, downstream_server) = live_relay_cached_connection(Instant::now()).await;
@@ -4060,6 +4062,7 @@ mod tests {
             .with_usage_store(Some(Arc::clone(&store)))
             .with_relay_timeout(Duration::from_secs(30));
         let config = super::super::testsupport::test_upstream_config();
+        pool.register_upstream_config_for_tests(&config);
         let capabilities = relay_test_capabilities();
         let key = relay_cache_key(&config.name, 41, None);
         let connect_lock = Arc::new(Mutex::new(()));
@@ -4124,6 +4127,7 @@ mod tests {
                 .with_usage_store(Some(Arc::clone(&store)))
                 .with_relay_timeout(timeout);
             let config = super::super::testsupport::test_upstream_config();
+            pool.register_upstream_config_for_tests(&config);
             let capabilities = relay_test_capabilities();
             let key = relay_cache_key(&config.name, 42, None);
             let connect_lock = Arc::new(Mutex::new(()));
@@ -4258,6 +4262,8 @@ mod tests {
             let pool = UpstreamPool::new()
                 .with_usage_store(Some(Arc::clone(&store)))
                 .with_relay_timeout(Duration::from_secs(30));
+            pool.register_upstream_config_for_tests(&config);
+            assert!(pool.upstream_config_matches(&config));
             let key = relay_cache_key(&config.name, session_id, None);
             let connect_lock = Arc::new(Mutex::new(()));
             pool.relay_connect_locks
@@ -4300,6 +4306,7 @@ mod tests {
             let pool = UpstreamPool::new()
                 .with_usage_store(Some(Arc::clone(&store)))
                 .with_relay_timeout(Duration::from_millis(20));
+            pool.register_upstream_config_for_tests(&config);
             let key = relay_cache_key(&config.name, session_id, None);
             let connect_lock = Arc::new(Mutex::new(()));
             pool.relay_connect_locks
@@ -4327,6 +4334,7 @@ mod tests {
         );
 
         let pool = UpstreamPool::new().with_usage_store(Some(Arc::clone(&store)));
+        pool.register_upstream_config_for_tests(&config);
         for (index, capability) in capabilities.into_iter().enumerate() {
             invoke_cold_relay_path(
                 &pool,
@@ -4604,6 +4612,7 @@ mod tests {
 
         let pool = UpstreamPool::new();
         let config = super::super::testsupport::test_upstream_config(); // name = "test"
+        pool.register_upstream_config_for_tests(&config);
 
         // Seed the catalog so `record_failure_for` has an entry to mark unhealthy.
         let name_arc: Arc<str> = Arc::from(config.name.as_str());
@@ -4747,6 +4756,7 @@ mod tests {
 
         let pool = UpstreamPool::new();
         let config = super::super::testsupport::test_upstream_config();
+        pool.register_upstream_config_for_tests(&config);
         let name_arc: Arc<str> = Arc::from(config.name.as_str());
         pool.catalog_write().await.insert(
             config.name.clone(),
@@ -4848,6 +4858,7 @@ mod tests {
     async fn acquire_or_connect_relay_keys_by_subject() {
         let pool = UpstreamPool::new();
         let config = super::super::testsupport::test_upstream_config(); // name "test", no url/command
+        pool.register_upstream_config_for_tests(&config);
 
         // A downstream agent peer is required by the signature; it is unused on
         // the fast path (cache hit) and on the bob miss (connect fails first).
