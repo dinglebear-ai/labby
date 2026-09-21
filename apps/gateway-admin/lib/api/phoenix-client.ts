@@ -75,11 +75,25 @@ export interface PhoenixAttachment {
   name: string
 }
 
+export interface PhoenixMcpAppResourceContent {
+  text?: string
+  mimeType?: string
+  mime_type?: string
+  uri?: string
+}
+
+export interface PhoenixMcpApp {
+  resourceUri: string
+  resource?: { contents?: PhoenixMcpAppResourceContent[] }
+  errorKind?: string
+}
+
 export interface PhoenixEvent {
   method: string
   params: unknown
   sequence?: number
   received_at_ms?: number
+  mcp_apps?: PhoenixMcpApp[]
 }
 
 export interface PhoenixDiagnostics {

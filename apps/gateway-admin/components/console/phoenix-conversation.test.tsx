@@ -41,3 +41,56 @@ test('Phoenix keeps reasoning collapsed while preserving its chronological slot'
   assert.ok(html.indexOf('aria-label="Reasoning. 1 event"') < html.indexOf('after'))
   assert.doesNotMatch(html, /hidden reasoning details/)
 })
+
+test('Phoenix renders a hydrated direct MCP App inline while preserving tool activity', () => {
+  const html = renderToStaticMarkup(<PhoenixConversation
+    messages={[]}
+    events={[{
+      method: 'item/completed', received_at_ms: 50, sequence: 1,
+      params: { item: { type: 'mcpToolCall', server: 'connexin', tool: 'echo', status: 'completed' } },
+      mcp_apps: [{
+        resourceUri: 'ui://connexin/echo.html',
+        resource: { contents: [{ uri: 'ui://connexin/echo.html', mimeType: 'text/html;profile=mcp-app', text: '<main>Connexin Echo</main>' }] },
+      }],
+    }]}
+    mark={<span>PX</span>} copiedIndex={undefined} onRetry={noop} onCopy={noop} onEdit={noop}
+  />)
+  assert.match(html, /connexin · echo/)
+  assert.match(html, /data-phoenix-mcp-app="ready"/)
+  assert.match(html, /ui:\/\/connexin\/echo\.html MCP UI/)
+  assert.match(html, /Connexin Echo/)
+})
+
+test('Phoenix renders nested Code Mode MCP Apps from hydrated events', () => {
+  const html = renderToStaticMarkup(<PhoenixConversation
+    messages={[]}
+    events={[{
+      method: 'item/completed', received_at_ms: 60, sequence: 1,
+      params: { item: { type: 'mcpToolCall', server: 'labby', tool: 'codemode', status: 'completed' } },
+      mcp_apps: [{
+        resourceUri: 'ui://connexin/countdown.html',
+        resource: { contents: [{ uri: 'ui://connexin/countdown.html', mime_type: 'text/html;profile=mcp-app', text: '<main>Countdown</main>' }] },
+      }],
+    }]}
+    mark={<span>PX</span>} copiedIndex={undefined} onRetry={noop} onCopy={noop} onEdit={noop}
+  />)
+  assert.match(html, /labby · codemode/)
+  assert.match(html, /ui:\/\/connexin\/countdown\.html MCP UI/)
+  assert.match(html, /Countdown/)
+})
+
+test('Phoenix falls back safely when MCP App hydration fails', () => {
+  const html = renderToStaticMarkup(<PhoenixConversation
+    messages={[]}
+    events={[{
+      method: 'item/completed', received_at_ms: 70, sequence: 1,
+      params: { item: { type: 'mcpToolCall', server: 'connexin', tool: 'shutdown', status: 'completed' } },
+      mcp_apps: [{ resourceUri: 'ui://connexin/shutdown.html', errorKind: 'upstream_error' }],
+    }]}
+    mark={<span>PX</span>} copiedIndex={undefined} onRetry={noop} onCopy={noop} onEdit={noop}
+  />)
+  assert.match(html, /connexin · shutdown/)
+  assert.match(html, /data-phoenix-mcp-app="fallback"/)
+  assert.match(html, /upstream_error/)
+  assert.match(html, /underlying tool result is still preserved/)
+})
