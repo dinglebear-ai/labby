@@ -267,8 +267,7 @@ standalone local CLI command:
   "params": {
     "execution_id": "01JEXAMPLE",
     "name": "gateway-summary",
-    "description": "Summarize gateway health",
-    "confirm": true
+    "description": "Summarize gateway health"
   }
 }
 ```
@@ -278,6 +277,11 @@ only in memory and may expire, be evicted, disappear after restart/deploy, or
 live in another gateway process. Promoted snippets are written as plaintext
 executable content and may contain anything the original Code Mode source
 contained.
+
+Promotion is a destructive action. Use the calling surface's native
+confirmation/elicitation flow; `confirm` is not part of the action payload.
+Inspect the retained source first and never promote literal credentials because
+the source is persisted verbatim as plaintext.
 
 Successful upstream MCP results are unwrapped before reaching snippet code when possible. Structured content is returned as the value; all-text content is parsed as JSON when possible; mixed content keeps its MCP content shape.
 
@@ -320,11 +324,12 @@ async () => {
   const timed = async (label, fn) => {
     const started = Date.now();
     try {
+      const result = await fn();
       return {
         label,
         ok: true,
         ms: Date.now() - started,
-        result: await fn()
+        result
       };
     } catch (error) {
       return {

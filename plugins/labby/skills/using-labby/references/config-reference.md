@@ -35,6 +35,7 @@ Root `[code_mode]` controls Code Mode limits:
 ```toml
 [code_mode]
 enabled = true
+mcp_ui_enabled = false
 trace_params = true
 result_shape_policy = "off"      # off | truncate
 timeout_ms = 30000
@@ -46,10 +47,16 @@ max_log_entries = 1000
 max_log_bytes = 65536
 ```
 
-`gateway.code_mode.set` accepts these public fields. `result_shape_policy =
+`max_source_bytes` is config-file-only. `gateway.code_mode.set` accepts the
+other public fields shown here. `result_shape_policy =
 "truncate"` shapes only successful completed final `result` values for
 model-facing output. It does not affect sandbox-visible `callTool()` results,
 does not retain raw results, and is not redaction.
+
+This is the common model-facing subset. Runtime docs cover semantic search,
+widget callbacks, artifacts, runner-pool behavior, per-run call budgets, and
+per-call result limits. `trusted_read_only_tools` is retired compatibility input;
+it is ignored and grants no read-only authority.
 
 ## Config Mutation
 

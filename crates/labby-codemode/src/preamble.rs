@@ -403,9 +403,9 @@ codemode.describe = async function(target) {{
       if (input.description) bits.push(input.description);
       return bits.join(" - ");
     }}).join("\n");
-    var toolDeclaration = entry.tools === undefined ? "omitted (caller policy unchanged)" : (entry.tools.length ? entry.tools.join(", ") : "[] (intended deny-all)");
+    var toolDeclaration = entry.tools === undefined ? "omitted (inherits caller scope)" : (entry.tools.length ? entry.tools.join(", ") : "[] (deny all upstream tools)");
     markdown = "# " + entry.name + "\n\nKind: snippet\n\nName: `" + entry.name + "`\n\nDescription: " + entry.description + "\n\nRun: `codemode.run(" + JSON.stringify(entry.name) + ", input)`\n" + (inputLines ? "\nInputs:\n" + inputLines + "\n" : "\nInputs: none\n");
-    markdown += "\nDeclared upstream tools: " + toolDeclaration + "\nMetadata only: declarations do not currently restrict execution.\n";
+    markdown += "\nDeclared upstream tools: " + toolDeclaration + "\nExecution policy: declarations narrow the caller scope and never grant authority; a nonempty list is intersected exactly with that scope.\n";
   }} else if (entry.kind === "tool") {{
     markdown = "# " + entry.path + "\n\n" + entry.description + "\n\n- kind: `tool`\n- id: `" + entry.id + "`\n- helper: `" + entry.helper + "`\n- signature: `" + entry.signature + "`\n";
     // Fetched from the host on demand rather than embedded in the sandbox

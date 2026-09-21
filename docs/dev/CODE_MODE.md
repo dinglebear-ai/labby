@@ -361,11 +361,13 @@ promote the live process's retained source into a user snippet through the
   "params": {
     "execution_id": "01JEXAMPLE",
     "name": "gateway-summary",
-    "description": "Summarize gateway health",
-    "confirm": true
+    "description": "Summarize gateway health"
   }
 }
 ```
+
+Promotion uses the calling surface's native confirmation/elicitation flow;
+`confirm` is not part of the action payload.
 
 Promotion source is deliberately ephemeral and live-gateway scoped. It is stored
 only in memory, is evicted by retention limits, and disappears after restart,

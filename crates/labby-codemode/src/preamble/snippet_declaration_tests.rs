@@ -6,11 +6,11 @@ use crate::types::{CatalogDescriptor, CodeModeCatalogKind, CodeModeDiscoveryEntr
 #[test]
 fn javy_search_and_describe_preserve_declaration_presence() {
     for (tools, expected, description) in [
-        (None, None, "omitted (caller policy unchanged)"),
+        (None, None, "omitted (inherits caller scope)"),
         (
             Some(vec![]),
             Some(serde_json::json!([])),
-            "[] (intended deny-all)",
+            "[] (deny all upstream tools)",
         ),
         (
             Some(vec!["alpha::read".to_owned(), "beta::list".to_owned()]),
@@ -62,9 +62,9 @@ fn javy_search_and_describe_preserve_declaration_presence() {
         }
         let rendered = value["description"]["markdown"].as_str().unwrap();
         assert!(rendered.contains(description), "{rendered}");
-        assert!(
-            rendered.contains("Metadata only: declarations do not currently restrict execution.")
-        );
+        assert!(rendered.contains(
+            "Execution policy: declarations narrow the caller scope and never grant authority"
+        ));
     }
 }
 
