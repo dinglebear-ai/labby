@@ -177,7 +177,10 @@ with `unknown` intersections.
   visible upstream. Pass a returned `resources[].uri` unchanged to
   `codemode.readResource(uri)`; resource URIs are not tool IDs.
 - `codemode.run(name, input)` executes a discovered saved snippet within the
-  already-established execution scope.
+  enclosing run scope; frontmatter tool declarations are not reapplied on this
+  nested path. Snippet discovery and execution require unscoped `lab:admin` or
+  trusted-local authority and are unavailable through `codemode_read`,
+  route-scoped, or tool-scoped runs.
 - `codemode.getPrompt(id, args)` resolves a discovered Prompt using its exact
   `prompt::<upstream>::<name>` ID.
 - `codemode.listSkills()` lists caller-visible Agent Skills;
@@ -186,9 +189,11 @@ with `unknown` intersections.
 - `codemode.step(name, fn)` adds bounded, redacted best-effort journal data.
   It does not provide public resume/replay, and a successful run does not prove
   the detached journal flush completed.
-- The `state`, `git`, and `openapi` local providers are only available to
-  unscoped admin/trusted-local execution. Do not assume they exist on protected
-  routes or through `codemode_read`.
+- The `state` and `git` providers, plus static/no-auth OpenAPI operations,
+  require unscoped admin/trusted-local execution. An OpenAPI operation with
+  `oauth_upstream` may be used by an authenticated, unscoped, execute-capable
+  caller with a verified subject. These providers remain unavailable on
+  protected/tool-scoped routes and through `codemode_read`.
 
 ## Action-Dispatched Upstreams
 
@@ -328,7 +333,7 @@ Common error kinds:
 | `queue_saturated` | Labby's local per-upstream concurrency gate is saturated — not an upstream rate limit. Retry after a short delay or reduce parallel `callTool` fan-out. |
 | `response_too_large` | The gateway capped an oversized upstream response; narrow the query or paginate. Distinct from `result_too_large`/`artifact_too_large`, which cap Code Mode's own result/artifact output. |
 | `timeout` | Split work into smaller executions. |
-| `network_error` / `server_error` / `decode_error` / `upstream_error` | Retry or operate the upstream service; unknown structured upstream-local kinds are returned as `upstream_error` without poisoning upstream health. |
+| `network_error` / `server_error` / `decode_error` / `upstream_error` | Retry unchanged only when `side_effects` is `none_expected` and `recovery.same_arguments` permits it. Otherwise verify the outcome or idempotency first and follow `recovery.guidance`. Unknown structured upstream-local kinds are returned as `upstream_error` without poisoning upstream health. |
 | `oauth_needs_reauth` | Check `labby server auth status <upstream> --json`. |
 | `snippet_not_found` | Check the snippet name with `codemode.search()`. |
 
@@ -388,9 +393,11 @@ labby code run --code 'async () => ({ ok: true })' --json
 labby code run --file ./snippet.js --json
 ```
 
-CLI `search` and `describe` inspect the live catalog without constructing a
-JavaScript payload. Inside an execution, use `codemode.search()` and
-`codemode.describe()` so discovery and the call share the same scoped run.
+CLI `search` and `describe` are convenience wrappers that construct and execute
+the same Code Mode discovery calls, so the operator does not need to author the
+JavaScript. They inherit Code Mode runtime, authority, and timeout constraints.
+Inside an execution, use `codemode.search()` and `codemode.describe()` so
+discovery and the call share the same scoped run.
 
 ## Safe Execution Pattern
 

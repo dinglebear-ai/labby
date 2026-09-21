@@ -1,6 +1,6 @@
 ---
 name: creating-snippets
-description: Use when creating, editing, promoting, validating, testing, running, explaining, or removing Labby Code Mode snippets; when turning a successful Code Mode execution into a reusable workflow; or when building schema-backed snippets from live upstream tool ids, JSON schemas, inputs, defaults, artifacts, and MCP/CLI snippet actions.
+description: Use when creating, editing, promoting, validating, testing, running, explaining, or removing Labby Code Mode snippets; when turning a successful Code Mode execution into a reusable workflow; or when building schema-backed snippets from live upstream tool ids, JSON schemas, inputs, defaults, artifacts, and CLI/MCP/API snippet actions.
 ---
 
 # Creating Snippets
@@ -86,7 +86,8 @@ catalog. Substitute only IDs and parameters returned by search/describe. The
 `tools` declaration narrows native saved-snippet execution by intersecting with
 the caller's existing Code Mode scope; it never grants authority. Omitting it
 keeps the caller's scope, `[]` denies all upstream tools, and a nonempty list
-permits only those exact dependencies.
+permits only those exact dependencies. A nested `codemode.run` keeps the
+enclosing run scope and does not reapply the saved snippet's declaration.
 
 ## Inputs And Defaults
 
@@ -143,9 +144,11 @@ execution into a user snippet. The `execution_id` is ephemeral, actor/route
 scoped, admin-only, and retained only for successful admin executions. It is
 lost on expiry, eviction, restart, or another gateway process.
 Promotion persists source verbatim as plaintext, so never promote code containing
-literal credentials. Let the calling surface perform its native confirmation;
-do not add a payload-level `confirm`. Use `force` to replace a user snippet and
-`shadow_builtin` only when intentionally shadowing a built-in name.
+literal credentials. MCP may elicit confirmation. The HTTP API dispatches after
+admin authorization, so its caller or operator must obtain explicit confirmation
+before submitting the request. There is no promotion CLI and no payload-level
+`confirm`. Use `force` to replace a user snippet and `shadow_builtin` only when
+intentionally shadowing a built-in name.
 
 ## Execution Patterns
 

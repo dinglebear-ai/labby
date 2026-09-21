@@ -47,8 +47,9 @@ max_log_entries = 1000
 max_log_bytes = 65536
 ```
 
-`max_source_bytes` is config-file-only. `gateway.code_mode.set` accepts the
-other public fields shown here. `result_shape_policy =
+`gateway.code_mode.set` does not accept `max_source_bytes`; edit it through the
+typed admin `settings.config.update` surface or the configuration file. The
+action accepts the other public fields shown here. `result_shape_policy =
 "truncate"` shapes only successful completed final `result` values for
 model-facing output. It does not affect sandbox-visible `callTool()` results,
 does not retain raw results, and is not redaction.

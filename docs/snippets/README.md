@@ -278,10 +278,12 @@ live in another gateway process. Promoted snippets are written as plaintext
 executable content and may contain anything the original Code Mode source
 contained.
 
-Promotion is a destructive action. Use the calling surface's native
-confirmation/elicitation flow; `confirm` is not part of the action payload.
-Inspect the retained source first and never promote literal credentials because
-the source is persisted verbatim as plaintext.
+Promotion is a destructive action. MCP may elicit confirmation. The HTTP API
+dispatches after `lab:admin` authorization, so its caller or operator must
+obtain explicit confirmation before submitting the request. There is no
+promotion CLI, and `confirm` is not part of the action payload. Inspect the
+retained source first and never promote literal credentials because the source
+is persisted verbatim as plaintext.
 
 Successful upstream MCP results are unwrapped before reaching snippet code when possible. Structured content is returned as the value; all-text content is parsed as JSON when possible; mixed content keeps its MCP content shape.
 

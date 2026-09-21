@@ -366,8 +366,10 @@ promote the live process's retained source into a user snippet through the
 }
 ```
 
-Promotion uses the calling surface's native confirmation/elicitation flow;
-`confirm` is not part of the action payload.
+MCP may elicit confirmation. The HTTP API dispatches after `lab:admin`
+authorization, so its caller or operator must obtain explicit confirmation
+before submitting the request. There is no promotion CLI, and `confirm` is not
+part of the action payload.
 
 Promotion source is deliberately ephemeral and live-gateway scoped. It is stored
 only in memory, is evicted by retention limits, and disappears after restart,
@@ -380,7 +382,8 @@ directory and may contain anything the original Code Mode source contained.
 > process umask). If the original Code Mode source embedded a literal secret,
 > token, or captured credential, that value is now persisted in cleartext and
 > survives restarts until the snippet is removed. Promotion is `destructive: true`
-> (MCP elicitation when available; HTTP/CLI use their own confirmation surfaces)
+> (MCP elicitation when available; HTTP callers must confirm out of band; there
+> is no promotion CLI)
 > precisely because it is a persistence action — do not promote sources that
 > carry inline secrets; pass them through snippet `input`/params at run time instead.
 
@@ -734,7 +737,7 @@ Canonical error kinds:
 | `result_too_large` / `artifact_too_large` | Retry with smaller output | Returned value or artifact exceeded configured caps. |
 | `timeout` | Retry with smaller work | The live QuickJS/Javy runner wall-clock backstop interrupted execution. |
 | `rate_limited` | Retry later | Upstream or host-side rate limit was hit. |
-| `network_error` / `server_error` / `decode_error` / `upstream_error` | Retry or operate upstream | Upstream transport, protocol, server failure, or unknown structured upstream-local kind. Unknown structured upstream kinds are returned as `upstream_error` without poisoning upstream health. |
+| `network_error` / `server_error` / `decode_error` / `upstream_error` | Inspect retry metadata and verify outcome | Retry unchanged only when `side_effects` is `none_expected` and `recovery.same_arguments` permits it. Otherwise verify the outcome or idempotency first and follow `recovery.guidance`. Unknown structured upstream-local kinds are returned as `upstream_error` without poisoning upstream health. |
 | `auth_failed` / `oauth_needs_reauth` | Reauthenticate | Upstream credentials are absent or rejected. |
 | `snippet_not_found` | Fix and retry | Requested snippet name does not exist. |
 | `internal_error` | Bug or unsupported state | Unexpected host/runner failure. |

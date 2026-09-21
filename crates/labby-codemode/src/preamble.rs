@@ -403,9 +403,16 @@ codemode.describe = async function(target) {{
       if (input.description) bits.push(input.description);
       return bits.join(" - ");
     }}).join("\n");
-    var toolDeclaration = entry.tools === undefined ? "omitted (inherits caller scope)" : (entry.tools.length ? entry.tools.join(", ") : "[] (deny all upstream tools)");
+    var toolDeclaration;
+    if (entry.tools === undefined) {{
+      toolDeclaration = "omitted (native exec/test inherits caller scope)";
+    }} else if (entry.tools.length) {{
+      toolDeclaration = entry.tools.join(", ");
+    }} else {{
+      toolDeclaration = "[] (native exec/test denies all upstream tools)";
+    }}
     markdown = "# " + entry.name + "\n\nKind: snippet\n\nName: `" + entry.name + "`\n\nDescription: " + entry.description + "\n\nRun: `codemode.run(" + JSON.stringify(entry.name) + ", input)`\n" + (inputLines ? "\nInputs:\n" + inputLines + "\n" : "\nInputs: none\n");
-    markdown += "\nDeclared upstream tools: " + toolDeclaration + "\nExecution policy: declarations narrow the caller scope and never grant authority; a nonempty list is intersected exactly with that scope.\n";
+    markdown += "\nDeclared upstream tools: " + toolDeclaration + "\nExecution policy: native snippets.exec/test intersects a nonempty declaration with caller authority and never grants authority. Nested codemode.run retains the enclosing run scope; it does not reapply the declaration.\n";
   }} else if (entry.kind === "tool") {{
     markdown = "# " + entry.path + "\n\n" + entry.description + "\n\n- kind: `tool`\n- id: `" + entry.id + "`\n- helper: `" + entry.helper + "`\n- signature: `" + entry.signature + "`\n";
     // Fetched from the host on demand rather than embedded in the sandbox
@@ -494,8 +501,40 @@ codemode.batch = async function(jobs) {{
   if (!Array.isArray(jobs)) {{
     throw new Error("codemode.batch requires an array of jobs");
   }}
-  var settled = await Promise.allSettled(jobs.map(function(job) {{
-    return typeof job === "function" ? Promise.resolve().then(job) : job;
+  function decodeBatchError(reason) {{
+    var message = String(reason && reason.message ? reason.message : reason);
+    try {{
+      var parsed = JSON.parse(message);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {{
+        if (!["none_expected", "possible", "unknown"].includes(parsed.side_effects)) {{
+          parsed.side_effects = "unknown";
+        }}
+        if (!parsed.recovery || typeof parsed.recovery !== "object" || Array.isArray(parsed.recovery)) {{
+          parsed.recovery = {{}};
+        }}
+        if (!["safe", "conditional", "discouraged", "never"].includes(parsed.recovery.same_arguments)) {{
+          parsed.recovery.same_arguments = "discouraged";
+        }}
+        return parsed;
+      }}
+    }} catch (_) {{}}
+    return {{
+      message: message,
+      side_effects: "unknown",
+      recovery: {{ same_arguments: "discouraged" }}
+    }};
+  }}
+  var settled = await Promise.allSettled(jobs.map(function(job, index) {{
+    return Promise.resolve().then(function() {{
+      if (typeof job === "function") return job();
+      if (job && typeof job.then === "function") return job;
+      throw new Error(JSON.stringify({{
+        kind: "invalid_param",
+        message: "codemode.batch job at index " + index + " must be a function or Promise",
+        side_effects: "none_expected",
+        recovery: {{ same_arguments: "never", guidance: "Replace the invalid entry with a function or Promise." }}
+      }}));
+    }});
   }}));
   var ok = [];
   var failed = [];
@@ -503,8 +542,7 @@ codemode.batch = async function(jobs) {{
     if (result.status === "fulfilled") {{
       ok.push({{ i: index, value: result.value }});
     }} else {{
-      var reason = result.reason;
-      failed.push({{ i: index, error: String(reason && reason.message ? reason.message : reason) }});
+      failed.push({{ i: index, error: decodeBatchError(result.reason) }});
     }}
   }});
   return {{ ok: ok, failed: failed, all_ok: failed.length === 0 }};
@@ -816,9 +854,10 @@ mod tests {
         assert!(js.contains("__lab_internal::get_skill"));
         assert!(js.contains("__lab_internal::read_skill"));
         assert!(js.contains("Promise.allSettled"));
-        assert!(js.contains("Promise.resolve().then(job)"));
+        assert!(js.contains("return Promise.resolve().then(function()"));
         assert!(js.contains("ok.push({ i: index, value: result.value })"));
-        assert!(js.contains("failed.push({ i: index, error: String"));
+        assert!(js.contains("failed.push({ i: index, error: decodeBatchError"));
+        assert!(js.contains("must be a function or Promise"));
         assert!(js.contains("all_ok: failed.length === 0"));
     }
 

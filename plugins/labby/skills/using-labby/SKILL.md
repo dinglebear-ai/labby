@@ -1,6 +1,6 @@
 ---
 name: using-labby
-description: "Use when operating an already installed Labby through its CLI or MCP surfaces; configuring LABBY_HOME; checking health or logs; managing gateway upstreams, OAuth, protected routes, snippets, and Agent Skills; or discovering and executing upstream MCP tools with Code Mode. For installation, first-run onboarding, host-service repair, or deployment recovery, use $install-labby instead."
+description: "Use when operating an already installed Labby through its CLI, MCP, HTTP API, or web UI; updating Labby; configuring LABBY_HOME; exporting, verifying, or restoring durable state; checking health or logs; managing gateway upstreams, OAuth, protected routes, snippets, and Agent Skills; or discovering and executing upstream MCP tools with Code Mode. For installation, first-run onboarding, host-service repair, or deployment recovery, use $install-labby instead."
 ---
 
 # Operating Labby
