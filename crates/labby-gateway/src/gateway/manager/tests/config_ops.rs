@@ -951,6 +951,11 @@ async fn mcp_app_visibility_setting_persists_notifies_and_skips_pool_rebuild() {
     initial.mcp_apps.server_logs = true;
     initial.mcp_apps.add_server = true;
     initial.mcp_apps.settings = true;
+    std::fs::write(
+        &path,
+        toml::to_string(&initial).expect("serialize initial config"),
+    )
+    .expect("persist explicit enabled app visibility");
     manager.seed_config_unchecked_for_tests(initial).await;
     assert!(runtime.current_pool().await.is_none());
 
