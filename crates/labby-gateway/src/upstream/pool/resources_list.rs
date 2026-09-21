@@ -1890,6 +1890,7 @@ mod tests {
             },
         );
         let config = oauth_schema_config("linear");
+        pool.register_upstream_config_for_tests(&config);
 
         let alice = pool
             .subject_scoped_gateway_server_schema(&config, "alice")
@@ -1936,6 +1937,7 @@ mod tests {
         );
         let mut config = oauth_schema_config("google-drive");
         config.proxy_resources = true;
+        pool.register_upstream_config_for_tests(&config);
 
         let resources = pool.subject_scoped_resources(&[config], "alice").await;
         let uris = resources
@@ -1988,6 +1990,7 @@ mod tests {
         );
         let mut config = oauth_schema_config("tools-only");
         config.proxy_resources = true;
+        pool.register_upstream_config_for_tests(&config);
 
         let resources = pool
             .subject_scoped_resources(std::slice::from_ref(&config), "alice")
@@ -2071,6 +2074,7 @@ mod tests {
         pool.request_timeout = Duration::from_millis(25);
         let mut config = oauth_schema_config("slow");
         config.proxy_resources = true;
+        pool.register_upstream_config_for_tests(&config);
 
         let started = Instant::now();
         let resources = pool.subject_scoped_resources(&[config], "alice").await;
@@ -2104,6 +2108,7 @@ mod tests {
         });
         let mut config = oauth_schema_config("slow-connect");
         config.proxy_resources = true;
+        pool.register_upstream_config_for_tests(&config);
 
         let started = Instant::now();
         let resources = pool.subject_scoped_resources(&[config], "alice").await;

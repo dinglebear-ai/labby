@@ -1994,6 +1994,7 @@ mod tests {
         });
         pool.install_test_subject_tools_for_upstream(&config, "alice", vec![tool])
             .await;
+        pool.register_upstream_config_for_tests(&config);
 
         let listed = pool
             .cached_mcp_app_tools_allowed(
