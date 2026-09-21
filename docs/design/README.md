@@ -5,6 +5,7 @@ These documents describe design contracts that are implemented by, or intentiona
 ## Accepted Target Architecture
 
 - [ADR 0002](../adr/0002-labby-product-contracts-over-private-depot.md) — Labby owns public contracts and administration workflows over a separate private Depot backend; [capability audit](./depot-capability-audit.md) records current dispatch coverage and parity differences.
+- [labby-depot-direct-control-plane.md](./labby-depot-direct-control-plane.md) — implementation contract for direct server-side Depot access, shared connection and policy ownership, public workflows, migration, and verification without a Depot MCP dependency.
 - [labby-depot-saas-north-star.md](./labby-depot-saas-north-star.md) — hosted and self-hosted Labby/Depot product boundary, Lime first-tenant rollout, shared tenant-aware Depot target, R2 content plane, and SaaS control-plane constraints.
 - [phabby-control-plane.md](./phabby-control-plane.md) — Phoenix/OTP control plane shared by Labby and Depot.
 - [phabby-migration-ledger.md](./phabby-migration-ledger.md) — current-to-target cutover and verification gates.

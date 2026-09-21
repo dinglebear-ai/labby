@@ -23,6 +23,11 @@ pub enum Operation {
     ArtifactsList,
     ArtifactsGet,
     ArtifactsSearch,
+    ArtifactsDeleteRemote,
+    SkillsList,
+    SkillsGet,
+    SkillsLoad,
+    SkillsRead,
     CandidatesList,
     CandidatesIntake,
     ArtifactsFollow,
@@ -63,6 +68,11 @@ impl Operation {
             Self::ArtifactsList => "depot.artifacts.list",
             Self::ArtifactsGet => "depot.artifacts.get",
             Self::ArtifactsSearch => "depot.skills.search",
+            Self::ArtifactsDeleteRemote => "depot.skills.delete",
+            Self::SkillsList => "depot.skills.list",
+            Self::SkillsGet => "depot.skills.get",
+            Self::SkillsLoad => "depot.skills.load",
+            Self::SkillsRead => "depot.skills.read",
             Self::CandidatesList => "depot.artifacts.list_candidates",
             Self::CandidatesIntake => "depot.artifacts.intake_candidate",
             Self::ArtifactsFollow => "depot.artifacts.follow",
@@ -103,6 +113,11 @@ impl Operation {
         Self::ArtifactsList,
         Self::ArtifactsGet,
         Self::ArtifactsSearch,
+        Self::ArtifactsDeleteRemote,
+        Self::SkillsList,
+        Self::SkillsGet,
+        Self::SkillsLoad,
+        Self::SkillsRead,
         Self::CandidatesList,
         Self::CandidatesIntake,
         Self::ArtifactsFollow,
@@ -207,6 +222,13 @@ impl Operation {
             Self::ArtifactsSearch => {
                 "964f29b4c9d7e241eb40b1e008bf38f07c3959aae1f785f9d4b6210fc1bd0925"
             }
+            Self::ArtifactsDeleteRemote => {
+                "ed4a3789a443220512602112aec2d3dffc8ce10a908b30f3dc924c7fbeef25af"
+            }
+            Self::SkillsList => "0db47745ef0e81cfef00f22118d4780c67bcf64111a20671366227f96125d178",
+            Self::SkillsGet => "8c4fc62b36049b9ffa64dae2eea3c4fae05926ba0ee84c11568bd9e48c0087f4",
+            Self::SkillsLoad => "1e57d017464bf0caa2324d532f45f01f8f5c45c814a0a01a6f1baa25d35b0b08",
+            Self::SkillsRead => "f114bde7d077cb6e8991ab9552b0a8f766791d8f1f54f71c9ef97a11c04c17e8",
             Self::SearchArd => "f02862af885d5d524a3eb6fbf6c8b0e80a951d0c80e5a43a4b92d4a326770478",
             Self::SearchMarketplace => {
                 "230081d99596c5eb013874d30d54846c44a48a1131463ebc66f72d0bd2a372d7"
@@ -277,24 +299,11 @@ impl ArtifactControlClient {
             .get_json_bounded("/api/operations", MAX_CONTROL_PLANE_RESPONSE_BYTES)
             .await?;
         let compatible = catalog.operations.iter().any(|definition| {
-            let declared_fingerprint = definition.get("schemaFingerprint").and_then(Value::as_str);
-            // Three-way agreement: the fingerprint Depot declares, the
-            // fingerprint of the schema Depot actually serves, and the
-            // constant this client was built against must all match.
-            let served_fingerprint = definition.get("inputSchema").and_then(schema_fingerprint);
-            definition.get("name").and_then(Value::as_str) == Some(operation.provider_name())
-                && definition.get("contractVersion").and_then(Value::as_u64)
-                    == Some(OPERATION_CONTRACT_VERSION)
-                && declared_fingerprint == Some(operation.expected_schema_fingerprint())
-                && served_fingerprint.as_deref() == declared_fingerprint
-                && definition
-                    .pointer("/inputSchema/type")
-                    .and_then(Value::as_str)
-                    == Some("object")
-                && definition
-                    .pointer("/outputSchema/type")
-                    .and_then(Value::as_str)
-                    == Some("object")
+            operation_contract_is_compatible(
+                definition,
+                operation.provider_name(),
+                operation.expected_schema_fingerprint(),
+            )
         });
         if !compatible {
             return Err(ApiError::Internal(
@@ -364,6 +373,35 @@ impl ArtifactControlClient {
 #[must_use]
 pub fn schema_fingerprint(schema: &Value) -> Option<String> {
     labby_primitives::canonical_json::fingerprint_hex(schema).ok()
+}
+
+/// Verify that a served operation definition agrees with a locally pinned
+/// operation contract.
+///
+/// Compatibility requires three-way agreement between the fingerprint Depot
+/// declares, the canonical fingerprint of the schema Depot actually serves,
+/// and the fingerprint pinned by the Labby build.
+#[must_use]
+pub fn operation_contract_is_compatible(
+    definition: &Value,
+    operation_name: &str,
+    expected_schema_fingerprint: &str,
+) -> bool {
+    let declared_fingerprint = definition.get("schemaFingerprint").and_then(Value::as_str);
+    let served_fingerprint = definition.get("inputSchema").and_then(schema_fingerprint);
+    definition.get("name").and_then(Value::as_str) == Some(operation_name)
+        && definition.get("contractVersion").and_then(Value::as_u64)
+            == Some(OPERATION_CONTRACT_VERSION)
+        && declared_fingerprint == Some(expected_schema_fingerprint)
+        && served_fingerprint.as_deref() == declared_fingerprint
+        && definition
+            .pointer("/inputSchema/type")
+            .and_then(Value::as_str)
+            == Some("object")
+        && definition
+            .pointer("/outputSchema/type")
+            .and_then(Value::as_str)
+            == Some("object")
 }
 
 #[cfg(test)]

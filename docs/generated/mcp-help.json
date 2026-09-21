@@ -1534,16 +1534,16 @@
       ]
     },
     {
-      "name": "depot_publish",
-      "description": "Publish skill archives to a protected Team Depot",
+      "name": "artifact_publish",
+      "description": "Publish skill archives through a protected Team Artifact authority",
       "category": "artifacts",
       "status": "available",
       "caller_bound": false,
       "requires_http_subject": false,
       "actions": [
         {
-          "name": "depot.publish_skill_archive",
-          "description": "Publish a skill archive to the authenticated team's Depot",
+          "name": "artifacts.publish_skill_archive",
+          "description": "Publish a skill archive to the authenticated team's Artifact authority",
           "destructive": false,
           "requires_admin": false,
           "required_scopes": [],
@@ -4644,6 +4644,172 @@
             }
           ],
           "returns": "ArtifactCandidatePage"
+        },
+        {
+          "name": "artifacts.delete_remote",
+          "description": "Delete an ingested remote Artifact while preserving immutable bundle versions",
+          "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "connection_id",
+              "ty": "string",
+              "required": false,
+              "description": "Configured remote Artifact authority; optional when exactly one is configured"
+            },
+            {
+              "name": "namespace",
+              "ty": "string",
+              "required": true,
+              "description": "Remote Artifact namespace"
+            },
+            {
+              "name": "name",
+              "ty": "string",
+              "required": true,
+              "description": "Remote Artifact name"
+            },
+            {
+              "name": "expected_version",
+              "ty": "string",
+              "required": true,
+              "description": "Current Artifact state version required for optimistic concurrency"
+            }
+          ],
+          "returns": "DeleteReceipt"
+        },
+        {
+          "name": "artifacts.list_remote_skills",
+          "description": "List canonical Skill summaries from one remote Artifact authority",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "connection_id",
+              "ty": "string",
+              "required": false,
+              "description": "Configured remote Artifact authority; optional when exactly one is configured"
+            },
+            {
+              "name": "cursor",
+              "ty": "string",
+              "required": false,
+              "description": "Opaque remote continuation cursor"
+            },
+            {
+              "name": "limit",
+              "ty": "integer",
+              "required": false,
+              "description": "Bounded remote page size"
+            }
+          ],
+          "returns": "RemoteSkillPage"
+        },
+        {
+          "name": "artifacts.get_remote_skill",
+          "description": "Get one remote Skill manifest and its exact resource inventory",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "connection_id",
+              "ty": "string",
+              "required": false,
+              "description": "Configured remote Artifact authority; optional when exactly one is configured"
+            },
+            {
+              "name": "uri",
+              "ty": "string",
+              "required": true,
+              "description": "Canonical remote SKILL.md URI returned by list_remote_skills"
+            }
+          ],
+          "returns": "RemoteSkill"
+        },
+        {
+          "name": "artifacts.load_remote_skill",
+          "description": "Load a remote Skill manifest with bounded byte continuation",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "connection_id",
+              "ty": "string",
+              "required": false,
+              "description": "Configured remote Artifact authority; optional when exactly one is configured"
+            },
+            {
+              "name": "uri",
+              "ty": "string",
+              "required": true,
+              "description": "Canonical remote SKILL.md URI returned by list_remote_skills"
+            },
+            {
+              "name": "offset",
+              "ty": "integer",
+              "required": false,
+              "description": "Continuation byte offset, from 0 through 16777216"
+            },
+            {
+              "name": "max_bytes",
+              "ty": "integer",
+              "required": false,
+              "description": "Maximum bytes to return, from 4 through 262144"
+            }
+          ],
+          "returns": "RemoteSkillContent"
+        },
+        {
+          "name": "artifacts.read_remote_skill",
+          "description": "Read a remote Skill file or list one direct-child directory page",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "connection_id",
+              "ty": "string",
+              "required": false,
+              "description": "Configured remote Artifact authority; optional when exactly one is configured"
+            },
+            {
+              "name": "uri",
+              "ty": "string",
+              "required": true,
+              "description": "Canonical remote Skill resource or directory URI"
+            },
+            {
+              "name": "offset",
+              "ty": "integer",
+              "required": false,
+              "description": "File continuation byte offset, from 0 through 16777216"
+            },
+            {
+              "name": "max_bytes",
+              "ty": "integer",
+              "required": false,
+              "description": "Maximum file bytes to return, from 4 through 262144"
+            },
+            {
+              "name": "cursor",
+              "ty": "string",
+              "required": false,
+              "description": "Opaque remote continuation cursor"
+            },
+            {
+              "name": "limit",
+              "ty": "integer",
+              "required": false,
+              "description": "Maximum direct children to return, from 1 through 250"
+            }
+          ],
+          "returns": "RemoteSkillResource"
         },
         {
           "name": "artifacts.intake_candidate",

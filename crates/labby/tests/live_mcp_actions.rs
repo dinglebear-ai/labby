@@ -468,7 +468,7 @@ async fn raw_mode_catalog_is_exact_and_builtin_help_executes_live() {
         .filter(|service| {
             !matches!(
                 service.as_str(),
-                "lab_admin" | "bundles" | "depot_publish" | "jobs" | "sources" | "uploads"
+                "lab_admin" | "artifact_publish" | "bundles" | "jobs" | "sources" | "uploads"
             )
         })
         .cloned()
@@ -560,10 +560,10 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
     action_scenarios::initialize_browser_fixture(runner.http_base_url()).await;
     let expected = mcp_intents()
         .into_iter()
-        // lab_admin is intentionally local-only. depot_publish is owned by a
+        // lab_admin is intentionally local-only. artifact_publish is owned by a
         // protected team route and requires a bound user grant. Neither can be
         // exercised through the root HTTP MCP route owned by this runner.
-        .filter(|intent| !matches!(intent.service.as_str(), "lab_admin" | "depot_publish"))
+        .filter(|intent| !matches!(intent.service.as_str(), "lab_admin" | "artifact_publish"))
         .collect::<Vec<_>>();
     let expected_count = expected.len();
 
@@ -665,11 +665,11 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
 }
 
 #[tokio::test]
-async fn depot_publish_service_requires_the_protected_team_route_contract() {
+async fn artifact_publish_service_requires_the_protected_team_route_contract() {
     let runner = BuiltinMcpRunner::start().await.expect("live MCP runner");
     let intents = mcp_intents()
         .into_iter()
-        .filter(|intent| intent.service == "depot_publish")
+        .filter(|intent| intent.service == "artifact_publish")
         .collect::<Vec<_>>();
     assert_eq!(intents.len(), 3);
 

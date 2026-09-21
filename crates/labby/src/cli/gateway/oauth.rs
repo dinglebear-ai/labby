@@ -72,6 +72,10 @@ pub(super) async fn run_gateway_oauth_start(
                 args.name
             ))
         );
+        let progress = crate::output::progress::ProgressPhase::spinner(
+            format,
+            format!("Waiting for OAuth completion for `{}`", args.name),
+        );
         let wait_value = dispatch_gateway_action(
             manager,
             config,
@@ -88,6 +92,7 @@ pub(super) async fn run_gateway_oauth_start(
                 serde_json::to_string(&error).unwrap_or_else(|_| error.to_string())
             )
         })?;
+        drop(progress);
 
         let (result, exit_code) = oauth_wait_outcome(value, wait_value)?;
         let authenticated = exit_code == ExitCode::SUCCESS;
