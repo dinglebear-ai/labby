@@ -5,7 +5,6 @@
 //! origin, recovery advice, unchanged-retry safety, and partial-side-effect risk.
 
 use schemars::JsonSchema;
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
