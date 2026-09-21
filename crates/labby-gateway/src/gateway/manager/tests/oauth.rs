@@ -51,6 +51,7 @@ async fn reload_evicts_removed_upstream_oauth_clients() {
         registration: UpstreamOauthRegistration::Dynamic,
         scopes: None,
         credential: Default::default(),
+        additional_endpoint_origins: vec![],
         prefer_client_metadata_document: None,
     });
     manager

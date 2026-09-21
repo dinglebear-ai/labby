@@ -563,6 +563,7 @@ fn fixture_oauth_upstream_config(name: &str) -> crate::config::UpstreamConfig {
         },
         scopes: None,
         credential: Default::default(),
+        additional_endpoint_origins: vec![],
         prefer_client_metadata_document: None,
     });
     config
