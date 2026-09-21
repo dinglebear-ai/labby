@@ -20,7 +20,6 @@ import {
 import { AURORA_BADGE_LABEL } from '@/components/aurora/tokens'
 import {
   type CodeModeArtifactReceipt,
-  type CodeModeCallUi,
   type CodeModeCallTrace,
   type CodeModeErrorContract,
   type CodeModeExecuteTrace,
@@ -34,6 +33,7 @@ import {
   stringifyRedactedParams,
 } from '@/lib/code-mode-app/trace'
 import { cn } from '@/lib/utils'
+import { McpAppResourcePanel } from '@/components/mcp-app/mcp-app-resource-panel'
 
 const AURORA_DARK_TOKENS = {
   '--aurora-page-bg': '#07131c',
@@ -492,7 +492,7 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
           </>
         ) : null}
       </section>
-      {activeUi ? <McpUiResourcePanel ui={activeUi} resourceReader={resourceReader} /> : null}
+      {activeUi && resourceReader ? <McpAppResourcePanel resourceUri={activeUi.resourceUri} readResource={resourceReader} /> : null}
       </div>
     </main>
   )
@@ -920,125 +920,6 @@ function CallRows({
       })}
     </div>
   )
-}
-
-function McpUiResourcePanel({
-  ui,
-  resourceReader,
-}: {
-  ui: CodeModeCallUi
-  resourceReader: ResourceReader | null
-}) {
-  const [html, setHtml] = useState<string | null>(null)
-  const [state, setState] = useState<'idle' | 'loading' | 'ready' | 'unavailable' | 'error'>(
-    resourceReader ? 'loading' : 'unavailable',
-  )
-
-  useEffect(() => {
-    if (!resourceReader) {
-      setHtml(null)
-      setState('unavailable')
-      return
-    }
-    let cancelled = false
-    setState('loading')
-    setHtml(null)
-    resourceReader({ uri: ui.resourceUri })
-      .then((result) => {
-        if (cancelled) return
-        const content = result.contents?.find((item) => {
-          const mime = item.mimeType ?? item.mime_type ?? ''
-          return typeof item.text === 'string' && (mime.includes('html') || item.uri === ui.resourceUri)
-        })
-        if (content?.text) {
-          setHtml(content.text)
-          setState('ready')
-        } else {
-          setState('unavailable')
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setState('error')
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [resourceReader, ui.resourceUri])
-
-  return (
-    <section
-      className="mt-2 overflow-hidden rounded-[10px] border"
-      style={{
-        borderColor: 'color-mix(in srgb, var(--aurora-border-default) 45%, var(--aurora-page-bg))',
-        background: 'linear-gradient(180deg, var(--aurora-panel-strong-top), var(--aurora-panel-strong))',
-        boxShadow: 'var(--aurora-shadow-medium), var(--aurora-highlight-strong)',
-      }}
-    >
-      <div
-        className="flex min-w-0 items-center gap-2 border-b px-3 py-2"
-        style={{
-        borderColor: HAIRLINE,
-        background: HEAD_FOOT_BG,
-      }}
-      >
-        <span
-          className="flex size-7 shrink-0 items-center justify-center rounded-md border text-aurora-accent-strong"
-          style={{
-            borderColor: 'color-mix(in srgb, var(--aurora-accent-primary) 42%, var(--aurora-border-default))',
-            background: 'color-mix(in srgb, var(--aurora-accent-primary) 9%, var(--aurora-control-surface))',
-          }}
-        >
-          <Terminal className="size-3.5" strokeWidth={1.75} />
-        </span>
-        <span className="shrink-0 text-[12.5px] font-bold">MCP App</span>
-        <span className="min-w-0 truncate text-[11.5px] text-aurora-text-muted" title={ui.resourceUri}>
-          {externalAppName(ui.resourceUri)}
-        </span>
-        {state === 'loading' ? (
-          <span className={cn(AURORA_BADGE_LABEL, 'ml-auto shrink-0 text-aurora-text-muted')}>
-            loading
-          </span>
-        ) : state === 'ready' ? (
-          <span className="ml-auto flex shrink-0 items-center gap-1.5 text-[11px] text-aurora-success">
-            <StatusDot tone="success" label="ready" />
-            Ready
-          </span>
-        ) : null}
-        {state === 'error' ? (
-          <span className={cn(AURORA_BADGE_LABEL, 'ml-auto shrink-0 text-aurora-warn')}>
-            unavailable
-          </span>
-        ) : null}
-      </div>
-      <div className="min-h-[220px] bg-white">
-        {html ? (
-          <iframe
-            title={`${ui.resourceUri} MCP UI`}
-            className="block min-h-[320px] w-full border-0 bg-white"
-            style={{ height: 'min(620px, 72vh)' }}
-            sandbox="allow-scripts allow-forms allow-popups allow-downloads"
-            srcDoc={html}
-          />
-        ) : (
-          <div className="flex min-h-[220px] items-center justify-center px-5 text-center text-xs text-[#4a6872]">
-            {state === 'loading'
-              ? 'Loading MCP UI...'
-              : state === 'error'
-                ? 'Failed to load MCP UI resource.'
-                : 'MCP UI resource reader unavailable.'}
-          </div>
-        )}
-      </div>
-    </section>
-  )
-}
-
-function externalAppName(resourceUri: string): string {
-  try {
-    return new URL(resourceUri).hostname || resourceUri
-  } catch {
-    return resourceUri
-  }
 }
 
 function DiscoveryRows({

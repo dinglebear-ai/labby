@@ -30,7 +30,12 @@ pub(crate) fn descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> 
 fn csrf_exempt(action: &str) -> bool {
     matches!(
         action,
-        "help" | "schema" | "phoenix.status" | "phoenix.session.list" | "phoenix.session.read"
+        "help"
+            | "schema"
+            | "phoenix.status"
+            | "phoenix.session.list"
+            | "phoenix.session.read"
+            | "phoenix.mcp_app.read"
     )
 }
 
@@ -52,6 +57,8 @@ async fn handle(
     require_platform_administrator(authority.platform_administrator)?;
     let owner = identity.safe_fingerprint().to_owned();
     let runtime = state.phoenix_runtime;
+    #[cfg(feature = "gateway")]
+    let gateway_manager = state.gateway_manager;
     let request_headers = headers.clone();
     let request_auth = auth.clone();
     handle_action_with_meta(
@@ -67,6 +74,42 @@ async fn handle(
         move |action, params| async move {
             if !csrf_exempt(&action) {
                 super::require_session_csrf(&action, &request_headers, Some(&request_auth))?;
+            }
+            if action == "phoenix.mcp_app.read" {
+                #[cfg(feature = "gateway")]
+                {
+                    let uri = params.get("uri").and_then(Value::as_str).ok_or_else(|| {
+                        ToolError::MissingParam {
+                            message: "missing required parameter `uri`".into(),
+                            param: "uri".into(),
+                        }
+                    })?;
+                    let manager = gateway_manager.ok_or_else(|| ToolError::Sdk {
+                        sdk_kind: "executor_unavailable".into(),
+                        message: "gateway runtime is unavailable for MCP App resource reads".into(),
+                    })?;
+                    let oauth_subject =
+                        crate::dispatch::oauth_subject::oauth_upstream_subject_for_request(
+                            Some(&request_auth),
+                            Some(&owner),
+                        );
+                    return serde_json::to_value(
+                        manager
+                            .read_mcp_app_resource(uri, oauth_subject.as_deref())
+                            .await?,
+                    )
+                    .map_err(|error| ToolError::Sdk {
+                        sdk_kind: "serialization_error".into(),
+                        message: format!("failed to serialize MCP App resource: {error}"),
+                    });
+                }
+                #[cfg(not(feature = "gateway"))]
+                {
+                    return Err(ToolError::Sdk {
+                        sdk_kind: "executor_unavailable".into(),
+                        message: "gateway support is unavailable for MCP App resource reads".into(),
+                    });
+                }
             }
             runtime.dispatch(&owner, &action, params).await
         },
@@ -100,9 +143,23 @@ mod tests {
     fn read_only_session_actions_are_csrf_exempt() {
         assert!(csrf_exempt("phoenix.session.list"));
         assert!(csrf_exempt("phoenix.session.read"));
+        assert!(csrf_exempt("phoenix.mcp_app.read"));
         assert!(!csrf_exempt("phoenix.session.start"));
         assert!(!csrf_exempt("phoenix.session.rename"));
         assert!(!csrf_exempt("phoenix.session.close"));
+    }
+
+    #[test]
+    fn mcp_app_read_is_registered_as_a_read_only_phoenix_action() {
+        let action = crate::dispatch::phoenix::ACTIONS
+            .iter()
+            .find(|action| action.name == "phoenix.mcp_app.read")
+            .expect("MCP App resource read action");
+        assert!(!action.destructive);
+        assert!(!action.requires_admin);
+        assert_eq!(action.params.len(), 1);
+        assert_eq!(action.params[0].name, "uri");
+        assert!(action.params[0].required);
     }
 
     #[test]

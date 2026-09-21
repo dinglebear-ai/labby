@@ -11,6 +11,115 @@ use super::*;
 use crate::gateway::code_mode::catalog_cache;
 
 #[tokio::test]
+async fn phoenix_mcp_app_resource_reads_generic_ui_resource_and_rejects_invalid_inputs() {
+    let server = wiremock::MockServer::start().await;
+    let fallback = OneShotHttpResponder::new("status", Duration::ZERO);
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .respond_with(move |request: &wiremock::Request| {
+            use wiremock::Respond;
+            let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+            let result = match body["method"].as_str().unwrap() {
+                "server/discover" => json!({
+                    "resultType": "complete", "supportedVersions": ["2026-07-28"],
+                    "capabilities": {"tools": {}, "resources": {}},
+                    "serverInfo": {"name": "mcp-app-fixture", "version": "1"},
+                    "ttlMs": 0, "cacheScope": "private"
+                }),
+                "resources/list" => json!({"resources": [{
+                    "uri": "ui://fixture/app.html", "name": "Fixture app",
+                    "mimeType": "text/html;profile=mcp-app"
+                }]}),
+                "resources/templates/list" => json!({"resourceTemplates": []}),
+                "resources/read" => {
+                    assert_eq!(body["params"]["uri"], "ui://fixture/app.html");
+                    json!({"contents": [{
+                        "uri": "ui://fixture/app.html",
+                        "mimeType": "text/html;profile=mcp-app",
+                        "text": "<main>fixture app</main>"
+                    }]})
+                }
+                _ => return fallback.respond(request),
+            };
+            wiremock::ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0", "id": body["id"], "result": result
+            }))
+        })
+        .mount(&server)
+        .await;
+
+    let mut config = fixture_http_upstream("fixture");
+    config.url = Some(format!("{}/mcp", server.uri()));
+    config.proxy_resources = true;
+    let (manager, pool) = code_mode_manager_with_pool(config).await;
+    manager.ensure_resource_upstreams_ready(&pool, None).await;
+
+    let result = manager
+        .read_mcp_app_resource("ui://fixture/app.html", None)
+        .await
+        .expect("published MCP App resource should read");
+    assert!(matches!(
+        &result.contents[0],
+        rmcp::model::ResourceContents::TextResourceContents { uri, mime_type, text, .. }
+            if uri == "ui://fixture/app.html"
+                && mime_type.as_deref() == Some("text/html;profile=mcp-app")
+                && text == "<main>fixture app</main>"
+    ));
+
+    for (uri, kind) in [
+        ("https://example.test/app.html", "invalid_param"),
+        ("ui://fixture", "invalid_param"),
+        ("ui://missing/app.html", "not_found"),
+    ] {
+        let error = manager
+            .read_mcp_app_resource(uri, None)
+            .await
+            .expect_err("invalid or missing MCP App resource must fail");
+        assert_eq!(error.kind(), kind, "{uri}");
+    }
+
+    let unavailable = GatewayManager::new(
+        tempfile::tempdir().unwrap().path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    )
+    .read_mcp_app_resource("ui://fixture/app.html", None)
+    .await
+    .expect_err("missing published pool must fail closed");
+    assert_eq!(unavailable.kind(), "executor_unavailable");
+}
+
+#[tokio::test]
+async fn phoenix_mcp_app_resource_preserves_oauth_subject_isolation() {
+    let mut upstream = fixture_oauth_upstream("private-apps", "http://unused.invalid/mcp");
+    upstream.proxy_resources = true;
+    let (manager, pool) = code_mode_manager_with_pool(upstream.clone()).await;
+    let mut tool = rmcp::model::Tool::new(
+        "render_private".to_string(),
+        "private app".to_string(),
+        Arc::new(serde_json::Map::new()),
+    );
+    tool.meta = Some(rmcp::model::MetaObject(serde_json::Map::from_iter([(
+        "ui".to_string(),
+        json!({ "resourceUri": "ui://private-apps/widget.html" }),
+    )])));
+    pool.install_test_subject_tools_for_upstream(&upstream, "alice", vec![tool])
+        .await;
+
+    manager
+        .read_mcp_app_resource("ui://private-apps/widget.html", Some("alice"))
+        .await
+        .expect("the owning OAuth subject reads through its cached connection");
+    let error = manager
+        .read_mcp_app_resource("ui://private-apps/widget.html", Some("bob"))
+        .await
+        .expect_err("another subject must not reuse Alice's OAuth connection");
+    assert!(
+        matches!(error.kind(), "resource_read_failed" | "not_found"),
+        "unexpected kind: {}",
+        error.kind()
+    );
+}
+
+#[tokio::test]
 async fn code_mode_resource_discovery_returns_readable_exposed_uris() {
     let server = wiremock::MockServer::start().await;
     let fallback = OneShotHttpResponder::new("status", Duration::ZERO);

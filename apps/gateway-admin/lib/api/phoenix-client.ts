@@ -82,6 +82,20 @@ export interface PhoenixEvent {
   received_at_ms?: number
 }
 
+export interface McpResourceContent {
+  uri?: string
+  text?: string
+  blob?: string
+  mimeType?: string
+  mime_type?: string
+  _meta?: Record<string, unknown>
+}
+
+export interface McpResourceReadResult {
+  contents?: McpResourceContent[]
+  _meta?: Record<string, unknown>
+}
+
 export interface PhoenixDiagnostics {
   account?: unknown
   rate_limits?: unknown
@@ -131,6 +145,8 @@ function action<T>(name: string, params: object, signal?: AbortSignal) {
 
 export const phoenixApi = {
   status: (signal?: AbortSignal) => action<PhoenixStatus>('phoenix.status', {}, signal),
+  readMcpAppResource: (uri: string, signal?: AbortSignal) =>
+    action<McpResourceReadResult>('phoenix.mcp_app.read', { uri }, signal),
   models: (signal?: AbortSignal) => action<{ models: PhoenixModel[] }>('phoenix.models.list', {}, signal),
   list: (signal?: AbortSignal) => action<PhoenixSessionList>('phoenix.session.list', {}, signal),
   start: (model?: string, effort?: string, signal?: AbortSignal) => action<PhoenixSession>('phoenix.session.start', { model, effort }, signal),

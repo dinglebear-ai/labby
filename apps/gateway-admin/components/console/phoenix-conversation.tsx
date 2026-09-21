@@ -4,6 +4,9 @@ import type { ReactNode } from 'react'
 import { Clipboard, Pencil, RefreshCw } from 'lucide-react'
 import type { PhoenixEvent, PhoenixMessage } from '@/lib/api/phoenix-client'
 import { PhoenixEventTimeline, isPhoenixAgentDelta, phoenixAgentDelta, phoenixEventTime } from './phoenix-event-timeline'
+import { McpAppResourcePanel, type McpAppResourceReader } from '@/components/mcp-app/mcp-app-resource-panel'
+import { phoenixApi } from '@/lib/api/phoenix-client'
+import { mcpAppsForPhoenixEvent } from '@/lib/mcp-app/event-apps'
 
 type MessageEntry = { kind: 'message'; time: number; order: number; index: number; message: PhoenixMessage }
 type EventEntry = { kind: 'event'; time: number; order: number; event: PhoenixEvent }
@@ -88,12 +91,19 @@ function Reactions({ message, index, copiedIndex, onRetry, onCopy, onEdit }: { m
   </div>
 }
 
-export function PhoenixConversation({ messages, events, mark, copiedIndex, onRetry, onCopy, onEdit }: { messages: PhoenixMessage[]; events: PhoenixEvent[]; mark: ReactNode; copiedIndex?: number; onRetry: (index: number) => void; onCopy: (text: string, index: number) => void; onEdit: (index: number, text: string) => void }) {
+const readPhoenixMcpAppResource: McpAppResourceReader = ({ uri }, signal) => phoenixApi.readMcpAppResource(uri, signal)
+
+export function PhoenixConversation({ messages, events, mark, copiedIndex, onRetry, onCopy, onEdit, readMcpAppResource = readPhoenixMcpAppResource }: { messages: PhoenixMessage[]; events: PhoenixEvent[]; mark: ReactNode; copiedIndex?: number; onRetry: (index: number) => void; onCopy: (text: string, index: number) => void; onEdit: (index: number, text: string) => void; readMcpAppResource?: McpAppResourceReader }) {
   const chunks = buildChunks(messages, events)
   const streamedTurns = new Set<string>()
+  const renderedApps = new Set<string>()
   return <>
     {chunks.map((chunk) => {
-      if (chunk.kind === 'events') return <div key={chunk.id} className="pl-[35px]"><PhoenixEventTimeline events={chunk.events}/></div>
+      if (chunk.kind === 'events') return <div key={chunk.id} className="pl-[35px]"><PhoenixEventTimeline events={chunk.events}/>{chunk.events.flatMap(mcpAppsForPhoenixEvent).filter((app) => {
+        if (renderedApps.has(app.key)) return false
+        renderedApps.add(app.key)
+        return true
+      }).map((app) => <McpAppResourcePanel key={app.key} resourceUri={app.resourceUri} appName={app.appName} toolInput={app.toolInput} toolResult={app.toolResult} readResource={readMcpAppResource}/>)}</div>
       if (chunk.kind === 'assistant-stream') {
         const firstForTurn = !streamedTurns.has(chunk.turnKey)
         streamedTurns.add(chunk.turnKey)

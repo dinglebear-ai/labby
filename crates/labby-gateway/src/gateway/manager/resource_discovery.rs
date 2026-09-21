@@ -4,11 +4,59 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use futures::StreamExt as _;
+use labby_runtime::error::ToolError;
+use rmcp::model::ReadResourceResult;
 
 use super::GatewayManager;
 use crate::upstream::pool::{UpstreamPool, upstream_discovery_concurrency};
 
 impl GatewayManager {
+    /// Read one native MCP App resource from the currently published pool.
+    ///
+    /// This is an exact read against already-published runtime state. It never
+    /// creates a pool, reconnects an upstream, or derives routing from a named
+    /// provider; native `ui://` ownership remains the pool's responsibility.
+    pub async fn read_mcp_app_resource(
+        &self,
+        uri: &str,
+        oauth_subject: Option<&str>,
+    ) -> Result<ReadResourceResult, ToolError> {
+        validate_mcp_app_uri(uri)?;
+        let pool = self.current_pool_sync().ok_or_else(|| ToolError::Sdk {
+            sdk_kind: "executor_unavailable".to_string(),
+            message: "gateway upstream pool is unavailable".to_string(),
+        })?;
+        if let Some(subject) = oauth_subject {
+            let config = self.current_config().await;
+            let owner = pool
+                .cached_subject_scoped_ui_resource_owner(&config.upstream, subject, uri, None)
+                .await
+                .map_err(|message| ToolError::Sdk {
+                    sdk_kind: "resource_owner_conflict".to_string(),
+                    message,
+                })?;
+            if let Some(owner) = owner {
+                return pool
+                    .subject_scoped_read_resource(&owner, subject, uri)
+                    .await
+                    .map_err(|message| ToolError::Sdk {
+                        sdk_kind: "resource_read_failed".to_string(),
+                        message,
+                    });
+            }
+        }
+        pool.read_upstream_ui_resource(uri)
+            .await
+            .ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "not_found".to_string(),
+                message: "MCP App resource is not available from a published upstream".to_string(),
+            })?
+            .map_err(|message| ToolError::Sdk {
+                sdk_kind: "resource_read_failed".to_string(),
+                message,
+            })
+    }
+
     /// Warm eligible regular peers within one shared catalog warm-up deadline.
     /// OAuth and relay peers remain isolated from this global connection pool.
     pub async fn ensure_resource_upstreams_ready(
@@ -66,4 +114,21 @@ impl GatewayManager {
             );
         }
     }
+}
+
+fn validate_mcp_app_uri(uri: &str) -> Result<(), ToolError> {
+    let parsed = url::Url::parse(uri).map_err(|_| ToolError::InvalidParam {
+        message: "MCP App resource URI must be a valid ui:// URI".to_string(),
+        param: "uri".to_string(),
+    })?;
+    if parsed.scheme() != "ui"
+        || parsed.host_str().is_none_or(str::is_empty)
+        || matches!(parsed.path(), "" | "/")
+    {
+        return Err(ToolError::InvalidParam {
+            message: "MCP App resource URI must include a ui:// authority and path".to_string(),
+            param: "uri".to_string(),
+        });
+    }
+    Ok(())
 }

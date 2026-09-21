@@ -115,6 +115,11 @@ const fn action(
 
 pub(crate) const ACTIONS: &[ActionSpec] = &[
     action("phoenix.status", "Read Phoenix availability", &[]),
+    action(
+        "phoenix.mcp_app.read",
+        "Read a proxied MCP App UI resource",
+        &[param("uri", true)],
+    ),
     action("phoenix.models.list", "List selectable Codex models", &[]),
     action(
         "phoenix.session.list",

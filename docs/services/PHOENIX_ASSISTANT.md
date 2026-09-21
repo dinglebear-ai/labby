@@ -46,6 +46,12 @@ Phoenix recognizes the documented item families, including:
 
 It also preserves supported hook/model/status events. Unknown started/completed item types are shown as a generic icon node instead of being silently discarded.
 
+## Proxied MCP Apps
+
+Completed `mcpToolCall` items progressively enhance the chronological tool node with an inline MCP App when App Server reports a valid `ui://` resource in `appContext.resourceUri`. Phoenix also accepts the older top-level `mcpAppResourceUri` and modern or legacy result metadata (`_meta.ui.resourceUri` and `_meta["ui/resourceUri"]`) for compatibility. Invalid or non-`ui://` values remain ordinary tool events.
+
+Code Mode uses the same host path: Phoenix parses retained `code_mode_execute_trace` results and renders nested `calls[].ui.resourceUri` links without a named-upstream branch or restart. The authenticated read action forwards the native URI through the published gateway resource owner, including the caller's existing subject-scoped OAuth connection when applicable. Tool activity and model-facing fallback remain visible on detection, resource, bridge, or iframe failure. Apps use sandboxed iframes without `allow-same-origin`; the MCP Apps host bridge completes initialization, forwards bounded resource reads, and delivers retained tool input/results. Retained events reconstruct panels and their bridge state after reload.
+
 ## Attachments
 
 Codex App Server's official turn inputs are text, image URL, and local image. The browser cannot safely hand arbitrary local paths to a remote container, so Labby transports:

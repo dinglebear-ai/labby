@@ -39,3 +39,20 @@ test('Phoenix session listing uses the owner-scoped read action', async () => {
   assert.equal(result.sessions[0]?.turn_status, 'ready')
   globalThis.fetch = originalFetch
 })
+
+test('Phoenix MCP App read preserves the resource response contract', async () => {
+  const originalFetch = globalThis.fetch
+  let body: unknown
+  globalThis.fetch = async (_input, init) => {
+    body = JSON.parse(String(init?.body))
+    return new Response(JSON.stringify({ contents: [{ uri: 'ui://fixture/app.html', mimeType: 'text/html;profile=mcp-app', text: '<main>Fixture</main>', _meta: { ui: { prefersBorder: true } } }] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }
+  try {
+    const result = await phoenixApi.readMcpAppResource('ui://fixture/app.html')
+    assert.deepEqual(body, { action: 'phoenix.mcp_app.read', params: { uri: 'ui://fixture/app.html' } })
+    assert.equal(result.contents?.[0]?.mimeType, 'text/html;profile=mcp-app')
+    assert.deepEqual(result.contents?.[0]?._meta, { ui: { prefersBorder: true } })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
