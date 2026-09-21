@@ -5,12 +5,17 @@ use crate::types::{CatalogDescriptor, CodeModeCatalogKind, CodeModeDiscoveryEntr
 
 #[test]
 fn javy_search_and_describe_preserve_declaration_presence() {
+    const POLICY: &str = "Execution policy: native snippets.exec/test intersects a nonempty declaration with caller authority and never grants authority. Nested codemode.run retains the enclosing run scope; it does not reapply the declaration.";
     for (tools, expected, description) in [
-        (None, None, "omitted (caller policy unchanged)"),
+        (
+            None,
+            None,
+            "omitted (native exec/test inherits caller scope)",
+        ),
         (
             Some(vec![]),
             Some(serde_json::json!([])),
-            "[] (intended deny-all)",
+            "[] (native exec/test denies all upstream tools)",
         ),
         (
             Some(vec!["alpha::read".to_owned(), "beta::list".to_owned()]),
@@ -62,10 +67,66 @@ fn javy_search_and_describe_preserve_declaration_presence() {
         }
         let rendered = value["description"]["markdown"].as_str().unwrap();
         assert!(rendered.contains(description), "{rendered}");
-        assert!(
-            rendered.contains("Metadata only: declarations do not currently restrict execution.")
+        assert!(rendered.contains(POLICY));
+    }
+}
+
+#[test]
+fn javy_batch_preserves_structured_errors_and_rejects_invalid_jobs() {
+    let preamble = generate_discovery_js(&[], 0.5).unwrap();
+    let script = format!(
+        "{preamble}\n\
+         globalThis.result = null;\n\
+         (async () => {{\n\
+           const outcome = await codemode.batch([\n\
+             () => Promise.resolve({{ok: true}}),\n\
+             Promise.resolve('started'),\n\
+             () => Promise.reject(new Error(JSON.stringify({{kind: 'timeout', side_effects: 'possible', recovery: {{same_arguments: 'never'}}}}))),\n\
+             () => Promise.reject(new Error(JSON.stringify({{message: 'partial'}}))),\n\
+             () => Promise.reject(new Error('plain text failure')),\n\
+             {{get then() {{ throw new Error('throwing then getter'); }}}},\n\
+             undefined, null, 7\n\
+           ]);\n\
+           globalThis.result = JSON.stringify(outcome);\n\
+         }})().catch(error => {{ globalThis.result = JSON.stringify({{error: String(error)}}); }});"
+    );
+    let mut config = javy::Config::default();
+    config.memory_limit(8 * 1024 * 1024);
+    let runtime = javy::Runtime::new(config).unwrap();
+    runtime
+        .context()
+        .with(|cx| cx.eval::<(), _>(script))
+        .unwrap();
+    runtime.resolve_pending_jobs().unwrap();
+    let result: String = runtime
+        .context()
+        .with(|cx| cx.globals().get("result"))
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_str(&result).unwrap();
+
+    assert!(value.get("error").is_none(), "{value}");
+    assert_eq!(value["ok"].as_array().unwrap().len(), 2);
+    assert_eq!(value["failed"].as_array().unwrap().len(), 7);
+    assert_eq!(value["failed"][0]["error"]["kind"], "timeout");
+    assert_eq!(value["failed"][0]["error"]["side_effects"], "possible");
+    for failure in value["failed"].as_array().unwrap().iter().take(4).skip(1) {
+        assert_eq!(failure["error"]["side_effects"], "unknown");
+        assert_eq!(
+            failure["error"]["recovery"]["same_arguments"],
+            "discouraged"
         );
     }
+    assert_eq!(value["failed"][2]["error"]["message"], "plain text failure");
+    assert_eq!(
+        value["failed"][3]["error"]["message"],
+        "throwing then getter"
+    );
+    for failure in value["failed"].as_array().unwrap().iter().skip(4) {
+        assert_eq!(failure["error"]["kind"], "invalid_param");
+        assert_eq!(failure["error"]["side_effects"], "none_expected");
+        assert_eq!(failure["error"]["recovery"]["same_arguments"], "never");
+    }
+    assert_eq!(value["all_ok"], false);
 }
 
 #[test]

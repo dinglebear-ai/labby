@@ -244,12 +244,14 @@ Team-scoped `gateway.loadout.*` and `gateway.protected_route.*` actions act insi
 
 ## Gateway Code Mode
 
-When enabled, Labby hides raw proxied upstream tools from MCP `list_tools()` and exposes
-the single synthetic `codemode` gateway tool:
+When enabled, Labby hides raw proxied upstream tools from MCP `list_tools()` and
+exposes bounded synthetic Code Mode entry points:
 
 | Tool | Purpose | Status |
 |------|---------|------|
 | `codemode` | Run one JavaScript async arrow function in the Code Mode sandbox. Use `codemode.search()` and `codemode.describe()` inside the same execution to discover upstream tools, then call them through generated helpers or `callTool(id, params)`. | Primary |
+| `codemode_read` | Run the same payload with enforced read-only admission. It accepts `lab:read`, `lab`, or `lab:admin` and exposes only tools whose live descriptor is explicitly read-only and non-destructive. | Primary |
+| `codemode_ui` | Optional MCP App twin of full-authority `codemode`, enabled by `mcp_ui_enabled`. | Optional |
 
 This keeps the MCP catalog small while still allowing clients to reach every exposed upstream tool.
 Per-upstream `expose_tools` filters still apply before tools enter the searchable catalog.
@@ -259,6 +261,7 @@ Configuration lives at root `[code_mode]` in `config.toml`:
 ```toml
 [code_mode]
 enabled = true
+mcp_ui_enabled = false
 trace_params = true
 result_shape_policy = "off"
 timeout_ms = 30000
@@ -304,10 +307,11 @@ exposure checks. `params` must be JSON-serializable.
 
 ### Code Mode Call Inspector
 
-When Code Mode is enabled, the synthetic MCP `codemode` tool advertises a
-read-only MCP App inspector through `_meta.ui.resourceUri`.
+When Code Mode UI is enabled, the synthetic MCP `codemode_ui` tool advertises a
+read-only inspector UI through `_meta.ui.resourceUri`; the tool itself retains
+the same execution authority as `codemode`.
 
-- `codemode` attaches `ui://lab/code-mode/codemode`
+- `codemode_ui` attaches `ui://lab/code-mode/codemode`
 - recent in-memory history is available at `ui://lab/code-mode/history`
 
 The inspector is passive observability only. It renders tool-result
@@ -444,7 +448,7 @@ Advertised tools per active mode:
 
 | Mode | Advertised MCP tools |
 |------|---------------------|
-| `[code_mode].enabled = true` | `codemode`, optional `codemode_ui`; root peers also receive `mcp_app`, plus eligible enabled admin app tools |
+| `[code_mode].enabled = true` | `codemode`, `codemode_read`, optional `codemode_ui`; root peers also receive `mcp_app`, plus eligible enabled admin app tools |
 | Neither | raw Labby service tools + healthy upstream tools; root peers also receive `mcp_app`, plus eligible enabled admin app tools |
 
 Use `codemode` for gateway Code Mode. Discovery happens inside the sandbox with
@@ -460,10 +464,13 @@ Rules:
 - `code_mode.max_log_entries` is validated in the range `1..=100000`
 - `code_mode.max_log_bytes` is validated in the range `1..=104857600`
 - `codemode` requires a non-empty `code` string
-- `codemode` requires `lab` or `lab:admin` and broker calls through the gateway visibility checks
+- `codemode` and `codemode_ui` require `lab` or `lab:admin`; `codemode_read`
+  also accepts `lab:read` and rechecks explicit live read-only annotations
 - Lab actions are not supported inside Code Mode `callTool`
 - gateway action provenance fields (`origin` and `owner`) are reserved in Code Mode and are overwritten by the broker
-- `codemode` enforces `timeout_ms` by killing the child process; tool calls are bounded by the run deadline and host-side tool policy, not by a per-run call-count cap
+- `codemode` enforces `timeout_ms` by killing the child process; tool calls are
+  bounded by the run deadline, host-side policy, and a configurable per-run
+  call budget (512 by default, up to 2048)
 - invalid Code Mode ids return `invalid_code_mode_id`
 - unavailable or overlarge upstream schemas may be omitted; generated signatures fall back to `unknown`
 - old `[[upstream]].code_mode` blocks are accepted only as migration input and are dropped on the next gateway config write
