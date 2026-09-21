@@ -255,6 +255,7 @@ async fn expose_prompts_filters_the_subject_scoped_listing() {
     let pool = static_catalog_pool("static").await;
     seed_subject_connection(&pool, "static", "alice").await;
     let config = oauth_upstream_config("static", Some(vec![EXPOSED_PROMPT]));
+    pool.register_upstream_config_for_tests(&config);
 
     let names: Vec<String> = pool
         .subject_scoped_prompts(std::slice::from_ref(&config), "alice", &[])
@@ -278,6 +279,7 @@ async fn subject_scoped_prompts_honor_initialize_and_skip_unadvertised_capabilit
     .await;
     seed_subject_connection(&pool, "tools-only", "alice").await;
     let config = oauth_upstream_config("tools-only", None);
+    pool.register_upstream_config_for_tests(&config);
 
     let prompts = pool
         .subject_scoped_prompts(std::slice::from_ref(&config), "alice", &[])
@@ -322,6 +324,7 @@ async fn expose_prompts_blocks_a_subject_scoped_get_of_an_excluded_prompt() {
     let pool = static_catalog_pool("static").await;
     seed_subject_connection(&pool, "static", "alice").await;
     let config = oauth_upstream_config("static", Some(vec![EXPOSED_PROMPT]));
+    pool.register_upstream_config_for_tests(&config);
 
     let blocked = pool
         .subject_scoped_get_prompt(
@@ -352,6 +355,7 @@ async fn expose_prompts_hides_excluded_prompts_from_subject_scoped_owner_lookup(
     let pool = static_catalog_pool("static").await;
     seed_subject_connection(&pool, "static", "alice").await;
     let config = oauth_upstream_config("static", Some(vec![EXPOSED_PROMPT]));
+    pool.register_upstream_config_for_tests(&config);
     let configs = std::slice::from_ref(&config);
 
     assert_eq!(
@@ -374,6 +378,7 @@ async fn invalid_expose_prompts_hides_every_subject_scoped_prompt() {
     let pool = static_catalog_pool("static").await;
     seed_subject_connection(&pool, "static", "alice").await;
     let config = oauth_upstream_config("static", Some(vec!["   "]));
+    pool.register_upstream_config_for_tests(&config);
 
     assert!(
         pool.subject_scoped_prompts(std::slice::from_ref(&config), "alice", &[])
@@ -389,6 +394,7 @@ async fn absent_expose_prompts_leaves_subject_scoped_prompts_alone() {
     let pool = static_catalog_pool("static").await;
     seed_subject_connection(&pool, "static", "alice").await;
     let config = oauth_upstream_config("static", None);
+    pool.register_upstream_config_for_tests(&config);
 
     assert_eq!(
         pool.subject_scoped_prompts(std::slice::from_ref(&config), "alice", &[])
@@ -418,6 +424,7 @@ async fn subject_prompt_listing_waits_for_global_catalog_fanout_permit() {
         .await
         .expect("hold every global permit");
     let config = oauth_upstream_config("static", None);
+    pool.register_upstream_config_for_tests(&config);
     let deadline_at = tokio::time::Instant::now() + std::time::Duration::from_millis(25);
 
     let prompts = pool

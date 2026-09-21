@@ -69,7 +69,7 @@ impl UpstreamPool {
         let fingerprint = crate::gateway::code_mode::catalog_cache::fingerprint(config);
         self.upstream_config_fingerprints
             .get(&config.name)
-            .is_none_or(|current| current.as_str() == fingerprint)
+            .is_some_and(|current| current.as_str() == fingerprint)
     }
 
     pub(super) async fn install_connected_tools(
@@ -510,6 +510,14 @@ impl UpstreamPool {
                 tools: Vec::new(),
                 last_used: Instant::now(),
             },
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn register_upstream_config_for_tests(&self, config: &UpstreamConfig) {
+        self.upstream_config_fingerprints.insert(
+            config.name.clone(),
+            crate::gateway::code_mode::catalog_cache::fingerprint(config),
         );
     }
 
