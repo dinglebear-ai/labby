@@ -347,7 +347,7 @@ fn write_gateway_config_replaces_persisted_mcp_app_visibility() {
     let path = dir.path().join("config.toml");
     std::fs::write(
         &path,
-        r#"
+        r"
 [mcp_apps]
 manager = true
 skill_library = true
@@ -355,7 +355,7 @@ add_server = true
 server_logs = true
 gateway_status = true
 settings = true
-"#,
+",
     )
     .expect("write config");
 
