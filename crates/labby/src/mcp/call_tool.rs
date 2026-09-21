@@ -849,17 +849,27 @@ impl LabMcpServer {
         // fanout reports it as `during_tool_call` — the signal that separates
         // harmless catalog movement from the flapping clients actually feel.
         let _in_flight = crate::mcp::catalog_churn::InFlightToolCall::enter();
-        let service = request.name.as_ref().to_string();
+        let wire_name = request.name.as_ref().to_string();
         // This request remains live until the upstream tail. Keep its large
         // serde value off this already broad dispatch future's stack frame.
         let upstream_request = Box::new(request.clone());
         let args = request.arguments.unwrap_or_default();
-        let action = args
-            .get("action")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let params = args.get("params").cloned().unwrap_or(Value::Null);
+        let atomic_target = self.registry.resolve_atomic_action(&wire_name);
+        let (service, action, params) = match atomic_target {
+            Some((service, action)) => (
+                service.name.to_string(),
+                action.name.to_string(),
+                Value::Object(args.clone()),
+            ),
+            None => (
+                wire_name,
+                args.get("action")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                args.get("params").cloned().unwrap_or(Value::Null),
+            ),
+        };
         let instance = params
             .get("instance")
             .and_then(Value::as_str)
@@ -2356,6 +2366,9 @@ impl LabMcpServer {
         _context: &RequestContext<RoleServer>,
     ) -> bool {
         let service = request.name.as_ref();
+        if let Some((_, action)) = self.registry.resolve_atomic_action(service) {
+            return action.destructive;
+        }
         let action = request
             .arguments
             .as_ref()
@@ -2389,6 +2402,9 @@ impl LabMcpServer {
         context: &RequestContext<RoleServer>,
     ) -> bool {
         let service = request.name.as_ref();
+        if let Some((_, action)) = self.registry.resolve_atomic_action(service) {
+            return action.destructive;
+        }
         let action = request
             .arguments
             .as_ref()

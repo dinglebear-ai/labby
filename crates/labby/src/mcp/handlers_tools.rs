@@ -264,8 +264,9 @@ impl LabMcpServer {
         };
         #[cfg(not(feature = "skills"))]
         let skill_library_mode = SkillLibraryDescriptorMode::Hidden;
+        let tool_projection_mode = self.registry.tool_projection_mode();
         for svc in self.registry.services() {
-            // `service_visible_on_mcp` already checks `route_scope.allows_service`.
+            // service_visible_on_mcp already checks route_scope.allows_service.
             if self.service_visible_on_mcp(svc.name).await {
                 #[cfg(feature = "gateway")]
                 if matches!(&project_shadow, ProjectDiscoveryShadow::Bound(_)) {
@@ -277,17 +278,45 @@ impl LabMcpServer {
                         continue;
                     }
                 }
-                builtin_names.insert(svc.name.to_string());
-                if hide_raw_tools && svc.name != SERVER_LOGS_TOOL_NAME {
-                    suppressed_builtin_tool_count += 1;
-                } else {
-                    advertised_names.insert(svc.name.to_string());
-                    descriptors.push(self.registry.permanent_tools().builtin_service_tool(
-                        svc,
-                        server_logs_app_visible,
-                        skill_library_mode,
-                    ));
-                    builtin_tool_count += 1;
+                if tool_projection_mode.includes_router() {
+                    builtin_names.insert(svc.name.to_string());
+                    if hide_raw_tools && svc.name != SERVER_LOGS_TOOL_NAME {
+                        suppressed_builtin_tool_count += 1;
+                    } else {
+                        advertised_names.insert(svc.name.to_string());
+                        descriptors.push(self.registry.permanent_tools().builtin_service_tool(
+                            svc,
+                            server_logs_app_visible,
+                            skill_library_mode,
+                        ));
+                        builtin_tool_count += 1;
+                    }
+                }
+                if tool_projection_mode.includes_atomic() {
+                    let allowed_actions = self.allowed_mcp_actions(svc.name).await;
+                    for action in svc.actions {
+                        if allowed_actions.as_ref().is_some_and(|allowed| {
+                            !allowed.iter().any(|candidate| candidate == action.name)
+                        }) {
+                            continue;
+                        }
+                        let Some(tool) = self
+                            .registry
+                            .permanent_tools()
+                            .atomic_action_tool(svc, action)
+                        else {
+                            continue;
+                        };
+                        let name = tool.name.to_string();
+                        builtin_names.insert(name.clone());
+                        if hide_raw_tools {
+                            suppressed_builtin_tool_count += 1;
+                        } else {
+                            advertised_names.insert(name);
+                            descriptors.push(tool);
+                            builtin_tool_count += 1;
+                        }
+                    }
                 }
             }
         }

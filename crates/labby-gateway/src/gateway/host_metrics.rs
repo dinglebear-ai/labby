@@ -1,8 +1,9 @@
 //! Bounded sampling of this daemon and its descendants, never unrelated host workloads.
+use schemars::JsonSchema;
 use serde::Serialize;
 use std::path::Path;
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Serialize, JsonSchema)]
 pub(super) struct HostMetrics {
     pub available: bool,
     pub scope: &'static str,

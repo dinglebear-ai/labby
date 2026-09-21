@@ -1,6 +1,145 @@
 //! Action catalog for the `setup` Bootstrap orchestrator.
 
 use labby_primitives::action::{ActionSpec, ParamSpec};
+use schemars::JsonSchema;
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct BootstrapResultSchema {
+    created: bool,
+    env_path: String,
+    token: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct ServiceSchemaMapSchema {
+    services: BTreeMap<String, ServiceSchemaEntrySchema>,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct ServiceSchemaEntrySchema {
+    name: String,
+    display_name: String,
+    description: String,
+    category: String,
+    supports_multi_instance: bool,
+    default_port: Option<u16>,
+    built_in_upstream_api: bool,
+    env: Vec<ServiceEnvSchema>,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct ServiceEnvSchema {
+    name: String,
+    description: String,
+    example: String,
+    secret: bool,
+    required: bool,
+    ui: Option<ServiceUiSchema>,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct ServiceUiSchema {
+    kind: String,
+    enum_values: Option<Vec<String>>,
+    advanced: bool,
+    help_url: Option<String>,
+    depends_on: Option<String>,
+    validation: ServiceUiValidationSchema,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct ServiceUiValidationSchema {
+    required: bool,
+    min_length: Option<usize>,
+    max_length: Option<usize>,
+    pattern: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct DraftGetResultSchema {
+    entries: Vec<super::types::DraftEntry>,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct DraftSetResultSchema {
+    written: usize,
+    skipped: Vec<String>,
+    backup_path: Option<PathBuf>,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct DraftDiscardResultSchema {
+    removed: bool,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct SettingsUpdateStateSchema {
+    config_path: String,
+    changed: bool,
+    previous: SettingsUpdatePreviousSchema,
+    restart_required: bool,
+    restart_note: String,
+    services: SettingsUpdateServicesSchema,
+    surfaces: SettingsUpdateSurfacesSchema,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct SettingsUpdatePreviousSchema {
+    services: SettingsUpdatePreviousServicesSchema,
+}
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct SettingsUpdatePreviousServicesSchema {
+    built_in_upstream_apis_enabled: Option<bool>,
+}
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct SettingsUpdateServicesSchema {
+    built_in_upstream_apis_enabled: bool,
+    built_in_upstream_api_services: Vec<String>,
+    bootstrap_services: Vec<String>,
+}
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct SettingsUpdateSurfacesSchema {
+    mcp: SettingsMcpSurfaceSchema,
+    web: SettingsWebSurfaceSchema,
+    auth: SettingsAuthSurfaceSchema,
+}
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct SettingsMcpSurfaceSchema {
+    transport: String,
+    host: String,
+    port: u16,
+    protocol_version: String,
+    lifecycle: String,
+}
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct SettingsWebSurfaceSchema {
+    auth_disabled: bool,
+    assets_dir: Option<String>,
+}
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct SettingsAuthSurfaceSchema {
+    mode: String,
+    public_url: Option<String>,
+}
 
 /// Setup actions that may only run from a trusted local transport. These
 /// either mint first-run credentials or initiate an outbound connectivity
@@ -14,6 +153,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "Catalog",
+        output_schema: None,
         params: &[],
     },
     ActionSpec {
@@ -22,6 +162,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "Schema",
+        output_schema: None,
         params: &[ParamSpec {
             name: "action",
             ty: "string",
@@ -35,6 +176,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "SetupSnapshot",
+        output_schema: Some(labby_primitives::action::schema_for::<super::types::SetupSnapshot>),
         params: &[],
     },
     ActionSpec {
@@ -43,6 +185,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: true,
         requires_admin: true,
         returns: "BootstrapOutcome",
+        output_schema: Some(labby_primitives::action::schema_for::<BootstrapResultSchema>),
         params: &[],
     },
     ActionSpec {
@@ -51,6 +194,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "ServiceSchemaMap",
+        output_schema: Some(labby_primitives::action::schema_for::<ServiceSchemaMapSchema>),
         params: &[ParamSpec {
             name: "services",
             ty: "string[]",
@@ -64,6 +208,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "DraftEntry[]",
+        output_schema: Some(labby_primitives::action::schema_for::<DraftGetResultSchema>),
         params: &[],
     },
     ActionSpec {
@@ -72,6 +217,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: true,
         requires_admin: true,
         returns: "DraftSetOutcome",
+        output_schema: Some(labby_primitives::action::schema_for::<DraftSetResultSchema>),
         params: &[
             ParamSpec {
                 name: "entries",
@@ -93,6 +239,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: true,
         requires_admin: true,
         returns: "DraftDiscardOutcome",
+        output_schema: Some(labby_primitives::action::schema_for::<DraftDiscardResultSchema>),
         params: &[],
     },
     ActionSpec {
@@ -101,6 +248,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: true,
         requires_admin: true,
         returns: "CommitOutcome",
+        output_schema: Some(labby_primitives::action::schema_for::<super::types::CommitOutcome>),
         params: &[ParamSpec {
             name: "force",
             ty: "boolean",
@@ -114,6 +262,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "SettingsState",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::settings::SettingsStateResponse>,
+        ),
         params: &[ParamSpec {
             name: "section",
             ty: "string",
@@ -127,6 +278,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "SettingsSchema",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::settings::SettingsSchemaResponse>,
+        ),
         params: &[],
     },
     ActionSpec {
@@ -135,6 +289,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "EnvSettingSpec[]",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<Vec<super::settings::EnvSettingSpec>>,
+        ),
         params: &[],
     },
     ActionSpec {
@@ -143,6 +300,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "SettingsState",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::settings::SettingsStateResponse>,
+        ),
         params: &[],
     },
     ActionSpec {
@@ -151,6 +311,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: true,
         requires_admin: true,
         returns: "SettingsState",
+        output_schema: Some(labby_primitives::action::schema_for::<SettingsUpdateStateSchema>),
         params: &[ParamSpec {
             name: "services.built_in_upstream_apis_enabled",
             ty: "boolean",
@@ -164,6 +325,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: true,
         requires_admin: true,
         returns: "SettingsMutationOutcome",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::settings::SettingsMutationOutcome>,
+        ),
         params: &[ParamSpec {
             name: "entries",
             ty: "SettingsUpdateEntry[]",
@@ -177,6 +341,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: true,
         requires_admin: true,
         returns: "SettingsState",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::settings::SettingsStateResponse>,
+        ),
         params: &[ParamSpec {
             name: "entries",
             ty: "SettingsUpdateEntry[]",
@@ -190,6 +357,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "SetupReport",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::local_setup::SetupReport>,
+        ),
         params: &[],
     },
     ActionSpec {
@@ -198,6 +368,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: true,
         requires_admin: true,
         returns: "SetupReport",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::local_setup::SetupReport>,
+        ),
         params: &[],
     },
     ActionSpec {
@@ -206,6 +379,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: true,
         requires_admin: true,
         returns: "ProxySetupOutcome",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::proxy::ProxySetupOutcome>,
+        ),
         params: &[
             ParamSpec {
                 name: "preferences",
@@ -233,6 +409,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: true,
         requires_admin: true,
         returns: "CommitOutcome",
+        output_schema: Some(labby_primitives::action::schema_for::<super::types::CommitOutcome>),
         params: &[ParamSpec {
             name: "force",
             ty: "boolean",

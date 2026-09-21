@@ -1,9 +1,10 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use labby_runtime::gateway_config::ImportSource;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, JsonSchema, Deserialize, PartialEq, Eq)]
 pub struct ResourceLeaseReleaseView {
     pub released: bool,
 }
@@ -61,7 +62,7 @@ impl CatalogChangeNotifier {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, JsonSchema, Deserialize)]
 pub struct GatewayConfigView {
     pub name: String,
     #[serde(default)]
@@ -103,7 +104,7 @@ pub struct GatewayConfigView {
 }
 
 /// A server discovered from an external MCP config but not yet imported.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema, Deserialize)]
 pub struct DiscoveredServerView {
     pub name: String,
     /// Which client config type it was found in (e.g. "cursor", "vscode", "gemini").
@@ -131,7 +132,7 @@ pub struct DiscoveredServerView {
 }
 
 /// One operator-deleted imported upstream that suppresses future auto-imports.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema, Deserialize)]
 pub struct ImportTombstoneView {
     pub name: String,
     pub source_client: String,
@@ -144,7 +145,7 @@ pub struct ImportTombstoneView {
 }
 
 /// Why a server was skipped during `gateway.import`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, JsonSchema, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ImportSkipReason {
     AlreadyConfigured,
@@ -153,21 +154,21 @@ pub enum ImportSkipReason {
 }
 
 /// One skipped entry from a `gateway.import` call.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema, Deserialize)]
 pub struct ImportSkipView {
     pub name: String,
     pub reason: ImportSkipReason,
 }
 
 /// One error entry from a `gateway.import` call.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema, Deserialize)]
 pub struct ImportErrorView {
     pub name: String,
     pub message: String,
 }
 
 /// Structured result returned by `gateway.import`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, JsonSchema, Deserialize)]
 pub struct ImportResultView {
     pub imported: Vec<GatewayView>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -176,13 +177,13 @@ pub struct ImportResultView {
     pub errors: Vec<ImportErrorView>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, JsonSchema, Deserialize)]
 pub struct PendingDiscoveryOutcome {
     pub queued: usize,
     pub skipped: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema, Deserialize)]
 pub struct PendingImportView {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -197,7 +198,7 @@ pub struct PendingImportView {
     pub enrichment_suggestion_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
 pub struct GatewayHeaderRecoveryMetricsView {
     pub mismatch_detected: u64,
     pub schema_refreshes: u64,
@@ -212,7 +213,7 @@ impl GatewayHeaderRecoveryMetricsView {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, JsonSchema, Deserialize)]
 pub struct GatewayRuntimeView {
     pub name: String,
     /// Whether the shared upstream pool currently owns a live transport.
@@ -253,7 +254,7 @@ pub struct GatewayRuntimeView {
     pub header_recovery: GatewayHeaderRecoveryMetricsView,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
 pub struct DependencyHintView {
     pub code: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -264,7 +265,7 @@ pub struct DependencyHintView {
     pub truncated: bool,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, JsonSchema, Deserialize)]
 pub struct GatewayView {
     pub config: GatewayConfigView,
     pub runtime: GatewayRuntimeView,
@@ -274,7 +275,7 @@ pub struct GatewayView {
     pub enrichment_suggestion_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, JsonSchema, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum GatewayEnrichmentProvider {
     #[default]
@@ -283,7 +284,7 @@ pub enum GatewayEnrichmentProvider {
     Codex,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, JsonSchema, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum GatewayHintProposalStatus {
     Suggested,
@@ -291,7 +292,7 @@ pub enum GatewayHintProposalStatus {
     MetadataInsufficient,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, JsonSchema, Deserialize, PartialEq, Eq)]
 pub struct GatewayHintProposalView {
     pub upstream: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -306,14 +307,14 @@ pub struct GatewayHintProposalView {
     pub existing_hint: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, JsonSchema, Deserialize, PartialEq, Eq)]
 pub struct GatewayEnrichmentPreviewView {
     pub provider: GatewayEnrichmentProvider,
     pub stats: GatewayEnrichmentPreviewStatsView,
     pub proposals: Vec<GatewayHintProposalView>,
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, JsonSchema, Deserialize, PartialEq, Eq)]
 pub struct GatewayEnrichmentPreviewStatsView {
     pub bytes: usize,
     pub upstream_count: usize,
@@ -321,7 +322,7 @@ pub struct GatewayEnrichmentPreviewStatsView {
     pub truncated: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, JsonSchema, Deserialize, PartialEq, Eq)]
 pub struct GatewayHintApplyView {
     pub upstream: String,
     pub hint: String,
@@ -330,7 +331,7 @@ pub struct GatewayHintApplyView {
     pub previous_hint: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, JsonSchema, Deserialize, PartialEq)]
 pub struct GatewayUsageToolCount {
     pub upstream: String,
     pub tool: String,
@@ -341,7 +342,7 @@ pub struct GatewayUsageToolCount {
     pub failed: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, JsonSchema, Deserialize, PartialEq)]
 pub struct GatewayUsageActorCount {
     pub actor: String,
     pub calls: i64,
@@ -349,7 +350,7 @@ pub struct GatewayUsageActorCount {
     pub attribution: Option<labby_runtime::usage_actor::UsageAttribution>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, JsonSchema, Deserialize, PartialEq, Eq)]
 pub struct GatewayUsageAttributionFilters {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_name: Option<String>,
@@ -359,20 +360,20 @@ pub struct GatewayUsageAttributionFilters {
     pub agent_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, JsonSchema, Deserialize, PartialEq)]
 pub struct GatewayUsageErrorCount {
     pub kind: String,
     pub calls: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, JsonSchema, Deserialize, PartialEq)]
 pub struct GatewayUsageUpstreamCount {
     pub upstream: String,
     pub calls: i64,
     pub failed: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, JsonSchema, Deserialize, PartialEq)]
 pub struct GatewayUsageLatencyStat {
     pub upstream: String,
     pub tool: String,
@@ -382,7 +383,7 @@ pub struct GatewayUsageLatencyStat {
     pub avg_elapsed_ms: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, JsonSchema, Deserialize, PartialEq)]
 pub struct GatewayUsageTimeBucket {
     pub ts_unix: i64,
     pub calls: i64,
@@ -390,19 +391,19 @@ pub struct GatewayUsageTimeBucket {
     pub outcomes: Vec<GatewayUsageErrorCount>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, JsonSchema, Deserialize, PartialEq, Eq)]
 pub struct GatewayUsageHourCount {
     pub hour: u8,
     pub calls: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, JsonSchema, Deserialize, PartialEq, Eq)]
 pub struct GatewayUsageToolFacet {
     pub upstream: String,
     pub tool: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, JsonSchema, Deserialize, PartialEq, Eq)]
 pub struct GatewayUsageFacets {
     pub tools: Vec<GatewayUsageToolFacet>,
     pub capabilities: Vec<String>,
@@ -413,7 +414,7 @@ pub struct GatewayUsageFacets {
     pub outcomes: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, JsonSchema, Deserialize, PartialEq)]
 pub struct GatewayUsageMetricsView {
     pub window_total_calls: i64,
     pub total_calls: i64,
@@ -440,7 +441,7 @@ pub struct GatewayUsageMetricsView {
     pub facets: GatewayUsageFacets,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, JsonSchema, Deserialize, PartialEq)]
 pub struct GatewayUsageCallView {
     pub ts_unix: i64,
     pub upstream: String,
@@ -457,7 +458,7 @@ pub struct GatewayUsageCallView {
     pub attribution: Option<labby_runtime::usage_actor::UsageAttribution>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, JsonSchema, Deserialize, PartialEq)]
 pub struct GatewayUsageCallsView {
     pub calls: Vec<GatewayUsageCallView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -468,14 +469,14 @@ pub struct GatewayUsageCallsView {
     pub next_cursor: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum McpClientTransportType {
     Http,
     Stdio,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema, Deserialize)]
 pub struct McpClientConfigView {
     pub name: String,
     pub r#type: McpClientTransportType,
@@ -489,7 +490,7 @@ pub struct McpClientConfigView {
     pub env: Option<std::collections::HashMap<String, String>>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, JsonSchema, Deserialize)]
 pub struct GatewayCatalogDiff {
     #[serde(default)]
     pub tools_changed: bool,
@@ -499,7 +500,7 @@ pub struct GatewayCatalogDiff {
     pub prompts_changed: bool,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, JsonSchema, Deserialize)]
 pub struct ServiceConfigFieldView {
     pub name: String,
     #[serde(default)]
@@ -510,7 +511,7 @@ pub struct ServiceConfigFieldView {
     pub value_preview: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, JsonSchema, Deserialize)]
 pub struct ServiceConfigView {
     pub service: String,
     #[serde(default)]
@@ -519,13 +520,13 @@ pub struct ServiceConfigView {
     pub fields: Vec<ServiceConfigFieldView>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, JsonSchema, Deserialize)]
 pub struct VirtualServerMcpPolicyView {
     #[serde(default)]
     pub allowed_actions: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, JsonSchema, Deserialize)]
 pub struct ServiceActionView {
     pub name: String,
     pub description: String,
@@ -533,7 +534,7 @@ pub struct ServiceActionView {
     pub destructive: bool,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, JsonSchema, Deserialize)]
 pub struct GatewayToolExposureRowView {
     pub name: String,
     #[serde(default)]
@@ -544,14 +545,14 @@ pub struct GatewayToolExposureRowView {
     pub matched_by: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, JsonSchema, Deserialize)]
 pub struct GatewayCleanupMatchView {
     pub pattern: String,
     #[serde(default)]
     pub pids: Vec<u32>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, JsonSchema, Deserialize)]
 pub struct GatewayCleanupView {
     pub upstream: String,
     #[serde(default)]
@@ -578,7 +579,7 @@ pub struct GatewayCleanupView {
     pub aggressive_matches: Vec<GatewayCleanupMatchView>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
 pub struct GatewayRuntimeOwnerView {
     pub surface: String,
     #[serde(default)]
@@ -601,7 +602,7 @@ pub struct GatewayRuntimeOwnerView {
 ///
 /// Best-effort, not a strict liveness guarantee — see
 /// `labby_runtime::client_registry` module docs.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
 pub struct GatewayClientView {
     #[serde(default)]
     pub subject: Option<String>,
@@ -613,7 +614,7 @@ pub struct GatewayClientView {
     pub connected_at: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, JsonSchema, Deserialize)]
 pub struct GatewayMcpRuntimeView {
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub notification_incidents: std::collections::HashMap<String, String>,

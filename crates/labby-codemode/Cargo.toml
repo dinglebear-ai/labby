@@ -19,6 +19,7 @@ labby-openapi = { path = "../labby-openapi" }
 reqwest = { workspace = true }
 tokio = { workspace = true, features = ["process", "sync"] }
 futures.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 thiserror.workspace = true

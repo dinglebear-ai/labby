@@ -3548,6 +3548,7 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
                 requires_admin: false,
                 params: &[],
                 returns: "object",
+                output_schema: None,
             }];
 
         let mut registry = crate::registry::ToolRegistry::new();
@@ -3699,6 +3700,7 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
                 requires_admin: false,
                 params: &[],
                 returns: "object",
+                output_schema: None,
             }];
         for index in 0..service_count {
             let name = Box::leak(format!("resource_service_{index:03}").into_boxed_str());

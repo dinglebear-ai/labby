@@ -14,6 +14,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Namespace prefix owned by the synthetic in-process service peers that
@@ -107,7 +108,7 @@ fn default_mcp_scopes() -> Vec<String> {
 /// control tool stays available when its manager UI is disabled. Code Mode keeps
 /// its existing `CodeModeConfig::mcp_ui_enabled` field for backward-compatible
 /// config.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema, Deserialize, Default)]
 pub struct McpAppsConfig {
     /// Attach MCP App metadata to the always-available `mcp_app` control tool and advertise its UI resources.
     /// The control tool itself remains available when this is false. Fresh installs keep the UI opt-in.
@@ -138,7 +139,7 @@ pub struct McpAppsConfig {
 // ─── Code Mode ───────────────────────────────────────────────────────────────
 
 /// Model-facing policy applied to oversized final Code Mode results.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CodeModeResultShapePolicy {
     /// Return the normal result envelope without additional shaping.
@@ -153,7 +154,7 @@ pub enum CodeModeResultShapePolicy {
 /// Disabled by default (`tei_url = None`). When `tei_url` is unset or empty,
 /// `codemode.search()` runs its existing pure-lexical algorithm unchanged;
 /// this struct's fields are never read on that path.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema, Deserialize)]
 pub struct SemanticSearchConfig {
     /// Base URL of the TEI (Text Embeddings Inference) server, e.g.
     /// `http://localhost:52000`. `None` or empty (the default) means
@@ -190,7 +191,7 @@ impl SemanticSearchConfig {
 
 // `Eq` intentionally omitted: `SemanticSearchConfig.blend_weight` is an `f32`.
 /// Runtime limits, visibility, trust, and result-shaping settings for Code Mode.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema, Deserialize)]
 pub struct CodeModeConfig {
     /// Whether the MCP gateway advertises `codemode`.
     /// Code Mode is part of the standard Labby surface on fresh installs.
@@ -367,7 +368,7 @@ impl CodeModeConfig {
 // ─── Import provenance ───────────────────────────────────────────────────────
 
 /// Provenance record for an upstream imported from an external MCP config.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
 pub struct ImportSource {
     /// Which client config type this was discovered in (e.g. "cursor", "claude-code", "vscode").
     pub client: String,
@@ -417,7 +418,7 @@ impl ImportSource {
 }
 
 /// Suppresses automatic re-import of an operator-deleted imported upstream.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
 pub struct UpstreamImportTombstone {
     /// Name of the removed upstream.
     pub name: String,
@@ -439,7 +440,7 @@ impl UpstreamImportTombstone {
 }
 
 /// Controls how external MCP config discovery behaves on gateway startup.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GatewayImportMode {
     /// Discovery disabled. No external configs are scanned or imported (default).
@@ -456,7 +457,7 @@ pub enum GatewayImportMode {
 
 /// Explicit transport for an upstream MCP server. Omitted configurations
 /// retain the legacy URL/command inference behavior.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UpstreamTransport {
     /// Streamable HTTP transport over TCP/TLS.
@@ -470,7 +471,7 @@ pub enum UpstreamTransport {
 }
 
 /// Which MCP lifecycle Labby opens an upstream connection with.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UpstreamLifecycle {
     /// Try `server/discover` first and fall back to `initialize` only when the
@@ -483,7 +484,7 @@ pub enum UpstreamLifecycle {
 }
 
 /// Configuration for a single upstream MCP server.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema, Deserialize)]
 pub struct UpstreamConfig {
     /// Stable identifier for this upstream (used as tool-name prefix, skill
     /// origin label, OAuth state key, and route references).
@@ -1108,7 +1109,7 @@ pub fn canonicalize_upstream_url(raw: &str) -> Result<String, url::ParseError> {
 /// Loadouts select the upstream/service world a protected gateway route can see
 /// and gate whole MCP capability categories. Per-upstream exposure policies are
 /// still enforced underneath this layer, so a loadout can only narrow access.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
 pub struct GatewayLoadoutConfig {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1212,7 +1213,7 @@ impl GatewayLoadoutConfig {
 /// Secret-free reference from a Team-owned loadout to an installation-owned
 /// credential. Rotation creates a new generation, which changes runtime cache
 /// identity and makes retained work carrying the old generation fail closed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GatewayCredentialBindingRef {
     pub upstream_name: String,
@@ -1221,7 +1222,7 @@ pub struct GatewayCredentialBindingRef {
 }
 
 /// Explicit target kind for an OAuth-protected public MCP route.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProtectedMcpRouteTarget {
     /// Publish a filtered subset of Labby gateway upstreams and built-in services.
@@ -1229,7 +1230,7 @@ pub enum ProtectedMcpRouteTarget {
 }
 
 /// Gateway subset exposed by a protected MCP route.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema, Deserialize, Default)]
 pub struct ProtectedGatewaySubsetTarget {
     /// Authoritative Project bound to this explicit gateway-subset route.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1283,7 +1284,7 @@ pub enum ProtectedMcpRouteEffectiveTarget {
 }
 
 /// Gateway-managed public MCP route protected by Lab OAuth.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
 pub struct ProtectedMcpRouteConfig {
     /// Stable operator-facing identifier.
     pub name: String,
@@ -1605,7 +1606,7 @@ pub enum ConfigError {
 // ─── Outbound OAuth ──────────────────────────────────────────────────────────
 
 /// Outbound OAuth configuration for an upstream MCP server.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UpstreamOauthConfig {
     /// OAuth authorization flow used by this upstream.
@@ -1637,7 +1638,7 @@ pub struct UpstreamOauthConfig {
 }
 
 /// Outbound OAuth mode. Currently only `authorization_code_pkce` is supported.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UpstreamOauthMode {
     /// OAuth authorization-code flow with PKCE.
@@ -1645,7 +1646,7 @@ pub enum UpstreamOauthMode {
 }
 
 /// Persistence source for an upstream OAuth credential.
-#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
 #[serde(tag = "source", rename_all = "snake_case")]
 pub enum UpstreamOauthCredentialSource {
     /// Keep an encrypted token bundle per `(upstream, subject)`.
@@ -1693,7 +1694,7 @@ impl UpstreamOauthCredentialSource {
 }
 
 /// Outbound OAuth client-registration strategy.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
 #[serde(tag = "strategy", rename_all = "snake_case")]
 pub enum UpstreamOauthRegistration {
     /// Use a Client ID Metadata Document published at a fixed URL.
@@ -1716,7 +1717,7 @@ pub enum UpstreamOauthRegistration {
 // ─── Virtual servers ─────────────────────────────────────────────────────────
 
 /// Persisted state for a Labby-backed virtual server shown in the gateway.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
 pub struct VirtualServerConfig {
     /// Stable virtual-server identifier.
     pub id: String,
@@ -1734,7 +1735,7 @@ pub struct VirtualServerConfig {
 }
 
 /// Per-surface exposure flags for a virtual server.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
 pub struct VirtualServerSurfacesConfig {
     /// Expose the service through the CLI.
     #[serde(default)]
@@ -1751,7 +1752,7 @@ pub struct VirtualServerSurfacesConfig {
 }
 
 /// Action-level policy for Labby-backed single-tool MCP services.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
 pub struct VirtualServerMcpPolicyConfig {
     /// Service actions exposed by the virtual server's MCP tool.
     #[serde(default)]
@@ -1761,7 +1762,7 @@ pub struct VirtualServerMcpPolicyConfig {
 // ─── Web preferences ─────────────────────────────────────────────────────────
 
 /// Web UI preferences.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, JsonSchema, Deserialize)]
 pub struct WebPreferences {
     /// Path to the exported Labby assets directory served by `labby serve`.
     #[serde(default)]
@@ -1774,7 +1775,7 @@ pub struct WebPreferences {
 // ─── Gateway spawn-guard preferences ─────────────────────────────────────────
 
 /// Controls the stdio spawn-guard that validates upstream MCP server commands.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, JsonSchema, Deserialize)]
 pub struct GatewayPreferences {
     /// Periodically probe disconnected upstream MCP servers and replace stale
     /// connections when they become reachable again. Disabled by default
@@ -1815,7 +1816,7 @@ pub struct GatewayPreferences {
 ///
 /// Produced by the host's config layer (which owns env precedence and the
 /// legacy `[auth].public_url` fallback) and handed to the gateway runtime.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
 pub struct ResolvedPublicUrls {
     /// Public app URL. May be `None` when the operator has not configured one.
     pub app: Option<String>,
@@ -1850,7 +1851,7 @@ pub const DEFAULT_UPSTREAM_RELAY_TIMEOUT_MS: u64 = 300_000;
 /// `config.toml` keys stays the host's job, because the host keeps `LabConfig`.
 ///
 /// [`GatewayManager`]: ../../labby_gateway/gateway/struct.GatewayManager.html
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, JsonSchema, Deserialize)]
 pub struct GatewayConfig {
     /// Gateway-wide Code Mode exposure and execution settings.
     #[serde(default)]

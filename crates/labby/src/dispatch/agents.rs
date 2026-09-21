@@ -81,6 +81,7 @@ const fn action(
         requires_admin: false,
         params,
         returns: "object",
+        output_schema: None,
     }
 }
 /// An action that causes permanent, unrecoverable loss under the shared
@@ -97,6 +98,7 @@ const fn destructive_action(
         requires_admin: false,
         params,
         returns: "object",
+        output_schema: None,
     }
 }
 pub const ACTIONS: &[ActionSpec] = &[

@@ -1,5 +1,6 @@
 //! Shared types for outbound upstream OAuth.
 
+use schemars::JsonSchema;
 use serde::Serialize;
 use thiserror::Error;
 
@@ -156,7 +157,7 @@ impl OauthError {
 }
 
 /// Redacted status metadata for an upstream using the central Google credential broker.
-#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, JsonSchema, PartialEq, Eq)]
 pub struct GoogleCredentialBrokerStatus {
     pub account_selector_configured: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -169,7 +170,7 @@ pub struct GoogleCredentialBrokerStatus {
 
 /// Return value of
 /// [`UpstreamOauthManager::begin_authorization`](super::manager::UpstreamOauthManager::begin_authorization).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct BeginAuthorization {
     /// URL the operator's browser must navigate to.
     pub authorization_url: String,

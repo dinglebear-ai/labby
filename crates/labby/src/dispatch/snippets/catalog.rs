@@ -7,6 +7,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "Catalog",
+        output_schema: None,
         params: &[],
     },
     ActionSpec {
@@ -15,6 +16,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "Schema",
+        output_schema: None,
         params: &[ParamSpec {
             name: "action",
             ty: "string",
@@ -28,6 +30,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "SnippetList",
+        output_schema: None,
         params: &[],
     },
     ActionSpec {
@@ -36,6 +39,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "ResolvedSnippet",
+        output_schema: None,
         params: &[ParamSpec {
             name: "name",
             ty: "string",
@@ -49,6 +53,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "CodeModeExecutionResponse",
+        output_schema: None,
         params: &[
             ParamSpec {
                 name: "name",
@@ -70,6 +75,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "SnippetInfo",
+        output_schema: None,
         params: &[
             ParamSpec {
                 name: "name",
@@ -103,6 +109,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: true,
         requires_admin: true,
         returns: "SnippetPromotionResult",
+        output_schema: None,
         params: &[
             ParamSpec {
                 name: "execution_id",
@@ -142,6 +149,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "SnippetValidation",
+        output_schema: None,
         params: &[
             ParamSpec {
                 name: "name",
@@ -163,6 +171,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: true,
         requires_admin: true,
         returns: "SnippetRemoveResult",
+        output_schema: None,
         params: &[ParamSpec {
             name: "name",
             ty: "string",
@@ -176,6 +185,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "SnippetTestResult",
+        output_schema: None,
         params: &[
             ParamSpec {
                 name: "name",

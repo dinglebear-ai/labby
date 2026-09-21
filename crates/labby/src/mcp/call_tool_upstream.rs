@@ -1365,6 +1365,7 @@ mod tests {
                     requires_admin: false,
                     params: &[],
                     returns: "object",
+                    output_schema: None,
                 }];
             let mut registry = crate::registry::ToolRegistry::new();
             registry.register(crate::registry::RegisteredService {

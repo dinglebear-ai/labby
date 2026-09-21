@@ -1,5 +1,6 @@
 //! Versioned extension protocol vocabulary.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -9,7 +10,7 @@ pub const LEGACY_PROTOCOL_VERSION: u32 = 1;
 pub const PROTOCOL_VERSION: u32 = 2;
 
 /// JSON envelope exchanged with the MV3 extension.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq)]
 pub struct BrowserEnvelope {
     /// Protocol version. Unknown versions fail closed.
     pub version: u32,
@@ -68,7 +69,7 @@ impl BrowserEnvelope {
 }
 
 /// Extension and runtime messages.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BrowserMessage {
     /// Begin operator-approved pairing.
@@ -141,7 +142,7 @@ pub enum BrowserMessage {
 }
 
 /// Sanitized catalog observation for a concrete browser document.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq)]
 pub struct CatalogObservation {
     pub tab_id: i64,
     pub document_id: String,
@@ -154,7 +155,7 @@ pub struct CatalogObservation {
 }
 
 /// Serializable WebMCP tool metadata. Executable callbacks never cross the wire.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq)]
 pub struct ToolDescriptor {
     pub name: String,
     #[serde(default)]

@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -10,7 +11,7 @@ const SOFT_WARNING_DIVISOR: usize = 3;
 const MIN_SOFT_WARNING_BYTES: usize = 1024;
 
 /// Metadata describing model-facing shaping of a Code Mode final result.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct CodeModeResultShapeMetadata {
     /// Configured result-shaping policy.
     pub policy: CodeModeResultShapePolicy,

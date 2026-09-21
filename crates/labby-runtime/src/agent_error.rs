@@ -4,6 +4,8 @@
 //! additive contract fields every surface can compute from a stable error kind:
 //! origin, recovery advice, unchanged-retry safety, and partial-side-effect risk.
 
+use schemars::JsonSchema;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
@@ -24,7 +26,7 @@ pub use crate::redact::{
 /// guarantees. This is the single canonical definition — the gateway's
 /// `McpToolSafetyHints` and Code Mode's `CodeModeToolSafetyHints` are type
 /// aliases of it.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ToolSafetyHints {
     /// Upstream claim that invoking the tool does not mutate state.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -119,7 +121,7 @@ pub fn tool_execution_message(
 }
 
 /// Subsystem family in which an agent-facing error originated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentErrorOrigin {
     /// Generic Labby runtime failure.
@@ -143,7 +145,7 @@ pub enum AgentErrorOrigin {
 }
 
 /// High-level recovery action recommended to an agent caller.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRecoveryAction {
     /// Change the request, then retry.
@@ -167,7 +169,7 @@ pub enum AgentRecoveryAction {
 }
 
 /// Safety classification for repeating the exact same request arguments.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentSameArgumentsRetry {
     /// Exact retry is expected to be safe.
@@ -181,7 +183,7 @@ pub enum AgentSameArgumentsRetry {
 }
 
 /// Whether a failed operation may already have produced side effects.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentSideEffectRisk {
     /// No side effects are expected to have committed.
@@ -193,7 +195,7 @@ pub enum AgentSideEffectRisk {
 }
 
 /// Structured recovery guidance attached to an agent-facing error.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AgentRecoveryAdvice {
     /// Recommended high-level recovery action.
     pub action: AgentRecoveryAction,
@@ -207,7 +209,7 @@ pub struct AgentRecoveryAdvice {
 }
 
 /// Stable metadata derived from an error kind before request context is added.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AgentErrorMetadata {
     /// Agent-error contract version.
     pub contract_version: u32,
@@ -220,7 +222,7 @@ pub struct AgentErrorMetadata {
 }
 
 /// Optional request and subsystem context merged into an agent-error envelope.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AgentErrorContext {
     /// Built-in service associated with the failure.
     #[serde(skip_serializing_if = "Option::is_none")]

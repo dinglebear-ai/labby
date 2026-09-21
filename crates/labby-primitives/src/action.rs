@@ -6,6 +6,13 @@
 //! the CLI `labby help` command all read from this same slice. One source of
 //! truth for discovery.
 
+/// Generate the complete JSON Schema for a typed action payload.
+#[must_use]
+pub fn schema_for<T: schemars::JsonSchema>() -> serde_json::Value {
+    serde_json::to_value(schemars::schema_for!(T))
+        .expect("schemars-generated schema must serialize to JSON")
+}
+
 /// Compile-time metadata for one dotted action exposed by a service.
 #[derive(Debug, Clone, Copy)]
 pub struct ActionSpec {
@@ -42,6 +49,9 @@ pub struct ActionSpec {
     /// Type-name hint for the return shape, e.g. `"Movie[]"`. Not a runtime
     /// contract — purely informational, echoed in `help` output.
     pub returns: &'static str,
+    /// Complete JSON Schema for the action-specific success payload.
+    /// Atomic MCP projection requires this; the legacy router does not.
+    pub output_schema: Option<fn() -> serde_json::Value>,
 }
 
 /// One declared action parameter.

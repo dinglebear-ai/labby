@@ -64,6 +64,7 @@ const TEST_ACTIONS_ONE: &[ActionSpec] = &[
         requires_admin: false,
         params: &[],
         returns: "object",
+        output_schema: None,
     },
     ActionSpec {
         name: "health.get",
@@ -72,6 +73,7 @@ const TEST_ACTIONS_ONE: &[ActionSpec] = &[
         requires_admin: false,
         params: &[],
         returns: "object",
+        output_schema: None,
     },
 ];
 
@@ -83,6 +85,7 @@ const TEST_ACTIONS_TWO: &[ActionSpec] = &[
         requires_admin: false,
         params: &[],
         returns: "object",
+        output_schema: None,
     },
     ActionSpec {
         name: "health.list",
@@ -91,6 +94,7 @@ const TEST_ACTIONS_TWO: &[ActionSpec] = &[
         requires_admin: false,
         params: &[],
         returns: "object",
+        output_schema: None,
     },
 ];
 
@@ -122,6 +126,7 @@ const DESTRUCTIVE_ACTIONS: &[ActionSpec] = &[ActionSpec {
     requires_admin: false,
     params: &[],
     returns: "object",
+    output_schema: None,
 }];
 
 fn noop_dispatch(
