@@ -475,10 +475,18 @@ url = "https://mcp.example.com/mcp"
 
 [upstream.oauth]
 mode = "authorization_code_pkce"
+# Optional exact endpoint origins when a provider splits OAuth endpoints.
+# additional_endpoint_origins = ["https://www.figma.com"]
 
 [upstream.oauth.registration]
 strategy = "dynamic"
 ```
+
+`additional_endpoint_origins` is a per-upstream allowlist for OAuth metadata
+endpoints whose origin differs from the authorization-server issuer. Labby
+accepts HTTPS origins, plus loopback HTTP origins for local development; paths,
+credentials, query strings, and fragments are rejected. Keep this list limited
+to the provider origins you expect.
 
 For `labby mcp`, configure `LABBY_OAUTH_ENCRYPTION_KEY` in `~/.labby/.env`.
 The first request that needs the upstream opens the browser and completes the

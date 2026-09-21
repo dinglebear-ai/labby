@@ -921,6 +921,35 @@ impl UpstreamConfig {
                 ));
             }
         }
+        if let Some(oauth) = self.oauth.as_ref() {
+            let invalid_oauth = |reason: &str| ConfigError::InvalidOauth {
+                name: self.name.clone(),
+                reason: reason.to_string(),
+            };
+            for raw_origin in &oauth.additional_endpoint_origins {
+                let parsed = url::Url::parse(raw_origin.trim()).map_err(|_| {
+                    invalid_oauth(
+                        "additional_endpoint_origins must contain valid absolute HTTP(S) origins",
+                    )
+                })?;
+                let is_loopback_http = parsed.scheme() == "http"
+                    && parsed
+                        .host_str()
+                        .is_some_and(|host| matches!(host, "localhost" | "127.0.0.1" | "::1"));
+                if !(parsed.scheme() == "https" || is_loopback_http)
+                    || parsed.host_str().is_none()
+                    || !parsed.username().is_empty()
+                    || parsed.password().is_some()
+                    || parsed.path() != "/"
+                    || parsed.query().is_some()
+                    || parsed.fragment().is_some()
+                {
+                    return Err(invalid_oauth(
+                        "additional_endpoint_origins must contain HTTPS origins (or loopback HTTP) without paths, credentials, queries, or fragments",
+                    ));
+                }
+            }
+        }
         if let Some(raw) = self.url.as_deref() {
             let canonical =
                 canonicalize_upstream_url(raw).map_err(|_| ConfigError::InvalidUrl {
@@ -1615,6 +1644,10 @@ pub struct UpstreamOauthConfig {
     /// Optional OAuth scopes requested during authorization.
     #[serde(default)]
     pub scopes: Option<Vec<String>>,
+    /// Additional exact endpoint origins allowed when OAuth metadata splits
+    /// endpoints across origins instead of keeping them on the issuer origin.
+    #[serde(default)]
+    pub additional_endpoint_origins: Vec<String>,
     /// Selects where OAuth credentials for this upstream are persisted.
     ///
     /// `dedicated` preserves the original per-`(upstream, subject)` token store.
@@ -2380,6 +2413,46 @@ client_secret_env = "SECRET"
                 config.validate(),
                 Err(ConfigError::InvalidOauth { .. })
             ));
+        }
+    }
+
+    #[test]
+    fn oauth_split_endpoint_origins_parse_and_validate() {
+        let config: UpstreamConfig = toml::from_str(
+            r#"
+name = "figma"
+url = "https://mcp.figma.com/mcp"
+[oauth]
+mode = "authorization_code_pkce"
+additional_endpoint_origins = ["https://www.figma.com"]
+[oauth.registration]
+strategy = "dynamic"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.oauth.as_ref().unwrap().additional_endpoint_origins,
+            vec!["https://www.figma.com"]
+        );
+        config
+            .validate()
+            .expect("configured HTTPS origin validates");
+
+        for origin in [
+            "https://www.figma.com/oauth",
+            "https://user:pass@example.com",
+            "https://example.com?query=1",
+            "http://example.com",
+        ] {
+            let config: UpstreamConfig = toml::from_str(&format!(
+                "name = \"figma\"\nurl = \"https://mcp.figma.com/mcp\"\n[oauth]\nmode = \"authorization_code_pkce\"\nadditional_endpoint_origins = [\"{origin}\"]\n[oauth.registration]\nstrategy = \"dynamic\"\n"
+            ))
+            .unwrap();
+            assert!(
+                matches!(config.validate(), Err(ConfigError::InvalidOauth { .. })),
+                "origin should be rejected: {origin}"
+            );
         }
     }
 

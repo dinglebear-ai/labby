@@ -515,6 +515,7 @@ async fn oauth_upstream_with_empty_shared_catalog_is_not_reported_as_warming() {
         },
         scopes: None,
         credential: Default::default(),
+        additional_endpoint_origins: vec![],
         prefer_client_metadata_document: None,
     });
     pool.seed_lazy_upstreams(std::slice::from_ref(&upstream))
