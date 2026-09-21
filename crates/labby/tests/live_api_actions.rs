@@ -883,7 +883,7 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
         assert!(
             destructive_denials
                 .difference(&required_destructive_denials)
-                .all(|service| service == "bundles" || service == "stash"),
+                .all(|service| matches!(service.as_str(), "artifacts" | "bundles" | "stash")),
             "only services with dedicated authenticated fixtures may add a denial"
         );
 

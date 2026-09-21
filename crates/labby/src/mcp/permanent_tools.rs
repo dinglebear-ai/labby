@@ -218,7 +218,9 @@ fn builtin_service_annotations(service: &RegisteredService) -> ToolAnnotations {
             (false, derived_destructive, false, false)
         }
         "browser" | "gateway" | "setup" | "snippets" | "artifacts" | "bundles" | "jobs"
-        | "sources" | "uploads" | "depot_publish" => (false, derived_destructive, false, true),
+        | "sources" | "uploads" | "artifact_publish" | "depot_publish" => {
+            (false, derived_destructive, false, true)
+        }
         // `server_logs` is operationally read-only, but advertising it as such
         // would bypass the conservative next-hop gate described above.
         SERVER_LOGS_TOOL_NAME => (false, true, false, false),
@@ -714,7 +716,7 @@ mod tests {
         ("dev_containers", false, true, false, false),
         ("projects", false, false, false, false),
         ("doctor", false, false, true, true),
-        ("depot_publish", false, false, false, true),
+        ("artifact_publish", false, false, false, true),
         ("artifacts", false, true, false, true),
         ("browser", false, true, false, true),
         ("bundles", false, true, false, true),
@@ -923,7 +925,7 @@ mod tests {
                 .as_array()
                 .expect("bounded action enum")
                 .len(),
-            31
+            36
         );
         let annotations = tool.annotations.as_ref().expect("mixed-operation hints");
         assert_eq!(annotations.read_only_hint, Some(false));
@@ -1002,7 +1004,7 @@ mod tests {
         // the shared metadata; only widening it needs a fresh review.
         let expected_callable = [
             "access",
-            "depot_publish",
+            "artifact_publish",
             "doctor",
             "fs",
             "jobs",

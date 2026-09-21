@@ -345,6 +345,116 @@ pub(crate) const REMOTE_ARTIFACT_ACTIONS: &[ActionSpec] = &[
     crate::dispatch::artifact_control::CALLBACK_REMOTE_ACTIONS[2],
     crate::dispatch::artifact_control::CALLBACK_REMOTE_ACTIONS[3],
     spec(
+        "artifacts.delete_remote",
+        "Delete an ingested remote Artifact while preserving immutable bundle versions",
+        true,
+        true,
+        "DeleteReceipt",
+        &[
+            CONNECTION,
+            ParamSpec {
+                name: "namespace",
+                ty: "string",
+                required: true,
+                description: "Remote Artifact namespace",
+            },
+            ParamSpec {
+                name: "name",
+                ty: "string",
+                required: true,
+                description: "Remote Artifact name",
+            },
+            EXPECTED_VERSION,
+        ],
+    ),
+    spec(
+        "artifacts.list_remote_skills",
+        "List canonical Skill summaries from one remote Artifact authority",
+        false,
+        false,
+        "RemoteSkillPage",
+        &[CONNECTION, CURSOR, LIMIT],
+    ),
+    spec(
+        "artifacts.get_remote_skill",
+        "Get one remote Skill manifest and its exact resource inventory",
+        false,
+        false,
+        "RemoteSkill",
+        &[
+            CONNECTION,
+            ParamSpec {
+                name: "uri",
+                ty: "string",
+                required: true,
+                description: "Canonical remote SKILL.md URI returned by list_remote_skills",
+            },
+        ],
+    ),
+    spec(
+        "artifacts.load_remote_skill",
+        "Load a remote Skill manifest with bounded byte continuation",
+        false,
+        false,
+        "RemoteSkillContent",
+        &[
+            CONNECTION,
+            ParamSpec {
+                name: "uri",
+                ty: "string",
+                required: true,
+                description: "Canonical remote SKILL.md URI returned by list_remote_skills",
+            },
+            ParamSpec {
+                name: "offset",
+                ty: "integer",
+                required: false,
+                description: "Continuation byte offset, from 0 through 16777216",
+            },
+            ParamSpec {
+                name: "max_bytes",
+                ty: "integer",
+                required: false,
+                description: "Maximum bytes to return, from 4 through 262144",
+            },
+        ],
+    ),
+    spec(
+        "artifacts.read_remote_skill",
+        "Read a remote Skill file or list one direct-child directory page",
+        false,
+        false,
+        "RemoteSkillResource",
+        &[
+            CONNECTION,
+            ParamSpec {
+                name: "uri",
+                ty: "string",
+                required: true,
+                description: "Canonical remote Skill resource or directory URI",
+            },
+            ParamSpec {
+                name: "offset",
+                ty: "integer",
+                required: false,
+                description: "File continuation byte offset, from 0 through 16777216",
+            },
+            ParamSpec {
+                name: "max_bytes",
+                ty: "integer",
+                required: false,
+                description: "Maximum file bytes to return, from 4 through 262144",
+            },
+            CURSOR,
+            ParamSpec {
+                name: "limit",
+                ty: "integer",
+                required: false,
+                description: "Maximum direct children to return, from 1 through 250",
+            },
+        ],
+    ),
+    spec(
         "artifacts.intake_candidate",
         "Validate and persist bounded Artifact candidate evidence",
         false,
@@ -757,6 +867,9 @@ fn normalize_provider_params(
         ("jobs", "jobs.get" | "jobs.cancel" | "jobs.retry") => rename(object, "id", "jobId"),
         ("jobs", "jobs.start") => rename(object, "idempotency_key", "idempotencyKey"),
         ("uploads", "uploads.get" | "uploads.delete") => rename(object, "id", "uploadId"),
+        ("artifacts", "artifacts.load_remote_skill" | "artifacts.read_remote_skill") => {
+            rename(object, "max_bytes", "maxBytes")
+        }
         ("artifacts", "artifacts.get_remote") => rename(object, "id", "artifactId"),
         (
             "artifacts",
@@ -867,6 +980,11 @@ fn reject_secret_values(object: &serde_json::Map<String, Value>) -> Result<(), T
 pub(crate) fn operation(service: &str, action: &str) -> Option<Operation> {
     Some(match (service, action) {
         ("artifacts", "artifacts.search_remote") => Operation::ArtifactsSearch,
+        ("artifacts", "artifacts.delete_remote") => Operation::ArtifactsDeleteRemote,
+        ("artifacts", "artifacts.list_remote_skills") => Operation::SkillsList,
+        ("artifacts", "artifacts.get_remote_skill") => Operation::SkillsGet,
+        ("artifacts", "artifacts.load_remote_skill") => Operation::SkillsLoad,
+        ("artifacts", "artifacts.read_remote_skill") => Operation::SkillsRead,
         ("artifacts", "artifacts.list_remote") => Operation::ArtifactsList,
         ("artifacts", "artifacts.get_remote") => Operation::ArtifactsGet,
         ("artifacts", "artifacts.list_candidates") => Operation::CandidatesList,
@@ -977,6 +1095,114 @@ mod tests {
                 param.name == "expected_version" && param.ty == "string" && param.required
             }));
         }
+    }
+
+    #[test]
+    fn remote_delete_is_destructive_and_sealed_to_the_skill_delete_operation() {
+        let action = REMOTE_ARTIFACT_ACTIONS
+            .iter()
+            .find(|action| action.name == "artifacts.delete_remote")
+            .unwrap();
+        assert!(action.destructive);
+        assert!(action.requires_admin);
+        assert_eq!(action.returns, "DeleteReceipt");
+        assert_eq!(
+            operation("artifacts", action.name),
+            Some(Operation::ArtifactsDeleteRemote)
+        );
+        assert_eq!(
+            Operation::ArtifactsDeleteRemote.provider_name(),
+            "depot.skills.delete"
+        );
+        for name in ["namespace", "name", "expected_version"] {
+            assert!(
+                action
+                    .params
+                    .iter()
+                    .any(|param| param.name == name && param.required)
+            );
+        }
+    }
+
+    #[test]
+    fn remote_delete_maps_the_public_version_token_to_the_provider_contract() {
+        let mut params = json!({
+            "namespace": "acme",
+            "name": "guarded",
+            "expected_version": "sha256:revision"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        normalize_provider_params("artifacts", "artifacts.delete_remote", &mut params).unwrap();
+        assert_eq!(params["expectedVersion"], "sha256:revision");
+        assert!(params.get("expected_version").is_none());
+    }
+
+    #[test]
+    fn remote_skill_reads_are_explicit_provider_neutral_contracts() {
+        let expected = [
+            ("artifacts.list_remote_skills", Operation::SkillsList),
+            ("artifacts.get_remote_skill", Operation::SkillsGet),
+            ("artifacts.load_remote_skill", Operation::SkillsLoad),
+            ("artifacts.read_remote_skill", Operation::SkillsRead),
+        ];
+        for (name, provider_operation) in expected {
+            let action = REMOTE_ARTIFACT_ACTIONS
+                .iter()
+                .find(|action| action.name == name)
+                .unwrap_or_else(|| panic!("missing {name}"));
+            assert!(!action.destructive);
+            assert!(!action.requires_admin);
+            assert_eq!(operation("artifacts", name), Some(provider_operation));
+            assert!(
+                action
+                    .params
+                    .iter()
+                    .any(|param| param.name == "connection_id")
+            );
+        }
+    }
+
+    #[test]
+    fn remote_skill_read_parameters_preserve_continuation_contracts() {
+        let action = |name| {
+            REMOTE_ARTIFACT_ACTIONS
+                .iter()
+                .find(|action| action.name == name)
+                .unwrap()
+        };
+        for parameter in ["cursor", "limit"] {
+            assert!(
+                action("artifacts.list_remote_skills")
+                    .params
+                    .iter()
+                    .any(|param| param.name == parameter)
+            );
+        }
+        for parameter in ["uri", "offset", "max_bytes"] {
+            assert!(
+                action("artifacts.load_remote_skill")
+                    .params
+                    .iter()
+                    .any(|param| param.name == parameter)
+            );
+        }
+        for parameter in ["uri", "offset", "max_bytes", "cursor", "limit"] {
+            assert!(
+                action("artifacts.read_remote_skill")
+                    .params
+                    .iter()
+                    .any(|param| param.name == parameter)
+            );
+        }
+        let mut params = json!({"uri":"skill://authority/example/SKILL.md","max_bytes":4096})
+            .as_object()
+            .unwrap()
+            .clone();
+        normalize_provider_params("artifacts", "artifacts.load_remote_skill", &mut params).unwrap();
+        assert_eq!(params["maxBytes"], 4096);
+        assert!(params.get("max_bytes").is_none());
     }
 
     #[test]

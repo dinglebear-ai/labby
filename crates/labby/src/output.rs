@@ -1,5 +1,6 @@
 //! Output formatting for CLI commands.
 
+pub mod progress;
 pub mod render;
 pub mod theme;
 

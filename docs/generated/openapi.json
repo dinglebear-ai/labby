@@ -5825,6 +5825,11 @@
               "artifacts.list_remote",
               "artifacts.get_remote",
               "artifacts.list_candidates",
+              "artifacts.delete_remote",
+              "artifacts.list_remote_skills",
+              "artifacts.get_remote_skill",
+              "artifacts.load_remote_skill",
+              "artifacts.read_remote_skill",
               "artifacts.intake_candidate",
               "artifacts.follow",
               "artifacts.fork",
@@ -5941,6 +5946,28 @@
           }
         }
       },
+      "ArtifactsArtifactsDelete_remoteParams": {
+        "type": "object",
+        "required": [
+          "namespace",
+          "name",
+          "expected_version"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "expected_version": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "namespace": {
+            "type": "string"
+          }
+        }
+      },
       "ArtifactsArtifactsFollowParams": {
         "type": "object",
         "required": [
@@ -6017,6 +6044,20 @@
             "type": "string"
           },
           "id": {
+            "type": "string"
+          }
+        }
+      },
+      "ArtifactsArtifactsGet_remote_skillParams": {
+        "type": "object",
+        "required": [
+          "uri"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "uri": {
             "type": "string"
           }
         }
@@ -6178,6 +6219,40 @@
           }
         }
       },
+      "ArtifactsArtifactsList_remote_skillsParams": {
+        "type": "object",
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        }
+      },
+      "ArtifactsArtifactsLoad_remote_skillParams": {
+        "type": "object",
+        "required": [
+          "uri"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "max_bytes": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "uri": {
+            "type": "string"
+          }
+        }
+      },
       "ArtifactsArtifactsReadParams": {
         "type": "object",
         "required": [
@@ -6193,6 +6268,32 @@
             "type": "string"
           },
           "revision_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ArtifactsArtifactsRead_remote_skillParams": {
+        "type": "object",
+        "required": [
+          "uri"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "max_bytes": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "uri": {
             "type": "string"
           }
         }

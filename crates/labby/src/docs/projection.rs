@@ -830,7 +830,10 @@ fn service_feature(service: &str, matrix: &FeatureMatrix) -> Option<String> {
 
 pub(super) fn service_surfaces(service: &str) -> SurfaceAvailability {
     SurfaceAvailability {
-        cli: !matches!(service, "fs" | "stash" | "depot_publish"),
+        cli: !matches!(
+            service,
+            "fs" | "stash" | "artifact_publish" | "depot_publish"
+        ),
         mcp: true,
         api: service_has_http_surface(service),
         web_ui: matches!(
