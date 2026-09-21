@@ -451,6 +451,10 @@ impl PeerNotifier {
                                 );
                             }
                             Ok(UpstreamNotificationEvent::ResourceListChanged { upstream }) => {
+                                // resources/list is cache-only for regular upstreams. Refresh
+                                // the exact sender first so peers never observe a list-changed
+                                // notification while the cached catalog is still stale.
+                                pool.refresh_resources_after_list_changed(&upstream).await;
                                 self.notify_upstream_catalog_change(
                                     false, true, false, upstream,
                                 );

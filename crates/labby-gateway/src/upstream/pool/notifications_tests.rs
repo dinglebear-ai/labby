@@ -29,6 +29,8 @@ struct SubscriptionServer {
     acceptance_delay: Duration,
     tools: Arc<tokio::sync::RwLock<Vec<rmcp::model::Tool>>>,
     tool_change: Arc<tokio::sync::Notify>,
+    resources: Arc<tokio::sync::RwLock<Vec<Resource>>>,
+    resource_change: Arc<tokio::sync::Notify>,
 }
 
 impl SubscriptionServer {
@@ -40,6 +42,11 @@ impl SubscriptionServer {
             acceptance_delay: Duration::ZERO,
             tools: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             tool_change: Arc::new(tokio::sync::Notify::new()),
+            resources: Arc::new(tokio::sync::RwLock::new(vec![Resource::new(
+                NATIVE_RESOURCE_URI,
+                "subscription-resource",
+            )])),
+            resource_change: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
@@ -63,6 +70,14 @@ impl SubscriptionServer {
             .map(|name| super::testsupport::test_tool(name))
             .collect();
         self.tool_change.notify_one();
+    }
+
+    async fn replace_resources_and_notify(&self, uris: &[&str]) {
+        *self.resources.write().await = uris
+            .iter()
+            .map(|uri| Resource::new((*uri).to_string(), (*uri).to_string()))
+            .collect();
+        self.resource_change.notify_one();
     }
 }
 
@@ -94,10 +109,9 @@ impl ServerHandler for SubscriptionServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
-        Ok(ListResourcesResult::with_all_items(vec![Resource::new(
-            NATIVE_RESOURCE_URI,
-            "subscription-resource",
-        )]))
+        Ok(ListResourcesResult::with_all_items(
+            self.resources.read().await.clone(),
+        ))
     }
 
     fn accepted_subscription_filter(
@@ -128,6 +142,13 @@ impl ServerHandler for SubscriptionServer {
                     context
                         .sink()
                         .notify_tool_list_changed()
+                        .await
+                        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+                }
+                () = self.resource_change.notified() => {
+                    context
+                        .sink()
+                        .notify_resource_list_changed()
                         .await
                         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
                 }
@@ -490,4 +511,30 @@ async fn tool_change_consumer_refreshes_the_exact_named_catalog() {
         .map(|tool| tool.tool.name.to_string())
         .collect::<Vec<_>>();
     assert_eq!(tool_names, ["added_after_list_changed"]);
+}
+
+#[tokio::test]
+async fn resource_change_consumer_refreshes_the_exact_named_catalog() {
+    let pool = UpstreamPool::new();
+    let server = SubscriptionServer::accepting();
+    add_subscription_server(&pool, "leaf", server.clone()).await;
+    pool.list_upstream_resources().await;
+    pool.refresh_upstream_subscription("leaf").await;
+    let mut notifications = pool.subscribe_notifications();
+
+    server
+        .replace_resources_and_notify(&["file:///tmp/added-after-list-changed"])
+        .await;
+
+    let event = tokio::time::timeout(Duration::from_secs(2), notifications.recv())
+        .await
+        .expect("resource-list event arrives")
+        .expect("notification channel stays open");
+    let super::UpstreamNotificationEvent::ResourceListChanged { upstream } = event else {
+        panic!("expected resource-list event");
+    };
+    assert!(pool.refresh_resources_after_list_changed(&upstream).await);
+    let resources = pool.cached_upstream_resources_allowed(None).await;
+    assert_eq!(resources.len(), 1);
+    assert_eq!(resources[0].1.uri, "file:///tmp/added-after-list-changed");
 }

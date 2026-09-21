@@ -84,7 +84,31 @@ impl UpstreamPool {
         self.notification_tx.subscribe()
     }
 
-    /// Re-list one exact upstream after it reports `tools/list_changed` and
+    /// Re-list one exact upstream after it reports a resources/list_changed
+    /// notification and refresh only that upstream's cached resources.
+    ///
+    /// Downstream resources/list reads cached snapshots, so the notification
+    /// consumer must refresh the named source before forwarding list_changed.
+    pub async fn refresh_resources_after_list_changed(&self, upstream: &str) -> bool {
+        let allowed = BTreeSet::from([upstream.to_string()]);
+        if self
+            .observe_connection_catalog_entry(upstream)
+            .await
+            .is_none()
+        {
+            return false;
+        }
+        self.list_upstream_resources_allowed(Some(&allowed)).await;
+        self.catalog
+            .read()
+            .await
+            .get(upstream)
+            .is_some_and(|entry| {
+                entry.resource_health.is_routable() && entry.resource_last_error.is_none()
+            })
+    }
+
+    /// Re-list one exact upstream after it reports tools/list_changed and
     /// atomically replace only that upstream's cached tools.
     ///
     /// The notification event bus has two producers: the shared
