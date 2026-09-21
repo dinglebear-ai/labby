@@ -577,13 +577,15 @@ async fn q1_hostile_catalogs_stop_at_cursor_page_item_and_byte_bounds() {
             .all(|template| !template.name.contains("bomb"))
     );
 
-    // Startup capability probing and the forced full reload exercise three
-    // independent resource-list passes. Each cursor/byte breach must stop on
-    // its first response. Prompt probing is one single-page capability check
-    // plus the exact 64-page bounded reload pass.
+    // Startup capability probing and the forced full reload exercise two
+    // independent resource-list passes. The gateway intentionally performs a
+    // single post-connect resource refresh now, so the old duplicate reload
+    // pass is gone. Each cursor/byte breach must still stop on its first
+    // response. Prompt probing is one single-page capability check plus the
+    // exact 64-page bounded reload pass.
     assert_eq!(
         cursor.resource_lists(),
-        3,
+        2,
         "each oversized-cursor pass stops immediately"
     );
     assert_eq!(
@@ -594,7 +596,7 @@ async fn q1_hostile_catalogs_stop_at_cursor_page_item_and_byte_bounds() {
     assert_eq!(item.template_lists(), 1, "oversized page stops immediately");
     assert_eq!(
         bytes.resource_lists(),
-        3,
+        2,
         "each oversized-byte pass stops immediately"
     );
 
