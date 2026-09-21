@@ -130,6 +130,7 @@ async fn oauth_roundtrip() {
             scopes: Some(vec!["read".into()]),
             credential: Default::default(),
             prefer_client_metadata_document: None,
+            additional_endpoint_origins: vec![],
         }),
         transport: None,
         socket_path: None,
