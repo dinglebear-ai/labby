@@ -18,6 +18,7 @@ use super::super::types::{UpstreamCapability, UpstreamRuntimeOwner};
 #[cfg(test)]
 use super::TestUpstreamConnector;
 use super::UpstreamPool;
+use super::catalog_pagination;
 use super::connect::connect_upstream_with_client;
 use super::entries::{lazy_upstream_entry, resolve_upstream_exposure_policies};
 use super::helpers::{
@@ -26,7 +27,7 @@ use super::helpers::{
 };
 use super::resources_list::catalog_listing_timeout;
 use super::skills_list::peer_declares_skills;
-use super::tools::tool_has_mcp_app_ui_resource;
+use super::tools::{MAX_UPSTREAM_TOOLS, tool_has_mcp_app_ui_resource};
 use super::validate::validate_upstream_config;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -524,6 +525,62 @@ impl UpstreamPool {
         self.reprobe_tools_for_upstream_as(config, None, None).await
     }
 
+    async fn refresh_subject_scoped_tool_catalog(
+        &self,
+        config: &UpstreamConfig,
+        subject: &str,
+    ) -> anyhow::Result<()> {
+        // Ensure there is a live authenticated peer before taking the per-subject
+        // single-flight gate. A warm entry returns immediately; a cold entry
+        // performs the normal OAuth-backed connect and initial tools/list.
+        self.acquire_or_connect_subject(config, subject).await?;
+
+        let key = (config.name.clone(), subject.to_string());
+        let connect_lock = {
+            let mut locks = self.subject_connect_locks.write().await;
+            locks
+                .entry(key.clone())
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+        let connect_guard = connect_lock.lock().await;
+
+        let peer = {
+            let mut cache = self.subject_connections.write().await;
+            let Some(entry) = cache.get_mut(&key) else {
+                drop(cache);
+                drop(connect_guard);
+                // OAuth invalidation may have detached the entry after the
+                // initial acquire. Reconnect through the canonical path rather
+                // than resurrecting the detached peer.
+                self.acquire_or_connect_subject(config, subject).await?;
+                return Ok(());
+            };
+            entry.last_used = Instant::now();
+            entry.peer.clone()
+        };
+
+        let tools = catalog_pagination::list_tools(
+            &peer,
+            upstream_discovery_timeout(config, self.request_timeout),
+            MAX_UPSTREAM_TOOLS,
+        )
+        .await?;
+
+        let mut cache = self.subject_connections.write().await;
+        let Some(entry) = cache.get_mut(&key) else {
+            drop(cache);
+            drop(connect_guard);
+            // The credential/session was invalidated while tools/list was in
+            // flight. Never re-publish results from that detached peer.
+            self.acquire_or_connect_subject(config, subject).await?;
+            return Ok(());
+        };
+        entry.tools = tools;
+        entry.last_used = Instant::now();
+        Ok(())
+    }
+
     pub async fn reprobe_tools_for_upstream_as(
         &self,
         config: &UpstreamConfig,
@@ -546,7 +603,8 @@ impl UpstreamPool {
         if config.oauth.is_some()
             && let Some(subject) = oauth_subject
         {
-            self.acquire_or_connect_subject(config, subject).await?;
+            self.refresh_subject_scoped_tool_catalog(config, subject)
+                .await?;
             return Ok(true);
         }
         // The gate is taken inside `reprobe_upstream`, and only for the
@@ -860,6 +918,89 @@ mod tests {
         assert!(pool.healthy_tools().await.is_empty());
         assert!(pool.healthy_tools_for_upstream("oauth").await.is_empty());
         assert_eq!(pool.connection_count_for_tests().await, 0);
+    }
+
+    #[tokio::test]
+    async fn oauth_reprobe_refreshes_cached_subject_tool_catalog() {
+        #[derive(Clone)]
+        struct GrowingToolCatalogServer {
+            tool_count: Arc<AtomicUsize>,
+            list_calls: Arc<AtomicUsize>,
+        }
+
+        impl rmcp::ServerHandler for GrowingToolCatalogServer {
+            fn get_info(&self) -> rmcp::model::ServerInfo {
+                rmcp::model::ServerInfo::new(
+                    rmcp::model::ServerCapabilities::builder()
+                        .enable_tools()
+                        .build(),
+                )
+            }
+
+            async fn list_tools(
+                &self,
+                _request: Option<rmcp::model::PaginatedRequestParams>,
+                _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+            ) -> Result<rmcp::model::ListToolsResult, rmcp::model::ErrorData> {
+                self.list_calls.fetch_add(1, Ordering::SeqCst);
+                let count = self.tool_count.load(Ordering::SeqCst);
+                Ok(rmcp::model::ListToolsResult::with_all_items(
+                    (0..count)
+                        .map(|index| test_tool(&format!("tool_{index}")))
+                        .collect(),
+                ))
+            }
+        }
+
+        let pool = UpstreamPool::new();
+        let config = UpstreamConfig {
+            display_name: None,
+            lifecycle: None,
+            oauth: Some(UpstreamOauthConfig {
+                mode: UpstreamOauthMode::AuthorizationCodePkce,
+                registration: UpstreamOauthRegistration::Dynamic,
+                scopes: None,
+                credential: Default::default(),
+                prefer_client_metadata_document: None,
+            }),
+            ..named_test_upstream_config("oauth-growing")
+        };
+        let tool_count = Arc::new(AtomicUsize::new(1));
+        let list_calls = Arc::new(AtomicUsize::new(0));
+        pool.install_test_subject_server_for_upstream(
+            &config,
+            "alice",
+            GrowingToolCatalogServer {
+                tool_count: Arc::clone(&tool_count),
+                list_calls: Arc::clone(&list_calls),
+            },
+        )
+        .await;
+        pool.subject_connections
+            .write()
+            .await
+            .get_mut(&("oauth-growing".to_string(), "alice".to_string()))
+            .expect("subject connection")
+            .tools = vec![test_tool("tool_0")];
+
+        tool_count.store(3, Ordering::SeqCst);
+
+        assert!(
+            pool.reprobe_tools_for_upstream_as(&config, Some("alice"), None)
+                .await
+                .expect("subject reprobe")
+        );
+
+        let listed = pool
+            .cached_subject_scoped_tools_bounded(std::slice::from_ref(&config), "alice", 10)
+            .await;
+        let names = listed[0]
+            .1
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["tool_0", "tool_1", "tool_2"]);
+        assert_eq!(list_calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
