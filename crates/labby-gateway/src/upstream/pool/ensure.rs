@@ -530,6 +530,12 @@ impl UpstreamPool {
         config: &UpstreamConfig,
         subject: &str,
     ) -> anyhow::Result<()> {
+        // Capture the credential lifecycle before touching the subject peer. If
+        // OAuth invalidation races this refresh, the publication guard below
+        // prevents a tools/list result from the detached peer from being
+        // published into a replacement subject entry.
+        let lifecycle_epoch = self.oauth_lifecycle_epoch(&config.name, subject);
+
         // Ensure there is a live authenticated peer before taking the per-subject
         // single-flight gate. A warm entry returns immediately; a cold entry
         // performs the normal OAuth-backed connect and initial tools/list.
@@ -566,6 +572,9 @@ impl UpstreamPool {
             MAX_UPSTREAM_TOOLS,
         )
         .await?;
+        let _oauth_publication = self
+            .oauth_publication_guard(lifecycle_epoch.as_ref())
+            .await?;
 
         let mut cache = self.subject_connections.write().await;
         let Some(entry) = cache.get_mut(&key) else {
@@ -1002,6 +1011,118 @@ mod tests {
             .map(|tool| tool.name.as_ref())
             .collect::<Vec<_>>();
         assert_eq!(names, vec!["tool_0", "tool_1", "tool_2"]);
+        assert_eq!(list_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn oauth_reprobe_rejects_catalog_from_invalidated_lifecycle_epoch() {
+        #[derive(Clone)]
+        struct BlockingToolCatalogServer {
+            list_calls: Arc<AtomicUsize>,
+            block_refresh: Arc<AtomicBool>,
+            refresh_started: Arc<tokio::sync::Notify>,
+            release_refresh: Arc<tokio::sync::Notify>,
+        }
+
+        impl rmcp::ServerHandler for BlockingToolCatalogServer {
+            fn get_info(&self) -> rmcp::model::ServerInfo {
+                rmcp::model::ServerInfo::new(
+                    rmcp::model::ServerCapabilities::builder()
+                        .enable_tools()
+                        .build(),
+                )
+            }
+
+            async fn list_tools(
+                &self,
+                _request: Option<rmcp::model::PaginatedRequestParams>,
+                _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+            ) -> Result<rmcp::model::ListToolsResult, rmcp::model::ErrorData> {
+                self.list_calls.fetch_add(1, Ordering::SeqCst);
+                if !self.block_refresh.load(Ordering::SeqCst) {
+                    return Ok(rmcp::model::ListToolsResult::with_all_items(vec![
+                        test_tool("tool_0"),
+                    ]));
+                }
+
+                self.refresh_started.notify_one();
+                self.release_refresh.notified().await;
+                Ok(rmcp::model::ListToolsResult::with_all_items(vec![
+                    test_tool("stale_tool"),
+                ]))
+            }
+        }
+
+        let client_cache =
+            labby_auth::upstream::cache::OauthClientCache::new(Arc::new(dashmap::DashMap::new()));
+        let pool = Arc::new(UpstreamPool::new().with_oauth_client_cache(client_cache.clone()));
+        let config = UpstreamConfig {
+            display_name: None,
+            lifecycle: None,
+            oauth: Some(UpstreamOauthConfig {
+                mode: UpstreamOauthMode::AuthorizationCodePkce,
+                registration: UpstreamOauthRegistration::Dynamic,
+                scopes: None,
+                credential: Default::default(),
+                prefer_client_metadata_document: None,
+            }),
+            ..named_test_upstream_config("oauth-invalidated")
+        };
+        let list_calls = Arc::new(AtomicUsize::new(0));
+        let block_refresh = Arc::new(AtomicBool::new(false));
+        let refresh_started = Arc::new(tokio::sync::Notify::new());
+        let release_refresh = Arc::new(tokio::sync::Notify::new());
+        pool.install_test_subject_server_for_upstream(
+            &config,
+            "alice",
+            BlockingToolCatalogServer {
+                list_calls: Arc::clone(&list_calls),
+                block_refresh: Arc::clone(&block_refresh),
+                refresh_started: Arc::clone(&refresh_started),
+                release_refresh: Arc::clone(&release_refresh),
+            },
+        )
+        .await;
+        pool.subject_connections
+            .write()
+            .await
+            .get_mut(&("oauth-invalidated".to_string(), "alice".to_string()))
+            .expect("subject connection")
+            .tools = vec![test_tool("tool_0")];
+        block_refresh.store(true, Ordering::SeqCst);
+
+        let refresh_pool = Arc::clone(&pool);
+        let refresh_config = config.clone();
+        let refresh = tokio::spawn(async move {
+            refresh_pool
+                .reprobe_tools_for_upstream_as(&refresh_config, Some("alice"), None)
+                .await
+        });
+
+        refresh_started.notified().await;
+        client_cache.advance_subject_epoch("oauth-invalidated", "alice");
+        release_refresh.notify_one();
+
+        let error = refresh
+            .await
+            .expect("refresh task joins")
+            .expect_err("stale lifecycle epoch must reject catalog publication");
+        assert!(
+            error.to_string().contains(
+                "OAuth credentials changed while the upstream connection was being built"
+            ),
+            "unexpected refresh error: {error}"
+        );
+
+        let listed = pool
+            .cached_subject_scoped_tools_bounded(std::slice::from_ref(&config), "alice", 10)
+            .await;
+        let names = listed[0]
+            .1
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["tool_0"]);
         assert_eq!(list_calls.load(Ordering::SeqCst), 1);
     }
 
