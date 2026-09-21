@@ -15,14 +15,15 @@ use std::time::Instant;
 #[cfg(unix)]
 use crate::process::unix::{terminate_process_group_sigkill, terminate_process_group_sigterm};
 
+use futures::StreamExt;
 use tokio::sync::Mutex;
 
 use labby_runtime::gateway_config::UpstreamConfig;
 
 use super::super::types::UpstreamCapability;
 use super::helpers::{
-    STDIO_SHUTDOWN_TIMEOUT, SUBJECT_CONN_IDLE_TTL, SUBJECT_CONN_MAX_ENTRIES,
-    SUBJECT_CONN_SWEEP_INTERVAL,
+    CONNECTION_SHUTDOWN_CONCURRENCY, STDIO_SHUTDOWN_TIMEOUT, SUBJECT_CONN_IDLE_TTL,
+    SUBJECT_CONN_MAX_ENTRIES, SUBJECT_CONN_SWEEP_INTERVAL,
 };
 use super::logging::capability_name;
 use super::{SubjectScopedConnection, UpstreamConnection, UpstreamPool};
@@ -373,6 +374,10 @@ impl UpstreamPool {
     )> {
         use super::connect::connect_upstream_with_client;
 
+        anyhow::ensure!(
+            self.upstream_config_matches(config),
+            "upstream configuration changed before subject connection use"
+        );
         let key = (config.name.clone(), subject.to_string());
         let lifecycle_epoch = self.oauth_lifecycle_epoch(&config.name, subject);
 
@@ -436,11 +441,29 @@ impl UpstreamPool {
 
             let peer = conn.peer.clone();
             let cached_tools = tools.clone();
+            anyhow::ensure!(
+                self.upstream_config_matches(config),
+                "upstream configuration changed while subject connection was being built"
+            );
             // Network I/O completes without holding the lifecycle barrier.
             // Only the atomic epoch check plus cache publication is fenced.
-            let _oauth_publication = self
+            let oauth_publication = self
                 .oauth_publication_guard(lifecycle_epoch.as_ref())
                 .await?;
+            let gate_is_current = self
+                .subject_connect_locks
+                .read()
+                .await
+                .get(&key)
+                .is_some_and(|current| Arc::ptr_eq(current, &connect_lock));
+            if !gate_is_current {
+                drop(oauth_publication);
+                conn.shutdown(&config.name, "subject.config.superseded")
+                    .await;
+                anyhow::bail!(
+                    "upstream configuration changed while subject connection was being built"
+                );
+            }
             // Enforce the LRU cap BEFORE inserting so a burst of unique subjects
             // can't push the live-peer (and FD) count past the bound. Evicted
             // peers are shut down cleanly off-lock (P-H2).
@@ -477,13 +500,25 @@ impl UpstreamPool {
                 self.subject_connect_errors.write().await.remove(&key);
             }
             Err(error) => {
-                self.subject_connect_errors.write().await.insert(
+                let mut errors = self.subject_connect_errors.write().await;
+                errors.insert(
                     key.clone(),
-                    format!(
-                        "subject connection failed: {}",
-                        labby_runtime::redact::sanitize_error_text(&error.to_string(), 512)
-                    ),
+                    super::SubjectConnectErrorEntry {
+                        message: format!(
+                            "subject connection failed: {}",
+                            labby_runtime::redact::sanitize_error_text(&error.to_string(), 512)
+                        ),
+                        recorded_at: Instant::now(),
+                    },
                 );
+                while errors.len() > SUBJECT_CONN_MAX_ENTRIES {
+                    let oldest = errors
+                        .iter()
+                        .min_by_key(|(_, entry)| entry.recorded_at)
+                        .map(|(key, _)| key.clone());
+                    let Some(oldest) = oldest else { break };
+                    errors.remove(&oldest);
+                }
             }
         }
 
@@ -512,15 +547,42 @@ impl UpstreamPool {
     ///
     /// Called when an upstream is updated or removed so stale cached
     /// connections are not reused after the config changes.
-    pub(super) async fn evict_subject_connections_for(&self, upstream_name: &str) {
-        self.subject_connections
-            .write()
-            .await
-            .retain(|(name, _), _| name != upstream_name);
+    pub(super) async fn detach_subject_connections_for(
+        &self,
+        upstream_name: &str,
+    ) -> Vec<(String, UpstreamConnection)> {
+        let drained = {
+            let mut cache = self.subject_connections.write().await;
+            let keys = cache
+                .keys()
+                .filter(|(name, _)| name == upstream_name)
+                .cloned()
+                .collect::<Vec<_>>();
+            keys.into_iter()
+                .filter_map(|key| cache.remove(&key).map(|entry| (key.0, entry._connection)))
+                .collect::<Vec<_>>()
+        };
         self.subject_connect_errors
             .write()
             .await
             .retain(|(name, _), _| name != upstream_name);
+        self.subject_connect_locks
+            .write()
+            .await
+            .retain(|(name, _), _| name != upstream_name);
+        drained
+    }
+
+    pub(super) async fn evict_subject_connections_for(&self, upstream_name: &str) {
+        let drained = self.detach_subject_connections_for(upstream_name).await;
+        futures::stream::iter(drained)
+            .map(|(name, conn)| async move {
+                conn.shutdown(&name, "subject.cache.upstream_reconcile")
+                    .await;
+            })
+            .buffer_unordered(CONNECTION_SHUTDOWN_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await;
     }
 
     /// Evict the cached connection for a single `(upstream, subject)` pair.
@@ -574,8 +636,27 @@ impl UpstreamPool {
                 .collect::<Vec<_>>()
         };
         let connections_evicted = expired.len();
-        for (name, conn) in expired {
-            conn.shutdown(&name, "subject.cache.sweep").await;
+        futures::stream::iter(expired)
+            .map(|(name, conn)| async move {
+                conn.shutdown(&name, "subject.cache.sweep").await;
+            })
+            .buffer_unordered(CONNECTION_SHUTDOWN_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await;
+
+        // Drop stale failed-connect diagnostics on the same TTL and keep the
+        // error cache bounded even when subjects never establish a live peer.
+        {
+            let mut errors = self.subject_connect_errors.write().await;
+            errors.retain(|_, entry| entry.recorded_at.elapsed() < SUBJECT_CONN_IDLE_TTL);
+            while errors.len() > SUBJECT_CONN_MAX_ENTRIES {
+                let oldest = errors
+                    .iter()
+                    .min_by_key(|(_, entry)| entry.recorded_at)
+                    .map(|(key, _)| key.clone());
+                let Some(oldest) = oldest else { break };
+                errors.remove(&oldest);
+            }
         }
 
         // Phase 2: prune orphan single-flight locks. Hold both locks so the
@@ -619,7 +700,7 @@ impl UpstreamPool {
             if slot.is_some() {
                 return;
             }
-            *slot = Some(tokio_util::sync::CancellationToken::new());
+            *slot = Some(Arc::new(tokio_util::sync::CancellationToken::new()));
         }
         let cancel = self
             .subject_sweep_task
@@ -629,7 +710,7 @@ impl UpstreamPool {
             .expect("sweep token just inserted");
 
         let pool = self.clone();
-        tokio::spawn(async move {
+        self.lifecycle_tasks.spawn(async move {
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => break,
@@ -638,6 +719,13 @@ impl UpstreamPool {
                         pool.sweep_relay_connections().await;
                     }
                 }
+            }
+            let mut slot = pool.subject_sweep_task.write().await;
+            if slot
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &cancel))
+            {
+                slot.take();
             }
         });
     }
@@ -648,8 +736,8 @@ impl UpstreamPool {
 mod tests {
     use std::sync::Arc;
 
-    use super::super::SubjectScopedConnection;
     use super::super::testsupport::*;
+    use super::super::{SubjectScopedConnection, UpstreamPool};
 
     /// P-C1: inserting a `SubjectScopedConnection` into the cache and calling
     /// `acquire_or_connect_subject` again with the same `(upstream, subject)`
@@ -715,6 +803,46 @@ mod tests {
     /// Clearing credentials must remove the initialized subject-scoped MCP
     /// peer, not only the token-producing client cache. Otherwise the old peer
     /// can keep executing until its idle TTL expires.
+    #[tokio::test]
+    async fn stale_config_cannot_reuse_cached_subject_connection() {
+        use std::time::Instant;
+
+        let pool = static_catalog_pool("alpha").await;
+        let old = named_test_upstream_config("alpha");
+        pool.seed_lazy_upstreams(std::slice::from_ref(&old)).await;
+
+        let connection = pool
+            .connections
+            .write()
+            .await
+            .remove("alpha")
+            .expect("alpha connection");
+        let peer = connection.peer.clone();
+        pool.subject_connections.write().await.insert(
+            ("alpha".to_string(), "alice".to_string()),
+            SubjectScopedConnection {
+                optional_catalogs: Default::default(),
+                _connection: connection,
+                peer,
+                tools: Vec::new(),
+                last_used: Instant::now(),
+            },
+        );
+
+        let mut changed = old.clone();
+        changed.url = Some("http://127.0.0.1:9999/mcp".to_string());
+        pool.upstream_config_fingerprints.insert(
+            "alpha".to_string(),
+            crate::gateway::code_mode::catalog_cache::fingerprint(&changed),
+        );
+
+        let error = pool
+            .acquire_or_connect_subject(&old, "alice")
+            .await
+            .expect_err("stale config must not reuse cached subject peer");
+        assert!(error.to_string().contains("configuration changed"));
+    }
+
     #[tokio::test]
     async fn oauth_subject_invalidation_evicts_matching_subject_connection() {
         use std::time::Instant;
@@ -1122,6 +1250,41 @@ mod tests {
     /// drives the map down to the cap. Exercising the selection logic directly
     /// keeps the test light (no need to open 256+ live peers to hit the real
     /// `SUBJECT_CONN_MAX_ENTRIES` bound).
+    #[tokio::test]
+    async fn subject_connect_error_cache_is_ttl_pruned_and_bounded() {
+        use super::super::SubjectConnectErrorEntry;
+        use super::super::helpers::{SUBJECT_CONN_IDLE_TTL, SUBJECT_CONN_MAX_ENTRIES};
+        use std::time::{Duration, Instant};
+
+        let pool = UpstreamPool::new();
+        {
+            let mut errors = pool.subject_connect_errors.write().await;
+            for index in 0..(SUBJECT_CONN_MAX_ENTRIES + 32) {
+                errors.insert(
+                    ("alpha".to_string(), format!("subject-{index}")),
+                    SubjectConnectErrorEntry {
+                        message: "failed".to_string(),
+                        recorded_at: Instant::now(),
+                    },
+                );
+            }
+            errors.insert(
+                ("alpha".to_string(), "stale".to_string()),
+                SubjectConnectErrorEntry {
+                    message: "stale".to_string(),
+                    recorded_at: Instant::now()
+                        .checked_sub(SUBJECT_CONN_IDLE_TTL + Duration::from_secs(1))
+                        .expect("instant in range"),
+                },
+            );
+        }
+
+        pool.sweep_subject_connections().await;
+        let errors = pool.subject_connect_errors.read().await;
+        assert!(errors.len() <= SUBJECT_CONN_MAX_ENTRIES);
+        assert!(!errors.contains_key(&("alpha".to_string(), "stale".to_string())));
+    }
+
     #[tokio::test]
     async fn evict_lru_over_cap_drops_least_recently_used_and_spares_protected() {
         use std::collections::HashMap;

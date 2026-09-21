@@ -50,6 +50,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+use futures::StreamExt;
 use futures::future::BoxFuture;
 
 #[allow(deprecated)]
@@ -72,9 +73,6 @@ use labby_runtime::gateway_config::UpstreamConfig;
 use crate::MCP_RELAY_CANCELLATION_TOKEN_META_KEY;
 
 use super::super::types::UpstreamCapability;
-#[cfg(test)]
-use super::UpstreamConnection;
-use super::UpstreamPool;
 use super::capability_call::{bounded_service_error_text, service_error_affects_connection_health};
 use super::connect::{
     OrderedRelayNotification, RelayNotificationInterceptor,
@@ -85,8 +83,8 @@ use super::entries::{
     resolve_request_resource_exposure_policy, resource_exposed,
 };
 use super::helpers::{
-    SUBJECT_CONN_IDLE_TTL, SUBJECT_CONN_MAX_ENTRIES, bare_upstream_prompt_name,
-    estimate_call_tool_response_size, estimate_prompt_response_size,
+    CONNECTION_SHUTDOWN_CONCURRENCY, SUBJECT_CONN_IDLE_TTL, SUBJECT_CONN_MAX_ENTRIES,
+    bare_upstream_prompt_name, estimate_call_tool_response_size, estimate_prompt_response_size,
     estimate_resource_response_size, max_response_bytes, normalize_resource_result_uri,
     redact_resource_uri_for_logging, upstream_transport,
 };
@@ -106,6 +104,7 @@ use super::relay_cancellation::{
 use super::tools_call::{
     is_tool_header_mismatch, record_header_mismatch, record_header_retry, refresh_tool_header_cache,
 };
+use super::{UpstreamConnection, UpstreamPool};
 
 const RELAY_ROUTE_CLEANUP_GRACE: Duration = Duration::from_secs(2);
 const CANCELLATION_NOTIFICATION_DELIVERY_GRACE: Duration = Duration::from_millis(500);
@@ -1089,6 +1088,30 @@ fn downstream_cancelled(reason: &str) -> String {
 }
 
 impl UpstreamPool {
+    async fn record_relay_failure_for(
+        &self,
+        upstream_name: &str,
+        capability: UpstreamCapability,
+        subject: Option<&str>,
+        error: impl Into<String>,
+    ) {
+        if subject.is_none() {
+            self.record_failure_for(upstream_name, capability, error)
+                .await;
+        }
+    }
+
+    async fn record_relay_success_for(
+        &self,
+        upstream_name: &str,
+        capability: UpstreamCapability,
+        subject: Option<&str>,
+    ) {
+        if subject.is_none() {
+            self.record_success_for(upstream_name, capability).await;
+        }
+    }
+
     /// Call a single tool on an upstream over a **relay-handled** connection
     /// that is cached per `(upstream, downstream-session, oauth-subject)`.
     ///
@@ -1176,7 +1199,7 @@ impl UpstreamPool {
                 let message = format!("upstream `{}` relay connection timed out", config.name);
                 log_upstream_request_error(event, started.elapsed().as_millis(), "connect_timeout", None, None, None);
                 super::usage_record::record_usage_call(self, event, caller_subject, "connect_timeout", started.elapsed().as_millis());
-                self.record_failure_for(&config.name, UpstreamCapability::Tools, message.clone()).await;
+                self.record_relay_failure_for(&config.name, UpstreamCapability::Tools, subject, message.clone()).await;
                 return Some(Err(super::CapabilityCallError::Timeout {
                     message,
                 }));
@@ -1313,9 +1336,10 @@ impl UpstreamPool {
                         let error = ServiceError::UnexpectedResponse;
                         let message =
                             "relayed upstream returned an unexpected response".to_string();
-                        self.record_failure_for(
+                        self.record_relay_failure_for(
                             &config.name,
                             UpstreamCapability::Tools,
+                            subject,
                             message.clone(),
                         )
                         .await;
@@ -1343,7 +1367,7 @@ impl UpstreamPool {
                 if response_size > max_bytes {
                     // The peer returned a complete response. The gateway's size
                     // policy rejected it, but the MCP connection remains healthy.
-                    self.record_success_for(&config.name, UpstreamCapability::Tools)
+                    self.record_relay_success_for(&config.name, UpstreamCapability::Tools, subject)
                         .await;
                     log_upstream_request_error(
                         event,
@@ -1381,8 +1405,12 @@ impl UpstreamPool {
                     .await;
                 match result {
                     Ok(result) => {
-                        self.record_success_for(&config.name, UpstreamCapability::Tools)
-                            .await;
+                        self.record_relay_success_for(
+                            &config.name,
+                            UpstreamCapability::Tools,
+                            subject,
+                        )
+                        .await;
                         log_upstream_request_finish(
                             event,
                             started.elapsed().as_millis(),
@@ -1399,9 +1427,10 @@ impl UpstreamPool {
                     }
                     Err(message) => {
                         let error = ServiceError::UnexpectedResponse;
-                        self.record_failure_for(
+                        self.record_relay_failure_for(
                             &config.name,
                             UpstreamCapability::Tools,
+                            subject,
                             message.clone(),
                         )
                         .await;
@@ -1450,16 +1479,17 @@ impl UpstreamPool {
                 if service_error_affects_connection_health(&error) {
                     // Transport/protocol failures may mean the cached connection
                     // is dead, so trip the breaker and force a reconnect.
-                    self.record_failure_for(
+                    self.record_relay_failure_for(
                         &config.name,
                         UpstreamCapability::Tools,
+                        subject,
                         message.clone(),
                     )
                     .await;
                     self.evict_relay_connection(&relay_key).await;
                 } else {
                     // A valid MCP error response proves the relay connection is alive.
-                    self.record_success_for(&config.name, UpstreamCapability::Tools)
+                    self.record_relay_success_for(&config.name, UpstreamCapability::Tools, subject)
                         .await;
                 }
                 log_upstream_request_error(
@@ -1583,7 +1613,7 @@ impl UpstreamPool {
                 let message = format!("upstream `{}` relay connection timed out", config.name);
                 log_upstream_request_error(event, started.elapsed().as_millis(), "connect_timeout", None, None, None);
                 super::usage_record::record_usage_call(self, event, subject, "connect_timeout", started.elapsed().as_millis());
-                self.record_failure_for(&config.name, UpstreamCapability::Prompts, message.clone()).await;
+                self.record_relay_failure_for(&config.name, UpstreamCapability::Prompts, subject, message.clone()).await;
                 return Some(Err(super::CapabilityCallError::Timeout { message }));
             }
             connection = self.acquire_or_connect_relay(
@@ -1678,9 +1708,10 @@ impl UpstreamPool {
                         let error = ServiceError::UnexpectedResponse;
                         let message =
                             "relayed upstream prompt returned an unexpected response".to_string();
-                        self.record_failure_for(
+                        self.record_relay_failure_for(
                             &config.name,
                             UpstreamCapability::Prompts,
+                            subject,
                             message.clone(),
                         )
                         .await;
@@ -1702,8 +1733,12 @@ impl UpstreamPool {
                     let message = format!(
                         "upstream response too large ({response_size} bytes, max {max_bytes})"
                     );
-                    self.record_success_for(&config.name, UpstreamCapability::Prompts)
-                        .await;
+                    self.record_relay_success_for(
+                        &config.name,
+                        UpstreamCapability::Prompts,
+                        subject,
+                    )
+                    .await;
                     log_upstream_request_error(
                         event,
                         started.elapsed().as_millis(),
@@ -1716,7 +1751,7 @@ impl UpstreamPool {
                         message,
                     }));
                 }
-                self.record_success_for(&config.name, UpstreamCapability::Prompts)
+                self.record_relay_success_for(&config.name, UpstreamCapability::Prompts, subject)
                     .await;
                 log_upstream_request_finish(
                     event,
@@ -1742,16 +1777,21 @@ impl UpstreamPool {
                     bounded_service_error_text(&error)
                 );
                 if service_error_affects_connection_health(&error) {
-                    self.record_failure_for(
+                    self.record_relay_failure_for(
                         &config.name,
                         UpstreamCapability::Prompts,
+                        subject,
                         message.clone(),
                     )
                     .await;
                     self.evict_relay_connection(&relay_key).await;
                 } else {
-                    self.record_success_for(&config.name, UpstreamCapability::Prompts)
-                        .await;
+                    self.record_relay_success_for(
+                        &config.name,
+                        UpstreamCapability::Prompts,
+                        subject,
+                    )
+                    .await;
                 }
                 log_upstream_request_error(
                     event,
@@ -1878,7 +1918,7 @@ impl UpstreamPool {
                 let message = format!("upstream `{}` relay connection timed out", config.name);
                 log_upstream_request_error(event, started.elapsed().as_millis(), "connect_timeout", None, None, None);
                 super::usage_record::record_usage_call(self, event, subject, "connect_timeout", started.elapsed().as_millis());
-                self.record_failure_for(&config.name, UpstreamCapability::Resources, message.clone()).await;
+                self.record_relay_failure_for(&config.name, UpstreamCapability::Resources, subject, message.clone()).await;
                 return Some(Err(super::CapabilityCallError::Timeout { message }));
             }
             connection = self.acquire_or_connect_relay(
@@ -1975,9 +2015,10 @@ impl UpstreamPool {
                         let error = ServiceError::UnexpectedResponse;
                         let message =
                             "relayed upstream resource returned an unexpected response".to_string();
-                        self.record_failure_for(
+                        self.record_relay_failure_for(
                             &config.name,
                             UpstreamCapability::Resources,
+                            subject,
                             message.clone(),
                         )
                         .await;
@@ -2007,8 +2048,12 @@ impl UpstreamPool {
                     let message = format!(
                         "upstream response too large ({response_size} bytes, max {max_bytes})"
                     );
-                    self.record_success_for(&config.name, UpstreamCapability::Resources)
-                        .await;
+                    self.record_relay_success_for(
+                        &config.name,
+                        UpstreamCapability::Resources,
+                        subject,
+                    )
+                    .await;
                     log_upstream_request_error(
                         event,
                         started.elapsed().as_millis(),
@@ -2028,7 +2073,7 @@ impl UpstreamPool {
                     incomplete @ ReadResourceResponse::InputRequired(_) => incomplete,
                     other => other,
                 };
-                self.record_success_for(&config.name, UpstreamCapability::Resources)
+                self.record_relay_success_for(&config.name, UpstreamCapability::Resources, subject)
                     .await;
                 log_upstream_request_finish(
                     event,
@@ -2054,16 +2099,21 @@ impl UpstreamPool {
                     bounded_service_error_text(&error)
                 );
                 if service_error_affects_connection_health(&error) {
-                    self.record_failure_for(
+                    self.record_relay_failure_for(
                         &config.name,
                         UpstreamCapability::Resources,
+                        subject,
                         message.clone(),
                     )
                     .await;
                     self.evict_relay_connection(&relay_key).await;
                 } else {
-                    self.record_success_for(&config.name, UpstreamCapability::Resources)
-                        .await;
+                    self.record_relay_success_for(
+                        &config.name,
+                        UpstreamCapability::Resources,
+                        subject,
+                    )
+                    .await;
                 }
                 log_upstream_request_error(
                     event,
@@ -2117,6 +2167,9 @@ impl UpstreamPool {
         Option<HttpCancellationSender>,
         Option<u64>,
     )> {
+        if !self.upstream_config_matches(config) {
+            return None;
+        }
         let lifecycle_epoch =
             subject.and_then(|subject| self.oauth_lifecycle_epoch(&config.name, subject));
         // `subject` (the OAuth identity, `None` on the raw path) is part of the
@@ -2208,9 +2261,10 @@ impl UpstreamPool {
         {
             Ok(pair) => pair,
             Err(error) => {
-                self.record_failure_for(
+                self.record_relay_failure_for(
                     &config.name,
                     UpstreamCapability::Tools,
+                    subject,
                     format!("relayed upstream connect failed: {error}"),
                 )
                 .await;
@@ -2228,9 +2282,10 @@ impl UpstreamPool {
         {
             Ok(sender) => sender,
             Err(error) => {
-                self.record_failure_for(
+                self.record_relay_failure_for(
                     &config.name,
                     UpstreamCapability::Tools,
+                    subject,
                     format!("relayed cancellation sender setup failed: {error}"),
                 )
                 .await;
@@ -2241,8 +2296,11 @@ impl UpstreamPool {
         };
         let peer = conn.peer.clone();
         let generation = conn.runtime.generation;
-        let _oauth_publication = match self.oauth_publication_guard(lifecycle_epoch.as_ref()).await
-        {
+        if !self.upstream_config_matches(config) {
+            conn.shutdown(&config.name, "relay.config.changed").await;
+            return None;
+        }
+        let oauth_publication = match self.oauth_publication_guard(lifecycle_epoch.as_ref()).await {
             Ok(guard) => guard,
             Err(_) => {
                 conn.shutdown(&config.name, "relay.oauth_epoch.changed")
@@ -2250,6 +2308,17 @@ impl UpstreamPool {
                 return None;
             }
         };
+        let gate_is_current = self
+            .relay_connect_locks
+            .read()
+            .await
+            .get(&key)
+            .is_some_and(|current| Arc::ptr_eq(current, &connect_lock));
+        if !gate_is_current {
+            drop(oauth_publication);
+            conn.shutdown(&config.name, "relay.config.superseded").await;
+            return None;
+        }
         // Enforce the LRU cap BEFORE inserting so a burst of unique sessions
         // cannot push the live-peer count past the bound; shut evicted peers
         // down off-lock.
@@ -2290,8 +2359,13 @@ impl UpstreamPool {
         }
     }
 
-    /// Evict every cached relay connection for one upstream.
-    pub(super) async fn evict_relay_connections_for(&self, upstream_name: &str) {
+    /// Detach every cached relay connection for one upstream without waiting
+    /// for transport shutdown. Selective publication uses this to keep the
+    /// global publication writer free of upstream I/O.
+    pub(super) async fn detach_relay_connections_for(
+        &self,
+        upstream_name: &str,
+    ) -> Vec<(String, UpstreamConnection<RelayClientHandler>)> {
         let drained: Vec<_> = {
             let mut cache = self.relay_connections.write().await;
             let keys = cache
@@ -2300,23 +2374,42 @@ impl UpstreamPool {
                 .cloned()
                 .collect::<Vec<_>>();
             keys.into_iter()
-                .filter_map(|key| cache.remove(&key).map(|entry| (key, entry)))
+                .filter_map(|key| cache.remove(&key).map(|entry| (key.0, entry._connection)))
                 .collect()
         };
-        for ((name, _session, _subject, _fingerprint), entry) in drained {
-            entry
-                ._connection
-                .shutdown(&name, "relay.cache.upstream_reconcile")
-                .await;
-        }
+        self.relay_connect_locks
+            .write()
+            .await
+            .retain(|(name, _, _, _), _| name != upstream_name);
+        drained
+    }
+
+    /// Evict every cached relay connection for one upstream.
+    pub(super) async fn evict_relay_connections_for(&self, upstream_name: &str) {
+        let drained = self.detach_relay_connections_for(upstream_name).await;
+        futures::stream::iter(drained)
+            .map(|(name, connection)| async move {
+                connection
+                    .shutdown(&name, "relay.cache.upstream_reconcile")
+                    .await;
+            })
+            .buffer_unordered(CONNECTION_SHUTDOWN_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await;
     }
 
     /// Evict all cached relay connections (called during pool drain).
     pub(super) async fn evict_all_relay_connections(&self) {
         let drained: Vec<_> = self.relay_connections.write().await.drain().collect();
-        for ((name, _session, _subject, _fingerprint), entry) in drained {
-            entry._connection.shutdown(&name, "relay.cache.drain").await;
-        }
+        futures::stream::iter(drained)
+            .map(
+                |((name, _session, _subject, _fingerprint), entry)| async move {
+                    entry._connection.shutdown(&name, "relay.cache.drain").await;
+                },
+            )
+            .buffer_unordered(CONNECTION_SHUTDOWN_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await;
     }
 
     /// Sweep the relay-connection cache: evict entries past the idle TTL or
@@ -2340,9 +2433,13 @@ impl UpstreamPool {
                 .collect::<Vec<_>>()
         };
         let connections_evicted = expired.len();
-        for (name, conn) in expired {
-            conn.shutdown(&name, "relay.cache.sweep").await;
-        }
+        futures::stream::iter(expired)
+            .map(|(name, conn)| async move {
+                conn.shutdown(&name, "relay.cache.sweep").await;
+            })
+            .buffer_unordered(CONNECTION_SHUTDOWN_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await;
 
         let locks_pruned = {
             let cache = self.relay_connections.read().await;
@@ -3777,6 +3874,60 @@ mod tests {
 
     /// `evict_all_relay_connections` empties the cache (and shuts the cached
     /// connections down) — the drain path.
+    #[tokio::test]
+    async fn stale_config_cannot_open_or_reuse_relay_connection() {
+        let pool = UpstreamPool::new();
+        let config = super::super::testsupport::test_upstream_config();
+        let mut changed = config.clone();
+        changed.url = Some("http://127.0.0.1:9999/mcp".to_string());
+        pool.upstream_config_fingerprints.insert(
+            config.name.clone(),
+            crate::gateway::code_mode::catalog_cache::fingerprint(&changed),
+        );
+        let downstream = relay_test_downstream().await;
+
+        let result = pool
+            .acquire_or_connect_relay_guarded(
+                &config,
+                None,
+                downstream.peer().clone(),
+                73,
+                relay_test_capabilities(),
+            )
+            .await;
+        assert!(
+            result.is_none(),
+            "stale config must not acquire a relay peer"
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_subject_health_is_isolated_from_global_circuit() {
+        let pool = super::super::testsupport::static_catalog_pool("alpha").await;
+        pool.record_relay_failure_for(
+            "alpha",
+            UpstreamCapability::Tools,
+            Some("alice"),
+            "alice failed",
+        )
+        .await;
+        assert!(matches!(
+            pool.upstream_capability_health("alpha", UpstreamCapability::Tools)
+                .await,
+            Some(crate::upstream::types::UpstreamHealth::Healthy)
+        ));
+
+        pool.record_relay_failure_for("alpha", UpstreamCapability::Tools, None, "transport failed")
+            .await;
+        assert!(matches!(
+            pool.upstream_capability_health("alpha", UpstreamCapability::Tools)
+                .await,
+            Some(crate::upstream::types::UpstreamHealth::Unhealthy {
+                consecutive_failures: 1
+            })
+        ));
+    }
+
     #[tokio::test]
     async fn relay_cache_evict_all_clears_entries() {
         let pool = UpstreamPool::new();
