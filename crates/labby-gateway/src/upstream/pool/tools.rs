@@ -1637,6 +1637,7 @@ mod tests {
                         },
                     scopes: None,
                     credential: Default::default(),
+                    additional_endpoint_origins: vec![],
                     prefer_client_metadata_document: None,
                 });
                 config
@@ -1884,6 +1885,7 @@ mod tests {
             },
             scopes: None,
             credential: Default::default(),
+            additional_endpoint_origins: vec![],
             prefer_client_metadata_document: None,
         });
         pool.install_test_subject_tools_for_upstream(
@@ -1947,6 +1949,7 @@ mod tests {
             },
             scopes: None,
             credential: Default::default(),
+            additional_endpoint_origins: vec![],
             prefer_client_metadata_document: None,
         });
         pool.install_test_subject_tools_for_upstream(
@@ -1990,6 +1993,7 @@ mod tests {
             },
             scopes: None,
             credential: Default::default(),
+            additional_endpoint_origins: vec![],
             prefer_client_metadata_document: None,
         });
         pool.install_test_subject_tools_for_upstream(&config, "alice", vec![tool])

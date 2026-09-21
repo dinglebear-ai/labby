@@ -329,10 +329,10 @@ labby server auth logout chrome-devtools
   `authorization_endpoint`, `token_endpoint`, `revocation_endpoint`, and
   (when present) `registration_endpoint` and `userinfo_endpoint` origins
   (scheme + host + port) must match the issuer origin; any drift surfaces as
-  `oauth_issuer_mismatch` (RFC 8414 §3.3). Known provider split endpoints are
-  allowed when they are part of the provider's documented OAuth deployment;
-  today Labby allows Google's `https://accounts.google.com` issuer to use the
-  `https://oauth2.googleapis.com` token endpoint.
+  `oauth_issuer_mismatch` (RFC 8414 §3.3). A provider's documented split
+  endpoint origins must be declared per upstream with
+  `oauth.additional_endpoint_origins`; Labby does not hardcode provider
+  exceptions.
 - **Provider credential broker.** Generic upstream OAuth clients remain
   per-upstream and per-subject. Google-backed upstreams may instead use the
   authenticated subject's centralized, encrypted Google provider credential.
