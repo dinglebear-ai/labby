@@ -1065,6 +1065,7 @@ mod tests {
                 scopes: None,
                 credential: Default::default(),
                 prefer_client_metadata_document: None,
+                additional_endpoint_origins: vec![],
             }),
             ..named_test_upstream_config("oauth-invalidated")
         };
