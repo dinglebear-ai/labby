@@ -4,6 +4,149 @@ use clap::{CommandFactory, Parser};
 use labby::cli::Cli;
 use std::process::{Command, Output};
 
+const ANSI_ESCAPE: u8 = 0x1b;
+
+#[derive(Debug, Clone)]
+struct PublicCommand {
+    canonical: Vec<String>,
+    aliases: Vec<Vec<String>>,
+    leaf: bool,
+}
+
+fn command_inventory() -> Vec<PublicCommand> {
+    fn visit(command: &clap::Command, parent: &[String], inventory: &mut Vec<PublicCommand>) {
+        for child in command
+            .get_subcommands()
+            .filter(|child| !child.is_hide_set())
+        {
+            let mut canonical = parent.to_vec();
+            canonical.push(child.get_name().to_owned());
+            let aliases = child
+                .get_all_aliases()
+                .map(|alias| {
+                    let mut path = parent.to_vec();
+                    path.push(alias.to_owned());
+                    path
+                })
+                .collect();
+            let leaf = child.get_subcommands().all(clap::Command::is_hide_set);
+            inventory.push(PublicCommand {
+                canonical: canonical.clone(),
+                aliases,
+                leaf,
+            });
+            visit(child, &canonical, inventory);
+        }
+    }
+
+    let mut root = Cli::command();
+    root.build();
+    let mut inventory = Vec::new();
+    visit(&root, &[], &mut inventory);
+    inventory
+}
+
+fn assert_plain_output(output: &Output, description: &str) {
+    assert!(
+        !output.stdout.contains(&ANSI_ESCAPE) && !output.stderr.contains(&ANSI_ESCAPE),
+        "ANSI escape leaked into {description}"
+    );
+}
+
+fn find_command<'a>(root: &'a clap::Command, path: &[String]) -> &'a clap::Command {
+    path.iter().fold(root, |command, name| {
+        let child = command
+            .get_subcommands()
+            .find(|child| child.get_name() == name);
+        assert!(
+            child.is_some(),
+            "missing Clap command path: {}",
+            path.join(" ")
+        );
+        child.unwrap()
+    })
+}
+
+fn representative_value(arg: &clap::Arg) -> String {
+    if let Some(value) = arg
+        .get_value_parser()
+        .possible_values()
+        .and_then(|mut values| values.next())
+    {
+        return value.get_name().to_owned();
+    }
+    let hint = arg
+        .get_value_names()
+        .and_then(|names| names.first())
+        .map(|name| name.as_str().to_ascii_uppercase())
+        .unwrap_or_else(|| arg.get_id().as_str().to_ascii_uppercase());
+    if hint.contains("URL") || hint.contains("ENDPOINT") || hint.contains("SERVER") {
+        "https://example.invalid".to_owned()
+    } else if hint.contains("DURATION")
+        || ((hint.contains("TIMEOUT") || hint.contains("GRACE"))
+            && !hint.contains("SECONDS")
+            && !hint.contains("MINUTES"))
+    {
+        "1s".to_owned()
+    } else if hint.contains("PORT") {
+        "40100".to_owned()
+    } else if hint.contains("LIMIT")
+        || hint.contains("LINES")
+        || hint.contains("COUNT")
+        || hint.contains("MAX")
+        || hint.contains("SECONDS")
+        || hint.contains("TTL")
+        || hint.contains("UNIX")
+        || hint.contains("MINUTES")
+        || hint.contains("SIZE")
+        || hint.contains("DEPTH")
+        || hint.contains("RETRIES")
+        || hint.contains("PAGE")
+        || hint.contains("OFFSET")
+    {
+        "1".to_owned()
+    } else if hint.contains("PATH")
+        || hint.contains("FILE")
+        || hint.contains("DIR")
+        || hint.contains("KEY")
+    {
+        "/private/tmp/labby-cli-contract".to_owned()
+    } else if hint.contains("BOOL") {
+        "true".to_owned()
+    } else {
+        "contract-value".to_owned()
+    }
+}
+
+fn option_spellings(arg: &clap::Arg) -> Vec<String> {
+    let mut spellings = Vec::new();
+    if let Some(long) = arg.get_long() {
+        spellings.push(format!("--{long}"));
+    }
+    if let Some(aliases) = arg.get_all_aliases() {
+        spellings.extend(aliases.into_iter().map(|alias| format!("--{alias}")));
+    }
+    if let Some(short) = arg.get_short() {
+        spellings.push(format!("-{short}"));
+    }
+    if let Some(aliases) = arg.get_all_short_aliases() {
+        spellings.extend(aliases.into_iter().map(|alias| format!("-{alias}")));
+    }
+    spellings
+}
+
+fn parser_probe(path: &[String], spelling: &str, arg: &clap::Arg) -> Vec<String> {
+    let mut argv = vec!["labby".to_owned()];
+    argv.extend(path.iter().cloned());
+    argv.push(spelling.to_owned());
+    if arg.get_action().takes_values() {
+        let count = arg.get_num_args().map_or(1, |range| range.min_values());
+        argv.extend(std::iter::repeat_with(|| representative_value(arg)).take(count));
+    }
+    argv.push("--help".to_owned());
+    argv
+}
+
 #[test]
 fn live_repository_text_does_not_teach_retired_cli_prefixes() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -289,6 +432,377 @@ fn every_public_help_path_runs_offline_and_has_qualified_usage() {
             "unqualified usage at {path}"
         );
     }
+}
+
+#[test]
+fn every_public_command_and_alias_has_plain_offline_help() {
+    for entry in command_inventory() {
+        for path in std::iter::once(&entry.canonical).chain(entry.aliases.iter()) {
+            let mut args = path.iter().map(String::as_str).collect::<Vec<_>>();
+            args.push("--help");
+            let label = format!("labby {}", path.join(" "));
+            let output = invoke(&args);
+            assert!(
+                output.status.success(),
+                "{label}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(!output.stdout.is_empty(), "empty help for {label}");
+            assert!(output.stderr.is_empty(), "stderr from help for {label}");
+            assert_plain_output(&output, &format!("help for {label}"));
+        }
+    }
+}
+
+#[test]
+fn every_public_command_has_structured_json_help() {
+    for entry in command_inventory() {
+        let mut args = vec!["help"];
+        args.extend(entry.canonical.iter().map(String::as_str));
+        args.push("--json");
+        let qualified = format!("labby {}", entry.canonical.join(" "));
+        let output = invoke(&args);
+        assert!(
+            output.status.success(),
+            "{qualified}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.stderr.is_empty(),
+            "stderr from JSON help for {qualified}"
+        );
+        assert_plain_output(&output, &format!("JSON help for {qualified}"));
+        let parsed = serde_json::from_slice(&output.stdout);
+        assert!(
+            parsed.is_ok(),
+            "invalid JSON help for {qualified}: {parsed:?}"
+        );
+        let document: serde_json::Value = parsed.unwrap();
+        assert_eq!(document["command"], qualified);
+        assert!(
+            document["usage"]
+                .as_str()
+                .is_some_and(|usage| !usage.is_empty()),
+            "missing usage for {qualified}"
+        );
+    }
+}
+
+#[test]
+fn every_public_option_and_short_flag_accepts_a_representative_value() {
+    let mut root = Cli::command();
+    root.build();
+    let inventory = command_inventory();
+    let paths =
+        std::iter::once(Vec::new()).chain(inventory.iter().map(|entry| entry.canonical.clone()));
+    let mut covered = std::collections::BTreeSet::new();
+
+    for path in paths {
+        let command = find_command(&root, &path);
+        for arg in command.get_arguments().filter(|arg| !arg.is_hide_set()) {
+            for spelling in option_spellings(arg) {
+                if matches!(spelling.as_str(), "--help" | "-h" | "--version" | "-V") {
+                    continue;
+                }
+                let argv = parser_probe(&path, &spelling, arg);
+                let error = Cli::command()
+                    .try_get_matches_from(argv.clone())
+                    .expect_err("--help parser probe must stop before command execution");
+                assert_eq!(
+                    error.kind(),
+                    clap::error::ErrorKind::DisplayHelp,
+                    "option parser probe failed for {argv:?}: {error}"
+                );
+                covered.insert(format!("labby {} {spelling}", path.join(" ")));
+            }
+        }
+    }
+    assert!(!covered.is_empty(), "Clap graph exposed no options");
+}
+
+#[test]
+fn feature_specific_command_inventory_matches_the_compiled_slice() {
+    let roots = command_inventory()
+        .into_iter()
+        .filter(|entry| entry.canonical.len() == 1)
+        .map(|entry| entry.canonical[0].clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    for gateway_command in ["gateway", "server", "route", "loadout", "code", "snippet"] {
+        assert_eq!(
+            roots.contains(gateway_command),
+            cfg!(feature = "gateway"),
+            "{gateway_command} did not follow the gateway feature"
+        );
+    }
+    assert_eq!(
+        roots.contains("skill"),
+        cfg!(any(feature = "skills", feature = "gateway")),
+        "skill did not follow its documented feature contract"
+    );
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LeafPlan {
+    Execute {
+        args: &'static [&'static str],
+        output: ScenarioOutput,
+    },
+    Exempt(&'static str),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScenarioOutput {
+    Json,
+    Plain,
+}
+
+fn leaf_plan(path: &str) -> Option<LeafPlan> {
+    Some(match path {
+        "help" => LeafPlan::Execute {
+            args: &["help", "--all", "--json"],
+            output: ScenarioOutput::Json,
+        },
+        "context list" => LeafPlan::Execute {
+            args: &["context", "list", "--json"],
+            output: ScenarioOutput::Json,
+        },
+        "config show" => LeafPlan::Execute {
+            args: &["config", "show", "--json"],
+            output: ScenarioOutput::Json,
+        },
+        "config check" => LeafPlan::Execute {
+            args: &["config", "check", "--json"],
+            output: ScenarioOutput::Json,
+        },
+        "completions query" => LeafPlan::Execute {
+            args: &["completions", "query", "--"],
+            output: ScenarioOutput::Plain,
+        },
+
+        // Each exemption names a concrete leaf. Do not collapse these arms to a
+        // command-prefix wildcard: the exact list is what makes a new Clap leaf
+        // fail review instead of silently inheriting an exemption.
+        "context get" | "context add" | "context set" | "context use" | "context remove"
+        | "context clear" => LeafPlan::Exempt(
+            "requires a named context fixture or intentionally mutates durable context selection",
+        ),
+        "auth login"
+        | "auth status"
+        | "auth logout"
+        | "auth bootstrap prepare"
+        | "auth bootstrap consume"
+        | "auth bootstrap status"
+        | "auth bootstrap recover"
+        | "auth bootstrap cleanup"
+        | "auth owner link"
+        | "auth relay local"
+        | "auth relay registry list"
+        | "auth relay registry import"
+        | "auth relay registry register"
+        | "auth relay registry remove"
+        | "auth relay registry disable"
+        | "auth relay registry enable"
+        | "auth provider google revoke" => LeafPlan::Exempt(
+            "requires an authenticated identity, bootstrap secret, provider, or relay fixture",
+        ),
+        "gateway reload"
+        | "gateway status"
+        | "gateway sessions list"
+        | "gateway urls"
+        | "gateway usage metrics"
+        | "gateway usage calls"
+        | "server list"
+        | "server get"
+        | "server add"
+        | "server set"
+        | "server remove"
+        | "server test"
+        | "server status"
+        | "server enable"
+        | "server disable"
+        | "server restart"
+        | "server cleanup"
+        | "server auth login"
+        | "server auth status"
+        | "server auth logout"
+        | "server discover"
+        | "server import"
+        | "server pending list"
+        | "server pending approve"
+        | "server pending reject"
+        | "server quarantine list"
+        | "server quarantine restore"
+        | "route list"
+        | "route get"
+        | "route add"
+        | "route replace"
+        | "route remove"
+        | "route test"
+        | "loadout list"
+        | "loadout get"
+        | "loadout add"
+        | "loadout set"
+        | "loadout remove"
+        | "code search"
+        | "code describe"
+        | "code status"
+        | "code enable"
+        | "code disable"
+        | "code ui status"
+        | "code ui enable"
+        | "code ui disable"
+        | "code run"
+        | "code hints preview"
+        | "code hints apply" => {
+            LeafPlan::Exempt("requires a live gateway/provider or a purpose-built protocol fixture")
+        }
+        "snippet list"
+        | "snippet get"
+        | "snippet run"
+        | "snippet add"
+        | "snippet validate"
+        | "snippet remove"
+        | "snippet test"
+        | "skill list"
+        | "skill search"
+        | "skill get"
+        | "skill read"
+        | "skill source list"
+        | "skill source trust"
+        | "skill source untrust"
+        | "skill source exposure set"
+        | "skill source exposure clear" => LeafPlan::Exempt(
+            "requires repository/plugin artifact fixtures and may create usage or trust state",
+        ),
+        "doctor auth" | "doctor relay" | "doctor proxy" | "doctor system" | "logs journal" => {
+            LeafPlan::Exempt("inspects host services, credentials, network routes, or system logs")
+        }
+        "setup wizard"
+        | "setup check"
+        | "setup repair"
+        | "host install"
+        | "host update auto enable"
+        | "host update auto disable"
+        | "host update auto status"
+        | "host service unit"
+        | "host service install"
+        | "host service status"
+        | "host service restart"
+        | "host service rollback"
+        | "host service uninstall"
+        | "host incus setup"
+        | "host incus sync"
+        | "host incus backup validate"
+        | "host incus backup apply"
+        | "host incus ssh bootstrap"
+        | "host incus ssh verify" => {
+            LeafPlan::Exempt("inspects or mutates the host installation, service manager, or Incus")
+        }
+        "config draft discard"
+        | "config proxy set"
+        | "state access migrate"
+        | "state export"
+        | "state verify"
+        | "state restore" => LeafPlan::Exempt(
+            "requires a configuration/state fixture or intentionally mutates durable state",
+        ),
+        "serve mcp" | "mcp" | "proxy" => {
+            LeafPlan::Exempt("starts a long-running transport and requires lifecycle orchestration")
+        }
+        "completions refresh" | "completions clear" => {
+            LeafPlan::Exempt("intentionally mutates the persistent shell completion cache")
+        }
+        _ => return None,
+    })
+}
+
+#[test]
+fn every_leaf_has_an_executable_scenario_or_a_reviewed_environment_exemption() {
+    let leaves = command_inventory()
+        .into_iter()
+        .filter(|entry| entry.leaf)
+        .collect::<Vec<_>>();
+    assert!(!leaves.is_empty());
+    let inventory = leaves
+        .iter()
+        .map(|entry| entry.canonical.join(" "))
+        .collect::<std::collections::BTreeSet<_>>();
+    let leaf_count = inventory.len();
+    let plans = inventory
+        .iter()
+        .map(|path| {
+            let plan = leaf_plan(path);
+            assert!(
+                plan.is_some(),
+                "public CLI leaf has no explicit reviewed plan: {path}"
+            );
+            (path.clone(), plan.unwrap())
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        plans
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>(),
+        inventory,
+        "the explicit leaf plan must exactly equal the Clap-derived leaf inventory"
+    );
+
+    let mut executed = 0;
+    let mut exempt = 0;
+    for (path, plan) in plans {
+        let LeafPlan::Execute {
+            args,
+            output: expected_output,
+        } = plan
+        else {
+            let LeafPlan::Exempt(reason) = plan else {
+                unreachable!()
+            };
+            assert!(!reason.trim().is_empty(), "empty exemption for {path}");
+            exempt += 1;
+            continue;
+        };
+        let home = tempfile::tempdir().unwrap();
+        let before = snapshot_tree(home.path());
+        let output = runtime_command(home.path(), args).output().unwrap();
+        assert!(
+            output.status.success(),
+            "offline scenario for {} failed: {}",
+            path,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.stderr.is_empty(),
+            "offline scenario wrote stderr: {path}"
+        );
+        if expected_output == ScenarioOutput::Json {
+            let parsed = serde_json::from_slice::<serde_json::Value>(&output.stdout);
+            assert!(
+                parsed.is_ok(),
+                "invalid JSON from {path}: {:?}",
+                parsed.err()
+            );
+        } else {
+            assert!(!output.stdout.is_empty(), "empty output from {path}");
+        }
+        assert_plain_output(&output, &format!("offline leaf scenario for {path}"));
+        assert_eq!(
+            snapshot_tree(home.path()),
+            before,
+            "offline scenario for {path} wrote state"
+        );
+        executed += 1;
+    }
+    assert_eq!(
+        executed, 5,
+        "review executable plans when this count changes"
+    );
+    assert_eq!(
+        exempt,
+        leaf_count - executed,
+        "every non-executed leaf needs a reviewed exemption"
+    );
 }
 
 #[test]

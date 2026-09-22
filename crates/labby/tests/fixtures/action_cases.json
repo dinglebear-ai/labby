@@ -1,62 +1,5 @@
 [
-  {
-    "service": "depot_publish",
-    "action": "depot.publish_skill_archive",
-    "canonical_action": null,
-    "applicable_surfaces": ["mcp"],
-    "applicable_features": ["all", "api-docs", "base", "default", "fs", "gateway-host", "lab-admin", "no-default", "skills"],
-    "scenario_kind": "excluded_with_reason",
-    "scenario_id": "protected_route_denial::depot_publish::publish_skill_archive",
-    "minimum_evidence": "live_state_transition",
-    "setup_ref": "catalog-only",
-    "fixture_params": {
-      "fixture": "catalog_metadata",
-      "parameters": {
-        "filename": "$fixture.filename",
-        "archive_base64": "$fixture.archive_base64"
-      }
-    },
-    "required": false,
-    "exclusion_reason": "the_live_mcp_shard_proves_root_route_denial; successful_publishing_requires_a_bound_access_grant_on_the_protected_team_depot_route_and_is_covered_by_the_exact_three_stage_delegation_pipeline_contract_tests",
-    "persistence_class": "ephemeral",
-    "scenario_owner": "stateful_workflow_runner"
-  },
-  {
-    "service": "depot_publish",
-    "action": "help",
-    "canonical_action": null,
-    "applicable_surfaces": ["mcp"],
-    "applicable_features": ["all", "api-docs", "base", "default", "fs", "gateway-host", "lab-admin", "no-default", "skills"],
-    "scenario_kind": "contract_probe",
-    "scenario_id": "contract_probe::depot_publish::help",
-    "minimum_evidence": "metadata_only",
-    "setup_ref": "catalog-only",
-    "fixture_params": {"fixture": "catalog_metadata", "parameters": {}},
-    "required": true,
-    "exclusion_reason": null,
-    "persistence_class": "reconstructed",
-    "scenario_owner": "catalog_governance"
-  },
-  {
-    "service": "depot_publish",
-    "action": "schema",
-    "canonical_action": null,
-    "applicable_surfaces": ["mcp"],
-    "applicable_features": ["all", "api-docs", "base", "default", "fs", "gateway-host", "lab-admin", "no-default", "skills"],
-    "scenario_kind": "contract_probe",
-    "scenario_id": "contract_probe::depot_publish::schema",
-    "minimum_evidence": "metadata_only",
-    "setup_ref": "catalog-only",
-    "fixture_params": {
-      "fixture": "catalog_metadata",
-      "parameters": {"action": "$fixture.action"}
-    },
-    "required": true,
-    "exclusion_reason": null,
-    "persistence_class": "reconstructed",
-    "scenario_owner": "catalog_governance"
-  },
-  {
+{
     "service": "browser",
     "action": "browser.call",
     "canonical_action": null,
@@ -82,7 +25,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "browser",
     "action": "browser.list",
     "canonical_action": null,
@@ -98,7 +41,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "browser",
     "action": "browser.pairing.approve",
     "canonical_action": null,
@@ -114,7 +57,7 @@
     "persistence_class": "durable",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "browser",
     "action": "browser.pairing.list",
     "canonical_action": null,
@@ -130,7 +73,7 @@
     "persistence_class": "ephemeral",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "browser",
     "action": "browser.revoke",
     "canonical_action": null,
@@ -146,7 +89,7 @@
     "persistence_class": "durable",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "browser",
     "action": "browser.session.enable",
     "canonical_action": null,
@@ -162,7 +105,7 @@
     "persistence_class": "durable",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "browser",
     "action": "browser.session.get",
     "canonical_action": null,
@@ -178,7 +121,7 @@
     "persistence_class": "ephemeral",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "browser",
     "action": "browser.sessions",
     "canonical_action": null,
@@ -194,7 +137,7 @@
     "persistence_class": "ephemeral",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "browser",
     "action": "browser.status",
     "canonical_action": null,
@@ -210,7 +153,7 @@
     "persistence_class": "ephemeral",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "browser",
     "action": "help",
     "canonical_action": null,
@@ -226,7 +169,7 @@
     "persistence_class": "none",
     "scenario_owner": "catalog_governance"
   },
-  {
+{
     "service": "browser",
     "action": "schema",
     "canonical_action": null,
@@ -245,7 +188,7 @@
     "persistence_class": "none",
     "scenario_owner": "catalog_governance"
   },
-  {
+{
     "service": "doctor",
     "action": "access.check",
     "canonical_action": null,
@@ -277,7 +220,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "doctor",
     "action": "audit.full",
     "canonical_action": null,
@@ -310,7 +253,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "doctor",
     "action": "auth.check",
     "canonical_action": null,
@@ -343,7 +286,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "doctor",
     "action": "help",
     "canonical_action": null,
@@ -375,7 +318,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "catalog_governance"
   },
-  {
+{
     "service": "doctor",
     "action": "oauth.relay.check",
     "canonical_action": null,
@@ -408,7 +351,7 @@
     "persistence_class": "ephemeral",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "doctor",
     "action": "proxy.check",
     "canonical_action": null,
@@ -445,7 +388,7 @@
     "persistence_class": "ephemeral",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "doctor",
     "action": "proxy.preflight",
     "canonical_action": null,
@@ -478,7 +421,7 @@
     "persistence_class": "ephemeral",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "doctor",
     "action": "schema",
     "canonical_action": null,
@@ -512,7 +455,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "catalog_governance"
   },
-  {
+{
     "service": "doctor",
     "action": "system.checks",
     "canonical_action": null,
@@ -545,7 +488,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "fs",
     "action": "fs.list",
     "canonical_action": null,
@@ -570,7 +513,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "fs",
     "action": "fs.preview",
     "canonical_action": null,
@@ -597,7 +540,7 @@
     "persistence_class": "none",
     "scenario_owner": "http_route_runner"
   },
-  {
+{
     "service": "fs",
     "action": "help",
     "canonical_action": null,
@@ -622,7 +565,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "catalog_governance"
   },
-  {
+{
     "service": "fs",
     "action": "schema",
     "canonical_action": null,
@@ -649,7 +592,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "catalog_governance"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.add",
     "canonical_action": null,
@@ -679,7 +622,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.client_config.get",
     "canonical_action": null,
@@ -707,7 +650,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.clients.list",
     "canonical_action": null,
@@ -734,7 +677,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.code_mode.get",
     "canonical_action": null,
@@ -762,7 +705,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.code_mode.set",
     "canonical_action": null,
@@ -790,7 +733,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.discover",
     "canonical_action": null,
@@ -818,7 +761,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.discovered_prompts",
     "canonical_action": null,
@@ -847,7 +790,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.discovered_resources",
     "canonical_action": null,
@@ -876,7 +819,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.discovered_tools",
     "canonical_action": null,
@@ -905,7 +848,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.enrich.apply",
     "canonical_action": null,
@@ -936,7 +879,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.enrich.preview",
     "canonical_action": null,
@@ -963,7 +906,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.get",
     "canonical_action": null,
@@ -993,7 +936,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.import",
     "canonical_action": null,
@@ -1021,7 +964,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.import_pending.approve",
     "canonical_action": null,
@@ -1050,7 +993,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.import_pending.list",
     "canonical_action": null,
@@ -1077,7 +1020,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.import_pending.reject",
     "canonical_action": null,
@@ -1106,7 +1049,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.import_tombstones.clear",
     "canonical_action": null,
@@ -1135,7 +1078,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.import_tombstones.list",
     "canonical_action": null,
@@ -1161,7 +1104,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.import_tombstones.restore",
     "canonical_action": null,
@@ -1190,7 +1133,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.list",
     "canonical_action": null,
@@ -1218,7 +1161,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.loadout.add",
     "canonical_action": null,
@@ -1248,7 +1191,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.loadout.get",
     "canonical_action": null,
@@ -1278,7 +1221,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.loadout.list",
     "canonical_action": null,
@@ -1304,7 +1247,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.loadout.list_state",
     "canonical_action": null,
@@ -1332,7 +1275,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.loadout.patch",
     "canonical_action": null,
@@ -1363,7 +1306,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.loadout.remove",
     "canonical_action": null,
@@ -1393,7 +1336,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.loadout.stage_patch",
     "canonical_action": null,
@@ -1424,7 +1367,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.loadout.stage_remove",
     "canonical_action": null,
@@ -1454,7 +1397,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.loadout.stage_update",
     "canonical_action": null,
@@ -1484,7 +1427,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.loadout.update",
     "canonical_action": null,
@@ -1514,7 +1457,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.mcp.cleanup",
     "canonical_action": null,
@@ -1544,7 +1487,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.mcp.disable",
     "canonical_action": null,
@@ -1574,7 +1517,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.mcp.enable",
     "canonical_action": null,
@@ -1604,7 +1547,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.mcp.list",
     "canonical_action": null,
@@ -1632,7 +1575,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.mcp.restart",
     "canonical_action": null,
@@ -1662,7 +1605,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.oauth.authorize",
     "canonical_action": null,
@@ -1690,7 +1633,7 @@
     "persistence_class": "ephemeral",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.oauth.clear",
     "canonical_action": null,
@@ -1719,7 +1662,7 @@
     "persistence_class": "ephemeral",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.oauth.google_revoke",
     "canonical_action": null,
@@ -1749,7 +1692,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.oauth.probe",
     "canonical_action": null,
@@ -1777,7 +1720,7 @@
     "persistence_class": "ephemeral",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.oauth.resource_lease.create",
     "canonical_action": null,
@@ -1808,7 +1751,7 @@
     "persistence_class": "ephemeral",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.oauth.resource_lease.release",
     "canonical_action": null,
@@ -1836,7 +1779,7 @@
     "persistence_class": "ephemeral",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.oauth.resource_lease.renew",
     "canonical_action": null,
@@ -1865,7 +1808,7 @@
     "persistence_class": "ephemeral",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.oauth.start",
     "canonical_action": null,
@@ -1894,7 +1837,7 @@
     "persistence_class": "ephemeral",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.oauth.status",
     "canonical_action": null,
@@ -1923,7 +1866,7 @@
     "persistence_class": "ephemeral",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.oauth.wait",
     "canonical_action": null,
@@ -1952,7 +1895,7 @@
     "persistence_class": "ephemeral",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.protected_route.add",
     "canonical_action": null,
@@ -1982,7 +1925,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.protected_route.get",
     "canonical_action": null,
@@ -2012,7 +1955,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.protected_route.list",
     "canonical_action": null,
@@ -2038,7 +1981,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.protected_route.list_state",
     "canonical_action": null,
@@ -2066,7 +2009,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.protected_route.remove",
     "canonical_action": null,
@@ -2096,7 +2039,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.protected_route.stage_add",
     "canonical_action": null,
@@ -2126,7 +2069,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.protected_route.stage_remove",
     "canonical_action": null,
@@ -2156,7 +2099,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.protected_route.stage_update",
     "canonical_action": null,
@@ -2187,7 +2130,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.protected_route.test",
     "canonical_action": null,
@@ -2217,7 +2160,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.protected_route.update",
     "canonical_action": null,
@@ -2248,7 +2191,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.public_urls.get",
     "canonical_action": null,
@@ -2275,7 +2218,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.reload",
     "canonical_action": null,
@@ -2302,7 +2245,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.remove",
     "canonical_action": null,
@@ -2332,7 +2275,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.schema",
     "canonical_action": null,
@@ -2360,7 +2303,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "catalog_governance"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.server.get",
     "canonical_action": null,
@@ -2389,7 +2332,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.servers",
     "canonical_action": null,
@@ -2415,7 +2358,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.service_actions",
     "canonical_action": null,
@@ -2444,7 +2387,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.service_config.get",
     "canonical_action": null,
@@ -2473,7 +2416,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.service_config.set",
     "canonical_action": null,
@@ -2503,7 +2446,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.skills.list",
     "canonical_action": null,
@@ -2530,7 +2473,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.status",
     "canonical_action": null,
@@ -2557,7 +2500,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.supported_services",
     "canonical_action": null,
@@ -2584,7 +2527,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.test",
     "canonical_action": null,
@@ -2612,7 +2555,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.update",
     "canonical_action": null,
@@ -2643,7 +2586,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.usage.calls",
     "canonical_action": null,
@@ -2671,7 +2614,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.usage.metrics",
     "canonical_action": null,
@@ -2699,7 +2642,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.virtual_server.disable",
     "canonical_action": null,
@@ -2728,7 +2671,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.virtual_server.enable",
     "canonical_action": null,
@@ -2757,7 +2700,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.virtual_server.get_mcp_policy",
     "canonical_action": null,
@@ -2786,7 +2729,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.virtual_server.quarantine.list",
     "canonical_action": null,
@@ -2813,7 +2756,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.virtual_server.quarantine.restore",
     "canonical_action": null,
@@ -2842,7 +2785,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.virtual_server.remove",
     "canonical_action": null,
@@ -2871,7 +2814,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.virtual_server.set_mcp_policy",
     "canonical_action": null,
@@ -2901,7 +2844,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "gateway.virtual_server.set_surface",
     "canonical_action": null,
@@ -2932,7 +2875,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "gateway",
     "action": "help",
     "canonical_action": null,
@@ -2958,7 +2901,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "catalog_governance"
   },
-  {
+{
     "service": "gateway",
     "action": "schema",
     "canonical_action": null,
@@ -2987,7 +2930,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "catalog_governance"
   },
-  {
+{
     "service": "lab_admin",
     "action": "help",
     "canonical_action": null,
@@ -3011,7 +2954,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "catalog_governance"
   },
-  {
+{
     "service": "lab_admin",
     "action": "onboarding.audit",
     "canonical_action": null,
@@ -3037,7 +2980,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "lab_admin",
     "action": "schema",
     "canonical_action": null,
@@ -3063,7 +3006,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "catalog_governance"
   },
-  {
+{
     "service": "server_logs",
     "action": "help",
     "canonical_action": null,
@@ -3095,7 +3038,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "catalog_governance"
   },
-  {
+{
     "service": "server_logs",
     "action": "schema",
     "canonical_action": null,
@@ -3129,7 +3072,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "catalog_governance"
   },
-  {
+{
     "service": "server_logs",
     "action": "server_logs.query",
     "canonical_action": null,
@@ -3162,7 +3105,7 @@
     "persistence_class": "ephemeral",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "setup",
     "action": "bootstrap",
     "canonical_action": null,
@@ -3194,7 +3137,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "setup",
     "action": "check",
     "canonical_action": null,
@@ -3227,7 +3170,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "setup",
     "action": "draft.commit",
     "canonical_action": null,
@@ -3260,7 +3203,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "setup",
     "action": "draft.discard",
     "canonical_action": null,
@@ -3294,7 +3237,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "setup",
     "action": "draft.get",
     "canonical_action": null,
@@ -3327,7 +3270,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "setup",
     "action": "draft.set",
     "canonical_action": null,
@@ -3362,7 +3305,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "setup",
     "action": "finalize",
     "canonical_action": null,
@@ -3395,7 +3338,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "setup",
     "action": "help",
     "canonical_action": null,
@@ -3427,7 +3370,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "catalog_governance"
   },
-  {
+{
     "service": "setup",
     "action": "proxy.configure",
     "canonical_action": null,
@@ -3462,7 +3405,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "setup",
     "action": "repair",
     "canonical_action": null,
@@ -3495,7 +3438,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "setup",
     "action": "schema",
     "canonical_action": null,
@@ -3530,7 +3473,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "catalog_governance"
   },
-  {
+{
     "service": "setup",
     "action": "schema.get",
     "canonical_action": null,
@@ -3563,7 +3506,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "catalog_governance"
   },
-  {
+{
     "service": "setup",
     "action": "settings.advanced_state",
     "canonical_action": null,
@@ -3595,7 +3538,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "setup",
     "action": "settings.config.update",
     "canonical_action": null,
@@ -3630,7 +3573,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "setup",
     "action": "settings.env.update",
     "canonical_action": null,
@@ -3665,7 +3608,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "setup",
     "action": "settings.env_schema",
     "canonical_action": null,
@@ -3698,7 +3641,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "setup",
     "action": "settings.schema",
     "canonical_action": null,
@@ -3731,7 +3674,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "setup",
     "action": "settings.state",
     "canonical_action": null,
@@ -3764,7 +3707,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "setup",
     "action": "settings.update",
     "canonical_action": null,
@@ -3799,7 +3742,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "setup",
     "action": "state",
     "canonical_action": null,
@@ -3833,7 +3776,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "artifacts",
     "action": "help",
     "canonical_action": null,
@@ -3860,7 +3803,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "catalog_governance"
   },
-  {
+{
     "service": "artifacts",
     "action": "schema",
     "canonical_action": null,
@@ -3889,7 +3832,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "catalog_governance"
   },
-  {
+{
     "service": "artifacts",
     "action": "artifacts.search",
     "canonical_action": null,
@@ -3919,7 +3862,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "artifacts",
     "action": "artifacts.list",
     "canonical_action": null,
@@ -3947,7 +3890,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "artifacts",
     "action": "artifacts.get",
     "canonical_action": null,
@@ -3976,7 +3919,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "artifacts",
     "action": "artifacts.read",
     "canonical_action": null,
@@ -4008,7 +3951,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "artifacts",
     "action": "artifacts.history",
     "canonical_action": null,
@@ -4037,7 +3980,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "artifacts",
     "action": "artifacts.validate",
     "canonical_action": null,
@@ -4068,7 +4011,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "artifacts",
     "action": "artifacts.create",
     "canonical_action": null,
@@ -4101,7 +4044,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "artifacts",
     "action": "artifacts.save",
     "canonical_action": null,
@@ -4135,7 +4078,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "artifacts",
     "action": "artifacts.activate",
     "canonical_action": null,
@@ -4168,7 +4111,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "artifacts",
     "action": "artifacts.deactivate",
     "canonical_action": null,
@@ -4199,7 +4142,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "artifacts",
     "action": "artifacts.archive",
     "canonical_action": null,
@@ -4231,7 +4174,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "artifacts",
     "action": "artifacts.rollback",
     "canonical_action": null,
@@ -4263,7 +4206,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "artifacts",
     "action": "artifacts.refresh",
     "canonical_action": null,
@@ -4293,7 +4236,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "artifacts",
     "action": "artifacts.import",
     "canonical_action": null,
@@ -4325,7 +4268,7 @@
     "persistence_class": "none",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "artifacts",
     "action": "artifacts.import_batch",
     "canonical_action": null,
@@ -4356,7 +4299,7 @@
     "persistence_class": "none",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "snippets",
     "action": "help",
     "canonical_action": null,
@@ -4382,7 +4325,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "catalog_governance"
   },
-  {
+{
     "service": "snippets",
     "action": "schema",
     "canonical_action": null,
@@ -4410,7 +4353,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "catalog_governance"
   },
-  {
+{
     "service": "snippets",
     "action": "snippets.create",
     "canonical_action": null,
@@ -4440,7 +4383,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "snippets",
     "action": "snippets.exec",
     "canonical_action": null,
@@ -4469,7 +4412,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "snippets",
     "action": "snippets.get",
     "canonical_action": null,
@@ -4498,7 +4441,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "snippets",
     "action": "snippets.list",
     "canonical_action": null,
@@ -4525,7 +4468,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "snippets",
     "action": "snippets.promote",
     "canonical_action": null,
@@ -4554,7 +4497,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "snippets",
     "action": "snippets.remove",
     "canonical_action": null,
@@ -4583,7 +4526,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "snippets",
     "action": "snippets.test",
     "canonical_action": null,
@@ -4610,7 +4553,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "snippets",
     "action": "snippets.validate",
     "canonical_action": null,
@@ -4637,7 +4580,7 @@
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "artifacts",
     "action": "artifacts.search_remote",
     "canonical_action": null,
@@ -4667,7 +4610,7 @@
     "persistence_class": "none",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "artifacts",
     "action": "artifacts.list_remote",
     "canonical_action": null,
@@ -4695,7 +4638,7 @@
     "persistence_class": "none",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "artifacts",
     "action": "artifacts.get_remote",
     "canonical_action": null,
@@ -4725,7 +4668,7 @@
     "persistence_class": "none",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "artifacts",
     "action": "artifacts.list_candidates",
     "canonical_action": null,
@@ -4753,7 +4696,7 @@
     "persistence_class": "none",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "sources",
     "action": "help",
     "canonical_action": null,
@@ -4780,7 +4723,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "catalog_governance"
   },
-  {
+{
     "service": "sources",
     "action": "schema",
     "canonical_action": null,
@@ -4809,7 +4752,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "catalog_governance"
   },
-  {
+{
     "service": "sources",
     "action": "sources.list",
     "canonical_action": null,
@@ -4837,7 +4780,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "sources",
     "action": "sources.configure",
     "canonical_action": null,
@@ -4867,7 +4810,7 @@
     "persistence_class": "durable",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "sources",
     "action": "sources.delete",
     "canonical_action": null,
@@ -4896,7 +4839,7 @@
     "persistence_class": "durable",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "sources",
     "action": "sources.refresh",
     "canonical_action": null,
@@ -4926,7 +4869,7 @@
     "persistence_class": "durable",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "jobs",
     "action": "help",
     "canonical_action": null,
@@ -4953,7 +4896,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "catalog_governance"
   },
-  {
+{
     "service": "jobs",
     "action": "schema",
     "canonical_action": null,
@@ -4982,7 +4925,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "catalog_governance"
   },
-  {
+{
     "service": "jobs",
     "action": "jobs.start",
     "canonical_action": null,
@@ -5013,7 +4956,7 @@
     "persistence_class": "durable",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "jobs",
     "action": "jobs.list",
     "canonical_action": null,
@@ -5041,7 +4984,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "jobs",
     "action": "jobs.get",
     "canonical_action": null,
@@ -5071,7 +5014,7 @@
     "persistence_class": "durable",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "jobs",
     "action": "jobs.cancel",
     "canonical_action": null,
@@ -5101,7 +5044,7 @@
     "persistence_class": "durable",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "jobs",
     "action": "jobs.retry",
     "canonical_action": null,
@@ -5131,7 +5074,7 @@
     "persistence_class": "durable",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "uploads",
     "action": "help",
     "canonical_action": null,
@@ -5158,7 +5101,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "catalog_governance"
   },
-  {
+{
     "service": "uploads",
     "action": "schema",
     "canonical_action": null,
@@ -5187,7 +5130,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "catalog_governance"
   },
-  {
+{
     "service": "uploads",
     "action": "uploads.create",
     "canonical_action": null,
@@ -5217,7 +5160,7 @@
     "persistence_class": "ephemeral",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "uploads",
     "action": "uploads.get",
     "canonical_action": null,
@@ -5247,7 +5190,7 @@
     "persistence_class": "ephemeral",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "uploads",
     "action": "uploads.delete",
     "canonical_action": null,
@@ -5276,7 +5219,7 @@
     "persistence_class": "ephemeral",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "bundles",
     "action": "help",
     "canonical_action": null,
@@ -5303,7 +5246,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "catalog_governance"
   },
-  {
+{
     "service": "bundles",
     "action": "schema",
     "canonical_action": null,
@@ -5332,7 +5275,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "catalog_governance"
   },
-  {
+{
     "service": "bundles",
     "action": "bundles.list",
     "canonical_action": null,
@@ -5360,7 +5303,7 @@
     "persistence_class": "reconstructed",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "bundles",
     "action": "bundles.get",
     "canonical_action": null,
@@ -5390,7 +5333,7 @@
     "persistence_class": "durable",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "bundles",
     "action": "bundles.create",
     "canonical_action": null,
@@ -5420,7 +5363,7 @@
     "persistence_class": "durable",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "bundles",
     "action": "bundles.add",
     "canonical_action": null,
@@ -5452,7 +5395,7 @@
     "persistence_class": "durable",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "bundles",
     "action": "bundles.remove",
     "canonical_action": null,
@@ -5484,7 +5427,7 @@
     "persistence_class": "durable",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "bundles",
     "action": "bundles.set_visibility",
     "canonical_action": null,
@@ -5515,7 +5458,7 @@
     "persistence_class": "durable",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "bundles",
     "action": "bundles.publish",
     "canonical_action": null,
@@ -5545,7 +5488,7 @@
     "persistence_class": "durable",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "bundles",
     "action": "bundles.delete",
     "canonical_action": null,
@@ -5574,7 +5517,7 @@
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "artifacts",
     "action": "artifacts.intake_candidate",
     "canonical_action": null,
@@ -5604,7 +5547,7 @@
     "persistence_class": "durable",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "artifacts",
     "action": "artifacts.follow",
     "canonical_action": null,
@@ -5635,7 +5578,7 @@
     "persistence_class": "durable",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "artifacts",
     "action": "artifacts.fork",
     "canonical_action": null,
@@ -5667,7 +5610,7 @@
     "persistence_class": "durable",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "artifacts",
     "action": "artifacts.set_publication",
     "canonical_action": null,
@@ -5698,7 +5641,7 @@
     "persistence_class": "durable",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "artifacts",
     "action": "artifacts.set_license",
     "canonical_action": null,
@@ -5729,7 +5672,7 @@
     "persistence_class": "durable",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "artifacts",
     "action": "artifacts.search_skills_sh",
     "canonical_action": null,
@@ -5759,7 +5702,7 @@
     "persistence_class": "none",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "artifacts",
     "action": "artifacts.search_ard",
     "canonical_action": null,
@@ -5790,7 +5733,7 @@
     "persistence_class": "none",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "artifacts",
     "action": "artifacts.search_marketplace",
     "canonical_action": null,
@@ -5820,7 +5763,7 @@
     "persistence_class": "none",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "artifacts",
     "action": "artifacts.list_mcp_registry",
     "canonical_action": null,
@@ -5848,7 +5791,7 @@
     "persistence_class": "none",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "artifacts",
     "action": "artifacts.list_acp_registry",
     "canonical_action": null,
@@ -5876,7 +5819,7 @@
     "persistence_class": "none",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "artifacts",
     "action": "artifacts.authority_status",
     "canonical_action": null,
@@ -5904,7 +5847,7 @@
     "persistence_class": "none",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "artifacts",
     "action": "artifacts.list_connections",
     "canonical_action": null,
@@ -5932,7 +5875,7 @@
     "persistence_class": "none",
     "scenario_owner": "optional_external_runner"
   },
-  {
+{
     "service": "stash", "action": "help", "canonical_action": null,
     "applicable_surfaces": ["mcp", "api"],
     "applicable_features": ["all", "api-docs", "base", "default", "fs", "gateway-host", "lab-admin", "no-default", "skills"],
@@ -5940,7 +5883,7 @@
     "setup_ref": "catalog-only", "fixture_params": {"fixture": "catalog_metadata", "parameters": {}},
     "required": true, "exclusion_reason": null, "persistence_class": "reconstructed", "scenario_owner": "catalog_governance"
   },
-  {
+{
     "service": "stash", "action": "schema", "canonical_action": null,
     "applicable_surfaces": ["mcp", "api"],
     "applicable_features": ["all", "api-docs", "base", "default", "fs", "gateway-host", "lab-admin", "no-default", "skills"],
@@ -5948,7 +5891,7 @@
     "setup_ref": "catalog-only", "fixture_params": {"fixture": "catalog_metadata", "parameters": {"action": "$fixture.action"}},
     "required": true, "exclusion_reason": null, "persistence_class": "reconstructed", "scenario_owner": "catalog_governance"
   },
-  {
+{
     "service": "stash", "action": "stash.list", "canonical_action": null,
     "applicable_surfaces": ["mcp", "api", "web_ui"],
     "applicable_features": ["all", "api-docs", "base", "default", "fs", "gateway-host", "lab-admin", "no-default", "skills"],
@@ -5956,7 +5899,7 @@
     "setup_ref": "disposable-home", "fixture_params": {"fixture": "isolated_stash_readonly", "parameters": {}},
     "required": true, "exclusion_reason": null, "persistence_class": "durable", "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "stash", "action": "stash.search", "canonical_action": null,
     "applicable_surfaces": ["mcp", "api", "web_ui"],
     "applicable_features": ["all", "api-docs", "base", "default", "fs", "gateway-host", "lab-admin", "no-default", "skills"],
@@ -5964,7 +5907,7 @@
     "setup_ref": "disposable-home", "fixture_params": {"fixture": "isolated_stash_readonly", "parameters": {"query": "$fixture.query"}},
     "required": true, "exclusion_reason": null, "persistence_class": "durable", "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "stash", "action": "stash.stats", "canonical_action": null,
     "applicable_surfaces": ["mcp", "api", "web_ui"],
     "applicable_features": ["all", "api-docs", "base", "default", "fs", "gateway-host", "lab-admin", "no-default", "skills"],
@@ -5972,7 +5915,7 @@
     "setup_ref": "disposable-home", "fixture_params": {"fixture": "isolated_stash_readonly", "parameters": {}},
     "required": true, "exclusion_reason": null, "persistence_class": "durable", "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "stash", "action": "stash.metadata", "canonical_action": null,
     "applicable_surfaces": ["mcp", "api"],
     "applicable_features": ["all", "api-docs", "base", "default", "fs", "gateway-host", "lab-admin", "no-default", "skills"],
@@ -5980,7 +5923,7 @@
     "setup_ref": "disposable-home", "fixture_params": {"fixture": "isolated_stash_readonly", "parameters": {"file_id": "$fixture.file_id"}},
     "required": true, "exclusion_reason": null, "persistence_class": "durable", "scenario_owner": "surface_action_runner"
   },
-  {
+{
     "service": "stash", "action": "stash.rename", "canonical_action": null,
     "applicable_surfaces": ["mcp", "api", "web_ui"],
     "applicable_features": ["all", "api-docs", "base", "default", "fs", "gateway-host", "lab-admin", "no-default", "skills"],
@@ -5988,7 +5931,7 @@
     "setup_ref": "disposable-home", "fixture_params": {"fixture": "isolated_stash_workflow", "parameters": {"file_id": "$fixture.file_id", "display_name": "$fixture.display_name"}},
     "required": true, "exclusion_reason": null, "persistence_class": "durable", "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "stash", "action": "stash.delete", "canonical_action": null,
     "applicable_surfaces": ["mcp", "api", "web_ui"],
     "applicable_features": ["all", "api-docs", "base", "default", "fs", "gateway-host", "lab-admin", "no-default", "skills"],
@@ -5996,7 +5939,7 @@
     "setup_ref": "disposable-home", "fixture_params": {"fixture": "isolated_stash_destructive", "parameters": {"file_id": "$fixture.file_id"}},
     "required": true, "exclusion_reason": null, "persistence_class": "durable", "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "stash", "action": "stash.grants.create", "canonical_action": null,
     "applicable_surfaces": ["mcp", "api", "web_ui"],
     "applicable_features": ["all", "api-docs", "base", "default", "fs", "gateway-host", "lab-admin", "no-default", "skills"],
@@ -6004,7 +5947,7 @@
     "setup_ref": "disposable-home", "fixture_params": {"fixture": "isolated_stash_workflow", "parameters": {"file_id": "$fixture.file_id", "grantee_principal_id": "$fixture.grantee_principal_id"}},
     "required": true, "exclusion_reason": null, "persistence_class": "durable", "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "stash", "action": "stash.grants.list", "canonical_action": null,
     "applicable_surfaces": ["mcp", "api", "web_ui"],
     "applicable_features": ["all", "api-docs", "base", "default", "fs", "gateway-host", "lab-admin", "no-default", "skills"],
@@ -6012,7 +5955,7 @@
     "setup_ref": "disposable-home", "fixture_params": {"fixture": "isolated_stash_workflow", "parameters": {"file_id": "$fixture.file_id"}},
     "required": true, "exclusion_reason": null, "persistence_class": "durable", "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "stash", "action": "stash.grants.revoke", "canonical_action": null,
     "applicable_surfaces": ["mcp", "api", "web_ui"],
     "applicable_features": ["all", "api-docs", "base", "default", "fs", "gateway-host", "lab-admin", "no-default", "skills"],
@@ -6020,7 +5963,7 @@
     "setup_ref": "disposable-home", "fixture_params": {"fixture": "isolated_stash_workflow", "parameters": {"file_id": "$fixture.file_id", "grant_id": "$fixture.grant_id"}},
     "required": true, "exclusion_reason": null, "persistence_class": "durable", "scenario_owner": "stateful_workflow_runner"
   },
-  {
+{
     "service": "doctor",
     "action": "capabilities.status",
     "canonical_action": null,
@@ -6051,5 +5994,254 @@
     "exclusion_reason": null,
     "persistence_class": "reconstructed",
     "scenario_owner": "surface_action_runner"
+  },
+{
+  "service": "artifact_publish",
+  "action": "artifacts.publish_skill_archive",
+  "canonical_action": null,
+  "applicable_surfaces": [
+    "mcp"
+  ],
+  "applicable_features": [
+    "all",
+    "api-docs",
+    "base",
+    "default",
+    "fs",
+    "gateway-host",
+    "lab-admin",
+    "no-default",
+    "skills"
+  ],
+  "scenario_kind": "excluded_with_reason",
+  "scenario_id": "protected_route_denial::artifact_publish::publish_skill_archive",
+  "minimum_evidence": "live_state_transition",
+  "setup_ref": "catalog-only",
+  "fixture_params": {
+    "fixture": "catalog_metadata",
+    "parameters": {
+      "filename": "$fixture.filename",
+      "archive_base64": "$fixture.archive_base64"
+    }
+  },
+  "required": false,
+  "exclusion_reason": "the_live_mcp_shard_proves_root_route_denial; successful_publishing_requires_a_bound_access_grant_on_the_protected_team_depot_route_and_is_covered_by_the_exact_three_stage_delegation_pipeline_contract_tests",
+  "persistence_class": "ephemeral",
+  "scenario_owner": "stateful_workflow_runner"
+},
+{
+  "service": "artifact_publish",
+  "action": "help",
+  "canonical_action": null,
+  "applicable_surfaces": [
+    "mcp"
+  ],
+  "applicable_features": [
+    "all",
+    "api-docs",
+    "base",
+    "default",
+    "fs",
+    "gateway-host",
+    "lab-admin",
+    "no-default",
+    "skills"
+  ],
+  "scenario_kind": "contract_probe",
+  "scenario_id": "contract_probe::artifact_publish::help",
+  "minimum_evidence": "metadata_only",
+  "setup_ref": "catalog-only",
+  "fixture_params": {
+    "fixture": "catalog_metadata",
+    "parameters": {}
+  },
+  "required": true,
+  "exclusion_reason": null,
+  "persistence_class": "reconstructed",
+  "scenario_owner": "catalog_governance"
+},
+{
+  "service": "artifact_publish",
+  "action": "schema",
+  "canonical_action": null,
+  "applicable_surfaces": [
+    "mcp"
+  ],
+  "applicable_features": [
+    "all",
+    "api-docs",
+    "base",
+    "default",
+    "fs",
+    "gateway-host",
+    "lab-admin",
+    "no-default",
+    "skills"
+  ],
+  "scenario_kind": "contract_probe",
+  "scenario_id": "contract_probe::artifact_publish::schema",
+  "minimum_evidence": "metadata_only",
+  "setup_ref": "catalog-only",
+  "fixture_params": {
+    "fixture": "catalog_metadata",
+    "parameters": {
+      "action": "$fixture.action"
+    }
+  },
+  "required": true,
+  "exclusion_reason": null,
+  "persistence_class": "reconstructed",
+  "scenario_owner": "catalog_governance"
+},
+{
+  "service": "artifacts",
+  "action": "artifacts.delete_remote",
+  "canonical_action": null,
+  "applicable_surfaces": [
+    "mcp",
+    "api"
+  ],
+  "applicable_features": [
+    "all",
+    "default",
+    "gateway-host",
+    "skills"
+  ],
+  "scenario_kind": "destructive_isolated",
+  "scenario_id": "external_optional::artifacts::delete_remote",
+  "minimum_evidence": "live_state_transition",
+  "setup_ref": "disposable-home",
+  "fixture_params": {
+    "fixture": "isolated_artifacts_destructive",
+    "parameters": {
+      "namespace": "$fixture.namespace",
+      "name": "$fixture.name",
+      "expected_version": "$fixture.remote_expected_version"
+    }
+  },
+  "required": true,
+  "exclusion_reason": null,
+  "persistence_class": "durable",
+  "scenario_owner": "stateful_workflow_runner"
+},
+{
+  "service": "artifacts",
+  "canonical_action": null,
+  "applicable_surfaces": [
+    "mcp",
+    "api"
+  ],
+  "applicable_features": [
+    "all",
+    "default",
+    "gateway-host",
+    "skills"
+  ],
+  "scenario_kind": "external_optional",
+  "minimum_evidence": "live_error_path",
+  "setup_ref": "disposable-home+synthetic-external",
+  "required": false,
+  "exclusion_reason": null,
+  "persistence_class": "none",
+  "scenario_owner": "optional_external_runner",
+  "action": "artifacts.get_remote_skill",
+  "scenario_id": "external_optional::artifacts::get_remote_skill",
+  "fixture_params": {
+    "fixture": "synthetic_external",
+    "parameters": {
+      "uri": "$fixture.uri"
+    }
   }
+},
+{
+  "service": "artifacts",
+  "canonical_action": null,
+  "applicable_surfaces": [
+    "mcp",
+    "api"
+  ],
+  "applicable_features": [
+    "all",
+    "default",
+    "gateway-host",
+    "skills"
+  ],
+  "scenario_kind": "external_optional",
+  "minimum_evidence": "live_error_path",
+  "setup_ref": "disposable-home+synthetic-external",
+  "required": false,
+  "exclusion_reason": null,
+  "persistence_class": "none",
+  "scenario_owner": "optional_external_runner",
+  "action": "artifacts.list_remote_skills",
+  "scenario_id": "external_optional::artifacts::list_remote_skills",
+  "fixture_params": {
+    "fixture": "synthetic_external",
+    "parameters": {}
+  }
+},
+{
+  "service": "artifacts",
+  "canonical_action": null,
+  "applicable_surfaces": [
+    "mcp",
+    "api"
+  ],
+  "applicable_features": [
+    "all",
+    "default",
+    "gateway-host",
+    "skills"
+  ],
+  "scenario_kind": "external_optional",
+  "minimum_evidence": "live_error_path",
+  "setup_ref": "disposable-home+synthetic-external",
+  "required": false,
+  "exclusion_reason": null,
+  "persistence_class": "none",
+  "scenario_owner": "optional_external_runner",
+  "action": "artifacts.load_remote_skill",
+  "scenario_id": "external_optional::artifacts::load_remote_skill",
+  "fixture_params": {
+    "fixture": "synthetic_external",
+    "parameters": {
+      "uri": "$fixture.uri",
+      "offset": "$fixture.offset",
+      "max_bytes": "$fixture.max_bytes"
+    }
+  }
+},
+{
+  "service": "artifacts",
+  "canonical_action": null,
+  "applicable_surfaces": [
+    "mcp",
+    "api"
+  ],
+  "applicable_features": [
+    "all",
+    "default",
+    "gateway-host",
+    "skills"
+  ],
+  "scenario_kind": "external_optional",
+  "minimum_evidence": "live_error_path",
+  "setup_ref": "disposable-home+synthetic-external",
+  "required": false,
+  "exclusion_reason": null,
+  "persistence_class": "none",
+  "scenario_owner": "optional_external_runner",
+  "action": "artifacts.read_remote_skill",
+  "scenario_id": "external_optional::artifacts::read_remote_skill",
+  "fixture_params": {
+    "fixture": "synthetic_external",
+    "parameters": {
+      "uri": "$fixture.uri",
+      "offset": "$fixture.offset",
+      "max_bytes": "$fixture.max_bytes",
+      "cursor": "$fixture.cursor",
+      "limit": "$fixture.limit"
+    }
+  }
+}
 ]

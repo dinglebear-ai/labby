@@ -171,7 +171,7 @@ pub(crate) fn fixtures() -> BTreeMap<String, ServiceFixture> {
         include_str!("../fixtures/e2e_actions/agents.json"),
         include_str!("../fixtures/e2e_actions/doctor.json"),
         include_str!("../fixtures/e2e_actions/dev_containers.json"),
-        include_str!("../fixtures/e2e_actions/depot_publish.json"),
+        include_str!("../fixtures/e2e_actions/artifact_publish.json"),
         include_str!("../fixtures/e2e_actions/browser.json"),
         include_str!("../fixtures/e2e_actions/fs.json"),
         include_str!("../fixtures/e2e_actions/gateway.json"),
@@ -559,7 +559,7 @@ fn dedicated_contract_for(key: &str, surface: Surface) -> Option<(&'static str, 
             "daemon_unavailable",
         ));
     }
-    if key.starts_with("depot_publish:") && surface == Surface::Mcp {
+    if key.starts_with("artifact_publish:") && surface == Surface::Mcp {
         return Some((
             "requires_protected_team_route_bound_grant",
             "route_scope_denied",
@@ -615,6 +615,7 @@ fn dedicated_contract_for(key: &str, surface: Surface) -> Option<(&'static str, 
                 | "artifacts:artifacts.archive"
                 | "artifacts:artifacts.rollback"
                 | "artifacts:artifacts.refresh"
+                | "artifacts:artifacts.delete_remote"
         )
     {
         return Some(("requires_project_bound_artifact_authority", "forbidden"));
@@ -662,6 +663,7 @@ fn dedicated_contract_for(key: &str, surface: Surface) -> Option<(&'static str, 
                 | "artifacts:artifacts.search_skills_sh"
                 | "artifacts:artifacts.set_license"
                 | "artifacts:artifacts.set_publication"
+                | "artifacts:artifacts.delete_remote"
         )
     {
         // Artifact authority failures now collapse to the non-enumerating

@@ -784,6 +784,7 @@ fn operation_authority(operation: Operation) -> (&'static str, crate::access::Pe
     match operation {
         Operation::ArtifactsList
         | Operation::ArtifactsSearch
+        | Operation::SkillsList
         | Operation::SearchSkillsSh
         | Operation::SearchArd
         | Operation::SearchMarketplace
@@ -796,7 +797,11 @@ fn operation_authority(operation: Operation) -> (&'static str, crate::access::Pe
         | Operation::JobsList
         | Operation::JobsGet
         | Operation::UploadsGet => ("scope.read", Permission::ProjectManage),
-        Operation::ArtifactsGet | Operation::BundlesGet => ("scope.use", Permission::AssetUse),
+        Operation::ArtifactsGet
+        | Operation::SkillsGet
+        | Operation::SkillsLoad
+        | Operation::SkillsRead
+        | Operation::BundlesGet => ("scope.use", Permission::AssetUse),
         Operation::CandidatesIntake
         | Operation::ArtifactsFork
         | Operation::JobsStart
@@ -816,6 +821,7 @@ fn operation_authority(operation: Operation) -> (&'static str, crate::access::Pe
         Operation::SourcesDelete | Operation::UploadsDelete | Operation::BundlesDelete => {
             ("scope.delete", Permission::ProjectManage)
         }
+        Operation::ArtifactsDeleteRemote => ("scope.delete", Permission::ProjectManage),
     }
 }
 
@@ -1485,6 +1491,7 @@ pinned_addresses = ["10.1.0.8"]
     #[test]
     fn deletes_mint_scope_delete_and_scopes_follow_the_capability_class() {
         for operation in [
+            Operation::ArtifactsDeleteRemote,
             Operation::SourcesDelete,
             Operation::UploadsDelete,
             Operation::BundlesDelete,
@@ -1563,6 +1570,11 @@ pinned_addresses = ["10.1.0.8"]
         assert!(
             controls
                 .require_managed_mutations_ready(Operation::SourcesDelete)
+                .is_err()
+        );
+        assert!(
+            controls
+                .require_managed_mutations_ready(Operation::ArtifactsDeleteRemote)
                 .is_err()
         );
         let standalone = ArtifactControlPlane::default();

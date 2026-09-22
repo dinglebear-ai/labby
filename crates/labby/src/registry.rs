@@ -556,12 +556,11 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
 
     reg.register(RegisteredService::bootstrap_operator(
         crate::dispatch::depot_publish::SERVICE,
-        "Publish skill archives to a protected Team Depot",
+        "Publish skill archives through a protected Team Artifact authority",
         "artifacts",
         crate::dispatch::depot_publish::ACTIONS,
         dispatch_fn!(crate::dispatch::depot_publish::dispatch),
     ));
-
     reg.register(RegisteredService::bootstrap_operator(
         "browser",
         "Bridge browser-native WebMCP tools into Labby",
