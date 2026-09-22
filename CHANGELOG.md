@@ -103,6 +103,29 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [2.0.0](https://github.com/dinglebear-ai/labby/compare/v1.21.0...v2.0.0) (2026-09-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** ship the resource-first command redesign ([#717](https://github.com/dinglebear-ai/labby/issues/717))
+
+### Added
+
+* **cli:** ship the resource-first command redesign ([#717](https://github.com/dinglebear-ai/labby/issues/717)) ([4214810](https://github.com/dinglebear-ai/labby/commit/4214810587159051893107527f36457dcaa6d015))
+* complete CLI and Depot control plane integration ([#735](https://github.com/dinglebear-ai/labby/issues/735)) ([7954d9a](https://github.com/dinglebear-ai/labby/commit/7954d9ad221c27defa8fa987143630f87d0e6aa6))
+* **web:** render proxied MCP Apps in Phoenix ([ba0b575](https://github.com/dinglebear-ai/labby/commit/ba0b575e7e28baeecddd67abf53b2f11ac777514))
+
+
+### Fixed
+
+* **auth:** allow configured OAuth endpoint origins ([fb833d8](https://github.com/dinglebear-ai/labby/commit/fb833d8d4234acc760b8a9dd62309f4c523a5af0))
+* **codemode:** bound refresh and prefer loopback daemon ([#702](https://github.com/dinglebear-ai/labby/issues/702)) ([2f2ffc2](https://github.com/dinglebear-ai/labby/commit/2f2ffc267a8d53b5735c04339535c907e0f1cd6a))
+* **gateway:** fence OAuth catalog refresh publication ([d06b89b](https://github.com/dinglebear-ai/labby/commit/d06b89b2b6ed09903406bc3086b3fbbcfa3044a5))
+* **gateway:** refresh subject-scoped OAuth tool catalogs ([#737](https://github.com/dinglebear-ai/labby/issues/737)) ([c397eca](https://github.com/dinglebear-ai/labby/commit/c397eca128ef917afc31883f0ea2dad926c674af))
+* persist MCP app visibility ([#730](https://github.com/dinglebear-ai/labby/issues/730)) ([4464e03](https://github.com/dinglebear-ai/labby/commit/4464e03b0df4db5df89260bcc2d596e661d1d71d))
+* surface degraded capabilities and simplify setup ([#691](https://github.com/dinglebear-ai/labby/issues/691)) ([cc45223](https://github.com/dinglebear-ai/labby/commit/cc4522398c96ad265f6b81610bccfe72bed18e00))
+
 ## [1.21.0](https://github.com/dinglebear-ai/labby/compare/v1.20.1...v1.21.0) (2026-09-20)
 
 
