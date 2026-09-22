@@ -21,7 +21,7 @@ use serde_json::Value;
 
 #[cfg(feature = "gateway")]
 use crate::mcp::call_tool_codemode::{
-    CodeModeUpstreamDescription, code_mode_description_with_suffix,
+    CodeModeDescriptionVariant, CodeModeUpstreamDescription, code_mode_tool_description,
 };
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog::{
@@ -469,7 +469,11 @@ impl PermanentToolRegistry {
         with_labby_security(
             Tool::new(
                 CODE_MODE_TOOL_NAME,
-                code_mode_description_with_suffix(upstreams, &code_mode_app_text_note()),
+                code_mode_tool_description(
+                    CodeModeDescriptionVariant::Full,
+                    upstreams,
+                    &code_mode_app_text_note(),
+                ),
                 code_mode_execute_schema(),
             )
             .with_annotations(code_mode_full_annotations())
@@ -483,16 +487,15 @@ impl PermanentToolRegistry {
         &self,
         upstreams: &[CodeModeUpstreamDescription],
     ) -> Tool {
-        with_labby_security(Tool::new(
-            CODE_MODE_READ_TOOL_NAME,
-            code_mode_description_with_suffix(
-                upstreams,
-                "Read-only Code Mode execution. Only upstream tools explicitly annotated readOnly=true are discoverable and callable; artifact writes are disabled. Use codemode for write-capable execution.",
-            ),
-            code_mode_execute_schema(),
+        with_labby_security(
+            Tool::new(
+                CODE_MODE_READ_TOOL_NAME,
+                code_mode_tool_description(CodeModeDescriptionVariant::Read, upstreams, ""),
+                code_mode_execute_schema(),
+            )
+            .with_annotations(code_mode_read_annotations())
+            .with_raw_output_schema(code_mode_trace_output_schema()),
         )
-        .with_annotations(code_mode_read_annotations())
-        .with_raw_output_schema(code_mode_trace_output_schema()))
     }
 }
 

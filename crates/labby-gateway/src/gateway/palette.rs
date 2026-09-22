@@ -957,17 +957,23 @@ fn parse_mcp_launcher_id(id: &str) -> Result<(&str, &str), ToolError> {
 }
 
 fn map_unknown_tool_to_not_found(error: ToolError) -> ToolError {
+    fn is_lookup_miss(kind: &str) -> bool {
+        matches!(
+            kind,
+            "unknown_tool" | "unknown_upstream" | "invalid_code_mode_id"
+        )
+    }
     match error {
-        ToolError::Sdk { sdk_kind, message }
-            if sdk_kind == "unknown_tool"
-                || sdk_kind == "unknown_upstream"
-                || sdk_kind == "invalid_code_mode_id" =>
-        {
-            ToolError::Sdk {
-                sdk_kind: "not_found".to_string(),
-                message,
-            }
-        }
+        ToolError::Sdk { sdk_kind, message } if is_lookup_miss(&sdk_kind) => ToolError::Sdk {
+            sdk_kind: "not_found".to_string(),
+            message,
+        },
+        // Checked execution errors arrive as lossless contracts; the palette's
+        // public contract still reports every lookup miss as `not_found`.
+        ToolError::Contract { kind, payload } if is_lookup_miss(&kind) => ToolError::Sdk {
+            sdk_kind: "not_found".to_string(),
+            message: payload.message,
+        },
         other => other,
     }
 }

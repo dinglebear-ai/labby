@@ -47,7 +47,7 @@ pub use execution_loadout::{
     ResolutionStatus,
 };
 pub use manager::{
-    LoadoutMcpCatalogPublicationError, LoadoutServiceCatalogPublicationError,
+    CodeModeExampleTool, LoadoutMcpCatalogPublicationError, LoadoutServiceCatalogPublicationError,
     ProjectRoutePublicationError, PublishedLoadoutMcpCatalogSnapshot, PublishedLoadoutService,
     PublishedLoadoutServiceCatalogSnapshot, PublishedProjectRouteSnapshot,
 };
