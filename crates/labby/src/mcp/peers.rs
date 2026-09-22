@@ -410,7 +410,9 @@ impl PeerNotifier {
         self,
         runtime: crate::dispatch::gateway::manager::GatewayRuntimeHandle,
     ) {
-        use crate::dispatch::upstream::pool::UpstreamNotificationEvent;
+        use crate::dispatch::upstream::pool::{
+            ListChangedKinds, ListChangedRefresher, UpstreamNotificationEvent,
+        };
 
         let mut pool_changes = runtime.subscribe_pool_changes();
         loop {
@@ -421,6 +423,18 @@ impl PeerNotifier {
                 continue;
             };
             let mut notifications = pool.subscribe_notifications();
+            // Per-upstream refresh workers scoped to this pool. The consumer
+            // never awaits an upstream RPC itself, so one slow or chatty
+            // upstream cannot delay another upstream's events or lag the bus.
+            // Dropping the refresher on a pool swap or consumer shutdown
+            // aborts every in-flight re-list.
+            let forwarder = self.clone();
+            let refresher = ListChangedRefresher::new(
+                Arc::clone(&pool),
+                move |upstream: &str, kinds: ListChangedKinds| {
+                    forwarder.forward_list_changed(upstream, kinds);
+                },
+            );
             loop {
                 tokio::select! {
                     changed = pool_changes.changed() => {
@@ -431,43 +445,22 @@ impl PeerNotifier {
                     }
                     event = notifications.recv() => {
                         match event {
+                            // Both the shared subscription stream and request-scoped relay
+                            // clients publish through this event bus. A list_changed only
+                            // records its kind here; the upstream's worker re-lists the
+                            // exact named catalog (tools, or the cache-only resources
+                            // snapshot) before that upstream's downstream notification is
+                            // forwarded, so peers never recompute a visible contract
+                            // against a stale cache. Prompts need no refresh and take the
+                            // same path so one upstream's notifications stay ordered.
                             Ok(UpstreamNotificationEvent::ToolListChanged { upstream }) => {
-                                // Re-list the exact named upstream before peers recompute their
-                                // visible contracts. Both the shared subscription stream and
-                                // request-scoped relay clients publish through this event bus.
-                                pool.refresh_tools_after_list_changed(&upstream).await;
-                                self.notify_catalog_changes(
-                                    &GatewayCatalogDiff {
-                                        tools_changed: true,
-                                        resources_changed: false,
-                                        prompts_changed: false,
-                                    },
-                                    labby_runtime::catalog_notify::SOURCE_UPSTREAM_SUBSCRIPTION,
-                                ).await;
+                                refresher.schedule(&upstream, ListChangedKinds::TOOLS);
                             }
                             Ok(UpstreamNotificationEvent::PromptListChanged { upstream }) => {
-                                self.notify_upstream_catalog_change(
-                                    false, false, true, upstream,
-                                );
+                                refresher.schedule(&upstream, ListChangedKinds::PROMPTS);
                             }
                             Ok(UpstreamNotificationEvent::ResourceListChanged { upstream }) => {
-                                // resources/list is cache-only for regular upstreams. Refresh
-                                // the exact sender first so peers never observe a list-changed
-                                // notification while the cached catalog is still stale. The
-                                // notification is forwarded either way: a failed refresh
-                                // removes the cached source, so what peers see did change.
-                                if !pool.refresh_resources_after_list_changed(&upstream).await {
-                                    tracing::warn!(
-                                        surface = "mcp",
-                                        service = "peers",
-                                        action = "catalog.resources.list_changed",
-                                        upstream = %upstream,
-                                        "resources/list_changed refresh did not publish a snapshot; forwarding list_changed with the upstream's rows withheld until the next successful listing"
-                                    );
-                                }
-                                self.notify_upstream_catalog_change(
-                                    false, true, false, upstream,
-                                );
+                                refresher.schedule(&upstream, ListChangedKinds::RESOURCES);
                             }
                             Ok(UpstreamNotificationEvent::ResourceUpdated { upstream, uri }) => {
                                 // Journal first. rmcp sends subscriptions/acknowledged before
@@ -526,6 +519,25 @@ impl PeerNotifier {
             &self.peers,
             diff.into(),
             source,
+        );
+    }
+
+    /// Forward one upstream's completed `list_changed` refresh. Tools stay a
+    /// global signal (every peer re-evaluates its own contract hash), while
+    /// resources and prompts are scoped to peers whose route allows the
+    /// upstream; `for_upstream` applies exactly that split, so all three kinds
+    /// share one call.
+    #[cfg(feature = "gateway")]
+    fn forward_list_changed(
+        &self,
+        upstream: &str,
+        kinds: crate::dispatch::upstream::pool::ListChangedKinds,
+    ) {
+        self.notify_upstream_catalog_change(
+            kinds.tools,
+            kinds.resources,
+            kinds.prompts,
+            upstream.to_string(),
         );
     }
 

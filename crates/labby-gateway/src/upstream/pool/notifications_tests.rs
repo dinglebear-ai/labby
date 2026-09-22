@@ -22,7 +22,7 @@ use super::{UpstreamConnection, UpstreamPool};
 const NATIVE_RESOURCE_URI: &str = "file:///tmp/subscription-resource";
 
 #[derive(Clone)]
-struct SubscriptionServer {
+pub(super) struct SubscriptionServer {
     attempts: Arc<AtomicUsize>,
     listening: Arc<AtomicBool>,
     failures_before_accept: usize,
@@ -33,10 +33,15 @@ struct SubscriptionServer {
     resources: Arc<tokio::sync::RwLock<Vec<Resource>>>,
     resource_change: Arc<tokio::sync::Notify>,
     fail_list_resources: Arc<AtomicBool>,
+    /// `resources/list` blocks while this is `false`, which lets a test hold
+    /// one upstream's re-list open for as long as it needs.
+    pub(super) resource_list_gate: Arc<tokio::sync::watch::Sender<bool>>,
+    /// Number of `resources/list` requests the fixture has served.
+    pub(super) resource_list_calls: Arc<AtomicUsize>,
 }
 
 impl SubscriptionServer {
-    fn accepting() -> Self {
+    pub(super) fn accepting() -> Self {
         Self {
             attempts: Arc::new(AtomicUsize::new(0)),
             listening: Arc::new(AtomicBool::new(false)),
@@ -51,6 +56,8 @@ impl SubscriptionServer {
             )])),
             resource_change: Arc::new(tokio::sync::Notify::new()),
             fail_list_resources: Arc::new(AtomicBool::new(false)),
+            resource_list_gate: Arc::new(tokio::sync::watch::Sender::new(true)),
+            resource_list_calls: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -68,7 +75,7 @@ impl SubscriptionServer {
         }
     }
 
-    async fn replace_tools_and_notify(&self, names: &[&str]) {
+    pub(super) async fn replace_tools_and_notify(&self, names: &[&str]) {
         *self.tools.write().await = names
             .iter()
             .map(|name| super::testsupport::test_tool(name))
@@ -113,6 +120,11 @@ impl ServerHandler for SubscriptionServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
+        self.resource_list_calls.fetch_add(1, Ordering::SeqCst);
+        let mut gate = self.resource_list_gate.subscribe();
+        gate.wait_for(|open| *open)
+            .await
+            .map_err(|_| ErrorData::internal_error("fixture gate dropped", None))?;
         if self.fail_list_resources.load(Ordering::SeqCst) {
             return Err(ErrorData::internal_error("fixture listing failure", None));
         }
@@ -178,7 +190,11 @@ async fn wait_until_listening(server: &SubscriptionServer) {
     .expect("subscription listener must be active before emitting list-changed");
 }
 
-async fn add_subscription_server(pool: &UpstreamPool, upstream: &str, server: SubscriptionServer) {
+pub(super) async fn add_subscription_server(
+    pool: &UpstreamPool,
+    upstream: &str,
+    server: SubscriptionServer,
+) {
     let (server_transport, client_transport) = tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
     let server_task = tokio::spawn(async move {
         let running = server

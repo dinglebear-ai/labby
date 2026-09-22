@@ -60,6 +60,11 @@ mod incarnation;
 mod legacy_client;
 mod lifecycle;
 mod lifecycle_compat;
+mod list_changed_refresh;
+#[cfg(test)]
+// `panic!` is how tests assert; `panic = "warn"` targets production paths.
+#[allow(clippy::panic)]
+mod list_changed_refresh_tests;
 #[cfg(test)]
 mod listing_timeout_tests;
 mod logging;
@@ -146,6 +151,9 @@ pub use helpers::{
 };
 pub(crate) use helpers::{
     install_max_response_bytes_default, install_upstream_discovery_concurrency_default,
+};
+pub use list_changed_refresh::{
+    LIST_CHANGED_COALESCE_WINDOW, ListChangedKinds, ListChangedRefresher,
 };
 pub use notifications::UpstreamNotificationEvent;
 pub use oauth_invalidation::OAuthSessionInvalidation;
