@@ -1933,8 +1933,9 @@ impl LabMcpServer {
                         Err(error) => {
                             // Keep the mapped message: a setup gate must name
                             // its remediation, not claim an outage.
-                            let mapped =
-                                crate::dispatch::access_errors::map_runtime_error("gateway", error);
+                            let mapped = crate::dispatch::access_errors::map_action_runtime_error(
+                                "gateway", &action, error,
+                            );
                             return Ok(error_result_from_envelope(build_error(
                                 &service,
                                 &action,

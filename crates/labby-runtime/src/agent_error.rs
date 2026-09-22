@@ -605,7 +605,7 @@ pub fn recovery_for_kind(
         "access_setup_required" => AgentRecoveryAdvice {
             action: AgentRecoveryAction::StartDependency,
             same_arguments: AgentSameArgumentsRetry::Never,
-            guidance: "Labby's durable access store has not been initialized, so no authorization decision can be made and nothing ran. Have the operator complete owner setup on the Labby host: run `labby setup` for bearer-token installs, or complete browser owner setup in the Labby web UI for OAuth installs. Retry only after setup succeeds; do not retry unchanged before then.".to_string(),
+            guidance: "Labby's durable access store is not set up, so no authorization decision can be made and nothing ran. Do not run setup yourself. Ask the operator of the Labby server to complete owner setup: installs with any OAuth provider (including bearer plus OAuth) complete browser owner setup in the Labby web UI, which takes effect without a restart; bearer-token-only installs run `labby setup` on the Labby server host and then restart the serving Labby process, because a running Labby only re-reads access setup at startup. If an owner access bootstrap is pending, the operator finishes it with `labby setup access-bootstrap consume` or removes it with `labby setup access-bootstrap cleanup` while Labby is stopped. Retry only after setup succeeds; do not retry unchanged before then.".to_string(),
             retry_after_ms: None,
         },
         "restart_required" => AgentRecoveryAdvice {
@@ -988,7 +988,15 @@ mod tests {
             AgentSameArgumentsRetry::Never
         );
         assert_eq!(value.recovery.retry_after_ms, None);
-        for phrase in ["`labby setup`", "owner setup", "OAuth"] {
+        for phrase in [
+            "Ask the operator of the Labby server",
+            "`labby setup`",
+            "restart the serving Labby process",
+            "OAuth provider",
+            "browser owner setup",
+            "labby setup access-bootstrap consume",
+            "labby setup access-bootstrap cleanup",
+        ] {
             assert!(value.recovery.guidance.contains(phrase), "{phrase}");
         }
     }
