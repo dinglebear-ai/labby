@@ -3273,6 +3273,32 @@ async fn canonical_code_mode_upstream_ignores_out_of_scope_alias_siblings() {
 }
 
 #[tokio::test]
+async fn canonical_code_mode_upstream_explains_priority_zero_in_scope_upstreams() {
+    // A non-positive priority disables routing without removing the upstream,
+    // so an in-scope caller must be told that, not "not found".
+    let mut suppressed = fixture_http_upstream("claude-macpoo");
+    suppressed.priority = 0.0;
+    let (manager, _pool) =
+        code_mode_manager_with_upstreams(vec![suppressed, fixture_http_upstream("github")]).await;
+
+    let err = manager
+        .canonical_code_mode_upstream("claude_macpoo", &ToolScope::default())
+        .await
+        .expect_err("priority-0 upstream cannot be called");
+    assert_eq!(err.kind(), "unavailable");
+    assert!(err.to_string().contains("configured but disabled"), "{err}");
+
+    // Out of scope it stays indistinguishable from a name that does not exist.
+    let scope = ToolScope::scoped_namespaces(vec!["github".to_string()], Vec::new());
+    let hidden = manager
+        .canonical_code_mode_upstream("claude_macpoo", &scope)
+        .await
+        .expect_err("out of scope");
+    assert_eq!(hidden.kind(), "unknown_upstream");
+    assert!(!hidden.to_string().contains("disabled"), "{hidden}");
+}
+
+#[tokio::test]
 async fn canonical_code_mode_upstream_explains_disabled_in_scope_upstreams() {
     let mut disabled = fixture_http_upstream("claude-macpoo");
     disabled.enabled = false;

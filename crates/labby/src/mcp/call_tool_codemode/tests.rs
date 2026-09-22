@@ -910,3 +910,21 @@ fn oversized_upstream_list_keeps_the_example_and_a_utf8_safe_cut() {
     );
     assert!(description.contains("more; use `codemode.search()` to discover them"));
 }
+
+#[test]
+fn empty_filter_entries_are_rejected_instead_of_widening_the_run() {
+    let available = std::collections::BTreeSet::from(["alpha".to_string(), "beta".to_string()]);
+    for (key, value) in [
+        ("upstreams", json!([""])),
+        ("upstreams", json!(["alpha", "   "])),
+        ("tools", json!([""])),
+        ("tools", json!(["  ::read"])),
+    ] {
+        let mut args = serde_json::Map::new();
+        args.insert(key.to_string(), value.clone());
+        let err = route_scoped_capability_filter(&args, None, &available)
+            .expect_err("an empty entry must not silently widen the run");
+        assert_eq!(err.kind(), "invalid_param", "{key} {value}");
+        assert!(err.to_string().contains("must not be empty"), "{err}");
+    }
+}

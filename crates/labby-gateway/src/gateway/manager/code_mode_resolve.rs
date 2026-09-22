@@ -287,12 +287,14 @@ impl GatewayManager {
                     .iter()
                     .map(|name| (*name).to_string())
                     .collect::<BTreeSet<_>>();
+                // `enabled = false` and a non-positive priority are the two
+                // ways to disable an upstream without removing it, so both
+                // get the actionable message rather than "not found".
                 let disabled = cfg
                     .upstream
                     .iter()
                     .filter(|upstream| {
-                        !upstream.enabled
-                            && is_routable(upstream.priority)
+                        (!upstream.enabled || !is_routable(upstream.priority))
                             && in_scope(&upstream.name)
                     })
                     .map(|upstream| upstream.name.as_str());

@@ -572,7 +572,8 @@ When search results do not match live execution, check the layers in order:
 
 `codemode` accepts optional `upstreams` and `tools` arrays to narrow the per-run
 capability set. When present, each filter must be a JSON array of strings; other
-shapes reject with `invalid_param`. Empty strings are ignored. The injected proxy only
+shapes reject with `invalid_param`, and so does an empty or whitespace-only
+entry: dropping it would silently widen the run to every visible upstream. The injected proxy only
 includes allowed tools, and direct `callTool` IDs outside the allowlist reject as
 `unknown_tool`, naming the in-scope upstreams or listing the allowed tools.
 
@@ -593,7 +594,8 @@ routable (priority above 0), and inside its route or capability scope. On a
 protected route, "configured but outside this route" and "does not exist" get
 the same `unknown_upstream` error, whose "Did you mean" suggestions or known-
 upstream list come only from that usable set. An in-scope upstream that is
-disabled is reported as `unavailable`, asking the operator to enable it.
+disabled — either `enabled = false` or a non-positive priority — is reported as
+`unavailable`, asking the operator to enable it.
 Requested names are echoed bounded to 128 bytes, and names longer than that get
 no suggestions.
 
