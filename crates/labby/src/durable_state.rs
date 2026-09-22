@@ -1350,7 +1350,18 @@ mod tests {
         private_dir(&bundle).unwrap();
         private_dir(&bundle.join("payload")).unwrap();
         export_locked(&paths, &bundle).unwrap();
-        rewrite_manifest(&bundle, |manifest| manifest.labby_version = "1.0.0".into());
+        // The oldest release of the *current* major: a literal would stop
+        // being same-major the next time the crate's major version bumps.
+        let same_major_producer = format!(
+            "{}.0.0",
+            env!("CARGO_PKG_VERSION")
+                .split('.')
+                .next()
+                .expect("crate version has a major component")
+        );
+        rewrite_manifest(&bundle, |manifest| {
+            manifest.labby_version = same_major_producer.clone();
+        });
         restore_bundle_locked(&paths, &bundle).unwrap();
 
         drop(
