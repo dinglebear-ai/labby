@@ -107,19 +107,39 @@ pub(crate) fn map_store_error(
 ///   the operator completes owner setup. It maps to `access_setup_required`.
 /// - `Blocked` and lifecycle failures are real outages (`service_unavailable`).
 pub(crate) fn map_runtime_error(service: &'static str, error: AccessRuntimeError) -> ToolError {
+    map_runtime_error_with_action(service, None, error)
+}
+
+/// [`map_runtime_error`] for a caller that knows the product action, so the
+/// server-side log line names the action that hit the lifecycle gate.
+pub(crate) fn map_action_runtime_error(
+    service: &'static str,
+    action: &str,
+    error: AccessRuntimeError,
+) -> ToolError {
+    map_runtime_error_with_action(service, Some(action), error)
+}
+
+fn map_runtime_error_with_action(
+    service: &'static str,
+    action: Option<&str>,
+    error: AccessRuntimeError,
+) -> ToolError {
     match error {
         AccessRuntimeError::SetupRequired(reason) => {
-            let reason = match reason {
+            let reason_code = match reason {
                 AccessSetupReason::Missing => "missing",
                 AccessSetupReason::Uninitialized => "uninitialized",
+                AccessSetupReason::ProofPending => "proof_pending",
             };
             tracing::warn!(
                 service,
-                reason,
+                action,
+                reason = reason_code,
                 kind = ACCESS_SETUP_REQUIRED_KIND,
-                "access store setup is required; run `labby setup` (bearer) or browser owner setup (OAuth)"
+                "access store setup is required; complete owner setup (browser owner setup, or `labby setup` then restart) or finish the pending access bootstrap"
             );
-            setup_required()
+            setup_required(reason)
         }
         AccessRuntimeError::Blocked(reason) => {
             let (level_error, reason) = match reason {
@@ -133,6 +153,7 @@ pub(crate) fn map_runtime_error(service: &'static str, error: AccessRuntimeError
             if level_error {
                 tracing::error!(
                     service,
+                    action,
                     reason,
                     kind = "service_unavailable",
                     "access store is blocked; operator action required"
@@ -140,6 +161,7 @@ pub(crate) fn map_runtime_error(service: &'static str, error: AccessRuntimeError
             } else {
                 tracing::warn!(
                     service,
+                    action,
                     reason,
                     kind = "service_unavailable",
                     "access store is blocked"
@@ -152,6 +174,7 @@ pub(crate) fn map_runtime_error(service: &'static str, error: AccessRuntimeError
         | AccessRuntimeError::LifecycleUnavailable => {
             tracing::warn!(
                 service,
+                action,
                 cause = %error,
                 kind = "service_unavailable",
                 "access runtime lifecycle is unavailable"
@@ -173,15 +196,35 @@ fn unavailable() -> ToolError {
 /// `start_dependency` recovery and no side effects.
 const ACCESS_SETUP_REQUIRED_KIND: &str = "access_setup_required";
 
-/// The caller-facing setup gate. The message is a fixed string that names the
-/// remediation for both auth modes; the typed reason stays in the server log.
-fn setup_required() -> ToolError {
+/// The caller-facing setup gate. The message is a fixed string addressed to
+/// the Labby server's operator that names the remediation for the observed
+/// setup state; the typed reason also stays in the server log.
+///
+/// `AccessRuntime` only re-observes store health at process start, so a
+/// bearer-only install that runs `labby setup` out of process must restart the
+/// serving Labby process. Browser owner setup and consuming a pending
+/// bootstrap both promote the running process directly.
+fn setup_required(reason: AccessSetupReason) -> ToolError {
+    let message = match reason {
+        AccessSetupReason::Missing | AccessSetupReason::Uninitialized => {
+            "access setup is required: this Labby server's access store has not been \
+             initialized, so nothing ran. Ask the operator of the Labby server to complete \
+             owner setup: installs with any OAuth provider (including bearer plus OAuth) \
+             complete browser owner setup in the Labby web UI; bearer-token-only installs \
+             run `labby setup` on the Labby server host and then restart the serving Labby \
+             process. Retry after setup succeeds."
+        }
+        AccessSetupReason::ProofPending => {
+            "access setup is required: an owner access bootstrap was prepared on this Labby \
+             server but not completed, so nothing ran. Ask the operator of the Labby server to \
+             finish it with `labby setup access-bootstrap consume --prepare-id <id>`, or to \
+             remove it with `labby setup access-bootstrap cleanup --prepare-id <id>` while \
+             Labby is stopped and then complete owner setup. Retry after setup succeeds."
+        }
+    };
     ToolError::Sdk {
         sdk_kind: ACCESS_SETUP_REQUIRED_KIND.to_owned(),
-        message: "access setup is required: this Labby's access store has not been initialized. \
-                  Run `labby setup` on the Labby host (bearer-token installs) or complete \
-                  owner setup in the Labby web UI (OAuth installs), then retry."
-            .to_owned(),
+        message: message.to_owned(),
     }
 }
 
@@ -267,6 +310,51 @@ mod tests {
             assert!(message.contains("`labby setup`"), "{message}");
             assert!(!message.contains("temporarily"), "{message}");
         }
+    }
+
+    /// The serving process only re-observes store health at startup, so a
+    /// bearer install that ran `labby setup` out of process must restart the
+    /// serving Labby process. The message addresses the server operator, and
+    /// any OAuth-including install (`--auth both` too) is sent to browser
+    /// owner setup, which promotes the running process without a restart.
+    #[test]
+    fn setup_required_message_asks_the_operator_and_names_the_restart() {
+        for reason in [AccessSetupReason::Missing, AccessSetupReason::Uninitialized] {
+            let mapped = map_runtime_error("gateway", AccessRuntimeError::SetupRequired(reason));
+            let message = mapped.user_message();
+            for phrase in [
+                "access setup is required",
+                "Ask the operator of the Labby server",
+                "`labby setup`",
+                "restart the serving Labby process",
+                "OAuth provider",
+                "browser owner setup",
+            ] {
+                assert!(message.contains(phrase), "{reason:?}: {phrase}: {message}");
+            }
+        }
+    }
+
+    /// A prepared-but-unconsumed owner bootstrap refuses both `labby setup`
+    /// and browser owner setup, so its guidance must name the pending
+    /// bootstrap instead.
+    #[test]
+    fn proof_pending_setup_names_the_pending_bootstrap() {
+        let mapped = map_runtime_error(
+            "gateway",
+            AccessRuntimeError::SetupRequired(AccessSetupReason::ProofPending),
+        );
+        assert_eq!(mapped.kind(), "access_setup_required");
+        let message = mapped.user_message();
+        for phrase in [
+            "access setup is required",
+            "Ask the operator of the Labby server",
+            "labby setup access-bootstrap consume",
+            "labby setup access-bootstrap cleanup",
+        ] {
+            assert!(message.contains(phrase), "{phrase}: {message}");
+        }
+        assert!(!message.contains("browser owner setup"), "{message}");
     }
 
     #[test]

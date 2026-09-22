@@ -125,13 +125,20 @@ Supported code may emit additional stable kinds, including:
 - concurrency/state: `rate_limited`, `queue_saturated`, `budget_exceeded`,
   `quota_exceeded`, `restart_required`, `stale_suggestion`,
   `merge_write_conflict`, `workspace_not_configured`;
-- access lifecycle: `access_setup_required` (the durable access store has never
-  been initialized, so no authority decision can be made; `origin: validation`,
+- access lifecycle: `access_setup_required` (the durable access store is not set
+  up, so no authority decision can be made; `origin: validation`,
   `side_effects: none_expected`, `recovery.action: start_dependency` with
-  `same_arguments: never`. The operator completes owner setup — `labby setup`
-  for bearer-token installs, browser owner setup for OAuth installs — before
-  any retry. A blocked store (locked, corrupt, insecure, newer schema,
-  read-only, unavailable) is a real outage and stays `service_unavailable`);
+  `same_arguments: never`. The operator of the Labby server completes owner
+  setup before any retry: installs with any OAuth provider (including bearer
+  plus OAuth) complete browser owner setup in the web UI, which takes effect
+  without a restart; bearer-token-only installs run `labby setup` on the server
+  host and then restart the serving Labby process, because a running Labby only
+  re-observes access setup at startup. A prepared-but-unconsumed owner
+  bootstrap reports the same kind and is finished with
+  `labby setup access-bootstrap consume` or removed with
+  `labby setup access-bootstrap cleanup` while Labby is stopped. A blocked store
+  (locked, corrupt, insecure, newer schema, read-only, unavailable) is a real
+  outage and stays `service_unavailable`);
 - internal failures: `internal_error`, `server_error`, `decode_error`.
 
 The emitting subsystem owns the precise remediation text. New stable kinds require
