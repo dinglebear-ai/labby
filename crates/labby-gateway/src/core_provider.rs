@@ -575,16 +575,16 @@ mod tests {
     #[test]
     fn merging_core_tools_preserves_upstream_withheld_summary() {
         let mut base = ToolsRender::empty();
-        base.withheld = std::sync::Arc::from([labby_codemode::WithheldTools {
-            namespace: "claude-macpoo".to_string(),
-            tool_count: 25,
-        }]);
+        base.withheld =
+            std::sync::Arc::from([
+                labby_codemode::WithheldTools::new("claude-macpoo", 25).expect("nonzero")
+            ]);
 
         let merged =
             merge_tools_render(base, Vec::new(), &ToolScope::default().read_only()).expect("merge");
 
         assert_eq!(merged.withheld.len(), 1);
-        assert_eq!(merged.withheld[0].namespace, "claude-macpoo");
+        assert_eq!(merged.withheld[0].namespace(), "claude-macpoo");
     }
 
     #[test]

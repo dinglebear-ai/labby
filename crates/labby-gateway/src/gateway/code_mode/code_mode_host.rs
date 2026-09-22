@@ -1548,6 +1548,15 @@ upstream's health in gateway status if it stays down."
     )
     .with_tool(id.to_string())
     .with_side_effects(CodeModeSideEffectRisk::NoneExpected)
+    .with_recovery(labby_codemode::CodeModeRecoveryAdvice {
+        action: labby_codemode::CodeModeRecoveryAction::RetryLater,
+        // Nothing was sent, so the identical call is safe once reconnected.
+        same_arguments: labby_codemode::CodeModeSameArgumentsRetry::Safe,
+        guidance: "Nothing was sent, so no effects need checking. Retry the same call after the \
+upstream reconnects; if it stays down, ask the operator to check gateway status."
+            .to_string(),
+        retry_after_ms: None,
+    })
 }
 
 fn contract_changed_call_error(id: &str) -> CodeModeCallError {
