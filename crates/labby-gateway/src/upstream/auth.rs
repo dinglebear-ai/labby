@@ -2,17 +2,30 @@ use std::path::{Path, PathBuf};
 
 use labby_runtime::gateway_config::UpstreamConfig;
 
-/// Standard location for the `.env` file: `~/.labby/.env`.
+/// Standard location for the `.env` file: `$LABBY_HOME/.env`, normally
+/// `~/.labby/.env`.
 ///
 /// Vendored from `lab`'s `crate::config::dotenv_path` so the upstream pool's
 /// dotenv-fallback bearer-token resolution does not reach back into the Labby
-/// binary crate. Returns `None` when the home directory cannot be resolved.
+/// binary crate. An explicit `LABBY_HOME` is exclusive, so an isolated
+/// installation never reads another installation's upstream bearer tokens.
+/// Returns `None` when neither root can be resolved.
 fn dotenv_path() -> Option<PathBuf> {
     #[cfg(windows)]
-    let home = std::env::var_os("USERPROFILE").map(PathBuf::from);
+    let home = std::env::var_os("USERPROFILE");
     #[cfg(not(windows))]
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    home.map(|home| home.join(".labby").join(".env"))
+    let home = std::env::var_os("HOME");
+    dotenv_path_from(std::env::var_os("LABBY_HOME"), home)
+}
+
+fn dotenv_path_from(
+    labby_home: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    if let Some(root) = labby_home.filter(|root| !root.is_empty()) {
+        return Some(PathBuf::from(root).join(".env"));
+    }
+    home.map(|home| PathBuf::from(home).join(".labby").join(".env"))
 }
 
 pub fn configured_bearer_token(env_name: &str) -> Option<String> {
@@ -146,6 +159,26 @@ mod tests {
             websocket_authorization_header_with_dotenv(&config, Some(&path)),
             Some("Bearer dotenv-secret".to_string())
         );
+    }
+
+    #[test]
+    fn dotenv_path_prefers_explicit_labby_home_over_user_home() {
+        assert_eq!(
+            dotenv_path_from(
+                Some("/srv/labby-preview".into()),
+                Some("/Users/operator".into())
+            ),
+            Some(PathBuf::from("/srv/labby-preview/.env"))
+        );
+    }
+
+    #[test]
+    fn dotenv_path_falls_back_to_user_home_installation() {
+        assert_eq!(
+            dotenv_path_from(Some("".into()), Some("/Users/operator".into())),
+            Some(PathBuf::from("/Users/operator/.labby/.env"))
+        );
+        assert_eq!(dotenv_path_from(None, None), None);
     }
 
     #[test]
