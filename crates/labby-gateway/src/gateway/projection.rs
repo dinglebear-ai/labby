@@ -282,8 +282,8 @@ fn is_nonessential_capability_error(message: &str) -> bool {
     // Only suppress the well-known optional-capability discovery failures
     // (prompts/resources list not implemented). Broad "-32601" / "Method not
     // found" matching would also hide real tool-call or handshake failures.
-    message.starts_with(crate::upstream::pool::UPSTREAM_PROMPT_LISTING_ERROR_PREFIX)
-        || message.starts_with(crate::upstream::pool::UPSTREAM_RESOURCE_LISTING_ERROR_PREFIX)
+    message.starts_with(labby_primitives::mcp::UPSTREAM_PROMPT_LISTING_ERROR_PREFIX)
+        || message.starts_with(labby_primitives::mcp::UPSTREAM_RESOURCE_LISTING_ERROR_PREFIX)
         || message.starts_with("does not implement MCP prompts discovery")
         || message.starts_with("does not implement MCP resources discovery")
 }

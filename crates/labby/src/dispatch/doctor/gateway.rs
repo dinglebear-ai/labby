@@ -20,9 +20,8 @@ use super::types::{Finding, Report, Severity};
 /// non-essential capability-discovery noise so doctor findings stay
 /// signal-rich (only real connection/auth errors surface).
 fn is_nonessential_capability_error(message: &str) -> bool {
-    message.starts_with(labby_gateway::upstream::pool::UPSTREAM_PROMPT_LISTING_ERROR_PREFIX)
-        || message
-            .starts_with(labby_gateway::upstream::pool::UPSTREAM_RESOURCE_LISTING_ERROR_PREFIX)
+    message.starts_with(labby_primitives::mcp::UPSTREAM_PROMPT_LISTING_ERROR_PREFIX)
+        || message.starts_with(labby_primitives::mcp::UPSTREAM_RESOURCE_LISTING_ERROR_PREFIX)
         || message.starts_with("does not implement MCP prompts discovery")
         || message.starts_with("does not implement MCP resources discovery")
 }
