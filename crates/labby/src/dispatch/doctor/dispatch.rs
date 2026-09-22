@@ -277,7 +277,8 @@ fn resolve_auth_config() -> (Option<labby_auth::config::AuthConfig>, Option<Stri
         .and_then(|config| crate::config::resolve_auth_for_config(&config))
     {
         Ok(config) => (Some(config), None),
-        Err(error) => (None, Some(error.to_string())),
+        // `{error:#}` keeps the typed cause the outer context names.
+        Err(error) => (None, Some(format!("{error:#}"))),
     }
 }
 

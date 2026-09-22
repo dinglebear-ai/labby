@@ -39,8 +39,19 @@ The access store has no independent environment override.
 `access.db`. The OAuth authorization store and its signing key default to
 `$LABBY_HOME/auth.db` and `$LABBY_HOME/auth-jwt.pem` in the same selected root;
 only an explicit `LABBY_AUTH_SQLITE_PATH` or `LABBY_AUTH_KEY_PATH` (or the
-matching `[auth]` setting) places them elsewhere. The upstream dotenv fallback
-for `bearer_token_env` reads `$LABBY_HOME/.env` as well. A standalone stdio fallback uses its own resolved state root, so
+matching `[auth]` setting) places them elsewhere.
+
+An installation that starts using an explicit `LABBY_HOME` therefore stops
+reading a pre-existing `~/.labby/auth.db`, which holds issued OAuth refresh
+tokens and registered OAuth clients: the new root starts with an empty store
+and a new signing key. Labby never moves, copies, or deletes those files. It
+warns at startup and reports an `auth:legacy-store` doctor finding naming both
+paths; move `auth.db` and `auth-jwt.pem` into the selected root, or set
+`LABBY_AUTH_SQLITE_PATH` and `LABBY_AUTH_KEY_PATH` to the existing files.
+
+The upstream dotenv fallback for `bearer_token_env` reads `$LABBY_HOME/.env`
+as well; a non-absolute root is ignored there rather than read relative to the
+working directory. A standalone stdio fallback uses its own resolved state root, so
 configure an explicit remote daemon target when stdio must share the daemon's
 project and membership state.
 
