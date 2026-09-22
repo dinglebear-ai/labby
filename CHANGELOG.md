@@ -103,6 +103,13 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [2.1.1](https://github.com/dinglebear-ai/labby/compare/v2.1.0...v2.1.1) (2026-09-22)
+
+
+### Fixed
+
+* limit stable releases to Linux and macOS ([#753](https://github.com/dinglebear-ai/labby/issues/753)) ([fc6dc80](https://github.com/dinglebear-ai/labby/commit/fc6dc8062e3b4272422251383ef13a1cfdd32612))
+
 ## [2.1.0](https://github.com/dinglebear-ai/labby/compare/v2.0.0...v2.1.0) (2026-09-22)
 
 
