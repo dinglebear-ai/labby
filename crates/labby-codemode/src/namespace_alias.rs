@@ -11,6 +11,25 @@ use std::collections::BTreeSet;
 /// Most names listed in an unknown-namespace message.
 const MAX_LISTED_NAMES: usize = 25;
 
+/// Longest requested name that is compared for typo suggestions or echoed
+/// verbatim. Longer input is caller error; bounding it keeps the edit-distance
+/// cost and error-message size small.
+const MAX_NAME_BYTES: usize = 128;
+
+/// A requested name safe to echo in an error message: trimmed and bounded.
+#[must_use]
+pub fn display_name(requested: &str) -> String {
+    let requested = requested.trim();
+    if requested.len() <= MAX_NAME_BYTES {
+        return requested.to_string();
+    }
+    let mut end = MAX_NAME_BYTES;
+    while !requested.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &requested[..end])
+}
+
 /// Spelling-insensitive identity: ASCII case and `-`/`_`/`.`/space
 /// separators do not distinguish namespaces.
 #[must_use]
@@ -42,24 +61,21 @@ pub fn resolve_namespace_alias<'a>(
     known: impl IntoIterator<Item = &'a str>,
 ) -> NamespaceResolution<'a> {
     let requested = requested.trim();
-    let key = namespace_alias_key(requested);
-    let mut aliases = Vec::new();
-    for candidate in known {
-        if candidate == requested {
-            return NamespaceResolution::Resolved(candidate);
-        }
-        if namespace_alias_key(candidate) == key {
-            aliases.push(candidate);
-        }
+    let known = known.into_iter().collect::<Vec<_>>();
+    if let Some(exact) = known.iter().find(|candidate| **candidate == requested) {
+        return NamespaceResolution::Resolved(exact);
     }
+    let key = namespace_alias_key(requested);
+    let mut aliases = known
+        .into_iter()
+        .filter(|candidate| namespace_alias_key(candidate) == key)
+        .collect::<Vec<_>>();
+    aliases.sort_unstable();
+    aliases.dedup();
     match aliases.as_slice() {
         [] => NamespaceResolution::Unknown,
         [only] => NamespaceResolution::Resolved(only),
-        _ => {
-            aliases.sort_unstable();
-            aliases.dedup();
-            NamespaceResolution::Ambiguous(aliases)
-        }
+        _ => NamespaceResolution::Ambiguous(aliases),
     }
 }
 
@@ -78,11 +94,13 @@ fn edit_distance(left: &str, right: &str) -> usize {
 }
 
 /// Up to three known names that look like likely typos of `requested`.
-#[must_use]
-pub fn similar_namespaces<'a>(
+fn similar_namespaces<'a>(
     requested: &str,
     known: impl IntoIterator<Item = &'a str>,
 ) -> Vec<&'a str> {
+    if requested.trim().len() > MAX_NAME_BYTES {
+        return Vec::new();
+    }
     let key = namespace_alias_key(requested);
     let threshold = (key.chars().count() / 4).max(2);
     let mut scored = known
@@ -120,7 +138,7 @@ pub fn unknown_namespace_guidance(requested: &str, visible: &BTreeSet<String>) -
         return format!("Did you mean {}?", backtick_list(similar));
     }
     if visible.is_empty() {
-        return "No upstreams are visible to this caller.".to_string();
+        return "No upstreams are visible to this caller. Check the route this client connected through, or ask the operator to enable an upstream.".to_string();
     }
     let listed = backtick_list(visible.iter().take(MAX_LISTED_NAMES).map(String::as_str));
     if visible.len() > MAX_LISTED_NAMES {
@@ -137,7 +155,8 @@ pub fn unknown_namespace_guidance(requested: &str, visible: &BTreeSet<String>) -
 #[must_use]
 pub fn ambiguous_namespace_message(requested: &str, matches: &[&str]) -> String {
     format!(
-        "Code Mode upstream `{requested}` is ambiguous: it matches {} ignoring case and `-`/`_` separators. Use the exact configured name.",
+        "Code Mode upstream `{}` is ambiguous: it matches {} ignoring case and `-`/`_` separators. Pass one of those exact names in `upstreams` or in the `upstream::tool` id.",
+        display_name(requested),
         backtick_list(matches.iter().copied())
     )
 }
@@ -183,6 +202,24 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_known_names_do_not_look_ambiguous() {
+        assert_eq!(
+            resolve_namespace_alias("A-B", ["a-b", "a-b"]),
+            NamespaceResolution::Resolved("a-b")
+        );
+    }
+
+    #[test]
+    fn oversized_names_skip_suggestions_and_are_bounded_for_display() {
+        let huge = "x".repeat(1_000_000);
+        assert!(similar_namespaces(&huge, ["xxx"]).is_empty());
+        let shown = display_name(&huge);
+        assert!(shown.len() <= MAX_NAME_BYTES + '…'.len_utf8());
+        assert!(shown.ends_with('…'));
+        assert_eq!(display_name(" github "), "github");
+    }
+
+    #[test]
     fn guidance_prefers_near_matches_then_lists_names() {
         let visible = set(&["claude-macpoo", "claude-squirts", "github"]);
         assert_eq!(
@@ -195,7 +232,7 @@ mod tests {
         );
         assert_eq!(
             unknown_namespace_guidance("zzz", &BTreeSet::new()),
-            "No upstreams are visible to this caller."
+            "No upstreams are visible to this caller. Check the route this client connected through, or ask the operator to enable an upstream."
         );
     }
 }

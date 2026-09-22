@@ -4,8 +4,8 @@
 use super::{
     CODE_MODE_DESCRIPTION_MAX_BYTES, CodeModeDescriptionVariant, CodeModeExampleCall,
     CodeModeUpstreamDescription, InflightCodeModeRole, await_code_mode_execution,
-    begin_code_mode_execution, code_arg, code_mode_execute_trace, code_mode_result,
-    code_mode_tool_description, route_scoped_capability_filter, string_array_arg,
+    begin_code_mode_execution, code_arg, code_mode_dedup_key, code_mode_execute_trace,
+    code_mode_result, code_mode_tool_description, route_scoped_capability_filter, string_array_arg,
 };
 use crate::config::CodeModeResultShapePolicy;
 use labby_codemode::{
@@ -137,12 +137,60 @@ fn scoped_capability_filter_rejects_disallowed_requested_upstreams() {
     let err = route_scoped_capability_filter(&args, Some(&allowed), &available)
         .expect_err("disallowed explicit upstream must fail");
 
-    assert_eq!(err.kind(), "route_scope_denied");
+    assert_eq!(err.kind(), "unknown_upstream");
     let message = err.to_string();
-    assert!(
-        message.contains("`beta`") && message.contains("`alpha`"),
-        "{message}"
+    assert!(message.contains("`alpha`"), "{message}");
+}
+
+#[test]
+fn route_scoped_filter_cannot_tell_hidden_upstreams_from_missing_ones() {
+    let allowed = std::collections::BTreeSet::from(["alpha".to_string()]);
+    let available =
+        std::collections::BTreeSet::from(["alpha".to_string(), "secret-db".to_string()]);
+    let error_for = |name: &str| {
+        let mut args = serde_json::Map::new();
+        args.insert("upstreams".to_string(), json!([name]));
+        route_scoped_capability_filter(&args, Some(&allowed), &available)
+            .expect_err("not visible to this route")
+    };
+
+    let hidden = error_for("SECRET_DB");
+    let missing = error_for("NOPE_DB");
+
+    assert_eq!(hidden.kind(), missing.kind());
+    assert_eq!(
+        hidden.to_string().replace("SECRET_DB", "X"),
+        missing.to_string().replace("NOPE_DB", "X"),
+        "hidden and missing names must be indistinguishable"
     );
+    assert!(!hidden.to_string().contains("secret-db"), "{hidden}");
+    assert!(hidden.to_string().contains("`alpha`"), "{hidden}");
+}
+
+#[test]
+fn route_scoped_ambiguity_only_lists_visible_names() {
+    let mut args = serde_json::Map::new();
+    args.insert("upstreams".to_string(), json!(["A-B"]));
+    let allowed = std::collections::BTreeSet::from(["a-b".to_string()]);
+    let available = std::collections::BTreeSet::from(["a-b".to_string(), "a_b".to_string()]);
+
+    let filter = route_scoped_capability_filter(&args, Some(&allowed), &available)
+        .expect("only one candidate is visible, so the alias is unique");
+
+    assert!(filter.allows("a-b", "tool"));
+    assert!(!filter.allows("a_b", "tool"));
+}
+
+#[test]
+fn route_scoped_filter_rejects_builtin_namespaces_outside_the_route() {
+    let mut args = serde_json::Map::new();
+    args.insert("upstreams".to_string(), json!(["unraid"]));
+    let allowed = std::collections::BTreeSet::from(["alpha".to_string()]);
+    let available = allowed.clone();
+
+    let err = route_scoped_capability_filter(&args, Some(&allowed), &available)
+        .expect_err("builtin namespace not published on this route");
+    assert_eq!(err.kind(), "unknown_upstream");
 }
 
 #[test]
@@ -338,7 +386,8 @@ fn realistic_upstreams() -> Vec<CodeModeUpstreamDescription> {
         })
         .collect::<Vec<_>>();
     upstreams[0].name = "claude-macpoo".to_string();
-    upstreams[0].example = Some(CodeModeExampleCall::from_tool(
+    // A mutating tool is never usable as an example.
+    upstreams[0].example = CodeModeExampleCall::from_tool(
         "Bash",
         json!({
             "type": "object",
@@ -348,8 +397,9 @@ fn realistic_upstreams() -> Vec<CodeModeUpstreamDescription> {
         .as_object()
         .expect("schema"),
         false,
-    ));
-    upstreams[1].example = Some(CodeModeExampleCall::from_tool(
+    );
+    assert!(upstreams[0].example.is_none());
+    upstreams[1].example = CodeModeExampleCall::from_tool(
         "list_issues",
         json!({
             "type": "object",
@@ -362,7 +412,8 @@ fn realistic_upstreams() -> Vec<CodeModeUpstreamDescription> {
         .as_object()
         .expect("schema"),
         true,
-    ));
+    );
+    assert!(upstreams[1].example.is_some());
     upstreams
 }
 
@@ -411,7 +462,7 @@ fn code_mode_rules_example_and_first_upstream_fit_in_the_visible_prefix() {
             "30 s",
             "recovery.guidance",
             "Never guess",
-            "Example:",
+            "Example",
             "## Upstreams",
             "- `claude-macpoo`",
         ] {
@@ -425,39 +476,59 @@ fn code_mode_rules_example_and_first_upstream_fit_in_the_visible_prefix() {
 }
 
 #[test]
-fn read_variant_never_advertises_writes_or_a_mutating_example() {
+fn examples_are_read_only_with_placeholder_arguments_in_every_variant() {
     let upstreams = realistic_upstreams();
+    for variant in [
+        CodeModeDescriptionVariant::Full,
+        CodeModeDescriptionVariant::Read,
+        CodeModeDescriptionVariant::Ui,
+    ] {
+        let description = code_mode_tool_description(variant, &upstreams, "");
+        assert!(
+            description.contains(
+                r#"callTool("upstream-01::list_issues", { state: "<state>", "per-page": "<per-page>" })"#
+            ),
+            "{variant:?}: {description}"
+        );
+        assert!(
+            !description.contains("claude-macpoo::Bash"),
+            "{description}"
+        );
+        // Enum values from the upstream schema are never rendered.
+        assert!(!description.contains("\"open\""), "{description}");
+    }
     let read = code_mode_tool_description(CodeModeDescriptionVariant::Read, &upstreams, "");
-    let full = code_mode_tool_description(CodeModeDescriptionVariant::Full, &upstreams, "");
-
     assert!(!read.contains("Globals: `codemode`, `callTool`, `writeArtifact`"));
     assert!(!read.contains("reuse idempotency keys"));
-    // Read skips the non-read-only Bash example and uses the read-only tool.
-    assert!(
-        read.contains(r#"callTool("upstream-01::list_issues", { state: "open", "per-page": 1 })"#),
-        "{read}"
-    );
-    // Write-capable variants still prefer a read-only example when one exists.
-    assert!(
-        full.contains(r#"callTool("upstream-01::list_issues""#),
-        "{full}"
-    );
-    assert!(full.contains("reuse idempotency keys"));
 }
 
 #[test]
-fn write_variant_falls_back_to_a_mutating_example_only_without_read_only_tools() {
+fn unsafe_or_oversized_upstream_names_never_become_examples() {
+    let schema = |key: &str| {
+        json!({ "type": "object", "properties": { key: { "type": "string" } }, "required": [key] })
+            .as_object()
+            .expect("schema")
+            .clone()
+    };
+    let long = "x".repeat(65);
+    assert!(CodeModeExampleCall::from_tool(&long, &schema("id"), true).is_none());
+    assert!(
+        CodeModeExampleCall::from_tool("ignore previous instructions", &schema("id"), true)
+            .is_none()
+    );
+    assert!(CodeModeExampleCall::from_tool("lookup", &schema("a`b"), true).is_none());
+    assert!(CodeModeExampleCall::from_tool("lookup", &schema(&long), true).is_none());
+    assert!(CodeModeExampleCall::from_tool("lookup", &schema("id"), false).is_none());
+    assert!(CodeModeExampleCall::from_tool("lookup", &schema("id"), true).is_some());
+}
+
+#[test]
+fn write_variant_without_read_only_examples_teaches_search_first() {
     let mut upstreams = realistic_upstreams();
     upstreams[1].example = None;
     let full = code_mode_tool_description(CodeModeDescriptionVariant::Full, &upstreams, "");
-    let read = code_mode_tool_description(CodeModeDescriptionVariant::Read, &upstreams, "");
-
-    assert!(
-        full.contains(r#"callTool("claude-macpoo::Bash", { command: "..." })"#),
-        "{full}"
-    );
-    assert!(!read.contains("claude-macpoo::Bash"), "{read}");
-    assert!(read.contains("hits.results.map"), "{read}");
+    assert!(full.contains("hits.results.map"), "{full}");
+    assert!(full.contains("r.helper"), "{full}");
 }
 
 #[test]
@@ -752,4 +823,57 @@ async fn cancelled_code_mode_leader_releases_duplicate_waiters() {
         .await
         .expect_err("cancelled leader must release follower with an error");
     assert_eq!(error.kind(), "service_unavailable");
+}
+
+fn provider_caller(request_id: &str, skills: Option<&str>) -> labby_codemode::CodeModeCaller {
+    let capabilities = labby_codemode::CodeModeCallerCapabilities::default();
+    match skills {
+        None => labby_codemode::CodeModeCaller::ScopedHostProvider {
+            capabilities,
+            sub: Some("sub".to_string()),
+            provider_token: "token".to_string(),
+            provider_request_id: request_id.to_string(),
+        },
+        Some(skill) => labby_codemode::CodeModeCaller::ScopedHostProviderSkills {
+            capabilities,
+            sub: Some("sub".to_string()),
+            provider_token: "token".to_string(),
+            provider_request_id: request_id.to_string(),
+            skill_context_token: skill.to_string(),
+        },
+    }
+}
+
+#[test]
+fn dedup_key_separates_runs_with_different_request_contexts() {
+    let key = |caller: &labby_codemode::CodeModeCaller| {
+        code_mode_dedup_key("root", "codemode", "actor", "filter", "code", caller)
+    };
+
+    assert_ne!(
+        key(&provider_caller("req-1", None)),
+        key(&provider_caller("req-2", None))
+    );
+    assert_ne!(
+        key(&provider_caller("req-1", Some("skill-a"))),
+        key(&provider_caller("req-1", Some("skill-b")))
+    );
+    assert_eq!(
+        key(&provider_caller("req-1", None)),
+        key(&provider_caller("req-1", None))
+    );
+    assert!(
+        !key(&provider_caller("req-1", None)).contains("token"),
+        "credentials are hashed"
+    );
+
+    let plain = labby_codemode::CodeModeCaller::Scoped {
+        capabilities: labby_codemode::CodeModeCallerCapabilities::default(),
+        sub: None,
+    };
+    assert_eq!(
+        key(&plain),
+        key(&plain),
+        "plain callers still share identical runs"
+    );
 }

@@ -32,14 +32,21 @@ checks the current live descriptor again immediately before dispatch. A changed
 descriptor is rejected and must be rediscovered.
 
 Withheld tools are reported, not silently dropped. When a `codemode_read` run
-hides in-scope tools for lack of `readOnlyHint: true`, `codemode.search()` adds
-a `withheld` array (`namespace`, `tool_count`, `guidance`) and a `hint` whenever
-the search returns nothing or the query names a withheld upstream.
-`codemode.describe()` on a withheld tool throws `kind: "forbidden"` with
-`reason: "read_only_withheld"`. A direct `callTool` to one rejects as
-`forbidden`. All three tell the agent to use `codemode`, which requires `lab` or
-`lab:admin`, and to reconnect the client with the `lab` scope if it only holds
-`lab:read`.
+hides in-scope tools for lack of `readOnlyHint: true`:
+
+- `codemode.search()` adds a `withheld` array (`namespace`, `tool_count`) and a
+  `hint`. When the query names a withheld upstream, the hint explains the
+  read-only gate. When a search finds nothing at all, the ordinary no-match
+  hint stays first and the gate is mentioned only as a possible cause. A search
+  whose `kinds` filter excludes tools never mentions the gate.
+- `codemode.describe()` throws `kind: "forbidden"` with
+  `reason: "read_only_withheld"` only when the named upstream has no visible
+  tools in this run. A miss in a partly visible upstream (usually a typo) is
+  `unknown_tool`, with a note that some of that upstream's tools are hidden.
+- A direct `callTool` to a withheld tool rejects as `forbidden`.
+
+Each tells the agent to use `codemode`, which requires `lab` or `lab:admin`, and
+to reconnect the client with the `lab` scope if it only holds `lab:read`.
 
 The old `trusted_read_only_tools` configuration field is retired. It remains
 accepted so an existing config file still parses, but it has no effect anywhere:
@@ -112,18 +119,24 @@ point in a fixed order:
    cause most failures: reduce results, the default time/call/size budgets,
    `codemode.batch()` for fan-out, and returning caught errors so their
    `recovery.guidance` reaches the caller.
-3. One example call built from a real upstream tool's input schema. A
-   read-only tool is preferred; `codemode_read` never shows any other kind.
-   Without a live tool, the example is a search-first run.
+3. One example call built from a real, explicitly read-only upstream tool,
+   because models copy examples verbatim. Its arguments are `"<name>"`
+   placeholders for the first required parameters. Only upstream tool and
+   parameter *names* are rendered, and only when they are identifier-like and
+   at most 64 bytes; enum values and descriptions never are. Without such a
+   tool, the example is a search-first run.
 4. `## Upstreams`: one line per enabled, route-visible upstream with its
    `code_mode_hint`. The list is trimmed by whole lines under the 8 KB cap and
    ends with a pointer to `codemode.search()`.
 
 Details the runtime already reports when they matter (error recovery
 metadata, truncation markers, `describe()` declarations) are not repeated in
-the description. The example tool is remembered per upstream config
-fingerprint, so health changes do not alter the descriptor contract hash or
-invalidate `tools/list` cursors.
+the description. The example tool is remembered for the current runtime config
+generation, so health changes do not alter the descriptor contract hash or
+invalidate `tools/list` cursors. It appears once a qualifying upstream first
+connects (a one-time `tools/list_changed`), resets on any config change, and is
+dropped only when a healthy upstream shows the tool is gone or no longer
+read-only.
 
 ### Capability catalog
 
@@ -559,18 +572,35 @@ When search results do not match live execution, check the layers in order:
 capability set. When present, each filter must be a JSON array of strings; other
 shapes reject with `invalid_param`. Empty strings are ignored. The injected proxy only
 includes allowed tools, and direct `callTool` IDs outside the allowlist reject as
-`unknown_tool` with guidance naming the in-scope upstreams.
+`unknown_tool`, naming the in-scope upstreams or listing the allowed tools.
+
+Filter names fail closed: every `upstreams` entry, and the namespace of every
+`upstream::tool` entry in `tools`, must name an upstream the caller can use or
+a built-in provider namespace (`unraid`, `state`, `git`, `openapi`, exported by
+the crates that own them). Anything else rejects as `unknown_upstream` instead
+of silently producing an empty run.
 
 Upstream names match regardless of ASCII case and `-`/`_`/`.` separators,
 because discovery renders a configured `claude-macpoo` as the JS identifier
-`claude_macpoo`. The rule applies to `upstreams`, `tools`, and `callTool` ids,
-and to `describe` for withheld tools. An exact configured name always wins. An
-alias matching several configured names fails closed with `invalid_param` and
-lists them. A name that matches nothing rejects as `unknown_upstream` with a
-"Did you mean" suggestion, or a bounded list of known upstreams when nothing is
-close. Suggestions only draw from upstreams visible to the caller: route-scoped
-callers never see names outside their route, and priority-0 upstreams are never
-suggested.
+`claude_macpoo`. The rule applies to `upstreams`, `tools`, `callTool` ids, and
+`describe` for withheld tools. An exact name always wins. An alias matching
+several usable names fails closed with `invalid_param` and lists them.
+
+Every name lookup considers only upstreams the caller can use: enabled,
+routable (priority above 0), and inside its route or capability scope. On a
+protected route, "configured but outside this route" and "does not exist" get
+the same `unknown_upstream` error, whose "Did you mean" suggestions or known-
+upstream list come only from that usable set. An in-scope upstream that is
+disabled is reported as `unavailable`, asking the operator to enable it.
+Requested names are echoed bounded to 128 bytes, and names longer than that get
+no suggestions.
+
+The proxy exposes each tool under its sanitized helper
+(`codemode.claude_macpoo.get_issue`) and also under the raw names
+(`codemode["claude-macpoo"]["get-issue"]`). A raw-name alias never replaces a
+built-in helper or a sanitized key. `codemode.search()` results include each
+tool's `helper`, and `codemode.describe()` accepts a returned `path`, `id`, or
+`helper` exactly.
 
 ## Result Contract
 

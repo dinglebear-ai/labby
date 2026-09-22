@@ -16,6 +16,11 @@ pub(crate) const CODE_MODE_DESCRIPTION_MAX_BYTES: usize = 8192;
 /// Most required parameters rendered into a generated example call.
 const EXAMPLE_MAX_PARAMS: usize = 3;
 
+/// Longest upstream-supplied tool or parameter name rendered into the
+/// description. Upstream text lands in the client-visible prefix, so it is
+/// bounded and restricted to identifier-like characters.
+const EXAMPLE_MAX_NAME_BYTES: usize = 64;
+
 /// Which Code Mode entry point a description is rendered for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CodeModeDescriptionVariant {
@@ -48,38 +53,56 @@ pub(crate) struct CodeModeExampleCall {
 
 impl CodeModeExampleCall {
     /// Build an example from a tool's input schema: its first few required
-    /// parameters with type-appropriate placeholder values.
+    /// parameters, each with a `"<name>"` placeholder that is obviously not a
+    /// real value. Only upstream *names* are rendered, never enum values or
+    /// descriptions, and only when they are short and identifier-like.
+    /// Returns `None` when the tool is not usable as an example.
     pub(crate) fn from_tool(
         tool: &str,
         input_schema: &serde_json::Map<String, Value>,
         read_only: bool,
-    ) -> Self {
-        let properties = input_schema.get("properties").and_then(Value::as_object);
+    ) -> Option<Self> {
+        if !read_only || !example_safe_name(tool, &['_', '-', '.']) {
+            return None;
+        }
         let required = input_schema
             .get("required")
             .and_then(Value::as_array)
             .map(Vec::as_slice)
-            .unwrap_or_default();
-        let fields = required
+            .unwrap_or_default()
             .iter()
             .filter_map(Value::as_str)
             .take(EXAMPLE_MAX_PARAMS)
-            .map(|name| {
-                let schema = properties.and_then(|props| props.get(name));
-                format!("{}: {}", js_key(name), placeholder(schema))
-            })
+            .collect::<Vec<_>>();
+        if !required
+            .iter()
+            .all(|name| example_safe_name(name, &['_', '-', '$']))
+        {
+            return None;
+        }
+        let fields = required
+            .iter()
+            .map(|name| format!("{}: \"<{name}>\"", js_key(name)))
             .collect::<Vec<_>>();
         let args = if fields.is_empty() {
             "{}".to_string()
         } else {
             format!("{{ {} }}", fields.join(", "))
         };
-        Self {
+        Some(Self {
             tool: tool.to_string(),
             args,
             read_only,
-        }
+        })
     }
+}
+
+fn example_safe_name(name: &str, extra: &[char]) -> bool {
+    !name.is_empty()
+        && name.len() <= EXAMPLE_MAX_NAME_BYTES
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || extra.contains(&ch))
 }
 
 fn js_key(name: &str) -> String {
@@ -93,45 +116,15 @@ fn js_key(name: &str) -> String {
     if identifier {
         name.to_string()
     } else {
-        serde_json::to_string(name).unwrap_or_else(|_| "\"\"".to_string())
+        format!("\"{name}\"")
     }
-}
-
-fn placeholder(schema: Option<&Value>) -> String {
-    let Some(schema) = schema else {
-        return "\"...\"".to_string();
-    };
-    if let Some(first) = schema
-        .get("enum")
-        .and_then(Value::as_array)
-        .and_then(|values| values.first())
-    {
-        return first.to_string();
-    }
-    let kind = match schema.get("type") {
-        Some(Value::String(kind)) => kind.as_str(),
-        Some(Value::Array(kinds)) => kinds
-            .iter()
-            .filter_map(Value::as_str)
-            .find(|kind| *kind != "null")
-            .unwrap_or("string"),
-        _ => "string",
-    };
-    match kind {
-        "integer" | "number" => "1",
-        "boolean" => "true",
-        "array" => "[]",
-        "object" => "{}",
-        _ => "\"...\"",
-    }
-    .to_string()
 }
 
 fn header(variant: CodeModeDescriptionVariant) -> &'static str {
     match variant {
         CodeModeDescriptionVariant::Read => {
             "Read-only Code Mode: run JavaScript that calls only upstream MCP tools annotated \
-`readOnlyHint: true`. Nothing can be changed and `writeArtifact` is unavailable. To change \
+`readOnlyHint: true`. Nothing can be changed; `writeArtifact` calls are rejected. To change \
 state, use `codemode` (requires the `lab` scope). `codemode.search()` reports tools hidden \
 by this restriction."
         }
@@ -151,18 +144,19 @@ const CORE: &str = "\
 Pass `code` as `async () => { ... }`; its return value is the result.
 
 Workflow:
-1. Find: `await codemode.search({ query: \"short intent\", limit: 5 })` returns paths and signatures.
-2. Check: `await codemode.describe(path)` returns TypeScript declarations. Output only reaches you \
-if the script returns it, so for an unfamiliar tool return `describe()` first and make the real \
-call in the next run.
-3. Call: `await codemode.<upstream>.<tool>(params)` or `await callTool(\"upstream::tool\", params)`.
+1. Find: `(await codemode.search({ query: \"short intent\", limit: 5 })).results` gives each \
+tool's `path`, `id`, `helper`, and `signature`.
+2. Check (only if the signature is not enough): return `await codemode.describe(path)` and call \
+in the next run; output only reaches you if the script returns it.
+3. Call the `helper` as given (e.g. `codemode.my_server.get_issue(params)`; `-`/`.` become \
+`_`), or `callTool(\"upstream::tool\", params)` with raw names.
 Never guess tool or parameter names.
 
 Rules:
-- Return only what is needed: select fields and slice arrays. Results over the budget (24 KB by \
-default) are truncated.
-- A run has 30 s and 512 tool calls by default. Fan out with `codemode.batch([() => ..., () => ...])`, \
-not `Promise.all`; it never rejects and resolves `{ ok, failed, all_ok }`.
+- Return only what is needed: select fields, slice arrays. Results over the budget \
+(24 KB default) are truncated.
+- Defaults: ~30 s and 512 tool calls per run. Fan out with `codemode.batch([() => ..., \
+() => ...])`, not `Promise.all`; it never rejects and resolves `{ ok, failed, all_ok }`.
 - A failed call rejects only its own promise. Catch it and return the error: its \
 `recovery.guidance` and `side_effects` say whether and how to retry.";
 
@@ -171,8 +165,8 @@ const WRITE_RULE: &str = "\
 before retrying.";
 
 const TAIL_RULES: &str = "\
-- No `fetch`, `fs`, `require`, or Node APIs; all I/O goes through tools. `lab::*` tools are \
-not available here; use Labby's own tools.
+- No `fetch`, `fs`, `require`, or Node APIs; all I/O goes through tools. Labby's own \
+services (e.g. `gateway`) are separate MCP tools, not callable here.
 - Optional inputs `upstreams` and `tools` narrow the run; upstream names ignore case and `-`/`_`.";
 
 fn globals_line(variant: CodeModeDescriptionVariant) -> &'static str {
@@ -184,40 +178,30 @@ fn globals_line(variant: CodeModeDescriptionVariant) -> &'static str {
     }
 }
 
-fn example_block(
-    variant: CodeModeDescriptionVariant,
-    upstreams: &[CodeModeUpstreamDescription],
-) -> String {
-    // Models copy the example, so prefer a read-only call even for the
-    // write-capable variants; `codemode_read` may only show read-only ones.
-    let pick = |read_only_only: bool| {
-        upstreams.iter().find_map(|upstream| {
-            upstream
-                .example
-                .as_ref()
-                .filter(|example| !read_only_only || example.read_only)
-                .map(|example| (upstream.name.as_str(), example))
-        })
-    };
-    let example = match variant {
-        CodeModeDescriptionVariant::Read => pick(true),
-        CodeModeDescriptionVariant::Full | CodeModeDescriptionVariant::Ui => {
-            pick(true).or_else(|| pick(false))
-        }
-    };
+fn example_block(upstreams: &[CodeModeUpstreamDescription]) -> String {
+    // Models copy the example verbatim, so it is only ever a read-only tool
+    // (enforced when the example is built) with placeholder arguments.
+    let example = upstreams.iter().find_map(|upstream| {
+        upstream
+            .example
+            .as_ref()
+            .filter(|example| example.read_only)
+            .map(|example| (upstream.name.as_str(), example))
+    });
     match example {
         Some((upstream, example)) => {
             let id = serde_json::to_string(&format!("{upstream}::{}", example.tool))
                 .unwrap_or_else(|_| "\"\"".to_string());
             format!(
-                "Example:\n```js\nasync () => {{\n  const result = await callTool({id}, {args});\n  \
-return result; // project or slice large results before returning\n}}\n```",
+                "Example (read-only; replace each <placeholder>):\n```js\nasync () => {{\n  \
+const result = await callTool({id}, {args});\n  return result; // select only the fields you \
+need\n}}\n```",
                 args = example.args
             )
         }
         None => "Example:\n```js\nasync () => {\n  const hits = await codemode.search({ query: \
-\"list open issues\", limit: 5 });\n  return hits.results.map(r => ({ path: r.path, signature: \
-r.signature }));\n}\n```"
+\"list open issues\", limit: 5 });\n  return hits.results.map(r => ({ helper: r.helper, \
+signature: r.signature }));\n}\n```"
             .to_string(),
     }
 }
@@ -265,7 +249,7 @@ pub(crate) fn code_mode_tool_description(
         "{}\n\n{rules}\n\n{}\n\n{}\n\n## Upstreams\n",
         header(variant),
         globals_line(variant),
-        example_block(variant, upstreams)
+        example_block(upstreams)
     );
 
     let trailer = trailer.trim();

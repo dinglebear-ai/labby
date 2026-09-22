@@ -873,17 +873,17 @@ fn scoped_call_id(
     if scope.allows(namespace, tool) {
         return Ok(raw.to_string());
     }
-    let Some(allowed) = scope.allowed_namespaces() else {
-        return Err(CodeModeCallError::new(
-            "unknown_tool",
-            format!(
-                "tool `{raw}` is outside this Code Mode execution capability set: it is not in the `tools` allowlist. Call a tool listed in the `tools` input, or rerun without that filter."
-            ),
-        )
-        .with_tool(raw.to_string()));
-    };
+    // Candidate namespaces: the explicit namespace scope, else namespaces
+    // named by `upstream::tool` entries in the tools allowlist.
+    let candidates = scope.allowed_namespaces().cloned().unwrap_or_else(|| {
+        scope
+            .allowed_tools()
+            .iter()
+            .filter_map(|id| crate::split_namespaced_id(id).map(|(ns, _)| ns.to_string()))
+            .collect()
+    });
     let resolved =
-        match crate::resolve_namespace_alias(namespace, allowed.iter().map(String::as_str)) {
+        match crate::resolve_namespace_alias(namespace, candidates.iter().map(String::as_str)) {
             crate::NamespaceResolution::Resolved(canonical) if canonical != namespace => {
                 Some(canonical)
             }
@@ -894,17 +894,32 @@ fn scoped_call_id(
     {
         return Ok(crate::types::namespaced_tool_id(canonical, tool));
     }
-    let message = if resolved.is_some() || allowed.contains(namespace) {
+    let shown = crate::display_name(raw);
+    let namespace_in_scope = scope
+        .allowed_namespaces()
+        .is_none_or(|allowed| resolved.is_some() || allowed.contains(namespace));
+    let message = if namespace_in_scope {
+        const MAX_LISTED_TOOLS: usize = 25;
+        let tools = scope.allowed_tools();
+        let listed = crate::backtick_list(tools.iter().take(MAX_LISTED_TOOLS).map(String::as_str));
+        let more = tools.len().saturating_sub(MAX_LISTED_TOOLS);
+        let more = if more > 0 {
+            format!(" (and {more} more)")
+        } else {
+            String::new()
+        };
         format!(
-            "tool `{raw}` is outside this Code Mode execution capability set: it is not in the `tools` allowlist. Call a tool listed in the `tools` input, or rerun without that filter."
+            "tool `{shown}` is outside this Code Mode execution capability set: it is not in the `tools` allowlist. Allowed: {listed}{more}. Call one of those, or rerun without the `tools` filter."
         )
     } else {
+        let allowed = scope.allowed_namespaces().cloned().unwrap_or_default();
         format!(
-            "tool `{raw}` is outside this Code Mode execution capability set: upstream `{namespace}` is not in scope. {} Use codemode.search() to find a valid `upstream::tool` id.",
-            crate::unknown_namespace_guidance(namespace, allowed)
+            "tool `{shown}` is outside this Code Mode execution capability set: upstream `{}` is not in scope. {} Use codemode.search() to find a valid `upstream::tool` id.",
+            crate::display_name(namespace),
+            crate::unknown_namespace_guidance(namespace, &allowed)
         )
     };
-    Err(CodeModeCallError::new("unknown_tool", message).with_tool(raw.to_string()))
+    Err(CodeModeCallError::new("unknown_tool", message).with_tool(shown))
 }
 
 #[cfg(test)]
@@ -961,6 +976,25 @@ mod scoped_call_id_tests {
     }
 
     #[test]
+    fn alias_resolves_against_namespaces_named_in_the_tools_allowlist() {
+        let id = scoped_call_id(
+            &scope(&[], &["claude-macpoo::Bash"]),
+            "claude_macpoo::Bash",
+            "claude_macpoo",
+            "Bash",
+        )
+        .expect("alias of an allowlisted id");
+        assert_eq!(id, "claude-macpoo::Bash");
+    }
+
+    #[test]
+    fn ambiguous_scoped_alias_is_rejected() {
+        let err = scoped_call_id(&scope(&["a-b", "a_b"], &[]), "A-B::x", "A-B", "x")
+            .expect_err("two scoped namespaces share the alias key");
+        assert_eq!(err.kind(), "unknown_tool");
+    }
+
+    #[test]
     fn tool_outside_tools_allowlist_says_so() {
         let err = scoped_call_id(
             &scope(&["claude-macpoo"], &["claude-macpoo::Read"]),
@@ -970,6 +1004,10 @@ mod scoped_call_id_tests {
         )
         .expect_err("tool not allowlisted");
         assert!(err.to_string().contains("`tools` allowlist"), "{err}");
+        assert!(
+            err.to_string().contains("Allowed: `claude-macpoo::Read`"),
+            "{err}"
+        );
     }
 }
 

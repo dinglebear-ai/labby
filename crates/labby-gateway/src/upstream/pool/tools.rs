@@ -317,6 +317,49 @@ impl UpstreamPool {
         selected.into_iter().cloned().collect()
     }
 
+    /// The exposed, explicitly read-only tool with the smallest name on a
+    /// routable upstream, as `(name, input schema)`. Scans borrowed entries and
+    /// clones only the chosen name and schema `Arc`.
+    pub async fn read_only_example_tool(
+        &self,
+        upstream: &str,
+    ) -> Option<(String, std::sync::Arc<serde_json::Map<String, Value>>)> {
+        let catalog = self.catalog.read().await;
+        let entry = catalog
+            .get(upstream)
+            .filter(|entry| entry.tool_health.is_routable())?;
+        entry
+            .tools
+            .values()
+            .filter(|tool| {
+                entry.exposure_policy.matches(tool.tool.name.as_ref())
+                    && crate::gateway::code_mode::code_mode_host::tool_is_explicitly_read_only(tool)
+            })
+            .min_by(|left, right| left.tool.name.cmp(&right.tool.name))
+            .map(|tool| {
+                (
+                    tool.tool.name.to_string(),
+                    std::sync::Arc::clone(&tool.tool.input_schema),
+                )
+            })
+    }
+
+    /// Whether `tool` is still an exposed, explicitly read-only tool of
+    /// `upstream`. `None` when the upstream is not currently routable, so the
+    /// caller cannot tell and should keep what it has.
+    pub async fn read_only_tool_still_present(&self, upstream: &str, tool: &str) -> Option<bool> {
+        let catalog = self.catalog.read().await;
+        let entry = catalog
+            .get(upstream)
+            .filter(|entry| entry.tool_health.is_routable())?;
+        Some(entry.tools.get(tool).is_some_and(|candidate| {
+            entry.exposure_policy.matches(tool)
+                && crate::gateway::code_mode::code_mode_host::tool_is_explicitly_read_only(
+                    candidate,
+                )
+        }))
+    }
+
     /// Inspect at most `inspection_limit` exposed tools and retain the highest
     /// scoring `limit` without cloning discarded schemas.
     pub async fn healthy_tools_for_upstream_ranked_bounded(

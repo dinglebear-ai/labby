@@ -231,11 +231,14 @@ function __codemodeAliasKey(value) {{
 }}
 function __codemodeWithheldSummary(items) {{
   return items.slice(0, 10).map(function(w) {{
-    return {{ namespace: w.namespace, tool_count: w.tool_count, guidance: w.guidance }};
+    return {{ namespace: w.namespace, tool_count: w.tool_count }};
   }});
 }}
-function __codemodeWithheldForSearch(tokens, total) {{
-  if (!__codemodeWithheld.length) return [];
+// Withheld upstreams the query names explicitly. Never consulted when a kind
+// filter excludes tools: snippet/prompt searches cannot be explained by the
+// read-only tool gate.
+function __codemodeWithheldNamed(tokens, hasKindFilter, kindFilter) {{
+  if (!__codemodeWithheld.length || (hasKindFilter && !kindFilter["tool"])) return [];
   var hits = [];
   for (var w = 0; w < __codemodeWithheld.length; w++) {{
     var ns = __codemodeNormalize(__codemodeWithheld[w].namespace);
@@ -243,14 +246,20 @@ function __codemodeWithheldForSearch(tokens, total) {{
       if (ns.indexOf(tokens[t]) !== -1) {{ hits.push(__codemodeWithheld[w]); break; }}
     }}
   }}
-  if (!hits.length && total === 0) hits = __codemodeWithheld.slice();
   return hits;
 }}
 function __codemodeWithheldHint(hits) {{
   if (hits.length === 1) return hits[0].guidance;
   var tools = 0;
   for (var i = 0; i < hits.length; i++) tools += hits[i].tool_count;
-  return tools + " tools across " + hits.length + " upstreams are hidden because this is a read-only Code Mode run (`codemode_read`) and those upstreams do not annotate them `readOnlyHint: true`. Use the `codemode` tool to reach them (requires the `lab` or `lab:admin` scope); if this client only holds `lab:read`, reconnect it with the `lab` scope. See `withheld` for the affected upstreams.";
+  return tools + " tools across " + hits.length + " upstreams are hidden because this is a read-only Code Mode run (`codemode_read`) and those upstreams do not annotate them `readOnlyHint: true`. Use the `codemode` tool to reach them (requires the `lab` or `lab:admin` scope); if this client only holds `lab:read`, reconnect it with the `lab` scope. `withheld` lists the affected upstreams.";
+}}
+// Secondary note for a search that found nothing at all: the gate *may* be
+// why, but the query is the likelier cause, so the no-match hint stays first.
+function __codemodeWithheldMaybe() {{
+  var tools = 0;
+  for (var i = 0; i < __codemodeWithheld.length; i++) tools += __codemodeWithheld[i].tool_count;
+  return " This read-only run also hides " + tools + " tool(s) that lack `readOnlyHint: true` (see `withheld`); if what you need is one of them, use the `codemode` tool (requires the `lab` scope).";
 }}
 function __codemodeWithheldTarget(raw) {{
   var ns = raw;
@@ -261,6 +270,13 @@ function __codemodeWithheldTarget(raw) {{
     if (__codemodeWithheld[w].key === key || __codemodeWithheld[w].helper === ns) return __codemodeWithheld[w];
   }}
   return null;
+}}
+function __codemodeNamespaceHasVisibleTools(withheld) {{
+  for (var i = 0; i < __codemodeDiscovery.length; i++) {{
+    var entry = __codemodeDiscovery[i];
+    if (entry.kind === "tool" && __codemodeAliasKey(entry.namespace) === withheld.key) return true;
+  }}
+  return false;
 }}
 function __codemodeNormalize(value) {{
   return String(value == null ? "" : value)
@@ -318,6 +334,7 @@ codemode.search = async function(input) {{
       var record = {{
         path: entry.path,
         id: entry.id,
+        helper: entry.helper,
         kind: entry.kind,
         namespace: entry.namespace,
         name: entry.name,
@@ -387,7 +404,7 @@ codemode.search = async function(input) {{
           var de = __codemodeDiscovery[d];
           if (hasKindFilter && !kindFilter[String(de.kind)]) break;
           var record2 = {{
-            path: de.path, id: de.id, kind: de.kind, namespace: de.namespace,
+            path: de.path, id: de.id, helper: de.helper, kind: de.kind, namespace: de.namespace,
             name: de.name, description: de.description, signature: de.signature,
             safety: de.safety,
             tools: de.tools,
@@ -415,17 +432,20 @@ codemode.search = async function(input) {{
     return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
   }});
   var total = scored.length;
-  var withheldHits = __codemodeWithheldForSearch(tokens, total);
+  var withheldHits = __codemodeWithheldNamed(tokens, hasKindFilter, kindFilter);
   if (total === 0) {{
     var empty = {{ results: [], total: 0, truncated: false, hint: __codemodeNoMatchHint }};
     if (withheldHits.length) {{
       empty.hint = __codemodeWithheldHint(withheldHits);
       empty.withheld = __codemodeWithheldSummary(withheldHits);
+    }} else if (__codemodeWithheld.length && !(hasKindFilter && !kindFilter["tool"])) {{
+      empty.hint = __codemodeNoMatchHint + __codemodeWithheldMaybe();
+      empty.withheld = __codemodeWithheldSummary(__codemodeWithheld);
     }}
     return empty;
   }}
   var results = scored.slice(0, limit).map(function(r) {{
-    return {{ path: r.path, id: r.id, kind: r.kind, namespace: r.namespace, name: r.name, description: r.description, signature: r.signature, tags: r.tags, tools: r.tools, safety: r.safety, score: r.score }};
+    return {{ path: r.path, id: r.id, helper: r.helper, kind: r.kind, namespace: r.namespace, name: r.name, description: r.description, signature: r.signature, tags: r.tags, tools: r.tools, safety: r.safety, score: r.score }};
   }});
   var found = {{ results: results, total: total, truncated: total > limit }};
   if (withheldHits.length) {{
@@ -468,7 +488,8 @@ codemode.describe = async function(target) {{
   }}
   if (!exact.length) {{
     var withheldTarget = __codemodeWithheldTarget(raw);
-    if (withheldTarget) {{
+    var unknownMessage = "No Code Mode discovery target matched `" + raw + "`. Run codemode.search({{ query: \"<intent>\" }}) and pass a returned `path`, `id`, or `helper` exactly; tool names are case-sensitive.";
+    if (withheldTarget && !__codemodeNamespaceHasVisibleTools(withheldTarget)) {{
       throw new Error(JSON.stringify({{
         kind: "forbidden",
         reason: "read_only_withheld",
@@ -476,10 +497,10 @@ codemode.describe = async function(target) {{
         message: "`" + raw + "` is not available in this run. " + withheldTarget.guidance
       }}));
     }}
-    throw new Error(JSON.stringify({{
-      kind: "unknown_tool",
-      message: "No Code Mode discovery target matched `" + raw + "`. Run codemode.search({{ query: \"<intent>\" }}) and pass a returned `path` or `id` exactly; tool names are case-sensitive."
-    }}));
+    if (withheldTarget) {{
+      unknownMessage += " Some tools from upstream `" + withheldTarget.namespace + "` are also hidden in this read-only run; if you need one of them, use the `codemode` tool (requires the `lab` scope).";
+    }}
+    throw new Error(JSON.stringify({{ kind: "unknown_tool", message: unknownMessage }}));
   }}
   if (exact.length > 1) {{
     throw new Error(JSON.stringify({{
@@ -741,6 +762,10 @@ pub(crate) fn generate_js_proxy_from_catalog(
     }
 
     let mut parts = String::new();
+    // Raw-name aliases (`codemode["claude-macpoo"]["get-issue"]`) emitted
+    // after every sanitized key exists; guarded so they never replace a
+    // helper or a sanitized key.
+    let mut raw_aliases = String::new();
     let mut by_snake_namespace: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut final_proxy_keys: BTreeMap<(String, String), (String, String)> = BTreeMap::new();
     for (namespace_name, namespace_tools) in &by_namespace {
@@ -783,6 +808,26 @@ pub(crate) fn generate_js_proxy_from_catalog(
             method_defs.push(format!(
                 "    {snake_json}: function(p) {{ return callTool({tool_id_json}, p == null ? {{}} : p); }}"
             ));
+            if dotted != snake {
+                let raw_tool_json = serde_json::to_string(dotted.as_str())
+                    .unwrap_or_else(|_| "\"unknown\"".to_string());
+                let namespace_json = serde_json::to_string(&namespace_snake)
+                    .unwrap_or_else(|_| "\"unknown\"".to_string());
+                let _ = writeln!(
+                    raw_aliases,
+                    "if (!Object.prototype.hasOwnProperty.call(codemode[{namespace_json}], {raw_tool_json})) codemode[{namespace_json}][{raw_tool_json}] = codemode[{namespace_json}][{snake_json}];"
+                );
+            }
+        }
+        if *namespace_name != namespace_snake {
+            let raw_json =
+                serde_json::to_string(namespace_name).unwrap_or_else(|_| "\"unknown\"".to_string());
+            let snake_json = serde_json::to_string(&namespace_snake)
+                .unwrap_or_else(|_| "\"unknown\"".to_string());
+            let _ = writeln!(
+                raw_aliases,
+                "if (!Object.prototype.hasOwnProperty.call(codemode, {raw_json})) codemode[{raw_json}] = codemode[{snake_json}];"
+            );
         }
     }
 
@@ -800,7 +845,7 @@ pub(crate) fn generate_js_proxy_from_catalog(
         "// Code Mode proxy — auto-generated\n\
          globalThis.codemode = globalThis.codemode || {{}};\n\
          var codemode = globalThis.codemode;\n\
-         {parts}"
+         {parts}{raw_aliases}"
     ))
 }
 
@@ -1224,9 +1269,17 @@ mod tests {
             js.contains("codemode[\"arcane_mcp\"]"),
             "hyphenated namespace key must be snake_cased: {js}"
         );
+        // The raw name is only an alias of the snake-cased object, for
+        // agents that copy the configured upstream name verbatim.
         assert!(
-            !js.contains("codemode[\"arcane-mcp\"]"),
-            "raw hyphenated key would only be bracket-accessible"
+            js.contains(
+                "if (!Object.prototype.hasOwnProperty.call(codemode, \"arcane-mcp\")) codemode[\"arcane-mcp\"] = codemode[\"arcane_mcp\"];"
+            ),
+            "raw hyphenated key must alias the snake-cased object: {js}"
+        );
+        assert!(
+            !js.contains("codemode[\"arcane-mcp\"] = {"),
+            "raw key must not get its own proxy object: {js}"
         );
         assert!(
             js.contains("arcane-mcp::arcane"),

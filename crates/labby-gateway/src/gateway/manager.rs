@@ -160,7 +160,7 @@ pub struct GatewayManager {
         Arc<dashmap::DashMap<String, tokio_util::sync::CancellationToken>>,
     pub(super) code_mode_app_state: CodeModeAppState,
     lazy_pool_init: Arc<Mutex<()>>,
-    pub(super) code_mode_example_memo: code_mode_resolve::CodeModeExampleMemo,
+    code_mode_example_memo: code_mode_resolve::SharedCodeModeExampleMemo,
     notifier: Option<CatalogChangeNotifier>,
     pub(super) oauth_client_cache: Option<OauthClientCache>,
     pub(super) upstream_oauth_managers: Option<Arc<dashmap::DashMap<String, UpstreamOauthManager>>>,

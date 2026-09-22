@@ -349,17 +349,29 @@ fn javy_describe_keeps_future_catalog_kinds_metadata_only() {
 }
 
 fn run_withheld_discovery_script(body: &str) -> serde_json::Value {
+    run_withheld_discovery_script_with("annotated", body)
+}
+
+/// `visible_namespace` hosts the one visible tool; `claude-macpoo` and
+/// `annotated` are both reported as withheld.
+fn run_withheld_discovery_script_with(visible_namespace: &str, body: &str) -> serde_json::Value {
     let tool = CodeModeDiscoveryEntry::from_catalog(&CatalogDescriptor::tool(
-        "annotated",
+        visible_namespace,
         "lookup",
         "Look up a record",
         None,
         None,
     ));
-    let withheld = [crate::host::WithheldTools {
-        namespace: "claude-macpoo".to_string(),
-        tool_count: 25,
-    }];
+    let withheld = [
+        crate::host::WithheldTools {
+            namespace: "claude-macpoo".to_string(),
+            tool_count: 25,
+        },
+        crate::host::WithheldTools {
+            namespace: "annotated".to_string(),
+            tool_count: 1,
+        },
+    ];
     let preamble = super::generate_discovery_js_with_withheld(&[tool], 0.5, &withheld).unwrap();
     let script = format!(
         "{preamble}\n\
@@ -383,18 +395,32 @@ fn run_withheld_discovery_script(body: &str) -> serde_json::Value {
 }
 
 #[test]
-fn javy_empty_read_only_search_explains_withheld_tools() {
+fn javy_empty_read_only_search_keeps_no_match_hint_first() {
     let value = run_withheld_discovery_script(
         "globalThis.result = JSON.stringify(await codemode.search({query: 'Bash'}));",
     );
 
     assert_eq!(value["total"], 0, "{value}");
+    let hint = value["hint"].as_str().unwrap();
+    assert!(hint.starts_with("No matches."), "{hint}");
+    assert!(hint.contains("use the `codemode` tool"), "{hint}");
     assert_eq!(value["withheld"][0]["namespace"], "claude-macpoo");
     assert_eq!(value["withheld"][0]["tool_count"], 25);
-    let hint = value["hint"].as_str().unwrap();
-    assert!(hint.contains("`claude-macpoo`"), "{hint}");
-    assert!(hint.contains("Use the `codemode` tool"), "{hint}");
-    assert!(hint.contains("`lab` scope"), "{hint}");
+    assert!(value["withheld"][0].get("guidance").is_none(), "{value}");
+}
+
+#[test]
+fn javy_snippet_only_search_never_blames_the_read_only_gate() {
+    let value = run_withheld_discovery_script(
+        "globalThis.result = JSON.stringify(await codemode.search({query: 'claude_macpoo', kinds: ['snippet']}));",
+    );
+
+    assert_eq!(value["total"], 0, "{value}");
+    assert!(value.get("withheld").is_none(), "{value}");
+    assert!(
+        !value["hint"].as_str().unwrap().contains("codemode_read"),
+        "{value}"
+    );
 }
 
 #[test]
@@ -443,6 +469,92 @@ fn javy_describe_withheld_tool_explains_read_only_gate() {
                 .contains("Use the `codemode` tool")
         );
     }
+}
+
+#[test]
+fn javy_describe_typo_in_partly_visible_namespace_is_unknown_tool() {
+    let value = run_withheld_discovery_script_with(
+        "annotated",
+        "try { await codemode.describe('annotated.lookupp'); } catch (error) { globalThis.result = error.message; }",
+    );
+
+    assert_eq!(value["kind"], "unknown_tool", "{value}");
+    let message = value["message"].as_str().unwrap();
+    assert!(message.contains("codemode.search"), "{message}");
+    assert!(message.contains("also hidden"), "{message}");
+}
+
+#[test]
+fn javy_alias_key_matches_rust_namespace_alias_key() {
+    let cases = [
+        "claude-macpoo",
+        "Claude_MacPoo",
+        " a.b c ",
+        "UPPER-lower_mixed.dots",
+        "plain",
+    ];
+    let preamble = super::generate_discovery_js_with_withheld(&[], 0.5, &[]).unwrap();
+    let script = format!(
+        "{preamble}\nglobalThis.result = JSON.stringify({}.map(__codemodeAliasKey));",
+        serde_json::to_string(&cases).unwrap()
+    );
+    let mut config = javy::Config::default();
+    config.memory_limit(8 * 1024 * 1024);
+    let runtime = javy::Runtime::new(config).unwrap();
+    runtime
+        .context()
+        .with(|cx| cx.eval::<(), _>(script))
+        .unwrap();
+    let result: String = runtime
+        .context()
+        .with(|cx| cx.globals().get("result"))
+        .unwrap();
+    let js: Vec<String> = serde_json::from_str(&result).unwrap();
+    let rust: Vec<String> = cases
+        .iter()
+        .map(|case| crate::namespace_alias_key(case))
+        .collect();
+    assert_eq!(js, rust);
+}
+
+#[test]
+fn javy_proxy_accepts_raw_hyphenated_names_without_clobbering_helpers() {
+    let tools = [
+        CatalogDescriptor::tool("claude-macpoo", "get-issue", "fixture", None, None),
+        CatalogDescriptor::tool("search", "lookup", "fixture", None, None),
+    ];
+    let refs = tools.iter().collect::<Vec<_>>();
+    let discovery = super::generate_discovery_js_with_withheld(&[], 0.5, &[]).unwrap();
+    let proxy = super::generate_js_proxy_from_catalog(&refs).unwrap();
+    let script = format!(
+        "{discovery}\n{proxy}\n\
+         globalThis.calls = [];\n\
+         globalThis.callTool = async (id) => {{ calls.push(id); return {{}}; }};\n\
+         (async () => {{\n\
+           await codemode.claude_macpoo.get_issue({{}});\n\
+           await codemode['claude-macpoo']['get-issue']({{}});\n\
+           globalThis.result = JSON.stringify({{ calls, searchIsHelper: typeof codemode.search === 'function' }});\n\
+         }})().catch(error => {{ globalThis.result = JSON.stringify({{error: String(error)}}); }});"
+    );
+    let mut config = javy::Config::default();
+    config.memory_limit(8 * 1024 * 1024);
+    let runtime = javy::Runtime::new(config).unwrap();
+    runtime
+        .context()
+        .with(|cx| cx.eval::<(), _>(script))
+        .unwrap();
+    runtime.resolve_pending_jobs().unwrap();
+    let result: String = runtime
+        .context()
+        .with(|cx| cx.globals().get("result"))
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_str(&result).unwrap();
+    assert!(value.get("error").is_none(), "{value}");
+    assert_eq!(
+        value["calls"],
+        serde_json::json!(["claude-macpoo::get-issue", "claude-macpoo::get-issue"])
+    );
+    assert_eq!(value["searchIsHelper"], true);
 }
 
 #[test]

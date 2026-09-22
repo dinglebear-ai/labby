@@ -3234,40 +3234,200 @@ async fn canonical_code_mode_upstream_suggestions_respect_scope_and_priority() {
     assert!(!message.contains("secret-beta"), "{message}");
     assert!(!message.contains("scoped-out-beta"), "{message}");
     assert!(message.contains("`alpha`"), "{message}");
+
+    // An exact out-of-scope name is indistinguishable from a missing one.
+    let hidden = manager
+        .canonical_code_mode_upstream("scoped-out-beta", &scope)
+        .await
+        .expect_err("out of scope");
+    let missing = manager
+        .canonical_code_mode_upstream("nothing-here", &scope)
+        .await
+        .expect_err("missing");
+    assert_eq!(hidden.kind(), "unknown_upstream");
+    assert_eq!(
+        hidden.to_string().replace("scoped-out-beta", "X"),
+        missing.to_string().replace("nothing-here", "X")
+    );
 }
 
 #[tokio::test]
-async fn code_mode_example_tools_are_sticky_until_config_changes() {
+async fn canonical_code_mode_upstream_ignores_out_of_scope_alias_siblings() {
+    let (manager, _pool) = code_mode_manager_with_upstreams(vec![
+        fixture_http_upstream("foo-bar"),
+        fixture_http_upstream("foo_bar"),
+    ])
+    .await;
+    let scope = ToolScope::scoped_namespaces(vec!["foo-bar".to_string()], Vec::new());
+
+    assert_eq!(
+        manager
+            .canonical_code_mode_upstream("Foo_Bar", &scope)
+            .await
+            .expect("only the in-scope sibling is a candidate"),
+        "foo-bar"
+    );
+}
+
+#[tokio::test]
+async fn canonical_code_mode_upstream_explains_disabled_in_scope_upstreams() {
+    let mut disabled = fixture_http_upstream("claude-macpoo");
+    disabled.enabled = false;
+    let (manager, _pool) =
+        code_mode_manager_with_upstreams(vec![disabled, fixture_http_upstream("github")]).await;
+
+    let err = manager
+        .canonical_code_mode_upstream("claude_macpoo", &ToolScope::default())
+        .await
+        .expect_err("disabled upstream");
+    assert_eq!(err.kind(), "unavailable");
+    assert!(err.to_string().contains("configured but disabled"), "{err}");
+
+    // Out of scope, the same disabled upstream is simply unknown.
+    let scope = ToolScope::scoped_namespaces(vec!["github".to_string()], Vec::new());
+    let err = manager
+        .canonical_code_mode_upstream("claude_macpoo", &scope)
+        .await
+        .expect_err("hidden");
+    assert_eq!(err.kind(), "unknown_upstream");
+    assert!(!err.to_string().contains("disabled"), "{err}");
+}
+
+fn example_entry(upstream: &str, tools: &[(&str, bool)]) -> UpstreamEntry {
+    let upstream_name: Arc<str> = Arc::from(upstream);
+    let tools = tools
+        .iter()
+        .map(|(name, read_only)| {
+            let mut tool = rmcp::model::Tool::new(
+                (*name).to_string(),
+                format!("{name} description"),
+                Arc::new(serde_json::Map::new()),
+            );
+            if *read_only {
+                tool.annotations = Some(rmcp::model::ToolAnnotations::new().read_only(true));
+            }
+            (
+                (*name).to_string(),
+                UpstreamTool {
+                    tool,
+                    input_schema: None,
+                    output_schema: None,
+                    upstream_name: Arc::clone(&upstream_name),
+                    destructive: false,
+                },
+            )
+        })
+        .collect();
+    fixture_upstream_entry(upstream, tools)
+}
+
+fn names(values: &[&str]) -> std::collections::BTreeSet<String> {
+    values.iter().map(|value| (*value).to_string()).collect()
+}
+
+#[tokio::test]
+async fn code_mode_example_tool_is_sticky_but_drops_vanished_tools() {
     let (manager, pool) = code_mode_manager_with_pool(fixture_http_upstream("claude-macpoo")).await;
+    let upstreams = names(&["claude-macpoo"]);
     pool.insert_entry_for_tests(
         "claude-macpoo",
-        healthy_entry_with_tool("claude-macpoo", "Bash"),
+        example_entry("claude-macpoo", &[("Read", true)]),
     )
     .await;
-    let names = vec!["claude-macpoo".to_string()];
+    let (_, first) = manager
+        .code_mode_example_tool(&upstreams)
+        .await
+        .expect("example");
+    assert_eq!(first.tool, "Read");
 
-    let first = manager.code_mode_example_tools(&names).await;
-    assert_eq!(first["claude-macpoo"].tool, "Bash");
-
-    // A catalog change (health flap, reconnect) must not change the example:
-    // it feeds the descriptor contract hash and pagination cursors.
+    // A reconnect that adds a smaller-named tool must not change the example:
+    // descriptors feed the contract hash and tools/list cursors.
     pool.insert_entry_for_tests(
         "claude-macpoo",
-        healthy_entry_with_tool("claude-macpoo", "Read"),
+        example_entry("claude-macpoo", &[("Glob", true), ("Read", true)]),
     )
     .await;
-    let second = manager.code_mode_example_tools(&names).await;
-    assert_eq!(second["claude-macpoo"].tool, "Bash");
+    let (_, sticky) = manager
+        .code_mode_example_tool(&upstreams)
+        .await
+        .expect("example");
+    assert_eq!(sticky.tool, "Read");
+
+    // A healthy upstream that no longer has the tool as read-only drops it.
+    pool.insert_entry_for_tests(
+        "claude-macpoo",
+        example_entry("claude-macpoo", &[("Glob", true), ("Read", false)]),
+    )
+    .await;
+    let (_, replaced) = manager
+        .code_mode_example_tool(&upstreams)
+        .await
+        .expect("example");
+    assert_eq!(replaced.tool, "Glob");
 }
 
 #[tokio::test]
-async fn code_mode_example_tools_skip_upstreams_without_live_tools() {
-    let (manager, _pool) = code_mode_manager_with_pool(fixture_http_upstream("cold")).await;
+async fn code_mode_example_tool_only_uses_read_only_tools_and_skips_cold_upstreams() {
+    let (manager, pool) = code_mode_manager_with_upstreams(vec![
+        fixture_http_upstream("alpha"),
+        fixture_http_upstream("beta"),
+        fixture_http_upstream("gamma"),
+    ])
+    .await;
+    // alpha: cold. beta: only a mutating tool. gamma: a read-only tool.
+    pool.insert_entry_for_tests("beta", example_entry("beta", &[("Bash", false)]))
+        .await;
+    pool.insert_entry_for_tests("gamma", example_entry("gamma", &[("lookup", true)]))
+        .await;
 
+    let (upstream, example) = manager
+        .code_mode_example_tool(&names(&["alpha", "beta", "gamma"]))
+        .await
+        .expect("gamma has a read-only tool");
+    assert_eq!(
+        (upstream.as_str(), example.tool.as_str()),
+        ("gamma", "lookup")
+    );
     assert!(
         manager
-            .code_mode_example_tools(&["cold".to_string()])
+            .code_mode_example_tool(&names(&["alpha", "beta"]))
             .await
-            .is_empty()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn code_mode_example_tool_resets_when_the_config_generation_changes() {
+    let (manager, pool) = code_mode_manager_with_pool(fixture_http_upstream("claude-macpoo")).await;
+    let upstreams = names(&["claude-macpoo"]);
+    pool.insert_entry_for_tests(
+        "claude-macpoo",
+        example_entry("claude-macpoo", &[("Read", true)]),
+    )
+    .await;
+    assert_eq!(
+        manager
+            .code_mode_example_tool(&upstreams)
+            .await
+            .expect("example")
+            .1
+            .tool,
+        "Read"
+    );
+
+    pool.insert_entry_for_tests(
+        "claude-macpoo",
+        example_entry("claude-macpoo", &[("Glob", true), ("Read", true)]),
+    )
+    .await;
+    manager.advance_runtime_config_generation();
+    assert_eq!(
+        manager
+            .code_mode_example_tool(&upstreams)
+            .await
+            .expect("example")
+            .1
+            .tool,
+        "Glob"
     );
 }

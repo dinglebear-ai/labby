@@ -348,7 +348,7 @@ impl CodeModeHost for GatewayManager {
         };
         if scope
             .allowed_namespaces()
-            .is_some_and(|allowed| !allowed.contains("unraid"))
+            .is_some_and(|allowed| !allowed.contains(crate::core_provider::CORE_PROVIDER_NAMESPACE))
         {
             return Ok(render);
         }
@@ -387,7 +387,7 @@ impl CodeModeHost for GatewayManager {
                 message: format!("Code Mode ids must use <namespace>::<tool>: `{id}`"),
             })?;
 
-        if upstream == "unraid" {
+        if upstream == crate::core_provider::CORE_PROVIDER_NAMESPACE {
             return self
                 .call_core_provider(tool, params, caller, surface, scope, ctx)
                 .await;

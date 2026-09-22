@@ -63,6 +63,55 @@ enum InflightCodeModeRole {
     Follower(Arc<InflightCodeModeExecution>),
 }
 
+/// Key under which identical concurrent Code Mode runs share one execution.
+///
+/// Everything that can change what the run is allowed to do or whose
+/// authority it runs under must be part of the key. That includes the
+/// per-request context a caller carries (host-provider credential and request
+/// id, Skills context, private-hop context): two runs from the same actor with
+/// different contexts must each execute under their own. Context tokens are
+/// hashed so no credential is kept in the in-flight map.
+fn code_mode_dedup_key(
+    route: &str,
+    service: &str,
+    actor: &str,
+    capability_filter_fingerprint: &str,
+    code_hash: &str,
+    caller: &CodeModeCaller,
+) -> String {
+    let context = match caller {
+        CodeModeCaller::ScopedPrivate { context_token, .. } => {
+            serde_json::json!({ "private": context_token })
+        }
+        CodeModeCaller::ScopedSkills {
+            skill_context_token,
+            ..
+        } => serde_json::json!({ "skills": skill_context_token }),
+        CodeModeCaller::ScopedHostProvider {
+            provider_token,
+            provider_request_id,
+            ..
+        } => serde_json::json!({ "provider": provider_token, "request": provider_request_id }),
+        CodeModeCaller::ScopedHostProviderSkills {
+            provider_token,
+            provider_request_id,
+            skill_context_token,
+            ..
+        } => serde_json::json!({
+            "provider": provider_token,
+            "request": provider_request_id,
+            "skills": skill_context_token,
+        }),
+        _ => Value::Null,
+    };
+    let context = if context.is_null() {
+        String::new()
+    } else {
+        hash_arguments(&context)
+    };
+    format!("{route}|{service}|{actor}|{capability_filter_fingerprint}|{code_hash}|{context}")
+}
+
 fn begin_code_mode_execution(key: String, execution_id: String) -> InflightCodeModeRole {
     let mut inflight = code_mode_inflight()
         .lock()
@@ -263,44 +312,56 @@ pub(crate) fn code_arg(
     Ok(code)
 }
 
-/// Code Mode namespaces served by built-in providers rather than configured
-/// upstreams. They are valid filter targets even though `upstream_names()`
-/// never lists them.
-const BUILTIN_CODE_MODE_NAMESPACES: &[&str] = &["unraid", "state", "git", "openapi"];
+/// Whether `name` is a namespace served by a built-in provider (Unraid Core or
+/// a local provider) rather than a configured upstream. Owned by the crates
+/// that implement those providers.
+fn is_builtin_code_mode_namespace(name: &str) -> bool {
+    name == labby_gateway::core_provider::CORE_PROVIDER_NAMESPACE
+        || labby_codemode::LOCAL_PROVIDER_NAMESPACES.contains(&name)
+}
 
-fn unknown_upstream_error(requested: &str, visible: &BTreeSet<String>) -> DispatchToolError {
+/// The single error for a filter name the caller cannot use.
+///
+/// "Configured but outside this route" and "does not exist" deliberately
+/// share this message and kind, so a route-scoped caller cannot probe for
+/// upstreams outside its route. Guidance is built only from `visible`.
+fn unavailable_upstream_error(requested: &str, visible: &BTreeSet<String>) -> DispatchToolError {
     DispatchToolError::Sdk {
         sdk_kind: "unknown_upstream".to_string(),
         message: format!(
-            "Code Mode upstream `{requested}` was not found. {} Pass a configured upstream name, or omit `upstreams` and use codemode.search() to discover namespaces.",
+            "Code Mode upstream `{}` is not available to this caller. {} Pass one of those names, or omit `upstreams` to use every upstream this caller can reach; codemode.search() lists their tools.",
+            labby_codemode::display_name(requested),
             labby_codemode::unknown_namespace_guidance(requested, visible)
         ),
     }
 }
 
-/// Resolve a requested `upstreams`/`tools` namespace to its configured name.
+/// Resolve a requested `upstreams`/`tools` namespace to a name the caller can
+/// use.
 ///
-/// Exact names win. Otherwise a unique case- or separator-insensitive alias
-/// resolves; an ambiguous alias fails closed. Unknown names fail with
-/// `unknown_upstream` and suggestions drawn only from `visible`, so a
-/// protected route never reveals upstreams outside its scope.
+/// Resolution only considers `visible` (the route-visible configured
+/// upstreams) plus built-in provider namespaces the route allows: exact names
+/// win, then a unique case/separator alias; an ambiguous alias fails closed
+/// listing only visible names. Anything else is
+/// [`unavailable_upstream_error`].
 fn canonicalize_upstream_filter(
     requested: &str,
-    available: &BTreeSet<String>,
     visible: &BTreeSet<String>,
+    route_allowed: Option<&BTreeSet<String>>,
 ) -> Result<String, DispatchToolError> {
     let requested = requested.trim();
-    if requested.is_empty()
-        || available.contains(requested)
-        || BUILTIN_CODE_MODE_NAMESPACES.contains(&requested)
+    if requested.is_empty() {
+        return Ok(String::new());
+    }
+    if is_builtin_code_mode_namespace(requested)
+        && route_allowed.is_none_or(|allowed| allowed.contains(requested))
     {
         return Ok(requested.to_string());
     }
-
-    match labby_codemode::resolve_namespace_alias(requested, available.iter().map(String::as_str)) {
+    match labby_codemode::resolve_namespace_alias(requested, visible.iter().map(String::as_str)) {
         labby_codemode::NamespaceResolution::Resolved(name) => Ok(name.to_string()),
         labby_codemode::NamespaceResolution::Unknown => {
-            Err(unknown_upstream_error(requested, visible))
+            Err(unavailable_upstream_error(requested, visible))
         }
         labby_codemode::NamespaceResolution::Ambiguous(matches) => Err(DispatchToolError::Sdk {
             sdk_kind: "invalid_param".to_string(),
@@ -311,14 +372,14 @@ fn canonicalize_upstream_filter(
 
 fn canonicalize_tool_filter(
     requested: &str,
-    available: &BTreeSet<String>,
     visible: &BTreeSet<String>,
+    route_allowed: Option<&BTreeSet<String>>,
 ) -> Result<String, DispatchToolError> {
     let requested = requested.trim();
     let Some((namespace, tool)) = requested.split_once("::") else {
         return Ok(requested.to_string());
     };
-    let namespace = canonicalize_upstream_filter(namespace, available, visible)?;
+    let namespace = canonicalize_upstream_filter(namespace, visible, route_allowed)?;
     Ok(format!("{namespace}::{tool}"))
 }
 
@@ -336,29 +397,12 @@ fn route_scoped_capability_filter(
     };
     let requested_upstreams = string_array_arg(args, "upstreams")?
         .into_iter()
-        .map(|name| canonicalize_upstream_filter(&name, available_upstreams, &visible))
+        .map(|name| canonicalize_upstream_filter(&name, &visible, route_allowed))
+        .filter(|name| !matches!(name, Ok(name) if name.is_empty()))
         .collect::<Result<Vec<_>, _>>()?;
-    if let Some(allowed) = route_allowed
-        && let Some(denied) = requested_upstreams
-            .iter()
-            .find(|name| !allowed.contains(*name))
-    {
-        let exposed = if visible.is_empty() {
-            "none".to_string()
-        } else {
-            labby_codemode::backtick_list(visible.iter().map(String::as_str))
-        };
-        return Err(DispatchToolError::Sdk {
-            sdk_kind: "route_scope_denied".to_string(),
-            message: format!(
-                "Code Mode upstream `{denied}` is outside this protected route's scope. This route exposes: {exposed}. Request one of those, or connect through a route that publishes `{denied}`."
-            ),
-        });
-    }
-
     let tools = string_array_arg(args, "tools")?
         .into_iter()
-        .map(|name| canonicalize_tool_filter(&name, available_upstreams, &visible))
+        .map(|name| canonicalize_tool_filter(&name, &visible, route_allowed))
         .collect::<Result<Vec<_>, _>>()?;
     let Some(allowed) = route_allowed else {
         return Ok(ToolScope::new(requested_upstreams, tools));
@@ -589,13 +633,13 @@ impl LabMcpServer {
 
         let broker = CodeModeBroker::new(Some(manager.as_ref()));
         let before = self.snapshot_tool_catalog_for_request(context).await;
-        let dedup_key = format!(
-            "{}|{}|{}|{}|{}",
-            self.route_scope.label(),
+        let dedup_key = code_mode_dedup_key(
+            &self.route_scope.label(),
             service,
             actor_key.unwrap_or(subject.as_str()),
-            capability_filter_fingerprint,
-            code_hash,
+            &capability_filter_fingerprint,
+            &code_hash,
+            &caller,
         );
         let broker_result = match begin_code_mode_execution(dedup_key, execution_id.clone()) {
             InflightCodeModeRole::Follower(entry) => {

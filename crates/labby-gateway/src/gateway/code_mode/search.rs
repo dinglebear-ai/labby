@@ -152,51 +152,54 @@ pub(crate) async fn build_tools_render(
     let metadata_entries = manager
         .code_mode_metadata_entries(caller, surface, scope)
         .await;
-    let withheld = withheld_by_access(&raw_tools, scope);
-    let mut render = catalog_from_tools(
-        manager,
-        filter_tools_for_access(raw_tools, scope),
-        include_snippets,
-        metadata_entries,
-    )
-    .await?;
+    let (tools, withheld) = partition_tools_for_access(raw_tools, scope);
+    let mut render = catalog_from_tools(manager, tools, include_snippets, metadata_entries).await?;
     render.withheld = withheld.into();
     Ok(render)
 }
 
-/// Count, per upstream, the in-scope tools a read-only run hides because
-/// they lack an explicit read-only annotation. Discovery surfaces this so an
-/// agent is told why a namespace is missing rather than seeing no results.
-fn withheld_by_access(tools: &[UpstreamTool], scope: &ToolScope) -> Vec<WithheldTools> {
-    if !scope.is_read_only() {
-        return Vec::new();
-    }
-    let mut counts = std::collections::BTreeMap::<&str, usize>::new();
-    for tool in tools {
-        if scope.allows(tool.upstream_name.as_ref(), tool.tool.name.as_ref())
-            && !super::code_mode_host::tool_is_explicitly_read_only(tool)
-        {
-            *counts.entry(tool.upstream_name.as_ref()).or_default() += 1;
-        }
-    }
-    counts
+/// Split the scope-allowed tools into those this execution may see and a
+/// per-upstream count of those a read-only run withholds for lacking an
+/// explicit read-only annotation. Discovery reports the withheld counts so an
+/// agent learns why a namespace is missing instead of seeing no results.
+fn partition_tools_for_access(
+    tools: Vec<UpstreamTool>,
+    scope: &ToolScope,
+) -> (Vec<UpstreamTool>, Vec<WithheldTools>) {
+    let mut withheld = std::collections::BTreeMap::<std::sync::Arc<str>, usize>::new();
+    let kept = tools
+        .into_iter()
+        .filter(|tool| {
+            if !scope.allows(tool.upstream_name.as_ref(), tool.tool.name.as_ref()) {
+                return false;
+            }
+            if scope.is_read_only() && !super::code_mode_host::tool_is_explicitly_read_only(tool) {
+                *withheld
+                    .entry(std::sync::Arc::clone(&tool.upstream_name))
+                    .or_default() += 1;
+                return false;
+            }
+            true
+        })
+        .collect();
+    let withheld = withheld
         .into_iter()
         .map(|(namespace, tool_count)| WithheldTools {
             namespace: namespace.to_string(),
             tool_count,
         })
-        .collect()
+        .collect();
+    (kept, withheld)
 }
 
+#[cfg(test)]
 fn filter_tools_for_access(tools: Vec<UpstreamTool>, scope: &ToolScope) -> Vec<UpstreamTool> {
-    tools
-        .into_iter()
-        .filter(|tool| {
-            scope.allows(tool.upstream_name.as_ref(), tool.tool.name.as_ref())
-                && (!scope.is_read_only()
-                    || super::code_mode_host::tool_is_explicitly_read_only(tool))
-        })
-        .collect()
+    partition_tools_for_access(tools, scope).0
+}
+
+#[cfg(test)]
+fn withheld_by_access(tools: &[UpstreamTool], scope: &ToolScope) -> Vec<WithheldTools> {
+    partition_tools_for_access(tools.to_vec(), scope).1
 }
 
 pub(super) async fn catalog_from_tools(

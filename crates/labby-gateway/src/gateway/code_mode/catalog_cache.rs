@@ -146,8 +146,7 @@ fn cache_lock_path(path: &Path) -> PathBuf {
 /// Stable fingerprint of an upstream config entry.
 pub(crate) fn fingerprint(config: &UpstreamConfig) -> String {
     let serialized = serde_json::to_string(config).unwrap_or_else(|_| format!("{:?}", config.name));
-    let digest = Sha256::digest(serialized.as_bytes());
-    digest.iter().map(|b| format!("{b:02x}")).collect()
+    hex::encode(Sha256::digest(serialized.as_bytes()))
 }
 
 impl CatalogCache {

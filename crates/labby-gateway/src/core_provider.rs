@@ -16,6 +16,10 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
 
+/// Code Mode namespace served by the Unraid Core provider (not a configured
+/// upstream).
+pub const CORE_PROVIDER_NAMESPACE: &str = "unraid";
+
 const PROVIDER_URL: &str = "http://unraid-core.local/v1/provider";
 const PROVIDER_PROTOCOL: &str = "1.0";
 const REQUEST_BYTES_MAX: usize = 1024 * 1024;
@@ -378,7 +382,7 @@ fn project_operation(
     }
     let safety = operation_safety(&operation)?;
     let descriptor = CatalogDescriptor::tool_with_safety(
-        "unraid",
+        CORE_PROVIDER_NAMESPACE,
         &operation.helper,
         &operation.summary,
         Some(arguments_schema(&operation.arguments)),

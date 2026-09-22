@@ -470,16 +470,13 @@ impl PeerContract {
             return Vec::new();
         };
         let mut upstreams = manager
-            .current_config()
+            .code_mode_enabled_upstream_hints()
             .await
-            .upstream
             .into_iter()
-            .filter(|upstream| upstream.enabled)
-            .filter(|upstream| self.route_scope.allows_upstream(&upstream.name))
-            .map(|upstream| CodeModeUpstreamDescription {
-                name: upstream.name,
-                hint: upstream
-                    .code_mode_hint
+            .filter(|(name, _)| self.route_scope.allows_upstream(name))
+            .map(|(name, hint)| CodeModeUpstreamDescription {
+                name,
+                hint: hint
                     .as_deref()
                     .and_then(labby_runtime::gateway_config::normalize_code_mode_hint),
                 example: None,
@@ -490,16 +487,15 @@ impl PeerContract {
         let names = upstreams
             .iter()
             .map(|upstream| upstream.name.clone())
-            .collect::<Vec<_>>();
-        let examples = manager.code_mode_example_tools(&names).await;
-        for upstream in &mut upstreams {
-            upstream.example = examples.get(&upstream.name).map(|example| {
-                crate::mcp::call_tool_codemode::CodeModeExampleCall::from_tool(
-                    &example.tool,
-                    &example.input_schema,
-                    example.read_only,
-                )
-            });
+            .collect::<std::collections::BTreeSet<_>>();
+        if let Some((name, example)) = manager.code_mode_example_tool(&names).await
+            && let Some(upstream) = upstreams.iter_mut().find(|upstream| upstream.name == name)
+        {
+            upstream.example = crate::mcp::call_tool_codemode::CodeModeExampleCall::from_tool(
+                &example.tool,
+                &example.input_schema,
+                true,
+            );
         }
         upstreams
     }
