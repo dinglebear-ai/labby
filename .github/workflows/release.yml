@@ -56,13 +56,13 @@ jobs:
             exit 1
           }
           expected="${GITHUB_REF_NAME#v}"
-          cargo_version="$(sed -n '/^\[workspace.package\]$/,/^\[/s/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
+          cargo_version="$(sed -n '/^\[workspace.package\]$/,/^\[/s/^version = "\([^"]*\)".*/\1/p' Cargo.toml | head -1)"
           npm_version="$(node -p "require('./packages/labby-mcp/package.json').version")"
           registry_version="$(python3 -c "import json; print(json.load(open('server.json'))['version'])")"
           manifest_version="$(python3 -c "import json; print(json.load(open('.release-please-manifest.json'))['.'])")"
           desktop_package_version="$(node -p "require('./apps/labby-desktop/package.json').version")"
           desktop_tauri_version="$(node -p "require('./apps/labby-desktop/src-tauri/tauri.conf.json').version")"
-          desktop_cargo_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' apps/labby-desktop/src-tauri/Cargo.toml | head -1)"
+          desktop_cargo_version="$(sed -n 's/^version = "\([^"]*\)".*/\1/p' apps/labby-desktop/src-tauri/Cargo.toml | head -1)"
           for pair in "Cargo.toml:$cargo_version" "package.json:$npm_version" "server.json:$registry_version" "release manifest:$manifest_version" "desktop package:$desktop_package_version" "desktop tauri:$desktop_tauri_version" "desktop cargo:$desktop_cargo_version"; do
             [[ "${pair#*:}" == "$expected" ]] || { echo "::error::${pair%%:*} version ${pair#*:} != $expected"; exit 1; }
           done
