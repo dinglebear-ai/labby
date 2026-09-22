@@ -649,26 +649,6 @@ impl UpstreamPool {
         }
     }
 
-    /// List resources for connected upstreams whose current connection has no
-    /// resource snapshot yet, so a cache-only resources/list can serve them.
-    ///
-    /// A fresh connect already warms its snapshot in
-    /// `refresh_capability_caches_after_connect`; this covers peers that were
-    /// installed without that step (in-process services, test seams) or whose
-    /// post-connect listing failed. It is a discovery-time fan-out, deliberately
-    /// kept out of `ensure_connection_for_upstream`: a connection waiter must
-    /// never sit behind another upstream's resources/list RPC.
-    pub async fn warm_missing_resource_snapshots_allowed(
-        &self,
-        allowed: Option<&BTreeSet<String>>,
-    ) {
-        let missing = self.upstreams_missing_resource_snapshot(allowed).await;
-        if missing.is_empty() {
-            return;
-        }
-        self.list_upstream_resources_allowed(Some(&missing)).await;
-    }
-
     async fn refresh_ui_resource_cache_for_healthy_upstream_if_needed(
         &self,
         config: &UpstreamConfig,
@@ -725,7 +705,8 @@ impl UpstreamPool {
 
     async fn refresh_resource_cache_for_upstream(&self, upstream_name: &str) {
         let allowed = BTreeSet::from([upstream_name.to_string()]);
-        self.list_upstream_resources_allowed(Some(&allowed)).await;
+        self.refresh_resource_snapshots_allowed(Some(&allowed))
+            .await;
     }
 
     /// Refresh one upstream's cached prompt listing after a lazy connect.

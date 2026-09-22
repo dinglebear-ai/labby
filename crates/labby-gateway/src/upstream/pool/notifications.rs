@@ -84,21 +84,38 @@ impl UpstreamPool {
         self.notification_tx.subscribe()
     }
 
-    /// Re-list one exact upstream after it reports a resources/list_changed
-    /// notification and refresh only that upstream's cached resources.
+    /// Refresh the cached resources of one exact upstream after it reports
+    /// `resources/list_changed`.
     ///
     /// Downstream resources/list reads cached snapshots, so the notification
     /// consumer must refresh the named source before forwarding list_changed.
+    /// Every subject's cached catalog for the upstream is dropped first, so a
+    /// subject-scoped listing re-fetches even when the upstream has no pooled
+    /// connection to re-list.
+    ///
+    /// Returns `true` when the upstream was re-listed over its pooled
+    /// connection and its resources capability is healthy afterwards. Returns
+    /// `false` when it has no current pooled connection (OAuth-only or
+    /// disconnected) or the listing failed; a failed listing removes the
+    /// cached source, so cached listings withhold that upstream's rows until
+    /// the next successful re-list rather than serving stale ones.
     pub async fn refresh_resources_after_list_changed(&self, upstream: &str) -> bool {
+        let cleared = self.invalidate_subject_resource_catalogs(upstream).await;
         let allowed = BTreeSet::from([upstream.to_string()]);
         if self
             .observe_connection_catalog_entry(upstream)
             .await
             .is_none()
         {
+            tracing::debug!(
+                upstream,
+                subject_catalogs_cleared = cleared,
+                "resources/list_changed for an upstream without a pooled connection; nothing to re-list"
+            );
             return false;
         }
-        self.list_upstream_resources_allowed(Some(&allowed)).await;
+        self.refresh_resource_snapshots_allowed(Some(&allowed))
+            .await;
         self.catalog
             .read()
             .await
@@ -109,7 +126,9 @@ impl UpstreamPool {
     }
 
     /// Re-list one exact upstream after it reports tools/list_changed and
-    /// atomically replace only that upstream's cached tools.
+    /// atomically replace only that upstream's cached tools. Returns `true`
+    /// when the replacement was published, `false` when the upstream has no
+    /// current pooled connection or the listing failed.
     ///
     /// The notification event bus has two producers: the shared
     /// subscriptions/listen connection and request-scoped relay connections.

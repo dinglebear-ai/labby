@@ -56,16 +56,27 @@ impl GatewayManager {
             unfinished += usize::from(timed_out);
         }
         // Listings are served from cached snapshots. A peer that is connected
-        // but was never listed (in-process services, a failed post-connect
-        // refresh) would otherwise stay invisible until its next reconnect.
-        if tokio::time::timeout_at(
-            deadline,
-            pool.warm_missing_resource_snapshots_allowed(allowed),
-        )
-        .await
-        .is_err()
+        // but was never listed (in-process services, a cancelled or failed
+        // post-connect refresh) would otherwise stay invisible until a
+        // reconnect, a gateway reload, or its own list_changed, and a peer
+        // that cannot push list_changed would never refresh at all. The
+        // warm-up task runs to completion regardless of the deadline; only
+        // never-listed upstreams are worth waiting for, stale ones refresh in
+        // the background while their current rows are served.
+        let warmup = pool.spawn_resource_snapshot_warmup(allowed).await;
+        if let Some(task) = warmup.task
+            && !warmup.cold.missing.is_empty()
+            && tokio::time::timeout_at(deadline, task).await.is_err()
         {
-            unfinished += 1;
+            unfinished += warmup.cold.missing.len();
+            tracing::warn!(
+                surface = "dispatch",
+                service = "gateway",
+                action = "resources.discovery",
+                missing = ?warmup.cold.missing,
+                stale = ?warmup.cold.stale,
+                "resource snapshot warm-up still running past the discovery deadline; these upstreams are listed once it completes"
+            );
         }
         if unfinished > 0 {
             tracing::warn!(

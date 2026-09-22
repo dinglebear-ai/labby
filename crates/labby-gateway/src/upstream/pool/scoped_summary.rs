@@ -1,5 +1,6 @@
 //! Cache-only, identity-scoped operator projections. No peer acquisition or discovery.
 use std::sync::Arc;
+use std::time::Instant;
 
 use labby_runtime::gateway_config::UpstreamConfig;
 use rmcp::{RoleClient, model::Resource, service::Peer};
@@ -13,7 +14,11 @@ use super::{UpstreamPool, helpers::UpstreamCachedSummary};
 
 #[derive(Default)]
 pub(crate) struct SubjectOptionalCatalogs {
-    pub resources: Option<Vec<Resource>>,
+    /// Full resource rows listed over this subject connection. Shared, not
+    /// cloned, on every cache hit.
+    pub resources: Option<Arc<[Resource]>>,
+    /// When `resources` was listed; `RESOURCE_SNAPSHOT_MAX_AGE` bounds reuse.
+    pub resources_listed_at: Option<Instant>,
     pub prompts: Option<Vec<String>>,
 }
 
@@ -77,7 +82,7 @@ impl UpstreamPool {
                     .optional_catalogs
                     .resources
                     .as_ref()
-                    .map_or(0, Vec::len),
+                    .map_or(0, |items| items.len()),
                 exposed_resource_count: if connected && config.proxy_resources {
                     entry
                         .optional_catalogs
@@ -140,10 +145,45 @@ impl UpstreamPool {
             return;
         }
         if let Some(resources) = resources {
-            entry.optional_catalogs.resources = Some(resources);
+            entry.optional_catalogs.resources = Some(resources.into());
+            entry.optional_catalogs.resources_listed_at = Some(Instant::now());
         }
         if let Some(prompts) = prompts {
             entry.optional_catalogs.prompts = Some(prompts);
+        }
+    }
+
+    /// Drop every subject's cached resource catalog for `upstream` so the next
+    /// subject-scoped listing re-fetches it. Called when the upstream announces
+    /// `resources/list_changed`; the subject connections themselves stay warm.
+    pub(super) async fn invalidate_subject_resource_catalogs(&self, upstream: &str) -> usize {
+        let mut cache = self.subject_connections.write().await;
+        let mut cleared = 0usize;
+        for ((name, _), entry) in cache.iter_mut() {
+            if name == upstream && entry.optional_catalogs.resources.take().is_some() {
+                entry.optional_catalogs.resources_listed_at = None;
+                cleared += 1;
+            }
+        }
+        cleared
+    }
+
+    /// Age a subject's cached resource catalog so freshness tests do not have
+    /// to wait out `RESOURCE_SNAPSHOT_MAX_AGE`.
+    #[cfg(test)]
+    pub(super) async fn age_subject_resource_catalog_for_tests(
+        &self,
+        upstream: &str,
+        subject: &str,
+        age: std::time::Duration,
+    ) {
+        let mut cache = self.subject_connections.write().await;
+        if let Some(entry) = cache.get_mut(&(upstream.to_owned(), subject.to_owned())) {
+            entry.optional_catalogs.resources_listed_at = Some(
+                Instant::now()
+                    .checked_sub(age)
+                    .expect("test age fits the monotonic clock"),
+            );
         }
     }
 }

@@ -453,8 +453,18 @@ impl PeerNotifier {
                             Ok(UpstreamNotificationEvent::ResourceListChanged { upstream }) => {
                                 // resources/list is cache-only for regular upstreams. Refresh
                                 // the exact sender first so peers never observe a list-changed
-                                // notification while the cached catalog is still stale.
-                                pool.refresh_resources_after_list_changed(&upstream).await;
+                                // notification while the cached catalog is still stale. The
+                                // notification is forwarded either way: a failed refresh
+                                // removes the cached source, so what peers see did change.
+                                if !pool.refresh_resources_after_list_changed(&upstream).await {
+                                    tracing::warn!(
+                                        surface = "mcp",
+                                        service = "peers",
+                                        action = "catalog.resources.list_changed",
+                                        upstream = %upstream,
+                                        "resources/list_changed refresh did not publish a snapshot; forwarding list_changed with the upstream's rows withheld until the next successful listing"
+                                    );
+                                }
                                 self.notify_upstream_catalog_change(
                                     false, true, false, upstream,
                                 );

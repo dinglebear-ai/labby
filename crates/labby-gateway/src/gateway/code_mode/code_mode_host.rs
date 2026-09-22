@@ -187,8 +187,11 @@ impl GatewayManager {
         };
         let allowed = scope.allowed_namespaces();
 
+        // Same cache-only contract as the MCP resources/list handler: warm
+        // never-listed peers, then read the snapshot instead of fanning out.
+        pool.ensure_resource_snapshots_allowed(allowed).await;
         for listed in pool
-            .list_upstream_resources_with_provenance_allowed(allowed)
+            .cached_upstream_resources_with_provenance_allowed(allowed)
             .await
         {
             let resource = listed.resource;

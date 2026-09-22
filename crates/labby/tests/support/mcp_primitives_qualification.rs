@@ -104,7 +104,7 @@ struct FixtureServer {
     /// Set by the test after a silent generation bump. This fixture is a
     /// stateless streamable-HTTP server, so it can only speak on a request
     /// stream: the next resources/read carries the resources/list_changed
-    /// announcement, the way a real server announces a catalog mutation.
+    /// announcement, as a stateless server would.
     announce_resource_list_changed: Arc<AtomicBool>,
 }
 
@@ -646,7 +646,7 @@ impl PrimitiveFixture {
     /// Announce resources/list_changed on the next resources/read this
     /// fixture serves. Labby serves resources/list from cached snapshots, so
     /// a silent generation bump is not observable downstream until the
-    /// upstream announces it.
+    /// upstream announces it (or Labby reconnects or reloads).
     pub(crate) fn announce_resource_list_changed_on_next_read(&self) {
         self.announce_resource_list_changed
             .store(true, Ordering::SeqCst);

@@ -10,6 +10,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use rmcp::model::{Prompt, Resource, ResourceTemplate};
 use tokio::sync::{RwLockReadGuard, RwLockWriteGuard};
@@ -177,6 +178,28 @@ pub struct PublishedResourceRoute {
     pub upstream_name: Arc<str>,
     pub native_uri: Arc<str>,
     pub resource: Resource,
+}
+
+/// Upstreams whose cached resource snapshot needs a re-list, by urgency.
+/// See `UpstreamPool::cold_resource_snapshots`.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ResourceSnapshotColdSet {
+    /// Never listed on the current connection: a listing should wait for these.
+    pub missing: BTreeSet<String>,
+    /// Listed, but older than the freshness bound with no push channel:
+    /// refreshed in the background while the current rows are served.
+    pub stale: BTreeSet<String>,
+}
+
+impl ResourceSnapshotColdSet {
+    pub fn is_empty(&self) -> bool {
+        self.missing.is_empty() && self.stale.is_empty()
+    }
+
+    /// Every upstream in the set, regardless of urgency.
+    pub fn names(&self) -> BTreeSet<String> {
+        self.missing.union(&self.stale).cloned().collect()
+    }
 }
 
 /// Immutable observational catalog of generic non-OAuth upstream resources.
@@ -384,18 +407,26 @@ enum ResourceTemplateSourceState {
 
 struct ResourceSource {
     incarnation: super::incarnation::ConnectionIncarnation,
-    /// Regular (`lab://upstream/...`-routable) rows, validated and budgeted.
+    /// When this snapshot was listed; `RESOURCE_SNAPSHOT_MAX_AGE` bounds how
+    /// long it is served without a re-list when the upstream cannot push
+    /// `resources/list_changed`.
+    listed_at: Instant,
+    /// Non-UI rows: the only rows that become published `lab://upstream/...`
+    /// routes.
     resources: Arc<[Resource]>,
     /// MCP Apps `ui://` rows. They are listed with their native URI and read
     /// through `read_upstream_ui_resource`, so they never become published
-    /// routes and stay outside the route validation and byte budget above.
+    /// routes. They are admitted, validated, and budgeted together with the
+    /// regular rows: route eligibility differs, retention bounds do not.
     ui_resources: Arc<[Resource]>,
+    /// Serialized size of every retained row, regular and UI.
     retained_bytes: usize,
 }
 enum ResourceSourceState {
     Ready(ResourceSource),
     Failed {
         incarnation: super::incarnation::ConnectionIncarnation,
+        listed_at: Instant,
         error: ResourceCatalogPublicationError,
     },
 }
@@ -530,9 +561,6 @@ impl CatalogState {
         incarnation: super::incarnation::ConnectionIncarnation,
         resources: &[Resource],
     ) {
-        let (ui_resources, resources): (Vec<_>, Vec<_>) = resources
-            .iter()
-            .partition(|resource| is_ui_resource_uri(&resource.uri));
         let existing_retained = self
             .resource_sources
             .iter()
@@ -542,9 +570,12 @@ impl CatalogState {
                 ResourceSourceState::Failed { .. } => None,
             })
             .try_fold(0usize, usize::checked_add);
+        // Every row the upstream returned is validated and budgeted, UI rows
+        // included: the retention bound is about memory, not about which rows
+        // become routes.
         let retained_bytes = validate_source_rows(
             resources.iter().map(|resource| resource.uri.as_str()),
-            resources.iter().copied(),
+            resources.iter(),
         )
         .and_then(|candidate| checked_retained_bytes(existing_retained, candidate))
         .map_err(|error| match error {
@@ -552,17 +583,40 @@ impl CatalogState {
             SourceAdmissionError::Duplicate => ResourceCatalogPublicationError::DuplicateResource,
             SourceAdmissionError::TooManyBytes => ResourceCatalogPublicationError::TooManyBytes,
         });
-        let source = if let Ok(retained_bytes) = retained_bytes {
-            ResourceSourceState::Ready(ResourceSource {
-                incarnation,
-                resources: resources.into_iter().cloned().collect::<Vec<_>>().into(),
-                ui_resources: ui_resources.into_iter().cloned().collect::<Vec<_>>().into(),
-                retained_bytes,
-            })
-        } else {
-            ResourceSourceState::Failed {
-                incarnation,
-                error: retained_bytes.expect_err("failed source"),
+        let listed_at = Instant::now();
+        let source = match retained_bytes {
+            Ok(retained_bytes) => {
+                let (ui_resources, resources): (Vec<_>, Vec<_>) = resources
+                    .iter()
+                    .cloned()
+                    .partition(|resource| is_ui_resource_uri(&resource.uri));
+                ResourceSourceState::Ready(ResourceSource {
+                    incarnation,
+                    listed_at,
+                    resources: resources.into(),
+                    ui_resources: ui_resources.into(),
+                    retained_bytes,
+                })
+            }
+            Err(error) => {
+                // The rows are not retained, so cached listings omit this
+                // upstream until a re-list succeeds. Say so once per verdict;
+                // the entry's resource health stays routable because the
+                // upstream itself answered.
+                tracing::warn!(
+                    surface = "dispatch",
+                    service = "upstream.pool",
+                    action = "resources.snapshot",
+                    upstream,
+                    row_count = resources.len(),
+                    error = ?error,
+                    "resource snapshot rejected; cached resources/list omits this upstream until it is re-listed"
+                );
+                ResourceSourceState::Failed {
+                    incarnation,
+                    listed_at,
+                    error,
+                }
             }
         };
         self.resource_sources.insert(upstream.to_string(), source);
@@ -570,6 +624,38 @@ impl CatalogState {
 
     pub(super) fn remove_resource_source(&mut self, upstream: &str) {
         self.resource_sources.remove(upstream);
+    }
+
+    /// The `Ready` resource snapshot of `upstream`'s current connection, when
+    /// the entry proxies resources and its resources circuit is closed.
+    fn current_ready_resource_source(&self, upstream: &str) -> Option<&ResourceSource> {
+        let entry = self.entries.get(upstream)?;
+        if !entry.proxy_resources || !entry.resource_health.is_routable() {
+            return None;
+        }
+        match self.resource_sources.get(upstream)? {
+            ResourceSourceState::Ready(source)
+                if self.incarnation(upstream) == Some(source.incarnation) =>
+            {
+                Some(source)
+            }
+            _ => None,
+        }
+    }
+
+    /// When `upstream`'s current connection last settled a resources/list
+    /// result, successful or rejected. `None` when it never has.
+    fn resource_snapshot_listed_at(&self, upstream: &str) -> Option<Instant> {
+        let current = self.incarnation(upstream)?;
+        let (incarnation, listed_at) = match self.resource_sources.get(upstream)? {
+            ResourceSourceState::Ready(source) => (source.incarnation, source.listed_at),
+            ResourceSourceState::Failed {
+                incarnation,
+                listed_at,
+                ..
+            } => (*incarnation, *listed_at),
+        };
+        (incarnation == current).then_some(listed_at)
     }
 
     pub(super) fn set_prompt_source(
@@ -871,7 +957,9 @@ impl CatalogState {
                 .ok_or(ResourceCatalogPublicationError::InvalidResource)?;
             let source = match source {
                 ResourceSourceState::Ready(source) => source,
-                ResourceSourceState::Failed { incarnation, error } => {
+                ResourceSourceState::Failed {
+                    incarnation, error, ..
+                } => {
                     if self.incarnation(upstream) != Some(*incarnation) {
                         return Err(ResourceCatalogPublicationError::InvalidResource);
                     }
@@ -1212,43 +1300,63 @@ impl UpstreamPool {
         self.catalog.read().await.published_resources.clone()
     }
 
-    /// Names of connected, resource-proxying upstreams whose current
-    /// connection incarnation has never settled a resources/list result.
+    /// Connected, routable, resource-proxying upstreams whose cached snapshot
+    /// cannot serve a `resources/list` as-is, split by why.
     ///
-    /// A `Failed` source from the current incarnation counts as settled: it
-    /// records a publication verdict on rows the upstream already returned,
-    /// and listing again cannot change that verdict.
-    pub(super) async fn upstreams_missing_resource_snapshot(
+    /// `missing`: the current connection incarnation never settled a
+    /// resources/list result (in-process peers, a cancelled or failed
+    /// post-connect listing). Listings should wait for these.
+    ///
+    /// `stale`: the snapshot, successful or rejected, is older than
+    /// `RESOURCE_SNAPSHOT_MAX_AGE` and the upstream has no live
+    /// `subscriptions/listen` stream to announce changes on. Listings serve
+    /// the current rows and refresh these in the background.
+    pub(super) async fn cold_resource_snapshots(
         &self,
         allowed: Option<&BTreeSet<String>>,
-    ) -> BTreeSet<String> {
+    ) -> ResourceSnapshotColdSet {
+        // An acknowledged subscriptions/listen stream is the only push channel
+        // a pooled connection has; `subscription_resources` holds exactly the
+        // upstreams whose current listen generation was acknowledged. Read it
+        // before the catalog, never nested: the two have no lock order.
+        let listening = self
+            .subscription_resources
+            .read()
+            .await
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
         let catalog = self.catalog.read().await;
-        catalog
-            .entries
-            .iter()
-            .filter(|(name, entry)| {
-                allowed.is_none_or(|allowed| allowed.contains(*name))
-                    && entry.proxy_resources
-                    && entry.resource_health.is_routable()
-            })
-            .filter(|(name, _)| {
-                let Some(current) = catalog.incarnation(name) else {
-                    return false;
-                };
-                let settled = match catalog.resource_sources.get(*name) {
-                    Some(ResourceSourceState::Ready(source)) => source.incarnation,
-                    Some(ResourceSourceState::Failed { incarnation, .. }) => *incarnation,
-                    None => return true,
-                };
-                settled != current
-            })
-            .map(|(name, _)| name.clone())
-            .collect()
+        let mut cold = ResourceSnapshotColdSet::default();
+        for (name, entry) in &catalog.entries {
+            if allowed.is_some_and(|allowed| !allowed.contains(name))
+                || !entry.proxy_resources
+                || !entry.resource_health.is_routable()
+                || catalog.incarnation(name).is_none()
+            {
+                continue;
+            }
+            match catalog.resource_snapshot_listed_at(name) {
+                None => {
+                    cold.missing.insert(name.clone());
+                }
+                Some(listed_at)
+                    if listed_at.elapsed() >= super::helpers::RESOURCE_SNAPSHOT_MAX_AGE
+                        && !listening.contains(name) =>
+                {
+                    cold.stale.insert(name.clone());
+                }
+                Some(_) => {}
+            }
+        }
+        cold
     }
 
     /// Return already-discovered upstream resources without peer I/O, including
     /// MCP Apps `ui://` rows. Discovery surfaces use this cache-only projection
-    /// so resources/list cannot fan out into a fleet-wide refresh.
+    /// so resources/list cannot fan out into a fleet-wide refresh. Rows are
+    /// exposure-filtered and capped at `MAX_UPSTREAM_RESOURCES`; the caller
+    /// applies the merged byte envelope.
     pub async fn cached_upstream_resources_allowed(
         &self,
         allowed: Option<&BTreeSet<String>>,
@@ -1258,35 +1366,51 @@ impl UpstreamPool {
         upstreams.sort_unstable_by_key(|(name, _)| name.as_str());
         let mut resources = Vec::new();
         for (name, entry) in upstreams {
-            if allowed.is_some_and(|allowed| !allowed.contains(name))
-                || !entry.proxy_resources
-                || !entry.resource_health.is_routable()
-            {
+            let remaining = super::tools::MAX_UPSTREAM_RESOURCES.saturating_sub(resources.len());
+            if remaining == 0 {
+                break;
+            }
+            if allowed.is_some_and(|allowed| !allowed.contains(name)) {
                 continue;
             }
-            let Some(ResourceSourceState::Ready(source)) = catalog.resource_sources.get(name)
-            else {
+            let Some(source) = catalog.current_ready_resource_source(name) else {
                 continue;
             };
-            if catalog.incarnation(name) != Some(source.incarnation) {
-                continue;
-            }
             let mut rows = source
                 .resources
                 .iter()
                 .chain(source.ui_resources.iter())
-                .filter(|resource| entry.resource_exposure_policy.matches(&resource.uri))
-                .cloned()
+                .filter(|resource| {
+                    super::entries::resource_exposed(&entry.resource_exposure_policy, &resource.uri)
+                })
                 .collect::<Vec<_>>();
             rows.sort_unstable_by(|left, right| left.uri.cmp(&right.uri));
-            for resource in rows {
-                if resources.len() >= super::tools::MAX_UPSTREAM_RESOURCES {
-                    return resources;
-                }
-                resources.push((name.clone(), resource));
-            }
+            resources.extend(
+                rows.into_iter()
+                    .take(remaining)
+                    .map(|resource| (name.clone(), resource.clone())),
+            );
         }
         resources
+    }
+
+    /// Age `upstream`'s current resource snapshot so freshness tests do not
+    /// have to wait out `RESOURCE_SNAPSHOT_MAX_AGE`.
+    #[cfg(test)]
+    pub(super) async fn age_resource_snapshot_for_tests(
+        &self,
+        upstream: &str,
+        age: std::time::Duration,
+    ) {
+        let mut catalog = self.catalog_write().await;
+        let aged = Instant::now()
+            .checked_sub(age)
+            .expect("test age fits the monotonic clock");
+        match catalog.resource_sources.get_mut(upstream) {
+            Some(ResourceSourceState::Ready(source)) => source.listed_at = aged,
+            Some(ResourceSourceState::Failed { listed_at, .. }) => *listed_at = aged,
+            None => {}
+        }
     }
 
     #[cfg(any(test, feature = "testkit"))]

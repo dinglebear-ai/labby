@@ -594,8 +594,9 @@ impl UsageStore {
                 .map_err(sqlite_error)?;
 
             // Discovery/list operations intentionally carry no item target. Keep
-            // them in fleet/upstream totals, but do not present plumbing as a
-            // user-invoked "Top tool" in the dashboard.
+            // them in fleet/upstream totals, but keep them out of the top,
+            // least-used, slowest, and distinct-tool rankings, which are about
+            // user-invoked items.
             let ranked_target_rollups = target_rollups
                 .iter()
                 .filter(|(tool, _, _)| !tool.tool.is_empty())
@@ -1316,6 +1317,8 @@ mod tests {
         discovery.tool_name.clear();
         discovery.capability = "resources".to_string();
         discovery.operation = "resources.list".to_string();
+        // Slow enough to top the latency ranking if plumbing were ranked.
+        discovery.elapsed_ms = 5_000;
         store.record_call(discovery).await.unwrap();
 
         let metrics = store
@@ -1334,6 +1337,16 @@ mod tests {
         assert_eq!(metrics.top_tools.len(), 1);
         assert_eq!(metrics.top_tools[0].tool, "search_repos");
         assert_eq!(metrics.top_tools[0].calls, 3);
+        assert_eq!(metrics.least_tools.len(), 1);
+        assert_eq!(metrics.least_tools[0].tool, "search_repos");
+        assert_eq!(metrics.slowest_tools.len(), 1);
+        assert_eq!(metrics.slowest_tools[0].tool, "search_repos");
+        assert_eq!(metrics.distinct_tools, 1);
+        assert_eq!(
+            metrics.upstreams.iter().map(|row| row.calls).sum::<i64>(),
+            4,
+            "discovery records stay in the upstream totals"
+        );
     }
 
     #[tokio::test]

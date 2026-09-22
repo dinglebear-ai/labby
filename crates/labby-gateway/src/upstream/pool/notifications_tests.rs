@@ -32,6 +32,7 @@ struct SubscriptionServer {
     tool_change: Arc<tokio::sync::Notify>,
     resources: Arc<tokio::sync::RwLock<Vec<Resource>>>,
     resource_change: Arc<tokio::sync::Notify>,
+    fail_list_resources: Arc<AtomicBool>,
 }
 
 impl SubscriptionServer {
@@ -49,6 +50,7 @@ impl SubscriptionServer {
                 "subscription-resource",
             )])),
             resource_change: Arc::new(tokio::sync::Notify::new()),
+            fail_list_resources: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -111,6 +113,9 @@ impl ServerHandler for SubscriptionServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
+        if self.fail_list_resources.load(Ordering::SeqCst) {
+            return Err(ErrorData::internal_error("fixture listing failure", None));
+        }
         Ok(ListResourcesResult::with_all_items(
             self.resources.read().await.clone(),
         ))
@@ -158,6 +163,19 @@ impl ServerHandler for SubscriptionServer {
             }
         }
     }
+}
+
+/// Wait for the fixture's subscriptions/listen handler to be active. The
+/// handshake crosses a duplex transport, so a yield count is not a bound; a
+/// wall-clock deadline is.
+async fn wait_until_listening(server: &SubscriptionServer) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !server.listening.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("subscription listener must be active before emitting list-changed");
 }
 
 async fn add_subscription_server(pool: &UpstreamPool, upstream: &str, server: SubscriptionServer) {
@@ -486,16 +504,7 @@ async fn tool_change_consumer_refreshes_the_exact_named_catalog() {
     let server = SubscriptionServer::accepting();
     add_subscription_server(&pool, "leaf", server.clone()).await;
     pool.refresh_upstream_subscription("leaf").await;
-    for _ in 0..100 {
-        if server.listening.load(Ordering::SeqCst) {
-            break;
-        }
-        tokio::task::yield_now().await;
-    }
-    assert!(
-        server.listening.load(Ordering::SeqCst),
-        "subscription listener must be active before emitting list-changed"
-    );
+    wait_until_listening(&server).await;
     let mut notifications = pool.subscribe_notifications();
 
     server
@@ -535,16 +544,7 @@ async fn resource_change_consumer_refreshes_the_exact_named_catalog()
     // The initial resource listing schedules the subscription refresh itself.
     // Starting another generation here would cancel the one under test.
     pool.list_upstream_resources().await;
-    for _ in 0..100 {
-        if server.listening.load(Ordering::SeqCst) {
-            break;
-        }
-        tokio::task::yield_now().await;
-    }
-    assert!(
-        server.listening.load(Ordering::SeqCst),
-        "subscription listener must be active before emitting list-changed"
-    );
+    wait_until_listening(&server).await;
     let mut notifications = pool.subscribe_notifications();
 
     server
@@ -563,4 +563,36 @@ async fn resource_change_consumer_refreshes_the_exact_named_catalog()
     assert_eq!(resources.len(), 1);
     assert_eq!(resources[0].1.uri, "file:///tmp/added-after-list-changed");
     Ok(())
+}
+
+#[tokio::test]
+async fn failed_list_changed_refresh_withholds_rows_until_the_next_warm_up() {
+    let pool = Arc::new(UpstreamPool::new());
+    let server = SubscriptionServer::accepting();
+    add_subscription_server(&pool, "leaf", server.clone()).await;
+    pool.list_upstream_resources().await;
+    assert_eq!(pool.cached_upstream_resources_allowed(None).await.len(), 1);
+
+    server.fail_list_resources.store(true, Ordering::SeqCst);
+    assert!(
+        !pool.refresh_resources_after_list_changed("leaf").await,
+        "a failed re-list reports false"
+    );
+    assert!(
+        pool.cached_upstream_resources_allowed(None)
+            .await
+            .is_empty(),
+        "stale rows are withheld rather than served after a failed re-list"
+    );
+    let cold = pool.cold_resource_snapshots(None).await;
+    assert_eq!(
+        cold.missing,
+        std::collections::BTreeSet::from(["leaf".to_string()]),
+        "the next discovery warm-up retries the upstream"
+    );
+
+    server.fail_list_resources.store(false, Ordering::SeqCst);
+    pool.warm_cold_resource_snapshots_allowed(None).await;
+    assert_eq!(pool.cached_upstream_resources_allowed(None).await.len(), 1);
+    assert!(pool.refresh_resources_after_list_changed("leaf").await);
 }

@@ -206,7 +206,10 @@ status exposes these cumulative per-upstream values as `header_recovery`, omitte
 while all counts are zero. Never emit tool arguments or synthesized
 `Mcp-Param-*` values in these events.
 
-Resource catalog fan-out uses `operation = "resources.list"`. Each upstream
+Resource catalog fan-out uses `operation = "resources.list"`. It runs on
+connect, reconnect, gateway reload, an upstream `resources/list_changed`, and
+the discovery warm-up of cold snapshots, not on every downstream
+`resources/list`, which is served from the cached snapshot. Each upstream
 emits `upstream.request.start` followed by `upstream.request.finish` or
 `upstream.request.error`, including `subject_scoped = true` for OAuth resource
 passes. When proxy policy permits an optional capability that the upstream did
