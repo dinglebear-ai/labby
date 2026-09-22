@@ -1207,6 +1207,19 @@ impl UpstreamPool {
         self.catalog.read().await.published_resources.clone()
     }
 
+    /// Whether the current connection incarnation has a successful resource
+    /// snapshot, including an explicitly empty resources/list result.
+    pub(super) async fn has_current_resource_snapshot(&self, upstream: &str) -> bool {
+        let catalog = self.catalog.read().await;
+        let Some(incarnation) = catalog.incarnation(upstream) else {
+            return false;
+        };
+        matches!(
+            catalog.resource_sources.get(upstream),
+            Some(ResourceSourceState::Ready(source)) if source.incarnation == incarnation
+        )
+    }
+
     /// Return already-discovered regular upstream resources without peer I/O.
     /// Discovery surfaces use this cache-only projection so resources/list cannot
     /// fan out into a fleet-wide refresh.

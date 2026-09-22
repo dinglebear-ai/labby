@@ -3907,6 +3907,21 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
             "upstream MCP App tools must pass through synthetic Code Mode"
         );
 
+        let pool = running
+            .service()
+            .current_upstream_pool()
+            .await
+            .expect("upstream pool");
+        let cached = pool
+            .cached_upstream_resources_with_provenance_allowed(None)
+            .await;
+        assert!(
+            cached
+                .iter()
+                .any(|listed| listed.native_uri == UPSTREAM_UI_URI),
+            "upstream MCP UI resource must be present in the regular resource cache: {cached:?}"
+        );
+
         let resources = running
             .service()
             .list_resources_impl(None, resource_context.clone())

@@ -232,9 +232,15 @@ impl UpstreamPool {
                 .and(oauth_subject)
                 .and_then(|subject| self.oauth_lifecycle_epoch(&config.name, subject));
             if self.upstream_is_ready(&config.name, readiness).await {
-                if readiness == Readiness::Tools {
-                    self.refresh_ui_resource_cache_for_healthy_upstream_if_needed(config)
-                        .await;
+                match readiness {
+                    Readiness::Tools => {
+                        self.refresh_ui_resource_cache_for_healthy_upstream_if_needed(config)
+                            .await;
+                    }
+                    Readiness::Connection => {
+                        self.refresh_resource_cache_for_connected_upstream_if_missing(config)
+                            .await;
+                    }
                 }
                 return Ok(false);
             }
@@ -247,9 +253,15 @@ impl UpstreamPool {
                 "upstream configuration changed before connection"
             );
             if self.upstream_is_ready(&config.name, readiness).await {
-                if readiness == Readiness::Tools {
-                    self.refresh_ui_resource_cache_for_healthy_upstream_if_needed(config)
-                        .await;
+                match readiness {
+                    Readiness::Tools => {
+                        self.refresh_ui_resource_cache_for_healthy_upstream_if_needed(config)
+                            .await;
+                    }
+                    Readiness::Connection => {
+                        self.refresh_resource_cache_for_connected_upstream_if_missing(config)
+                            .await;
+                    }
                 }
                 return Ok(false);
             }
@@ -647,6 +659,16 @@ impl UpstreamPool {
                 entry.supports_skills = supports_skills;
             }
         }
+    }
+
+    async fn refresh_resource_cache_for_connected_upstream_if_missing(
+        &self,
+        config: &UpstreamConfig,
+    ) {
+        if !config.proxy_resources || self.has_current_resource_snapshot(&config.name).await {
+            return;
+        }
+        self.refresh_resource_cache_for_upstream(&config.name).await;
     }
 
     async fn refresh_ui_resource_cache_for_healthy_upstream_if_needed(

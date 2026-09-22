@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use rmcp::model::{
@@ -24,6 +24,7 @@ const NATIVE_RESOURCE_URI: &str = "file:///tmp/subscription-resource";
 #[derive(Clone)]
 struct SubscriptionServer {
     attempts: Arc<AtomicUsize>,
+    listening: Arc<AtomicBool>,
     failures_before_accept: usize,
     listen_failures_before_stable: usize,
     acceptance_delay: Duration,
@@ -37,6 +38,7 @@ impl SubscriptionServer {
     fn accepting() -> Self {
         Self {
             attempts: Arc::new(AtomicUsize::new(0)),
+            listening: Arc::new(AtomicBool::new(false)),
             failures_before_accept: 0,
             listen_failures_before_stable: 0,
             acceptance_delay: Duration::ZERO,
@@ -135,6 +137,7 @@ impl ServerHandler for SubscriptionServer {
                 None,
             ));
         }
+        self.listening.store(true, Ordering::SeqCst);
         loop {
             tokio::select! {
                 () = context.cancelled() => return Ok(()),
@@ -483,6 +486,16 @@ async fn tool_change_consumer_refreshes_the_exact_named_catalog() {
     let server = SubscriptionServer::accepting();
     add_subscription_server(&pool, "leaf", server.clone()).await;
     pool.refresh_upstream_subscription("leaf").await;
+    for _ in 0..100 {
+        if server.listening.load(Ordering::SeqCst) {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        server.listening.load(Ordering::SeqCst),
+        "subscription listener must be active before emitting list-changed"
+    );
     let mut notifications = pool.subscribe_notifications();
 
     server
@@ -521,6 +534,16 @@ async fn resource_change_consumer_refreshes_the_exact_named_catalog()
     add_subscription_server(&pool, "leaf", server.clone()).await;
     pool.list_upstream_resources().await;
     pool.refresh_upstream_subscription("leaf").await;
+    for _ in 0..100 {
+        if server.listening.load(Ordering::SeqCst) {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        server.listening.load(Ordering::SeqCst),
+        "subscription listener must be active before emitting list-changed"
+    );
     let mut notifications = pool.subscribe_notifications();
 
     server
