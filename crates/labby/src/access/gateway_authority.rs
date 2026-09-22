@@ -198,15 +198,22 @@ pub(crate) async fn authorize_gateway_action(
     if class == GatewayAuthorityClass::Public {
         return Ok(None);
     }
-    let store = runtime.store().await.map_err(|error| {
-        tracing::warn!(
-            service = "gateway",
-            action,
-            error = %error,
-            kind = "service_unavailable",
-            "Gateway authority store is unavailable"
-        );
-        unavailable()
+    let store = runtime.store().await.map_err(|error| match error {
+        // A never-initialized store is a deterministic setup gate, not an
+        // outage: share the canonical mapping so every surface agrees.
+        super::AccessRuntimeError::SetupRequired(_) => {
+            crate::dispatch::access_errors::map_runtime_error("gateway", error)
+        }
+        other => {
+            tracing::warn!(
+                service = "gateway",
+                action,
+                error = %other,
+                kind = "service_unavailable",
+                "Gateway authority store is unavailable"
+            );
+            unavailable()
+        }
     })?;
     let (owner, capability, resource_id) = match class {
         GatewayAuthorityClass::PersonalManage => {
@@ -374,6 +381,91 @@ mod tests {
         assert_eq!(gateway_authority_class("other.action"), None);
         assert!(!gateway_transport_requires_admin("gateway.loadout.add"));
         assert!(gateway_transport_requires_admin("gateway.add"));
+    }
+
+    fn static_bearer_identity() -> VerifiedIdentity {
+        VerifiedIdentity::local_credential(
+            labby_auth::Authenticator::StaticBearer,
+            "static-bearer:primary",
+        )
+        .unwrap()
+    }
+
+    async fn authorize_against(runtime: &AccessRuntime, action: &str) -> ToolError {
+        authorize_gateway_action(
+            runtime,
+            static_bearer_identity(),
+            AuthorityCeiling::trusted_local(),
+            "installation",
+            None,
+            action,
+        )
+        .await
+        .err()
+        .expect("authorization must fail without a ready access store")
+    }
+
+    /// Field report (v1.20.1, bearer-only): a never-initialized access store
+    /// surfaced as a retryable upstream-transport outage. It is a setup gate.
+    #[tokio::test]
+    async fn uninitialized_access_store_reports_setup_required_not_an_outage() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().canonicalize().unwrap().join("access.db");
+        let runtime = AccessRuntime::initialize(path).await;
+        assert!(matches!(
+            runtime.status().await,
+            crate::access::AccessRuntimeStatus::SetupRequired(_)
+        ));
+
+        for action in [
+            "gateway.oauth.start",
+            "gateway.oauth.status",
+            "gateway.list",
+            "gateway.mcp.list",
+            "gateway.oauth.authorize",
+            "gateway.loadout.list",
+        ] {
+            let error = if action.starts_with("gateway.loadout.") {
+                authorize_gateway_action(
+                    &runtime,
+                    static_bearer_identity(),
+                    AuthorityCeiling::trusted_local(),
+                    "installation",
+                    Some("alpha"),
+                    action,
+                )
+                .await
+                .err()
+                .unwrap()
+            } else {
+                authorize_against(&runtime, action).await
+            };
+            assert_eq!(error.kind(), "access_setup_required", "{action}");
+            let envelope = error.to_agent_value();
+            assert_eq!(envelope["origin"], "validation", "{action}");
+            assert_eq!(envelope["side_effects"], "none_expected", "{action}");
+            assert_eq!(envelope["recovery"]["action"], "start_dependency");
+            assert_eq!(envelope["recovery"]["same_arguments"], "never");
+            let message = envelope["message"].as_str().unwrap();
+            assert!(message.contains("access setup is required"), "{message}");
+        }
+    }
+
+    #[tokio::test]
+    async fn blocked_access_store_remains_a_service_outage() {
+        for reason in [
+            crate::access::AccessBlockedReason::Locked,
+            crate::access::AccessBlockedReason::Corrupt,
+            crate::access::AccessBlockedReason::Unavailable,
+        ] {
+            let runtime = AccessRuntime::blocked_for_test(reason);
+            let error = authorize_against(&runtime, "gateway.oauth.start").await;
+            assert_eq!(error.kind(), "service_unavailable", "{reason:?}");
+            assert_eq!(
+                error.user_message(),
+                "Gateway authority is temporarily unavailable"
+            );
+        }
     }
 
     #[test]

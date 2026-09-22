@@ -7,7 +7,9 @@
 //! - which failures are caller-fixable input problems (`invalid_param`);
 //! - which failures are store lifecycle outages (`service_unavailable`) that
 //!   must be logged server-side with their typed cause but never leaked
-//!   verbatim to the caller.
+//!   verbatim to the caller;
+//! - which failures are the deterministic owner-setup gate
+//!   (`access_setup_required`) rather than an outage.
 //!
 //! The messages returned here are fixed strings. The typed cause is logged
 //! through `tracing` (WARN for outages that heal on their own, ERROR for
@@ -98,8 +100,12 @@ pub(crate) fn map_store_error(
 }
 
 /// Map a runtime-lifecycle failure (`AccessRuntime::store()`) to the shared
-/// envelope. Setup-required and blocked states are outages from the caller's
-/// point of view, never authorization decisions.
+/// envelope. Neither state is an authorization decision.
+///
+/// - `SetupRequired` is a deterministic setup gate, not an outage: the store
+///   has never been initialized, nothing ran, and retrying cannot help until
+///   the operator completes owner setup. It maps to `access_setup_required`.
+/// - `Blocked` and lifecycle failures are real outages (`service_unavailable`).
 pub(crate) fn map_runtime_error(service: &'static str, error: AccessRuntimeError) -> ToolError {
     match error {
         AccessRuntimeError::SetupRequired(reason) => {
@@ -110,10 +116,10 @@ pub(crate) fn map_runtime_error(service: &'static str, error: AccessRuntimeError
             tracing::warn!(
                 service,
                 reason,
-                kind = "service_unavailable",
-                "access store setup is required"
+                kind = ACCESS_SETUP_REQUIRED_KIND,
+                "access store setup is required; run `labby setup` (bearer) or browser owner setup (OAuth)"
             );
-            unavailable()
+            setup_required()
         }
         AccessRuntimeError::Blocked(reason) => {
             let (level_error, reason) = match reason {
@@ -159,6 +165,23 @@ fn unavailable() -> ToolError {
     ToolError::Sdk {
         sdk_kind: "service_unavailable".to_owned(),
         message: "access store is unavailable".to_owned(),
+    }
+}
+
+/// Stable kind for a never-initialized durable access store. Classified in
+/// `labby_runtime::agent_error` as a `validation`-origin setup gate with
+/// `start_dependency` recovery and no side effects.
+const ACCESS_SETUP_REQUIRED_KIND: &str = "access_setup_required";
+
+/// The caller-facing setup gate. The message is a fixed string that names the
+/// remediation for both auth modes; the typed reason stays in the server log.
+fn setup_required() -> ToolError {
+    ToolError::Sdk {
+        sdk_kind: ACCESS_SETUP_REQUIRED_KIND.to_owned(),
+        message: "access setup is required: this Labby's access store has not been initialized. \
+                  Run `labby setup` on the Labby host (bearer-token installs) or complete \
+                  owner setup in the Labby web UI (OAuth installs), then retry."
+            .to_owned(),
     }
 }
 
@@ -214,7 +237,6 @@ mod tests {
             assert!(!text.contains("sqlite"), "{text}");
         }
         for error in [
-            AccessRuntimeError::SetupRequired(AccessSetupReason::Missing),
             AccessRuntimeError::Blocked(AccessBlockedReason::Corrupt),
             AccessRuntimeError::Blocked(AccessBlockedReason::Locked),
             AccessRuntimeError::LifecycleUnavailable,
@@ -223,6 +245,27 @@ mod tests {
                 map_runtime_error("test", error).kind(),
                 "service_unavailable"
             );
+        }
+    }
+
+    /// A never-initialized access store is a deterministic setup gate: it is
+    /// not temporary, nothing ran, the upstream transport was never touched,
+    /// and the envelope names the owner-setup remediation.
+    #[test]
+    fn setup_required_is_a_non_retryable_setup_gate() {
+        for reason in [AccessSetupReason::Missing, AccessSetupReason::Uninitialized] {
+            let mapped = map_runtime_error("gateway", AccessRuntimeError::SetupRequired(reason));
+            assert_eq!(mapped.kind(), "access_setup_required", "{reason:?}");
+            let envelope = mapped.to_agent_value();
+            assert_eq!(envelope["kind"], "access_setup_required");
+            assert_eq!(envelope["origin"], "validation");
+            assert_eq!(envelope["side_effects"], "none_expected");
+            assert_eq!(envelope["recovery"]["action"], "start_dependency");
+            assert_eq!(envelope["recovery"]["same_arguments"], "never");
+            let message = envelope["message"].as_str().unwrap();
+            assert!(message.contains("access setup is required"), "{message}");
+            assert!(message.contains("`labby setup`"), "{message}");
+            assert!(!message.contains("temporarily"), "{message}");
         }
     }
 
