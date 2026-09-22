@@ -351,7 +351,12 @@ fn canonicalize_upstream_filter(
 ) -> Result<String, DispatchToolError> {
     let requested = requested.trim();
     if requested.is_empty() {
-        return Ok(String::new());
+        // Silently dropping an empty entry widens the run to every visible
+        // upstream, which is the opposite of what the caller asked for.
+        return Err(DispatchToolError::Sdk {
+            sdk_kind: "invalid_param".to_string(),
+            message: "Code Mode `upstreams`/`tools` entries must not be empty. Remove the empty entry, or omit the filter to use every upstream this caller can reach.".to_string(),
+        });
     }
     if is_builtin_code_mode_namespace(requested)
         && route_allowed.is_none_or(|allowed| allowed.contains(requested))
@@ -377,6 +382,12 @@ fn canonicalize_tool_filter(
 ) -> Result<String, DispatchToolError> {
     let requested = requested.trim();
     let Some((namespace, tool)) = requested.split_once("::") else {
+        if requested.is_empty() {
+            return Err(DispatchToolError::Sdk {
+                sdk_kind: "invalid_param".to_string(),
+                message: "Code Mode `tools` entries must not be empty. Remove the empty entry, or omit the filter to use every tool this caller can reach.".to_string(),
+            });
+        }
         return Ok(requested.to_string());
     };
     let namespace = canonicalize_upstream_filter(namespace, visible, route_allowed)?;
@@ -398,7 +409,6 @@ fn route_scoped_capability_filter(
     let requested_upstreams = string_array_arg(args, "upstreams")?
         .into_iter()
         .map(|name| canonicalize_upstream_filter(&name, &visible, route_allowed))
-        .filter(|name| !matches!(name, Ok(name) if name.is_empty()))
         .collect::<Result<Vec<_>, _>>()?;
     let tools = string_array_arg(args, "tools")?
         .into_iter()

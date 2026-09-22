@@ -492,9 +492,8 @@ impl PeerContract {
             && let Some(upstream) = upstreams.iter_mut().find(|upstream| upstream.name == name)
         {
             upstream.example = crate::mcp::call_tool_codemode::CodeModeExampleCall::from_tool(
-                &example.tool,
-                &example.input_schema,
-                true,
+                example.tool(),
+                example.input_schema(),
             );
         }
         upstreams

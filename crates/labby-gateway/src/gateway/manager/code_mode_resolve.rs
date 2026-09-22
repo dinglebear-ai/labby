@@ -13,23 +13,65 @@ use labby_runtime::error::ToolError;
 use super::GatewayManager;
 
 /// A real, explicitly read-only upstream tool that Code Mode descriptions
-/// render as their example call.
+/// render as their example call. Only the gateway builds one, from a live
+/// catalog entry that passed the read-only check.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CodeModeExampleTool {
-    pub tool: String,
-    pub input_schema: std::sync::Arc<serde_json::Map<String, serde_json::Value>>,
+    tool: String,
+    input_schema: std::sync::Arc<serde_json::Map<String, serde_json::Value>>,
 }
 
-/// Remembered example per upstream, valid for one runtime config generation.
+impl CodeModeExampleTool {
+    /// The upstream tool name.
+    #[must_use]
+    pub fn tool(&self) -> &str {
+        &self.tool
+    }
+
+    /// The tool's input schema.
+    #[must_use]
+    pub fn input_schema(&self) -> &serde_json::Map<String, serde_json::Value> {
+        &self.input_schema
+    }
+}
+
+/// Remembered examples, valid for one runtime config generation.
 ///
-/// Tool descriptors feed the MCP contract hash and `tools/list` cursors, so an
-/// example must not flap with upstream health: once chosen it is kept until the
-/// config changes (which resets the memo) or a *healthy* upstream shows the tool
-/// is gone or no longer read-only.
+/// Tool descriptors feed the MCP contract hash and `tools/list` cursors, so the
+/// example must not flap with upstream health. Stability holds at two levels:
+/// an upstream that has supplied an example keeps supplying it (a later
+/// connecting upstream does not take over), and each upstream keeps the tool it
+/// first chose. Everything resets when the config generation changes; a
+/// remembered tool is dropped only when a *healthy* upstream shows it is gone or
+/// no longer read-only.
 #[derive(Debug, Default)]
 pub(super) struct CodeModeExampleMemo {
     generation: u64,
     entries: std::collections::BTreeMap<String, CodeModeExampleTool>,
+}
+
+impl CodeModeExampleMemo {
+    fn sync(&mut self, generation: u64) {
+        if self.generation != generation {
+            self.generation = generation;
+            self.entries.clear();
+        }
+    }
+
+    fn get(&mut self, generation: u64, upstream: &str) -> Option<CodeModeExampleTool> {
+        self.sync(generation);
+        self.entries.get(upstream).cloned()
+    }
+
+    fn insert(&mut self, generation: u64, upstream: &str, example: CodeModeExampleTool) {
+        self.sync(generation);
+        self.entries.insert(upstream.to_string(), example);
+    }
+
+    fn remove(&mut self, generation: u64, upstream: &str) {
+        self.sync(generation);
+        self.entries.remove(upstream);
+    }
 }
 
 pub(super) type SharedCodeModeExampleMemo = std::sync::Arc<std::sync::Mutex<CodeModeExampleMemo>>;
@@ -126,15 +168,14 @@ impl GatewayManager {
             .collect()
     }
 
-    /// The example tool for Code Mode descriptions: the first of `upstreams`
-    /// (in sorted order) with an explicitly read-only tool, as
-    /// `(upstream, tool)`.
+    /// The example tool for Code Mode descriptions, as `(upstream, tool)`.
     ///
-    /// Only enabled, routable, non-OAuth upstreams qualify (OAuth catalogs are
-    /// per subject). Lookups stop at the first hit and never clone tool lists.
-    /// Upstreams with no live read-only tool yet are skipped and retried on
-    /// the next call, so an example appears once an upstream connects and then
-    /// stays put (see `CodeModeExampleMemo`).
+    /// Only enabled, routable, non-OAuth upstreams among `upstreams` qualify
+    /// (OAuth catalogs are per subject). A previously chosen upstream wins
+    /// while its remembered tool is still valid, so the example does not move
+    /// when another upstream connects later; otherwise the first upstream in
+    /// sorted order with a live read-only tool is chosen and remembered (see
+    /// `CodeModeExampleMemo`). Lookups never clone tool lists.
     pub async fn code_mode_example_tool(
         &self,
         upstreams: &BTreeSet<String>,
@@ -156,41 +197,39 @@ impl GatewayManager {
             .runtime_config_generation
             .load(std::sync::atomic::Ordering::Relaxed);
         let pool = self.current_pool().await;
-        for name in candidates {
-            let remembered = {
-                let mut memo = self
-                    .code_mode_example_memo
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if memo.generation != generation {
-                    memo.generation = generation;
-                    memo.entries.clear();
-                }
-                memo.entries.get(&name).cloned()
-            };
-            let Some(pool) = pool.as_ref() else {
-                if let Some(example) = remembered {
-                    return Some((name, example));
-                }
+        let memo = || {
+            self.code_mode_example_memo
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        };
+
+        for name in &candidates {
+            let Some(example) = memo().get(generation, name) else {
                 continue;
             };
-            if let Some(example) = remembered {
-                if pool
-                    .read_only_tool_still_present(&name, &example.tool)
-                    .await
-                    != Some(false)
-                {
-                    return Some((name, example));
+            let still_valid = match pool.as_ref() {
+                // No pool to consult: keep what we have rather than flap.
+                None => true,
+                Some(pool) => {
+                    pool.read_only_tool_still_present(name, &example.tool).await != Some(false)
                 }
-                tracing::debug!(
-                    surface = "dispatch",
-                    service = "gateway",
-                    action = "code_mode.example",
-                    upstream = %name,
-                    tool = %example.tool,
-                    "dropping Code Mode description example: tool gone or no longer read-only"
-                );
+            };
+            if still_valid {
+                return Some((name.clone(), example));
             }
+            tracing::debug!(
+                surface = "dispatch",
+                service = "gateway",
+                action = "code_mode.example",
+                upstream = %name,
+                tool = %example.tool,
+                "dropping Code Mode description example: tool gone or no longer read-only"
+            );
+            memo().remove(generation, name);
+        }
+
+        let pool = pool?;
+        for name in candidates {
             let Some((tool, input_schema)) = pool.read_only_example_tool(&name).await else {
                 tracing::debug!(
                     surface = "dispatch",
@@ -202,13 +241,7 @@ impl GatewayManager {
                 continue;
             };
             let example = CodeModeExampleTool { tool, input_schema };
-            let mut memo = self
-                .code_mode_example_memo
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if memo.generation == generation {
-                memo.entries.insert(name.clone(), example.clone());
-            }
+            memo().insert(generation, &name, example.clone());
             return Some((name, example));
         }
         None
@@ -254,12 +287,14 @@ impl GatewayManager {
                     .iter()
                     .map(|name| (*name).to_string())
                     .collect::<BTreeSet<_>>();
+                // `enabled = false` and a non-positive priority are the two
+                // ways to disable an upstream without removing it, so both
+                // get the actionable message rather than "not found".
                 let disabled = cfg
                     .upstream
                     .iter()
                     .filter(|upstream| {
-                        !upstream.enabled
-                            && is_routable(upstream.priority)
+                        (!upstream.enabled || !is_routable(upstream.priority))
                             && in_scope(&upstream.name)
                     })
                     .map(|upstream| upstream.name.as_str());
