@@ -10,6 +10,12 @@ use labby_runtime::gateway_config::UpstreamConfig;
 /// binary crate. An explicit `LABBY_HOME` is exclusive, so an isolated
 /// installation never reads another installation's upstream bearer tokens.
 /// Returns `None` when neither root can be resolved.
+///
+/// This crate stays independent of the Labby product crate, which owns the
+/// full installation-root contract and validates the root (absolute, not a
+/// symlink, securely owned) at startup. The local check here is the part that
+/// protects this read on its own: a non-absolute root would otherwise resolve
+/// a `.env` relative to whatever directory the process happened to start in.
 fn dotenv_path() -> Option<PathBuf> {
     #[cfg(windows)]
     let home = std::env::var_os("USERPROFILE");
@@ -23,9 +29,20 @@ fn dotenv_path_from(
     home: Option<std::ffi::OsString>,
 ) -> Option<PathBuf> {
     if let Some(root) = labby_home.filter(|root| !root.is_empty()) {
-        return Some(PathBuf::from(root).join(".env"));
+        let root = PathBuf::from(root);
+        if !root.is_absolute() {
+            // Only the variable name is logged: the value is operator-supplied
+            // and a rejected path adds nothing an operator cannot re-read.
+            tracing::warn!(
+                variable = "LABBY_HOME",
+                "ignoring a non-absolute Labby installation root; no upstream dotenv was read"
+            );
+            return None;
+        }
+        return Some(root.join(".env"));
     }
-    home.map(|home| PathBuf::from(home).join(".labby").join(".env"))
+    home.filter(|home| Path::new(home).is_absolute())
+        .map(|home| PathBuf::from(home).join(".labby").join(".env"))
 }
 
 pub fn configured_bearer_token(env_name: &str) -> Option<String> {
@@ -170,6 +187,18 @@ mod tests {
             ),
             Some(PathBuf::from("/srv/labby-preview/.env"))
         );
+    }
+
+    /// A relative root never resolves a dotenv against the process working
+    /// directory: it is refused here, independently of the product crate's
+    /// startup validation.
+    #[test]
+    fn dotenv_path_refuses_a_non_absolute_installation_root() {
+        assert_eq!(
+            dotenv_path_from(Some("relative/root".into()), Some("/Users/operator".into())),
+            None
+        );
+        assert_eq!(dotenv_path_from(None, Some("relative/home".into())), None);
     }
 
     #[test]
