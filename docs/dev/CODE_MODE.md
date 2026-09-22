@@ -100,6 +100,31 @@ Inside the sandbox:
   entry, and `await codemode.readSkill("skill://...")` reads its verified
   manifest-bound content.
 
+### Tool descriptions
+
+MCP clients commonly display only the first ~2 KB of a tool description, so
+`crates/labby/src/mcp/call_tool_codemode/description.rs` renders each entry
+point in a fixed order:
+
+1. A first line that says which entry point this is: read-only (`codemode_read`),
+   write-capable (`codemode`), or the trace inspector (`codemode_ui`).
+2. The code shape, the search → describe → call workflow, and the rules that
+   cause most failures: reduce results, the default time/call/size budgets,
+   `codemode.batch()` for fan-out, and returning caught errors so their
+   `recovery.guidance` reaches the caller.
+3. One example call built from a real upstream tool's input schema. A
+   read-only tool is preferred; `codemode_read` never shows any other kind.
+   Without a live tool, the example is a search-first run.
+4. `## Upstreams`: one line per enabled, route-visible upstream with its
+   `code_mode_hint`. The list is trimmed by whole lines under the 8 KB cap and
+   ends with a pointer to `codemode.search()`.
+
+Details the runtime already reports when they matter (error recovery
+metadata, truncation markers, `describe()` declarations) are not repeated in
+the description. The example tool is remembered per upstream config
+fingerprint, so health changes do not alter the descriptor contract hash or
+invalidate `tools/list` cursors.
+
 ### Capability catalog
 
 Code Mode discovery is represented by a source-neutral `CatalogDescriptor`,

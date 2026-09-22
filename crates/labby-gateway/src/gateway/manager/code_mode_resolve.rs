@@ -12,6 +12,25 @@ use labby_runtime::error::ToolError;
 
 use super::GatewayManager;
 
+/// A real upstream tool that Code Mode descriptions render as their example
+/// call, so the model sees a concrete, valid invocation shape.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CodeModeExampleTool {
+    pub tool: String,
+    pub input_schema: std::sync::Arc<serde_json::Map<String, serde_json::Value>>,
+    /// Explicitly read-only, so `codemode_read` may advertise it.
+    pub read_only: bool,
+}
+
+/// Per-upstream example memo: `name -> (config fingerprint, example)`.
+///
+/// Tool descriptors feed the MCP contract hash and pagination cursors, so the
+/// example must not flap with upstream health. The first example observed for
+/// an upstream is kept until that upstream's config changes.
+pub(super) type CodeModeExampleMemo = std::sync::Arc<
+    std::sync::Mutex<std::collections::BTreeMap<String, (String, CodeModeExampleTool)>>,
+>;
+
 async fn routed_tools_for_upstream(
     pool: &crate::upstream::pool::UpstreamPool,
     config: &labby_runtime::gateway_config::UpstreamConfig,
@@ -89,6 +108,74 @@ impl GatewayManager {
         }
         matches.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(matches)
+    }
+
+    /// Example tools for the named upstreams, for Code Mode descriptions.
+    ///
+    /// Only enabled, routable, non-OAuth upstreams qualify (OAuth catalogs are
+    /// per-subject). An explicitly read-only tool is preferred, then the first
+    /// tool by name. Selections are sticky per upstream config fingerprint;
+    /// an upstream with no live tools yet is simply omitted.
+    pub async fn code_mode_example_tools(
+        &self,
+        upstreams: &[String],
+    ) -> std::collections::BTreeMap<String, CodeModeExampleTool> {
+        let candidates = {
+            let cfg = self.config.read().await;
+            cfg.upstream
+                .iter()
+                .filter(|upstream| {
+                    upstream.enabled
+                        && upstream.oauth.is_none()
+                        && is_routable(upstream.priority)
+                        && upstreams.contains(&upstream.name)
+                })
+                .map(|upstream| {
+                    (
+                        upstream.name.clone(),
+                        crate::gateway::code_mode::catalog_cache::fingerprint(upstream),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let pool = self.current_pool().await;
+        let mut examples = std::collections::BTreeMap::new();
+        for (name, fingerprint) in candidates {
+            let remembered = self.code_mode_example_memo.lock().ok().and_then(|memo| {
+                memo.get(&name)
+                    .filter(|(seen, _)| *seen == fingerprint)
+                    .map(|(_, example)| example.clone())
+            });
+            if let Some(example) = remembered {
+                examples.insert(name, example);
+                continue;
+            }
+            let Some(pool) = pool.as_ref() else {
+                continue;
+            };
+            let tools = pool.healthy_tools_for_upstream(&name).await;
+            let chosen = tools
+                .iter()
+                .find(|tool| {
+                    crate::gateway::code_mode::code_mode_host::tool_is_explicitly_read_only(tool)
+                })
+                .or_else(|| tools.first());
+            let Some(tool) = chosen else {
+                continue;
+            };
+            let example = CodeModeExampleTool {
+                tool: tool.tool.name.to_string(),
+                input_schema: std::sync::Arc::clone(&tool.tool.input_schema),
+                read_only: crate::gateway::code_mode::code_mode_host::tool_is_explicitly_read_only(
+                    tool,
+                ),
+            };
+            if let Ok(mut memo) = self.code_mode_example_memo.lock() {
+                memo.insert(name.clone(), (fingerprint, example.clone()));
+            }
+            examples.insert(name, example);
+        }
+        examples
     }
 
     /// Map a `callTool` namespace to its configured upstream name.

@@ -965,7 +965,7 @@ impl CodeModeHost for GatewayManager {
     }
 }
 
-pub(super) fn tool_is_explicitly_read_only(tool: &UpstreamTool) -> bool {
+pub(crate) fn tool_is_explicitly_read_only(tool: &UpstreamTool) -> bool {
     rmcp_tool_is_explicitly_read_only(&tool.tool) && !tool.destructive
 }
 

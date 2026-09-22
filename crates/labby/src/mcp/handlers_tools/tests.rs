@@ -3440,11 +3440,11 @@ async fn codemode_description_lists_route_scoped_enabled_upstreams_and_hints() {
         .expect("codemode description")
         .as_ref();
 
-    assert!(description.contains("## Available upstream namespaces"));
-    assert!(description.contains("- `apps` -- Search connected application data"));
+    assert!(description.contains("## Upstreams"));
+    assert!(description.contains("- `apps`: Search connected application data"));
     assert!(!description.contains("- `hidden`"));
     assert!(!description.contains("- `hidden-upstream`"));
-    assert!(description.contains("Never guess helper or method names"));
+    assert!(description.contains("Never guess tool or parameter names"));
 }
 
 #[tokio::test]

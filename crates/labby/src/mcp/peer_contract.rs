@@ -482,10 +482,25 @@ impl PeerContract {
                     .code_mode_hint
                     .as_deref()
                     .and_then(labby_runtime::gateway_config::normalize_code_mode_hint),
+                example: None,
             })
             .collect::<Vec<_>>();
         upstreams.sort_by(|a, b| a.name.cmp(&b.name));
         upstreams.dedup_by(|a, b| a.name == b.name);
+        let names = upstreams
+            .iter()
+            .map(|upstream| upstream.name.clone())
+            .collect::<Vec<_>>();
+        let examples = manager.code_mode_example_tools(&names).await;
+        for upstream in &mut upstreams {
+            upstream.example = examples.get(&upstream.name).map(|example| {
+                crate::mcp::call_tool_codemode::CodeModeExampleCall::from_tool(
+                    &example.tool,
+                    &example.input_schema,
+                    example.read_only,
+                )
+            });
+        }
         upstreams
     }
 
@@ -785,6 +800,7 @@ mod tests {
             crate::mcp::call_tool_codemode::CodeModeUpstreamDescription {
                 name: "same-name-live-config".to_string(),
                 hint: Some("secret mutable hint".to_string()),
+                example: None,
             },
         ];
 

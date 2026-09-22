@@ -2,10 +2,10 @@
 //! `server.rs` (bead `lab-kvji.24.1.6`).
 
 use super::{
-    CODE_MODE_DESCRIPTION_MAX_BYTES, CodeModeUpstreamDescription, InflightCodeModeRole,
-    await_code_mode_execution, begin_code_mode_execution, code_arg, code_mode_description,
-    code_mode_description_with_suffix, code_mode_execute_trace, code_mode_result,
-    route_scoped_capability_filter, string_array_arg,
+    CODE_MODE_DESCRIPTION_MAX_BYTES, CodeModeDescriptionVariant, CodeModeExampleCall,
+    CodeModeUpstreamDescription, InflightCodeModeRole, await_code_mode_execution,
+    begin_code_mode_execution, code_arg, code_mode_execute_trace, code_mode_result,
+    code_mode_tool_description, route_scoped_capability_filter, string_array_arg,
 };
 use crate::config::CodeModeResultShapePolicy;
 use labby_codemode::{
@@ -324,61 +324,188 @@ fn scoped_capability_filter_defaults_to_route_allowed_upstreams() {
     assert!(!filter.allows("beta", "search"));
 }
 
-#[test]
-fn code_mode_description_contains_protocol_contract() {
-    // Source of truth: docs/dev/CODE_MODE.md
-    // Error contract:  docs/contracts/code-mode-tool-errors.md
-    let description = code_mode_description(&[]);
-    assert!(description.contains("callTool<T = unknown>"));
-    assert!(description.contains("Successful return: the upstream tool's structuredContent"));
-    assert!(description.contains("JSON.parse(String(e?.message ?? e))"));
-    assert!(description.contains("recovery.guidance"));
-    assert!(description.contains("side_effects"));
-    assert!(description.contains("origin: \"tool_execution\""));
-    assert!(description.contains("Promise.all"));
-    assert!(
-        description.contains("codemode"),
-        "description must explain the codemode typed helper namespace"
-    );
-    assert!(
-        description.contains("codemode.search"),
-        "description must make in-sandbox discovery primary"
-    );
-    assert!(description.contains("Never guess helper or method names"));
-    assert!(description.contains("live catalog"));
-    assert!(description.contains("## Available upstream namespaces"));
-    assert!(description.contains("none currently configured"));
-    assert!(description.contains("writeArtifact"));
-    assert!(description.contains("call_budget_exceeded"));
-    assert!(description.contains("executes `fn` in the current run"));
-    assert!(description.contains("best-effort append-only journal"));
-    assert!(description.contains("successful Code Mode response does not prove"));
-    assert!(!description.contains("runs once"));
-    assert!(!description.contains("replays its recorded result"));
-    assert!(
-        !description.contains("search.dts"),
-        "description must not imply primary codemode discovery returns legacy dts"
-    );
-    assert!(
-        !description.contains("For Lab built-in actions use the `execute` tool"),
-        "description must not point codemode callers at a removed execute tool"
-    );
-    assert!(description.len() < 8192);
+/// Clients such as Claude Code show roughly the first 2 KB of a description.
+const CLIENT_VISIBLE_BYTES: usize = 2048;
+
+fn realistic_upstreams() -> Vec<CodeModeUpstreamDescription> {
+    let mut upstreams = (0..20)
+        .map(|index| CodeModeUpstreamDescription {
+            name: format!("upstream-{index:02}"),
+            hint: Some(format!(
+                "Fixture service number {index} for description budget tests"
+            )),
+            example: None,
+        })
+        .collect::<Vec<_>>();
+    upstreams[0].name = "claude-macpoo".to_string();
+    upstreams[0].example = Some(CodeModeExampleCall::from_tool(
+        "Bash",
+        json!({
+            "type": "object",
+            "properties": { "command": { "type": "string" }, "timeout": { "type": "number" } },
+            "required": ["command"]
+        })
+        .as_object()
+        .expect("schema"),
+        false,
+    ));
+    upstreams[1].example = Some(CodeModeExampleCall::from_tool(
+        "list_issues",
+        json!({
+            "type": "object",
+            "properties": {
+                "state": { "type": "string", "enum": ["open", "closed"] },
+                "per-page": { "type": ["integer", "null"] }
+            },
+            "required": ["state", "per-page"]
+        })
+        .as_object()
+        .expect("schema"),
+        true,
+    ));
+    upstreams
+}
+
+fn visible_prefix(description: &str) -> &str {
+    let mut end = description.len().min(CLIENT_VISIBLE_BYTES);
+    while !description.is_char_boundary(end) {
+        end -= 1;
+    }
+    &description[..end]
 }
 
 #[test]
-fn code_mode_description_caps_the_final_composition_at_a_utf8_boundary() {
-    let suffix = format!("required final guidance: {}", "💩".repeat(4_096));
+fn code_mode_variants_differ_within_the_client_visible_prefix() {
+    let upstreams = realistic_upstreams();
+    let full = code_mode_tool_description(CodeModeDescriptionVariant::Full, &upstreams, "");
+    let read = code_mode_tool_description(CodeModeDescriptionVariant::Read, &upstreams, "");
+    let ui = code_mode_tool_description(CodeModeDescriptionVariant::Ui, &upstreams, "");
+
+    assert!(full.starts_with("Write-capable Code Mode"), "{full}");
+    assert!(read.starts_with("Read-only Code Mode"), "{read}");
+    assert!(
+        ui.starts_with("Code Mode with a visual trace inspector"),
+        "{ui}"
+    );
+    assert_ne!(visible_prefix(&full), visible_prefix(&read));
+    assert!(visible_prefix(&read).contains("use `codemode`"));
+    assert!(visible_prefix(&full).contains("`codemode_read`"));
+}
+
+#[test]
+fn code_mode_rules_example_and_first_upstream_fit_in_the_visible_prefix() {
+    let upstreams = realistic_upstreams();
+    for variant in [
+        CodeModeDescriptionVariant::Full,
+        CodeModeDescriptionVariant::Read,
+        CodeModeDescriptionVariant::Ui,
+    ] {
+        let description = code_mode_tool_description(variant, &upstreams, "");
+        let visible = visible_prefix(&description);
+        for required in [
+            "async () => {",
+            "codemode.search",
+            "codemode.describe",
+            "codemode.batch",
+            "24 KB",
+            "30 s",
+            "recovery.guidance",
+            "Never guess",
+            "Example:",
+            "## Upstreams",
+            "- `claude-macpoo`",
+        ] {
+            assert!(
+                visible.contains(required),
+                "{variant:?} prefix lacks {required:?}:\n{visible}"
+            );
+        }
+        assert!(description.len() <= CODE_MODE_DESCRIPTION_MAX_BYTES);
+    }
+}
+
+#[test]
+fn read_variant_never_advertises_writes_or_a_mutating_example() {
+    let upstreams = realistic_upstreams();
+    let read = code_mode_tool_description(CodeModeDescriptionVariant::Read, &upstreams, "");
+    let full = code_mode_tool_description(CodeModeDescriptionVariant::Full, &upstreams, "");
+
+    assert!(!read.contains("Globals: `codemode`, `callTool`, `writeArtifact`"));
+    assert!(!read.contains("reuse idempotency keys"));
+    // Read skips the non-read-only Bash example and uses the read-only tool.
+    assert!(
+        read.contains(r#"callTool("upstream-01::list_issues", { state: "open", "per-page": 1 })"#),
+        "{read}"
+    );
+    // Write-capable variants still prefer a read-only example when one exists.
+    assert!(
+        full.contains(r#"callTool("upstream-01::list_issues""#),
+        "{full}"
+    );
+    assert!(full.contains("reuse idempotency keys"));
+}
+
+#[test]
+fn write_variant_falls_back_to_a_mutating_example_only_without_read_only_tools() {
+    let mut upstreams = realistic_upstreams();
+    upstreams[1].example = None;
+    let full = code_mode_tool_description(CodeModeDescriptionVariant::Full, &upstreams, "");
+    let read = code_mode_tool_description(CodeModeDescriptionVariant::Read, &upstreams, "");
+
+    assert!(
+        full.contains(r#"callTool("claude-macpoo::Bash", { command: "..." })"#),
+        "{full}"
+    );
+    assert!(!read.contains("claude-macpoo::Bash"), "{read}");
+    assert!(read.contains("hits.results.map"), "{read}");
+}
+
+#[test]
+fn description_without_live_examples_teaches_a_search_first_run() {
     let upstreams = vec![CodeModeUpstreamDescription {
         name: "github".to_string(),
-        hint: Some("💩".repeat(4_096)),
+        hint: None,
+        example: None,
     }];
-    let description = code_mode_description_with_suffix(&upstreams, &suffix);
-    assert!(description.len() <= CODE_MODE_DESCRIPTION_MAX_BYTES);
-    assert!(description.contains("codemode.search"));
+    let description = code_mode_tool_description(CodeModeDescriptionVariant::Full, &upstreams, "");
+    assert!(description.contains("hits.results.map"), "{description}");
     assert!(description.contains("- `github`"));
-    assert!(description.contains("required final guidance:"));
+
+    let empty = code_mode_tool_description(CodeModeDescriptionVariant::Read, &[], "");
+    assert!(empty.contains("- none currently configured"));
+}
+
+#[test]
+fn oversized_upstream_lists_are_trimmed_by_whole_lines_with_a_search_pointer() {
+    let upstreams = (0..400)
+        .map(|index| CodeModeUpstreamDescription {
+            name: format!("upstream-{index:03}"),
+            hint: Some("💩".repeat(40)),
+            example: None,
+        })
+        .collect::<Vec<_>>();
+    let description = code_mode_tool_description(
+        CodeModeDescriptionVariant::Full,
+        &upstreams,
+        "low-priority trailer",
+    );
+
+    assert!(description.len() <= CODE_MODE_DESCRIPTION_MAX_BYTES);
+    assert!(description.starts_with("Write-capable Code Mode"));
+    assert!(description.contains("- `upstream-000`"));
+    assert!(description.contains("more; use `codemode.search()` to discover them"));
+    assert!(!description.contains("low-priority trailer"));
     assert!(std::str::from_utf8(description.as_bytes()).is_ok());
+}
+
+#[test]
+fn trailer_is_appended_when_it_fits() {
+    let description = code_mode_tool_description(
+        CodeModeDescriptionVariant::Full,
+        &[],
+        "low-priority trailer",
+    );
+    assert!(description.ends_with("low-priority trailer"));
 }
 
 #[test]

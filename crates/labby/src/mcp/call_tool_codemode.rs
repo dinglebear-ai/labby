@@ -199,173 +199,6 @@ impl Drop for StepBufferDropGuard {
     }
 }
 
-/// Static body for the primary `codemode` MCP tool description.
-///
-/// The final model-visible description is rendered with the current enabled,
-/// route-scoped upstream namespace snapshot by `code_mode_description`.
-pub(crate) const CODE_MODE_DESCRIPTION_BODY: &str = "\
-Execute JavaScript in a sandbox with access to the Labby gateway catalog.
-
-## Workflow
-
-1. Discover: `const hits = await codemode.search({ query: \"short intent phrase\", limit: 5 });`
-2. Inspect: `const docs = await codemode.describe(hits.results[0].path);`
-3. Discover resources: `const { resources } = await codemode.listResources(\"upstream-name\");` Then pass a returned `resources[].uri` unchanged to `codemode.readResource(uri)`.
-4. Call: `await codemode.<upstream>.<tool>(params)` or `await callTool(\"upstream::tool\", params);`
-
-Never guess helper or method names. If you have not already confirmed the exact \
-tool, run `codemode.search(...)` first. `codemode.search` returns compact \
-signatures; `codemode.describe(\"upstream.tool\")` returns focused TypeScript \
-declarations and call details.
-
-Enabled upstream namespaces are summarized below from the current route-scoped \
-configuration. Their individual tools and runtime health remain live; discover \
-those at execution time with `codemode.search` and `codemode.describe`.
-
-Pass `code` as `async () => { ... }` — the sandbox awaits its return value. \
-Whatever it returns becomes `result`.
-
-```ts
-async () => {
-  const hits = await codemode.search({ query: 'github issues', limit: 1 });
-  const docs = await codemode.describe(hits.results[0].path);
-  const issues = await codemode.github.search_issues({ q: 'bug' });
-  return { tool: docs.path, count: issues.items.length };
-}
-```
-
-Available globals: `codemode`, `callTool`, and `writeArtifact`. There is no \
-`require`, `process`, `fs`, `fetch`, Node.js, Deno, or Bun API. All external I/O \
-goes through gateway tools.
-
-Optional top-level inputs to this MCP tool:
-- `upstreams`: restrict this run to specific upstream namespaces.
-- `tools`: restrict this run to specific tools; accepts raw tool names or \
-`upstream::tool` ids.
-
-Every upstream MCP tool is callable two ways: `callTool(id, params)`, or the \
-auto-generated `codemode.<upstream>.<tool>(params)` helper (a thin wrapper over \
-the same callTool, named from the live catalog). Snippets are discoverable \
-through `codemode.search` and `codemode.describe`; run them with \
-`codemode.run(\"<snippet>\", input)`.
-
-`codemode.batch(jobs)` runs independent calls concurrently and never rejects: \
-pass an array of thunks (`() => codemode.x.y(...)`) or already-started calls, and \
-it resolves to `{ ok: [{ i, value }], failed: [{ i, error }], all_ok }` once \
-every job has settled. Prefer it over `Promise.all([...])` for fan-out — \
-`Promise.all` rejects on the first failure and discards every other in-flight \
-result; `codemode.batch` never does.
-
-`codemode.listResources(upstream)` lists exposed resources for one configured \
-upstream name and returns `{ resources: [...] }` with exact read-ready URIs. \
-Resource URIs are not `upstream::tool` identifiers. An empty list is not a \
-connection health check.\n\n\
-`codemode.readResource(uri)` reads an upstream MCP resource through the same \
-route and caller scope as the current Code Mode run. It returns the MCP \
-`ReadResourceResult` object with a `contents` array.
-
-Code Mode has a bounded wall-clock budget. For workflows with many mutating \
-calls, use small bounded batches, preserve stable idempotency keys, and inspect \
-completed results before retrying a timed-out batch; earlier calls may already \
-have committed.
-
-`codemode.step(name, fn)` executes `fn` in the current run, then buffers a bounded, \
-redacted result for Labby's best-effort append-only journal. There is no public \
-resume or replay operation, and a successful Code Mode response does not prove \
-that the detached journal flush has completed.
-
-```ts
-// codemode.<upstream>.<tool>() helpers are auto-generated from the live catalog.
-// Use codemode.search() / codemode.describe() for compact docs, and callTool for
-// dynamic ids.
-// Keep the final execution return within the configured envelope budget; project,
-// filter, or slice large results before returning.
-declare function callTool<T = unknown>(
-  id: `${string}::${string}`,
-  params: Record<string, unknown>
-): Promise<T>;
-```
-
-Successful return: the upstream tool's structuredContent if present; otherwise all \
-text blocks are joined and parsed as JSON when possible. Mixed/non-text results retain \
-the MCP result shape.
-
-Reduce before returning. Do not return a large upstream response raw.
-
-BAD:
-```ts
-return await callTool(id, params);
-```
-
-GOOD — project object fields and slice arrays:
-```ts
-const r = await callTool(id, params);
-return r.items.slice(0, 20).map(({ id, name }) => ({ id, name }));
-```
-
-GOOD — filter to the evidence the caller needs:
-```ts
-const r = await callTool(id, params);
-return { failures: r.items.filter(item => item.ok === false) };
-```
-
-Error handling:
-```ts
-try {
-  return await callTool(id, params);
-} catch (e) {
-  let error;
-  try {
-    error = JSON.parse(String(e?.message ?? e));
-    if (!error || typeof error !== 'object' || Array.isArray(error)) throw e;
-  }
-  catch { error = { message: String(e?.message ?? e), side_effects: 'unknown' }; }
-  // Inspect: kind, origin, recovery, side_effects, cause, evidence.
-  // Follow recovery.guidance. Avoid unchanged retries when side_effects is
-  // possible/unknown or recovery.same_arguments is discouraged/never.
-  // Without a structured contract, inspect the failure before retrying.
-  return { error };
-}
-```
-A completed MCP tool failure uses `origin: \"tool_execution\"`; inspect its preserved \
-`cause` and `evidence`, revise the call, and retry when appropriate. Transport or \
-rate-limit failures generally recommend retrying later. Permission, authentication, \
-and unknown-target failures require changing state or rediscovering first.
-
-A failed callTool rejects only its own promise — the run continues, so catch it and \
-proceed. For catch-and-continue fan-out, prefer `Promise.allSettled` so every call \
-settles before you return.
-
-Scope: `codemode_read` accepts `lab:read`, `lab`, or `lab:admin`; `codemode` and \
-`codemode_ui` require `lab` or `lab:admin`.
-
-Results are capped to the configured envelope budget (default 24 KB / 6000 tokens). \
-Oversized results are replaced with a truncation marker containing `truncated`, \
-`original_size`, `original_tokens`, `preview`, `next_action`, and (when the budget permits) `resource_read_example`. \
-Follow the returned recovery instructions: execution already happened, so do not \
-replay mutations to recover omitted output. For an embedded text resource, use \
-`resource_read_example` with the exact discovered URI and follow `next_offset` \
-until `done`, keeping the resource version stable between reads. Omitted bytes \
-are not automatically cached. When optional result shaping truncates output, \
-read `result_shaping.warning` for the same recovery guidance.
-
-Budget:
-- Time: a 30 s wall-clock timeout bounds the whole run. Split work across \
-calls or reduce local computation if the `timeout` kind is returned.
-- Tool calls: default 512 `callTool` calls per run, configurable by the host up \
-to 2048. Extra tool calls reject with `call_budget_exceeded`.
-- Memory: 64 MiB heap limit enforced by the QuickJS runtime. Reduce the data \
-processed inside the sandbox if the runner exits with `server_error`.
-- Stack: QuickJS enforces a native stack depth limit; avoid deep recursion.
-- For `timeout`, `call_budget_exceeded`, or output-size limits, follow the returned \
-recovery guidance. Inspect completed work before starting a smaller run; never \
-replay a mutating batch merely to recover its missing output.
-
-Lab actions (`lab::*` tool IDs) are not available in Code Mode. For Lab built-in \
-actions, use the native Lab service tools instead of Code Mode.";
-
-pub(crate) const CODE_MODE_DESCRIPTION_MAX_BYTES: usize = 8192;
-
 fn code_mode_call_metrics_json(calls: &[CodeModeExecutedCall]) -> String {
     let calls = calls
         .iter()
@@ -382,90 +215,6 @@ fn code_mode_call_metrics_json(calls: &[CodeModeExecutedCall]) -> String {
         })
         .collect::<Vec<_>>();
     serde_json::to_string(&calls).unwrap_or_else(|_| "[]".to_string())
-}
-
-fn utf8_prefix(value: &str, max_bytes: usize) -> &str {
-    let mut end = value.len().min(max_bytes);
-    while !value.is_char_boundary(end) {
-        end -= 1;
-    }
-    &value[..end]
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CodeModeUpstreamDescription {
-    pub(crate) name: String,
-    pub(crate) hint: Option<String>,
-}
-
-fn dynamic_code_mode_description(upstreams: &[CodeModeUpstreamDescription]) -> String {
-    let mut out = format!(
-        "{}\n\n## Available upstream namespaces\n\n",
-        CODE_MODE_DESCRIPTION_BODY.trim_end()
-    );
-    if upstreams.is_empty() {
-        out.push_str("- none currently configured");
-        return out;
-    }
-
-    for upstream in upstreams {
-        match upstream
-            .hint
-            .as_deref()
-            .and_then(labby_runtime::gateway_config::normalize_code_mode_hint)
-        {
-            Some(hint) => {
-                out.push_str(&format!("- `{}` -- {}\n", upstream.name, hint));
-            }
-            None => {
-                out.push_str(&format!("- `{}`\n", upstream.name));
-            }
-        }
-    }
-    out.trim_end().to_string()
-}
-
-#[must_use]
-#[cfg(test)]
-pub(crate) fn code_mode_description(upstreams: &[CodeModeUpstreamDescription]) -> String {
-    code_mode_description_with_suffix(upstreams, "")
-}
-
-/// Compose and cap the final model-visible Code Mode tool description.
-///
-/// Hosts commonly snapshot the complete `Tool` JSON, so callers must pass all
-/// stable tool-specific guidance here instead of appending text after the byte
-/// cap has been applied. On overflow, the beginning of the protocol contract
-/// and the beginning of the suffix are retained at UTF-8 boundaries.
-#[must_use]
-pub(crate) fn code_mode_description_with_suffix(
-    upstreams: &[CodeModeUpstreamDescription],
-    suffix: &str,
-) -> String {
-    const SEPARATOR: &str = "\n\n";
-    const TRUNCATION_NOTE: &str =
-        "\n\n[description truncated; use codemode.search for live details]";
-    // Preserve enough of the suffix to identify its contract while leaving
-    // room for at least the first configured upstream name. Agents need that
-    // name to rediscover details after the description is capped.
-    const SUFFIX_PREFIX_MAX_BYTES: usize = 256;
-
-    let body = dynamic_code_mode_description(upstreams);
-    let body = body.as_str();
-    let suffix = suffix.trim();
-    if suffix.is_empty() {
-        return utf8_prefix(body, CODE_MODE_DESCRIPTION_MAX_BYTES).to_string();
-    }
-
-    if body.len() + SEPARATOR.len() + suffix.len() <= CODE_MODE_DESCRIPTION_MAX_BYTES {
-        return format!("{body}{SEPARATOR}{suffix}");
-    }
-
-    let suffix = utf8_prefix(suffix, SUFFIX_PREFIX_MAX_BYTES);
-    let reserved = SEPARATOR.len() + suffix.len() + TRUNCATION_NOTE.len();
-    let body_budget = CODE_MODE_DESCRIPTION_MAX_BYTES.saturating_sub(reserved);
-    let body = utf8_prefix(body, body_budget);
-    format!("{body}{SEPARATOR}{suffix}{TRUNCATION_NOTE}")
 }
 
 pub(crate) fn string_array_arg(
@@ -1139,6 +888,15 @@ fn code_mode_result(
         });
     call_result_with_structured(text, structured, ui_meta)
 }
+
+mod description;
+
+#[cfg(test)]
+pub(crate) use description::CODE_MODE_DESCRIPTION_MAX_BYTES;
+pub(crate) use description::{
+    CodeModeDescriptionVariant, CodeModeExampleCall, CodeModeUpstreamDescription,
+    code_mode_tool_description,
+};
 
 #[cfg(test)]
 mod tests;

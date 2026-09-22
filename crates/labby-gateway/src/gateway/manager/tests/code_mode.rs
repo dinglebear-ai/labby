@@ -3235,3 +3235,39 @@ async fn canonical_code_mode_upstream_suggestions_respect_scope_and_priority() {
     assert!(!message.contains("scoped-out-beta"), "{message}");
     assert!(message.contains("`alpha`"), "{message}");
 }
+
+#[tokio::test]
+async fn code_mode_example_tools_are_sticky_until_config_changes() {
+    let (manager, pool) = code_mode_manager_with_pool(fixture_http_upstream("claude-macpoo")).await;
+    pool.insert_entry_for_tests(
+        "claude-macpoo",
+        healthy_entry_with_tool("claude-macpoo", "Bash"),
+    )
+    .await;
+    let names = vec!["claude-macpoo".to_string()];
+
+    let first = manager.code_mode_example_tools(&names).await;
+    assert_eq!(first["claude-macpoo"].tool, "Bash");
+
+    // A catalog change (health flap, reconnect) must not change the example:
+    // it feeds the descriptor contract hash and pagination cursors.
+    pool.insert_entry_for_tests(
+        "claude-macpoo",
+        healthy_entry_with_tool("claude-macpoo", "Read"),
+    )
+    .await;
+    let second = manager.code_mode_example_tools(&names).await;
+    assert_eq!(second["claude-macpoo"].tool, "Bash");
+}
+
+#[tokio::test]
+async fn code_mode_example_tools_skip_upstreams_without_live_tools() {
+    let (manager, _pool) = code_mode_manager_with_pool(fixture_http_upstream("cold")).await;
+
+    assert!(
+        manager
+            .code_mode_example_tools(&["cold".to_string()])
+            .await
+            .is_empty()
+    );
+}
