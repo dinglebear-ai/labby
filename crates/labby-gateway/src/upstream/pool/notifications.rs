@@ -84,6 +84,17 @@ impl UpstreamPool {
         self.notification_tx.subscribe()
     }
 
+    /// Publish an event onto the normalized notification bus as an upstream
+    /// connection would.
+    ///
+    /// The bus's consumer lives in the `labby` crate, so proving that consumer
+    /// never awaits an upstream RPC needs a way to put an event on the bus
+    /// without racing a real subscription handshake.
+    #[cfg(any(test, feature = "testkit"))]
+    pub fn publish_notification_event(&self, event: UpstreamNotificationEvent) {
+        drop(self.notification_tx.send(event));
+    }
+
     /// Refresh the cached resources of one exact upstream after it reports
     /// `resources/list_changed`.
     ///

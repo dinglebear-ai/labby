@@ -68,6 +68,8 @@ mod list_changed_refresh_tests;
 #[cfg(test)]
 mod listing_timeout_tests;
 mod logging;
+#[cfg(any(test, feature = "testkit"))]
+pub mod notification_testkit;
 mod notifications;
 #[cfg(test)]
 mod notifications_tests;
