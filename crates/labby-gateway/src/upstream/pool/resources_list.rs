@@ -1,9 +1,22 @@
 //! Resource listing and the synthetic gateway documents.
 //!
-//! `list_upstream_resources` / `subject_scoped_resources` enumerate proxied
-//! upstream resources (rewriting URIs to the gateway-prefixed form), while the
-//! `gateway_*` methods render the synthetic `lab://gateway/*` documents and
-//! resources. `cached_upstream_resource_uris` exposes the cached snapshot.
+//! Three entry points share one contract:
+//!
+//! - `list_upstream_resources*` is the live fan-out. It re-lists every routable
+//!   regular upstream and republishes each one's snapshot.
+//! - `cached_upstream_resources_with_provenance_allowed` is the cache-only
+//!   projection the MCP `resources/list` handler and Code Mode read. It never
+//!   performs peer I/O.
+//! - `spawn_resource_snapshot_warmup` / `warm_cold_resource_snapshots_allowed`
+//!   re-list only the upstreams whose snapshot is missing or older than
+//!   `RESOURCE_SNAPSHOT_MAX_AGE` without a push channel.
+//!
+//! Freshness owner: a snapshot is replaced on connect, reconnect, gateway
+//! reload, an upstream `resources/list_changed` (`refresh_resources_after_
+//! list_changed`), and by the warm-up above. `subject_scoped_resources` lists
+//! OAuth upstreams over the per-subject connection and caches the result on
+//! that connection under the same freshness bound. The `gateway_*` methods
+//! render the synthetic `lab://gateway/*` documents.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -25,13 +38,15 @@ use super::capability_call::{
     timed_capability_call_with_timeout,
 };
 use super::catalog_pagination;
+use super::catalog_publication::{ResourceSnapshotColdSet, is_ui_resource_uri};
 use super::entries::{
     health_str, log_exposure_filter, resolve_exposure_policy,
     resolve_request_resource_exposure_policy, resource_exposed,
 };
 use super::helpers::{
-    bare_upstream_resource_uri, classify_upstream_error, max_response_bytes, rewrite_resource_uri,
-    upstream_discovery_timeout, upstream_transport,
+    RESOURCE_SNAPSHOT_MAX_AGE, SUBJECT_CONN_IDLE_TTL, bare_upstream_resource_uri,
+    classify_upstream_error, max_response_bytes, rewrite_resource_uri, upstream_discovery_timeout,
+    upstream_transport,
 };
 use super::logging::{
     UpstreamRequestLog, is_capability_unsupported, log_upstream_capability_skipped,
@@ -46,6 +61,16 @@ use super::tools::MAX_UPSTREAM_RESOURCES;
 /// `oauth_invalidation_barrier` read guard are held, so an unbounded listing
 /// stalls every queued OAuth writer behind one slow upstream.
 const CATALOG_LISTING_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// A started resource snapshot warm-up. See
+/// `UpstreamPool::spawn_resource_snapshot_warmup`.
+pub struct ResourceSnapshotWarmup {
+    /// What the warm-up covers.
+    pub cold: ResourceSnapshotColdSet,
+    /// The running fan-out, `None` when nothing was cold. Dropping the handle
+    /// detaches the task; it keeps running to completion.
+    pub task: Option<tokio::task::JoinHandle<()>>,
+}
 
 /// One regular upstream Resource with its exact pre-rewrite provenance.
 ///
@@ -333,9 +358,12 @@ impl UpstreamPool {
         out
     }
 
-    /// List resources from all resource-proxy-enabled upstreams.
+    /// Live fan-out: list resources from all resource-proxy-enabled upstreams
+    /// and republish their snapshots.
     ///
     /// Resources are prefixed with `lab://upstream/{name}/` to avoid collisions.
+    /// Discovery surfaces should read
+    /// `cached_upstream_resources_with_provenance_allowed` instead.
     pub async fn list_upstream_resources(&self) -> Vec<Resource> {
         self.list_upstream_resources_allowed(None).await
     }
@@ -351,7 +379,137 @@ impl UpstreamPool {
             .collect()
     }
 
+    /// Return the already-discovered resource catalog of regular (non-OAuth)
+    /// upstreams, including their MCP Apps `ui://` rows, bounded exactly like
+    /// the live listing.
+    ///
+    /// This is intentionally cache-only: callers that are merely enumerating
+    /// resources must not turn an MCP resources/list request into fleet-wide I/O.
+    pub async fn cached_upstream_resources_with_provenance_allowed(
+        &self,
+        allowed: Option<&BTreeSet<String>>,
+    ) -> Vec<ListedUpstreamResource> {
+        let mut listed = Vec::new();
+        for (upstream_name, mut resource) in self.cached_upstream_resources_allowed(allowed).await {
+            let native_uri = resource.uri.clone();
+            if !is_ui_resource_uri(&resource.uri) {
+                rewrite_resource_uri(&mut resource, &upstream_name);
+            }
+            listed.push(ListedUpstreamResource {
+                upstream_name,
+                native_uri,
+                resource,
+            });
+        }
+        self.bound_listed_resources(&mut listed);
+        listed
+    }
+
+    /// Re-list the regular upstreams in `allowed` (all when `None`) and
+    /// republish their snapshots without building the merged listing envelope.
+    /// This is the refresh primitive behind connect, list_changed, and warm-up.
+    pub(super) async fn refresh_resource_snapshots_allowed(
+        &self,
+        allowed: Option<&BTreeSet<String>>,
+    ) {
+        drop(self.fan_out_upstream_resources_allowed(allowed).await);
+    }
+
+    /// Re-list the upstreams whose snapshot is missing or stale and wait for
+    /// the fan-out to finish. Single-flight: concurrent callers queue behind
+    /// one fan-out and then find nothing left to warm. Returns what was cold
+    /// when this caller took its turn.
+    pub async fn warm_cold_resource_snapshots_allowed(
+        &self,
+        allowed: Option<&BTreeSet<String>>,
+    ) -> ResourceSnapshotColdSet {
+        let _turn = self.resource_snapshot_warmup.lock().await;
+        let cold = self.cold_resource_snapshots(allowed).await;
+        if !cold.is_empty() {
+            self.refresh_resource_snapshots_allowed(Some(&cold.names()))
+                .await;
+        }
+        cold
+    }
+
+    /// Start a warm-up for the cold snapshots in `allowed` and report what it
+    /// covers. The task always runs to completion so a caller deadline can
+    /// never cut a fan-out short of publishing its rows, recording its
+    /// failures, or scheduling its subscription refreshes; a caller that stops
+    /// waiting simply serves the snapshot it has.
+    pub async fn spawn_resource_snapshot_warmup(
+        self: &Arc<Self>,
+        allowed: Option<&BTreeSet<String>>,
+    ) -> ResourceSnapshotWarmup {
+        let cold = self.cold_resource_snapshots(allowed).await;
+        if cold.is_empty() {
+            return ResourceSnapshotWarmup { cold, task: None };
+        }
+        let pool = Arc::clone(self);
+        let names = cold.names();
+        let task = tokio::spawn(async move {
+            drop(
+                pool.warm_cold_resource_snapshots_allowed(Some(&names))
+                    .await,
+            );
+        });
+        ResourceSnapshotWarmup {
+            cold,
+            task: Some(task),
+        }
+    }
+
+    /// Make the cached listing usable: wait for never-listed upstreams to be
+    /// warmed, and let stale ones refresh in the background.
+    pub async fn ensure_resource_snapshots_allowed(
+        self: &Arc<Self>,
+        allowed: Option<&BTreeSet<String>>,
+    ) {
+        let warmup = self.spawn_resource_snapshot_warmup(allowed).await;
+        if let Some(task) = warmup.task
+            && !warmup.cold.missing.is_empty()
+        {
+            drop(task.await);
+        }
+    }
+
+    /// Sort the merged listing, apply the response byte envelope, and cap the
+    /// item count. Shared by the live and cached listings so both surfaces
+    /// honour one bound contract.
+    fn bound_listed_resources(&self, resources: &mut Vec<ListedUpstreamResource>) {
+        // One pass in (upstream, URI) order keeps the result independent of
+        // completion order and measures each resource exactly once.
+        resources.sort_by(|left, right| {
+            (&left.upstream_name, &left.native_uri).cmp(&(&right.upstream_name, &right.native_uri))
+        });
+        let max_bytes = max_response_bytes();
+        let mut bytes = 2usize;
+        resources.retain(|item| {
+            #[cfg(test)]
+            self.merged_resource_measurements
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            bytes = bytes.saturating_add(
+                serde_json::to_vec(&item.resource).map_or(usize::MAX, |body| body.len() + 1),
+            );
+            bytes <= max_bytes
+        });
+        resources.truncate(MAX_UPSTREAM_RESOURCES);
+    }
+
     pub async fn list_upstream_resources_with_provenance_allowed(
+        &self,
+        allowed: Option<&BTreeSet<String>>,
+    ) -> Vec<ListedUpstreamResource> {
+        let mut resources = self.fan_out_upstream_resources_allowed(allowed).await;
+        // Bound only the merged envelope, after every server's complete,
+        // independently validated snapshot has been published.
+        self.bound_listed_resources(&mut resources);
+        resources
+    }
+
+    /// Issue resources/list to every routable regular upstream in `allowed`,
+    /// publish each snapshot, and return the exposed rows unbounded.
+    async fn fan_out_upstream_resources_allowed(
         &self,
         allowed: Option<&BTreeSet<String>>,
     ) -> Vec<ListedUpstreamResource> {
@@ -446,7 +604,9 @@ impl UpstreamPool {
                     // what `gateway.discovered_resources` shows the operator who
                     // is editing `expose_resources`, and hiding excluded URIs
                     // there would make the allowlist un-editable. Enforcement
-                    // happens on what leaves this function, and on every read.
+                    // happens on what leaves this function, on the cache-only
+                    // projection (`cached_upstream_resources_allowed`), and on
+                    // every read.
                     let Some((policy, resource_uris_changed)) = self
                         .apply_observed_resource_list_success(&observed, &upstream_resources)
                         .await
@@ -474,7 +634,7 @@ impl UpstreamPool {
                         // Rewriting to the `lab://upstream/{name}/…` gateway form
                         // would break that reference, so skip the rewrite here.
                         let native_uri = resource.uri.clone();
-                        if !resource.uri.starts_with("ui://") {
+                        if !is_ui_resource_uri(&resource.uri) {
                             rewrite_resource_uri(&mut resource, &name);
                         }
                         resources.push(ListedUpstreamResource {
@@ -503,26 +663,6 @@ impl UpstreamPool {
                 }
             }
         }
-
-        // Bound only the merged envelope, after every server's complete,
-        // independently validated snapshot has been published above. One
-        // pass in (upstream, URI) order keeps the result independent of
-        // completion order and measures each resource exactly once.
-        resources.sort_by(|left, right| {
-            (&left.upstream_name, &left.native_uri).cmp(&(&right.upstream_name, &right.native_uri))
-        });
-        let max_bytes = max_response_bytes();
-        let mut bytes = 2usize;
-        resources.retain(|item| {
-            #[cfg(test)]
-            self.merged_resource_measurements
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            bytes = bytes.saturating_add(
-                serde_json::to_vec(&item.resource).map_or(usize::MAX, |body| body.len() + 1),
-            );
-            bytes <= max_bytes
-        });
-        resources.truncate(MAX_UPSTREAM_RESOURCES);
 
         self.schedule_observed_upstream_subscription_refreshes(subscription_refreshes)
             .await;
@@ -673,6 +813,36 @@ impl UpstreamPool {
             futures.push(async move {
                 let started = Instant::now();
                 let request_timeout = catalog_listing_timeout(pool.request_timeout);
+                let key = (config.name.clone(), subject.clone());
+                let cached = {
+                    let cache = pool.subject_connections.read().await;
+                    cache.get(&key).and_then(|entry| {
+                        if entry.peer.is_transport_closed()
+                            || entry.last_used.elapsed() >= SUBJECT_CONN_IDLE_TTL
+                        {
+                            return None;
+                        }
+                        let listed_at = entry.optional_catalogs.resources_listed_at?;
+                        if listed_at.elapsed() >= RESOURCE_SNAPSHOT_MAX_AGE {
+                            return None;
+                        }
+                        entry.optional_catalogs.resources.clone()
+                    })
+                };
+                // A warm subject catalog is reused for `RESOURCE_SNAPSHOT_MAX_AGE`
+                // after it was listed, or until the subject connection is
+                // dropped or `refresh_resources_after_list_changed` clears it.
+                // Subject connections have no push channel of their own, so the
+                // age bound is what keeps every downstream resources/list from
+                // becoming another OAuth upstream resources/list RPC without
+                // freezing the catalog for the life of the connection.
+                if let Some(resources) = cached {
+                    let policy = resolve_request_resource_exposure_policy(
+                        &config.name,
+                        config.expose_resources.clone(),
+                    );
+                    return (config.name, policy, Ok(resources.to_vec()));
+                }
                 // Subject-scoped resources are discovered over a per-(upstream,
                 // subject) connection and never land in `self.catalog`, so
                 // there is no `UpstreamEntry::resource_exposure_policy` to
@@ -804,12 +974,7 @@ impl UpstreamPool {
                         &config.name,
                         &subject,
                         &peer,
-                        Some(
-                            resources
-                                .iter()
-                                .map(|resource| resource.uri.clone())
-                                .collect(),
-                        ),
+                        Some(resources.clone()),
                         None,
                     )
                     .await;
@@ -1921,8 +2086,297 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn warming_cold_snapshots_lists_only_cold_upstreams_once() {
+        let server = StaticCatalogServer::default();
+        let resource_calls = Arc::clone(&server.list_resources_count);
+        let pool = catalog_pool_with_server("cold", server).await;
+        assert!(
+            pool.cached_upstream_resources_allowed(None)
+                .await
+                .is_empty(),
+            "a connected peer that was never listed has no cached resources"
+        );
+        let cold = pool.cold_resource_snapshots(None).await;
+        assert_eq!(cold.missing, BTreeSet::from(["cold".to_string()]));
+        assert!(cold.stale.is_empty());
+
+        let warmed = pool.warm_cold_resource_snapshots_allowed(None).await;
+        assert_eq!(warmed.missing, BTreeSet::from(["cold".to_string()]));
+        assert_eq!(resource_calls.load(Ordering::SeqCst), 1);
+        let cached = pool.cached_upstream_resources_allowed(None).await;
+        assert_eq!(
+            cached.len(),
+            2,
+            "warming publishes the snapshot: {cached:?}"
+        );
+        assert!(pool.cold_resource_snapshots(None).await.is_empty());
+
+        let warmed = pool.warm_cold_resource_snapshots_allowed(None).await;
+        assert!(warmed.is_empty());
+        assert_eq!(
+            resource_calls.load(Ordering::SeqCst),
+            1,
+            "a warm snapshot must not be listed again"
+        );
+
+        let other = BTreeSet::from(["other".to_string()]);
+        pool.warm_cold_resource_snapshots_allowed(Some(&other))
+            .await;
+        assert_eq!(resource_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn concurrent_warmups_share_one_fan_out() {
+        let server = StaticCatalogServer::default();
+        let resource_calls = Arc::clone(&server.list_resources_count);
+        let pool = catalog_pool_with_server("cold", server).await;
+        let warmups = (0..8)
+            .map(|_| {
+                let pool = Arc::clone(&pool);
+                tokio::spawn(async move { pool.warm_cold_resource_snapshots_allowed(None).await })
+            })
+            .collect::<Vec<_>>();
+        let mut listed = 0usize;
+        for warmup in warmups {
+            if !warmup.await.expect("warm-up task").is_empty() {
+                listed += 1;
+            }
+        }
+        assert_eq!(listed, 1, "exactly one caller found the snapshot cold");
+        assert_eq!(
+            resource_calls.load(Ordering::SeqCst),
+            1,
+            "queued callers must not repeat the fan-out"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_snapshot_without_push_channel_is_relisted_in_the_background() {
+        let server = StaticCatalogServer::default();
+        let resource_calls = Arc::clone(&server.list_resources_count);
+        let pool = catalog_pool_with_server("legacy", server).await;
+        pool.warm_cold_resource_snapshots_allowed(None).await;
+        assert_eq!(resource_calls.load(Ordering::SeqCst), 1);
+
+        pool.age_resource_snapshot_for_tests("legacy", RESOURCE_SNAPSHOT_MAX_AGE)
+            .await;
+        let cold = pool.cold_resource_snapshots(None).await;
+        assert!(cold.missing.is_empty(), "an aged snapshot is still served");
+        assert_eq!(cold.stale, BTreeSet::from(["legacy".to_string()]));
+
+        let warmup = pool.spawn_resource_snapshot_warmup(None).await;
+        assert!(warmup.cold.missing.is_empty());
+        assert_eq!(
+            pool.cached_upstream_resources_allowed(None).await.len(),
+            2,
+            "the current rows stay listable while the refresh runs"
+        );
+        warmup
+            .task
+            .expect("a stale snapshot starts a warm-up")
+            .await
+            .expect("warm-up task");
+        assert_eq!(resource_calls.load(Ordering::SeqCst), 2);
+        assert!(pool.cold_resource_snapshots(None).await.is_empty());
+
+        // An upstream with an acknowledged subscriptions/listen stream
+        // announces its own changes, so age alone does not make it stale.
+        pool.age_resource_snapshot_for_tests("legacy", RESOURCE_SNAPSHOT_MAX_AGE)
+            .await;
+        pool.set_subscription_resources_for_test(HashMap::from([(
+            "legacy".to_string(),
+            BTreeSet::new(),
+        )]))
+        .await;
+        assert!(pool.cold_resource_snapshots(None).await.is_empty());
+        let warmup = pool.spawn_resource_snapshot_warmup(None).await;
+        assert!(warmup.task.is_none());
+        assert_eq!(resource_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn rejected_snapshot_is_omitted_and_retried_only_after_it_ages() {
+        let server = RejectedCatalogServer::default();
+        let resource_calls = Arc::clone(&server.list_resources_count);
+        let pool = catalog_pool_with_server("dupes", server).await;
+        pool.warm_cold_resource_snapshots_allowed(None).await;
+        assert_eq!(resource_calls.load(Ordering::SeqCst), 1);
+        assert!(
+            pool.cached_upstream_resources_allowed(None)
+                .await
+                .is_empty(),
+            "rows that were not retained cannot be listed"
+        );
+        assert!(
+            pool.cold_resource_snapshots(None).await.is_empty(),
+            "a rejected listing is settled for this incarnation"
+        );
+        pool.warm_cold_resource_snapshots_allowed(None).await;
+        assert_eq!(resource_calls.load(Ordering::SeqCst), 1);
+
+        pool.age_resource_snapshot_for_tests("dupes", RESOURCE_SNAPSHOT_MAX_AGE)
+            .await;
+        assert_eq!(
+            pool.cold_resource_snapshots(None).await.stale,
+            BTreeSet::from(["dupes".to_string()])
+        );
+        pool.warm_cold_resource_snapshots_allowed(None).await;
+        assert_eq!(resource_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn oversized_ui_row_is_rejected_like_a_regular_row() {
+        let pool = catalog_pool_with_server("apps", OversizedUiCatalogServer).await;
+        pool.list_upstream_resources().await;
+        assert!(
+            pool.cached_upstream_resources_allowed(None)
+                .await
+                .is_empty(),
+            "ui rows share the per-row byte cap"
+        );
+    }
+
+    #[tokio::test]
+    async fn cached_listing_applies_exposure_policy_to_ui_rows() {
+        let pool = catalog_pool_with_server("apps", UiCatalogServer).await;
+        pool.list_upstream_resources().await;
+        async fn set_policy(pool: &UpstreamPool, patterns: &[&str]) {
+            let mut catalog = pool.catalog_write().await;
+            catalog
+                .get_mut("apps")
+                .expect("apps entry")
+                .resource_exposure_policy = ToolExposurePolicy::from_patterns(
+                patterns
+                    .iter()
+                    .map(|pattern| (*pattern).to_string())
+                    .collect(),
+            )
+            .expect("valid allowlist");
+        }
+        let uris = |pool: Arc<UpstreamPool>| async move {
+            pool.cached_upstream_resources_allowed(None)
+                .await
+                .into_iter()
+                .map(|(_, resource)| resource.uri.to_string())
+                .collect::<Vec<_>>()
+        };
+
+        set_policy(&pool, &["file:///tmp/regular"]).await;
+        assert_eq!(uris(Arc::clone(&pool)).await, ["file:///tmp/regular"]);
+        set_policy(&pool, &["ui://*"]).await;
+        assert_eq!(uris(Arc::clone(&pool)).await, ["ui://apps/widget.html"]);
+        set_policy(&pool, &["*"]).await;
+        assert_eq!(
+            uris(Arc::clone(&pool)).await,
+            ["file:///tmp/regular", "ui://apps/widget.html"],
+            "the snapshot stays unfiltered, so a policy change needs no re-list"
+        );
+    }
+
+    #[derive(Clone, Default)]
+    struct RejectedCatalogServer {
+        list_resources_count: Arc<AtomicUsize>,
+    }
+
+    impl ServerHandler for RejectedCatalogServer {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        }
+
+        async fn list_resources(
+            &self,
+            _request: Option<PaginatedRequestParams>,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<ListResourcesResult, ErrorData> {
+            self.list_resources_count.fetch_add(1, Ordering::SeqCst);
+            Ok(ListResourcesResult::with_all_items(vec![
+                Resource::new("file:///tmp/twice", "first"),
+                Resource::new("file:///tmp/twice", "second"),
+            ]))
+        }
+    }
+
+    #[derive(Clone)]
+    struct OversizedUiCatalogServer;
+
+    impl ServerHandler for OversizedUiCatalogServer {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        }
+
+        async fn list_resources(
+            &self,
+            _request: Option<PaginatedRequestParams>,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<ListResourcesResult, ErrorData> {
+            Ok(ListResourcesResult::with_all_items(vec![
+                Resource::new("ui://apps/widget.html", "widget")
+                    .with_description("x".repeat(2 * 1024 * 1024)),
+            ]))
+        }
+    }
+
+    #[tokio::test]
+    async fn cached_listing_keeps_ui_rows_with_their_native_uri() {
+        let pool = catalog_pool_with_server("apps", UiCatalogServer).await;
+        pool.list_upstream_resources().await;
+        let cached = pool
+            .cached_upstream_resources_with_provenance_allowed(None)
+            .await;
+        let uris = cached
+            .iter()
+            .map(|listed| (listed.native_uri.as_str(), listed.resource.uri.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            uris,
+            [
+                (
+                    "file:///tmp/regular",
+                    "lab://upstream/apps/file:///tmp/regular"
+                ),
+                ("ui://apps/widget.html", "ui://apps/widget.html"),
+            ]
+        );
+        let published = pool
+            .published_resource_catalog()
+            .await
+            .expect("published resource catalog");
+        assert_eq!(
+            published
+                .routes()
+                .iter()
+                .map(|route| route.native_uri.as_ref())
+                .collect::<Vec<_>>(),
+            vec!["file:///tmp/regular"],
+            "ui rows never become published routes"
+        );
+    }
+
+    #[derive(Clone)]
+    struct UiCatalogServer;
+
+    impl ServerHandler for UiCatalogServer {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        }
+
+        async fn list_resources(
+            &self,
+            _request: Option<PaginatedRequestParams>,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<ListResourcesResult, ErrorData> {
+            Ok(ListResourcesResult::with_all_items(vec![
+                Resource::new("ui://apps/widget.html", "widget"),
+                Resource::new("file:///tmp/regular", "regular"),
+            ]))
+        }
+    }
+
+    #[tokio::test]
     async fn subject_scoped_resources_reuse_the_cached_subject_connection() {
-        let pool = catalog_pool_with_server("google-drive", StaticCatalogServer::default()).await;
+        let server = StaticCatalogServer::default();
+        let resource_calls = Arc::clone(&server.list_resources_count);
+        let pool = catalog_pool_with_server("google-drive", server).await;
         let peer = pool
             .connections
             .read()
@@ -1950,7 +2404,10 @@ mod tests {
         let mut config = oauth_schema_config("google-drive");
         config.proxy_resources = true;
 
-        let resources = pool.subject_scoped_resources(&[config], "alice").await;
+        let baseline_calls = resource_calls.load(Ordering::SeqCst);
+        let resources = pool
+            .subject_scoped_resources(std::slice::from_ref(&config), "alice")
+            .await;
         let uris = resources
             .iter()
             .map(|resource| resource.uri.as_str())
@@ -1963,6 +2420,66 @@ mod tests {
                 "lab://upstream/google-drive/lab://upstream/old-name/file:///tmp/upstream-two",
             ]
         );
+
+        assert_eq!(
+            resource_calls.load(Ordering::SeqCst),
+            baseline_calls + 1,
+            "the cold subject catalog should perform one resources/list RPC"
+        );
+
+        let cached = pool
+            .subject_scoped_resources(std::slice::from_ref(&config), "alice")
+            .await;
+        let cached_uris = cached
+            .iter()
+            .map(|resource| resource.uri.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(cached_uris, uris);
+        assert_eq!(
+            resource_calls.load(Ordering::SeqCst),
+            baseline_calls + 1,
+            "the warm subject catalog must not repeat resources/list"
+        );
+
+        // Subject connections have no push channel: the cached catalog is
+        // re-fetched once it is older than the freshness bound.
+        pool.age_subject_resource_catalog_for_tests(
+            "google-drive",
+            "alice",
+            RESOURCE_SNAPSHOT_MAX_AGE,
+        )
+        .await;
+        let refreshed = pool
+            .subject_scoped_resources(std::slice::from_ref(&config), "alice")
+            .await;
+        assert_eq!(refreshed.len(), uris.len());
+        assert_eq!(
+            resource_calls.load(Ordering::SeqCst),
+            baseline_calls + 2,
+            "an aged subject catalog is listed again"
+        );
+
+        // An upstream list_changed drops every subject's cached catalog for
+        // that upstream without touching the connections themselves.
+        assert!(
+            !pool
+                .refresh_resources_after_list_changed("google-drive")
+                .await
+        );
+        assert!(
+            pool.connections.read().await.get("google-drive").is_none(),
+            "the connection moved to the subject cache and stays there"
+        );
+        pool.subject_scoped_resources(std::slice::from_ref(&config), "alice")
+            .await;
+        assert_eq!(
+            resource_calls.load(Ordering::SeqCst),
+            baseline_calls + 3,
+            "list_changed invalidates the subject catalog"
+        );
+        pool.subject_scoped_resources(std::slice::from_ref(&config), "alice")
+            .await;
+        assert_eq!(resource_calls.load(Ordering::SeqCst), baseline_calls + 3);
     }
 
     #[tokio::test]
@@ -2016,10 +2533,8 @@ mod tests {
         let subject = connections
             .get(&("tools-only".to_string(), "alice".to_string()))
             .expect("subject connection remains cached");
-        assert_eq!(
-            subject.optional_catalogs.resources.clone(),
-            Some(Vec::<String>::new())
-        );
+        let empty: &[Resource] = &[];
+        assert_eq!(subject.optional_catalogs.resources.as_deref(), Some(empty));
         drop(connections);
 
         let error = pool

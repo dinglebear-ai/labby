@@ -32,7 +32,8 @@ use super::helpers::{
 /// this limit is hit.  Tests can reference this constant to assert bounds behavior.
 pub const MAX_UPSTREAM_TOOLS: usize = 1000;
 
-/// Hard cap on the total number of resources returned by `list_upstream_resources()`.
+/// Hard cap on resources in any upstream resource listing: the live fan-out,
+/// the cached projection, and subject-scoped aggregation.
 pub(crate) const MAX_UPSTREAM_RESOURCES: usize = 1000;
 
 /// Hard cap on the total number of prompts returned by `collect_upstream_prompts()`.
