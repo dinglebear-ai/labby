@@ -370,6 +370,9 @@ pub fn origin_for_kind(kind: &str) -> AgentErrorOrigin {
         | "stale_suggestion"
         | "merge_write_conflict"
         | "workspace_not_configured"
+        // The durable access store was never initialized: a deterministic
+        // setup gate evaluated before any dispatch, not a transport outage.
+        | "access_setup_required"
         | "restart_required"
         | "oauth_account_ambiguous"
         | "oauth_client_mismatch"
@@ -595,6 +598,14 @@ pub fn recovery_for_kind(
             action: AgentRecoveryAction::ReviseAndRetry,
             same_arguments: AgentSameArgumentsRetry::Never,
             guidance: "Have the operator set workspace.root to the intended existing directory on the Labby server and restart the serving process so it resolves the new root. Verify workspace access after startup before retrying; do not substitute an unrelated directory.".to_string(),
+            retry_after_ms: None,
+        },
+        // Not `retry_later`: the store stays uninitialized until an operator
+        // completes owner setup, so an unchanged retry can never succeed.
+        "access_setup_required" => AgentRecoveryAdvice {
+            action: AgentRecoveryAction::StartDependency,
+            same_arguments: AgentSameArgumentsRetry::Never,
+            guidance: "Labby's durable access store has not been initialized, so no authorization decision can be made and nothing ran. Have the operator complete owner setup on the Labby host: run `labby setup` for bearer-token installs, or complete browser owner setup in the Labby web UI for OAuth installs. Retry only after setup succeeds; do not retry unchanged before then.".to_string(),
             retry_after_ms: None,
         },
         "restart_required" => AgentRecoveryAdvice {
@@ -963,6 +974,22 @@ mod tests {
             assert_eq!(value.side_effects, AgentSideEffectRisk::NoneExpected);
             assert_eq!(value.recovery.action, action);
             assert!(value.recovery.guidance.contains(phrase), "{kind}");
+        }
+    }
+
+    #[test]
+    fn access_setup_required_is_a_deterministic_setup_gate_not_an_outage() {
+        let value = metadata_for_kind("access_setup_required", None);
+        assert_eq!(value.origin, AgentErrorOrigin::Validation);
+        assert_eq!(value.side_effects, AgentSideEffectRisk::NoneExpected);
+        assert_eq!(value.recovery.action, AgentRecoveryAction::StartDependency);
+        assert_eq!(
+            value.recovery.same_arguments,
+            AgentSameArgumentsRetry::Never
+        );
+        assert_eq!(value.recovery.retry_after_ms, None);
+        for phrase in ["`labby setup`", "owner setup", "OAuth"] {
+            assert!(value.recovery.guidance.contains(phrase), "{phrase}");
         }
     }
 
