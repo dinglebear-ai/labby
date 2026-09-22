@@ -96,6 +96,19 @@ pub(super) fn catalog_listing_timeout(request_timeout: Duration) -> Duration {
     request_timeout.min(CATALOG_LISTING_TIMEOUT)
 }
 
+/// Operator-visible detail for a rejected snapshot, recorded as the upstream's
+/// resources-capability error. It carries the same
+/// `failed to list resources from upstream:` wrapper as a listing failure on
+/// purpose: that prefix is what `gateway.status` and `doctor` classify as an
+/// optional-capability problem, so the upstream is rendered with the
+/// `resources_unavailable` warning instead of as disconnected.
+fn snapshot_rejection_error(family: &str, error: impl std::fmt::Debug) -> String {
+    format!(
+        "failed to list resources from upstream: {family} snapshot rejected ({error:?}); \
+         this upstream is omitted from the catalog until it is re-listed"
+    )
+}
+
 fn rewrite_resource_template(template: &mut ResourceTemplate, upstream_name: &str) {
     template.name = format!("{upstream_name}/{}", template.name);
     if !template.uri_template.starts_with("ui://") {
@@ -113,7 +126,17 @@ impl UpstreamPool {
         self.apply_to_observed_catalog(observed, |catalog| {
             let entry = catalog.get_mut(name).expect("observed entry validated");
             super::health::record_success_on_entry(name, entry, UpstreamCapability::Resources);
-            catalog.set_resource_template_source(name, observed.incarnation(), templates);
+            if let Some(error) =
+                catalog.set_resource_template_source(name, observed.incarnation(), templates)
+            {
+                catalog
+                    .get_mut(name)
+                    .expect("observed entry validated")
+                    .set_last_error_for(
+                        UpstreamCapability::Resources,
+                        Some(snapshot_rejection_error("resource template", error)),
+                    );
+            }
         })
         .await
         .is_some()
@@ -156,7 +179,20 @@ impl UpstreamPool {
             entry.resource_count = resources.len();
             entry.resource_uris = resource_uris;
             let policy = entry.resource_exposure_policy.clone();
-            catalog.set_resource_source(name, observed.incarnation(), resources);
+            if let Some(error) =
+                catalog.set_resource_source(name, observed.incarnation(), resources)
+            {
+                // The upstream answered, so its circuit stays closed; the
+                // rejection is still this upstream's current resources
+                // problem, and `gateway.status` renders it from here.
+                catalog
+                    .get_mut(name)
+                    .expect("observed entry validated")
+                    .set_last_error_for(
+                        UpstreamCapability::Resources,
+                        Some(snapshot_rejection_error("resource", error)),
+                    );
+            }
             (policy, changed)
         })
         .await
@@ -2222,6 +2258,86 @@ mod tests {
         );
         pool.warm_cold_resource_snapshots_allowed(None).await;
         assert_eq!(resource_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn rejected_snapshot_excludes_only_its_own_upstream_from_publication() {
+        // A snapshot rejection is a per-upstream admission verdict: the rows
+        // of one upstream were not retained. The published route catalog and
+        // the cached listing are fleet-wide projections, so the verdict must
+        // remove exactly that upstream and leave every other upstream's
+        // routes published. A fleet-wide Err here would let one server with
+        // a duplicate URI take every other server's `lab://upstream/...`
+        // routes off the air (lab-xtgnz).
+        let pool = catalog_pool_with_server("healthy", StaticCatalogServer::default()).await;
+        let rejected = catalog_pool_with_server("dupes", RejectedCatalogServer::default()).await;
+        let (connection, entry) = rejected.remove_connection_catalog_entry("dupes").await;
+        pool.install_connection_catalog_entry(
+            "dupes".to_string(),
+            connection.expect("fixture connection"),
+            entry.expect("fixture entry"),
+        )
+        .await
+        .expect("connection identity");
+        pool.resource_upstreams
+            .write()
+            .await
+            .push("dupes".to_string());
+
+        pool.list_upstream_resources().await;
+
+        let healthy_rows = vec![
+            ("healthy", "file:///tmp/upstream-one"),
+            (
+                "healthy",
+                "lab://upstream/old-name/file:///tmp/upstream-two",
+            ),
+        ];
+        let published = pool
+            .published_resource_catalog()
+            .await
+            .expect("one rejected snapshot must not unpublish the fleet");
+        assert_eq!(
+            published
+                .routes()
+                .iter()
+                .map(|route| (route.upstream_name.as_ref(), route.native_uri.as_ref()))
+                .collect::<Vec<_>>(),
+            healthy_rows
+        );
+        let cached = pool.cached_upstream_resources_allowed(None).await;
+        assert_eq!(
+            cached
+                .iter()
+                .map(|(name, resource)| (name.as_str(), resource.uri.as_str()))
+                .collect::<Vec<_>>(),
+            healthy_rows
+        );
+
+        // The rejection stays visible per upstream through the existing
+        // resources-capability error that gateway.status renders as the
+        // `resources_unavailable` warning. The upstream itself answered, so
+        // its resources circuit stays closed.
+        let error = pool
+            .upstream_capability_error("dupes", UpstreamCapability::Resources)
+            .await
+            .expect("the rejection is recorded on the rejected upstream");
+        assert!(error.contains("DuplicateResource"), "{error}");
+        assert!(
+            error.starts_with("failed to list resources from upstream:"),
+            "must carry the optional-capability wrapper so the upstream is not rendered disconnected: {error}"
+        );
+        assert_eq!(
+            pool.upstream_capability_error("healthy", UpstreamCapability::Resources)
+                .await,
+            None
+        );
+        assert!(
+            pool.upstream_capability_health("dupes", UpstreamCapability::Resources)
+                .await
+                .expect("dupes entry")
+                .is_routable()
+        );
     }
 
     #[tokio::test]

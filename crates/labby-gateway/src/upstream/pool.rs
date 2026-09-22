@@ -155,6 +155,8 @@ pub use resources_list::{ListedUpstreamResource, ListedUpstreamResourceTemplate}
 pub(crate) use resources_read::ExactResourceReadError;
 pub(crate) use stdio_stderr::install_upstream_stderr_level_default;
 pub use task_route::TaskRouteAuthorization;
+#[cfg(test)]
+pub(crate) use tools::MAX_UPSTREAM_RESOURCES;
 pub use tools::{
     MAX_UPSTREAM_TOOLS, tool_is_mcp_app_host_visible_for_config,
     upstream_has_mcp_app_ui_owner_for_config,

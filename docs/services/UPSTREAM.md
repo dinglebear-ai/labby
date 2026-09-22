@@ -598,7 +598,7 @@ lab://upstream/remote-lab/lab://gateway/actions
 - `resources/list` serves the cached per-upstream snapshot for regular upstreams and returns namespaced URIs. Labby refreshes that snapshot with a live `resources/list` on connect, reconnect, gateway reload, an upstream `resources/list_changed`, and when discovery finds a connected upstream with no snapshot yet. A snapshot older than 60 seconds on an upstream without a live `subscriptions/listen` stream is re-listed in the background while its current rows are served. OAuth subject-scoped upstreams are listed over the per-subject connection and cached with it under the same 60-second bound; an upstream `resources/list_changed` clears every subject's cached catalog for it.
 - `read_resource()` strips the prefix, identifies the upstream by name, and forwards the read.
 
-Failed resource listings from individual upstreams are logged as warnings. Other upstreams continue to serve.
+Failed resource listings from individual upstreams are logged as warnings. Other upstreams continue to serve. A listing whose rows Labby rejects (a duplicate or malformed URI, a row over 1 MiB, or a breach of the 8 MiB fleet retention budget) is handled the same way: that upstream is omitted from the cached listing and from the published `lab://upstream/...` route catalog until it is re-listed, the rejection is logged once and recorded as the upstream's resources warning in `gateway.status`, and every other upstream stays published.
 
 The same graceful-degradation rule applies to prompt/resource discovery and
 reads: one upstream failure must not prevent healthy upstreams from serving

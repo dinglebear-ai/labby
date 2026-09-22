@@ -6,6 +6,7 @@ use crate::gateway::manager::{
     LoadoutResourceCatalogPublicationError, LoadoutResourceTemplateCatalogPublicationError,
     LoadoutToolCatalogPublicationError,
 };
+use crate::upstream::pool::MAX_UPSTREAM_RESOURCES;
 use labby_runtime::gateway_config::{
     GatewayLoadoutConfig, ProtectedGatewaySubsetTarget, ProtectedMcpRouteConfig,
     ProtectedMcpRouteTarget, VirtualServerConfig, VirtualServerMcpPolicyConfig,
@@ -437,12 +438,14 @@ async fn loadout_resource_template_catalog_redacts_errors_and_bounds_config_chur
         result.err(),
         Some(LoadoutResourceTemplateCatalogPublicationError::Unstable)
     );
+    // A per-upstream admission failure (duplicate template) only withholds
+    // that upstream, so it cannot make the catalog unavailable. Breaching the
+    // fleet-wide route cap still can.
     pool.insert_resource_template_routes_for_tests(
         "alpha",
-        vec![
-            ResourceTemplate::new("file:///dup/{id}", "one"),
-            ResourceTemplate::new("file:///dup/{id}", "two"),
-        ],
+        (0..=MAX_UPSTREAM_RESOURCES)
+            .map(|index| ResourceTemplate::new(format!("file:///{index}/{{id}}"), "row"))
+            .collect(),
     )
     .await;
     assert_eq!(
@@ -701,13 +704,15 @@ async fn loadout_resource_catalog_redacts_missing_states_and_bounds_churn() {
 
     let invalid_runtime = GatewayRuntimeHandle::default();
     let invalid_pool = Arc::new(UpstreamPool::new());
+    // A per-upstream admission failure (duplicate URI) only withholds that
+    // upstream, so it cannot make the catalog unavailable. Breaching the
+    // fleet-wide route cap still can.
     invalid_pool
         .insert_resource_routes_for_tests(
             "alpha",
-            vec![
-                Resource::new("file:///dup", "one"),
-                Resource::new("file:///dup", "two"),
-            ],
+            (0..=MAX_UPSTREAM_RESOURCES)
+                .map(|index| Resource::new(format!("file:///{index}"), "row"))
+                .collect(),
         )
         .await;
     invalid_runtime.swap(Some(invalid_pool)).await;
@@ -1693,12 +1698,14 @@ async fn unified_loadout_mcp_catalog_bounds_sustained_resource_template_churn() 
         result.err(),
         Some(LoadoutMcpCatalogPublicationError::Unstable)
     );
+    // A per-upstream admission failure (duplicate template) only withholds
+    // that upstream, so it cannot make the unified catalog unavailable.
+    // Breaching the fleet-wide route cap still can.
     pool.insert_resource_template_routes_for_tests(
         "alpha",
-        vec![
-            ResourceTemplate::new("file:///dup/{id}", "one"),
-            ResourceTemplate::new("file:///dup/{id}", "two"),
-        ],
+        (0..=MAX_UPSTREAM_RESOURCES)
+            .map(|index| ResourceTemplate::new(format!("file:///{index}/{{id}}"), "row"))
+            .collect(),
     )
     .await;
     assert_eq!(
