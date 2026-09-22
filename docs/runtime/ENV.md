@@ -257,6 +257,7 @@ LABBY_CODE_MODE_RUNNER_BACKEND=microsandbox
 LABBY_CODE_MODE_MICROSANDBOX_EXE=/absolute/root-or-service-owned/path/to/msb
 LABBY_CODE_MODE_MICROSANDBOX_IMAGE=debian@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 LABBY_CODE_MODE_MICROSANDBOX_MAX_RUNNERS=4
+LABBY_CODE_MODE_MICROSANDBOX_HELPER_TIMEOUT_MS=5000
 ```
 
 - `LABBY_CODE_MODE_RUNNER_BACKEND` accepts `process` (default) or
@@ -278,6 +279,12 @@ LABBY_CODE_MODE_MICROSANDBOX_MAX_RUNNERS=4
 - `LABBY_CODE_MODE_MICROSANDBOX_MAX_RUNNERS` optionally bounds concurrent
   microVMs process-wide (default `4`, hard maximum `16`) independently of the
   generic runner-pool size and overflow settings.
+- `LABBY_CODE_MODE_MICROSANDBOX_HELPER_TIMEOUT_MS` optionally raises the
+  wall-clock bound on one `msb` helper invocation (create, list, remove;
+  default `5000`, read once at startup). The bound is wall-clock, so on a
+  saturated host a helper that would have finished can be killed and reported
+  as `cleanup_timeout`. Raise it on busy hosts; the cost is slower detection of
+  a genuinely hung helper.
 
 The host must separately provide working KVM access plus compatible `msb` and
 `libkrunfw` installations. See [CODE_MODE.md](../dev/CODE_MODE.md#microsandbox-runner-isolation-opt-in).

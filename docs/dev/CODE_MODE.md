@@ -907,9 +907,13 @@ run, so isolation holds by construction.
   surfaces a clean error without replay (`timeout` on wall-clock expiry). A
   pooled runner is also recycled after a fixed number of executions as cheap
   insurance against native-side leaks. External `callTool` operations reserve a
-  250 ms result-ack window inside the same per-execution wall-clock budget when
-  at least twice that budget remains, so host work cannot consume the runner's
-  acknowledgement budget without materially shortening normal calls. The
+  result-ack window inside the same per-execution wall-clock budget when at
+  least twice that window remains, so host work cannot consume the runner's
+  acknowledgement budget without materially shortening normal calls. The window
+  is 250 ms plus 2 ms per call enqueued so far, capped at 2 s: the runner has to
+  drain one acknowledgement per in-flight call, so a constant window shrinks to
+  microseconds per ack at high fanout and would report a completed run as a
+  timeout. The
   separate hung-runner watchdog remains 5 seconds. After the final tool result is
   relayed, the runner gets up to that 5-second grace to emit `done`/`error`, capped by the
   overall execution deadline. Only expiry of the full dedicated grace is reported
