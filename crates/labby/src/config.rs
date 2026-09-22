@@ -1448,6 +1448,80 @@ pub fn resolve_auth(config: Option<&AuthFileConfig>) -> Result<auth_config::Auth
     resolve_auth_with_env(config, std::env::vars())
 }
 
+/// Name the variable an installation root was resolved from, so a root error
+/// never blames `LABBY_HOME` for a `$HOME/.labby` default.
+fn installation_root_variable(root_vars: &HashMap<String, String>) -> &'static str {
+    let set = |name: &str| root_vars.get(name).is_some_and(|value| !value.is_empty());
+    if set("LABBY_HOME") {
+        "LABBY_HOME"
+    } else if set("HOME") {
+        "$HOME/.labby"
+    } else if set("USERPROFILE") {
+        "$USERPROFILE/.labby"
+    } else {
+        "LABBY_HOME, HOME, or USERPROFILE"
+    }
+}
+
+/// A legacy `$HOME/.labby` OAuth authorization store that the resolved
+/// installation root no longer points at.
+///
+/// The authorization store holds issued refresh tokens and registered OAuth
+/// clients. Nothing here moves, copies, or deletes a file: an installation
+/// that resolves a different root simply starts an empty store, and the
+/// operator decides whether to move the legacy files or to point
+/// `LABBY_AUTH_SQLITE_PATH` / `LABBY_AUTH_KEY_PATH` at them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegacyAuthStore {
+    /// The store path the current configuration resolves, which does not exist.
+    pub resolved: PathBuf,
+    /// The existing `$HOME/.labby` store this installation no longer reads.
+    pub legacy: PathBuf,
+}
+
+impl LegacyAuthStore {
+    /// One operator-facing sentence naming both paths and the remedy.
+    #[must_use]
+    pub fn message(&self) -> String {
+        format!(
+            "OAuth authorization store {} does not exist, but {} does: this installation resolves a different root, so previously issued OAuth tokens and registered clients are not visible to it. Move the auth.db and auth-jwt.pem files to the resolved root, or set LABBY_AUTH_SQLITE_PATH and LABBY_AUTH_KEY_PATH to the existing files. Labby never moves or deletes them for you.",
+            self.resolved.display(),
+            self.legacy.display()
+        )
+    }
+}
+
+/// Detect a legacy `$HOME/.labby` authorization store left behind by an
+/// installation that resolves a different root.
+#[must_use]
+pub fn legacy_auth_store(config: &auth_config::AuthConfig) -> Option<LegacyAuthStore> {
+    legacy_auth_store_with(
+        &config.sqlite_path,
+        |name| std::env::var_os(name),
+        |path| path.exists(),
+    )
+}
+
+fn legacy_auth_store_with(
+    resolved: &Path,
+    lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
+    exists: impl Fn(&Path) -> bool,
+) -> Option<LegacyAuthStore> {
+    let non_empty = |name: &str| lookup(name).filter(|value| !value.is_empty());
+    // Only an explicitly relocated installation can leave a legacy store
+    // behind; the default root is the legacy location.
+    non_empty("LABBY_HOME")?;
+    let home = non_empty("HOME").or_else(|| non_empty("USERPROFILE"))?;
+    let legacy = PathBuf::from(home).join(".labby").join("auth.db");
+    if legacy == resolved || exists(resolved) || !exists(&legacy) {
+        return None;
+    }
+    Some(LegacyAuthStore {
+        resolved: resolved.to_path_buf(),
+        legacy,
+    })
+}
+
 fn resolve_auth_with_env(
     config: Option<&AuthFileConfig>,
     env_vars: impl IntoIterator<Item = (String, String)>,
@@ -1672,20 +1746,22 @@ fn resolve_auth_with_env(
     // installation root as config.toml, .env, and access.db. Without this, an
     // instance with an explicit LABBY_HOME silently shared `$HOME/.labby/auth.db`
     // with the operator's primary installation.
-    let mut builder = auth_config::AuthConfigBuilder::new()
-        .enable_dynamic_registration(dynamic_registration)
-        .env_prefix("LABBY");
-    match crate::installation::InstallationPaths::resolve_with(|name| {
+    let paths = crate::installation::InstallationPaths::resolve_with(|name| {
         root_vars.get(name).map(std::ffi::OsString::from)
-    }) {
-        Ok(paths) => builder = builder.default_data_dir(paths.root()),
-        // No root variable at all: keep the auth crate's own default. Serving
-        // resolves the installation root first, so this is not reachable there.
-        Err(crate::installation::InstallationError::HomeUnavailable) => {}
-        Err(error) => {
-            return Err(anyhow::Error::from(error).context("invalid explicit LABBY_HOME"));
-        }
-    }
+    })
+    .map_err(|error| {
+        // Surfaces that print only the outer context still need the variable
+        // the root came from and the typed cause, so both are in this message.
+        let context = format!(
+            "resolve the Labby installation root ({}) for the OAuth authorization store: {error}",
+            installation_root_variable(&root_vars)
+        );
+        anyhow::Error::from(error).context(context)
+    })?;
+    let builder = auth_config::AuthConfigBuilder::new()
+        .enable_dynamic_registration(dynamic_registration)
+        .env_prefix("LABBY")
+        .default_data_dir(paths.root());
     let resolved = builder
         .build_from_sources(merged)
         .map_err(anyhow::Error::from)?;
@@ -3250,10 +3326,20 @@ mod tests {
         assert_eq!(pruned, vec![PathBuf::from("a")]);
     }
 
+    /// Auth resolution needs an installation root, and these tests must not
+    /// depend on the process environment, so they name one explicitly.
+    const TEST_HOME: &str = "/labby-config-test-home";
+
+    fn with_test_home(vars: impl IntoIterator<Item = (String, String)>) -> Vec<(String, String)> {
+        let mut env = vec![("HOME".to_string(), TEST_HOME.to_string())];
+        env.extend(vars);
+        env
+    }
+
     fn resolve_oauth_fixture(config: &AuthFileConfig) -> auth_config::AuthConfig {
         resolve_auth_with_env(
             Some(config),
-            [("LABBY_TOKEN_ENCRYPTION_KEY".to_string(), "11".repeat(32))],
+            with_test_home([("LABBY_TOKEN_ENCRYPTION_KEY".to_string(), "11".repeat(32))]),
         )
         .expect("OAuth fixture should resolve")
     }
@@ -3776,6 +3862,109 @@ future = "keep"
         );
     }
 
+    /// The context names the variable the root actually came from and carries
+    /// the typed cause in its own message, because surfaces that print only
+    /// `to_string()` otherwise show an unactionable one-liner.
+    #[test]
+    fn resolve_auth_root_errors_name_the_variable_and_the_cause() {
+        let dir = tempfile::tempdir().unwrap();
+        let explicit = resolve_auth_with_env(
+            None,
+            auth_store_env(Some(Path::new("relative/home")), dir.path(), &[]),
+        )
+        .expect_err("relative LABBY_HOME is not a usable installation root");
+        let message = explicit.to_string();
+        assert!(message.contains("LABBY_HOME"), "{message}");
+        assert!(message.contains("must be absolute"), "{message}");
+
+        #[cfg(unix)]
+        {
+            let home = dir.path().join("symlinked-home");
+            std::fs::create_dir(&home).unwrap();
+            std::os::unix::fs::symlink(dir.path(), home.join(".labby")).unwrap();
+            let implicit = resolve_auth_with_env(None, auth_store_env(None, &home, &[]))
+                .expect_err("a symlinked default root is not a usable installation root");
+            let message = implicit.to_string();
+            assert!(message.contains("$HOME/.labby"), "{message}");
+            assert!(!message.contains("explicit LABBY_HOME"), "{message}");
+            assert!(message.contains("secure directory"), "{message}");
+        }
+    }
+
+    /// An upgrade that starts using LABBY_HOME leaves the previously issued
+    /// OAuth tokens and registered clients in `$HOME/.labby`. Labby never
+    /// moves them, so it must at least say so.
+    #[test]
+    fn legacy_auth_store_is_reported_when_the_resolved_store_is_absent() {
+        let vars = |labby_home: Option<&str>, home: &str| {
+            let labby_home = labby_home.map(str::to_owned);
+            let home = home.to_owned();
+            move |name: &str| match name {
+                "LABBY_HOME" => labby_home.clone().map(std::ffi::OsString::from),
+                "HOME" => Some(std::ffi::OsString::from(home.clone())),
+                _ => None,
+            }
+        };
+        let legacy = PathBuf::from("/home/operator/.labby/auth.db");
+        let resolved = PathBuf::from("/srv/labby/auth.db");
+        let only_legacy = |path: &Path| path == legacy;
+
+        let notice = legacy_auth_store_with(
+            &resolved,
+            vars(Some("/srv/labby"), "/home/operator"),
+            only_legacy,
+        )
+        .expect("a legacy store this installation no longer reads");
+        assert_eq!(notice.legacy, legacy);
+        assert_eq!(notice.resolved, resolved);
+        let message = notice.message();
+        assert!(message.contains("/srv/labby/auth.db"), "{message}");
+        assert!(
+            message.contains("/home/operator/.labby/auth.db"),
+            "{message}"
+        );
+        assert!(message.contains("LABBY_AUTH_SQLITE_PATH"), "{message}");
+
+        // Nothing to report: no explicit root, an already-populated resolved
+        // store, or no legacy store at all.
+        assert_eq!(
+            legacy_auth_store_with(
+                &PathBuf::from("/home/operator/.labby/auth.db"),
+                vars(None, "/home/operator"),
+                only_legacy
+            ),
+            None
+        );
+        assert_eq!(
+            legacy_auth_store_with(
+                &resolved,
+                vars(Some("/srv/labby"), "/home/operator"),
+                |_| true
+            ),
+            None
+        );
+        assert_eq!(
+            legacy_auth_store_with(
+                &resolved,
+                vars(Some("/srv/labby"), "/home/operator"),
+                |_| false
+            ),
+            None
+        );
+    }
+
+    /// Without any home variable there is no installation root, and falling
+    /// back to labby-auth's CWD-relative `.labby` would write the OAuth store
+    /// wherever the process happened to start.
+    #[test]
+    fn resolve_auth_requires_an_installation_root() {
+        let error = resolve_auth_with_env(None, Vec::new())
+            .expect_err("an unresolvable installation root is an error");
+        let message = error.to_string();
+        assert!(message.contains("LABBY_HOME"), "{message}");
+        assert!(message.contains("HOME"), "{message}");
+    }
+
     #[test]
     fn resolve_auth_reads_ttls_from_config_toml_fields() {
         let cfg = AuthFileConfig {
@@ -3852,7 +4041,7 @@ future = "keep"
         let cfg = minimal_oauth_file_config();
         let resolved = resolve_auth_with_env(
             Some(&cfg),
-            [
+            with_test_home([
                 (
                     "LABBY_AUTH_ENABLE_DYNAMIC_REGISTRATION".into(),
                     "false".into(),
@@ -3861,7 +4050,7 @@ future = "keep"
                     "LABBY_TOKEN_ENCRYPTION_KEY".into(),
                     "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f".into(),
                 ),
-            ],
+            ]),
         )
         .unwrap();
         assert!(!resolved.enable_dynamic_registration);
@@ -3876,7 +4065,7 @@ future = "keep"
         assert!(!resolve_oauth_fixture(&cfg).enable_dynamic_registration);
         let resolved = resolve_auth_with_env(
             Some(&cfg),
-            [
+            with_test_home([
                 (
                     "LABBY_AUTH_ENABLE_DYNAMIC_REGISTRATION".into(),
                     "true".into(),
@@ -3885,7 +4074,7 @@ future = "keep"
                     "LABBY_TOKEN_ENCRYPTION_KEY".into(),
                     "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f".into(),
                 ),
-            ],
+            ]),
         )
         .unwrap();
         assert!(resolved.enable_dynamic_registration);
@@ -3923,10 +4112,10 @@ future = "keep"
         };
         let resolved = resolve_auth_with_env(
             Some(&cfg),
-            [(
+            with_test_home([(
                 "LABBY_TOKEN_ENCRYPTION_KEY".into(),
                 "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f".into(),
-            )],
+            )]),
         )
         .unwrap();
         assert_eq!(
@@ -3953,7 +4142,7 @@ future = "keep"
         };
         let resolved = resolve_auth_with_env(
             Some(&cfg),
-            [
+            with_test_home([
                 ("LABBY_AUTH_PROVIDER".into(), "authelia".into()),
                 (
                     "LABBY_AUTHELIA_ISSUER_URL".into(),
@@ -3972,7 +4161,7 @@ future = "keep"
                     "LABBY_TOKEN_ENCRYPTION_KEY".into(),
                     "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f".into(),
                 ),
-            ],
+            ]),
         )
         .unwrap();
         assert_eq!(
@@ -4001,10 +4190,10 @@ future = "keep"
         };
         let resolved = resolve_auth_with_env(
             Some(&cfg),
-            [(
+            with_test_home([(
                 "LABBY_TOKEN_ENCRYPTION_KEY".into(),
                 "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f".into(),
-            )],
+            )]),
         )
         .unwrap();
         let findings = crate::dispatch::doctor::run_auth_checks_with_config(Some(&resolved));
@@ -4055,14 +4244,14 @@ future = "keep"
         cfg.viewer_email_domains = Some(vec!["example.org".into()]);
         let error = resolve_auth_with_env(
             Some(&cfg),
-            [("LABBY_TOKEN_ENCRYPTION_KEY".into(), "11".repeat(32))],
+            with_test_home([("LABBY_TOKEN_ENCRYPTION_KEY".into(), "11".repeat(32))]),
         )
         .unwrap_err();
         assert!(error.to_string().contains("auth.viewer_project_id"));
         cfg.viewer_project_id = Some(" bootstrap-default ".into());
         let error = resolve_auth_with_env(
             Some(&cfg),
-            [("LABBY_TOKEN_ENCRYPTION_KEY".into(), "11".repeat(32))],
+            with_test_home([("LABBY_TOKEN_ENCRYPTION_KEY".into(), "11".repeat(32))]),
         )
         .unwrap_err();
         assert!(error.to_string().contains("auth.viewer_project_id"));
@@ -4078,26 +4267,26 @@ future = "keep"
         cfg.viewer_project_id = Some("bootstrap-default".into());
         let resolved = resolve_auth_with_env(
             Some(&cfg),
-            [
+            with_test_home([
                 (
                     "LABBY_AUTH_VIEWER_EMAIL_DOMAINS".into(),
                     "new.example".into(),
                 ),
                 ("LABBY_TOKEN_ENCRYPTION_KEY".into(), "11".repeat(32)),
-            ],
+            ]),
         )
         .unwrap();
         assert_eq!(resolved.viewer_email_domains, vec!["new.example"]);
         cfg.viewer_project_id = None;
         let error = resolve_auth_with_env(
             Some(&cfg),
-            [
+            with_test_home([
                 (
                     "LABBY_AUTH_VIEWER_PROJECT_ID".into(),
                     "bootstrap-default".into(),
                 ),
                 ("LABBY_TOKEN_ENCRYPTION_KEY".into(), "11".repeat(32)),
-            ],
+            ]),
         )
         .unwrap_err();
         assert!(error.to_string().contains("auth.viewer_project_id"));
