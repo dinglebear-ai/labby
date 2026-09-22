@@ -796,6 +796,27 @@ mod tests {
         assert_eq!(changes, CatalogNotificationChanges::new(false, true, true));
     }
 
+    /// The upstream `list_changed` consumer forwards all three kinds through
+    /// one `for_upstream` call, which is only equivalent to the previous
+    /// per-kind handling because a tools change stays a global signal: every
+    /// peer must re-evaluate its own contract hash. Adding a `tool_upstreams`
+    /// scope here would silently narrow that signal, so pin it.
+    #[test]
+    fn for_upstream_leaves_a_tools_change_unscoped() {
+        let tools = CatalogNotificationChanges::new(true, false, false).for_upstream("alpha");
+
+        assert!(tools.tools_changed);
+        assert!(
+            tools.resource_upstreams.is_none() && tools.prompt_upstreams.is_none(),
+            "an inactive kind contributes no scope"
+        );
+        assert_eq!(
+            tools,
+            CatalogNotificationChanges::new(true, false, false),
+            "a tools-only change is unchanged by scoping it to an upstream"
+        );
+    }
+
     #[test]
     fn mixed_kind_coalesce_does_not_widen_scoped_resource_or_prompt_events() {
         let resource = CatalogNotificationChanges::new(false, true, false).for_upstream("alpha");
