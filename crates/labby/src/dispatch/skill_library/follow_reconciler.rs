@@ -112,6 +112,19 @@ async fn tick(
         }
     }
 
+    // Restriction commits before the purge; retry any purge an earlier tick could not finish.
+    for mirror in store.managed_artifact_mirrors_pending_purge(64).await? {
+        let mirror_id = mirror.mirror_id.clone();
+        let restriction = mirror.status;
+        if let Err(error) = restrict(&store, runtime, &mirror, restriction, now).await {
+            tracing::warn!(
+                mirror_id,
+                kind = reconcile_error_kind(&error),
+                "managed Artifact purge retry failed"
+            );
+        }
+    }
+
     let subscriptions = store
         .auto_approved_artifact_subscriptions_due(checked_before, RECONCILE_BATCH_LIMIT)
         .await?;

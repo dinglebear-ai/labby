@@ -432,6 +432,33 @@ impl ManagedArtifactCoordinator {
         })
     }
 
+    /// Purge the managed local copy, tolerating a head that advances between read and purge.
+    ///
+    /// Restriction is already durable, so a concurrent in-flight follow update may still land one
+    /// last revision; the purge re-reads the head and removes whatever is current.
+    fn purge_managed_bytes(
+        &self,
+        local_artifact_id: &str,
+    ) -> Result<(), ManagedArtifactDistributionError> {
+        const PURGE_ATTEMPTS: usize = 3;
+        for _ in 0..PURGE_ATTEMPTS {
+            let local = match self.artifacts.get(local_artifact_id) {
+                Ok(local) => local,
+                Err(ArtifactError::NotFound("record")) => return Ok(()),
+                Err(error) => return Err(error.into()),
+            };
+            match self
+                .artifacts
+                .purge_artifact_exact(local_artifact_id, &local.current_revision_id)
+            {
+                Ok(_) => return Ok(()),
+                Err(ArtifactError::Conflict("head_changed")) => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(ArtifactError::Conflict("head_changed").into())
+    }
+
     /// Move a managed mirror into a terminal restricted state and purge its managed bytes.
     ///
     /// The durable follow reconciler uses this when current access is revoked or the source is
@@ -471,16 +498,7 @@ impl ManagedArtifactCoordinator {
                 )
                 .await?
         };
-        match self.artifacts.get(&restricted.local_artifact_id) {
-            Ok(local) => {
-                self.artifacts.purge_artifact_exact(
-                    &restricted.local_artifact_id,
-                    &local.current_revision_id,
-                )?;
-            }
-            Err(ArtifactError::NotFound("record")) => {}
-            Err(error) => return Err(error.into()),
-        }
+        self.purge_managed_bytes(&restricted.local_artifact_id)?;
         let removed = self
             .access
             .restrict_managed_artifact_mirror(
@@ -795,6 +813,98 @@ mod tests {
                 .unwrap()
                 .status,
             ManagedArtifactMirrorStatus::Removed
+        );
+    }
+
+    #[tokio::test]
+    async fn restricted_mirror_with_unpurged_bytes_is_retried_until_removed() {
+        let (_access_dir, access) = bootstrapped_access().await;
+        let source_dir = tempfile::tempdir().unwrap();
+        let source_package = tempfile::tempdir().unwrap();
+        std::fs::write(source_package.path().join("a.txt"), b"alpha").unwrap();
+        let source = ArtifactStore::new(source_dir.path().join("store")).unwrap();
+        let source_record = source
+            .import_local(
+                ArtifactImportRequest::new("resource", "upstream", "stranded-purge-demo"),
+                source_package.path(),
+            )
+            .unwrap();
+        let acquisition = source_acquisition(&source, &source_record).await;
+        let policy_epoch = install_authority(&access, &source_record.descriptor.id).await;
+        let destination_dir = tempfile::tempdir().unwrap();
+        let destination =
+            Arc::new(ArtifactStore::new(destination_dir.path().join("store")).unwrap());
+        let coordinator = ManagedArtifactCoordinator::new(access.clone(), Arc::clone(&destination));
+        let installed = coordinator
+            .install(ManagedArtifactInstallRequest {
+                mirror_id: "mirror-stranded".into(),
+                operation_id: "operation-stranded-install".into(),
+                owner_principal_id: "bootstrap-owner".into(),
+                destination_id: None,
+                source_provider_authority: "depot".into(),
+                source_assignment_id: "assignment-test".into(),
+                source_scope: OwnerScope::Personal(
+                    labby_primitives::access::PrincipalId::new("bootstrap-owner").unwrap(),
+                ),
+                mode: ManagedArtifactMirrorMode::Pinned,
+                policy_epoch,
+                update_policy: None,
+                authorization: managed_authorization(),
+                now: 20,
+                acquisition,
+            })
+            .await
+            .unwrap();
+        assert!(
+            access
+                .managed_artifact_mirrors_pending_purge(64)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        // Simulate a purge that failed after restriction committed: the durable state says
+        // revoked while the managed bytes are still on disk.
+        let stranded = access
+            .restrict_managed_artifact_mirror(
+                "mirror-stranded".into(),
+                installed.mirror.operation_id.clone(),
+                ManagedArtifactMirrorStatus::SourceWithdrawn,
+                30,
+            )
+            .await
+            .unwrap();
+        assert!(destination.get(&source_record.descriptor.id).is_ok());
+        assert!(
+            access
+                .managed_artifact_mirrors_for_reconciliation(i64::MAX, 64)
+                .await
+                .unwrap()
+                .is_empty(),
+            "authority reconciliation must not be the path that finds stranded mirrors"
+        );
+        let pending = access
+            .managed_artifact_mirrors_pending_purge(64)
+            .await
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].mirror_id, "mirror-stranded");
+
+        let removed = coordinator
+            .restrict_and_purge_managed_mirror("mirror-stranded".into(), stranded.status, 40)
+            .await
+            .unwrap();
+        assert_eq!(removed.status, ManagedArtifactMirrorStatus::Removed);
+        assert!(matches!(
+            destination.get(&source_record.descriptor.id),
+            Err(ArtifactError::NotFound("record"))
+        ));
+        assert!(
+            access
+                .managed_artifact_mirrors_pending_purge(64)
+                .await
+                .unwrap()
+                .is_empty()
         );
     }
 

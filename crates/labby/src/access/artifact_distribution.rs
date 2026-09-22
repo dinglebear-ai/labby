@@ -1394,8 +1394,42 @@ impl AccessStore {
             .await
     }
 
+    /// Active or committing mirrors whose authority is due for another check.
     pub(crate) async fn managed_artifact_mirrors_for_reconciliation(
         &self,
+        checked_before: i64,
+        limit: usize,
+    ) -> AccessStoreResult<Vec<ManagedArtifactMirror>> {
+        self.query_managed_artifact_mirrors(
+            "status IN ('active','committing')
+                       AND (last_checked_at IS NULL OR last_checked_at<=?1)
+                     ORDER BY COALESCE(last_checked_at,-9223372036854775808),mirror_id",
+            checked_before,
+            limit,
+        )
+        .await
+    }
+
+    /// Restricted mirrors whose managed bytes were not yet confirmed purged.
+    ///
+    /// Restriction commits before the purge, so a failed purge leaves the mirror in
+    /// `access_revoked`/`source_withdrawn` until a later reconciliation reaches `removed`.
+    pub(crate) async fn managed_artifact_mirrors_pending_purge(
+        &self,
+        limit: usize,
+    ) -> AccessStoreResult<Vec<ManagedArtifactMirror>> {
+        self.query_managed_artifact_mirrors(
+            "status IN ('access_revoked','source_withdrawn') AND ?1=?1
+                     ORDER BY updated_at,mirror_id",
+            0,
+            limit,
+        )
+        .await
+    }
+
+    async fn query_managed_artifact_mirrors(
+        &self,
+        filter: &'static str,
         checked_before: i64,
         limit: usize,
     ) -> AccessStoreResult<Vec<ManagedArtifactMirror>> {
@@ -1406,14 +1440,12 @@ impl AccessStore {
             i64::try_from(limit).map_err(|_| AccessStoreError::InvalidArtifactDistributionInput)?;
         self.with_connection(move |connection| {
             let mut statement = connection
-                .prepare(
+                .prepare(&format!(
                     "SELECT mirror_id,operation_id,owner_principal_id,identity_ref_json,authorization_project_id,authorization_team_id,destination_id,source_provider_authority,source_assignment_id,source_scope_kind,source_scope_id,source_artifact_id,source_revision_id,local_artifact_id,local_revision_id,mode,status,last_authorized_policy_epoch,last_checked_at,created_at,updated_at
                      FROM artifact_mirrors
-                     WHERE status IN ('active','committing')
-                       AND (last_checked_at IS NULL OR last_checked_at<=?1)
-                     ORDER BY COALESCE(last_checked_at,-9223372036854775808),mirror_id
-                     LIMIT ?2",
-                )
+                     WHERE {filter}
+                     LIMIT ?2"
+                ))
                 .map_err(map_sqlite_error)?;
             let rows = statement
                 .query_map(params![checked_before, limit], |row| {
