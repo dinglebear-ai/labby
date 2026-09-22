@@ -1530,6 +1530,90 @@
   },
   {
     "service": "artifacts",
+    "action": "artifacts.follow_managed",
+    "description": "Materialize one exact revision as a managed local mirror and create an explicit update subscription",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "source",
+        "ty": "object",
+        "required": true,
+        "description": "Server connection id plus exact immutable source, Artifact, and revision selector; never bytes, paths, endpoints, or credentials"
+      },
+      {
+        "name": "assignment_id",
+        "ty": "string",
+        "required": true,
+        "description": "Exact active source Assignment/share authorizing managed byte materialization"
+      },
+      {
+        "name": "idempotency_key",
+        "ty": "string",
+        "required": true,
+        "description": "Bounded request idempotency key (maximum 256 bytes)"
+      },
+      {
+        "name": "update_policy",
+        "ty": "string",
+        "required": true,
+        "description": "Follow policy: notify, auto_approved, or pinned"
+      }
+    ],
+    "returns": "ManagedArtifactReceipt",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.follow_update",
+    "description": "Apply one exact currently-authorized source revision to an existing followed managed mirror",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "source",
+        "ty": "object",
+        "required": true,
+        "description": "Server connection id plus exact immutable source, Artifact, and revision selector; never bytes, paths, endpoints, or credentials"
+      },
+      {
+        "name": "idempotency_key",
+        "ty": "string",
+        "required": true,
+        "description": "Bounded request idempotency key (maximum 256 bytes)"
+      }
+    ],
+    "returns": "ManagedArtifactReceipt",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
     "action": "artifacts.fork",
     "description": "Fork an exact Artifact revision into a new hosted Artifact",
     "destructive": false,
@@ -1587,6 +1671,60 @@
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.fork_personal",
+    "description": "Fork one exact permitted source revision into a new caller-owned Personal Artifact",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "source",
+        "ty": "object",
+        "required": true,
+        "description": "Server connection id plus exact immutable source, Artifact, and revision selector; never bytes, paths, endpoints, or credentials"
+      },
+      {
+        "name": "assignment_id",
+        "ty": "string",
+        "required": true,
+        "description": "Exact active source Assignment/share authorizing managed byte materialization"
+      },
+      {
+        "name": "name",
+        "ty": "string",
+        "required": true,
+        "description": "Name for the new caller-owned Personal Artifact"
+      },
+      {
+        "name": "title",
+        "ty": "string",
+        "required": false,
+        "description": "Optional title for the new Personal Artifact"
+      },
+      {
+        "name": "idempotency_key",
+        "ty": "string",
+        "required": true,
+        "description": "Bounded request idempotency key (maximum 256 bytes)"
+      }
+    ],
+    "returns": "PersonalArtifactForkReceipt",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -2213,6 +2351,48 @@
   },
   {
     "service": "artifacts",
+    "action": "artifacts.pin",
+    "description": "Materialize one exact revision as a managed local mirror without following future revisions",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "source",
+        "ty": "object",
+        "required": true,
+        "description": "Server connection id plus exact immutable source, Artifact, and revision selector; never bytes, paths, endpoints, or credentials"
+      },
+      {
+        "name": "assignment_id",
+        "ty": "string",
+        "required": true,
+        "description": "Exact active source Assignment/share authorizing managed byte materialization"
+      },
+      {
+        "name": "idempotency_key",
+        "ty": "string",
+        "required": true,
+        "description": "Bounded request idempotency key (maximum 256 bytes)"
+      }
+    ],
+    "returns": "ManagedArtifactReceipt",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
     "action": "artifacts.read",
     "description": "Read one bounded file from an immutable stored revision",
     "destructive": false,
@@ -2824,6 +3004,42 @@
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.transfer_options",
+    "description": "Evaluate current remote-use and distribution options for one exact source revision without mutating local state",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "source",
+        "ty": "object",
+        "required": true,
+        "description": "Server connection id plus exact immutable source, Artifact, and revision selector; never bytes, paths, endpoints, or credentials"
+      },
+      {
+        "name": "assignment_id",
+        "ty": "string",
+        "required": false,
+        "description": "Exact source Assignment/share whose distribution ceiling should be evaluated"
+      }
+    ],
+    "returns": "ArtifactTransferOptions",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },

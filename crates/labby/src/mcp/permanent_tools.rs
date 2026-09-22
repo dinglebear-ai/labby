@@ -928,7 +928,7 @@ mod tests {
                 .as_array()
                 .expect("bounded action enum")
                 .len(),
-            36
+            41
         );
         let annotations = tool.annotations.as_ref().expect("mixed-operation hints");
         assert_eq!(annotations.read_only_hint, Some(false));

@@ -359,12 +359,12 @@ Milestone 0A implementation evidence: `labby-auth` now emits one transport-indep
 - [x] managed mirror preserves source authority and never acquires ownership.
 - [x] managed pin.
 - [x] follow/subscription state.
-- [ ] auto-approved update reauthorization. The exact-revision coordinator path reauthorizes and is tested, but the follow-observation driver that invokes it automatically is not implemented yet.
+- [x] auto-approved update reauthorization. The serve-owned follow reconciler polls `auto_approved` subscriptions and reauthorizes every exact revision before applying it.
 - [x] personal fork.
 - [ ] detached export authorization. The existing secret-safe exact-acquisition export primitive is tested, but no distribution-authorized product action invokes it yet.
 - [ ] reshare authorization. Policy evaluation exists, but no reshare operation is wired.
 - [x] license/publication/takedown intersection.
-- [ ] revocation states. State transitions, subscription pausing, managed-byte purge, and tests exist; automatic revocation/source-withdrawal reconciliation is not wired yet.
+- [x] revocation states. The follow reconciler moves managed mirrors to `access_revoked`/`source_withdrawn`, pauses following, purges managed bytes, and retries a purge that failed after restriction until the mirror reaches `removed`. Source-withdrawal detection currently reads Depot heads only; `repository:` sources get access revocation but no withdrawal check.
 
 ### Phase 10: Personal Labby pairing/remote transfer
 
