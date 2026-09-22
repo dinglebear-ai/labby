@@ -514,7 +514,8 @@ async fn tool_change_consumer_refreshes_the_exact_named_catalog() {
 }
 
 #[tokio::test]
-async fn resource_change_consumer_refreshes_the_exact_named_catalog() {
+async fn resource_change_consumer_refreshes_the_exact_named_catalog()
+-> Result<(), Box<dyn std::error::Error>> {
     let pool = UpstreamPool::new();
     let server = SubscriptionServer::accepting();
     add_subscription_server(&pool, "leaf", server.clone()).await;
@@ -531,10 +532,11 @@ async fn resource_change_consumer_refreshes_the_exact_named_catalog() {
         .expect("resource-list event arrives")
         .expect("notification channel stays open");
     let super::UpstreamNotificationEvent::ResourceListChanged { upstream } = event else {
-        panic!("expected resource-list event");
+        return Err("expected resource-list event".into());
     };
     assert!(pool.refresh_resources_after_list_changed(&upstream).await);
     let resources = pool.cached_upstream_resources_allowed(None).await;
     assert_eq!(resources.len(), 1);
     assert_eq!(resources[0].1.uri, "file:///tmp/added-after-list-changed");
+    Ok(())
 }
