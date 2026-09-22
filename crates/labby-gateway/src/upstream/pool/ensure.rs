@@ -232,15 +232,9 @@ impl UpstreamPool {
                 .and(oauth_subject)
                 .and_then(|subject| self.oauth_lifecycle_epoch(&config.name, subject));
             if self.upstream_is_ready(&config.name, readiness).await {
-                match readiness {
-                    Readiness::Tools => {
-                        self.refresh_ui_resource_cache_for_healthy_upstream_if_needed(config)
-                            .await;
-                    }
-                    Readiness::Connection => {
-                        self.refresh_resource_cache_for_connected_upstream_if_missing(config)
-                            .await;
-                    }
+                if readiness == Readiness::Tools {
+                    self.refresh_ui_resource_cache_for_healthy_upstream_if_needed(config)
+                        .await;
                 }
                 return Ok(false);
             }
@@ -253,15 +247,9 @@ impl UpstreamPool {
                 "upstream configuration changed before connection"
             );
             if self.upstream_is_ready(&config.name, readiness).await {
-                match readiness {
-                    Readiness::Tools => {
-                        self.refresh_ui_resource_cache_for_healthy_upstream_if_needed(config)
-                            .await;
-                    }
-                    Readiness::Connection => {
-                        self.refresh_resource_cache_for_connected_upstream_if_missing(config)
-                            .await;
-                    }
+                if readiness == Readiness::Tools {
+                    self.refresh_ui_resource_cache_for_healthy_upstream_if_needed(config)
+                        .await;
                 }
                 return Ok(false);
             }
@@ -661,14 +649,24 @@ impl UpstreamPool {
         }
     }
 
-    async fn refresh_resource_cache_for_connected_upstream_if_missing(
+    /// List resources for connected upstreams whose current connection has no
+    /// resource snapshot yet, so a cache-only resources/list can serve them.
+    ///
+    /// A fresh connect already warms its snapshot in
+    /// `refresh_capability_caches_after_connect`; this covers peers that were
+    /// installed without that step (in-process services, test seams) or whose
+    /// post-connect listing failed. It is a discovery-time fan-out, deliberately
+    /// kept out of `ensure_connection_for_upstream`: a connection waiter must
+    /// never sit behind another upstream's resources/list RPC.
+    pub async fn warm_missing_resource_snapshots_allowed(
         &self,
-        config: &UpstreamConfig,
+        allowed: Option<&BTreeSet<String>>,
     ) {
-        if !config.proxy_resources || self.has_current_resource_snapshot(&config.name).await {
+        let missing = self.upstreams_missing_resource_snapshot(allowed).await;
+        if missing.is_empty() {
             return;
         }
-        self.refresh_resource_cache_for_upstream(&config.name).await;
+        self.list_upstream_resources_allowed(Some(&missing)).await;
     }
 
     async fn refresh_ui_resource_cache_for_healthy_upstream_if_needed(

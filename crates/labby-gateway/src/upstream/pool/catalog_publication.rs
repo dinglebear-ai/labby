@@ -384,7 +384,12 @@ enum ResourceTemplateSourceState {
 
 struct ResourceSource {
     incarnation: super::incarnation::ConnectionIncarnation,
+    /// Regular (`lab://upstream/...`-routable) rows, validated and budgeted.
     resources: Arc<[Resource]>,
+    /// MCP Apps `ui://` rows. They are listed with their native URI and read
+    /// through `read_upstream_ui_resource`, so they never become published
+    /// routes and stay outside the route validation and byte budget above.
+    ui_resources: Arc<[Resource]>,
     retained_bytes: usize,
 }
 enum ResourceSourceState {
@@ -525,10 +530,9 @@ impl CatalogState {
         incarnation: super::incarnation::ConnectionIncarnation,
         resources: &[Resource],
     ) {
-        let resources = resources
+        let (ui_resources, resources): (Vec<_>, Vec<_>) = resources
             .iter()
-            .filter(|resource| !is_ui_resource_uri(&resource.uri))
-            .collect::<Vec<_>>();
+            .partition(|resource| is_ui_resource_uri(&resource.uri));
         let existing_retained = self
             .resource_sources
             .iter()
@@ -552,6 +556,7 @@ impl CatalogState {
             ResourceSourceState::Ready(ResourceSource {
                 incarnation,
                 resources: resources.into_iter().cloned().collect::<Vec<_>>().into(),
+                ui_resources: ui_resources.into_iter().cloned().collect::<Vec<_>>().into(),
                 retained_bytes,
             })
         } else {
@@ -1207,22 +1212,43 @@ impl UpstreamPool {
         self.catalog.read().await.published_resources.clone()
     }
 
-    /// Whether the current connection incarnation has a successful resource
-    /// snapshot, including an explicitly empty resources/list result.
-    pub(super) async fn has_current_resource_snapshot(&self, upstream: &str) -> bool {
+    /// Names of connected, resource-proxying upstreams whose current
+    /// connection incarnation has never settled a resources/list result.
+    ///
+    /// A `Failed` source from the current incarnation counts as settled: it
+    /// records a publication verdict on rows the upstream already returned,
+    /// and listing again cannot change that verdict.
+    pub(super) async fn upstreams_missing_resource_snapshot(
+        &self,
+        allowed: Option<&BTreeSet<String>>,
+    ) -> BTreeSet<String> {
         let catalog = self.catalog.read().await;
-        let Some(incarnation) = catalog.incarnation(upstream) else {
-            return false;
-        };
-        matches!(
-            catalog.resource_sources.get(upstream),
-            Some(ResourceSourceState::Ready(source)) if source.incarnation == incarnation
-        )
+        catalog
+            .entries
+            .iter()
+            .filter(|(name, entry)| {
+                allowed.is_none_or(|allowed| allowed.contains(*name))
+                    && entry.proxy_resources
+                    && entry.resource_health.is_routable()
+            })
+            .filter(|(name, _)| {
+                let Some(current) = catalog.incarnation(name) else {
+                    return false;
+                };
+                let settled = match catalog.resource_sources.get(*name) {
+                    Some(ResourceSourceState::Ready(source)) => source.incarnation,
+                    Some(ResourceSourceState::Failed { incarnation, .. }) => *incarnation,
+                    None => return true,
+                };
+                settled != current
+            })
+            .map(|(name, _)| name.clone())
+            .collect()
     }
 
-    /// Return already-discovered regular upstream resources without peer I/O.
-    /// Discovery surfaces use this cache-only projection so resources/list cannot
-    /// fan out into a fleet-wide refresh.
+    /// Return already-discovered upstream resources without peer I/O, including
+    /// MCP Apps `ui://` rows. Discovery surfaces use this cache-only projection
+    /// so resources/list cannot fan out into a fleet-wide refresh.
     pub async fn cached_upstream_resources_allowed(
         &self,
         allowed: Option<&BTreeSet<String>>,
@@ -1248,6 +1274,7 @@ impl UpstreamPool {
             let mut rows = source
                 .resources
                 .iter()
+                .chain(source.ui_resources.iter())
                 .filter(|resource| entry.resource_exposure_policy.matches(&resource.uri))
                 .cloned()
                 .collect::<Vec<_>>();

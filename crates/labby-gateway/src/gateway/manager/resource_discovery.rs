@@ -55,6 +55,18 @@ impl GatewayManager {
         while let Some(timed_out) = discoveries.next().await {
             unfinished += usize::from(timed_out);
         }
+        // Listings are served from cached snapshots. A peer that is connected
+        // but was never listed (in-process services, a failed post-connect
+        // refresh) would otherwise stay invisible until its next reconnect.
+        if tokio::time::timeout_at(
+            deadline,
+            pool.warm_missing_resource_snapshots_allowed(allowed),
+        )
+        .await
+        .is_err()
+        {
+            unfinished += 1;
+        }
         if unfinished > 0 {
             tracing::warn!(
                 surface = "dispatch",

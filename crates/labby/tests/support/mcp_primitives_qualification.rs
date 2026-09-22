@@ -1,6 +1,6 @@
 use std::sync::{
     Arc,
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::time::Duration;
 
@@ -101,6 +101,11 @@ struct FixtureServer {
     mode: FixtureMode,
     generation: Arc<AtomicUsize>,
     counters: Arc<FixtureCounters>,
+    /// Set by the test after a silent generation bump. This fixture is a
+    /// stateless streamable-HTTP server, so it can only speak on a request
+    /// stream: the next resources/read carries the resources/list_changed
+    /// announcement, the way a real server announces a catalog mutation.
+    announce_resource_list_changed: Arc<AtomicBool>,
 }
 
 impl FixtureServer {
@@ -433,8 +438,18 @@ impl ServerHandler for FixtureServer {
     async fn read_resource(
         &self,
         request: ReadResourceRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, ErrorData> {
+        if self
+            .announce_resource_list_changed
+            .swap(false, Ordering::SeqCst)
+        {
+            context
+                .peer
+                .notify_resource_list_changed()
+                .await
+                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        }
         if self.mode != FixtureMode::Normal {
             return Err(Self::unsupported("resources/read"));
         }
@@ -566,6 +581,7 @@ pub(crate) struct PrimitiveFixture {
     owner: Arc<str>,
     generation: Arc<AtomicUsize>,
     counters: Arc<FixtureCounters>,
+    announce_resource_list_changed: Arc<AtomicBool>,
     address: std::net::SocketAddr,
     shutdown: CancellationToken,
     task: JoinHandle<()>,
@@ -580,11 +596,13 @@ impl PrimitiveFixture {
         let owner: Arc<str> = Arc::from(owner);
         let generation = Arc::new(AtomicUsize::new(0));
         let counters = Arc::new(FixtureCounters::default());
+        let announce_resource_list_changed = Arc::new(AtomicBool::new(false));
         let server = FixtureServer {
             owner: Arc::clone(&owner),
             mode,
             generation: Arc::clone(&generation),
             counters: Arc::clone(&counters),
+            announce_resource_list_changed: Arc::clone(&announce_resource_list_changed),
         };
         let service = StreamableHttpService::new(
             move || Ok(server.clone()),
@@ -606,6 +624,7 @@ impl PrimitiveFixture {
             owner,
             generation,
             counters,
+            announce_resource_list_changed,
             address,
             shutdown,
             task,
@@ -622,6 +641,15 @@ impl PrimitiveFixture {
 
     pub(crate) fn set_generation(&self, generation: usize) {
         self.generation.store(generation, Ordering::SeqCst);
+    }
+
+    /// Announce resources/list_changed on the next resources/read this
+    /// fixture serves. Labby serves resources/list from cached snapshots, so
+    /// a silent generation bump is not observable downstream until the
+    /// upstream announces it.
+    pub(crate) fn announce_resource_list_changed_on_next_read(&self) {
+        self.announce_resource_list_changed
+            .store(true, Ordering::SeqCst);
     }
 
     pub(crate) fn resource_lists(&self) -> usize {

@@ -1963,6 +1963,105 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn warming_missing_snapshots_lists_only_cold_upstreams_once() {
+        let server = StaticCatalogServer::default();
+        let resource_calls = Arc::clone(&server.list_resources_count);
+        let pool = catalog_pool_with_server("cold", server).await;
+        assert!(
+            pool.cached_upstream_resources_allowed(None)
+                .await
+                .is_empty(),
+            "a connected peer that was never listed has no cached resources"
+        );
+        assert_eq!(
+            pool.upstreams_missing_resource_snapshot(None).await,
+            BTreeSet::from(["cold".to_string()])
+        );
+
+        pool.warm_missing_resource_snapshots_allowed(None).await;
+        assert_eq!(resource_calls.load(Ordering::SeqCst), 1);
+        let cached = pool.cached_upstream_resources_allowed(None).await;
+        assert_eq!(
+            cached.len(),
+            2,
+            "warming publishes the snapshot: {cached:?}"
+        );
+        assert!(
+            pool.upstreams_missing_resource_snapshot(None)
+                .await
+                .is_empty()
+        );
+
+        pool.warm_missing_resource_snapshots_allowed(None).await;
+        assert_eq!(
+            resource_calls.load(Ordering::SeqCst),
+            1,
+            "a warm snapshot must not be listed again"
+        );
+
+        let other = BTreeSet::from(["other".to_string()]);
+        pool.warm_missing_resource_snapshots_allowed(Some(&other))
+            .await;
+        assert_eq!(resource_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn cached_listing_keeps_ui_rows_with_their_native_uri() {
+        let pool = catalog_pool_with_server("apps", UiCatalogServer).await;
+        pool.list_upstream_resources().await;
+        let cached = pool
+            .cached_upstream_resources_with_provenance_allowed(None)
+            .await;
+        let uris = cached
+            .iter()
+            .map(|listed| (listed.native_uri.as_str(), listed.resource.uri.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            uris,
+            [
+                (
+                    "file:///tmp/regular",
+                    "lab://upstream/apps/file:///tmp/regular"
+                ),
+                ("ui://apps/widget.html", "ui://apps/widget.html"),
+            ]
+        );
+        let published = pool
+            .published_resource_catalog()
+            .await
+            .expect("published resource catalog");
+        assert_eq!(
+            published
+                .routes()
+                .iter()
+                .map(|route| route.native_uri.as_ref())
+                .collect::<Vec<_>>(),
+            vec!["file:///tmp/regular"],
+            "ui rows never become published routes"
+        );
+    }
+
+    #[derive(Clone)]
+    struct UiCatalogServer;
+
+    impl ServerHandler for UiCatalogServer {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        }
+
+        async fn list_resources(
+            &self,
+            _request: Option<PaginatedRequestParams>,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<ListResourcesResult, ErrorData> {
+            Ok(ListResourcesResult::with_all_items(vec![
+                Resource::new("ui://apps/widget.html", "widget"),
+                Resource::new("file:///tmp/regular", "regular"),
+            ]))
+        }
+    }
+
+    #[tokio::test]
     async fn subject_scoped_resources_reuse_the_cached_subject_connection() {
         let server = StaticCatalogServer::default();
         let resource_calls = Arc::clone(&server.list_resources_count);

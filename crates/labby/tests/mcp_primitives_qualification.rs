@@ -231,7 +231,41 @@ async fn q1_resources_prompts_templates_completions_and_collisions_round_trip() 
         .expect_err("unsupported server method must be explicit");
     assert_mcp_code(unsupported, ErrorCode::METHOD_NOT_FOUND);
 
+    // resources/list is served from Labby's cached snapshot, so an upstream
+    // catalog change becomes visible only after the upstream announces it.
+    // Labby refreshes the exact sender before forwarding list_changed, so the
+    // forwarded notification proves the refreshed catalog is listable.
+    let mut resource_changes = peer
+        .listen(
+            SubscriptionFilter::builder()
+                .resources_list_changed()
+                .build(),
+        )
+        .await
+        .expect("resources list-change subscription");
     alpha.set_generation(1);
+    alpha.announce_resource_list_changed_on_next_read();
+    peer.read_resource(ReadResourceRequestParams::new(
+        "lab://upstream/alpha/fixture://text",
+    ))
+    .await
+    .expect("read that carries alpha's list_changed announcement");
+    let notification = tokio::time::timeout(REQUEST_TIMEOUT, resource_changes.next())
+        .await
+        .expect("resources list-change deadline")
+        .expect("healthy resources list-change subscription")
+        .expect("resources list-change notification");
+    assert!(
+        matches!(
+            notification,
+            ServerNotification::ResourceListChangedNotification(_)
+        ),
+        "unexpected notification: {notification:?}"
+    );
+    resource_changes
+        .cancel()
+        .await
+        .expect("resources subscription cancellation");
     let changed_resources = peer.list_resources(None).await.expect("changed resources");
     let changed_prompts = peer.list_prompts(None).await.expect("changed prompts");
     let changed_templates = peer
