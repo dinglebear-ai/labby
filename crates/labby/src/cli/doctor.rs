@@ -99,7 +99,8 @@ async fn run_full_audit(
     let public_relay = load_optional_public_relay_manager().await;
     let (resolved_auth, auth_config_error) = match crate::config::resolve_auth_for_config(config) {
         Ok(auth) => (Some(auth), None),
-        Err(error) => (None, Some(error.to_string())),
+        // `{error:#}` keeps the typed cause the outer context names.
+        Err(error) => (None, Some(format!("{error:#}"))),
     };
 
     tokio::spawn(async move {
@@ -154,7 +155,7 @@ async fn run_auth(
         Err(error) => {
             let report = Report {
                 findings: vec![crate::dispatch::doctor::auth_config_error_finding(
-                    &error.to_string(),
+                    &format!("{error:#}"),
                 )],
             };
             if format.is_json() {

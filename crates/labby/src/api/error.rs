@@ -142,6 +142,7 @@ impl IntoResponse for ApiError {
             | "stale_suggestion"
             | "merge_write_conflict"
             | "workspace_not_configured"
+            | "access_setup_required"
             | "authority_changed" => StatusCode::CONFLICT,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
@@ -312,6 +313,7 @@ mod tests {
         assert_eq!(status_for("audit_timeout"), StatusCode::GATEWAY_TIMEOUT);
         assert_eq!(status_for("merge_write_conflict"), StatusCode::CONFLICT);
         assert_eq!(status_for("workspace_not_configured"), StatusCode::CONFLICT);
+        assert_eq!(status_for("access_setup_required"), StatusCode::CONFLICT);
         // A post-commit draft cleanup failure really is an internal partial
         // transaction failure and intentionally remains HTTP 500.
         assert_eq!(
