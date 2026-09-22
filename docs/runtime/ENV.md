@@ -36,7 +36,11 @@ install/restart collision check.
 
 The access store has no independent environment override.
 `LABBY_AUTH_SQLITE_PATH` selects the OAuth authorization store, not
-`access.db`. A standalone stdio fallback uses its own resolved state root, so
+`access.db`. The OAuth authorization store and its signing key default to
+`$LABBY_HOME/auth.db` and `$LABBY_HOME/auth-jwt.pem` in the same selected root;
+only an explicit `LABBY_AUTH_SQLITE_PATH` or `LABBY_AUTH_KEY_PATH` (or the
+matching `[auth]` setting) places them elsewhere. The upstream dotenv fallback
+for `bearer_token_env` reads `$LABBY_HOME/.env` as well. A standalone stdio fallback uses its own resolved state root, so
 configure an explicit remote daemon target when stdio must share the daemon's
 project and membership state.
 

@@ -621,6 +621,26 @@ pub fn run_capability_checks() -> Vec<Finding> {
     by_check.into_values().collect()
 }
 
+/// Installation root the doctor inspects: the same root serve resolves.
+///
+/// An invalid explicit `LABBY_HOME` is reported verbatim so its probes fail
+/// visibly instead of silently inspecting the user-home installation.
+fn doctor_installation_root(
+    lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> std::path::PathBuf {
+    crate::installation::InstallationPaths::resolve_with(&lookup).map_or_else(
+        |_| {
+            lookup("LABBY_HOME")
+                .filter(|root| !root.is_empty())
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| {
+                    std::path::PathBuf::from(lookup("HOME").unwrap_or_default()).join(".labby")
+                })
+        },
+        |paths| paths.root().to_path_buf(),
+    )
+}
+
 /// Run all local system probes: env-var checks, config files, toolchain, and disk.
 ///
 /// Order: env-var checks first (preserves current `labby doctor` output), then
@@ -650,9 +670,10 @@ pub async fn run_system_checks() -> Vec<Finding> {
     }
 
     let home = std::env::var("HOME").unwrap_or_default();
-    let env_path = format!("{home}/.labby/.env");
-    let lab_dir = format!("{home}/.labby");
-    let config_path = format!("{home}/.labby/config.toml");
+    let install_root = doctor_installation_root(|name| std::env::var_os(name));
+    let env_path = install_root.join(".env").display().to_string();
+    let lab_dir = install_root.display().to_string();
+    let config_path = install_root.join("config.toml").display().to_string();
     let mut probes = Vec::new();
     probes.push(process_probe(
         "lab",
@@ -1331,7 +1352,7 @@ pub fn run_auth_checks_with_config(
     config: Option<&labby_auth::config::AuthConfig>,
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
-    let home = std::env::var("HOME").unwrap_or_default();
+    let install_root = doctor_installation_root(|name| std::env::var_os(name));
 
     let mode = config.map_or_else(
         || {
@@ -1682,14 +1703,14 @@ pub fn run_auth_checks_with_config(
         let sqlite_path = config.map_or_else(
             || {
                 std::env::var("LABBY_AUTH_SQLITE_PATH")
-                    .unwrap_or_else(|_| format!("{home}/.labby/auth.db"))
+                    .unwrap_or_else(|_| install_root.join("auth.db").display().to_string())
             },
             |config| config.sqlite_path.display().to_string(),
         );
         let key_path = config.map_or_else(
             || {
                 std::env::var("LABBY_AUTH_KEY_PATH")
-                    .unwrap_or_else(|_| format!("{home}/.labby/auth-jwt.pem"))
+                    .unwrap_or_else(|_| install_root.join("auth-jwt.pem").display().to_string())
             },
             |config| config.key_path.display().to_string(),
         );
@@ -1847,6 +1868,53 @@ fn file_perms_check(service: &str, label: &str, path: &str) -> Finding {
 #[cfg(test)]
 mod auth_tests {
     use super::*;
+
+    fn lookup<'a>(
+        vars: &'a [(&'a str, &'a str)],
+    ) -> impl Fn(&str) -> Option<std::ffi::OsString> + 'a {
+        move |name| {
+            vars.iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| std::ffi::OsString::from(value))
+        }
+    }
+
+    #[test]
+    fn doctor_installation_root_honors_explicit_labby_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let instance = dir.path().join("instance");
+        let user = dir.path().join("user");
+        let vars = [
+            ("LABBY_HOME", instance.to_str().unwrap()),
+            ("HOME", user.to_str().unwrap()),
+        ];
+        let expected = crate::installation::InstallationPaths::from_root(&instance)
+            .unwrap()
+            .root()
+            .to_path_buf();
+        assert_eq!(doctor_installation_root(lookup(&vars)), expected);
+    }
+
+    #[test]
+    fn doctor_installation_root_defaults_to_user_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path().join("user");
+        let vars = [("HOME", user.to_str().unwrap())];
+        let expected = crate::installation::InstallationPaths::from_root(user.join(".labby"))
+            .unwrap()
+            .root()
+            .to_path_buf();
+        assert_eq!(doctor_installation_root(lookup(&vars)), expected);
+    }
+
+    #[test]
+    fn doctor_installation_root_reports_invalid_labby_home_verbatim() {
+        let vars = [("LABBY_HOME", "relative/root"), ("HOME", "/Users/operator")];
+        assert_eq!(
+            doctor_installation_root(lookup(&vars)),
+            std::path::PathBuf::from("relative/root")
+        );
+    }
 
     fn authelia_test_config(dir: &std::path::Path) -> labby_auth::config::AuthConfig {
         labby_auth::config::AuthConfigBuilder::new()
