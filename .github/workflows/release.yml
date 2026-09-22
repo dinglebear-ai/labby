@@ -105,10 +105,6 @@ jobs:
             runner: '"ubuntu-24.04"'
             binary: labby
             archive: lab-x86_64-unknown-linux-gnu.tar.gz
-          - target: x86_64-pc-windows-msvc
-            runner: '"windows-latest"'
-            binary: labby.exe
-            archive: lab-x86_64-pc-windows-msvc.zip
           - target: aarch64-apple-darwin
             runner: '"macos-15"'
             binary: labby
@@ -122,27 +118,14 @@ jobs:
           name: gateway-admin-out
           path: apps/gateway-admin/out
       - name: Install Rust and kache
-        if: runner.os != 'Windows'
         uses: ./.github/actions/setup-rust-kache
         with:
           targets: ${{ matrix.target }}
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
-        if: runner.os == 'Windows'
-        with:
-          toolchain: "1.97.1"
-          targets: ${{ matrix.target }}
-      - name: Restore Windows Cargo cache
-        if: runner.os == 'Windows'
-        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
-        with:
-          shared-key: labby-release-windows-v1
-          cache-on-failure: true
 
       - name: Build natively
         run: cargo build --workspace --all-features --locked --release --target ${{ matrix.target }}
 
-      - name: Package Unix artifact
-        if: runner.os != 'Windows'
+      - name: Package artifact
         run: |
           set -euo pipefail
           mkdir -p dist
@@ -154,8 +137,7 @@ jobs:
             shasum -a 256 "${{ matrix.archive }}" > "${{ matrix.archive }}.sha256"
           fi
 
-      - name: Smoke packaged Code Mode runner (Unix)
-        if: runner.os != 'Windows'
+      - name: Smoke packaged Code Mode runner
         env:
           # This is a one-shot CLI smoke. Do not leave a warm runner parked
           # while the workflow shell waits for the packaged process to exit.
@@ -167,42 +149,6 @@ jobs:
             | grep -q '"sum":2'
           ./dist/${{ matrix.binary }} skill --help \
             | grep -q 'Read locally visible skills'
-
-      - name: Package Windows artifact
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/${{ matrix.binary }}"
-          Compress-Archive -Path "dist/${{ matrix.binary }}" -DestinationPath "${{ matrix.archive }}" -Force
-          $hash = (Get-FileHash "${{ matrix.archive }}" -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  ${{ matrix.archive }}" | Out-File -FilePath "${{ matrix.archive }}.sha256" -Encoding ascii
-
-      - name: Smoke packaged Code Mode runner (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          # Hosted Windows runners track descendant processes. A pooled Code
-          # Mode runner can therefore keep this one-shot smoke alive after the
-          # CLI has returned its result.
-          LABBY_CODE_MODE_POOL_SIZE: "0"
-        run: |
-          $ErrorActionPreference = "Stop"
-          # Native output is captured as an array of lines. On an array, -notmatch
-          # returns the non-matching lines, so it is truthy for any multi-line
-          # output even when the expected text is present. Out-String joins the
-          # lines so each check tests one string.
-          $output = & ".\dist\${{ matrix.binary }}" --json code run --code "async () => ({ ok: true, sum: 1 + 1 })" | Out-String
-          if ($LASTEXITCODE -ne 0) {
-            throw "Code Mode packaged smoke failed with exit code $LASTEXITCODE"
-          }
-          if ($output -notmatch '"sum":2') {
-            throw "Code Mode packaged smoke did not return expected result: $output"
-          }
-          $skillsHelp = & ".\dist\${{ matrix.binary }}" skill --help | Out-String
-          if ($LASTEXITCODE -ne 0 -or $skillsHelp -notmatch 'Read locally visible skills') {
-            throw "Packaged binary does not expose the required Skills surface: $skillsHelp"
-          }
 
       - name: Attest exact platform candidate archive
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
@@ -235,11 +181,6 @@ jobs:
             artifact: lab-x86_64-unknown-linux-gnu
             archive: lab-x86_64-unknown-linux-gnu.tar.gz
             binary: labby
-          - deployment: windows
-            runner: windows-latest
-            artifact: lab-x86_64-pc-windows-msvc
-            archive: lab-x86_64-pc-windows-msvc.zip
-            binary: labby.exe
           - deployment: macos
             runner: macos-15
             artifact: lab-aarch64-apple-darwin
@@ -482,9 +423,7 @@ jobs:
       - name: Prepare immutable installer assets
         run: |
           cp scripts/install.sh labby-install.sh
-          cp scripts/install.ps1 labby-install.ps1
           sha256sum labby-install.sh > labby-install.sh.sha256
-          sha256sum labby-install.ps1 > labby-install.ps1.sha256
       - name: Install Syft for subject-specific SBOMs
         uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610
       - name: Generate one SPDX SBOM per shipped subject
@@ -510,9 +449,9 @@ jobs:
             --repository "$GITHUB_REPOSITORY" \
             --incus-sha256 "$INCUS_SHA256" \
             --mcp-manifest-sha256 "$MCP_MANIFEST_SHA256" \
-            lab-*.tar.gz lab-*.zip lab-*.sha256 lab-*.spdx.json \
+            lab-*.tar.gz lab-*.sha256 lab-*.spdx.json \
             labby-desktop-*.tar.gz labby-desktop-*.AppImage labby-desktop-*.sha256 labby-desktop-*.spdx.json \
-            labby-install.*.spdx.json labby-install.sh labby-install.ps1 labby-install.sh.sha256 labby-install.ps1.sha256
+            labby-install.sh.spdx.json labby-install.sh labby-install.sh.sha256
       - name: Upload qualified assets to draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -520,7 +459,7 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          files=(lab-*.tar.gz lab-*.tar.gz.sha256 lab-*.zip lab-*.zip.sha256 lab-*.spdx.json labby-desktop-*.tar.gz labby-desktop-*.AppImage labby-desktop-*.sha256 labby-desktop-*.spdx.json labby-install.sh labby-install.sh.sha256 labby-install.sh.spdx.json labby-install.ps1 labby-install.ps1.sha256 labby-install.ps1.spdx.json release-manifest.json)
+          files=(lab-*.tar.gz lab-*.tar.gz.sha256 lab-*.spdx.json labby-desktop-*.tar.gz labby-desktop-*.AppImage labby-desktop-*.sha256 labby-desktop-*.spdx.json labby-install.sh labby-install.sh.sha256 labby-install.sh.spdx.json release-manifest.json)
           gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft | grep -Fx true
           touch /tmp/labby-release-was-draft
           scripts/ci/upload-immutable-release-assets.sh -- "${files[@]}"
@@ -529,7 +468,6 @@ jobs:
         with:
           subject-path: |
             lab-*.tar.gz
-            lab-*.zip
             lab-*.spdx.json
             lab-*.sha256
             labby-desktop-*.tar.gz
@@ -538,9 +476,7 @@ jobs:
             labby-desktop-*.spdx.json
             labby-install.*.spdx.json
             labby-install.sh
-            labby-install.ps1
             labby-install.sh.sha256
-            labby-install.ps1.sha256
             release-manifest.json
       - name: Verify release provenance as a consumer
         env:
@@ -548,7 +484,7 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          for artifact in lab-*.tar.gz lab-*.zip lab-*.sha256 lab-*.spdx.json labby-desktop-*.tar.gz labby-desktop-*.AppImage labby-desktop-*.sha256 labby-desktop-*.spdx.json labby-install.sh labby-install.ps1 labby-install.*.sha256 labby-install.*.spdx.json release-manifest.json; do
+          for artifact in lab-*.tar.gz lab-*.sha256 lab-*.spdx.json labby-desktop-*.tar.gz labby-desktop-*.AppImage labby-desktop-*.sha256 labby-desktop-*.spdx.json labby-install.sh labby-install.sh.sha256 labby-install.sh.spdx.json release-manifest.json; do
             scripts/ci/verify-release-provenance.sh --repo ${{ github.repository }} --workflow release.yml --ref ${{ github.ref }} --artifact "$artifact"
           done
       - name: Prepare npm stable pointer transaction

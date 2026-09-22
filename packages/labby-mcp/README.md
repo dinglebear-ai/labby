@@ -150,33 +150,14 @@ The npm launcher is a weaker trust path than the installer scripts. It
 downloads the release archive for the current platform and verifies only the
 `.sha256` sidecar (or the `SHA256SUMS` manifest) published next to it on the
 same release; it does not require `gh` and does not verify GitHub build
-provenance. Use `labby-install.sh` or `labby-install.ps1` when provenance
-verification matters.
-
-Windows PowerShell:
-
-```powershell
-$Version = "vX.Y.Z"
-$Base = "https://github.com/dinglebear-ai/labby/releases/download/$Version"
-Invoke-WebRequest "$Base/labby-install.ps1" -OutFile labby-install.ps1
-Invoke-WebRequest "$Base/labby-install.ps1.sha256" -OutFile labby-install.ps1.sha256
-gh attestation verify labby-install.ps1 `
-  --repo dinglebear-ai/labby `
-  --signer-workflow dinglebear-ai/labby/.github/workflows/release.yml `
-  --source-ref "refs/tags/$Version" `
-  --deny-self-hosted-runners
-$Expected = ((Get-Content labby-install.ps1.sha256) -split '\s+')[0]
-if ((Get-FileHash labby-install.ps1 -Algorithm SHA256).Hash.ToLower() -ne $Expected) { throw "installer digest mismatch" }
-$env:LABBY_INSTALL_VERSION = $Version
-& ./labby-install.ps1
-labby setup
-labby serve --host 127.0.0.1 --port 8765
-```
+provenance. Use `labby-install.sh` on Linux or macOS when provenance
+verification matters. Current releases do not publish Windows binaries or
+installers.
 
 The separately downloaded and attested install scripts resolve an immutable GitHub Release containing the current
 platform asset, require `gh`, verify the archive's attestation against the
 Labby repository, `release.yml`, exact tag, and hosted-runner policy, verify its checksum, and install `labby` onto the
-user PATH. On Linux and macOS the shell installer then runs `labby setup`, which
+user PATH. The shell installer then runs `labby setup`, which
 asks whether this machine should run a server or connect to an existing one.
 Server setup configures authentication and a managed native service, or an Incus
 container on supported Linux hosts. Client setup saves the explicit gateway URL
@@ -188,7 +169,6 @@ and expose it through a publicly reachable HTTPS `LABBY_PUBLIC_URL`; bearer-only
 mode is for local/CLI clients and is not the supported ChatGPT web path. The web
 UI offers bearer token sign-in only over HTTPS or a direct loopback connection;
 behind a TLS-terminating proxy, set `LABBY_PUBLIC_URL=https://...` to unlock it.
-The PowerShell installer installs the binary; run setup separately as shown above.
 
 For unattended shell installs, set `LABBY_SETUP_ROLE=server` or `client` and the
 corresponding `LABBY_SETUP_*` options. For a binary-only install, set
@@ -209,15 +189,9 @@ it without downloading or changing `$LABBY_HOME`:
 LABBY_INSTALL_ROLLBACK=1 sh ./labby-install.sh
 ```
 
-```powershell
-$env:LABBY_INSTALL_ROLLBACK = '1'
-& .\labby-install.ps1
-```
-
 Rollback switches only the installed executable and receipt. It does not
 downgrade or delete configuration, credentials, databases, or other durable
-state. Inspect the receipt at `<install-dir>/.labby-install/receipt` on Unix or
-`receipt.json` on Windows.
+state. Inspect the receipt at `<install-dir>/.labby-install/receipt`.
 
 Release qualification can install an already-downloaded candidate without
 network or source fallback by setting `LABBY_INSTALL_LOCAL_BINARY` and its exact
@@ -726,8 +700,8 @@ remains the rebuild-and-restart developer shortcut.
 
 Release Please maintains the version/changelog pull request and creates the
 stable tag plus draft GitHub release when that pull request merges. The stable
-tag triggers the heavy GitHub-hosted candidate workflow. It builds Linux,
-macOS, and Windows archives with checksums, builds and smokes the Incus image,
+tag triggers the heavy GitHub-hosted candidate workflow. It builds Linux and
+macOS archives with checksums, builds and smokes the Incus image,
 publishes the npm launcher, and publishes Labby's
 `server.json` metadata to the official MCP Registry. Only after qualification
 and publication succeed does the workflow promote the draft GitHub release.
