@@ -532,8 +532,9 @@ async fn resource_change_consumer_refreshes_the_exact_named_catalog()
     let pool = UpstreamPool::new();
     let server = SubscriptionServer::accepting();
     add_subscription_server(&pool, "leaf", server.clone()).await;
+    // The initial resource listing schedules the subscription refresh itself.
+    // Starting another generation here would cancel the one under test.
     pool.list_upstream_resources().await;
-    pool.refresh_upstream_subscription("leaf").await;
     for _ in 0..100 {
         if server.listening.load(Ordering::SeqCst) {
             break;
