@@ -1038,7 +1038,7 @@ pub(crate) fn code_mode_execute_schema() -> Arc<serde_json::Map<String, Value>> 
                 "upstreams": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Optional: limit this run to these upstreams. Use names as listed in the description or search results; case and `-`/`_` do not matter."
+                    "description": "Optional: limit this run to these upstreams. Use names as listed in the description or search results; case and `-`/`_`/`.` separators do not matter."
                 },
                 "tools": {
                     "type": "array",

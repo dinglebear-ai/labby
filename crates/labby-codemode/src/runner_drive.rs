@@ -103,6 +103,25 @@ const RUNNER_SETTLEMENT_GRACE: Duration = Duration::from_secs(5);
 /// hung-runner watchdog: it protects the control-plane handshake without
 /// materially shortening legitimate upstream tool execution.
 const RUNNER_RESULT_ACK_RESERVE: Duration = Duration::from_millis(250);
+/// Extra acknowledgement budget per call the handshake may have to drain.
+///
+/// The reserve covers writing one ToolResult/ToolError per in-flight call and
+/// reading Done/Error back. That work grows with fanout, so a constant budget
+/// silently shrinks to microseconds per ack at high fanout (0.5 ms/ack at the
+/// 512-call default) and turns a completed run into a timeout that discards
+/// every real result.
+const RUNNER_RESULT_ACK_PER_CALL: Duration = Duration::from_millis(2);
+/// Ceiling for the scaled reserve, kept well under [`RUNNER_SETTLEMENT_GRACE`].
+const RUNNER_RESULT_ACK_RESERVE_MAX: Duration = Duration::from_secs(2);
+
+/// Acknowledgement budget for `in_flight` outstanding calls.
+fn result_ack_reserve(in_flight: u64) -> Duration {
+    let per_call =
+        RUNNER_RESULT_ACK_PER_CALL.saturating_mul(u32::try_from(in_flight).unwrap_or(u32::MAX));
+    RUNNER_RESULT_ACK_RESERVE
+        .saturating_add(per_call)
+        .min(RUNNER_RESULT_ACK_RESERVE_MAX)
+}
 
 #[derive(Clone, Copy)]
 struct SettlementWatch {
@@ -134,12 +153,14 @@ impl SettlementWatch {
 fn external_tool_deadline(
     now: tokio::time::Instant,
     execution_deadline: tokio::time::Instant,
+    in_flight: u64,
 ) -> tokio::time::Instant {
     let remaining = execution_deadline
         .checked_duration_since(now)
         .unwrap_or_default();
-    if remaining > RUNNER_RESULT_ACK_RESERVE.saturating_mul(2) {
-        execution_deadline - RUNNER_RESULT_ACK_RESERVE
+    let reserve = result_ack_reserve(in_flight);
+    if remaining > reserve.saturating_mul(2) {
+        execution_deadline - reserve
     } else {
         execution_deadline
     }
@@ -679,7 +700,11 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                                     }
                                     Ok(None) => {
                                         let now = tokio::time::Instant::now();
-                                        let tool_deadline = external_tool_deadline(now, deadline);
+                                        let tool_deadline = external_tool_deadline(
+                                            now,
+                                            deadline,
+                                            state.calls_enqueued,
+                                        );
                                         if tool_deadline < deadline
                                             && !state.result_ack_reserve_observed
                                         {
@@ -691,7 +716,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                                                 service = "code_mode",
                                                 action = "codemode.result_ack.reserve",
                                                 event = "armed",
-                                                reserve_ms = RUNNER_RESULT_ACK_RESERVE.as_millis(),
+                                                reserve_ms = result_ack_reserve(state.calls_enqueued).as_millis(),
                                                 result_ack_reserve_use_count,
                                                 "reserved Code Mode result acknowledgement budget"
                                             );
@@ -1640,9 +1665,21 @@ mod tests {
         let execution_deadline = now + Duration::from_secs(30);
 
         assert_eq!(
-            external_tool_deadline(now, execution_deadline),
+            external_tool_deadline(now, execution_deadline, 0),
             execution_deadline - RUNNER_RESULT_ACK_RESERVE
         );
+    }
+
+    #[test]
+    fn result_ack_reserve_scales_with_fanout_and_is_capped() {
+        assert_eq!(result_ack_reserve(0), RUNNER_RESULT_ACK_RESERVE);
+        // The 512-call default gets ~1.3s to drain, not 250ms.
+        assert_eq!(
+            result_ack_reserve(512),
+            RUNNER_RESULT_ACK_RESERVE + RUNNER_RESULT_ACK_PER_CALL * 512
+        );
+        assert_eq!(result_ack_reserve(u64::MAX), RUNNER_RESULT_ACK_RESERVE_MAX);
+        assert!(RUNNER_RESULT_ACK_RESERVE_MAX < RUNNER_SETTLEMENT_GRACE);
     }
 
     #[test]
@@ -1651,7 +1688,7 @@ mod tests {
         let execution_deadline = now + Duration::from_millis(400);
 
         assert_eq!(
-            external_tool_deadline(now, execution_deadline),
+            external_tool_deadline(now, execution_deadline, 0),
             execution_deadline
         );
     }
@@ -1727,28 +1764,25 @@ sleep 3600
     #[cfg(not(windows))]
     #[tokio::test]
     async fn result_ack_reserve_handles_default_max_call_fanout() {
+        // `awk` emits the calls and validates the replies in one process each:
+        // a `sh` read-loop over 512 replies measures shell throughput rather
+        // than the reserve, and starves on a loaded host.
         let script = r#"
 IFS= read -r _
-i=1
-while [ $i -le 512 ]; do
-  printf '{"type":"tool_call","seq":%s,"id":"stub::slow","params":{}}\n' "$i"
-  i=$((i + 1))
-done
-i=1
-while [ $i -le 512 ]; do
-  IFS= read -r reply
-  case "$reply" in
-    *'"type":"tool_error"'*) ;;
-    *) exit 24 ;;
-  esac
-  i=$((i + 1))
-done
+awk 'BEGIN{for(i=1;i<=512;i++) printf "{\"type\":\"tool_call\",\"seq\":%d,\"id\":\"stub::slow\",\"params\":{}}\n", i}'
+awk '{ if ($0 !~ /"type":"tool_error"/) exit 24; n++; if (n==512) exit 0 } END{ if (n<512) exit 25 }'
+status=$?
+[ "$status" -eq 0 ] || exit "$status"
 printf '%s\n' '{"type":"done","result":{"state":"json","value":{"acked":512}},"logs":[]}'
 sleep 3600
 "#;
+        // Large enough that the scaled reserve reaches its cap, so the drain
+        // budget under test is the product's maximum rather than a fraction
+        // of a tight test deadline.
+        let budget = Duration::from_secs(5);
         let host = DelayedToolHost {
             inner: NoopHost::default(),
-            delay: Duration::from_secs(2),
+            delay: budget,
         };
         let broker = CodeModeBroker::new(Some(&host));
         let mut runner = PooledRunner::spawn_stub_script(script).expect("spawn fanout stub");
@@ -1756,8 +1790,8 @@ sleep 3600
         let outcome = broker
             .drive_runner(
                 &mut runner,
-                &test_config(Duration::from_secs(2)),
-                tokio::time::Instant::now() + Duration::from_secs(2),
+                &test_config(budget),
+                tokio::time::Instant::now() + budget,
             )
             .await;
 
@@ -1765,7 +1799,7 @@ sleep 3600
         // `sleep 3600`, so this ceiling only has to be far below that.
         assert!(
             started.elapsed() < Duration::from_secs(30),
-            "the 2s deadline, not the stub script, must end the run: {:?}",
+            "the execution deadline, not the stub script, must end the run: {:?}",
             started.elapsed()
         );
         match outcome {

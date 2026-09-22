@@ -306,6 +306,14 @@ Upstream transport error:
         self
     }
 
+    /// Override the recovery advice the kind implies, for a producer that
+    /// knows more (e.g. a call that was provably never dispatched).
+    #[must_use]
+    pub fn with_recovery(mut self, recovery: CodeModeRecoveryAdvice) -> Self {
+        self.recovery = recovery;
+        self
+    }
+
     /// Override the derived side-effect risk classification.
     /// Override the canonical side-effect risk.
     #[must_use]
@@ -396,9 +404,14 @@ impl From<ToolError> for CodeModeCallError {
     /// A [`ToolError::Contract`] (from [`CodeModeCallError::into_contract_tool_error`])
     /// round-trips losslessly: its refined `origin`/`recovery`/`side_effects`
     /// and extras (`tool`, `cause`, `safety`, `evidence`, ...) are restored
-    /// rather than recomputed from the kind. Every other variant is rebuilt
-    /// from its kind.
+    /// rather than recomputed from the kind. Every other variant, and a
+    /// contract that no longer deserializes, is rebuilt from its kind.
     fn from(error: ToolError) -> Self {
+        fn put<T: Serialize>(wire: &mut Map<String, Value>, key: &str, value: Option<T>) {
+            if let Some(value) = value.and_then(|value| serde_json::to_value(value).ok()) {
+                wire.insert(key.to_string(), value);
+            }
+        }
         if let ToolError::Contract { kind, payload } = &error {
             let mut wire = payload.extra.clone();
             wire.insert("kind".to_string(), Value::String(kind.clone()));
@@ -406,34 +419,19 @@ impl From<ToolError> for CodeModeCallError {
                 "message".to_string(),
                 Value::String(payload.message.clone()),
             );
-            let refined = [
-                (
-                    "origin",
-                    payload
-                        .origin
-                        .and_then(|value| serde_json::to_value(value).ok()),
+            put(&mut wire, "origin", payload.origin);
+            put(&mut wire, "recovery", payload.recovery.as_ref());
+            put(&mut wire, "side_effects", payload.side_effects);
+            match serde_json::from_value::<Self>(Value::Object(wire)) {
+                Ok(restored) => return restored,
+                Err(error) => tracing::warn!(
+                    surface = "dispatch",
+                    service = "code_mode",
+                    action = "error.contract_restore",
+                    kind = %kind,
+                    error = %error,
+                    "Code Mode error contract did not round-trip; recovery metadata recomputed from its kind"
                 ),
-                (
-                    "recovery",
-                    payload
-                        .recovery
-                        .as_ref()
-                        .and_then(|value| serde_json::to_value(value).ok()),
-                ),
-                (
-                    "side_effects",
-                    payload
-                        .side_effects
-                        .and_then(|value| serde_json::to_value(value).ok()),
-                ),
-            ];
-            for (key, value) in refined {
-                if let Some(value) = value {
-                    wire.insert(key.to_string(), value);
-                }
-            }
-            if let Ok(restored) = serde_json::from_value::<Self>(Value::Object(wire)) {
-                return restored;
             }
         }
         Self::new(error.kind(), error.user_message())
@@ -481,6 +479,50 @@ fn recovery_for_kind(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contract_round_trip_preserves_every_extra_field() {
+        let original = CodeModeCallError::tool_execution(
+            "alpha::write",
+            "rate_limited",
+            Some("upstream_error".to_string()),
+            "Exit code 7",
+            CodeModeErrorEvidence {
+                content: vec![serde_json::json!({"type":"text","text":"Exit code 7"})],
+                ..CodeModeErrorEvidence::default()
+            },
+            CodeModeToolSafetyHints {
+                read_only_hint: Some(false),
+                destructive_hint: Some(true),
+                idempotent_hint: Some(false),
+                open_world_hint: Some(true),
+            },
+            Some(1500),
+        )
+        .with_origin(CodeModeErrorOrigin::UpstreamTransport);
+        let restored = CodeModeCallError::from(original.clone().into_contract_tool_error());
+
+        assert_eq!(
+            serde_json::to_value(&restored).unwrap(),
+            serde_json::to_value(&original).unwrap()
+        );
+        assert_eq!(restored.recovery.retry_after_ms, Some(1500));
+        assert!(restored.evidence.is_some() && restored.cause.is_some());
+    }
+
+    #[test]
+    fn undeserializable_contract_falls_back_to_kind_and_message() {
+        let mut extra = Map::new();
+        extra.insert(
+            "safety".to_string(),
+            Value::String("not an object".to_string()),
+        );
+        let error = ToolError::contract("not_connected", "upstream down", extra, None, None, None);
+        let restored = CodeModeCallError::from(error);
+
+        assert_eq!(restored.kind(), "not_connected");
+        assert_eq!(restored.user_message(), "upstream down");
+    }
 
     #[test]
     fn contract_tool_error_round_trips_refined_metadata() {

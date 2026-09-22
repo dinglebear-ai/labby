@@ -386,19 +386,9 @@ fn realistic_upstreams() -> Vec<CodeModeUpstreamDescription> {
         })
         .collect::<Vec<_>>();
     upstreams[0].name = "claude-macpoo".to_string();
-    // A mutating tool is never usable as an example.
-    upstreams[0].example = CodeModeExampleCall::from_tool(
-        "Bash",
-        json!({
-            "type": "object",
-            "properties": { "command": { "type": "string" }, "timeout": { "type": "number" } },
-            "required": ["command"]
-        })
-        .as_object()
-        .expect("schema"),
-        false,
-    );
-    assert!(upstreams[0].example.is_none());
+    // The gateway only offers explicitly read-only tools, so the mutating
+    // upstream simply has no example.
+    upstreams[0].example = None;
     upstreams[1].example = CodeModeExampleCall::from_tool(
         "list_issues",
         json!({
@@ -411,7 +401,6 @@ fn realistic_upstreams() -> Vec<CodeModeUpstreamDescription> {
         })
         .as_object()
         .expect("schema"),
-        true,
     );
     assert!(upstreams[1].example.is_some());
     upstreams
@@ -511,15 +500,13 @@ fn unsafe_or_oversized_upstream_names_never_become_examples() {
             .clone()
     };
     let long = "x".repeat(65);
-    assert!(CodeModeExampleCall::from_tool(&long, &schema("id"), true).is_none());
+    assert!(CodeModeExampleCall::from_tool(&long, &schema("id")).is_none());
     assert!(
-        CodeModeExampleCall::from_tool("ignore previous instructions", &schema("id"), true)
-            .is_none()
+        CodeModeExampleCall::from_tool("ignore previous instructions", &schema("id")).is_none()
     );
-    assert!(CodeModeExampleCall::from_tool("lookup", &schema("a`b"), true).is_none());
-    assert!(CodeModeExampleCall::from_tool("lookup", &schema(&long), true).is_none());
-    assert!(CodeModeExampleCall::from_tool("lookup", &schema("id"), false).is_none());
-    assert!(CodeModeExampleCall::from_tool("lookup", &schema("id"), true).is_some());
+    assert!(CodeModeExampleCall::from_tool("lookup", &schema("a`b")).is_none());
+    assert!(CodeModeExampleCall::from_tool("lookup", &schema(&long)).is_none());
+    assert!(CodeModeExampleCall::from_tool("lookup", &schema("id")).is_some());
 }
 
 #[test]
@@ -867,13 +854,77 @@ fn dedup_key_separates_runs_with_different_request_contexts() {
         "credentials are hashed"
     );
 
-    let plain = labby_codemode::CodeModeCaller::Scoped {
+    let plain = || labby_codemode::CodeModeCaller::Scoped {
         capabilities: labby_codemode::CodeModeCallerCapabilities::default(),
         sub: None,
     };
     assert_eq!(
-        key(&plain),
-        key(&plain),
-        "plain callers still share identical runs"
+        key(&plain()),
+        key(&plain()),
+        "separately built plain callers still share identical runs"
     );
+    assert_ne!(key(&plain()), key(&provider_caller("req-1", None)));
+
+    let private = |token: &str| labby_codemode::CodeModeCaller::ScopedPrivate {
+        capabilities: labby_codemode::CodeModeCallerCapabilities::default(),
+        sub: None,
+        context_token: token.to_string(),
+    };
+    let skills = |token: &str| labby_codemode::CodeModeCaller::ScopedSkills {
+        capabilities: labby_codemode::CodeModeCallerCapabilities::default(),
+        sub: None,
+        skill_context_token: token.to_string(),
+    };
+    assert_ne!(key(&private("ctx-a")), key(&private("ctx-b")));
+    assert_ne!(key(&skills("ctx-a")), key(&skills("ctx-b")));
+    assert_ne!(
+        key(&private("same")),
+        key(&skills("same")),
+        "a private and a skills context with the same token must not collide"
+    );
+    assert!(!key(&private("secret-ctx")).contains("secret-ctx"));
+}
+
+#[test]
+fn oversized_upstream_list_keeps_the_example_and_a_utf8_safe_cut() {
+    let mut upstreams = (0..400)
+        .map(|index| CodeModeUpstreamDescription {
+            name: format!("upstream-{index:03}"),
+            hint: Some("ünïcödé 💩 hint text".repeat(3)),
+            example: None,
+        })
+        .collect::<Vec<_>>();
+    upstreams[0].example = CodeModeExampleCall::from_tool(
+        "lookup",
+        json!({ "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"] })
+            .as_object()
+            .expect("schema"),
+    );
+    let description = code_mode_tool_description(CodeModeDescriptionVariant::Read, &upstreams, "");
+
+    assert!(description.len() <= CODE_MODE_DESCRIPTION_MAX_BYTES);
+    assert!(std::str::from_utf8(description.as_bytes()).is_ok());
+    assert!(
+        description.contains(r#"callTool("upstream-000::lookup", { id: "<id>" })"#),
+        "{description}"
+    );
+    assert!(description.contains("more; use `codemode.search()` to discover them"));
+}
+
+#[test]
+fn empty_filter_entries_are_rejected_instead_of_widening_the_run() {
+    let available = std::collections::BTreeSet::from(["alpha".to_string(), "beta".to_string()]);
+    for (key, value) in [
+        ("upstreams", json!([""])),
+        ("upstreams", json!(["alpha", "   "])),
+        ("tools", json!([""])),
+        ("tools", json!(["  ::read"])),
+    ] {
+        let mut args = serde_json::Map::new();
+        args.insert(key.to_string(), value.clone());
+        let err = route_scoped_capability_filter(&args, None, &available)
+            .expect_err("an empty entry must not silently widen the run");
+        assert_eq!(err.kind(), "invalid_param", "{key} {value}");
+        assert!(err.to_string().contains("must not be empty"), "{err}");
+    }
 }

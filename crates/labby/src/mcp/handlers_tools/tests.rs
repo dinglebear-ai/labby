@@ -7036,3 +7036,39 @@ async fn codemode_descriptors_match_between_tools_list_and_contract_with_example
         assert!(!from_list.contains("claude-macpoo::Bash"), "{from_list}");
     }
 }
+
+#[tokio::test]
+async fn codemode_call_to_disabled_upstream_reports_unavailable() {
+    let mut disabled = fixture_upstream_config("claude-macpoo");
+    disabled.enabled = false;
+    // Only the disabled upstream: an enabled-but-unreachable one would fail
+    // the catalog refresh before the call under test runs.
+    let manager = code_mode_manager_with_test_runner(
+        true,
+        vec![disabled],
+        Some(Arc::new(UpstreamPool::new())),
+    )
+    .await;
+    let server = test_server(
+        completion_test_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let text = run_code(
+        &running,
+        CODE_MODE_TOOL_NAME,
+        "lab",
+        "async () => { try { await callTool('claude_macpoo::Bash', {}); return 'ok'; } \
+         catch (e) { return String(e && e.message || e); } }",
+    )
+    .await;
+
+    assert!(text.contains("unavailable"), "{text}");
+    assert!(text.contains("configured but disabled"), "{text}");
+}

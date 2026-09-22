@@ -3273,6 +3273,32 @@ async fn canonical_code_mode_upstream_ignores_out_of_scope_alias_siblings() {
 }
 
 #[tokio::test]
+async fn canonical_code_mode_upstream_explains_priority_zero_in_scope_upstreams() {
+    // A non-positive priority disables routing without removing the upstream,
+    // so an in-scope caller must be told that, not "not found".
+    let mut suppressed = fixture_http_upstream("claude-macpoo");
+    suppressed.priority = 0.0;
+    let (manager, _pool) =
+        code_mode_manager_with_upstreams(vec![suppressed, fixture_http_upstream("github")]).await;
+
+    let err = manager
+        .canonical_code_mode_upstream("claude_macpoo", &ToolScope::default())
+        .await
+        .expect_err("priority-0 upstream cannot be called");
+    assert_eq!(err.kind(), "unavailable");
+    assert!(err.to_string().contains("configured but disabled"), "{err}");
+
+    // Out of scope it stays indistinguishable from a name that does not exist.
+    let scope = ToolScope::scoped_namespaces(vec!["github".to_string()], Vec::new());
+    let hidden = manager
+        .canonical_code_mode_upstream("claude_macpoo", &scope)
+        .await
+        .expect_err("out of scope");
+    assert_eq!(hidden.kind(), "unknown_upstream");
+    assert!(!hidden.to_string().contains("disabled"), "{hidden}");
+}
+
+#[tokio::test]
 async fn canonical_code_mode_upstream_explains_disabled_in_scope_upstreams() {
     let mut disabled = fixture_http_upstream("claude-macpoo");
     disabled.enabled = false;
@@ -3329,7 +3355,7 @@ fn names(values: &[&str]) -> std::collections::BTreeSet<String> {
 }
 
 #[tokio::test]
-async fn code_mode_example_tool_is_sticky_but_drops_vanished_tools() {
+async fn code_mode_example_tool_is_sticky_but_drops_tools_no_longer_read_only() {
     let (manager, pool) = code_mode_manager_with_pool(fixture_http_upstream("claude-macpoo")).await;
     let upstreams = names(&["claude-macpoo"]);
     pool.insert_entry_for_tests(
@@ -3341,7 +3367,7 @@ async fn code_mode_example_tool_is_sticky_but_drops_vanished_tools() {
         .code_mode_example_tool(&upstreams)
         .await
         .expect("example");
-    assert_eq!(first.tool, "Read");
+    assert_eq!(first.tool(), "Read");
 
     // A reconnect that adds a smaller-named tool must not change the example:
     // descriptors feed the contract hash and tools/list cursors.
@@ -3354,7 +3380,7 @@ async fn code_mode_example_tool_is_sticky_but_drops_vanished_tools() {
         .code_mode_example_tool(&upstreams)
         .await
         .expect("example");
-    assert_eq!(sticky.tool, "Read");
+    assert_eq!(sticky.tool(), "Read");
 
     // A healthy upstream that no longer has the tool as read-only drops it.
     pool.insert_entry_for_tests(
@@ -3366,7 +3392,7 @@ async fn code_mode_example_tool_is_sticky_but_drops_vanished_tools() {
         .code_mode_example_tool(&upstreams)
         .await
         .expect("example");
-    assert_eq!(replaced.tool, "Glob");
+    assert_eq!(replaced.tool(), "Glob");
 }
 
 #[tokio::test]
@@ -3387,10 +3413,7 @@ async fn code_mode_example_tool_only_uses_read_only_tools_and_skips_cold_upstrea
         .code_mode_example_tool(&names(&["alpha", "beta", "gamma"]))
         .await
         .expect("gamma has a read-only tool");
-    assert_eq!(
-        (upstream.as_str(), example.tool.as_str()),
-        ("gamma", "lookup")
-    );
+    assert_eq!((upstream.as_str(), example.tool()), ("gamma", "lookup"));
     assert!(
         manager
             .code_mode_example_tool(&names(&["alpha", "beta"]))
@@ -3414,7 +3437,8 @@ async fn code_mode_example_tool_resets_when_the_config_generation_changes() {
             .await
             .expect("example")
             .1
-            .tool,
+            .tool()
+            .to_string(),
         "Read"
     );
 
@@ -3430,7 +3454,8 @@ async fn code_mode_example_tool_resets_when_the_config_generation_changes() {
             .await
             .expect("example")
             .1
-            .tool,
+            .tool()
+            .to_string(),
         "Glob"
     );
 }
@@ -3467,5 +3492,46 @@ async fn code_mode_host_reports_disconnected_upstream_as_not_connected() {
     assert!(!message.contains("was not found"), "{message}");
     let value = serde_json::to_value(&err).expect("serialize");
     assert_eq!(value["side_effects"], "none_expected", "{value}");
-    assert_ne!(value["recovery"]["action"], "rediscover", "{value}");
+    assert_eq!(value["recovery"]["action"], "retry_later", "{value}");
+    assert_eq!(value["recovery"]["same_arguments"], "safe", "{value}");
+    let guidance = value["recovery"]["guidance"].as_str().unwrap_or_default();
+    assert!(guidance.contains("Nothing was sent"), "{value}");
+    assert!(
+        !guidance.contains("partial effects"),
+        "must not contradict side_effects: {value}"
+    );
+}
+
+#[tokio::test]
+async fn code_mode_example_upstream_does_not_move_when_an_earlier_one_connects() {
+    let (manager, pool) = code_mode_manager_with_upstreams(vec![
+        fixture_http_upstream("alpha"),
+        fixture_http_upstream("gamma"),
+    ])
+    .await;
+    let upstreams = names(&["alpha", "gamma"]);
+    pool.insert_entry_for_tests("gamma", example_entry("gamma", &[("lookup", true)]))
+        .await;
+    let (first, _) = manager
+        .code_mode_example_tool(&upstreams)
+        .await
+        .expect("example");
+    assert_eq!(first, "gamma");
+
+    // `alpha` sorts first but connects later; the example must stay on
+    // `gamma`, or every connect would republish the descriptor contract.
+    pool.insert_entry_for_tests("alpha", example_entry("alpha", &[("read", true)]))
+        .await;
+    let (after, _) = manager
+        .code_mode_example_tool(&upstreams)
+        .await
+        .expect("example");
+    assert_eq!(after, "gamma");
+
+    // A caller that cannot see `gamma` still gets its own stable example.
+    let (scoped, _) = manager
+        .code_mode_example_tool(&names(&["alpha"]))
+        .await
+        .expect("example");
+    assert_eq!(scoped, "alpha");
 }
