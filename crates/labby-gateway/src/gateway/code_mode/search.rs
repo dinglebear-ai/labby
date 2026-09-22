@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use labby_codemode::snippet::store::{SnippetInfo, builtin_snippet_dir, list_snippets};
 use labby_codemode::{
     CatalogDescriptor, CodeModeCaller, CodeModeSurface, CodeModeToolSafety, ToolScope, ToolsRender,
+    WithheldTools,
 };
 use sha2::{Digest, Sha256};
 
@@ -114,6 +115,7 @@ fn render_from_cached_catalog(
         entries,
         catalog_json,
         serialized_size,
+        withheld: std::sync::Arc::from([]),
     }
 }
 
@@ -150,24 +152,54 @@ pub(crate) async fn build_tools_render(
     let metadata_entries = manager
         .code_mode_metadata_entries(caller, surface, scope)
         .await;
-    catalog_from_tools(
-        manager,
-        filter_tools_for_access(raw_tools, scope),
-        include_snippets,
-        metadata_entries,
-    )
-    .await
+    let (tools, withheld) = partition_tools_for_access(raw_tools, scope);
+    let mut render = catalog_from_tools(manager, tools, include_snippets, metadata_entries).await?;
+    render.withheld = withheld.into();
+    Ok(render)
 }
 
-fn filter_tools_for_access(tools: Vec<UpstreamTool>, scope: &ToolScope) -> Vec<UpstreamTool> {
-    tools
+/// Split the scope-allowed tools into those this execution may see and a
+/// per-upstream count of those a read-only run withholds for lacking an
+/// explicit read-only annotation. Discovery reports the withheld counts so an
+/// agent learns why a namespace is missing instead of seeing no results.
+fn partition_tools_for_access(
+    tools: Vec<UpstreamTool>,
+    scope: &ToolScope,
+) -> (Vec<UpstreamTool>, Vec<WithheldTools>) {
+    let mut withheld = std::collections::BTreeMap::<std::sync::Arc<str>, usize>::new();
+    let kept = tools
         .into_iter()
         .filter(|tool| {
-            scope.allows(tool.upstream_name.as_ref(), tool.tool.name.as_ref())
-                && (!scope.is_read_only()
-                    || super::code_mode_host::tool_is_explicitly_read_only(tool))
+            if !scope.allows(tool.upstream_name.as_ref(), tool.tool.name.as_ref()) {
+                return false;
+            }
+            if scope.is_read_only() && !super::code_mode_host::tool_is_explicitly_read_only(tool) {
+                *withheld
+                    .entry(std::sync::Arc::clone(&tool.upstream_name))
+                    .or_default() += 1;
+                return false;
+            }
+            true
         })
-        .collect()
+        .collect();
+    let withheld = withheld
+        .into_iter()
+        .map(|(namespace, tool_count)| WithheldTools {
+            namespace: namespace.to_string(),
+            tool_count,
+        })
+        .collect();
+    (kept, withheld)
+}
+
+#[cfg(test)]
+fn filter_tools_for_access(tools: Vec<UpstreamTool>, scope: &ToolScope) -> Vec<UpstreamTool> {
+    partition_tools_for_access(tools, scope).0
+}
+
+#[cfg(test)]
+fn withheld_by_access(tools: &[UpstreamTool], scope: &ToolScope) -> Vec<WithheldTools> {
+    partition_tools_for_access(tools.to_vec(), scope).1
 }
 
 pub(super) async fn catalog_from_tools(
@@ -340,6 +372,7 @@ pub(super) async fn catalog_from_tools(
         entries,
         catalog_json,
         serialized_size,
+        withheld: std::sync::Arc::from([]),
     })
 }
 
@@ -894,6 +927,53 @@ mod tests {
         assert!(super::super::code_mode_host::tool_is_explicitly_read_only(
             &filtered[0]
         ));
+    }
+
+    #[test]
+    fn read_only_scope_reports_withheld_tools_per_upstream() {
+        let make = |upstream: &str, name: &str, read_only: bool| {
+            let mut tool = rmcp::model::Tool::new(
+                name.to_string(),
+                "fixture tool",
+                Arc::new(serde_json::Map::new()),
+            );
+            if read_only {
+                tool.annotations = Some(rmcp::model::ToolAnnotations::new().read_only(true));
+            }
+            UpstreamTool {
+                tool,
+                input_schema: None,
+                output_schema: None,
+                upstream_name: Arc::from(upstream),
+                destructive: false,
+            }
+        };
+        let tools = vec![
+            make("claude-macpoo", "Bash", false),
+            make("claude-macpoo", "Read", false),
+            make("annotated", "lookup", true),
+            make("annotated", "mutate", false),
+            make("out-of-scope", "Bash", false),
+        ];
+        let scope = ToolScope::new(
+            vec!["claude-macpoo".to_string(), "annotated".to_string()],
+            Vec::new(),
+        );
+
+        assert!(withheld_by_access(&tools, &scope).is_empty());
+        assert_eq!(
+            withheld_by_access(&tools, &scope.read_only()),
+            vec![
+                WithheldTools {
+                    namespace: "annotated".to_string(),
+                    tool_count: 1,
+                },
+                WithheldTools {
+                    namespace: "claude-macpoo".to_string(),
+                    tool_count: 2,
+                },
+            ]
+        );
     }
 
     #[test]

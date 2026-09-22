@@ -686,8 +686,8 @@ impl LabMcpServer {
         let snapshot_audience = catalog_snapshot_audience(auth);
 
         // Cursor pages must resume the exact catalog captured by page one. In
-        // particular, do not turn every offset into another fleet-wide
-        // resources/list fan-out.
+        // particular, do not turn every offset into another catalog rebuild
+        // (discovery warm-up plus the OAuth subject-scoped fan-out).
         if let Some(revision) = page_collector.expected_revision().map(str::to_owned) {
             let snapshot = self
                 .route_runtime
@@ -999,7 +999,7 @@ impl LabMcpServer {
             }
             if !resources.finished() {
                 for listed in pool
-                    .list_upstream_resources_with_provenance_allowed(
+                    .cached_upstream_resources_with_provenance_allowed(
                         self.route_scope.allowed_upstreams(),
                     )
                     .await
@@ -1147,7 +1147,7 @@ impl LabMcpServer {
             action = "list_resources",
             subject,
             elapsed_ms,
-            catalog_source = "live_snapshot",
+            catalog_source = "cached_snapshot",
             catalog_resource_count,
             page_resource_count = resources.len(),
             has_next_cursor = next_cursor.is_some(),
@@ -2840,6 +2840,9 @@ mod tests {
         entered: Option<Arc<tokio::sync::Notify>>,
         release: Option<Arc<tokio::sync::Notify>>,
         fail_connect: bool,
+        /// When set, every resources/list blocks until a permit is added.
+        resource_gate: Option<Arc<tokio::sync::Semaphore>>,
+        resource_lists: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     impl ServerHandler for ColdResourceServer {
@@ -2889,6 +2892,11 @@ mod tests {
             _: Option<PaginatedRequestParams>,
             _: RequestContext<RoleServer>,
         ) -> Result<ListResourcesResult, ErrorData> {
+            self.resource_lists
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if let Some(gate) = &self.resource_gate {
+                gate.acquire().await.expect("open fixture gate").forget();
+            }
             Ok(ListResourcesResult::with_all_items(vec![
                 Resource::new("qa-vm-service://skill", "skill"),
                 Resource::new("qa-vm-service://private", "private"),
@@ -2972,6 +2980,56 @@ mod tests {
             1
         );
         assert_eq!(pool.list_upstream_resources().await.len(), 2);
+        task.abort();
+    }
+
+    /// A blocked resources/list must not hold the listing past its warm
+    /// budget, and the warm-up it started must still publish once the
+    /// upstream answers: the deadline stops the wait, never the fan-out.
+    #[tokio::test]
+    async fn cold_discovery_serves_the_snapshot_once_a_slow_warm_up_completes() {
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let fixture = ColdResourceServer {
+            resource_gate: Some(Arc::clone(&gate)),
+            ..Default::default()
+        };
+        let (server, pool, task) = cold_discovery_fixture(fixture.clone(), 300).await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            server.ensure_resource_upstreams_ready(&pool),
+        )
+        .await
+        .expect("discovery returns within its budget while resources/list blocks");
+        assert!(
+            pool.cached_upstream_resources_allowed(None)
+                .await
+                .is_empty(),
+            "nothing is listable before the upstream answers"
+        );
+        let blocked = fixture
+            .resource_lists
+            .load(std::sync::atomic::Ordering::SeqCst);
+        assert!(blocked >= 1, "the warm-up issued resources/list");
+
+        gate.add_permits(16);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if pool.cached_upstream_resources_allowed(None).await.len() == 2 {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the detached warm-up publishes the snapshot after release");
+
+        server.ensure_resource_upstreams_ready(&pool).await;
+        assert_eq!(
+            fixture.connects.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "no reconnect was needed"
+        );
+        assert_eq!(pool.cached_upstream_resources_allowed(None).await.len(), 2);
         task.abort();
     }
 
@@ -3905,6 +3963,21 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
                 .iter()
                 .any(|tool| tool.name.as_ref() == UPSTREAM_UI_TOOL_NAME),
             "upstream MCP App tools must pass through synthetic Code Mode"
+        );
+
+        let pool = running
+            .service()
+            .current_upstream_pool()
+            .await
+            .expect("upstream pool");
+        let cached = pool
+            .cached_upstream_resources_with_provenance_allowed(None)
+            .await;
+        assert!(
+            cached
+                .iter()
+                .any(|listed| listed.native_uri == UPSTREAM_UI_URI),
+            "upstream MCP UI resource must be present in the regular resource cache: {cached:?}"
         );
 
         let resources = running

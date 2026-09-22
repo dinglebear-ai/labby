@@ -705,7 +705,8 @@ impl UpstreamPool {
 
     async fn refresh_resource_cache_for_upstream(&self, upstream_name: &str) {
         let allowed = BTreeSet::from([upstream_name.to_string()]);
-        self.list_upstream_resources_allowed(Some(&allowed)).await;
+        self.refresh_resource_snapshots_allowed(Some(&allowed))
+            .await;
     }
 
     /// Refresh one upstream's cached prompt listing after a lazy connect.

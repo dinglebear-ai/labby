@@ -393,7 +393,49 @@ Upstream transport error:
 }
 
 impl From<ToolError> for CodeModeCallError {
+    /// A [`ToolError::Contract`] (from [`CodeModeCallError::into_contract_tool_error`])
+    /// round-trips losslessly: its refined `origin`/`recovery`/`side_effects`
+    /// and extras (`tool`, `cause`, `safety`, `evidence`, ...) are restored
+    /// rather than recomputed from the kind. Every other variant is rebuilt
+    /// from its kind.
     fn from(error: ToolError) -> Self {
+        if let ToolError::Contract { kind, payload } = &error {
+            let mut wire = payload.extra.clone();
+            wire.insert("kind".to_string(), Value::String(kind.clone()));
+            wire.insert(
+                "message".to_string(),
+                Value::String(payload.message.clone()),
+            );
+            let refined = [
+                (
+                    "origin",
+                    payload
+                        .origin
+                        .and_then(|value| serde_json::to_value(value).ok()),
+                ),
+                (
+                    "recovery",
+                    payload
+                        .recovery
+                        .as_ref()
+                        .and_then(|value| serde_json::to_value(value).ok()),
+                ),
+                (
+                    "side_effects",
+                    payload
+                        .side_effects
+                        .and_then(|value| serde_json::to_value(value).ok()),
+                ),
+            ];
+            for (key, value) in refined {
+                if let Some(value) = value {
+                    wire.insert(key.to_string(), value);
+                }
+            }
+            if let Ok(restored) = serde_json::from_value::<Self>(Value::Object(wire)) {
+                return restored;
+            }
+        }
         Self::new(error.kind(), error.user_message())
     }
 }
@@ -439,6 +481,20 @@ fn recovery_for_kind(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contract_tool_error_round_trips_refined_metadata() {
+        let original = CodeModeCallError::new("not_connected", "upstream down")
+            .with_tool("alpha::read".to_string())
+            .with_side_effects(CodeModeSideEffectRisk::NoneExpected);
+        let restored = CodeModeCallError::from(original.clone().into_contract_tool_error());
+
+        assert_eq!(restored.kind(), "not_connected");
+        assert_eq!(
+            serde_json::to_value(&restored).unwrap(),
+            serde_json::to_value(&original).unwrap()
+        );
+    }
 
     #[test]
     fn tool_execution_error_is_actionable_and_preserves_evidence() {

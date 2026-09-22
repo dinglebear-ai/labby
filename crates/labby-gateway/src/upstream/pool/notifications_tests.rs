@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use rmcp::model::{
@@ -24,22 +24,33 @@ const NATIVE_RESOURCE_URI: &str = "file:///tmp/subscription-resource";
 #[derive(Clone)]
 struct SubscriptionServer {
     attempts: Arc<AtomicUsize>,
+    listening: Arc<AtomicBool>,
     failures_before_accept: usize,
     listen_failures_before_stable: usize,
     acceptance_delay: Duration,
     tools: Arc<tokio::sync::RwLock<Vec<rmcp::model::Tool>>>,
     tool_change: Arc<tokio::sync::Notify>,
+    resources: Arc<tokio::sync::RwLock<Vec<Resource>>>,
+    resource_change: Arc<tokio::sync::Notify>,
+    fail_list_resources: Arc<AtomicBool>,
 }
 
 impl SubscriptionServer {
     fn accepting() -> Self {
         Self {
             attempts: Arc::new(AtomicUsize::new(0)),
+            listening: Arc::new(AtomicBool::new(false)),
             failures_before_accept: 0,
             listen_failures_before_stable: 0,
             acceptance_delay: Duration::ZERO,
             tools: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             tool_change: Arc::new(tokio::sync::Notify::new()),
+            resources: Arc::new(tokio::sync::RwLock::new(vec![Resource::new(
+                NATIVE_RESOURCE_URI,
+                "subscription-resource",
+            )])),
+            resource_change: Arc::new(tokio::sync::Notify::new()),
+            fail_list_resources: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -63,6 +74,14 @@ impl SubscriptionServer {
             .map(|name| super::testsupport::test_tool(name))
             .collect();
         self.tool_change.notify_one();
+    }
+
+    async fn replace_resources_and_notify(&self, uris: &[&str]) {
+        *self.resources.write().await = uris
+            .iter()
+            .map(|uri| Resource::new((*uri).to_string(), (*uri).to_string()))
+            .collect();
+        self.resource_change.notify_one();
     }
 }
 
@@ -94,10 +113,12 @@ impl ServerHandler for SubscriptionServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
-        Ok(ListResourcesResult::with_all_items(vec![Resource::new(
-            NATIVE_RESOURCE_URI,
-            "subscription-resource",
-        )]))
+        if self.fail_list_resources.load(Ordering::SeqCst) {
+            return Err(ErrorData::internal_error("fixture listing failure", None));
+        }
+        Ok(ListResourcesResult::with_all_items(
+            self.resources.read().await.clone(),
+        ))
     }
 
     fn accepted_subscription_filter(
@@ -121,6 +142,7 @@ impl ServerHandler for SubscriptionServer {
                 None,
             ));
         }
+        self.listening.store(true, Ordering::SeqCst);
         loop {
             tokio::select! {
                 () = context.cancelled() => return Ok(()),
@@ -131,9 +153,29 @@ impl ServerHandler for SubscriptionServer {
                         .await
                         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
                 }
+                () = self.resource_change.notified() => {
+                    context
+                        .sink()
+                        .notify_resource_list_changed()
+                        .await
+                        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+                }
             }
         }
     }
+}
+
+/// Wait for the fixture's subscriptions/listen handler to be active. The
+/// handshake crosses a duplex transport, so a yield count is not a bound; a
+/// wall-clock deadline is.
+async fn wait_until_listening(server: &SubscriptionServer) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !server.listening.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("subscription listener must be active before emitting list-changed");
 }
 
 async fn add_subscription_server(pool: &UpstreamPool, upstream: &str, server: SubscriptionServer) {
@@ -462,6 +504,7 @@ async fn tool_change_consumer_refreshes_the_exact_named_catalog() {
     let server = SubscriptionServer::accepting();
     add_subscription_server(&pool, "leaf", server.clone()).await;
     pool.refresh_upstream_subscription("leaf").await;
+    wait_until_listening(&server).await;
     let mut notifications = pool.subscribe_notifications();
 
     server
@@ -490,4 +533,66 @@ async fn tool_change_consumer_refreshes_the_exact_named_catalog() {
         .map(|tool| tool.tool.name.to_string())
         .collect::<Vec<_>>();
     assert_eq!(tool_names, ["added_after_list_changed"]);
+}
+
+#[tokio::test]
+async fn resource_change_consumer_refreshes_the_exact_named_catalog()
+-> Result<(), Box<dyn std::error::Error>> {
+    let pool = UpstreamPool::new();
+    let server = SubscriptionServer::accepting();
+    add_subscription_server(&pool, "leaf", server.clone()).await;
+    // The initial resource listing schedules the subscription refresh itself.
+    // Starting another generation here would cancel the one under test.
+    pool.list_upstream_resources().await;
+    wait_until_listening(&server).await;
+    let mut notifications = pool.subscribe_notifications();
+
+    server
+        .replace_resources_and_notify(&["file:///tmp/added-after-list-changed"])
+        .await;
+
+    let event = tokio::time::timeout(Duration::from_secs(2), notifications.recv())
+        .await
+        .expect("resource-list event arrives")
+        .expect("notification channel stays open");
+    let super::UpstreamNotificationEvent::ResourceListChanged { upstream } = event else {
+        return Err("expected resource-list event".into());
+    };
+    assert!(pool.refresh_resources_after_list_changed(&upstream).await);
+    let resources = pool.cached_upstream_resources_allowed(None).await;
+    assert_eq!(resources.len(), 1);
+    assert_eq!(resources[0].1.uri, "file:///tmp/added-after-list-changed");
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_list_changed_refresh_withholds_rows_until_the_next_warm_up() {
+    let pool = Arc::new(UpstreamPool::new());
+    let server = SubscriptionServer::accepting();
+    add_subscription_server(&pool, "leaf", server.clone()).await;
+    pool.list_upstream_resources().await;
+    assert_eq!(pool.cached_upstream_resources_allowed(None).await.len(), 1);
+
+    server.fail_list_resources.store(true, Ordering::SeqCst);
+    assert!(
+        !pool.refresh_resources_after_list_changed("leaf").await,
+        "a failed re-list reports false"
+    );
+    assert!(
+        pool.cached_upstream_resources_allowed(None)
+            .await
+            .is_empty(),
+        "stale rows are withheld rather than served after a failed re-list"
+    );
+    let cold = pool.cold_resource_snapshots(None).await;
+    assert_eq!(
+        cold.missing,
+        std::collections::BTreeSet::from(["leaf".to_string()]),
+        "the next discovery warm-up retries the upstream"
+    );
+
+    server.fail_list_resources.store(false, Ordering::SeqCst);
+    pool.warm_cold_resource_snapshots_allowed(None).await;
+    assert_eq!(pool.cached_upstream_resources_allowed(None).await.len(), 1);
+    assert!(pool.refresh_resources_after_list_changed("leaf").await);
 }

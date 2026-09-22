@@ -1471,6 +1471,37 @@ if authenticated_action; then exit 93; fi
         ):
             self.assertIn("shopt -s nullglob", release_steps[name]["run"], name)
 
+    def test_preflight_version_extraction_tolerates_release_please_marker(self) -> None:
+        # release-please annotates the desktop version line with a trailing
+        # "# x-release-please-version" comment, which the test below requires.
+        # The preflight's sed had no trailing ".*", so the substitution left the
+        # comment glued to the captured version and every tag after #646 failed
+        # with "desktop cargo version 1.21.0 # x-release-please-version != 1.21.0".
+        workflow = self.text(".github/workflows/release.yml")
+        extractions = [
+            line.strip()
+            for line in workflow.splitlines()
+            if "sed -n" in line and 's/^version = "' in line
+        ]
+        self.assertEqual(2, len(extractions), extractions)
+        for extraction in extractions:
+            self.assertIn(r'\)".*/\1/p', extraction, extraction)
+        # The published sed must return a bare version with and without the marker.
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = Path(tmp) / "Cargo.toml"
+            for line, expected in (
+                ('version = "1.21.0" # x-release-please-version', "1.21.0"),
+                ('version = "2.0.0"', "2.0.0"),
+            ):
+                manifest.write_text(line + "\n", encoding="utf-8")
+                result = subprocess.run(
+                    ["sed", "-n", r's/^version = "\([^"]*\)".*/\1/p', str(manifest)],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertEqual(expected, result.stdout.strip(), line)
+
     def test_version_sync_gate_covers_desktop_manifests(self) -> None:
         # The desktop shell follows the root workspace release, but nothing on
         # main compared its three manifests to Cargo.toml: they sat at 1.18.2

@@ -12,6 +12,28 @@ use labby_runtime::error::ToolError;
 
 use super::GatewayManager;
 
+/// A real, explicitly read-only upstream tool that Code Mode descriptions
+/// render as their example call.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CodeModeExampleTool {
+    pub tool: String,
+    pub input_schema: std::sync::Arc<serde_json::Map<String, serde_json::Value>>,
+}
+
+/// Remembered example per upstream, valid for one runtime config generation.
+///
+/// Tool descriptors feed the MCP contract hash and `tools/list` cursors, so an
+/// example must not flap with upstream health: once chosen it is kept until the
+/// config changes (which resets the memo) or a *healthy* upstream shows the tool
+/// is gone or no longer read-only.
+#[derive(Debug, Default)]
+pub(super) struct CodeModeExampleMemo {
+    generation: u64,
+    entries: std::collections::BTreeMap<String, CodeModeExampleTool>,
+}
+
+pub(super) type SharedCodeModeExampleMemo = std::sync::Arc<std::sync::Mutex<CodeModeExampleMemo>>;
+
 async fn routed_tools_for_upstream(
     pool: &crate::upstream::pool::UpstreamPool,
     config: &labby_runtime::gateway_config::UpstreamConfig,
@@ -89,6 +111,178 @@ impl GatewayManager {
         }
         matches.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(matches)
+    }
+
+    /// `(name, code_mode_hint)` for every enabled upstream, read under the
+    /// config lock without cloning the whole configuration.
+    pub async fn code_mode_enabled_upstream_hints(&self) -> Vec<(String, Option<String>)> {
+        self.config
+            .read()
+            .await
+            .upstream
+            .iter()
+            .filter(|upstream| upstream.enabled)
+            .map(|upstream| (upstream.name.clone(), upstream.code_mode_hint.clone()))
+            .collect()
+    }
+
+    /// The example tool for Code Mode descriptions: the first of `upstreams`
+    /// (in sorted order) with an explicitly read-only tool, as
+    /// `(upstream, tool)`.
+    ///
+    /// Only enabled, routable, non-OAuth upstreams qualify (OAuth catalogs are
+    /// per subject). Lookups stop at the first hit and never clone tool lists.
+    /// Upstreams with no live read-only tool yet are skipped and retried on
+    /// the next call, so an example appears once an upstream connects and then
+    /// stays put (see `CodeModeExampleMemo`).
+    pub async fn code_mode_example_tool(
+        &self,
+        upstreams: &BTreeSet<String>,
+    ) -> Option<(String, CodeModeExampleTool)> {
+        let candidates = {
+            let cfg = self.config.read().await;
+            cfg.upstream
+                .iter()
+                .filter(|upstream| {
+                    upstream.enabled
+                        && upstream.oauth.is_none()
+                        && is_routable(upstream.priority)
+                        && upstreams.contains(&upstream.name)
+                })
+                .map(|upstream| upstream.name.clone())
+                .collect::<BTreeSet<_>>()
+        };
+        let generation = self
+            .runtime_config_generation
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let pool = self.current_pool().await;
+        for name in candidates {
+            let remembered = {
+                let mut memo = self
+                    .code_mode_example_memo
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if memo.generation != generation {
+                    memo.generation = generation;
+                    memo.entries.clear();
+                }
+                memo.entries.get(&name).cloned()
+            };
+            let Some(pool) = pool.as_ref() else {
+                if let Some(example) = remembered {
+                    return Some((name, example));
+                }
+                continue;
+            };
+            if let Some(example) = remembered {
+                if pool
+                    .read_only_tool_still_present(&name, &example.tool)
+                    .await
+                    != Some(false)
+                {
+                    return Some((name, example));
+                }
+                tracing::debug!(
+                    surface = "dispatch",
+                    service = "gateway",
+                    action = "code_mode.example",
+                    upstream = %name,
+                    tool = %example.tool,
+                    "dropping Code Mode description example: tool gone or no longer read-only"
+                );
+            }
+            let Some((tool, input_schema)) = pool.read_only_example_tool(&name).await else {
+                tracing::debug!(
+                    surface = "dispatch",
+                    service = "gateway",
+                    action = "code_mode.example",
+                    upstream = %name,
+                    "no live read-only tool for a Code Mode description example"
+                );
+                continue;
+            };
+            let example = CodeModeExampleTool { tool, input_schema };
+            let mut memo = self
+                .code_mode_example_memo
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if memo.generation == generation {
+                memo.entries.insert(name.clone(), example.clone());
+            }
+            return Some((name, example));
+        }
+        None
+    }
+
+    /// Map a `callTool` namespace to the configured upstream it names.
+    ///
+    /// Discovery renders `claude-macpoo` as `claude_macpoo`, so agents send
+    /// either spelling; a unique case/separator alias resolves. Resolution only
+    /// considers upstreams the caller can use (enabled, routable, inside
+    /// `scope`), so neither a match nor an error ever names anything else. An
+    /// in-scope upstream that is disabled gets its own actionable message;
+    /// every other miss is `unknown_upstream` with guidance drawn from the
+    /// usable set.
+    pub async fn canonical_code_mode_upstream(
+        &self,
+        requested: &str,
+        scope: &labby_codemode::ToolScope,
+    ) -> Result<String, ToolError> {
+        let cfg = self.config.read().await;
+        let in_scope = |name: &str| {
+            scope
+                .allowed_namespaces()
+                .is_none_or(|allowed| allowed.contains(name))
+        };
+        let usable = cfg
+            .upstream
+            .iter()
+            .filter(|upstream| {
+                upstream.enabled && is_routable(upstream.priority) && in_scope(&upstream.name)
+            })
+            .map(|upstream| upstream.name.as_str())
+            .collect::<BTreeSet<_>>();
+        let shown = labby_codemode::display_name(requested);
+        match labby_codemode::resolve_namespace_alias(requested, usable.iter().copied()) {
+            labby_codemode::NamespaceResolution::Resolved(name) => Ok(name.to_string()),
+            labby_codemode::NamespaceResolution::Ambiguous(matches) => Err(ToolError::Sdk {
+                sdk_kind: "invalid_param".to_string(),
+                message: labby_codemode::ambiguous_namespace_message(requested, &matches),
+            }),
+            labby_codemode::NamespaceResolution::Unknown => {
+                let usable_names = usable
+                    .iter()
+                    .map(|name| (*name).to_string())
+                    .collect::<BTreeSet<_>>();
+                let disabled = cfg
+                    .upstream
+                    .iter()
+                    .filter(|upstream| {
+                        !upstream.enabled
+                            && is_routable(upstream.priority)
+                            && in_scope(&upstream.name)
+                    })
+                    .map(|upstream| upstream.name.as_str());
+                if let labby_codemode::NamespaceResolution::Resolved(name) =
+                    labby_codemode::resolve_namespace_alias(requested, disabled)
+                {
+                    return Err(ToolError::Sdk {
+                        sdk_kind: "unavailable".to_string(),
+                        message: format!(
+                            "Code Mode upstream `{name}` is configured but disabled, so its tools cannot be called. Ask the operator to enable it, or use another upstream. {}",
+                            labby_codemode::unknown_namespace_guidance(requested, &usable_names)
+                        ),
+                    });
+                }
+                Err(ToolError::Sdk {
+                    sdk_kind: "unknown_upstream".to_string(),
+                    message: format!(
+                        "Code Mode upstream `{shown}` is not available to this caller. {} Use codemode.search() to find a valid `upstream::tool` id.",
+                        labby_codemode::unknown_namespace_guidance(requested, &usable_names)
+                    ),
+                })
+            }
+        }
     }
 
     pub async fn resolve_code_mode_upstream_tool(
