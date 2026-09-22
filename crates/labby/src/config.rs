@@ -1620,7 +1620,11 @@ fn resolve_auth_with_env(
         );
     }
 
+    let mut root_vars: HashMap<String, String> = HashMap::new();
     for (key, value) in env_vars {
+        if matches!(key.as_str(), "LABBY_HOME" | "HOME" | "USERPROFILE") {
+            root_vars.insert(key.clone(), value.clone());
+        }
         if key.starts_with("LABBY_AUTH_")
             || key == "LABBY_PUBLIC_URL"
             || key.starts_with("LABBY_GOOGLE_")
@@ -1664,9 +1668,25 @@ fn resolve_auth_with_env(
             anyhow::bail!("LABBY_AUTH_ENABLE_DYNAMIC_REGISTRATION must be true, false, 1, or 0")
         }
     };
-    let resolved = auth_config::AuthConfigBuilder::new()
+    // The authorization store and signing key default into the same
+    // installation root as config.toml, .env, and access.db. Without this, an
+    // instance with an explicit LABBY_HOME silently shared `$HOME/.labby/auth.db`
+    // with the operator's primary installation.
+    let mut builder = auth_config::AuthConfigBuilder::new()
         .enable_dynamic_registration(dynamic_registration)
-        .env_prefix("LABBY")
+        .env_prefix("LABBY");
+    match crate::installation::InstallationPaths::resolve_with(|name| {
+        root_vars.get(name).map(std::ffi::OsString::from)
+    }) {
+        Ok(paths) => builder = builder.default_data_dir(paths.root()),
+        // No root variable at all: keep the auth crate's own default. Serving
+        // resolves the installation root first, so this is not reachable there.
+        Err(crate::installation::InstallationError::HomeUnavailable) => {}
+        Err(error) => {
+            return Err(anyhow::Error::from(error).context("invalid explicit LABBY_HOME"));
+        }
+    }
+    let resolved = builder
         .build_from_sources(merged)
         .map_err(anyhow::Error::from)?;
     if !resolved.viewer_email_domains.is_empty()
@@ -3663,6 +3683,97 @@ future = "keep"
             "unexpected error: {err:#}"
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
+    }
+
+    fn auth_store_env(
+        labby_home: Option<&Path>,
+        home: &Path,
+        extra: &[(&str, String)],
+    ) -> Vec<(String, String)> {
+        let mut env = vec![("HOME".to_string(), home.display().to_string())];
+        if let Some(root) = labby_home {
+            env.push(("LABBY_HOME".to_string(), root.display().to_string()));
+        }
+        env.extend(
+            extra
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), value.clone())),
+        );
+        env
+    }
+
+    fn canonical_root(path: &Path) -> PathBuf {
+        crate::installation::InstallationPaths::from_root(path)
+            .expect("test installation root")
+            .root()
+            .to_path_buf()
+    }
+
+    #[test]
+    fn resolve_auth_places_auth_store_under_explicit_labby_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let labby_home = dir.path().join("instance");
+        let user_home = dir.path().join("user");
+
+        let resolved =
+            resolve_auth_with_env(None, auth_store_env(Some(&labby_home), &user_home, &[]))
+                .expect("auth config resolves");
+
+        let root = canonical_root(&labby_home);
+        assert_eq!(resolved.sqlite_path, root.join("auth.db"));
+        assert_eq!(resolved.key_path, root.join("auth-jwt.pem"));
+    }
+
+    #[test]
+    fn resolve_auth_explicit_store_paths_override_labby_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let labby_home = dir.path().join("instance");
+        let user_home = dir.path().join("user");
+        let sqlite = dir.path().join("elsewhere/auth.db");
+        let key = dir.path().join("elsewhere/key.pem");
+
+        let resolved = resolve_auth_with_env(
+            None,
+            auth_store_env(
+                Some(&labby_home),
+                &user_home,
+                &[
+                    ("LABBY_AUTH_SQLITE_PATH", sqlite.display().to_string()),
+                    ("LABBY_AUTH_KEY_PATH", key.display().to_string()),
+                ],
+            ),
+        )
+        .expect("auth config resolves");
+
+        assert_eq!(resolved.sqlite_path, sqlite);
+        assert_eq!(resolved.key_path, key);
+    }
+
+    #[test]
+    fn resolve_auth_without_labby_home_uses_user_home_installation() {
+        let dir = tempfile::tempdir().unwrap();
+        let user_home = dir.path().join("user");
+
+        let resolved = resolve_auth_with_env(None, auth_store_env(None, &user_home, &[]))
+            .expect("auth config resolves");
+
+        let root = canonical_root(&user_home.join(".labby"));
+        assert_eq!(resolved.sqlite_path, root.join("auth.db"));
+        assert_eq!(resolved.key_path, root.join("auth-jwt.pem"));
+    }
+
+    #[test]
+    fn resolve_auth_rejects_relative_labby_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = resolve_auth_with_env(
+            None,
+            auth_store_env(Some(Path::new("relative/home")), dir.path(), &[]),
+        )
+        .expect_err("relative LABBY_HOME must not fall back to the user home");
+        assert!(
+            format!("{error:#}").contains("LABBY_HOME"),
+            "unexpected error: {error:#}"
+        );
     }
 
     #[test]

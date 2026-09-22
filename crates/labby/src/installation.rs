@@ -22,11 +22,25 @@ impl InstallationPaths {
     /// Resolve the one installation root from `LABBY_HOME`, otherwise
     /// `$HOME/.labby` (`USERPROFILE` is the Windows fallback).
     pub fn resolve() -> Result<Self, InstallationError> {
-        if let Some(root) = non_empty_env_path("LABBY_HOME") {
+        Self::resolve_with(|name| std::env::var_os(name))
+    }
+
+    /// [`Self::resolve`] over an explicit variable lookup, so callers that
+    /// already hold an environment snapshot resolve the same root without
+    /// re-reading process state.
+    pub fn resolve_with(
+        lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
+    ) -> Result<Self, InstallationError> {
+        let non_empty = |name: &str| {
+            lookup(name)
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+        };
+        if let Some(root) = non_empty("LABBY_HOME") {
             return Self::from_root(root);
         }
-        let home = non_empty_env_path("HOME")
-            .or_else(|| non_empty_env_path("USERPROFILE"))
+        let home = non_empty("HOME")
+            .or_else(|| non_empty("USERPROFILE"))
             .ok_or(InstallationError::HomeUnavailable)?;
         Self::from_root(home.join(".labby"))
     }
@@ -187,12 +201,6 @@ pub enum InstallationError {
         owner: &'static str,
         source: io::Error,
     },
-}
-
-fn non_empty_env_path(name: &str) -> Option<PathBuf> {
-    std::env::var_os(name)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
 }
 
 fn validate_root_metadata(path: &Path, metadata: &fs::Metadata) -> Result<(), InstallationError> {
