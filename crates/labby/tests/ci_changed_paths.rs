@@ -985,9 +985,8 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
     let release = fs::read_to_string(repo_root().join(".github/workflows/release.yml"))
         .expect("read release workflow");
     assert!(
-        release.matches("skill --help").count() >= 2
-            && release.matches("Read locally visible skills").count() >= 2,
-        "Unix and Windows release artifacts must prove the compiled Skills surface"
+        release.contains("skill --help") && release.contains("Read locally visible skills"),
+        "Linux and macOS release artifacts must prove the compiled Skills surface"
     );
     let incus_smoke = fs::read_to_string(repo_root().join("scripts/ci/smoke-incus-image.sh"))
         .expect("read Incus smoke script");
@@ -1942,10 +1941,10 @@ fn release_tool_downloads_are_version_and_digest_pinned() {
     for target in [
         "target: x86_64-unknown-linux-gnu",
         "target: aarch64-apple-darwin",
-        "target: x86_64-pc-windows-msvc",
     ] {
         assert!(release.contains(target), "release matrix missing {target}");
     }
+    assert!(!release.contains("target: x86_64-pc-windows-msvc"));
     assert!(release.contains("runner: '\"macos-15\"'"));
     assert!(!release.contains("x86_64-apple-darwin"));
     assert!(!release.contains("/latest/download/"));
