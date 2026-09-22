@@ -180,25 +180,21 @@ pub(crate) fn namespace_segment(name: &str) -> String {
 // JS proxy generation (runtime executable, not type declarations)
 // ────────────────────────────────────────────────────────────────────────────
 
-#[cfg(test)]
-pub(crate) fn generate_discovery_js(
-    entries: &[CodeModeDiscoveryEntry],
-    blend_weight: f32,
-) -> Result<String, String> {
-    generate_discovery_js_with_withheld(entries, blend_weight, &[])
-}
-
 /// Agent-facing explanation for tools a read-only run withheld.
+/// How to reach tools a read-only run withholds. Shared by every withheld
+/// message (Rust per-upstream guidance and the JS multi-upstream hints).
+const WITHHELD_SCOPE_ADVICE: &str = "Use the `codemode` tool to reach them (requires the `lab` or `lab:admin` scope); if this client only holds `lab:read`, reconnect it with the `lab` scope.";
+
 pub(crate) fn withheld_guidance(withheld: &WithheldTools) -> String {
-    let count = withheld.tool_count;
+    let count = withheld.tool_count();
     let noun = if count == 1 { "tool" } else { "tools" };
     format!(
-        "{count} {noun} from upstream `{namespace}` are hidden because this is a read-only Code Mode run (`codemode_read`) and the upstream does not annotate them `readOnlyHint: true`. Use the `codemode` tool to reach them (requires the `lab` or `lab:admin` scope); if this client only holds `lab:read`, reconnect it with the `lab` scope.",
-        namespace = withheld.namespace
+        "{count} {noun} from upstream `{namespace}` are hidden because this is a read-only Code Mode run (`codemode_read`) and the upstream does not annotate them `readOnlyHint: true`. {WITHHELD_SCOPE_ADVICE}",
+        namespace = withheld.namespace()
     )
 }
 
-pub(crate) fn generate_discovery_js_with_withheld(
+pub(crate) fn generate_discovery_js(
     entries: &[CodeModeDiscoveryEntry],
     blend_weight: f32,
     withheld: &[WithheldTools],
@@ -210,22 +206,30 @@ pub(crate) fn generate_discovery_js_with_withheld(
             .iter()
             .map(|item| {
                 serde_json::json!({
-                    "namespace": item.namespace,
-                    "key": crate::namespace_alias::namespace_alias_key(&item.namespace),
-                    "helper": namespace_segment(&item.namespace),
-                    "tool_count": item.tool_count,
+                    "namespace": item.namespace(),
+                    "key": crate::namespace_alias::namespace_alias_key(item.namespace()),
+                    "helper": namespace_segment(item.namespace()),
+                    "tool_count": item.tool_count(),
                     "guidance": withheld_guidance(item),
                 })
             })
             .collect::<Vec<_>>(),
     )
     .map_err(|err| format!("failed to serialize Code Mode withheld summary: {err}"))?;
+    let advice_json = serde_json::to_string(WITHHELD_SCOPE_ADVICE)
+        .map_err(|err| format!("failed to serialize Code Mode withheld advice: {err}"))?;
     Ok(format!(
         r##"
 globalThis.codemode = globalThis.codemode || {{}};
 var codemode = globalThis.codemode;
 var __codemodeDiscovery = {json};
 var __codemodeWithheld = {withheld_json};
+var __codemodeWithheldAdvice = {advice_json};
+function __codemodeSumTools(items) {{
+  var tools = 0;
+  for (var i = 0; i < items.length; i++) tools += items[i].tool_count;
+  return tools;
+}}
 function __codemodeAliasKey(value) {{
   return String(value == null ? "" : value).trim().toLowerCase().replace(/[-. ]/g, "_");
 }}
@@ -250,16 +254,12 @@ function __codemodeWithheldNamed(tokens, hasKindFilter, kindFilter) {{
 }}
 function __codemodeWithheldHint(hits) {{
   if (hits.length === 1) return hits[0].guidance;
-  var tools = 0;
-  for (var i = 0; i < hits.length; i++) tools += hits[i].tool_count;
-  return tools + " tools across " + hits.length + " upstreams are hidden because this is a read-only Code Mode run (`codemode_read`) and those upstreams do not annotate them `readOnlyHint: true`. Use the `codemode` tool to reach them (requires the `lab` or `lab:admin` scope); if this client only holds `lab:read`, reconnect it with the `lab` scope. `withheld` lists the affected upstreams.";
+  return __codemodeSumTools(hits) + " tools across " + hits.length + " upstreams are hidden because this is a read-only Code Mode run (`codemode_read`) and those upstreams do not annotate them `readOnlyHint: true`. " + __codemodeWithheldAdvice + " `withheld` lists the affected upstreams.";
 }}
 // Secondary note for a search that found nothing at all: the gate *may* be
 // why, but the query is the likelier cause, so the no-match hint stays first.
 function __codemodeWithheldMaybe() {{
-  var tools = 0;
-  for (var i = 0; i < __codemodeWithheld.length; i++) tools += __codemodeWithheld[i].tool_count;
-  return " This read-only run also hides " + tools + " tool(s) that lack `readOnlyHint: true` (see `withheld`); if what you need is one of them, use the `codemode` tool (requires the `lab` scope).";
+  return " This read-only run also hides " + __codemodeSumTools(__codemodeWithheld) + " tool(s) that lack `readOnlyHint: true` (see `withheld`); if what you need is one of them: " + __codemodeWithheldAdvice;
 }}
 function __codemodeWithheldTarget(raw) {{
   var ns = raw;
@@ -766,6 +766,15 @@ pub(crate) fn generate_js_proxy_from_catalog(
     // after every sanitized key exists; guarded so they never replace a
     // helper or a sanitized key.
     let mut raw_aliases = String::new();
+    // Raw namespaces that sanitize to the same key (`foo-bar`, `foo_bar`)
+    // share one proxy object; a raw alias would then expose both upstreams'
+    // tools under one raw name, so such namespaces get no raw alias.
+    let mut raw_per_snake: BTreeMap<String, usize> = BTreeMap::new();
+    for namespace_name in by_namespace.keys() {
+        *raw_per_snake
+            .entry(namespace_segment(namespace_name))
+            .or_default() += 1;
+    }
     let mut by_snake_namespace: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut final_proxy_keys: BTreeMap<(String, String), (String, String)> = BTreeMap::new();
     for (namespace_name, namespace_tools) in &by_namespace {
@@ -819,7 +828,9 @@ pub(crate) fn generate_js_proxy_from_catalog(
                 );
             }
         }
-        if *namespace_name != namespace_snake {
+        if *namespace_name != namespace_snake
+            && raw_per_snake.get(&namespace_snake).copied() == Some(1)
+        {
             let raw_json =
                 serde_json::to_string(namespace_name).unwrap_or_else(|_| "\"unknown\"".to_string());
             let snake_json = serde_json::to_string(&namespace_snake)
@@ -950,7 +961,7 @@ mod tests {
     #[test]
     fn discovery_preamble_preserves_existing_codemode_object() {
         let entries = vec![discovery_entry("arcane", "containers", "List containers")];
-        let js = generate_discovery_js(&entries, 0.5).expect("js");
+        let js = generate_discovery_js(&entries, 0.5, &[]).expect("js");
         assert!(js.contains("globalThis.codemode = globalThis.codemode || {}"));
         assert!(js.contains("codemode.search"));
         assert!(js.contains("codemode.describe"));
@@ -969,7 +980,7 @@ mod tests {
             discovery_entry("github", "search_issues", "Search GitHub issues"),
             discovery_entry("github", "list_pull_requests", "List GitHub pull requests"),
         ];
-        let js = generate_discovery_js(&entries, 0.5).expect("js");
+        let js = generate_discovery_js(&entries, 0.5, &[]).expect("js");
 
         assert!(js.contains("typeof input === \"object\""));
         assert!(js.contains("Math.max(1, Math.min(50"));
@@ -1010,7 +1021,7 @@ mod tests {
         entry.dts =
             "type GithubListTagsInput = { owner: string; repo: string; perPage?: number };\n"
                 .to_string();
-        let js = generate_discovery_js(&[entry], 0.5).expect("js");
+        let js = generate_discovery_js(&[entry], 0.5, &[]).expect("js");
 
         assert!(!js.contains("__codemodeTypes"));
         assert!(!js.contains("GithubListTagsInput"));
@@ -1049,7 +1060,7 @@ mod tests {
             "required": ["owner"],
         }));
         entry.dts = "type GithubListTagsInput = { owner: string };\n".to_string();
-        let js = generate_discovery_js(&[entry], 0.5).expect("js");
+        let js = generate_discovery_js(&[entry], 0.5, &[]).expect("js");
 
         // Neither field is serialized onto the discovery entry (`#[serde(skip)]`)
         // and types are never embedded anywhere now — assert JSON-schema-shaped
@@ -1077,7 +1088,7 @@ mod tests {
                 entry
             })
             .collect::<Vec<_>>();
-        let js = generate_discovery_js(&entries, 0.5).expect("4k discovery JS");
+        let js = generate_discovery_js(&entries, 0.5, &[]).expect("4k discovery JS");
 
         assert!(
             js.len() < 2_000_000,
@@ -1100,7 +1111,7 @@ mod tests {
             "list_tags",
             "List repository tags",
         )];
-        let js = generate_discovery_js(&entries, 0.5).expect("js");
+        let js = generate_discovery_js(&entries, 0.5, &[]).expect("js");
 
         assert!(js.contains("hint: __codemodeNoMatchHint"));
         assert!(js.contains("Broaden the query or try synonyms."));
@@ -1131,7 +1142,7 @@ mod tests {
     #[test]
     fn generate_discovery_js_includes_semantic_blend() {
         let entries = vec![discovery_entry("arcane", "containers", "List containers")];
-        let js = generate_discovery_js(&entries, 0.5).expect("js generation succeeds");
+        let js = generate_discovery_js(&entries, 0.5, &[]).expect("js generation succeeds");
         assert!(js.contains("__lab_internal::semantic_rank"));
         assert!(js.contains("blendedScore"));
         assert!(js.contains("codemode.search = async function"));
@@ -1140,7 +1151,7 @@ mod tests {
     #[test]
     fn generate_discovery_js_interpolates_configured_blend_weight() {
         let entries = vec![discovery_entry("arcane", "containers", "List containers")];
-        let js = generate_discovery_js(&entries, 0.75).expect("js generation succeeds");
+        let js = generate_discovery_js(&entries, 0.75, &[]).expect("js generation succeeds");
         assert!(js.contains("var BLEND_WEIGHT = 0.75"));
     }
 
@@ -1151,14 +1162,14 @@ mod tests {
         // (e.g. network_error surfaced as a JS Error) cannot propagate out
         // of codemode.search() and break the caller's script.
         let entries = vec![discovery_entry("arcane", "containers", "List containers")];
-        let js = generate_discovery_js(&entries, 0.5).expect("js generation succeeds");
+        let js = generate_discovery_js(&entries, 0.5, &[]).expect("js generation succeeds");
         assert!(js.contains("catch (e) {"));
     }
 
     #[test]
     fn discovery_describe_rejects_namespace_only_targets() {
         let entries = vec![discovery_entry("github", "search_issues", "Search issues")];
-        let js = generate_discovery_js(&entries, 0.5).expect("js");
+        let js = generate_discovery_js(&entries, 0.5, &[]).expect("js");
         assert!(js.contains("ambiguous_target"));
         assert!(js.contains("github.search_issues"));
     }

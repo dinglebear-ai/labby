@@ -184,10 +184,7 @@ fn partition_tools_for_access(
         .collect();
     let withheld = withheld
         .into_iter()
-        .map(|(namespace, tool_count)| WithheldTools {
-            namespace: namespace.to_string(),
-            tool_count,
-        })
+        .filter_map(|(namespace, tool_count)| WithheldTools::new(namespace.as_ref(), tool_count))
         .collect();
     (kept, withheld)
 }
@@ -964,14 +961,8 @@ mod tests {
         assert_eq!(
             withheld_by_access(&tools, &scope.read_only()),
             vec![
-                WithheldTools {
-                    namespace: "annotated".to_string(),
-                    tool_count: 1,
-                },
-                WithheldTools {
-                    namespace: "claude-macpoo".to_string(),
-                    tool_count: 2,
-                },
+                WithheldTools::new("annotated", 1).expect("nonzero"),
+                WithheldTools::new("claude-macpoo", 2).expect("nonzero"),
             ]
         );
     }

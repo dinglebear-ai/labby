@@ -1309,12 +1309,45 @@ fn write_json_canonical(writer: &mut impl Write, value: &Value) -> io::Result<()
 
 #[cfg(test)]
 mod tests {
+
     #![allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 
     use super::*;
     use serde_json::json;
     use std::sync::Arc;
     use tracing_subscriber::layer::SubscriberExt;
+
+    #[test]
+    fn palette_maps_contract_lookup_misses_to_not_found() {
+        use super::map_unknown_tool_to_not_found;
+        for kind in ["unknown_tool", "unknown_upstream", "invalid_code_mode_id"] {
+            let sdk = map_unknown_tool_to_not_found(ToolError::Sdk {
+                sdk_kind: kind.to_string(),
+                message: format!("{kind}: guidance"),
+            });
+            let contract = map_unknown_tool_to_not_found(ToolError::contract(
+                kind,
+                format!("{kind}: guidance"),
+                serde_json::Map::new(),
+                None,
+                None,
+                None,
+            ));
+            for mapped in [sdk, contract] {
+                assert_eq!(mapped.kind(), "not_found", "{kind}");
+                assert_eq!(mapped.user_message(), format!("{kind}: guidance"));
+            }
+        }
+        let passthrough = map_unknown_tool_to_not_found(ToolError::contract(
+            "not_connected",
+            "upstream down",
+            serde_json::Map::new(),
+            None,
+            None,
+            None,
+        ));
+        assert_eq!(passthrough.kind(), "not_connected");
+    }
 
     #[test]
     fn palette_search_query_normalizes_once_and_rejects_oversize_input() {

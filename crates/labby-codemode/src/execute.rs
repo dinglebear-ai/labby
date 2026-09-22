@@ -228,7 +228,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             .collect::<Vec<_>>();
         let code_mode_config = host.config().await;
         let blend_weight = code_mode_config.semantic_search.blend_weight;
-        let discovery_js = super::preamble::generate_discovery_js_with_withheld(
+        let discovery_js = super::preamble::generate_discovery_js(
             &discovery_entries,
             blend_weight,
             &render.withheld,
@@ -875,10 +875,12 @@ fn scoped_call_id(
     }
     // Candidate namespaces: the explicit namespace scope, else namespaces
     // named by `upstream::tool` entries in the tools allowlist.
-    let candidates = scope.allowed_namespaces().cloned().unwrap_or_else(|| {
+    let allowed_namespaces = scope.allowed_namespaces().cloned();
+    let candidates = allowed_namespaces.clone().unwrap_or_else(|| {
         scope
             .allowed_tools()
-            .iter()
+            .into_iter()
+            .flatten()
             .filter_map(|id| crate::split_namespaced_id(id).map(|(ns, _)| ns.to_string()))
             .collect()
     });
@@ -894,32 +896,48 @@ fn scoped_call_id(
     {
         return Ok(crate::types::namespaced_tool_id(canonical, tool));
     }
-    let shown = crate::display_name(raw);
-    let namespace_in_scope = scope
-        .allowed_namespaces()
+    let namespace_in_scope = allowed_namespaces
+        .as_ref()
         .is_none_or(|allowed| resolved.is_some() || allowed.contains(namespace));
+    Err(out_of_scope_call_error(
+        scope,
+        raw,
+        namespace,
+        namespace_in_scope,
+        allowed_namespaces.unwrap_or_default(),
+    ))
+}
+
+/// The `unknown_tool` error for a `callTool` id outside the execution scope,
+/// naming what the scope does allow.
+fn out_of_scope_call_error(
+    scope: &ToolScope,
+    raw: &str,
+    namespace: &str,
+    namespace_in_scope: bool,
+    allowed_namespaces: std::collections::BTreeSet<String>,
+) -> CodeModeCallError {
+    const MAX_LISTED_TOOLS: usize = 25;
+    let shown = crate::display_name(raw);
     let message = if namespace_in_scope {
-        const MAX_LISTED_TOOLS: usize = 25;
-        let tools = scope.allowed_tools();
+        let tools = scope.allowed_tools().cloned().unwrap_or_default();
         let listed = crate::backtick_list(tools.iter().take(MAX_LISTED_TOOLS).map(String::as_str));
-        let more = tools.len().saturating_sub(MAX_LISTED_TOOLS);
-        let more = if more > 0 {
-            format!(" (and {more} more)")
+        let more_suffix = if tools.len() > MAX_LISTED_TOOLS {
+            format!(" (and {} more)", tools.len() - MAX_LISTED_TOOLS)
         } else {
             String::new()
         };
         format!(
-            "tool `{shown}` is outside this Code Mode execution capability set: it is not in the `tools` allowlist. Allowed: {listed}{more}. Call one of those, or rerun without the `tools` filter."
+            "tool `{shown}` is outside this Code Mode execution capability set: it is not in the `tools` allowlist. Allowed: {listed}{more_suffix}. Call one of those, or rerun without the `tools` filter."
         )
     } else {
-        let allowed = scope.allowed_namespaces().cloned().unwrap_or_default();
         format!(
             "tool `{shown}` is outside this Code Mode execution capability set: upstream `{}` is not in scope. {} Use codemode.search() to find a valid `upstream::tool` id.",
             crate::display_name(namespace),
-            crate::unknown_namespace_guidance(namespace, &allowed)
+            crate::unknown_namespace_guidance(namespace, &allowed_namespaces)
         )
     };
-    Err(CodeModeCallError::new("unknown_tool", message).with_tool(shown))
+    CodeModeCallError::new("unknown_tool", message).with_tool(shown)
 }
 
 #[cfg(test)]

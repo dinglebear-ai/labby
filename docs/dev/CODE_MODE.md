@@ -133,8 +133,10 @@ Details the runtime already reports when they matter (error recovery
 metadata, truncation markers, `describe()` declarations) are not repeated in
 the description. The example tool is remembered for the current runtime config
 generation, so health changes do not alter the descriptor contract hash or
-invalidate `tools/list` cursors. It appears once a qualifying upstream first
-connects (a one-time `tools/list_changed`), resets on any config change, and is
+invalidate `tools/list` cursors. It is taken from the first upstream in sorted
+order with a live read-only tool, and that upstream keeps supplying it: another
+upstream connecting later does not take over. The example therefore appears
+once (a one-time `tools/list_changed`), resets on any config change, and is
 dropped only when a healthy upstream shows the tool is gone or no longer
 read-only.
 
