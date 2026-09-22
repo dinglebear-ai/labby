@@ -124,8 +124,8 @@ impl GatewayManager {
         upstream.code_mode_hint = Some(hint.clone());
         self.persist_config_owned(_mutation_guard, cfg).await?;
         // A `code_mode_hint` is rendered into the visible `codemode` tool
-        // description (the "Available upstream namespaces" section built in
-        // `mcp/handlers_tools.rs` via `code_mode_description`), so applying a
+        // description (the "## Upstreams" section built in
+        // `mcp/call_tool_codemode/description.rs`), so applying a
         // hint genuinely changes the externally visible tool contract and must
         // notify. Only the tool descriptor changes — resources and prompts do
         // not — so this is a tools-only change.

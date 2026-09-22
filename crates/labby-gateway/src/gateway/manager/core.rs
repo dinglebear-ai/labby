@@ -258,6 +258,7 @@ impl GatewayManager {
             agent_execution_cancellations: Arc::new(dashmap::DashMap::new()),
             code_mode_app_state: CodeModeAppState::default(),
             lazy_pool_init: Arc::new(Mutex::new(())),
+            code_mode_example_memo: Default::default(),
             notifier: None,
             oauth_client_cache: None,
             upstream_oauth_managers: None,
