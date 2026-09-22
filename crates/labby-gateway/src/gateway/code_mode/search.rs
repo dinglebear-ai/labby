@@ -152,17 +152,64 @@ pub(crate) async fn build_tools_render(
         .await;
     catalog_from_tools(
         manager,
-        filter_tools_for_access(raw_tools, scope),
+        filter_tools_for_access(manager, raw_tools, scope, caller),
         include_snippets,
         metadata_entries,
     )
     .await
 }
 
-fn filter_tools_for_access(tools: Vec<UpstreamTool>, scope: &ToolScope) -> Vec<UpstreamTool> {
+fn filter_tools_for_access(
+    manager: &GatewayManager,
+    tools: Vec<UpstreamTool>,
+    scope: &ToolScope,
+    caller: &CodeModeCaller,
+) -> Vec<UpstreamTool> {
+    let published = manager.published_service_registry_snapshot().ok();
     tools
         .into_iter()
         .filter(|tool| {
+            if let Some(service_name) = tool
+                .upstream_name
+                .strip_prefix(labby_runtime::gateway_config::IN_PROCESS_UPSTREAM_PREFIX)
+            {
+                // Synthetic peers carry neither the product access runtime nor
+                // a transport AuthContext. Do not advertise unknown or admin
+                // operations merely because the peer can list them.
+                let Some(action_name) = tool.tool.name.strip_prefix(&format!("{service_name}."))
+                else {
+                    return false;
+                };
+                let Some(action) = published
+                    .as_ref()
+                    .and_then(|catalog| {
+                        catalog
+                            .services()
+                            .iter()
+                            .find(|service| service.name() == service_name)
+                    })
+                    .and_then(|service| {
+                        service
+                            .actions()
+                            .iter()
+                            .find(|action| action.name() == action_name)
+                    })
+                else {
+                    return false;
+                };
+                if action.requires_admin() {
+                    return false;
+                }
+                if service_name == "gateway"
+                    && !matches!(action_name, "help" | "schema")
+                    && !(action_name == "gateway.oauth.authorize"
+                        && manager.has_code_mode_personal_oauth_provider()
+                        && caller.authority_token().is_some()
+                        && caller.can_execute())
+                {
+                    return false;
+                }
+            }
             scope.allows(tool.upstream_name.as_ref(), tool.tool.name.as_ref())
                 && (!scope.is_read_only()
                     || super::code_mode_host::tool_is_explicitly_read_only(tool))
@@ -479,7 +526,121 @@ fn normalize_path(path: &Path) -> String {
 #[allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 mod tests {
     use super::*;
+    use std::future::Future;
     use std::sync::Arc;
+
+    struct SyntheticRegistry;
+
+    struct TestPersonalOauthProvider;
+
+    impl crate::gateway::code_mode::oauth::CodeModePersonalOauthProvider for TestPersonalOauthProvider {
+        fn authorize<'a>(
+            &'a self,
+            _: &'a GatewayManager,
+            _: &'a str,
+            _: serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<serde_json::Value, ToolError>> + Send + 'a>>
+        {
+            Box::pin(async { Ok(serde_json::Value::Null) })
+        }
+    }
+
+    impl crate::registry::InProcessServiceRegistry for SyntheticRegistry {
+        fn in_process_services(&self) -> Vec<Box<dyn crate::registry::InProcessService>> {
+            Vec::new()
+        }
+    }
+
+    impl crate::gateway::service_registry::GatewayServiceRegistry for SyntheticRegistry {
+        fn service_names(&self) -> Vec<&'static str> {
+            vec!["fixture", "gateway"]
+        }
+        fn contains_service(&self, name: &str) -> bool {
+            matches!(name, "fixture" | "gateway")
+        }
+        fn service_actions(
+            &self,
+            name: &str,
+        ) -> Option<Vec<crate::gateway::service_registry::ServiceActionInfo>> {
+            let action =
+                |name, requires_admin| crate::gateway::service_registry::ServiceActionInfo {
+                    name,
+                    description: "fixture",
+                    destructive: false,
+                    requires_admin,
+                };
+            match name {
+                "fixture" => Some(vec![action("list", false), action("reset", true)]),
+                "gateway" => Some(vec![action("gateway.oauth.authorize", false)]),
+                _ => None,
+            }
+        }
+        fn service_meta(&self, _: &str) -> Option<&'static labby_primitives::plugin::PluginMeta> {
+            None
+        }
+    }
+
+    #[test]
+    fn synthetic_catalog_hides_admin_and_unwired_personal_actions() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = GatewayManager::new(
+            dir.path().join("config.toml"),
+            crate::gateway::runtime::GatewayRuntimeHandle::default(),
+        )
+        .with_builtin_service_registry(Arc::new(SyntheticRegistry));
+        let tool = |service: &str, name: &str| UpstreamTool {
+            tool: rmcp::model::Tool::new(
+                name.to_owned(),
+                "fixture",
+                Arc::new(serde_json::Map::new()),
+            ),
+            input_schema: None,
+            output_schema: None,
+            upstream_name: Arc::from(crate::upstream::pool::in_process_upstream_name(service)),
+            destructive: false,
+        };
+        let tools = vec![
+            tool("fixture", "fixture.list"),
+            tool("fixture", "fixture.reset"),
+            tool("gateway", "gateway.gateway.oauth.authorize"),
+        ];
+        let filtered = filter_tools_for_access(
+            &manager,
+            tools,
+            &ToolScope::default(),
+            &CodeModeCaller::TrustedLocal,
+        );
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].tool.name.as_ref(), "fixture.list");
+
+        let manager =
+            manager.with_code_mode_personal_oauth_provider(Arc::new(TestPersonalOauthProvider));
+        let caller = CodeModeCaller::WithAuthority {
+            caller: Box::new(CodeModeCaller::Scoped {
+                capabilities: labby_codemode::CodeModeCallerCapabilities {
+                    can_read: true,
+                    can_execute: true,
+                    ..Default::default()
+                },
+                sub: Some("personal-user".to_owned()),
+            }),
+            authority_token: "request-token".to_owned(),
+        };
+        let visible = filter_tools_for_access(
+            &manager,
+            vec![tool("gateway", "gateway.gateway.oauth.authorize")],
+            &ToolScope::default(),
+            &caller,
+        );
+        assert_eq!(visible.len(), 1, "verified caller sees the OAuth action");
+        let hidden_on_read_route = filter_tools_for_access(
+            &manager,
+            vec![tool("gateway", "gateway.gateway.oauth.authorize")],
+            &ToolScope::default().read_only(),
+            &caller,
+        );
+        assert!(hidden_on_read_route.is_empty());
+    }
 
     fn safety_fixture(annotations: Option<rmcp::model::ToolAnnotations>) -> UpstreamTool {
         let mut tool = rmcp::model::Tool::new(
@@ -841,6 +1002,11 @@ mod tests {
 
     #[test]
     fn exact_tool_scope_filters_model_facing_catalog_within_allowed_upstream() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = GatewayManager::new(
+            dir.path().join("config.toml"),
+            crate::gateway::runtime::GatewayRuntimeHandle::default(),
+        );
         let named = Arc::<str>::from("fixture");
         let make = |name: &str| UpstreamTool {
             tool: rmcp::model::Tool::new(
@@ -858,7 +1024,12 @@ mod tests {
             vec!["fixture::query".to_string()],
         );
 
-        let filtered = filter_tools_for_access(vec![make("query"), make("mutate")], &scope);
+        let filtered = filter_tools_for_access(
+            &manager,
+            vec![make("query"), make("mutate")],
+            &scope,
+            &CodeModeCaller::TrustedLocal,
+        );
 
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].tool.name.as_ref(), "query");
@@ -866,6 +1037,11 @@ mod tests {
 
     #[test]
     fn read_only_catalog_filter_is_fail_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = GatewayManager::new(
+            dir.path().join("config.toml"),
+            crate::gateway::runtime::GatewayRuntimeHandle::default(),
+        );
         let named = Arc::<str>::from("fixture");
         let make = |annotations: Option<rmcp::model::ToolAnnotations>| {
             let mut tool = rmcp::model::Tool::new(
@@ -889,7 +1065,12 @@ mod tests {
         ];
 
         let read_only_scope = ToolScope::default().read_only();
-        let filtered = filter_tools_for_access(tools, &read_only_scope);
+        let filtered = filter_tools_for_access(
+            &manager,
+            tools,
+            &read_only_scope,
+            &CodeModeCaller::TrustedLocal,
+        );
         assert_eq!(filtered.len(), 1);
         assert!(super::super::code_mode_host::tool_is_explicitly_read_only(
             &filtered[0]
@@ -898,6 +1079,11 @@ mod tests {
 
     #[test]
     fn read_only_catalog_uses_standard_mcp_safety_annotations() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = GatewayManager::new(
+            dir.path().join("config.toml"),
+            crate::gateway::runtime::GatewayRuntimeHandle::default(),
+        );
         let named = Arc::<str>::from("fixture");
         let mut tool = rmcp::model::Tool::new(
             "query".to_string(),
@@ -915,7 +1101,13 @@ mod tests {
 
         let read_only_scope = ToolScope::default().read_only();
         assert_eq!(
-            filter_tools_for_access(vec![tool], &read_only_scope).len(),
+            filter_tools_for_access(
+                &manager,
+                vec![tool],
+                &read_only_scope,
+                &CodeModeCaller::TrustedLocal
+            )
+            .len(),
             1
         );
     }

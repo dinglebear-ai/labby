@@ -364,6 +364,7 @@ fn settings_annotations() -> ToolAnnotations {
         .open_world(false)
 }
 
+#[allow(dead_code)] // Atomic-only mode is retained for staged host rollout.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum ToolProjectionMode {
     #[default]
@@ -1337,7 +1338,7 @@ mod tests {
 
     #[test]
     fn atomic_descriptor_requires_and_embeds_complete_output_schema() {
-        fn status_output_schema() -> serde_json::Value {
+        fn status_output_schema() -> Value {
             serde_json::json!({
                 "type": "object",
                 "properties": { "healthy": { "type": "boolean" } },

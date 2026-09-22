@@ -88,7 +88,7 @@ enum GatewayMcpRestartResultSchema {
     },
     Completed {
         completed: bool,
-        gateway: super::types::GatewayView,
+        gateway: Box<super::types::GatewayView>,
         cleanup: super::types::GatewayCleanupView,
     },
     Pending {

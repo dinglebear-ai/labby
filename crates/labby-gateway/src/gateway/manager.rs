@@ -39,6 +39,7 @@ use labby_runtime::gateway_config::GatewayConfig;
 use crate::upstream::pool::{HeaderRecoveryMetricsStore, InProcessConnector};
 
 use super::agent_execution::AgentExecutionStore;
+use super::code_mode::oauth::CodeModePersonalOauthProvider;
 use super::code_mode::skills::CodeModeSkillProvider;
 use super::code_mode::{CodeModeHistory, CodeModeSourceStore};
 use super::config_store::GatewayConfigStore;
@@ -154,6 +155,7 @@ pub struct GatewayManager {
     pub(super) execution_capability_publication: Arc<std::sync::RwLock<()>>,
     pub(super) execution_capability_provider: Option<Arc<dyn ExecutionCapabilityCatalogProvider>>,
     pub(super) code_mode_skill_provider: Option<Arc<dyn CodeModeSkillProvider>>,
+    pub(super) code_mode_personal_oauth_provider: Option<Arc<dyn CodeModePersonalOauthProvider>>,
     pub(super) agent_executions: Arc<AgentExecutionStore>,
     pub(super) agent_execution_cancellations:
         Arc<dashmap::DashMap<String, tokio_util::sync::CancellationToken>>,

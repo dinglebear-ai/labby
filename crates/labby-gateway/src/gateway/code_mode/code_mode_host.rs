@@ -144,7 +144,7 @@ impl GatewayManager {
         let mut entries = BTreeMap::<String, CatalogDescriptor>::new();
 
         if matches!(
-            caller,
+            caller.without_authority(),
             CodeModeCaller::TrustedLocal
                 | CodeModeCaller::ScopedSkills { .. }
                 | CodeModeCaller::ScopedHostProviderSkills { .. }
@@ -386,6 +386,17 @@ impl CodeModeHost for GatewayManager {
                 sdk_kind: "invalid_code_mode_id".to_string(),
                 message: format!("Code Mode ids must use <namespace>::<tool>: `{id}`"),
             })?;
+
+        // The synthetic gateway peer has no access runtime or verified caller
+        // identity. Personal OAuth uses the product host's request-bound
+        // authority adapter, never generic in-process dispatch.
+        if is_in_process_upstream(upstream) && tool == "gateway.gateway.oauth.authorize" {
+            return self
+                .call_personal_oauth_from_code_mode(
+                    id, upstream, tool, params, caller, surface, scope,
+                )
+                .await;
+        }
 
         if upstream == "unraid" {
             return self
@@ -1014,6 +1025,70 @@ fn unix_now() -> i64 {
 
 /// Gateway-side Code Mode dispatch helpers (not trait methods).
 impl GatewayManager {
+    async fn call_personal_oauth_from_code_mode(
+        &self,
+        id: &str,
+        upstream: &str,
+        tool: &str,
+        params: Value,
+        caller: &CodeModeCaller,
+        surface: CodeModeSurface,
+        scope: &ToolScope,
+    ) -> Result<ToolCallOutcome, CodeModeCallError> {
+        let denied = || {
+            CodeModeCallError::new(
+                "forbidden",
+                "Personal OAuth authorization requires verified caller authority and lab scope",
+            )
+            .with_tool(id.to_string())
+            .with_origin(CodeModeErrorOrigin::Policy)
+            .with_side_effects(CodeModeSideEffectRisk::NoneExpected)
+        };
+        if surface != CodeModeSurface::Mcp
+            || !caller.can_execute()
+            || scope.is_read_only()
+            || !scope.allows(upstream, tool)
+        {
+            return Err(denied());
+        }
+        let token = caller.authority_token().ok_or_else(denied)?;
+        let provider = self
+            .code_mode_personal_oauth_provider
+            .as_ref()
+            .ok_or_else(denied)?;
+        let published = self
+            .published_service_registry_snapshot()
+            .map_err(|error| {
+                CodeModeCallError::from(ToolError::Sdk {
+                    sdk_kind: "service_unavailable".to_string(),
+                    message: error.to_string(),
+                })
+            })?;
+        if !published.services().iter().any(|service| {
+            service.name() == "gateway"
+                && service
+                    .actions()
+                    .iter()
+                    .any(|action| action.name() == "gateway.oauth.authorize")
+        }) {
+            return Err(CodeModeCallError::new(
+                "not_found",
+                "Personal OAuth action is unavailable",
+            )
+            .with_tool(id.to_string()));
+        }
+        let data = provider.authorize(self, token, params).await?;
+        Ok(ToolCallOutcome {
+            value: serde_json::json!({
+                "ok": true,
+                "service": "gateway",
+                "action": "gateway.oauth.authorize",
+                "data": data,
+            }),
+            ui: None,
+        })
+    }
+
     async fn call_core_provider(
         &self,
         tool: &str,
@@ -1780,7 +1855,8 @@ fn is_in_process_upstream(upstream: &str) -> bool {
 /// an action whose requirements differ from Code Mode's is still evaluated
 /// correctly rather than against a stale yes/no.
 pub(crate) fn propagated_caller_auth(caller: &CodeModeCaller) -> PropagatedCallerAuth {
-    match caller {
+    match caller.without_authority() {
+        CodeModeCaller::WithAuthority { .. } => unreachable!("authority wrapper was removed"),
         CodeModeCaller::TrustedLocal => PropagatedCallerAuth::trusted_local(),
         CodeModeCaller::Scoped { capabilities, sub } => {
             // The kernel deliberately keeps Lab's scope vocabulary out of its
@@ -1866,6 +1942,146 @@ mod tests {
     use rmcp::model::{ContentBlock, ErrorCode, ErrorData, MetaObject};
     #[cfg(unix)]
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    struct PersonalOauthRegistry;
+
+    impl crate::registry::InProcessServiceRegistry for PersonalOauthRegistry {
+        fn in_process_services(&self) -> Vec<Box<dyn crate::registry::InProcessService>> {
+            Vec::new()
+        }
+    }
+
+    impl crate::gateway::service_registry::GatewayServiceRegistry for PersonalOauthRegistry {
+        fn service_names(&self) -> Vec<&'static str> {
+            vec!["gateway"]
+        }
+        fn contains_service(&self, name: &str) -> bool {
+            name == "gateway"
+        }
+        fn service_actions(
+            &self,
+            name: &str,
+        ) -> Option<Vec<crate::gateway::service_registry::ServiceActionInfo>> {
+            (name == "gateway").then_some(vec![
+                crate::gateway::service_registry::ServiceActionInfo {
+                    name: "gateway.oauth.authorize",
+                    description: "Authorize personal upstream",
+                    destructive: false,
+                    requires_admin: false,
+                },
+            ])
+        }
+        fn service_meta(&self, _: &str) -> Option<&'static labby_primitives::plugin::PluginMeta> {
+            None
+        }
+    }
+
+    struct PersonalOauthProvider;
+
+    impl crate::gateway::code_mode::oauth::CodeModePersonalOauthProvider for PersonalOauthProvider {
+        fn authorize<'a>(
+            &'a self,
+            _: &'a GatewayManager,
+            token: &'a str,
+            params: Value,
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'a>> {
+            Box::pin(async move {
+                assert_eq!(token, "verified-request-token");
+                assert_eq!(params, serde_json::json!({"upstream": "personal"}));
+                Ok(serde_json::json!({"authorization_url": "https://example.test/authorize"}))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn personal_oauth_atomic_tool_calls_product_authority_provider() {
+        let cfg_dir = tempfile::tempdir().unwrap();
+        let manager = GatewayManager::new(
+            cfg_dir.path().join("config.toml"),
+            GatewayRuntimeHandle::default(),
+        )
+        .with_builtin_service_registry(Arc::new(PersonalOauthRegistry))
+        .with_code_mode_personal_oauth_provider(Arc::new(PersonalOauthProvider));
+        let id = format!(
+            "{}gateway::gateway.gateway.oauth.authorize",
+            labby_runtime::gateway_config::IN_PROCESS_UPSTREAM_PREFIX
+        );
+        let caller = CodeModeCaller::WithAuthority {
+            caller: Box::new(CodeModeCaller::Scoped {
+                capabilities: labby_codemode::CodeModeCallerCapabilities {
+                    can_read: true,
+                    can_execute: true,
+                    ..Default::default()
+                },
+                sub: Some("personal-user".to_owned()),
+            }),
+            authority_token: "verified-request-token".to_owned(),
+        };
+        let result = CodeModeHost::call_tool(
+            &manager,
+            &id,
+            serde_json::json!({"upstream": "personal"}),
+            &caller,
+            CodeModeSurface::Mcp,
+            &ToolScope::default(),
+            ExecCtx::none(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            result.value["data"]["authorization_url"],
+            "https://example.test/authorize"
+        );
+        let error = CodeModeHost::call_tool(
+            &manager,
+            &id,
+            serde_json::json!({"upstream": "personal"}),
+            &caller,
+            CodeModeSurface::Mcp,
+            &ToolScope::default().read_only(),
+            ExecCtx::none(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind, "forbidden");
+    }
+
+    #[tokio::test]
+    async fn personal_oauth_atomic_tool_does_not_use_unauthenticated_in_process_peer() {
+        let cfg_dir = tempfile::tempdir().unwrap();
+        let manager = GatewayManager::new(
+            cfg_dir.path().join("config.toml"),
+            GatewayRuntimeHandle::default(),
+        );
+        let id = format!(
+            "{}gateway::gateway.gateway.oauth.authorize",
+            labby_runtime::gateway_config::IN_PROCESS_UPSTREAM_PREFIX
+        );
+        for caller in [
+            CodeModeCaller::TrustedLocal,
+            CodeModeCaller::Scoped {
+                capabilities: labby_codemode::CodeModeCallerCapabilities {
+                    can_read: true,
+                    can_execute: true,
+                    ..Default::default()
+                },
+                sub: Some("personal-user".to_string()),
+            },
+        ] {
+            let error = CodeModeHost::call_tool(
+                &manager,
+                &id,
+                serde_json::json!({"upstream": "personal"}),
+                &caller,
+                CodeModeSurface::Mcp,
+                &ToolScope::default(),
+                ExecCtx::none(),
+            )
+            .await
+            .expect_err("synthetic gateway peer has no personal authority context");
+            assert_eq!(error.kind, "forbidden");
+        }
+    }
 
     #[test]
     fn semantic_candidates_are_source_neutral_and_kind_filterable() {
