@@ -10,6 +10,24 @@ use serde_json::{Map, Value, json};
 /// Version number embedded in every structured agent-error envelope.
 pub const AGENT_ERROR_CONTRACT_VERSION: u32 = 1;
 
+/// Canonical operator commands for completing or removing a pending owner
+/// access bootstrap. Error producers compose these constants so recovery text
+/// cannot drift from the current CLI hierarchy.
+pub const ACCESS_BOOTSTRAP_CONSUME_COMMAND: &str = "labby auth bootstrap consume";
+pub const ACCESS_BOOTSTRAP_CLEANUP_COMMAND: &str = "labby auth bootstrap cleanup";
+
+/// Canonical owner-setup guidance shared by surface-specific setup errors.
+pub const ACCESS_SETUP_OPERATOR_GUIDANCE: &str = "Ask the operator of the Labby server to complete owner setup: installs with any OAuth provider (including bearer plus OAuth) complete browser owner setup in the Labby web UI, which takes effect without a restart; bearer-token-only installs run `labby setup` on the Labby server host and then restart the serving Labby process, because a running Labby only re-reads access setup at startup.";
+
+/// Canonical pending-bootstrap guidance, optionally including surface-specific
+/// arguments such as a known prepare id.
+#[must_use]
+pub fn pending_access_bootstrap_operator_guidance(command_arguments: &str) -> String {
+    format!(
+        "Ask the operator of the Labby server to finish any pending owner access bootstrap with `{ACCESS_BOOTSTRAP_CONSUME_COMMAND}{command_arguments}` or remove it with `{ACCESS_BOOTSTRAP_CLEANUP_COMMAND}{command_arguments}` while Labby is stopped."
+    )
+}
+
 // The sanitize/secret helpers moved to `crate::redact` (the charter home for
 // redaction). Re-exported here so existing `agent_error::…` imports keep
 // working. Pure module-placement move — zero behavior change beyond the
@@ -605,7 +623,10 @@ pub fn recovery_for_kind(
         "access_setup_required" => AgentRecoveryAdvice {
             action: AgentRecoveryAction::StartDependency,
             same_arguments: AgentSameArgumentsRetry::Never,
-            guidance: "Labby's durable access store is not set up, so no authorization decision can be made and nothing ran. Do not run setup yourself. Ask the operator of the Labby server to complete owner setup: installs with any OAuth provider (including bearer plus OAuth) complete browser owner setup in the Labby web UI, which takes effect without a restart; bearer-token-only installs run `labby setup` on the Labby server host and then restart the serving Labby process, because a running Labby only re-reads access setup at startup. If an owner access bootstrap is pending, the operator finishes it with `labby setup access-bootstrap consume` or removes it with `labby setup access-bootstrap cleanup` while Labby is stopped. Retry only after setup succeeds; do not retry unchanged before then.".to_string(),
+            guidance: format!(
+                "Labby's durable access store is not set up, so no authorization decision can be made and nothing ran. Do not run setup yourself. {ACCESS_SETUP_OPERATOR_GUIDANCE} {} Retry only after setup succeeds; do not retry unchanged before then.",
+                pending_access_bootstrap_operator_guidance("")
+            ),
             retry_after_ms: None,
         },
         "restart_required" => AgentRecoveryAdvice {
@@ -994,8 +1015,8 @@ mod tests {
             "restart the serving Labby process",
             "OAuth provider",
             "browser owner setup",
-            "labby setup access-bootstrap consume",
-            "labby setup access-bootstrap cleanup",
+            "labby auth bootstrap consume",
+            "labby auth bootstrap cleanup",
         ] {
             assert!(value.recovery.guidance.contains(phrase), "{phrase}");
         }

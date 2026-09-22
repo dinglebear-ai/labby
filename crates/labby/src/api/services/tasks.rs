@@ -111,7 +111,7 @@ mod tests {
     /// gateway: the same uninitialized store answers HTTP 409 here too.
     #[tokio::test]
     async fn tasks_report_an_uninitialized_access_store_as_a_setup_gate() {
-        let state = crate::api::services::gateway::tests::uninitialized_access_state(None).await;
+        let state = super::super::uninitialized_access_state().await;
         let identity = labby_auth::VerifiedIdentity::local_credential(
             labby_auth::Authenticator::StaticBearer,
             "static-bearer:primary",

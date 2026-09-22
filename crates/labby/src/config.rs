@@ -1477,16 +1477,38 @@ pub struct LegacyAuthStore {
     pub resolved: PathBuf,
     /// The existing `$HOME/.labby` store this installation no longer reads.
     pub legacy: PathBuf,
+    /// The signing-key path paired with [`Self::resolved`].
+    pub resolved_key: PathBuf,
+    /// The signing-key path paired with [`Self::legacy`].
+    pub legacy_key: PathBuf,
+    /// Whether the legacy signing key exists alongside the database.
+    pub legacy_key_exists: bool,
 }
 
 impl LegacyAuthStore {
     /// One operator-facing sentence naming both paths and the remedy.
     #[must_use]
     pub fn message(&self) -> String {
+        let remedy = if self.legacy_key_exists {
+            format!(
+                "Move {} and {} to {} and {}, respectively, or set LABBY_AUTH_SQLITE_PATH and LABBY_AUTH_KEY_PATH to the existing files.",
+                self.legacy.display(),
+                self.legacy_key.display(),
+                self.resolved.display(),
+                self.resolved_key.display(),
+            )
+        } else {
+            format!(
+                "Move {} to {}, or set LABBY_AUTH_SQLITE_PATH to the existing database. The paired legacy signing key {} was not found, so do not claim or attempt to move it.",
+                self.legacy.display(),
+                self.resolved.display(),
+                self.legacy_key.display(),
+            )
+        };
         format!(
-            "OAuth authorization store {} does not exist, but {} does: this installation resolves a different root, so previously issued OAuth tokens and registered clients are not visible to it. Move the auth.db and auth-jwt.pem files to the resolved root, or set LABBY_AUTH_SQLITE_PATH and LABBY_AUTH_KEY_PATH to the existing files. Labby never moves or deletes them for you.",
+            "OAuth authorization store {} does not exist, but {} does: this installation resolves a different root, so previously issued OAuth tokens and registered clients are not visible to it. {remedy} Labby never moves or deletes files for you.",
             self.resolved.display(),
-            self.legacy.display()
+            self.legacy.display(),
         )
     }
 }
@@ -1497,6 +1519,7 @@ impl LegacyAuthStore {
 pub fn legacy_auth_store(config: &auth_config::AuthConfig) -> Option<LegacyAuthStore> {
     legacy_auth_store_with(
         &config.sqlite_path,
+        &config.key_path,
         |name| std::env::var_os(name),
         |path| path.exists(),
     )
@@ -1504,21 +1527,39 @@ pub fn legacy_auth_store(config: &auth_config::AuthConfig) -> Option<LegacyAuthS
 
 fn legacy_auth_store_with(
     resolved: &Path,
+    resolved_key: &Path,
     lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
     exists: impl Fn(&Path) -> bool,
 ) -> Option<LegacyAuthStore> {
     let non_empty = |name: &str| lookup(name).filter(|value| !value.is_empty());
     // Only an explicitly relocated installation can leave a legacy store
     // behind; the default root is the legacy location.
-    non_empty("LABBY_HOME")?;
+    let installation_root =
+        crate::installation::InstallationPaths::from_root(PathBuf::from(non_empty("LABBY_HOME")?))
+            .ok()?
+            .root()
+            .to_path_buf();
     let home = non_empty("HOME").or_else(|| non_empty("USERPROFILE"))?;
-    let legacy = PathBuf::from(home).join(".labby").join("auth.db");
+    let legacy_root = PathBuf::from(home).join(".labby");
+    if installation_root == legacy_root
+        || resolved != installation_root.join("auth.db")
+        || resolved_key != installation_root.join("auth-jwt.pem")
+    {
+        // Explicit auth path overrides are intentional and carry no evidence
+        // that changing the installation root stranded a legacy store.
+        return None;
+    }
+    let legacy = legacy_root.join("auth.db");
+    let legacy_key = legacy_root.join("auth-jwt.pem");
     if legacy == resolved || exists(resolved) || !exists(&legacy) {
         return None;
     }
     Some(LegacyAuthStore {
         resolved: resolved.to_path_buf(),
         legacy,
+        resolved_key: resolved_key.to_path_buf(),
+        legacy_key_exists: exists(&legacy_key),
+        legacy_key,
     })
 }
 
@@ -3906,17 +3947,23 @@ future = "keep"
             }
         };
         let legacy = PathBuf::from("/home/operator/.labby/auth.db");
+        let legacy_key = PathBuf::from("/home/operator/.labby/auth-jwt.pem");
         let resolved = PathBuf::from("/srv/labby/auth.db");
-        let only_legacy = |path: &Path| path == legacy;
+        let resolved_key = PathBuf::from("/srv/labby/auth-jwt.pem");
+        let legacy_files = |path: &Path| path == legacy || path == legacy_key;
 
         let notice = legacy_auth_store_with(
             &resolved,
+            &resolved_key,
             vars(Some("/srv/labby"), "/home/operator"),
-            only_legacy,
+            legacy_files,
         )
         .expect("a legacy store this installation no longer reads");
         assert_eq!(notice.legacy, legacy);
         assert_eq!(notice.resolved, resolved);
+        assert_eq!(notice.legacy_key, legacy_key);
+        assert_eq!(notice.resolved_key, resolved_key);
+        assert!(notice.legacy_key_exists);
         let message = notice.message();
         assert!(message.contains("/srv/labby/auth.db"), "{message}");
         assert!(
@@ -3930,14 +3977,16 @@ future = "keep"
         assert_eq!(
             legacy_auth_store_with(
                 &PathBuf::from("/home/operator/.labby/auth.db"),
+                &PathBuf::from("/home/operator/.labby/auth-jwt.pem"),
                 vars(None, "/home/operator"),
-                only_legacy
+                legacy_files
             ),
             None
         );
         assert_eq!(
             legacy_auth_store_with(
                 &resolved,
+                &resolved_key,
                 vars(Some("/srv/labby"), "/home/operator"),
                 |_| true
             ),
@@ -3946,10 +3995,64 @@ future = "keep"
         assert_eq!(
             legacy_auth_store_with(
                 &resolved,
+                &resolved_key,
                 vars(Some("/srv/labby"), "/home/operator"),
                 |_| false
             ),
             None
+        );
+
+        // Explicit auth-store overrides carry no evidence that changing the
+        // installation root stranded the legacy defaults.
+        assert_eq!(
+            legacy_auth_store_with(
+                &PathBuf::from("/srv/custom/auth.sqlite"),
+                &resolved_key,
+                vars(Some("/srv/labby"), "/home/operator"),
+                legacy_files,
+            ),
+            None
+        );
+        assert_eq!(
+            legacy_auth_store_with(
+                &resolved,
+                &PathBuf::from("/srv/custom/signing.pem"),
+                vars(Some("/srv/labby"), "/home/operator"),
+                legacy_files,
+            ),
+            None
+        );
+
+        let missing_key_notice = legacy_auth_store_with(
+            &resolved,
+            &resolved_key,
+            vars(Some("/srv/labby"), "/home/operator"),
+            |path| path == legacy,
+        )
+        .expect("the legacy database is still actionable without a key");
+        assert!(!missing_key_notice.legacy_key_exists);
+        let message = missing_key_notice.message();
+        assert!(message.contains("was not found"), "{message}");
+        assert!(
+            !message.contains("Move /home/operator/.labby/auth.db and"),
+            "{message}"
+        );
+
+        let directory = tempfile::tempdir().expect("temporary installation parent");
+        let raw_root = directory.path().join("unused").join("..").join("labby");
+        let canonical_root = crate::installation::InstallationPaths::from_root(&raw_root)
+            .expect("normalized installation root")
+            .root()
+            .to_path_buf();
+        let normalized_notice = legacy_auth_store_with(
+            &canonical_root.join("auth.db"),
+            &canonical_root.join("auth-jwt.pem"),
+            vars(raw_root.to_str(), "/home/operator"),
+            legacy_files,
+        );
+        assert!(
+            normalized_notice.is_some(),
+            "normalized LABBY_HOME must retain the warning"
         );
     }
 

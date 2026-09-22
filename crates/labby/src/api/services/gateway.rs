@@ -498,7 +498,7 @@ fn inject_gateway_owner(
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -583,37 +583,14 @@ pub(crate) mod tests {
             .with_access_runtime(runtime)
     }
 
-    /// The state a fresh install serves before owner setup completes: the
-    /// access store exists as a path but was never initialized.
-    pub(crate) async fn uninitialized_access_state(
-        manager: Option<Arc<GatewayManager>>,
-    ) -> AppState {
-        let directory = tempfile::Builder::new()
-            .prefix("labby-access-setup-required-")
-            .tempdir_in(std::env::current_dir().expect("test working directory"))
-            .expect("access tempdir");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
-                .expect("secure access tempdir");
-        }
-        let runtime = Arc::new(
-            crate::access::AccessRuntime::initialize(directory.keep().join("access.db")).await,
-        );
-        let state = AppState::from_registry(build_default_registry()).with_access_runtime(runtime);
-        match manager {
-            Some(manager) => state.with_gateway_manager(manager),
-            None => state,
-        }
-    }
-
     /// Field report (v1.20.1): an uninitialized access store answered HTTP 503
     /// with a retryable transport error. It is a setup gate: HTTP 409, a
     /// distinct kind, and no same-argument retry.
     #[tokio::test]
     async fn gateway_action_reports_an_uninitialized_access_store_as_a_setup_gate() {
-        let state = uninitialized_access_state(Some(test_manager())).await;
+        let state = super::super::uninitialized_access_state()
+            .await
+            .with_gateway_manager(test_manager());
         let app = build_router_with_bearer(state, Some("test-token".into()), None);
         let response = post_gateway(app, json!({ "action": "gateway.list", "params": {} })).await;
 

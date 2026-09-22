@@ -135,8 +135,8 @@ Supported code may emit additional stable kinds, including:
   host and then restart the serving Labby process, because a running Labby only
   re-observes access setup at startup. A prepared-but-unconsumed owner
   bootstrap reports the same kind and is finished with
-  `labby setup access-bootstrap consume` or removed with
-  `labby setup access-bootstrap cleanup` while Labby is stopped. A blocked store
+  `labby auth bootstrap consume` or removed with
+  `labby auth bootstrap cleanup` while Labby is stopped. A blocked store
   (locked, corrupt, insecure, newer schema, read-only, unavailable) is a real
   outage and stays `service_unavailable`);
 - internal failures: `internal_error`, `server_error`, `decode_error`.

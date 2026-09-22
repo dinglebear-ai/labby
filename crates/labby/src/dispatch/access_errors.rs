@@ -205,26 +205,21 @@ const ACCESS_SETUP_REQUIRED_KIND: &str = "access_setup_required";
 /// serving Labby process. Browser owner setup and consuming a pending
 /// bootstrap both promote the running process directly.
 fn setup_required(reason: AccessSetupReason) -> ToolError {
+    use labby_runtime::agent_error::{
+        ACCESS_SETUP_OPERATOR_GUIDANCE, pending_access_bootstrap_operator_guidance,
+    };
     let message = match reason {
-        AccessSetupReason::Missing | AccessSetupReason::Uninitialized => {
-            "access setup is required: this Labby server's access store has not been \
-             initialized, so nothing ran. Ask the operator of the Labby server to complete \
-             owner setup: installs with any OAuth provider (including bearer plus OAuth) \
-             complete browser owner setup in the Labby web UI; bearer-token-only installs \
-             run `labby setup` on the Labby server host and then restart the serving Labby \
-             process. Retry after setup succeeds."
-        }
-        AccessSetupReason::ProofPending => {
-            "access setup is required: an owner access bootstrap was prepared on this Labby \
-             server but not completed, so nothing ran. Ask the operator of the Labby server to \
-             finish it with `labby setup access-bootstrap consume --prepare-id <id>`, or to \
-             remove it with `labby setup access-bootstrap cleanup --prepare-id <id>` while \
-             Labby is stopped and then complete owner setup. Retry after setup succeeds."
-        }
+        AccessSetupReason::Missing | AccessSetupReason::Uninitialized => format!(
+            "access setup is required: this Labby server's access store has not been initialized, so nothing ran. {ACCESS_SETUP_OPERATOR_GUIDANCE} Retry after setup succeeds."
+        ),
+        AccessSetupReason::ProofPending => format!(
+            "access setup is required: an owner access bootstrap was prepared on this Labby server but not completed, so nothing ran. {} Then complete owner setup. Retry after setup succeeds.",
+            pending_access_bootstrap_operator_guidance(" --prepare-id <id>")
+        ),
     };
     ToolError::Sdk {
         sdk_kind: ACCESS_SETUP_REQUIRED_KIND.to_owned(),
-        message: message.to_owned(),
+        message,
     }
 }
 
@@ -349,8 +344,8 @@ mod tests {
         for phrase in [
             "access setup is required",
             "Ask the operator of the Labby server",
-            "labby setup access-bootstrap consume",
-            "labby setup access-bootstrap cleanup",
+            "labby auth bootstrap consume",
+            "labby auth bootstrap cleanup",
         ] {
             assert!(message.contains(phrase), "{phrase}: {message}");
         }

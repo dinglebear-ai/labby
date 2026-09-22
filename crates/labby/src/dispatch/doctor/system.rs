@@ -692,7 +692,7 @@ pub async fn run_system_checks() -> Vec<Finding> {
         let config_path = install_root.join("config.toml").display().to_string();
         probes.push(process_probe(
             "lab",
-            "config:~/.labby/.env",
+            "config:installation-root/.env",
             path_test_command(&env_path, false),
             format!("{env_path} found"),
             Severity::Warn,
@@ -700,7 +700,7 @@ pub async fn run_system_checks() -> Vec<Finding> {
         ));
         probes.push(process_probe(
             "lab",
-            "config:~/.labby/.env:writable",
+            "config:installation-root/.env:writable",
             path_test_command(&env_path, true),
             format!("{env_path} is writable"),
             Severity::Fail,
@@ -708,7 +708,7 @@ pub async fn run_system_checks() -> Vec<Finding> {
         ));
         probes.push(process_probe(
             "lab",
-            "config:~/.labby:writable",
+            "config:installation-root:writable",
             path_test_command(&lab_dir, true),
             format!("{lab_dir} is writable"),
             Severity::Fail,
@@ -716,7 +716,7 @@ pub async fn run_system_checks() -> Vec<Finding> {
         ));
         probes.push(process_probe(
             "lab",
-            "config:~/.labby/config.toml",
+            "config:installation-root/config.toml",
             path_test_command(&config_path, false),
             format!("{config_path} found"),
             Severity::Warn,
