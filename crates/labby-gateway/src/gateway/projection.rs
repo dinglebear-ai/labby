@@ -282,8 +282,8 @@ fn is_nonessential_capability_error(message: &str) -> bool {
     // Only suppress the well-known optional-capability discovery failures
     // (prompts/resources list not implemented). Broad "-32601" / "Method not
     // found" matching would also hide real tool-call or handshake failures.
-    message.starts_with("failed to list prompts from upstream:")
-        || message.starts_with("failed to list resources from upstream:")
+    message.starts_with(crate::upstream::pool::UPSTREAM_PROMPT_LISTING_ERROR_PREFIX)
+        || message.starts_with(crate::upstream::pool::UPSTREAM_RESOURCE_LISTING_ERROR_PREFIX)
         || message.starts_with("does not implement MCP prompts discovery")
         || message.starts_with("does not implement MCP resources discovery")
 }
@@ -381,6 +381,26 @@ async fn optional_capability_warnings(
                  catalog; its tools are unaffected: {message}"
             ),
         });
+    }
+    // A rejected snapshot is a different failure mode: the upstream answered,
+    // so no capability error is recorded and its circuit stays closed, but its
+    // rows were not retained and it contributes nothing to the catalog.
+    // Without this the upstream would render as healthy with a normal resource
+    // count while publishing no routes at all. This reads the retained source
+    // state rather than the shared capability error slot, which every sibling
+    // listing clears, so the warning lasts exactly as long as the withholding.
+    if upstream.proxy_resources {
+        for withheld in pool.withheld_snapshots(&upstream.name).await {
+            let family = withheld.family;
+            let reason = withheld.reason;
+            warnings.push(super::view_models::ServerWarningView {
+                code: "resources_unavailable".to_string(),
+                message: format!(
+                    "this server's {family} were rejected ({reason}), so they are missing from \
+                     the catalog until it is listed again; its tools are unaffected"
+                ),
+            });
+        }
     }
     warnings
 }

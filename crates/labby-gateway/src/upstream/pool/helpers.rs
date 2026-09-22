@@ -35,6 +35,17 @@ pub struct UpstreamCachedSummary {
     pub supports_skills: Option<bool>,
 }
 
+/// Prefix every failed upstream `resources/list` error carries.
+///
+/// This string is a classification contract, not just a message: operator
+/// surfaces (`gateway::projection::is_nonessential_capability_error`, the
+/// doctor gateway check) match on it to decide that an optional capability
+/// failed rather than that the upstream is down. Producers and matchers share
+/// this constant so the two cannot drift apart silently.
+pub const UPSTREAM_RESOURCE_LISTING_ERROR_PREFIX: &str = "failed to list resources from upstream:";
+/// Prompt-listing counterpart of [`UPSTREAM_RESOURCE_LISTING_ERROR_PREFIX`].
+pub const UPSTREAM_PROMPT_LISTING_ERROR_PREFIX: &str = "failed to list prompts from upstream:";
+
 /// Per-upstream timeout for initial discovery (`list_tools`).
 pub(super) const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(15);
 /// Stdio discovery includes process/package-runner/SSH cold start, not just RPC.
