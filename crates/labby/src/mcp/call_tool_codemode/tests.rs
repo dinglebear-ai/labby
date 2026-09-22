@@ -138,6 +138,11 @@ fn scoped_capability_filter_rejects_disallowed_requested_upstreams() {
         .expect_err("disallowed explicit upstream must fail");
 
     assert_eq!(err.kind(), "route_scope_denied");
+    let message = err.to_string();
+    assert!(
+        message.contains("`beta`") && message.contains("`alpha`"),
+        "{message}"
+    );
 }
 
 #[test]
@@ -177,7 +182,7 @@ fn capability_filter_rejects_ambiguous_case_alias() {
         .expect_err("ambiguous case-only alias must fail closed");
 
     assert_eq!(err.kind(), "invalid_param");
-    assert!(err.to_string().contains("ambiguous by case"));
+    assert!(err.to_string().contains("is ambiguous"));
 }
 
 #[test]
@@ -191,6 +196,119 @@ fn capability_filter_prefers_exact_case_over_alias_matching() {
 
     assert!(filter.allows("Axon", "axon"));
     assert!(!filter.allows("axon", "axon"));
+}
+
+fn available(names: &[&str]) -> std::collections::BTreeSet<String> {
+    names.iter().map(|name| (*name).to_string()).collect()
+}
+
+fn upstreams_args(names: Value) -> serde_json::Map<String, Value> {
+    let mut args = serde_json::Map::new();
+    args.insert("upstreams".to_string(), names);
+    args
+}
+
+#[test]
+fn capability_filter_matches_underscore_alias_of_hyphenated_upstream() {
+    // Search results render namespaces as `claude_macpoo`, so agents echo
+    // that spelling back; it must resolve to the configured `claude-macpoo`.
+    let args = upstreams_args(json!(["claude_macpoo"]));
+    let filter = route_scoped_capability_filter(&args, None, &available(&["claude-macpoo"]))
+        .expect("separator-only alias should canonicalize");
+
+    assert!(filter.allows("claude-macpoo", "Bash"));
+    assert!(!filter.allows("claude_macpoo", "Bash"));
+}
+
+#[test]
+fn capability_filter_matches_case_and_separator_alias_together() {
+    let args = upstreams_args(json!(["Claude_MacPoo"]));
+    let filter = route_scoped_capability_filter(&args, None, &available(&["claude-macpoo"]))
+        .expect("case plus separator alias should canonicalize");
+
+    assert!(filter.allows("claude-macpoo", "Bash"));
+}
+
+#[test]
+fn capability_filter_canonicalizes_separator_alias_in_namespaced_tool_filter() {
+    let mut args = serde_json::Map::new();
+    args.insert("tools".to_string(), json!(["claude_macpoo::Bash"]));
+    let filter = route_scoped_capability_filter(&args, None, &available(&["claude-macpoo"]))
+        .expect("namespaced tool filter should canonicalize a separator alias");
+
+    assert!(filter.allows("claude-macpoo", "Bash"));
+}
+
+#[test]
+fn capability_filter_rejects_ambiguous_separator_alias_and_lists_candidates() {
+    let args = upstreams_args(json!(["A-b"]));
+    let err = route_scoped_capability_filter(&args, None, &available(&["a-b", "a_b"]))
+        .expect_err("alias matching two upstreams must fail closed");
+
+    assert_eq!(err.kind(), "invalid_param");
+    let message = err.to_string();
+    assert!(
+        message.contains("`a-b`") && message.contains("`a_b`"),
+        "{message}"
+    );
+}
+
+#[test]
+fn capability_filter_rejects_unknown_upstream_with_similar_name_suggestion() {
+    let args = upstreams_args(json!(["claude-macpo"]));
+    let err = route_scoped_capability_filter(
+        &args,
+        None,
+        &available(&["claude-macpoo", "claude-squirts", "github"]),
+    )
+    .expect_err("unknown upstream must not silently yield an empty catalog");
+
+    assert_eq!(err.kind(), "unknown_upstream");
+    let message = err.to_string();
+    assert!(message.contains("`claude-macpo`"), "{message}");
+    assert!(
+        message.contains("Did you mean `claude-macpoo`"),
+        "{message}"
+    );
+}
+
+#[test]
+fn capability_filter_unknown_upstream_without_similar_name_lists_known_upstreams() {
+    let args = upstreams_args(json!(["zzz"]));
+    let err = route_scoped_capability_filter(&args, None, &available(&["alpha", "beta"]))
+        .expect_err("unknown upstream must fail");
+
+    assert_eq!(err.kind(), "unknown_upstream");
+    let message = err.to_string();
+    assert!(!message.contains("Did you mean"), "{message}");
+    assert!(
+        message.contains("`alpha`") && message.contains("`beta`"),
+        "{message}"
+    );
+}
+
+#[test]
+fn capability_filter_unknown_upstream_suggestions_stay_inside_route_scope() {
+    let args = upstreams_args(json!(["secret-bet"]));
+    let allowed = available(&["alpha"]);
+    let err = route_scoped_capability_filter(
+        &args,
+        Some(&allowed),
+        &available(&["alpha", "secret-beta"]),
+    )
+    .expect_err("unknown upstream must fail");
+
+    assert_eq!(err.kind(), "unknown_upstream");
+    assert!(!err.to_string().contains("secret-beta"), "{err}");
+}
+
+#[test]
+fn capability_filter_keeps_builtin_provider_namespaces() {
+    let args = upstreams_args(json!(["unraid"]));
+    let filter = route_scoped_capability_filter(&args, None, &available(&["alpha"]))
+        .expect("built-in provider namespace is not a configured upstream but is valid");
+
+    assert!(filter.allows("unraid", "anything"));
 }
 
 #[test]

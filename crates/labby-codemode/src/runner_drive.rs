@@ -1926,6 +1926,7 @@ sleep 3600
                     entries: Arc::from([]),
                     catalog_json: Arc::from("[]"),
                     serialized_size: 2,
+                    withheld: Arc::from([]),
                 })
             }
 
@@ -2193,6 +2194,7 @@ sleep 3600
                     entries: Arc::from([]),
                     catalog_json: Arc::from("[]"),
                     serialized_size: 2,
+                    withheld: Arc::from([]),
                 })
             }
 

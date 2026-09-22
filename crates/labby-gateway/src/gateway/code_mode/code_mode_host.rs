@@ -392,6 +392,8 @@ impl CodeModeHost for GatewayManager {
                 .call_core_provider(tool, params, caller, surface, scope, ctx)
                 .await;
         }
+        let upstream = self.canonical_code_mode_upstream(upstream, scope).await?;
+        let upstream = upstream.as_str();
         let owner = runtime_owner(caller, surface);
         let oauth_subject = oauth_subject(caller);
 
@@ -414,7 +416,9 @@ impl CodeModeHost for GatewayManager {
             );
             return Err(ToolError::Sdk {
                 sdk_kind: "forbidden".to_string(),
-                message: format!("Tool `{upstream}::{tool}` is not explicitly read-only."),
+                message: format!(
+                    "Tool `{upstream}::{tool}` is not available in a read-only Code Mode run (`codemode_read`): the upstream does not annotate it `readOnlyHint: true`. Use the `codemode` tool to call it (requires the `lab` or `lab:admin` scope); if this client only holds `lab:read`, reconnect it with the `lab` scope."
+                ),
             }
             .into());
         }

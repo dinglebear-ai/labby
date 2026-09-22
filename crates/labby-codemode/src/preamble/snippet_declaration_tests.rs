@@ -347,3 +347,115 @@ fn javy_describe_keeps_future_catalog_kinds_metadata_only() {
     assert!(markdown.contains("- kind: `skill`"), "{markdown}");
     assert!(!markdown.contains("Parameters (TypeScript)"), "{markdown}");
 }
+
+fn run_withheld_discovery_script(body: &str) -> serde_json::Value {
+    let tool = CodeModeDiscoveryEntry::from_catalog(&CatalogDescriptor::tool(
+        "annotated",
+        "lookup",
+        "Look up a record",
+        None,
+        None,
+    ));
+    let withheld = [crate::host::WithheldTools {
+        namespace: "claude-macpoo".to_string(),
+        tool_count: 25,
+    }];
+    let preamble = super::generate_discovery_js_with_withheld(&[tool], 0.5, &withheld).unwrap();
+    let script = format!(
+        "{preamble}\n\
+         globalThis.callTool = async () => ({{ranked: []}});\n\
+         globalThis.result = null;\n\
+         (async () => {{ {body} }})().catch(error => {{ globalThis.result = JSON.stringify({{error: String(error)}}); }});"
+    );
+    let mut config = javy::Config::default();
+    config.memory_limit(8 * 1024 * 1024);
+    let runtime = javy::Runtime::new(config).unwrap();
+    runtime
+        .context()
+        .with(|cx| cx.eval::<(), _>(script))
+        .unwrap();
+    runtime.resolve_pending_jobs().unwrap();
+    let result: String = runtime
+        .context()
+        .with(|cx| cx.globals().get("result"))
+        .unwrap();
+    serde_json::from_str(&result).unwrap()
+}
+
+#[test]
+fn javy_empty_read_only_search_explains_withheld_tools() {
+    let value = run_withheld_discovery_script(
+        "globalThis.result = JSON.stringify(await codemode.search({query: 'Bash'}));",
+    );
+
+    assert_eq!(value["total"], 0, "{value}");
+    assert_eq!(value["withheld"][0]["namespace"], "claude-macpoo");
+    assert_eq!(value["withheld"][0]["tool_count"], 25);
+    let hint = value["hint"].as_str().unwrap();
+    assert!(hint.contains("`claude-macpoo`"), "{hint}");
+    assert!(hint.contains("Use the `codemode` tool"), "{hint}");
+    assert!(hint.contains("`lab` scope"), "{hint}");
+}
+
+#[test]
+fn javy_search_naming_withheld_namespace_reports_it_alongside_results() {
+    let value = run_withheld_discovery_script(
+        "globalThis.result = JSON.stringify(await codemode.search({query: 'claude_macpoo lookup'}));",
+    );
+
+    assert_eq!(
+        value["withheld"][0]["namespace"], "claude-macpoo",
+        "{value}"
+    );
+    assert!(value["hint"].as_str().unwrap().contains("codemode_read"));
+}
+
+#[test]
+fn javy_search_without_withheld_relevance_keeps_plain_shape() {
+    let value = run_withheld_discovery_script(
+        "globalThis.result = JSON.stringify(await codemode.search({query: 'lookup record'}));",
+    );
+
+    assert_eq!(value["total"], 1, "{value}");
+    assert!(value.get("withheld").is_none(), "{value}");
+    assert!(value.get("hint").is_none(), "{value}");
+}
+
+#[test]
+fn javy_describe_withheld_tool_explains_read_only_gate() {
+    for target in [
+        "claude_macpoo.Bash",
+        "claude-macpoo::Bash",
+        "Claude-MacPoo::Read",
+    ] {
+        let value = run_withheld_discovery_script(&format!(
+            "try {{ await codemode.describe({target:?}); globalThis.result = JSON.stringify({{unexpected: true}}); }} \
+             catch (error) {{ globalThis.result = error.message; }}"
+        ));
+
+        assert_eq!(value["kind"], "forbidden", "{target}: {value}");
+        assert_eq!(value["reason"], "read_only_withheld");
+        assert_eq!(value["namespace"], "claude-macpoo");
+        assert!(
+            value["message"]
+                .as_str()
+                .unwrap()
+                .contains("Use the `codemode` tool")
+        );
+    }
+}
+
+#[test]
+fn javy_describe_unknown_target_points_at_search() {
+    let value = run_withheld_discovery_script(
+        "try { await codemode.describe('nope.missing'); } catch (error) { globalThis.result = error.message; }",
+    );
+
+    assert_eq!(value["kind"], "unknown_tool", "{value}");
+    assert!(
+        value["message"]
+            .as_str()
+            .unwrap()
+            .contains("codemode.search")
+    );
+}

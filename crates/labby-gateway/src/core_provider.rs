@@ -505,6 +505,9 @@ pub fn merge_tools_render(
         entries: entries.into(),
         serialized_size: catalog_json.len(),
         catalog_json: catalog_json.into(),
+        // Core operations are not upstream tools; the upstream withheld
+        // summary is unchanged by merging them.
+        withheld: base.withheld,
     })
 }
 
@@ -564,6 +567,21 @@ mod tests {
 
     #[cfg(unix)]
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    #[test]
+    fn merging_core_tools_preserves_upstream_withheld_summary() {
+        let mut base = ToolsRender::empty();
+        base.withheld = std::sync::Arc::from([labby_codemode::WithheldTools {
+            namespace: "claude-macpoo".to_string(),
+            tool_count: 25,
+        }]);
+
+        let merged =
+            merge_tools_render(base, Vec::new(), &ToolScope::default().read_only()).expect("merge");
+
+        assert_eq!(merged.withheld.len(), 1);
+        assert_eq!(merged.withheld[0].namespace, "claude-macpoo");
+    }
 
     #[test]
     fn shared_provider_fixture_matches_the_client_contract() {

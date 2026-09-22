@@ -31,6 +31,16 @@ The catalog checks the standard MCP annotations during discovery. The call path
 checks the current live descriptor again immediately before dispatch. A changed
 descriptor is rejected and must be rediscovered.
 
+Withheld tools are reported, not silently dropped. When a `codemode_read` run
+hides in-scope tools for lack of `readOnlyHint: true`, `codemode.search()` adds
+a `withheld` array (`namespace`, `tool_count`, `guidance`) and a `hint` whenever
+the search returns nothing or the query names a withheld upstream.
+`codemode.describe()` on a withheld tool throws `kind: "forbidden"` with
+`reason: "read_only_withheld"`. A direct `callTool` to one rejects as
+`forbidden`. All three tell the agent to use `codemode`, which requires `lab` or
+`lab:admin`, and to reconnect the client with the `lab` scope if it only holds
+`lab:read`.
+
 The old `trusted_read_only_tools` configuration field is retired. It remains
 accepted so an existing config file still parses, but it has no effect anywhere:
 neither catalog admission nor the execution gate reads it. `gateway.code_mode.set`
@@ -524,7 +534,18 @@ When search results do not match live execution, check the layers in order:
 capability set. When present, each filter must be a JSON array of strings; other
 shapes reject with `invalid_param`. Empty strings are ignored. The injected proxy only
 includes allowed tools, and direct `callTool` IDs outside the allowlist reject as
-`unknown_tool`.
+`unknown_tool` with guidance naming the in-scope upstreams.
+
+Upstream names match regardless of ASCII case and `-`/`_`/`.` separators,
+because discovery renders a configured `claude-macpoo` as the JS identifier
+`claude_macpoo`. The rule applies to `upstreams`, `tools`, and `callTool` ids,
+and to `describe` for withheld tools. An exact configured name always wins. An
+alias matching several configured names fails closed with `invalid_param` and
+lists them. A name that matches nothing rejects as `unknown_upstream` with a
+"Did you mean" suggestion, or a bounded list of known upstreams when nothing is
+close. Suggestions only draw from upstreams visible to the caller: route-scoped
+callers never see names outside their route, and priority-0 upstreams are never
+suggested.
 
 ## Result Contract
 

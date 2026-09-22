@@ -228,11 +228,15 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             .collect::<Vec<_>>();
         let code_mode_config = host.config().await;
         let blend_weight = code_mode_config.semantic_search.blend_weight;
-        let discovery_js = super::preamble::generate_discovery_js(&discovery_entries, blend_weight)
-            .map_err(|message| ToolError::Sdk {
-                sdk_kind: "invalid_param".to_string(),
-                message,
-            })?;
+        let discovery_js = super::preamble::generate_discovery_js_with_withheld(
+            &discovery_entries,
+            blend_weight,
+            &render.withheld,
+        )
+        .map_err(|message| ToolError::Sdk {
+            sdk_kind: "invalid_param".to_string(),
+            message,
+        })?;
         let tool_entries = catalog
             .iter()
             .filter(|entry| entry.kind == CodeModeCatalogKind::Tool)
@@ -413,22 +417,13 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                         .map(|value| ToolCallOutcome { value, ui: None })
                         .map_err(CodeModeCallError::from);
                 }
-                if !scope.allows(&namespace, &tool) {
-                    return Err(CodeModeCallError::new(
-                        "unknown_tool",
-                        format!(
-                            "tool `{}` is outside this Code Mode execution capability set",
-                            parsed.raw
-                        ),
-                    )
-                    .with_tool(parsed.raw.clone()));
-                }
+                let id = scoped_call_id(scope, &parsed.raw, &namespace, &tool)?;
                 // The host applies destructive-tool policy when it resolves the
                 // call (read-only callers cannot run a tool the host marks
                 // destructive); it surfaces a `forbidden` error which passes
                 // straight through.
                 let outcome = host
-                    .call_tool(&parsed.raw, params, &caller, surface, scope, ctx)
+                    .call_tool(&id, params, &caller, surface, scope, ctx)
                     .await?;
                 if let Some(ui) = outcome.ui {
                     if let Ok(mut sink) = self.ui_capture.lock() {
@@ -863,6 +858,121 @@ fn ui_resource_uri(ui_meta: &Value) -> Option<&str> {
     ui_meta.get("resourceUri").and_then(Value::as_str)
 }
 
+/// Resolve a `callTool` id against this execution's scope.
+///
+/// A namespace that is only a case/separator alias of exactly one scoped
+/// namespace (discovery shows `claude-macpoo` as `claude_macpoo`) resolves to
+/// it. Anything else outside the scope fails with guidance naming what the
+/// scope does allow.
+fn scoped_call_id(
+    scope: &ToolScope,
+    raw: &str,
+    namespace: &str,
+    tool: &str,
+) -> Result<String, CodeModeCallError> {
+    if scope.allows(namespace, tool) {
+        return Ok(raw.to_string());
+    }
+    let Some(allowed) = scope.allowed_namespaces() else {
+        return Err(CodeModeCallError::new(
+            "unknown_tool",
+            format!(
+                "tool `{raw}` is outside this Code Mode execution capability set: it is not in the `tools` allowlist. Call a tool listed in the `tools` input, or rerun without that filter."
+            ),
+        )
+        .with_tool(raw.to_string()));
+    };
+    let resolved =
+        match crate::resolve_namespace_alias(namespace, allowed.iter().map(String::as_str)) {
+            crate::NamespaceResolution::Resolved(canonical) if canonical != namespace => {
+                Some(canonical)
+            }
+            _ => None,
+        };
+    if let Some(canonical) = resolved
+        && scope.allows(canonical, tool)
+    {
+        return Ok(crate::types::namespaced_tool_id(canonical, tool));
+    }
+    let message = if resolved.is_some() || allowed.contains(namespace) {
+        format!(
+            "tool `{raw}` is outside this Code Mode execution capability set: it is not in the `tools` allowlist. Call a tool listed in the `tools` input, or rerun without that filter."
+        )
+    } else {
+        format!(
+            "tool `{raw}` is outside this Code Mode execution capability set: upstream `{namespace}` is not in scope. {} Use codemode.search() to find a valid `upstream::tool` id.",
+            crate::unknown_namespace_guidance(namespace, allowed)
+        )
+    };
+    Err(CodeModeCallError::new("unknown_tool", message).with_tool(raw.to_string()))
+}
+
+#[cfg(test)]
+mod scoped_call_id_tests {
+    use super::scoped_call_id;
+    use crate::ToolScope;
+
+    fn scope(namespaces: &[&str], tools: &[&str]) -> ToolScope {
+        ToolScope::new(
+            namespaces.iter().map(|name| (*name).to_string()).collect(),
+            tools.iter().map(|name| (*name).to_string()).collect(),
+        )
+    }
+
+    #[test]
+    fn in_scope_id_is_unchanged() {
+        let id = scoped_call_id(
+            &scope(&["claude-macpoo"], &[]),
+            "claude-macpoo::Bash",
+            "claude-macpoo",
+            "Bash",
+        )
+        .expect("in scope");
+        assert_eq!(id, "claude-macpoo::Bash");
+    }
+
+    #[test]
+    fn separator_alias_resolves_to_scoped_namespace() {
+        let id = scoped_call_id(
+            &scope(&["claude-macpoo"], &[]),
+            "claude_macpoo::Bash",
+            "claude_macpoo",
+            "Bash",
+        )
+        .expect("alias resolves");
+        assert_eq!(id, "claude-macpoo::Bash");
+    }
+
+    #[test]
+    fn out_of_scope_namespace_suggests_similar_scoped_upstream() {
+        let err = scoped_call_id(
+            &scope(&["claude-macpoo"], &[]),
+            "claude-macpo::Bash",
+            "claude-macpo",
+            "Bash",
+        )
+        .expect_err("typo is outside scope");
+        let message = err.to_string();
+        assert!(
+            message.contains("Did you mean `claude-macpoo`"),
+            "{message}"
+        );
+        assert!(message.contains("codemode.search()"), "{message}");
+    }
+
+    #[test]
+    fn tool_outside_tools_allowlist_says_so() {
+        let err = scoped_call_id(
+            &scope(&["claude-macpoo"], &["claude-macpoo::Read"]),
+            "claude_macpoo::Bash",
+            "claude_macpoo",
+            "Bash",
+        )
+        .expect_err("tool not allowlisted");
+        assert!(err.to_string().contains("`tools` allowlist"), "{err}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1198,6 +1308,7 @@ mod tests {
                 entries,
                 catalog_json: Arc::clone(&self.catalog_json),
                 serialized_size: self.catalog_json.len(),
+                withheld: Arc::from([]),
             })
         }
 

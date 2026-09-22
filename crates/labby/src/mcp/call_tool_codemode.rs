@@ -514,41 +514,62 @@ pub(crate) fn code_arg(
     Ok(code)
 }
 
+/// Code Mode namespaces served by built-in providers rather than configured
+/// upstreams. They are valid filter targets even though `upstream_names()`
+/// never lists them.
+const BUILTIN_CODE_MODE_NAMESPACES: &[&str] = &["unraid", "state", "git", "openapi"];
+
+fn unknown_upstream_error(requested: &str, visible: &BTreeSet<String>) -> DispatchToolError {
+    DispatchToolError::Sdk {
+        sdk_kind: "unknown_upstream".to_string(),
+        message: format!(
+            "Code Mode upstream `{requested}` was not found. {} Pass a configured upstream name, or omit `upstreams` and use codemode.search() to discover namespaces.",
+            labby_codemode::unknown_namespace_guidance(requested, visible)
+        ),
+    }
+}
+
+/// Resolve a requested `upstreams`/`tools` namespace to its configured name.
+///
+/// Exact names win. Otherwise a unique case- or separator-insensitive alias
+/// resolves; an ambiguous alias fails closed. Unknown names fail with
+/// `unknown_upstream` and suggestions drawn only from `visible`, so a
+/// protected route never reveals upstreams outside its scope.
 fn canonicalize_upstream_filter(
     requested: &str,
     available: &BTreeSet<String>,
+    visible: &BTreeSet<String>,
 ) -> Result<String, DispatchToolError> {
     let requested = requested.trim();
-    if requested.is_empty() || available.contains(requested) {
+    if requested.is_empty()
+        || available.contains(requested)
+        || BUILTIN_CODE_MODE_NAMESPACES.contains(&requested)
+    {
         return Ok(requested.to_string());
     }
 
-    let mut matches = available
-        .iter()
-        .filter(|candidate| candidate.eq_ignore_ascii_case(requested));
-    let Some(first) = matches.next() else {
-        return Ok(requested.to_string());
-    };
-    if matches.next().is_some() {
-        return Err(DispatchToolError::Sdk {
+    match labby_codemode::resolve_namespace_alias(requested, available.iter().map(String::as_str)) {
+        labby_codemode::NamespaceResolution::Resolved(name) => Ok(name.to_string()),
+        labby_codemode::NamespaceResolution::Unknown => {
+            Err(unknown_upstream_error(requested, visible))
+        }
+        labby_codemode::NamespaceResolution::Ambiguous(matches) => Err(DispatchToolError::Sdk {
             sdk_kind: "invalid_param".to_string(),
-            message: format!(
-                "Code Mode upstream `{requested}` is ambiguous by case; use the exact configured casing"
-            ),
-        });
+            message: labby_codemode::ambiguous_namespace_message(requested, &matches),
+        }),
     }
-    Ok(first.clone())
 }
 
 fn canonicalize_tool_filter(
     requested: &str,
     available: &BTreeSet<String>,
+    visible: &BTreeSet<String>,
 ) -> Result<String, DispatchToolError> {
     let requested = requested.trim();
     let Some((namespace, tool)) = requested.split_once("::") else {
         return Ok(requested.to_string());
     };
-    let namespace = canonicalize_upstream_filter(namespace, available)?;
+    let namespace = canonicalize_upstream_filter(namespace, available, visible)?;
     Ok(format!("{namespace}::{tool}"))
 }
 
@@ -557,25 +578,38 @@ fn route_scoped_capability_filter(
     route_allowed: Option<&BTreeSet<String>>,
     available_upstreams: &BTreeSet<String>,
 ) -> Result<ToolScope, DispatchToolError> {
+    let visible = match route_allowed {
+        Some(allowed) => allowed
+            .intersection(available_upstreams)
+            .cloned()
+            .collect::<BTreeSet<_>>(),
+        None => available_upstreams.clone(),
+    };
     let requested_upstreams = string_array_arg(args, "upstreams")?
         .into_iter()
-        .map(|name| canonicalize_upstream_filter(&name, available_upstreams))
+        .map(|name| canonicalize_upstream_filter(&name, available_upstreams, &visible))
         .collect::<Result<Vec<_>, _>>()?;
     if let Some(allowed) = route_allowed
-        && requested_upstreams
+        && let Some(denied) = requested_upstreams
             .iter()
-            .any(|name| !allowed.contains(name))
+            .find(|name| !allowed.contains(*name))
     {
+        let exposed = if visible.is_empty() {
+            "none".to_string()
+        } else {
+            labby_codemode::backtick_list(visible.iter().map(String::as_str))
+        };
         return Err(DispatchToolError::Sdk {
             sdk_kind: "route_scope_denied".to_string(),
-            message: "Code Mode requested an upstream outside this protected route scope"
-                .to_string(),
+            message: format!(
+                "Code Mode upstream `{denied}` is outside this protected route's scope. This route exposes: {exposed}. Request one of those, or connect through a route that publishes `{denied}`."
+            ),
         });
     }
 
     let tools = string_array_arg(args, "tools")?
         .into_iter()
-        .map(|name| canonicalize_tool_filter(&name, available_upstreams))
+        .map(|name| canonicalize_tool_filter(&name, available_upstreams, &visible))
         .collect::<Result<Vec<_>, _>>()?;
     let Some(allowed) = route_allowed else {
         return Ok(ToolScope::new(requested_upstreams, tools));

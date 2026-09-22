@@ -3170,3 +3170,68 @@ async fn an_entirely_suppressed_fleet_is_an_error_not_an_empty_catalog() {
     );
     drop(dead_server);
 }
+
+#[tokio::test]
+async fn canonical_code_mode_upstream_resolves_separator_and_case_aliases() {
+    let (manager, _pool) = code_mode_manager_with_upstreams(vec![
+        fixture_http_upstream("claude-macpoo"),
+        fixture_http_upstream("github"),
+    ])
+    .await;
+    let scope = ToolScope::default();
+
+    for requested in ["claude-macpoo", "claude_macpoo", "Claude_MacPoo"] {
+        assert_eq!(
+            manager
+                .canonical_code_mode_upstream(requested, &scope)
+                .await
+                .expect("alias resolves"),
+            "claude-macpoo",
+            "{requested}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn canonical_code_mode_upstream_unknown_name_suggests_similar_upstream() {
+    let (manager, _pool) = code_mode_manager_with_upstreams(vec![
+        fixture_http_upstream("claude-macpoo"),
+        fixture_http_upstream("github"),
+    ])
+    .await;
+
+    let err = manager
+        .canonical_code_mode_upstream("claude-macpo", &ToolScope::default())
+        .await
+        .expect_err("unknown upstream");
+
+    assert_eq!(err.kind(), "unknown_upstream");
+    let message = err.to_string();
+    assert!(
+        message.contains("Did you mean `claude-macpoo`"),
+        "{message}"
+    );
+    assert!(message.contains("codemode.search()"), "{message}");
+}
+
+#[tokio::test]
+async fn canonical_code_mode_upstream_suggestions_respect_scope_and_priority() {
+    let mut suppressed = fixture_http_upstream("secret-beta");
+    suppressed.priority = 0.0;
+    let (manager, _pool) = code_mode_manager_with_upstreams(vec![
+        fixture_http_upstream("alpha"),
+        fixture_http_upstream("scoped-out-beta"),
+        suppressed,
+    ])
+    .await;
+    let scope = ToolScope::scoped_namespaces(vec!["alpha".to_string()], Vec::new());
+
+    let err = manager
+        .canonical_code_mode_upstream("beta", &scope)
+        .await
+        .expect_err("unknown upstream");
+    let message = err.to_string();
+    assert!(!message.contains("secret-beta"), "{message}");
+    assert!(!message.contains("scoped-out-beta"), "{message}");
+    assert!(message.contains("`alpha`"), "{message}");
+}

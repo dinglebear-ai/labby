@@ -91,6 +91,52 @@ impl GatewayManager {
         Ok(matches)
     }
 
+    /// Map a `callTool` namespace to its configured upstream name.
+    ///
+    /// Discovery renders `claude-macpoo` as `claude_macpoo`, so agents send
+    /// either spelling; a unique case/separator alias resolves. Unknown names
+    /// fail with `unknown_upstream` and suggestions drawn only from routable
+    /// upstreams inside `scope`, so a scoped caller never learns other names.
+    pub async fn canonical_code_mode_upstream(
+        &self,
+        requested: &str,
+        scope: &labby_codemode::ToolScope,
+    ) -> Result<String, ToolError> {
+        let cfg = self.config.read().await;
+        let configured = cfg
+            .upstream
+            .iter()
+            .map(|upstream| upstream.name.as_str())
+            .collect::<Vec<_>>();
+        match labby_codemode::resolve_namespace_alias(requested, configured.iter().copied()) {
+            labby_codemode::NamespaceResolution::Resolved(name) => Ok(name.to_string()),
+            labby_codemode::NamespaceResolution::Ambiguous(matches) => Err(ToolError::Sdk {
+                sdk_kind: "invalid_param".to_string(),
+                message: labby_codemode::ambiguous_namespace_message(requested, &matches),
+            }),
+            labby_codemode::NamespaceResolution::Unknown => {
+                let visible = cfg
+                    .upstream
+                    .iter()
+                    .filter(|upstream| {
+                        is_routable(upstream.priority)
+                            && scope
+                                .allowed_namespaces()
+                                .is_none_or(|allowed| allowed.contains(&upstream.name))
+                    })
+                    .map(|upstream| upstream.name.clone())
+                    .collect::<BTreeSet<_>>();
+                Err(ToolError::Sdk {
+                    sdk_kind: "unknown_upstream".to_string(),
+                    message: format!(
+                        "Code Mode upstream `{requested}` was not found. {} Use codemode.search() to find a valid `upstream::tool` id.",
+                        labby_codemode::unknown_namespace_guidance(requested, &visible)
+                    ),
+                })
+            }
+        }
+    }
+
     pub async fn resolve_code_mode_upstream_tool(
         &self,
         upstream: &str,
