@@ -229,8 +229,8 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         # v1.13.3 reads .env and auth.db from $HOME/.labby regardless of LABBY_HOME.
         unix = self.text("scripts/ci/n-minus-one/unix")
         self.assertIn('labby_home="$user_home/.labby"', unix)
-        self.assertEqual(1, unix.count('LABBY_HOME="$labby_home"'))
-        self.assertEqual(1, unix.count('HOME="$user_home" LABBY_HOME="$labby_home"'))
+        self.assertEqual(2, unix.count('LABBY_HOME="$labby_home"'))
+        self.assertEqual(2, unix.count('HOME="$user_home" LABBY_HOME="$labby_home"'))
         self.assertIn('scripts/ci/verified-process.py" identity', unix)
         self.assertIn('scripts/ci/verified-process.py" stop', unix)
         windows = self.text("scripts/ci/n-minus-one/windows")
@@ -254,6 +254,22 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("-RedirectStandardOutput '$pwsh_work_root", windows)
         self.assertIn("-RedirectStandardError '$pwsh_work_root", windows)
         self.assertIn('"$root"/*/service*.log', self.text("scripts/ci/n-minus-one-diagnostics.sh"))
+
+    def test_n_minus_one_installs_remain_noninteractive_and_bootstrap_owner(self) -> None:
+        for name in ("unix", "macos", "incus", "host-service"):
+            adapter = self.text(f"scripts/ci/n-minus-one/{name}")
+            previous = adapter[adapter.index("install-previous)"):adapter.index("seed-state)")]
+            self.assertIn("LABBY_INSTALL_NO_SETUP=1", previous, name)
+        for name in ("unix", "macos"):
+            adapter = self.text(f"scripts/ci/n-minus-one/{name}")
+            upgrade = adapter[adapter.index("upgrade)"):adapter.index("verify-candidate)")]
+            self.assertIn("LABBY_INSTALL_NO_SETUP=1", upgrade, name)
+            self.assertIn("setup --bootstrap-static-owner", upgrade, name)
+            self.assertIn("LABBY_AUTH_MODE=bearer", adapter, name)
+        incus = self.text("scripts/ci/n-minus-one/incus")
+        upgrade = incus[incus.index("upgrade)"):incus.index("verify-candidate)")]
+        self.assertIn("setup --bootstrap-static-owner", upgrade)
+        self.assertIn("systemctl restart labby", upgrade)
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "pidfd is Linux-specific")
     def test_unix_restart_waits_for_prior_daemon_exit_before_replacement(self) -> None:
