@@ -134,7 +134,7 @@ impl GatewayManager {
     /// per subject). Lookups stop at the first hit and never clone tool lists.
     /// Upstreams with no live read-only tool yet are skipped and retried on
     /// the next call, so an example appears once an upstream connects and then
-    /// stays put (see [`CodeModeExampleMemo`]).
+    /// stays put (see `CodeModeExampleMemo`).
     pub async fn code_mode_example_tool(
         &self,
         upstreams: &BTreeSet<String>,

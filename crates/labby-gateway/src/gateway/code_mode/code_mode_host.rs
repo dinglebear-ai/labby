@@ -1250,7 +1250,7 @@ impl GatewayManager {
             destructive_denial_kind,
         )
         .await
-        .map_err(CodeModeCallError::into_tool_error)
+        .map_err(CodeModeCallError::into_contract_tool_error)
     }
 
     async fn execute_upstream_tool_checked_inner(
@@ -1526,14 +1526,28 @@ impl GatewayManager {
             None => {
                 pool.record_failure(upstream, format!("upstream `{upstream}` is not connected"))
                     .await;
-                Err(CodeModeCallError::new(
-                    "not_found",
-                    format!("upstream tool `{upstream}::{tool}` was not found"),
-                )
-                .with_tool(id))
+                Err(upstream_not_connected_call_error(&id))
             }
         }
     }
+}
+
+/// The tool exists in the catalog but its upstream has no live connection, so
+/// nothing was sent. Reporting this as a missing tool (`not_found` +
+/// `rediscover`) would send agents back to search, which lists the same tool
+/// again.
+fn upstream_not_connected_call_error(id: &str) -> CodeModeCallError {
+    let upstream = id.split_once("::").map_or(id, |(upstream, _)| upstream);
+    CodeModeCallError::new(
+        "not_connected",
+        format!(
+            "Upstream `{upstream}` is not connected, so `{id}` was not called. The tool exists; \
+retry shortly (the upstream may be reconnecting), or ask the operator to check the \
+upstream's health in gateway status if it stays down."
+        ),
+    )
+    .with_tool(id.to_string())
+    .with_side_effects(CodeModeSideEffectRisk::NoneExpected)
 }
 
 fn contract_changed_call_error(id: &str) -> CodeModeCallError {
@@ -1550,10 +1564,7 @@ fn map_checked_call_error(error: CheckedToolCallError, id: &str) -> CodeModeCall
     match error {
         CheckedToolCallError::Check(error) => *error,
         CheckedToolCallError::MissingTool => contract_changed_call_error(id),
-        CheckedToolCallError::Unavailable => {
-            CodeModeCallError::new("not_found", format!("upstream tool `{id}` was not found"))
-                .with_tool(id.to_string())
-        }
+        CheckedToolCallError::Unavailable => upstream_not_connected_call_error(id),
         CheckedToolCallError::Connect(message) => CodeModeCallError::new(
             "auth_failed",
             labby_runtime::agent_error::sanitize_error_text(

@@ -1084,6 +1084,8 @@ async fn code_mode_host_blocks_unannotated_tools_for_read_only_callers() {
     pool.insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "ping"))
         .await;
 
+    // Read-only Code Mode runs (`codemode_read`) are expressed by a read-only
+    // scope; the host gate re-checks the live descriptor before dispatch.
     let err = CodeModeHost::call_tool(
         &manager,
         "alpha::ping",
@@ -1093,21 +1095,19 @@ async fn code_mode_host_blocks_unannotated_tools_for_read_only_callers() {
             sub: Some("user-1".to_string()),
         },
         CodeModeSurface::Mcp,
-        &ToolScope::new(Vec::new(), Vec::new()),
+        &ToolScope::new(Vec::new(), Vec::new()).read_only(),
         labby_codemode::ExecCtx::none(),
     )
     .await
     .expect_err("a read-only caller must not execute an unannotated tool");
 
-    // Two layers deny this, and the catalog is the first: an unannotated tool is
-    // not admitted to a read-only caller's catalog at all, so resolution fails
-    // before the execution gate is consulted. `forbidden` would mean the catalog
-    // admitted it and only the gate caught it; either is a denial, and asserting
-    // both keeps this test honest if the layering ever shifts.
-    assert!(
-        matches!(err.kind(), "not_found" | "forbidden"),
-        "a read-only caller must be denied an unannotated tool, got kind {}: {}",
+    // This must be the read-only gate itself. The fixture upstream has no live
+    // peer, so any other outcome (such as `not_connected`) would mean the gate
+    // was never reached.
+    assert_eq!(
         err.kind(),
+        "forbidden",
+        "a read-only caller must be denied an unannotated tool, got: {}",
         err.user_message()
     );
 }
@@ -1138,18 +1138,21 @@ async fn code_mode_host_admits_annotated_read_only_tools_without_an_operator_all
             sub: Some("user-1".to_string()),
         },
         CodeModeSurface::Mcp,
-        &ToolScope::new(Vec::new(), Vec::new()),
+        &ToolScope::new(Vec::new(), Vec::new()).read_only(),
         labby_codemode::ExecCtx::none(),
     )
     .await;
 
-    if let Err(err) = outcome {
-        assert!(
-            !err.user_message().contains("not explicitly annotated"),
-            "an annotated read-only tool must clear the read-only gate, got: {}",
-            err.user_message()
-        );
-    }
+    // The fixture upstream has no live peer, so a call that clears the
+    // read-only gate fails at dispatch with `not_connected`. `forbidden` would
+    // mean the gate rejected an annotated read-only tool.
+    let err = outcome.expect_err("the fixture upstream has no live peer");
+    assert_eq!(
+        err.kind(),
+        "not_connected",
+        "an annotated read-only tool must clear the read-only gate, got: {}",
+        err.user_message()
+    );
 }
 
 #[tokio::test]
@@ -3430,4 +3433,39 @@ async fn code_mode_example_tool_resets_when_the_config_generation_changes() {
             .tool,
         "Glob"
     );
+}
+
+/// A catalog entry whose connection is gone must not be reported as a missing
+/// tool: `not_found` + `rediscover` sends agents back to search, which lists
+/// the same tool again, in a loop.
+#[tokio::test]
+async fn code_mode_host_reports_disconnected_upstream_as_not_connected() {
+    let (manager, pool) =
+        code_mode_manager_with_upstreams(vec![fixture_http_upstream("claude-macpoo")]).await;
+    pool.insert_entry_for_tests(
+        "claude-macpoo",
+        healthy_entry_with_tool("claude-macpoo", "Bash"),
+    )
+    .await;
+
+    let err = CodeModeHost::call_tool(
+        &manager,
+        "claude_macpoo::Bash",
+        json!({}),
+        &CodeModeCaller::TrustedLocal,
+        CodeModeSurface::Mcp,
+        &ToolScope::new(Vec::new(), Vec::new()),
+        labby_codemode::ExecCtx::none(),
+    )
+    .await
+    .expect_err("the fixture entry has no live peer");
+
+    assert_eq!(err.kind(), "not_connected", "{}", err.user_message());
+    let message = err.user_message();
+    assert!(message.contains("claude-macpoo"), "{message}");
+    assert!(message.contains("not connected"), "{message}");
+    assert!(!message.contains("was not found"), "{message}");
+    let value = serde_json::to_value(&err).expect("serialize");
+    assert_eq!(value["side_effects"], "none_expected", "{value}");
+    assert_ne!(value["recovery"]["action"], "rediscover", "{value}");
 }

@@ -6987,10 +6987,10 @@ async fn codemode_alias_reaches_the_canonical_upstream_end_to_end() {
     )
     .await;
 
-    // The fixture upstream is not reachable, so the call fails at dispatch;
-    // what matters is that it got past name resolution to the real upstream.
-    assert!(!text.contains("unknown_upstream"), "{text}");
-    assert!(!text.contains("outside this Code Mode execution"), "{text}");
+    // The fixture upstream has no live peer, so a call that clears name
+    // resolution and every scope gate fails at dispatch with `not_connected`
+    // for the canonical upstream name.
+    assert!(text.contains("not_connected"), "{text}");
     assert!(
         text.contains("claude-macpoo::Bash"),
         "host must dispatch under the canonical upstream name: {text}"
