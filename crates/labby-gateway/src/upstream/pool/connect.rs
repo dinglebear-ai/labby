@@ -22,8 +22,10 @@ use rmcp::model::{
     TaskStatusNotificationParams,
 };
 use rmcp::service::{ClientServiceExt, RawRxJsonRpcMessage, RxJsonRpcMessage, TxJsonRpcMessage};
+#[cfg(unix)]
+use rmcp::transport::streamable_http_client::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::{
-    StreamableHttpClientTransport, StreamableHttpClientTransportConfig, StreamableHttpClientWorker,
+    StreamableHttpClientTransportConfig, StreamableHttpClientWorker,
 };
 use rmcp::transport::{Transport, TransportAdapterIdentity, WorkerTransport};
 use rmcp::{ClientHandler, RoleClient};

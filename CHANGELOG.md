@@ -103,6 +103,34 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [2.1.2](https://github.com/dinglebear-ai/labby/compare/v2.1.1...v2.1.2) (2026-09-23)
+
+
+### Fixed
+
+* **release:** keep N-1 upgrade qualification noninteractive ([#755](https://github.com/dinglebear-ai/labby/issues/755)) ([8b7b294](https://github.com/dinglebear-ai/labby/commit/8b7b29483fbb5cd7299a647d13215447b92ab628))
+
+## [2.1.1](https://github.com/dinglebear-ai/labby/compare/v2.1.0...v2.1.1) (2026-09-22)
+
+
+### Fixed
+
+* limit stable releases to Linux and macOS ([#753](https://github.com/dinglebear-ai/labby/issues/753)) ([fc6dc80](https://github.com/dinglebear-ai/labby/commit/fc6dc8062e3b4272422251383ef13a1cfdd32612))
+
+## [2.1.0](https://github.com/dinglebear-ai/labby/compare/v2.0.0...v2.1.0) (2026-09-22)
+
+
+### Added
+
+* **apm:** publish Labby as an APM package ([#750](https://github.com/dinglebear-ai/labby/issues/750)) ([5ae2498](https://github.com/dinglebear-ai/labby/commit/5ae24986a710768185d5313b4ce4e53528006c8e))
+
+
+### Fixed
+
+* **codemode:** explain hidden tools, resolve upstream name aliases, rewrite descriptions ([#743](https://github.com/dinglebear-ai/labby/issues/743)) ([e6b7e8e](https://github.com/dinglebear-ai/labby/commit/e6b7e8e808dd043e70e9b8d570e3d74476b3574a))
+* **gateway:** cache resource catalogs between listings ([#741](https://github.com/dinglebear-ai/labby/issues/741)) ([f374c01](https://github.com/dinglebear-ai/labby/commit/f374c0177376eff2f69e1c2993a62ed19600d043))
+* **release:** strip the release-please marker from preflight version reads ([#745](https://github.com/dinglebear-ai/labby/issues/745)) ([522a0c7](https://github.com/dinglebear-ai/labby/commit/522a0c799df4517209ff15bd2acc5e382d824fc5))
+
 ## [2.0.0](https://github.com/dinglebear-ai/labby/compare/v1.21.0...v2.0.0) (2026-09-22)
 
 

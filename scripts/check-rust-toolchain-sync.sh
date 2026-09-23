@@ -46,8 +46,7 @@ rust_toolchain_action_ref="dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d8435678
 
 require_text .github/actions/setup-rust-kache/action.yml "uses: $rust_toolchain_action_ref"
 require_text .github/workflows/ci.yml "uses: $rust_toolchain_action_ref"
-require_text .github/workflows/release.yml "uses: $rust_toolchain_action_ref"
-require_text .github/workflows/release.yml "toolchain: \"$expected\""
+require_text .github/workflows/release.yml "uses: ./.github/actions/setup-rust-kache"
 
 check_direct_rust_action_toolchains() {
   local file=$1

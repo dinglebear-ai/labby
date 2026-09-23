@@ -133,8 +133,10 @@ Details the runtime already reports when they matter (error recovery
 metadata, truncation markers, `describe()` declarations) are not repeated in
 the description. The example tool is remembered for the current runtime config
 generation, so health changes do not alter the descriptor contract hash or
-invalidate `tools/list` cursors. It appears once a qualifying upstream first
-connects (a one-time `tools/list_changed`), resets on any config change, and is
+invalidate `tools/list` cursors. It is taken from the first upstream in sorted
+order with a live read-only tool, and that upstream keeps supplying it: another
+upstream connecting later does not take over. The example therefore appears
+once (a one-time `tools/list_changed`), resets on any config change, and is
 dropped only when a healthy upstream shows the tool is gone or no longer
 read-only.
 
@@ -570,7 +572,8 @@ When search results do not match live execution, check the layers in order:
 
 `codemode` accepts optional `upstreams` and `tools` arrays to narrow the per-run
 capability set. When present, each filter must be a JSON array of strings; other
-shapes reject with `invalid_param`. Empty strings are ignored. The injected proxy only
+shapes reject with `invalid_param`, and so does an empty or whitespace-only
+entry: dropping it would silently widen the run to every visible upstream. The injected proxy only
 includes allowed tools, and direct `callTool` IDs outside the allowlist reject as
 `unknown_tool`, naming the in-scope upstreams or listing the allowed tools.
 
@@ -591,7 +594,8 @@ routable (priority above 0), and inside its route or capability scope. On a
 protected route, "configured but outside this route" and "does not exist" get
 the same `unknown_upstream` error, whose "Did you mean" suggestions or known-
 upstream list come only from that usable set. An in-scope upstream that is
-disabled is reported as `unavailable`, asking the operator to enable it.
+disabled — either `enabled = false` or a non-positive priority — is reported as
+`unavailable`, asking the operator to enable it.
 Requested names are echoed bounded to 128 bytes, and names longer than that get
 no suggestions.
 
@@ -905,9 +909,13 @@ run, so isolation holds by construction.
   surfaces a clean error without replay (`timeout` on wall-clock expiry). A
   pooled runner is also recycled after a fixed number of executions as cheap
   insurance against native-side leaks. External `callTool` operations reserve a
-  250 ms result-ack window inside the same per-execution wall-clock budget when
-  at least twice that budget remains, so host work cannot consume the runner's
-  acknowledgement budget without materially shortening normal calls. The
+  result-ack window inside the same per-execution wall-clock budget when at
+  least twice that window remains, so host work cannot consume the runner's
+  acknowledgement budget without materially shortening normal calls. The window
+  is 250 ms plus 2 ms per call enqueued so far, capped at 2 s: the runner has to
+  drain one acknowledgement per in-flight call, so a constant window shrinks to
+  microseconds per ack at high fanout and would report a completed run as a
+  timeout. The
   separate hung-runner watchdog remains 5 seconds. After the final tool result is
   relayed, the runner gets up to that 5-second grace to emit `done`/`error`, capped by the
   overall execution deadline. Only expiry of the full dedicated grace is reported

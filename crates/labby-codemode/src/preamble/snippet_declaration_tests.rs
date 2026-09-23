@@ -34,7 +34,7 @@ fn javy_search_and_describe_preserve_declaration_presence() {
             shadowed: false,
         };
         let entry = CodeModeDiscoveryEntry::from_catalog(&CatalogDescriptor::snippet(&info));
-        let preamble = generate_discovery_js(&[entry], 0.5).unwrap();
+        let preamble = generate_discovery_js(&[entry], 0.5, &[]).unwrap();
         let script = format!(
             "{preamble}\n\
              globalThis.callTool = async () => {{ throw new Error('no host discovery needed'); }};\n\
@@ -73,7 +73,7 @@ fn javy_search_and_describe_preserve_declaration_presence() {
 
 #[test]
 fn javy_batch_preserves_structured_errors_and_rejects_invalid_jobs() {
-    let preamble = generate_discovery_js(&[], 0.5).unwrap();
+    let preamble = generate_discovery_js(&[], 0.5, &[]).unwrap();
     let script = format!(
         "{preamble}\n\
          globalThis.result = null;\n\
@@ -148,7 +148,7 @@ fn javy_search_filters_lexical_and_semantic_results_by_kind() {
         path: "catalog-snippet.md".into(),
         shadowed: false,
     }));
-    let preamble = generate_discovery_js(&[tool, snippet], 0.5).unwrap();
+    let preamble = generate_discovery_js(&[tool, snippet], 0.5, &[]).unwrap();
     let script = format!(
         "{preamble}\n\
          globalThis.callTool = async (_id, params) => {{\n\
@@ -198,7 +198,7 @@ fn javy_search_filters_lexical_and_semantic_results_by_kind() {
 
 #[test]
 fn javy_prompt_and_skill_helpers_dispatch_exact_internal_calls() {
-    let preamble = generate_discovery_js(&[], 0.5).unwrap();
+    let preamble = generate_discovery_js(&[], 0.5, &[]).unwrap();
     let script = format!(
         "{preamble}
          globalThis.calls = [];
@@ -301,7 +301,7 @@ fn javy_describe_keeps_future_catalog_kinds_metadata_only() {
     skill.dts = "this must never be fetched for metadata-only kinds".into();
 
     let entry = CodeModeDiscoveryEntry::from_catalog(&skill);
-    let preamble = generate_discovery_js(&[entry], 0.5).unwrap();
+    let preamble = generate_discovery_js(&[entry], 0.5, &[]).unwrap();
     let script = format!(
         "{preamble}\n\
          globalThis.describeTypeCalls = 0;\n\
@@ -363,16 +363,10 @@ fn run_withheld_discovery_script_with(visible_namespace: &str, body: &str) -> se
         None,
     ));
     let withheld = [
-        crate::host::WithheldTools {
-            namespace: "claude-macpoo".to_string(),
-            tool_count: 25,
-        },
-        crate::host::WithheldTools {
-            namespace: "annotated".to_string(),
-            tool_count: 1,
-        },
+        crate::host::WithheldTools::new("claude-macpoo", 25).expect("nonzero"),
+        crate::host::WithheldTools::new("annotated", 1).expect("nonzero"),
     ];
-    let preamble = super::generate_discovery_js_with_withheld(&[tool], 0.5, &withheld).unwrap();
+    let preamble = generate_discovery_js(&[tool], 0.5, &withheld).unwrap();
     let script = format!(
         "{preamble}\n\
          globalThis.callTool = async () => ({{ranked: []}});\n\
@@ -403,7 +397,10 @@ fn javy_empty_read_only_search_keeps_no_match_hint_first() {
     assert_eq!(value["total"], 0, "{value}");
     let hint = value["hint"].as_str().unwrap();
     assert!(hint.starts_with("No matches."), "{hint}");
-    assert!(hint.contains("use the `codemode` tool"), "{hint}");
+    assert!(hint.contains("Use the `codemode` tool"), "{hint}");
+    // A zero-result query is most likely the query's fault; the possible
+    // gate is mentioned without blaming any particular upstream.
+    assert!(!hint.contains("claude-macpoo"), "{hint}");
     assert_eq!(value["withheld"][0]["namespace"], "claude-macpoo");
     assert_eq!(value["withheld"][0]["tool_count"], 25);
     assert!(value["withheld"][0].get("guidance").is_none(), "{value}");
@@ -493,7 +490,7 @@ fn javy_alias_key_matches_rust_namespace_alias_key() {
         "UPPER-lower_mixed.dots",
         "plain",
     ];
-    let preamble = super::generate_discovery_js_with_withheld(&[], 0.5, &[]).unwrap();
+    let preamble = generate_discovery_js(&[], 0.5, &[]).unwrap();
     let script = format!(
         "{preamble}\nglobalThis.result = JSON.stringify({}.map(__codemodeAliasKey));",
         serde_json::to_string(&cases).unwrap()
@@ -524,7 +521,7 @@ fn javy_proxy_accepts_raw_hyphenated_names_without_clobbering_helpers() {
         CatalogDescriptor::tool("search", "lookup", "fixture", None, None),
     ];
     let refs = tools.iter().collect::<Vec<_>>();
-    let discovery = super::generate_discovery_js_with_withheld(&[], 0.5, &[]).unwrap();
+    let discovery = generate_discovery_js(&[], 0.5, &[]).unwrap();
     let proxy = super::generate_js_proxy_from_catalog(&refs).unwrap();
     let script = format!(
         "{discovery}\n{proxy}\n\
@@ -569,5 +566,22 @@ fn javy_describe_unknown_target_points_at_search() {
             .as_str()
             .unwrap()
             .contains("codemode.search")
+    );
+}
+
+#[test]
+fn proxy_skips_raw_aliases_for_namespaces_sharing_a_sanitized_key() {
+    let tools = [
+        CatalogDescriptor::tool("foo-bar", "alpha", "fixture", None, None),
+        CatalogDescriptor::tool("foo_bar", "beta", "fixture", None, None),
+        CatalogDescriptor::tool("solo-ns", "gamma", "fixture", None, None),
+    ];
+    let refs = tools.iter().collect::<Vec<_>>();
+    let proxy = super::generate_js_proxy_from_catalog(&refs).unwrap();
+
+    assert!(!proxy.contains("codemode[\"foo-bar\"] ="), "{proxy}");
+    assert!(
+        proxy.contains("codemode[\"solo-ns\"] = codemode[\"solo_ns\"]"),
+        "{proxy}"
     );
 }

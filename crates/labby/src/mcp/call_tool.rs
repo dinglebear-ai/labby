@@ -1931,13 +1931,16 @@ impl LabMcpServer {
                     let store = match self.access_runtime.store().await {
                         Ok(store) => store,
                         Err(error) => {
-                            let mapped =
-                                crate::dispatch::access_errors::map_runtime_error("gateway", error);
+                            // Keep the mapped message: a setup gate must name
+                            // its remediation, not claim an outage.
+                            let mapped = crate::dispatch::access_errors::map_action_runtime_error(
+                                "gateway", &action, error,
+                            );
                             return Ok(error_result_from_envelope(build_error(
                                 &service,
                                 &action,
                                 mapped.kind(),
-                                "Gateway authority store is unavailable",
+                                mapped.user_message(),
                             ))
                             .into());
                         }
@@ -1978,11 +1981,14 @@ impl LabMcpServer {
                     {
                         Ok(authority) => authority,
                         Err(error) => {
+                            // Authorization errors carry fixed caller-safe
+                            // messages; reuse them so an outage or setup gate is
+                            // not reported as a denial.
                             return Ok(error_result_from_envelope(build_error(
                                 &service,
                                 &action,
                                 error.kind(),
-                                "Gateway operation is not authorized",
+                                error.user_message(),
                             ))
                             .into());
                         }

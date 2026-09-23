@@ -2396,6 +2396,93 @@ async fn list_tools_advertises_add_server_app_only_to_admins() {
     );
 }
 
+/// An access runtime whose durable store was never initialized: the state a
+/// fresh install serves in before owner setup completes.
+async fn uninitialized_test_access_runtime()
+-> (tempfile::TempDir, Arc<crate::access::AccessRuntime>) {
+    let directory = tempfile::Builder::new()
+        .prefix("labby-mcp-access-setup-")
+        .tempdir_in(std::env::current_dir().expect("test working directory"))
+        .expect("access tempdir");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("secure access tempdir");
+    }
+    let runtime = Arc::new(
+        crate::access::AccessRuntime::initialize(directory.path().join("access.db")).await,
+    );
+    (directory, runtime)
+}
+
+async fn gateway_mcp_error_envelope(
+    access_runtime: Arc<crate::access::AccessRuntime>,
+    action: &str,
+) -> Value {
+    // Exercise the direct gateway tool, independent of Code Mode defaults.
+    let mut server = test_server(
+        crate::registry::build_default_registry(),
+        Some(code_mode_manager(false).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    server.access_runtime = access_runtime;
+    let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let mut context = request_context_with_peer(running.peer().clone());
+    context.extensions.insert(primary_static_bearer_identity());
+
+    let result = Box::pin(running.service().call_tool_impl(
+        CallToolRequestParams::new("gateway").with_arguments(serde_json::Map::from_iter([
+            ("action".to_string(), Value::String(action.to_string())),
+            ("params".to_string(), serde_json::json!({})),
+        ])),
+        context,
+    ))
+    .await
+    .expect("call tool result");
+
+    assert!(result.is_error.unwrap_or(false), "{result:?}");
+    let text = result.content[0].as_text().expect("text").text.as_str();
+    serde_json::from_str(text).expect("error envelope")
+}
+
+/// Field report (v1.20.1): the MCP gateway tool reported a never-initialized
+/// access store as a retryable outage. It is a setup gate and must name its
+/// remediation.
+#[tokio::test]
+async fn gateway_tool_reports_an_uninitialized_access_store_as_a_setup_gate() {
+    let (_directory, runtime) = uninitialized_test_access_runtime().await;
+    for action in ["gateway.list", "gateway.mcp.list"] {
+        let envelope = gateway_mcp_error_envelope(Arc::clone(&runtime), action).await;
+        assert_eq!(
+            envelope["error"]["kind"], "access_setup_required",
+            "{action}"
+        );
+        let message = envelope["error"]["message"]
+            .as_str()
+            .expect("error message");
+        assert!(message.contains("access setup is required"), "{message}");
+        assert!(message.contains("`labby setup`"), "{message}");
+        assert!(!message.contains("unavailable"), "{message}");
+    }
+}
+
+#[tokio::test]
+async fn gateway_tool_reports_a_blocked_access_store_as_a_service_outage() {
+    let runtime = Arc::new(crate::access::AccessRuntime::blocked_for_test(
+        crate::access::AccessBlockedReason::Corrupt,
+    ));
+    let envelope = gateway_mcp_error_envelope(runtime, "gateway.list").await;
+    assert_eq!(
+        envelope["error"]["kind"], "service_unavailable",
+        "{envelope}"
+    );
+}
+
 #[tokio::test]
 async fn gateway_status_app_is_admin_only_and_returns_gateway_list() {
     let server = test_server(
@@ -7035,4 +7122,40 @@ async fn codemode_descriptors_match_between_tools_list_and_contract_with_example
         );
         assert!(!from_list.contains("claude-macpoo::Bash"), "{from_list}");
     }
+}
+
+#[tokio::test]
+async fn codemode_call_to_disabled_upstream_reports_unavailable() {
+    let mut disabled = fixture_upstream_config("claude-macpoo");
+    disabled.enabled = false;
+    // Only the disabled upstream: an enabled-but-unreachable one would fail
+    // the catalog refresh before the call under test runs.
+    let manager = code_mode_manager_with_test_runner(
+        true,
+        vec![disabled],
+        Some(Arc::new(UpstreamPool::new())),
+    )
+    .await;
+    let server = test_server(
+        completion_test_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let text = run_code(
+        &running,
+        CODE_MODE_TOOL_NAME,
+        "lab",
+        "async () => { try { await callTool('claude_macpoo::Bash', {}); return 'ok'; } \
+         catch (e) { return String(e && e.message || e); } }",
+    )
+    .await;
+
+    assert!(text.contains("unavailable"), "{text}");
+    assert!(text.contains("configured but disabled"), "{text}");
 }

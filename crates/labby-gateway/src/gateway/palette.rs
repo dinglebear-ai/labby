@@ -968,12 +968,18 @@ fn map_unknown_tool_to_not_found(error: ToolError) -> ToolError {
             sdk_kind: "not_found".to_string(),
             message,
         },
-        // Checked execution errors arrive as lossless contracts; the palette's
-        // public contract still reports every lookup miss as `not_found`.
-        ToolError::Contract { kind, payload } if is_lookup_miss(&kind) => ToolError::Sdk {
-            sdk_kind: "not_found".to_string(),
-            message: payload.message,
-        },
+        // Checked execution errors arrive as lossless contracts. The palette's
+        // public contract reports every lookup miss as `not_found`, but only
+        // the kind is rewritten: the payload's guidance, recovery advice, and
+        // extras still reach the caller.
+        ToolError::Contract { kind, payload } if is_lookup_miss(&kind) => ToolError::contract(
+            "not_found",
+            payload.message,
+            payload.extra,
+            payload.origin,
+            payload.recovery,
+            payload.side_effects,
+        ),
         other => other,
     }
 }
@@ -1309,12 +1315,64 @@ fn write_json_canonical(writer: &mut impl Write, value: &Value) -> io::Result<()
 
 #[cfg(test)]
 mod tests {
+
     #![allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 
     use super::*;
     use serde_json::json;
     use std::sync::Arc;
     use tracing_subscriber::layer::SubscriberExt;
+
+    #[test]
+    fn palette_maps_contract_lookup_misses_to_not_found() {
+        use super::map_unknown_tool_to_not_found;
+        for kind in ["unknown_tool", "unknown_upstream", "invalid_code_mode_id"] {
+            let sdk = map_unknown_tool_to_not_found(ToolError::Sdk {
+                sdk_kind: kind.to_string(),
+                message: format!("{kind}: guidance"),
+            });
+            let contract = map_unknown_tool_to_not_found(ToolError::contract(
+                kind,
+                format!("{kind}: guidance"),
+                serde_json::Map::new(),
+                None,
+                None,
+                None,
+            ));
+            for mapped in [sdk, contract] {
+                assert_eq!(mapped.kind(), "not_found", "{kind}");
+                assert_eq!(mapped.user_message(), format!("{kind}: guidance"));
+            }
+
+            // Renaming the kind must not discard the payload the checked path
+            // built: an agent still gets the tool id and recovery advice.
+            let mut extra = serde_json::Map::new();
+            extra.insert("tool".to_string(), serde_json::json!("alpha::ping"));
+            let detailed = map_unknown_tool_to_not_found(ToolError::contract(
+                kind,
+                "detailed guidance",
+                extra,
+                None,
+                Some(labby_runtime::agent_error::recovery_for_kind(
+                    kind, None, false,
+                )),
+                None,
+            ));
+            assert_eq!(detailed.kind(), "not_found");
+            let value = serde_json::to_value(&detailed).expect("serialize");
+            assert_eq!(value["tool"], "alpha::ping", "{value}");
+            assert!(value["recovery"]["guidance"].is_string(), "{value}");
+        }
+        let passthrough = map_unknown_tool_to_not_found(ToolError::contract(
+            "not_connected",
+            "upstream down",
+            serde_json::Map::new(),
+            None,
+            None,
+            None,
+        ));
+        assert_eq!(passthrough.kind(), "not_connected");
+    }
 
     #[test]
     fn palette_search_query_normalizes_once_and_rejects_oversize_input() {

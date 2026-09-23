@@ -36,7 +36,22 @@ install/restart collision check.
 
 The access store has no independent environment override.
 `LABBY_AUTH_SQLITE_PATH` selects the OAuth authorization store, not
-`access.db`. A standalone stdio fallback uses its own resolved state root, so
+`access.db`. The OAuth authorization store and its signing key default to
+`$LABBY_HOME/auth.db` and `$LABBY_HOME/auth-jwt.pem` in the same selected root;
+only an explicit `LABBY_AUTH_SQLITE_PATH` or `LABBY_AUTH_KEY_PATH` (or the
+matching `[auth]` setting) places them elsewhere.
+
+An installation that starts using an explicit `LABBY_HOME` therefore stops
+reading a pre-existing `~/.labby/auth.db`, which holds issued OAuth refresh
+tokens and registered OAuth clients: the new root starts with an empty store
+and a new signing key. Labby never moves, copies, or deletes those files. It
+warns at startup and reports an `auth:legacy-store` doctor finding naming both
+paths; move `auth.db` and `auth-jwt.pem` into the selected root, or set
+`LABBY_AUTH_SQLITE_PATH` and `LABBY_AUTH_KEY_PATH` to the existing files.
+
+The upstream dotenv fallback for `bearer_token_env` reads `$LABBY_HOME/.env`
+as well; a non-absolute root is ignored there rather than read relative to the
+working directory. A standalone stdio fallback uses its own resolved state root, so
 configure an explicit remote daemon target when stdio must share the daemon's
 project and membership state.
 
@@ -257,6 +272,7 @@ LABBY_CODE_MODE_RUNNER_BACKEND=microsandbox
 LABBY_CODE_MODE_MICROSANDBOX_EXE=/absolute/root-or-service-owned/path/to/msb
 LABBY_CODE_MODE_MICROSANDBOX_IMAGE=debian@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 LABBY_CODE_MODE_MICROSANDBOX_MAX_RUNNERS=4
+LABBY_CODE_MODE_MICROSANDBOX_HELPER_TIMEOUT_MS=5000
 ```
 
 - `LABBY_CODE_MODE_RUNNER_BACKEND` accepts `process` (default) or
@@ -278,6 +294,12 @@ LABBY_CODE_MODE_MICROSANDBOX_MAX_RUNNERS=4
 - `LABBY_CODE_MODE_MICROSANDBOX_MAX_RUNNERS` optionally bounds concurrent
   microVMs process-wide (default `4`, hard maximum `16`) independently of the
   generic runner-pool size and overflow settings.
+- `LABBY_CODE_MODE_MICROSANDBOX_HELPER_TIMEOUT_MS` optionally raises the
+  wall-clock bound on one `msb` helper invocation (create, list, remove;
+  default `5000`, read once at startup). The bound is wall-clock, so on a
+  saturated host a helper that would have finished can be killed and reported
+  as `cleanup_timeout`. Raise it on busy hosts; the cost is slower detection of
+  a genuinely hung helper.
 
 The host must separately provide working KVM access plus compatible `msb` and
 `libkrunfw` installations. See [CODE_MODE.md](../dev/CODE_MODE.md#microsandbox-runner-isolation-opt-in).

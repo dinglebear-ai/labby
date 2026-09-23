@@ -205,6 +205,16 @@ function formatSkillPatterns(patterns: string[] | null | undefined): string {
   return (patterns ?? []).join(', ')
 }
 
+/// A protected-route write rejected because a route of that name already
+/// exists. The backend answers 409 for several kinds, and the mutation layer
+/// throws its own error class, so this matches the reported shape rather than
+/// a class identity.
+export function isRouteNameConflict(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false
+  const { status, code } = error as { status?: unknown; code?: unknown }
+  return status === 409 && code === 'conflict'
+}
+
 const emptyCustomState = {
   transport: 'http' as TransportType,
   name: '',
@@ -823,7 +833,10 @@ export function GatewayFormDialog({
     try {
       await addProtectedRoute(route, signal)
     } catch (error) {
-      if (error instanceof GatewayApiError && error.status === 409) {
+      // Only a name conflict means "this route already exists, update it".
+      // Other 409s (for example the access setup gate) must surface: replaying
+      // the write as an update would hide them behind a second failure.
+      if (isRouteNameConflict(error)) {
         await updateProtectedRoute(route.name, route, signal)
         return
       }

@@ -19,10 +19,9 @@ for appimage in labby-desktop-*.AppImage; do
   [[ -f "$appimage" ]] || continue
   "$syft_bin" "$appimage" -o "spdx-json=$appimage.spdx.json"
 done
-for installer in labby-install.sh labby-install.ps1; do
-  [[ -f "$installer" ]] || { echo "missing installer subject: $installer" >&2; exit 1; }
-  subject_dir=$(mktemp -d)
-  cp "$installer" "$subject_dir/"
-  "$syft_bin" "dir:$subject_dir" -o "spdx-json=$installer.spdx.json"
-  rm -rf "$subject_dir"
-done
+installer=labby-install.sh
+[[ -f "$installer" ]] || { echo "missing installer subject: $installer" >&2; exit 1; }
+subject_dir=$(mktemp -d)
+cp "$installer" "$subject_dir/"
+"$syft_bin" "dir:$subject_dir" -o "spdx-json=$installer.spdx.json"
+rm -rf "$subject_dir"
