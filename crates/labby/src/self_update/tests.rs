@@ -151,11 +151,20 @@ async fn installer_keeps_exclusion_after_updater_is_killed() {
     }
     for legacy in [true, false] {
         let dir = tempfile::tempdir().unwrap();
+        nix::unistd::mkfifo(
+            &dir.path().join("keep-open"),
+            nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+        )
+        .unwrap();
         fs::write(
             dir.path().join("install.sh"),
             r#"
+sh -c '
+echo $$ > "$LABBY_INSTALL_DIR/installer-child.pid"
+read -r _ < "$LABBY_INSTALL_DIR/keep-open"
+' &
 echo $$ > "$LABBY_INSTALL_DIR/installer.pid"
-sleep 120
+wait
 "#,
         )
         .unwrap();
@@ -184,6 +193,7 @@ sleep 120
                 if let Some(pid) = fs::read_to_string(dir.path().join("installer.pid"))
                     .ok()
                     .and_then(|text| text.trim().parse::<i32>().ok())
+                    .filter(|_| dir.path().join("installer-child.pid").exists())
                 {
                     break Pid::from_raw(pid);
                 }
@@ -191,7 +201,11 @@ sleep 120
             }
         })
         .await
-        .unwrap();
+        .expect("installer and its descendant must be ready before sending signals");
+        // The descendant publishes readiness before blocking on a FIFO using
+        // shell builtins. Nothing forks after that signal: announcing readiness
+        // before `sleep 120` raced killpg against the sleep spawn, which could
+        // leave an orphan holding descriptor 9 after its shell was killed.
         let installer_group = if legacy { updater_pid } else { pid };
         let _installer_cleanup = GroupCleanup(installer_group);
         kill(updater_pid, Signal::SIGKILL).unwrap();
@@ -211,7 +225,7 @@ sleep 120
             }
         })
         .await
-        .unwrap();
+        .expect("stopped installer group must release the update lock");
     }
 }
 
