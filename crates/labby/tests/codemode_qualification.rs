@@ -268,23 +268,27 @@ async fn q3_seeded_bounded_stress_has_literal_counts_and_no_duplicate_effects() 
 #[tokio::test]
 async fn q3_execution_timeout_is_typed_and_does_not_duplicate_the_effect() {
     let limits = Limits {
-        // Leave enough admission budget under full-suite load while the
-        // deliberately pending upstream call still exceeds the deadline by an
-        // order of magnitude.
-        timeout_ms: 1_000,
+        // Use the normal two-second request budget. Code Mode reserves 500ms
+        // for response delivery, leaving 1.5s for cold proxy generation and
+        // execution; the deliberately pending upstream still takes 10s.
+        timeout_ms: 2_000,
         ..Limits::default()
     };
     let runner = CodeModeQualification::start(limits)
         .await
         .expect("Q3 runner");
-    assert_eq!(runner.limits.timeout_ms, 1_000);
+    assert_eq!(runner.limits.timeout_ms, 2_000);
     let prewarm = runner
         .execute(
             r#"async () => await callTool("forge::forge.safe", {query:"prewarm",limit:1,enabled:true})"#,
         )
         .await
         .expect("prewarm Code Mode and the upstream tool path");
-    assert!(!prewarm.is_error, "prewarm must complete before the oracle");
+    assert!(
+        !prewarm.is_error,
+        "prewarm must complete before the oracle: {}",
+        prewarm.structured
+    );
     let before = runner
         .fixture_invocation_count()
         .await
@@ -434,7 +438,9 @@ async fn q3_call_budget_rejects_before_the_third_effect() {
 #[tokio::test]
 async fn q3_queue_limit_rejects_before_dispatch_and_settles_started_effect() {
     let limits = Limits {
-        timeout_ms: 1_000,
+        // Match the normal Code Mode budget so the 500ms response reserve
+        // cannot exhaust a cold proxy before the queue oracle begins.
+        timeout_ms: 2_000,
         upstream_request_timeout_ms: Some(50),
         upstream_max_in_flight: Some(1),
         ..Limits::default()
@@ -442,6 +448,17 @@ async fn q3_queue_limit_rejects_before_dispatch_and_settles_started_effect() {
     let runner = CodeModeQualification::start(limits)
         .await
         .expect("Q3 runner");
+    let prewarm = runner
+        .execute(
+            r#"async () => await callTool("forge::forge.safe", {query:"prewarm",limit:1,enabled:true})"#,
+        )
+        .await
+        .expect("prewarm Code Mode and the upstream tool path");
+    assert!(
+        !prewarm.is_error,
+        "prewarm must complete before the queue oracle: {}",
+        prewarm.structured
+    );
     let before = runner
         .fixture_invocation_count()
         .await

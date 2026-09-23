@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 /// Dispatch services (top-level `dispatch/<service>.rs` entrypoints) whose
 /// cross-service imports are governed by the allowlist. Shared subsystems
 /// (`node`, `security`, `upstream`, `code_mode`) and shared leaf modules
-/// (`error`, `access_errors`, `helpers`, `redact`, `path_safety`, `fs_atomic`,
+/// (`error`, `access_errors`, `helpers`, `schema`, `redact`, `path_safety`, `fs_atomic`,
 /// `clients`) are NOT
 /// action-dispatched services and are always importable — they are the common
 /// substrate, not peers. See `dispatch/CLAUDE.md` § "Shared subsystems".
@@ -62,6 +62,8 @@ const SHARED_NON_SERVICES: &[&str] = &[
     // denial, caller-error, and outage classification. It declares no actions
     // and dispatches nothing.
     "access_errors",
+    // Typed action output schemas are shared metadata, not a dispatch service.
+    "schema",
     // `artifact_sources` is the single admission rule for host-configured
     // `[[artifacts.sources]]`, shared by the artifact control plane and the
     // Skill Library import path so both reach one verdict per source. It
