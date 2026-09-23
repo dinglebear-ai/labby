@@ -33,9 +33,9 @@ use crate::gateway::service_registry::{
 };
 use crate::gateway::types::CatalogChangeNotifier;
 use crate::upstream::pool::{
-    ExactPromptCallError, ExactResourceReadError, ExactToolCallError, HeaderRecoveryMetricsStore,
-    InProcessConnector, PromptCatalogGeneration, ResourceCatalogGeneration, ToolCatalogGeneration,
-    UpstreamPool,
+    CapabilityCallError, ExactPromptCallError, ExactResourceReadError, ExactToolCallError,
+    HeaderRecoveryMetricsStore, InProcessConnector, PromptCatalogGeneration,
+    ResourceCatalogGeneration, ToolCatalogGeneration, UpstreamPool,
 };
 
 use super::{GatewayManager, GatewayRuntimeHandle, PoolPublicationGeneration};
@@ -259,6 +259,7 @@ impl GatewayManager {
             agent_execution_cancellations: Arc::new(dashmap::DashMap::new()),
             code_mode_app_state: CodeModeAppState::default(),
             lazy_pool_init: Arc::new(Mutex::new(())),
+            code_mode_example_memo: Default::default(),
             notifier: None,
             oauth_client_cache: None,
             upstream_oauth_managers: None,
@@ -724,6 +725,42 @@ impl GatewayManager {
             ExactResourceReadError::Timeout => PublishedResourceReadError::Timeout,
             ExactResourceReadError::Cancelled => PublishedResourceReadError::Cancelled,
             ExactResourceReadError::TooLarge => PublishedResourceReadError::TooLarge,
+        })
+    }
+
+    /// Read a native MCP App ui:// resource from the currently published pool.
+    ///
+    /// The upstream pool performs ownership reverse lookup from cached resource
+    /// URIs and tool metadata. This wrapper keeps the read pinned to one pool
+    /// publication so a concurrent gateway reload cannot return stale app HTML.
+    pub async fn read_published_ui_resource(
+        &self,
+        uri: &str,
+    ) -> Result<ReadResourceResult, PublishedResourceReadError> {
+        let first = self.runtime.published_pool_snapshot();
+        let pool_generation = first.generation();
+        let Some(pool) = first.into_pool() else {
+            return Err(PublishedResourceReadError::Unavailable);
+        };
+        let result = pool
+            .read_upstream_ui_resource_allowed_typed(uri, None)
+            .await
+            .ok_or(PublishedResourceReadError::Unavailable)?;
+        if self.runtime.published_pool_snapshot().generation() != pool_generation {
+            return Err(PublishedResourceReadError::Unavailable);
+        }
+        result.map_err(|error| match error {
+            CapabilityCallError::Timeout { .. } => PublishedResourceReadError::Timeout,
+            CapabilityCallError::QueueSaturated { .. } => {
+                PublishedResourceReadError::QueueUnavailable
+            }
+            CapabilityCallError::ResponseTooLarge { .. } => PublishedResourceReadError::TooLarge,
+            CapabilityCallError::Cancelled { .. } => PublishedResourceReadError::Cancelled,
+            CapabilityCallError::Mcp { .. }
+            | CapabilityCallError::Transport { .. }
+            | CapabilityCallError::Protocol { .. }
+            | CapabilityCallError::InputRequiredRoundsExceeded { .. }
+            | CapabilityCallError::Other { .. } => PublishedResourceReadError::Upstream,
         })
     }
 

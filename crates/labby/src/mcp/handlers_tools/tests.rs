@@ -568,6 +568,7 @@ fn fixture_oauth_upstream_config(name: &str) -> crate::config::UpstreamConfig {
         },
         scopes: None,
         credential: Default::default(),
+        additional_endpoint_origins: vec![],
         prefer_client_metadata_document: None,
     });
     config
@@ -2400,6 +2401,93 @@ async fn list_tools_advertises_add_server_app_only_to_admins() {
     );
 }
 
+/// An access runtime whose durable store was never initialized: the state a
+/// fresh install serves in before owner setup completes.
+async fn uninitialized_test_access_runtime()
+-> (tempfile::TempDir, Arc<crate::access::AccessRuntime>) {
+    let directory = tempfile::Builder::new()
+        .prefix("labby-mcp-access-setup-")
+        .tempdir_in(std::env::current_dir().expect("test working directory"))
+        .expect("access tempdir");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("secure access tempdir");
+    }
+    let runtime = Arc::new(
+        crate::access::AccessRuntime::initialize(directory.path().join("access.db")).await,
+    );
+    (directory, runtime)
+}
+
+async fn gateway_mcp_error_envelope(
+    access_runtime: Arc<crate::access::AccessRuntime>,
+    action: &str,
+) -> Value {
+    // Exercise the direct gateway tool, independent of Code Mode defaults.
+    let mut server = test_server(
+        crate::registry::build_default_registry(),
+        Some(code_mode_manager(false).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    server.access_runtime = access_runtime;
+    let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let mut context = request_context_with_peer(running.peer().clone());
+    context.extensions.insert(primary_static_bearer_identity());
+
+    let result = Box::pin(running.service().call_tool_impl(
+        CallToolRequestParams::new("gateway").with_arguments(serde_json::Map::from_iter([
+            ("action".to_string(), Value::String(action.to_string())),
+            ("params".to_string(), serde_json::json!({})),
+        ])),
+        context,
+    ))
+    .await
+    .expect("call tool result");
+
+    assert!(result.is_error.unwrap_or(false), "{result:?}");
+    let text = result.content[0].as_text().expect("text").text.as_str();
+    serde_json::from_str(text).expect("error envelope")
+}
+
+/// Field report (v1.20.1): the MCP gateway tool reported a never-initialized
+/// access store as a retryable outage. It is a setup gate and must name its
+/// remediation.
+#[tokio::test]
+async fn gateway_tool_reports_an_uninitialized_access_store_as_a_setup_gate() {
+    let (_directory, runtime) = uninitialized_test_access_runtime().await;
+    for action in ["gateway.list", "gateway.mcp.list"] {
+        let envelope = gateway_mcp_error_envelope(Arc::clone(&runtime), action).await;
+        assert_eq!(
+            envelope["error"]["kind"], "access_setup_required",
+            "{action}"
+        );
+        let message = envelope["error"]["message"]
+            .as_str()
+            .expect("error message");
+        assert!(message.contains("access setup is required"), "{message}");
+        assert!(message.contains("`labby setup`"), "{message}");
+        assert!(!message.contains("unavailable"), "{message}");
+    }
+}
+
+#[tokio::test]
+async fn gateway_tool_reports_a_blocked_access_store_as_a_service_outage() {
+    let runtime = Arc::new(crate::access::AccessRuntime::blocked_for_test(
+        crate::access::AccessBlockedReason::Corrupt,
+    ));
+    let envelope = gateway_mcp_error_envelope(runtime, "gateway.list").await;
+    assert_eq!(
+        envelope["error"]["kind"], "service_unavailable",
+        "{envelope}"
+    );
+}
+
 #[tokio::test]
 async fn gateway_status_app_is_admin_only_and_returns_gateway_list() {
     let server = test_server(
@@ -3444,11 +3532,18 @@ async fn codemode_description_lists_route_scoped_enabled_upstreams_and_hints() {
         .expect("codemode description")
         .as_ref();
 
-    assert!(description.contains("## Available upstream namespaces"));
-    assert!(description.contains("- `apps` -- Search connected application data"));
+    // Structure, not prose: the visible upstream and its hint are listed,
+    // hidden ones are not, and the list sits inside the client-visible prefix.
+    let listed = description
+        .find("- `apps`")
+        .expect("visible upstream is listed");
+    assert!(
+        listed < 2048,
+        "upstream list must start within the visible prefix"
+    );
+    assert!(description[listed..].contains("Search connected application data"));
     assert!(!description.contains("- `hidden`"));
     assert!(!description.contains("- `hidden-upstream`"));
-    assert!(description.contains("Never guess helper or method names"));
 }
 
 #[tokio::test]
@@ -6864,4 +6959,208 @@ async fn personal_oauth_authorize_enforces_mcp_execute_scope() {
             );
         }
     }
+}
+
+/// One upstream named like a real Claude Code bridge: a hyphenated name and
+/// tools without read-only annotations.
+async fn macpoo_code_mode_server(
+    tools: &[(&str, bool)],
+) -> (
+    rmcp::service::RunningService<rmcp::RoleServer, LabMcpServer>,
+    Arc<UpstreamPool>,
+) {
+    let upstream_name: Arc<str> = Arc::from("claude-macpoo");
+    let tools = tools
+        .iter()
+        .map(|(name, read_only)| {
+            let mut tool = fixture_upstream_tool(&upstream_name, name, None);
+            if *read_only {
+                tool.tool.annotations = Some(rmcp::model::ToolAnnotations::new().read_only(true));
+            }
+            ((*name).to_string(), tool)
+        })
+        .collect::<HashMap<_, _>>();
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_entry_for_test(
+        "claude-macpoo",
+        fixture_upstream_entry("claude-macpoo", tools),
+    )
+    .await;
+    let manager = code_mode_manager_with_test_runner(
+        true,
+        vec![fixture_upstream_config("claude-macpoo")],
+        Some(Arc::clone(&pool)),
+    )
+    .await;
+    let server = test_server(
+        completion_test_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    (running, pool)
+}
+
+async fn run_code(
+    running: &rmcp::service::RunningService<rmcp::RoleServer, LabMcpServer>,
+    tool: &str,
+    scope: &str,
+    code: &str,
+) -> String {
+    let result = running
+        .service()
+        .call_tool_impl(
+            CallToolRequestParams::new(tool.to_string()).with_arguments(
+                serde_json::json!({ "code": code })
+                    .as_object()
+                    .expect("object")
+                    .clone(),
+            ),
+            scoped_context(running.peer().clone(), &[scope]),
+        )
+        .await
+        .expect("call result");
+    result.content[0].as_text().expect("text").text.to_string()
+}
+
+#[tokio::test]
+async fn codemode_read_alias_to_mutating_tool_is_denied_with_guidance() {
+    let (running, pool) = macpoo_code_mode_server(&[("Bash", false)]).await;
+
+    let text = run_code(
+        &running,
+        CODE_MODE_READ_TOOL_NAME,
+        "lab:read",
+        "async () => await callTool('claude_macpoo::Bash', {})",
+    )
+    .await;
+
+    assert!(text.contains("forbidden"), "{text}");
+    assert!(text.contains("`codemode`"), "{text}");
+    assert!(text.contains("`lab`"), "{text}");
+    assert!(
+        !text.contains("unknown_upstream"),
+        "the alias must resolve: {text}"
+    );
+    assert_eq!(pool.upstream_tool_last_error("claude-macpoo").await, None);
+}
+
+#[tokio::test]
+async fn codemode_read_search_surfaces_withheld_summary_end_to_end() {
+    let (running, _pool) = macpoo_code_mode_server(&[("Bash", false), ("Edit", false)]).await;
+
+    let text = run_code(
+        &running,
+        CODE_MODE_READ_TOOL_NAME,
+        "lab:read",
+        "async () => await codemode.search({ query: 'claude macpoo' })",
+    )
+    .await;
+
+    assert!(text.contains("withheld"), "{text}");
+    assert!(text.contains("claude-macpoo"), "{text}");
+    assert!(text.contains("codemode_read"), "{text}");
+}
+
+#[tokio::test]
+async fn codemode_alias_reaches_the_canonical_upstream_end_to_end() {
+    let (running, _pool) = macpoo_code_mode_server(&[("Bash", false)]).await;
+
+    let text = run_code(
+        &running,
+        CODE_MODE_TOOL_NAME,
+        "lab",
+        "async () => { try { await callTool('Claude_MacPoo::Bash', {}); return 'ok'; } \
+         catch (e) { return String(e && e.message || e); } }",
+    )
+    .await;
+
+    // The fixture upstream has no live peer, so a call that clears name
+    // resolution and every scope gate fails at dispatch with `not_connected`
+    // for the canonical upstream name.
+    assert!(text.contains("not_connected"), "{text}");
+    assert!(
+        text.contains("claude-macpoo::Bash"),
+        "host must dispatch under the canonical upstream name: {text}"
+    );
+}
+
+#[tokio::test]
+async fn codemode_descriptors_match_between_tools_list_and_contract_with_examples() {
+    let (running, _pool) = macpoo_code_mode_server(&[("Read", true), ("Bash", false)]).await;
+    let context = rmcp::service::RequestContext::new(
+        rmcp::model::NumberOrString::Number(1),
+        running.peer().clone(),
+    );
+
+    let contract = running
+        .service()
+        .peer_contract_for_request(&context)
+        .visible_tool_descriptors()
+        .await;
+    let listed = running
+        .service()
+        .list_tools_impl(None, context)
+        .await
+        .expect("list tools");
+
+    for name in [CODE_MODE_TOOL_NAME, CODE_MODE_READ_TOOL_NAME] {
+        let from_contract = contract
+            .iter()
+            .find(|tool| tool.name.as_ref() == name)
+            .and_then(|tool| tool.description.clone())
+            .expect("contract descriptor");
+        let from_list = listed
+            .tools
+            .iter()
+            .find(|tool| tool.name.as_ref() == name)
+            .and_then(|tool| tool.description.clone())
+            .expect("listed descriptor");
+        assert_eq!(from_contract, from_list, "{name}");
+        assert!(
+            from_list.contains("claude-macpoo::Read"),
+            "{name} should use the live read-only example: {from_list}"
+        );
+        assert!(!from_list.contains("claude-macpoo::Bash"), "{from_list}");
+    }
+}
+
+#[tokio::test]
+async fn codemode_call_to_disabled_upstream_reports_unavailable() {
+    let mut disabled = fixture_upstream_config("claude-macpoo");
+    disabled.enabled = false;
+    // Only the disabled upstream: an enabled-but-unreachable one would fail
+    // the catalog refresh before the call under test runs.
+    let manager = code_mode_manager_with_test_runner(
+        true,
+        vec![disabled],
+        Some(Arc::new(UpstreamPool::new())),
+    )
+    .await;
+    let server = test_server(
+        completion_test_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let text = run_code(
+        &running,
+        CODE_MODE_TOOL_NAME,
+        "lab",
+        "async () => { try { await callTool('claude_macpoo::Bash', {}); return 'ok'; } \
+         catch (e) { return String(e && e.message || e); } }",
+    )
+    .await;
+
+    assert!(text.contains("unavailable"), "{text}");
+    assert!(text.contains("configured but disabled"), "{text}");
 }

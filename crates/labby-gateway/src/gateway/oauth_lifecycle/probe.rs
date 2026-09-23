@@ -303,6 +303,7 @@ fn register_transient_manager(
             credential: Default::default(),
             // Propagate the operator override so that if this transient
             // config is later persisted it retains the explicit setting.
+            additional_endpoint_origins: vec![],
             prefer_client_metadata_document: prefer_cimd,
         }),
         imported_from: None,

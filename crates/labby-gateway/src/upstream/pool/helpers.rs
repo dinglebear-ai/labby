@@ -83,6 +83,19 @@ pub(super) const STDIO_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 /// the background sweep task ([`SUBJECT_CONN_SWEEP_INTERVAL`]).
 pub(super) const SUBJECT_CONN_IDLE_TTL: Duration = Duration::from_mins(5);
 
+/// Longest a cached resource snapshot is served without a re-list when the
+/// upstream has no live push channel.
+///
+/// `resources/list` is served from cached per-upstream snapshots. Upstreams on
+/// the 2026-07-28 protocol keep a `subscriptions/listen` stream open and
+/// announce `resources/list_changed`, so their snapshot only refreshes on that
+/// signal. Pooled connections to older upstreams use the unit client handler
+/// and never receive list_changed, so without this bound their catalog would
+/// only refresh on reconnect or reload. Discovery re-lists a snapshot older
+/// than this in the background (stale-while-revalidate); the same bound caps
+/// the per-subject OAuth resource catalog, which has no push channel at all.
+pub(super) const RESOURCE_SNAPSHOT_MAX_AGE: Duration = Duration::from_mins(1);
+
 /// Interval at which the background subject-connection sweep runs (P-H2).
 ///
 /// Each tick evicts idle-TTL-expired `subject_connections` entries (shutting

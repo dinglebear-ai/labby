@@ -154,16 +154,18 @@ mod tests {
             "unrelated commands must not inherit --project-id: {unrelated:?}"
         );
 
-        crate::cli::Cli::try_parse_from(["labby", "skills", "list"])
+        crate::cli::Cli::try_parse_from(["labby", "skill", "list"])
             .expect("local Skill reads do not require misleading project context");
 
         let help = crate::cli::Cli::command()
-            .find_subcommand_mut("skills")
+            .find_subcommand_mut("skill")
             .expect("skills command")
             .render_long_help()
             .to_string();
         assert!(!help.contains("--project-id"));
-        assert!(help.contains("Artifact-backed shared and private Skills are not available"));
+        assert!(help.contains(
+            "Local reads do not grant access to shared or private artifact-backed skills"
+        ));
         assert!(help.contains("authenticated HTTP or MCP client"));
     }
 

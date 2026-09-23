@@ -88,11 +88,12 @@ fn all_tools_are_in_process(tools: &[UpstreamTool]) -> bool {
     })
 }
 
-/// Wall-clock a one-shot CLI catalog build may spend cold-connecting uncached
-/// upstreams: half the configured Code Mode execution timeout, so proxy
-/// generation leaves the sandbox roughly the other half (less the broker's
-/// response reserve and catalog rendering).
-fn one_shot_catalog_connect_budget(code_mode: &CodeModeConfig) -> std::time::Duration {
+/// Wall-clock a Code Mode catalog build may spend contacting upstreams:
+/// half the configured execution timeout, so proxy generation leaves the
+/// sandbox roughly the other half (less the broker's response reserve and
+/// catalog rendering). Shared by one-shot CLI cold-connects and the long-lived
+/// MCP refresh path so neither surface can consume the whole execution budget.
+fn catalog_connect_budget(code_mode: &CodeModeConfig) -> std::time::Duration {
     std::time::Duration::from_millis(code_mode.timeout_ms) / 2
 }
 
@@ -387,9 +388,30 @@ impl GatewayManager {
                     .await;
             }
         }
+        let mut refresh_timed_out = false;
         if allow_cold_connect {
-            self.refresh_code_mode_catalog_allowed(owner, oauth_subject, allowed_upstreams)
-                .await?;
+            let budget = {
+                let cfg = self.config.read().await;
+                catalog_connect_budget(&cfg.code_mode)
+            };
+            match tokio::time::timeout(
+                budget,
+                self.refresh_code_mode_catalog_allowed(owner, oauth_subject, allowed_upstreams),
+            )
+            .await
+            {
+                Ok(result) => result?,
+                Err(_) => {
+                    refresh_timed_out = true;
+                    tracing::warn!(
+                        surface = "dispatch",
+                        service = "gateway",
+                        action = "code_mode.refresh_catalog",
+                        budget_ms = budget.as_millis(),
+                        "Code Mode catalog refresh exceeded its wall-clock budget; using already healthy upstreams"
+                    );
+                }
+            }
         } else {
             self.ensure_search_runtime_ready_allowed(
                 false,
@@ -410,7 +432,15 @@ impl GatewayManager {
         } else {
             Vec::new()
         };
-        Ok(merge_visible_catalog_tools(global, subject_scoped))
+        let visible = merge_visible_catalog_tools(global, subject_scoped);
+        if refresh_timed_out && all_tools_are_in_process(&visible) {
+            return Err(ToolError::Sdk {
+                sdk_kind: "upstream_connect_error".to_string(),
+                message: "Code Mode catalog refresh timed out before any real upstream was usable"
+                    .to_string(),
+            });
+        }
+        Ok(visible)
     }
 
     /// One-shot CLI variant of `code_mode_catalog_tools`: serve the codemode
@@ -419,7 +449,7 @@ impl GatewayManager {
     /// are subject-scoped, so they are probed on every run (when a subject is
     /// present, which the gateway host always supplies) and never cached.
     ///
-    /// A one-shot `labby gateway code exec` must not connect the full upstream
+    /// A one-shot `labby code run` must not connect the full upstream
     /// fleet per invocation just to generate the `codemode.*` proxy. Tool calls
     /// still resolve live (`resolve_code_mode_upstream_tool` ensures the target
     /// upstream), so a stale cache can only mis-shape the proxy — `callTool`
@@ -557,7 +587,7 @@ impl GatewayManager {
         let concurrency = crate::upstream::pool::upstream_discovery_concurrency(
             cfg.gateway.upstream_discovery_concurrency,
         );
-        let budget = one_shot_catalog_connect_budget(&cfg.code_mode);
+        let budget = catalog_connect_budget(&cfg.code_mode);
         let deadline = Instant::now() + budget;
         let fingerprints: BTreeMap<String, Option<String>> = pending
             .iter()
@@ -890,7 +920,7 @@ impl GatewayManager {
             match outcome {
                 Ok(_) => {
                     // Keep the one-shot CLI catalog cache warm from the
-                    // long-lived surface so `gateway code exec` rarely has to
+                    // long-lived surface so `code run` rarely has to
                     // cold-connect upstreams for proxy generation.
                     if upstream.oauth.is_none() {
                         cache_updates.push(

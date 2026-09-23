@@ -68,6 +68,8 @@ pub struct RenderEnv {
     pub colorterm: Option<String>,
     pub lang: Option<String>,
     pub lab_symbols: Option<String>,
+    pub columns: Option<usize>,
+    pub ci: bool,
 }
 
 impl RenderEnv {
@@ -93,6 +95,11 @@ impl RenderEnv {
             lab_symbols: std::env::var("LABBY_SYMBOLS")
                 .ok()
                 .or_else(crate::config::resolved_symbols),
+            columns: std::env::var("COLUMNS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .filter(|columns| *columns > 0),
+            ci: std::env::var_os("CI").is_some(),
         }
     }
 }
@@ -101,6 +108,8 @@ impl RenderEnv {
 pub struct RenderContext {
     pub level: ColorLevel,
     pub symbols: SymbolMode,
+    pub columns: usize,
+    pub interactive: bool,
 }
 
 impl RenderContext {
@@ -109,12 +118,23 @@ impl RenderContext {
         Self {
             level: detect_color_level(policy, &env),
             symbols: detect_symbol_mode(&env),
+            columns: env.columns.unwrap_or(100).clamp(40, 240),
+            interactive: env.stream_is_tty
+                && !env.no_color
+                && !env.ci
+                && !is_dumb_terminal(&env)
+                && !matches!(policy, ColorPolicy::Plain),
         }
     }
 
     #[must_use]
     pub const fn styled(self) -> bool {
         !matches!(self.level, ColorLevel::Plain)
+    }
+
+    #[must_use]
+    pub const fn animations_enabled(self) -> bool {
+        self.interactive
     }
 }
 
@@ -138,6 +158,8 @@ impl OutputFormat {
                 RenderContext {
                     level: ColorLevel::Plain,
                     symbols: detect_symbol_mode(&env),
+                    columns: env.columns.unwrap_or(100).clamp(40, 240),
+                    interactive: false,
                 }
             } else {
                 RenderContext::from_policy(policy, env)
@@ -334,25 +356,21 @@ impl CliTheme {
     }
 
     #[must_use]
-    #[allow(dead_code)]
     pub fn bullet(self) -> &'static str {
         self.symbol(self.symbols().bullet)
     }
 
     #[must_use]
-    #[allow(dead_code)]
     pub fn disclosure(self) -> &'static str {
         self.symbol(self.symbols().disclosure)
     }
 
     #[must_use]
-    #[allow(dead_code)]
     pub fn dot(self) -> &'static str {
         self.symbol(self.symbols().dot)
     }
 
     #[must_use]
-    #[allow(dead_code)]
     pub fn divider(self) -> &'static str {
         self.symbol(self.symbols().divider)
     }
@@ -422,7 +440,9 @@ fn detect_color_level(policy: ColorPolicy, env: &RenderEnv) -> ColorLevel {
         return ColorLevel::Plain;
     }
 
-    if matches!(policy, ColorPolicy::Auto) && (!env.stream_is_tty || env.no_color) {
+    if matches!(policy, ColorPolicy::Auto)
+        && (!env.stream_is_tty || env.no_color || env.ci || is_dumb_terminal(env))
+    {
         return ColorLevel::Plain;
     }
 
@@ -443,6 +463,12 @@ fn detect_color_level(policy: ColorPolicy, env: &RenderEnv) -> ColorLevel {
     } else {
         ColorLevel::Ansi256
     }
+}
+
+fn is_dumb_terminal(env: &RenderEnv) -> bool {
+    env.term
+        .as_deref()
+        .is_some_and(|term| term.eq_ignore_ascii_case("dumb"))
 }
 
 fn detect_symbol_mode(env: &RenderEnv) -> SymbolMode {
@@ -511,6 +537,8 @@ mod tests {
             colorterm: colorterm.map(str::to_string),
             lang: Some("en_US.UTF-8".to_string()),
             lab_symbols: None,
+            columns: Some(100),
+            ci: false,
         }
     }
 
@@ -563,6 +591,8 @@ mod tests {
         CliTheme::from_context(RenderContext {
             level,
             symbols: SymbolMode::Unicode,
+            columns: 100,
+            interactive: false,
         })
     }
 
@@ -629,8 +659,46 @@ mod tests {
                 colorterm: None,
                 lang: Some("C".to_string()),
                 lab_symbols: None,
+                columns: Some(80),
+                ci: false,
             },
         );
         assert_eq!(ctx.symbols, SymbolMode::Ascii);
+    }
+
+    #[test]
+    fn auto_disables_style_and_animation_in_ci() {
+        let mut environment = env(true, false, Some("xterm-256color"), Some("truecolor"));
+        environment.ci = true;
+        let ctx = RenderContext::from_policy(ColorPolicy::Auto, environment);
+        assert_eq!(ctx.level, ColorLevel::Plain);
+        assert!(!ctx.animations_enabled());
+    }
+
+    #[test]
+    fn auto_disables_style_and_animation_for_dumb_terminal() {
+        let ctx = RenderContext::from_policy(
+            ColorPolicy::Auto,
+            env(true, false, Some("dumb"), Some("truecolor")),
+        );
+        assert_eq!(ctx.level, ColorLevel::Plain);
+        assert_eq!(ctx.symbols, SymbolMode::Ascii);
+        assert!(!ctx.animations_enabled());
+    }
+
+    #[test]
+    fn terminal_width_is_bounded_for_predictable_layouts() {
+        let mut narrow = env(true, false, Some("xterm-256color"), None);
+        narrow.columns = Some(12);
+        let mut wide = narrow.clone();
+        wide.columns = Some(999);
+        assert_eq!(
+            RenderContext::from_policy(ColorPolicy::Auto, narrow).columns,
+            40
+        );
+        assert_eq!(
+            RenderContext::from_policy(ColorPolicy::Auto, wide).columns,
+            240
+        );
     }
 }

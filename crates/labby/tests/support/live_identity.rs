@@ -275,8 +275,8 @@ impl LiveIdentity {
         // secret outputs before the caller-owned installation disappears.
         let mut recovery = installation_command(&root);
         recovery.args([
-            "setup",
-            "access-bootstrap",
+            "auth",
+            "bootstrap",
             "recover",
             "--prepare-id",
             &prepare_id,
@@ -800,7 +800,7 @@ pub(crate) fn prepare_with_loadout_and_scopes(
 ) -> Result<Value, String> {
     let mut command = installation_command(root);
     command
-        .args(["setup", "access-bootstrap", "prepare", "--proof-file"])
+        .args(["auth", "bootstrap", "prepare", "--proof-file"])
         .arg(root.join("proof.json"))
         .arg("--credential-file")
         .arg(root.join("credential.txt"))
@@ -832,13 +832,7 @@ pub(crate) fn prepare_with_loadout_and_scopes(
 
 pub(crate) fn recover(root: &Path, prepare_id: &str, revoke: bool) -> Result<Value, String> {
     let mut command = installation_command(root);
-    command.args([
-        "setup",
-        "access-bootstrap",
-        "recover",
-        "--prepare-id",
-        prepare_id,
-    ]);
+    command.args(["auth", "bootstrap", "recover", "--prepare-id", prepare_id]);
     if revoke {
         command.arg("--revoke");
     }

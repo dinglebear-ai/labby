@@ -920,16 +920,29 @@ async fn code_mode_host_list_tools_for_mcp_cold_connects_with_a_finite_budget() 
 
     let mut hanging = fixture_http_upstream("alpha");
     hanging.url = Some(format!("http://{addr}/mcp"));
-    let (manager, pool) =
-        code_mode_manager_with_upstreams(vec![hanging, fixture_http_upstream("beta")]).await;
+    let beta_config = fixture_http_upstream("beta");
+    let upstreams = vec![hanging, beta_config];
+    let (manager, pool) = code_mode_manager_with_upstreams(upstreams.clone()).await;
+    manager
+        .seed_config_unchecked_for_tests(GatewayConfig {
+            code_mode: CodeModeConfig {
+                enabled: true,
+                timeout_ms: 2_000,
+                ..CodeModeConfig::default()
+            },
+            upstream: upstreams,
+            ..GatewayConfig::default()
+        })
+        .await;
     let mut beta = healthy_entry_with_tool("beta", "ping");
     let ping = beta.tools.get_mut("ping").expect("fixture tool");
     ping.destructive = false;
     ping.tool.annotations = Some(rmcp::model::ToolAnnotations::new().read_only(true));
     pool.insert_entry_for_tests("beta", beta).await;
 
+    let started = std::time::Instant::now();
     let render = tokio::time::timeout(
-        Duration::from_secs(20),
+        Duration::from_secs(3),
         CodeModeHost::list_tools(
             &manager,
             &CodeModeCaller::Scoped {
@@ -950,6 +963,10 @@ async fn code_mode_host_list_tools_for_mcp_cold_connects_with_a_finite_budget() 
     .await
     .expect("MCP proxy cold-connect budget must be finite")
     .expect("MCP Code Mode proxy generation should retain healthy tools");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "MCP catalog refresh must leave sandbox time instead of waiting for the hanging upstream"
+    );
 
     let ids = render
         .entries
@@ -957,6 +974,69 @@ async fn code_mode_host_list_tools_for_mcp_cold_connects_with_a_finite_budget() 
         .map(|entry| entry.id.as_str())
         .collect::<Vec<_>>();
     assert_eq!(ids, vec!["beta::ping"]);
+}
+
+#[tokio::test]
+async fn code_mode_host_mcp_refresh_budget_fails_closed_without_a_real_upstream() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind hanging upstream fixture");
+    let addr = listener.local_addr().expect("listener addr");
+    tokio::spawn(async move {
+        while let Ok((socket, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let _socket = socket;
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            });
+        }
+    });
+
+    let mut hanging = fixture_http_upstream("alpha");
+    hanging.url = Some(format!("http://{addr}/mcp"));
+    let upstreams = vec![hanging];
+    let (manager, _pool) = code_mode_manager_with_upstreams(upstreams.clone()).await;
+    manager
+        .seed_config_unchecked_for_tests(GatewayConfig {
+            code_mode: CodeModeConfig {
+                enabled: true,
+                timeout_ms: 2_000,
+                ..CodeModeConfig::default()
+            },
+            upstream: upstreams,
+            ..GatewayConfig::default()
+        })
+        .await;
+
+    let started = std::time::Instant::now();
+    let error = CodeModeHost::list_tools(
+        &manager,
+        &CodeModeCaller::Scoped {
+            capabilities: labby_codemode::CodeModeCallerCapabilities {
+                can_read: true,
+                can_execute: false,
+                can_use_snippets: false,
+                is_admin: false,
+            },
+            sub: Some("user-1".to_string()),
+        },
+        CodeModeSurface::Mcp,
+        &ToolScope::default().read_only(),
+        false,
+        false,
+    )
+    .await
+    .expect_err("builtin-only catalog after refresh timeout must fail closed");
+
+    assert_eq!(error.kind(), "upstream_connect_error");
+    assert!(
+        error
+            .to_string()
+            .contains("timed out before any real upstream was usable")
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "fail-closed timeout must still leave the broker execution budget bounded"
+    );
 }
 
 #[tokio::test]
@@ -1004,6 +1084,8 @@ async fn code_mode_host_blocks_unannotated_tools_for_read_only_callers() {
     pool.insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "ping"))
         .await;
 
+    // Read-only Code Mode runs (`codemode_read`) are expressed by a read-only
+    // scope; the host gate re-checks the live descriptor before dispatch.
     let err = CodeModeHost::call_tool(
         &manager,
         "alpha::ping",
@@ -1013,21 +1095,19 @@ async fn code_mode_host_blocks_unannotated_tools_for_read_only_callers() {
             sub: Some("user-1".to_string()),
         },
         CodeModeSurface::Mcp,
-        &ToolScope::new(Vec::new(), Vec::new()),
+        &ToolScope::new(Vec::new(), Vec::new()).read_only(),
         labby_codemode::ExecCtx::none(),
     )
     .await
     .expect_err("a read-only caller must not execute an unannotated tool");
 
-    // Two layers deny this, and the catalog is the first: an unannotated tool is
-    // not admitted to a read-only caller's catalog at all, so resolution fails
-    // before the execution gate is consulted. `forbidden` would mean the catalog
-    // admitted it and only the gate caught it; either is a denial, and asserting
-    // both keeps this test honest if the layering ever shifts.
-    assert!(
-        matches!(err.kind(), "not_found" | "forbidden"),
-        "a read-only caller must be denied an unannotated tool, got kind {}: {}",
+    // This must be the read-only gate itself. The fixture upstream has no live
+    // peer, so any other outcome (such as `not_connected`) would mean the gate
+    // was never reached.
+    assert_eq!(
         err.kind(),
+        "forbidden",
+        "a read-only caller must be denied an unannotated tool, got: {}",
         err.user_message()
     );
 }
@@ -1058,18 +1138,21 @@ async fn code_mode_host_admits_annotated_read_only_tools_without_an_operator_all
             sub: Some("user-1".to_string()),
         },
         CodeModeSurface::Mcp,
-        &ToolScope::new(Vec::new(), Vec::new()),
+        &ToolScope::new(Vec::new(), Vec::new()).read_only(),
         labby_codemode::ExecCtx::none(),
     )
     .await;
 
-    if let Err(err) = outcome {
-        assert!(
-            !err.user_message().contains("not explicitly annotated"),
-            "an annotated read-only tool must clear the read-only gate, got: {}",
-            err.user_message()
-        );
-    }
+    // The fixture upstream has no live peer, so a call that clears the
+    // read-only gate fails at dispatch with `not_connected`. `forbidden` would
+    // mean the gate rejected an annotated read-only tool.
+    let err = outcome.expect_err("the fixture upstream has no live peer");
+    assert_eq!(
+        err.kind(),
+        "not_connected",
+        "an annotated read-only tool must clear the read-only gate, got: {}",
+        err.user_message()
+    );
 }
 
 #[tokio::test]
@@ -3089,4 +3172,366 @@ async fn an_entirely_suppressed_fleet_is_an_error_not_an_empty_catalog() {
         "the error must name the suppressed upstream: {message}"
     );
     drop(dead_server);
+}
+
+#[tokio::test]
+async fn canonical_code_mode_upstream_resolves_separator_and_case_aliases() {
+    let (manager, _pool) = code_mode_manager_with_upstreams(vec![
+        fixture_http_upstream("claude-macpoo"),
+        fixture_http_upstream("github"),
+    ])
+    .await;
+    let scope = ToolScope::default();
+
+    for requested in ["claude-macpoo", "claude_macpoo", "Claude_MacPoo"] {
+        assert_eq!(
+            manager
+                .canonical_code_mode_upstream(requested, &scope)
+                .await
+                .expect("alias resolves"),
+            "claude-macpoo",
+            "{requested}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn canonical_code_mode_upstream_unknown_name_suggests_similar_upstream() {
+    let (manager, _pool) = code_mode_manager_with_upstreams(vec![
+        fixture_http_upstream("claude-macpoo"),
+        fixture_http_upstream("github"),
+    ])
+    .await;
+
+    let err = manager
+        .canonical_code_mode_upstream("claude-macpo", &ToolScope::default())
+        .await
+        .expect_err("unknown upstream");
+
+    assert_eq!(err.kind(), "unknown_upstream");
+    let message = err.to_string();
+    assert!(
+        message.contains("Did you mean `claude-macpoo`"),
+        "{message}"
+    );
+    assert!(message.contains("codemode.search()"), "{message}");
+}
+
+#[tokio::test]
+async fn canonical_code_mode_upstream_suggestions_respect_scope_and_priority() {
+    let mut suppressed = fixture_http_upstream("secret-beta");
+    suppressed.priority = 0.0;
+    let (manager, _pool) = code_mode_manager_with_upstreams(vec![
+        fixture_http_upstream("alpha"),
+        fixture_http_upstream("scoped-out-beta"),
+        suppressed,
+    ])
+    .await;
+    let scope = ToolScope::scoped_namespaces(vec!["alpha".to_string()], Vec::new());
+
+    let err = manager
+        .canonical_code_mode_upstream("beta", &scope)
+        .await
+        .expect_err("unknown upstream");
+    let message = err.to_string();
+    assert!(!message.contains("secret-beta"), "{message}");
+    assert!(!message.contains("scoped-out-beta"), "{message}");
+    assert!(message.contains("`alpha`"), "{message}");
+
+    // An exact out-of-scope name is indistinguishable from a missing one.
+    let hidden = manager
+        .canonical_code_mode_upstream("scoped-out-beta", &scope)
+        .await
+        .expect_err("out of scope");
+    let missing = manager
+        .canonical_code_mode_upstream("nothing-here", &scope)
+        .await
+        .expect_err("missing");
+    assert_eq!(hidden.kind(), "unknown_upstream");
+    assert_eq!(
+        hidden.to_string().replace("scoped-out-beta", "X"),
+        missing.to_string().replace("nothing-here", "X")
+    );
+}
+
+#[tokio::test]
+async fn canonical_code_mode_upstream_ignores_out_of_scope_alias_siblings() {
+    let (manager, _pool) = code_mode_manager_with_upstreams(vec![
+        fixture_http_upstream("foo-bar"),
+        fixture_http_upstream("foo_bar"),
+    ])
+    .await;
+    let scope = ToolScope::scoped_namespaces(vec!["foo-bar".to_string()], Vec::new());
+
+    assert_eq!(
+        manager
+            .canonical_code_mode_upstream("Foo_Bar", &scope)
+            .await
+            .expect("only the in-scope sibling is a candidate"),
+        "foo-bar"
+    );
+}
+
+#[tokio::test]
+async fn canonical_code_mode_upstream_explains_priority_zero_in_scope_upstreams() {
+    // A non-positive priority disables routing without removing the upstream,
+    // so an in-scope caller must be told that, not "not found".
+    let mut suppressed = fixture_http_upstream("claude-macpoo");
+    suppressed.priority = 0.0;
+    let (manager, _pool) =
+        code_mode_manager_with_upstreams(vec![suppressed, fixture_http_upstream("github")]).await;
+
+    let err = manager
+        .canonical_code_mode_upstream("claude_macpoo", &ToolScope::default())
+        .await
+        .expect_err("priority-0 upstream cannot be called");
+    assert_eq!(err.kind(), "unavailable");
+    assert!(err.to_string().contains("configured but disabled"), "{err}");
+
+    // Out of scope it stays indistinguishable from a name that does not exist.
+    let scope = ToolScope::scoped_namespaces(vec!["github".to_string()], Vec::new());
+    let hidden = manager
+        .canonical_code_mode_upstream("claude_macpoo", &scope)
+        .await
+        .expect_err("out of scope");
+    assert_eq!(hidden.kind(), "unknown_upstream");
+    assert!(!hidden.to_string().contains("disabled"), "{hidden}");
+}
+
+#[tokio::test]
+async fn canonical_code_mode_upstream_explains_disabled_in_scope_upstreams() {
+    let mut disabled = fixture_http_upstream("claude-macpoo");
+    disabled.enabled = false;
+    let (manager, _pool) =
+        code_mode_manager_with_upstreams(vec![disabled, fixture_http_upstream("github")]).await;
+
+    let err = manager
+        .canonical_code_mode_upstream("claude_macpoo", &ToolScope::default())
+        .await
+        .expect_err("disabled upstream");
+    assert_eq!(err.kind(), "unavailable");
+    assert!(err.to_string().contains("configured but disabled"), "{err}");
+
+    // Out of scope, the same disabled upstream is simply unknown.
+    let scope = ToolScope::scoped_namespaces(vec!["github".to_string()], Vec::new());
+    let err = manager
+        .canonical_code_mode_upstream("claude_macpoo", &scope)
+        .await
+        .expect_err("hidden");
+    assert_eq!(err.kind(), "unknown_upstream");
+    assert!(!err.to_string().contains("disabled"), "{err}");
+}
+
+fn example_entry(upstream: &str, tools: &[(&str, bool)]) -> UpstreamEntry {
+    let upstream_name: Arc<str> = Arc::from(upstream);
+    let tools = tools
+        .iter()
+        .map(|(name, read_only)| {
+            let mut tool = rmcp::model::Tool::new(
+                (*name).to_string(),
+                format!("{name} description"),
+                Arc::new(serde_json::Map::new()),
+            );
+            if *read_only {
+                tool.annotations = Some(rmcp::model::ToolAnnotations::new().read_only(true));
+            }
+            (
+                (*name).to_string(),
+                UpstreamTool {
+                    tool,
+                    input_schema: None,
+                    output_schema: None,
+                    upstream_name: Arc::clone(&upstream_name),
+                    destructive: false,
+                },
+            )
+        })
+        .collect();
+    fixture_upstream_entry(upstream, tools)
+}
+
+fn names(values: &[&str]) -> std::collections::BTreeSet<String> {
+    values.iter().map(|value| (*value).to_string()).collect()
+}
+
+#[tokio::test]
+async fn code_mode_example_tool_is_sticky_but_drops_tools_no_longer_read_only() {
+    let (manager, pool) = code_mode_manager_with_pool(fixture_http_upstream("claude-macpoo")).await;
+    let upstreams = names(&["claude-macpoo"]);
+    pool.insert_entry_for_tests(
+        "claude-macpoo",
+        example_entry("claude-macpoo", &[("Read", true)]),
+    )
+    .await;
+    let (_, first) = manager
+        .code_mode_example_tool(&upstreams)
+        .await
+        .expect("example");
+    assert_eq!(first.tool(), "Read");
+
+    // A reconnect that adds a smaller-named tool must not change the example:
+    // descriptors feed the contract hash and tools/list cursors.
+    pool.insert_entry_for_tests(
+        "claude-macpoo",
+        example_entry("claude-macpoo", &[("Glob", true), ("Read", true)]),
+    )
+    .await;
+    let (_, sticky) = manager
+        .code_mode_example_tool(&upstreams)
+        .await
+        .expect("example");
+    assert_eq!(sticky.tool(), "Read");
+
+    // A healthy upstream that no longer has the tool as read-only drops it.
+    pool.insert_entry_for_tests(
+        "claude-macpoo",
+        example_entry("claude-macpoo", &[("Glob", true), ("Read", false)]),
+    )
+    .await;
+    let (_, replaced) = manager
+        .code_mode_example_tool(&upstreams)
+        .await
+        .expect("example");
+    assert_eq!(replaced.tool(), "Glob");
+}
+
+#[tokio::test]
+async fn code_mode_example_tool_only_uses_read_only_tools_and_skips_cold_upstreams() {
+    let (manager, pool) = code_mode_manager_with_upstreams(vec![
+        fixture_http_upstream("alpha"),
+        fixture_http_upstream("beta"),
+        fixture_http_upstream("gamma"),
+    ])
+    .await;
+    // alpha: cold. beta: only a mutating tool. gamma: a read-only tool.
+    pool.insert_entry_for_tests("beta", example_entry("beta", &[("Bash", false)]))
+        .await;
+    pool.insert_entry_for_tests("gamma", example_entry("gamma", &[("lookup", true)]))
+        .await;
+
+    let (upstream, example) = manager
+        .code_mode_example_tool(&names(&["alpha", "beta", "gamma"]))
+        .await
+        .expect("gamma has a read-only tool");
+    assert_eq!((upstream.as_str(), example.tool()), ("gamma", "lookup"));
+    assert!(
+        manager
+            .code_mode_example_tool(&names(&["alpha", "beta"]))
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn code_mode_example_tool_resets_when_the_config_generation_changes() {
+    let (manager, pool) = code_mode_manager_with_pool(fixture_http_upstream("claude-macpoo")).await;
+    let upstreams = names(&["claude-macpoo"]);
+    pool.insert_entry_for_tests(
+        "claude-macpoo",
+        example_entry("claude-macpoo", &[("Read", true)]),
+    )
+    .await;
+    assert_eq!(
+        manager
+            .code_mode_example_tool(&upstreams)
+            .await
+            .expect("example")
+            .1
+            .tool()
+            .to_string(),
+        "Read"
+    );
+
+    pool.insert_entry_for_tests(
+        "claude-macpoo",
+        example_entry("claude-macpoo", &[("Glob", true), ("Read", true)]),
+    )
+    .await;
+    manager.advance_runtime_config_generation();
+    assert_eq!(
+        manager
+            .code_mode_example_tool(&upstreams)
+            .await
+            .expect("example")
+            .1
+            .tool()
+            .to_string(),
+        "Glob"
+    );
+}
+
+/// A catalog entry whose connection is gone must not be reported as a missing
+/// tool: `not_found` + `rediscover` sends agents back to search, which lists
+/// the same tool again, in a loop.
+#[tokio::test]
+async fn code_mode_host_reports_disconnected_upstream_as_not_connected() {
+    let (manager, pool) =
+        code_mode_manager_with_upstreams(vec![fixture_http_upstream("claude-macpoo")]).await;
+    pool.insert_entry_for_tests(
+        "claude-macpoo",
+        healthy_entry_with_tool("claude-macpoo", "Bash"),
+    )
+    .await;
+
+    let err = CodeModeHost::call_tool(
+        &manager,
+        "claude_macpoo::Bash",
+        json!({}),
+        &CodeModeCaller::TrustedLocal,
+        CodeModeSurface::Mcp,
+        &ToolScope::new(Vec::new(), Vec::new()),
+        labby_codemode::ExecCtx::none(),
+    )
+    .await
+    .expect_err("the fixture entry has no live peer");
+
+    assert_eq!(err.kind(), "not_connected", "{}", err.user_message());
+    let message = err.user_message();
+    assert!(message.contains("claude-macpoo"), "{message}");
+    assert!(message.contains("not connected"), "{message}");
+    assert!(!message.contains("was not found"), "{message}");
+    let value = serde_json::to_value(&err).expect("serialize");
+    assert_eq!(value["side_effects"], "none_expected", "{value}");
+    assert_eq!(value["recovery"]["action"], "retry_later", "{value}");
+    assert_eq!(value["recovery"]["same_arguments"], "safe", "{value}");
+    let guidance = value["recovery"]["guidance"].as_str().unwrap_or_default();
+    assert!(guidance.contains("Nothing was sent"), "{value}");
+    assert!(
+        !guidance.contains("partial effects"),
+        "must not contradict side_effects: {value}"
+    );
+}
+
+#[tokio::test]
+async fn code_mode_example_upstream_does_not_move_when_an_earlier_one_connects() {
+    let (manager, pool) = code_mode_manager_with_upstreams(vec![
+        fixture_http_upstream("alpha"),
+        fixture_http_upstream("gamma"),
+    ])
+    .await;
+    let upstreams = names(&["alpha", "gamma"]);
+    pool.insert_entry_for_tests("gamma", example_entry("gamma", &[("lookup", true)]))
+        .await;
+    let (first, _) = manager
+        .code_mode_example_tool(&upstreams)
+        .await
+        .expect("example");
+    assert_eq!(first, "gamma");
+
+    // `alpha` sorts first but connects later; the example must stay on
+    // `gamma`, or every connect would republish the descriptor contract.
+    pool.insert_entry_for_tests("alpha", example_entry("alpha", &[("read", true)]))
+        .await;
+    let (after, _) = manager
+        .code_mode_example_tool(&upstreams)
+        .await
+        .expect("example");
+    assert_eq!(after, "gamma");
+
+    // A caller that cannot see `gamma` still gets its own stable example.
+    let (scoped, _) = manager
+        .code_mode_example_tool(&names(&["alpha"]))
+        .await
+        .expect("example");
+    assert_eq!(scoped, "alpha");
 }

@@ -814,6 +814,7 @@ mod tests {
                 },
                 scopes: None,
                 credential: Default::default(),
+                additional_endpoint_origins: vec![],
                 prefer_client_metadata_document: None,
             });
             client_cache

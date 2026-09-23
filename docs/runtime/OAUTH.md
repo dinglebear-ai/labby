@@ -141,7 +141,7 @@ TOML, command lines, logs, or support bundles.
 
 ## Remote CLI operator sign-in
 
-`labby login --server https://lab.example` opens the existing browser OAuth
+`labby auth login --server https://lab.example` opens the existing browser OAuth
 flow for the operator account. Configure `LABBY_SERVER_URL=https://lab.example`
 for subsequent commands. Login does not create an identity grant or bypass
 platform authorization: the authenticated account must already have authority
@@ -157,10 +157,10 @@ forward the public native-client document to Labby along with OAuth routes.
 Explicit alternatives are available for deployment policy and older servers:
 
 ```bash
-labby login --server https://lab.example --dynamic-registration
-labby login --server https://lab.example --client-metadata-url https://client.example/labby.json
-labby login --server https://lab.example --client-id registered-native-client
-labby login --server https://lab.example --client-id registered-client --client-secret-env CLI_CLIENT_SECRET
+labby auth login --server https://lab.example --dynamic-registration
+labby auth login --server https://lab.example --client-metadata-url https://client.example/labby.json
+labby auth login --server https://lab.example --client-id registered-native-client
+labby auth login --server https://lab.example --client-id registered-client --client-secret-env CLI_CLIENT_SECRET
 ```
 
 Only the environment variable name is stored for a preregistered secret; the
@@ -344,7 +344,7 @@ Labby supports two separate first-owner flows:
   requires the authenticated browser session, CSRF token, `lab:admin`, the
   canonical external identity, and an email matching
   `LABBY_AUTH_ADMIN_EMAIL`.
-- `labby setup access-bootstrap` is the direct-local operator flow documented
+- `labby auth bootstrap` is the direct-local operator flow documented
   in [Local access bootstrap](../guides/LOCAL_ACCESS_BOOTSTRAP.md). Eligibility
   comes only from a one-time 256-bit proof prepared offline while the
   installation is pristine. Loopback location by itself grants nothing.
@@ -484,8 +484,8 @@ Google-specific notes:
 Labby also ships a local OAuth callback forwarder for browser-side machines:
 
 ```bash
-labby oauth relay-local --machine node-a --port 38935
-labby oauth relay-local --forward-base http://node.internal.example:38935/callback/node-a --port 38935
+labby auth relay local --machine node-a --port 38935
+labby auth relay local --forward-base http://node.internal.example:38935/callback/node-a --port 38935
 ```
 
 This helper exists for cases where:
@@ -540,7 +540,7 @@ Public relay constraints:
 - deep target reachability belongs in explicit doctor checks:
 
 ```bash
-labby doctor oauth-relay --probe-targets --json
+labby doctor relay --probe-targets --json
 ```
 
 The registry is separate from `[oauth.machines]` and is stored at:
@@ -552,14 +552,14 @@ The registry is separate from `[oauth.machines]` and is stored at:
 Offline registry management:
 
 ```bash
-labby oauth relay-registry list --json
-labby oauth relay-registry import --file /tmp/callback-relay-registry.json --json
-labby oauth relay-registry register \
+labby auth relay registry list --json
+labby auth relay registry import --file /tmp/callback-relay-registry.json --json
+labby auth relay registry register \
   --machine devhost \
   --target-url http://100.99.0.1:38935/callback/devhost
-labby oauth relay-registry disable --machine devhost
-labby oauth relay-registry enable --machine devhost
-labby oauth relay-registry remove --machine devhost
+labby auth relay registry disable --machine devhost
+labby auth relay registry enable --machine devhost
+labby auth relay registry remove --machine devhost
 ```
 
 CLI registry mutations write the sidecar file and report
@@ -1215,7 +1215,7 @@ route through the live gateway may return `restart_required`; update
 
 ```bash
 systemctl restart labby.service
-labby gateway protected-route get root --json
+labby route get root --json
 ```
 
 After restart, verify the public challenge and route metadata:
@@ -1489,7 +1489,7 @@ Current verification is owned by Labby's built-in health/doctor surfaces and foc
 
 ### Pre-flight — `labby doctor auth`
 
-Use `labby doctor auth` to inspect auth/OAuth environment, persisted files, permissions, and configuration before or alongside a running server. Use `labby doctor proxy` for caller-visible public proxy checks and `labby doctor oauth-relay` for callback-relay registry/target checks.
+Use `labby doctor auth` to inspect auth/OAuth environment, persisted files, permissions, and configuration before or alongside a running server. Use `labby doctor proxy` for caller-visible public proxy checks and `labby doctor relay` for callback-relay registry/target checks.
 
 ### Running-server checks
 

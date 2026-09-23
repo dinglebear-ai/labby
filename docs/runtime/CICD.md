@@ -290,7 +290,7 @@ land the required code/tests and the baseline update together.
   - Native Windows workspace and Palette jobs use GitHub-hosted runners, bounded timeouts, and keyed Cargo caches; workspace tests block `ci-gate`, while Palette remains advisory
   - Heavy release work starts from an immutable stable-version tag while the
     matching GitHub release is still draft
-  - Release Linux jobs use GitHub-hosted x86_64 runners; native macOS and Windows artifacts use GitHub-hosted runners
+  - Release Linux jobs use GitHub-hosted x86_64 runners; native macOS artifacts use GitHub-hosted Apple Silicon runners
 
 The pinned fleet policy and repository contract set `allow-arm64: true` for
 Labby. This removes the former fleet-wide ARM64 token rejection while keeping
@@ -324,13 +324,11 @@ repository and is outside this repository's local runner selection.
 |----------|--------|
 | Linux x86_64 | `x86_64-unknown-linux-gnu` |
 | macOS arm64 | `aarch64-apple-darwin` |
-| Windows x86_64 | `x86_64-pc-windows-msvc` |
 
-macOS and Windows are supported platforms. Official macOS artifacts are built
-on a native GitHub-hosted Apple Silicon runner. Official Windows artifacts are
-built on native GitHub-hosted Windows runners using the MSVC target.
-Cross-compilation may be useful experimentally, but it is not the release
-support contract.
+Official macOS artifacts are built on a native GitHub-hosted Apple Silicon
+runner. Windows remains covered by required CI tests, but is not a release
+target. Cross-compilation may be useful experimentally, but it is not the
+release support contract.
 
 ## Integration Tests
 
@@ -353,7 +351,7 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
 4. Each platform archive is built, smoke-tested, and attested in its build job.
    The N-1 matrix verifies that exact archive attestation before extraction,
    checks the archive sidecar, and records an archive-to-extracted-binary digest
-   binding. It then invokes a platform-owned adapter for Unix, Windows, macOS, Incus,
+   binding. It then invokes a platform-owned adapter for Unix, macOS, Incus,
    and host-service deployment. The host-service leg is advisory: it runs
    and reports, but cannot block a release, until the service can write its
    logs under the v1.16 systemd sandbox. N-1 is the newest published
@@ -374,6 +372,18 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
    readable, and repeat the authenticated action. A missing command or adapter
    is a hard failure. The archive is the attestation subject; the extracted
    binary digest is the activation-integrity binding, not a claimed attestation.
+   Before candidate activation, each supported adapter stops the service and
+   exports an authenticated offline state bundle with the verified candidate.
+   Rollback restores that bundle before reactivating the older executable:
+   binary rollback alone cannot undo forward-only database migrations. The
+   bundle and its random owner-only recovery key remain outside `LABBY_HOME`
+   in the disposable qualification fixture and are never uploaded as logs.
+   Linux service adapters run export and restore as the `labby` state owner,
+   not root. They stage the verified candidate in that owner's private recovery
+   directory so runner-only paths do not block access after dropping privileges.
+   macOS uses a dedicated LaunchAgent and aligned `HOME`/`LABBY_HOME` so older
+   releases cannot resolve state outside the fixture. Config bytes and the
+   original credential must survive; startup may add unrelated dotenv keys.
 5. The final gated job verifies archive checksums and creates one SPDX JSON SBOM
    for each archive and installer. It records every
    subject digest in `release-manifest.json`, records every published checksum
@@ -446,7 +456,7 @@ replacement tag or bump the version merely to hide partial publication.
 ## Artifact Distribution
 
 - **Surface:** GitHub Releases
-- **Artifacts per release:** one binary archive per supported target (Linux x86_64, macOS arm64, and Windows x86_64)
+- **Artifacts per release:** one binary archive per supported target (Linux x86_64 and macOS arm64)
 - **Checksums:** every binary archive has a SHA-256 checksum file
 - **SBOMs:** one identity-bound SPDX JSON document per archive and installer
 - **Manifest:** `release-manifest.json` binds every promoted subject name, size,

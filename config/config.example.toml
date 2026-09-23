@@ -26,6 +26,16 @@
 #   3. $LABBY_HOME/config.toml
 #   4. Built-in defaults
 
+# Named CLI destinations are non-secret preferences in this same file.
+# Use `labby context add NAME --server URL --use` instead of storing tokens here.
+# Invocation --server/--context wins over environment targets; environment
+# targets win over current_context. Local host commands are not retargeted.
+# [cli]
+# current_context = "homelab"
+# [cli.contexts.homelab]
+# server = "https://example.invalid/"
+# team_id = "personal"
+
 # ── Output ───────────────────────────────────────────────────────────────────
 
 [output]

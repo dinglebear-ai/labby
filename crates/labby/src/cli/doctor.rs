@@ -4,7 +4,7 @@
 //!   labby doctor              — full audit (system + auth + gateway + relay)
 //!   labby doctor system       — local system checks only
 //!   labby doctor auth         — auth/OAuth configuration checks
-//!   labby doctor oauth-relay  — public OAuth callback relay registry checks
+//!   labby doctor relay  — public OAuth callback relay registry checks
 //!
 //! Exit codes: 0 = ok, 1 = warnings, 2 = failures.
 
@@ -32,6 +32,7 @@ pub enum DoctorCheck {
     /// Check auth/OAuth configuration (env vars, files, permissions)
     Auth(DoctorAuthArgs),
     /// Check public OAuth callback relay registry and optionally target sockets
+    #[command(name = "relay")]
     OauthRelay(DoctorOauthRelayArgs),
     /// Check public Lab and protected MCP proxy endpoints from caller-visible URLs
     Proxy(DoctorProxyArgs),
@@ -98,7 +99,8 @@ async fn run_full_audit(
     let public_relay = load_optional_public_relay_manager().await;
     let (resolved_auth, auth_config_error) = match crate::config::resolve_auth_for_config(config) {
         Ok(auth) => (Some(auth), None),
-        Err(error) => (None, Some(error.to_string())),
+        // `{error:#}` keeps the typed cause the outer context names.
+        Err(error) => (None, Some(format!("{error:#}"))),
     };
 
     tokio::spawn(async move {
@@ -153,7 +155,7 @@ async fn run_auth(
         Err(error) => {
             let report = Report {
                 findings: vec![crate::dispatch::doctor::auth_config_error_finding(
-                    &error.to_string(),
+                    &format!("{error:#}"),
                 )],
             };
             if format.is_json() {
@@ -478,10 +480,10 @@ mod tests {
 
     #[test]
     fn doctor_oauth_relay_cli_parses_probe_targets() {
-        let cli = Cli::try_parse_from(["lab", "doctor", "oauth-relay", "--probe-targets"])
+        let cli = Cli::try_parse_from(["lab", "doctor", "relay", "--probe-targets"])
             .expect("oauth relay doctor command should parse");
 
-        match cli.command {
+        match cli.command.into_operation() {
             Command::Doctor(super::DoctorArgs {
                 check: Some(super::DoctorCheck::OauthRelay(args)),
             }) => assert!(args.probe_targets),

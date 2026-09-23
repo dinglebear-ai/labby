@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-json="$(cargo run -p labby --all-features -- --json setup incus-ssh verify "$@")"
+json="$(cargo run -p labby --all-features -- --json host incus ssh verify "$@")"
 failed_count="$(jq '.failed | length' <<<"$json")"
 
 if [[ "$failed_count" -eq 0 ]]; then

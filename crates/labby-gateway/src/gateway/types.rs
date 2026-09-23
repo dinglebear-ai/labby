@@ -131,6 +131,22 @@ pub struct DiscoveredServerView {
     pub tombstoned: bool,
 }
 
+/// Redacted diagnostics returned when `gateway.discover` is called with `explain`.
+#[derive(Debug, Clone, Serialize, JsonSchema, Deserialize)]
+pub struct DiscoveryExplanationView {
+    pub scanned_clients: Vec<String>,
+    pub matched_paths: Vec<String>,
+    pub discovered_by_client: std::collections::BTreeMap<String, usize>,
+    pub duplicates_omitted: usize,
+}
+
+/// Explained discovery result. The ordinary action retains its array response.
+#[derive(Debug, Clone, Serialize, JsonSchema, Deserialize)]
+pub struct ExplainedDiscoveryView {
+    pub servers: Vec<DiscoveredServerView>,
+    pub explanation: DiscoveryExplanationView,
+}
+
 /// One operator-deleted imported upstream that suppresses future auto-imports.
 #[derive(Debug, Clone, Serialize, JsonSchema, Deserialize)]
 pub struct ImportTombstoneView {
@@ -171,10 +187,21 @@ pub struct ImportErrorView {
 #[derive(Debug, Clone, Default, Serialize, JsonSchema, Deserialize)]
 pub struct ImportResultView {
     pub imported: Vec<GatewayView>,
+    /// Redacted entries that would be imported when `dry_run` is true.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub planned: Vec<ImportPlanView>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skipped: Vec<ImportSkipView>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<ImportErrorView>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema, Deserialize, PartialEq, Eq)]
+pub struct ImportPlanView {
+    pub name: String,
+    pub source_client: String,
+    pub source_path: String,
+    pub transport: McpClientTransportType,
 }
 
 #[derive(Debug, Clone, Default, Serialize, JsonSchema, Deserialize)]

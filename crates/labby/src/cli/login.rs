@@ -7,8 +7,8 @@ use std::process::ExitCode;
 
 #[derive(Debug, Args)]
 pub struct LoginArgs {
-    /// HTTPS server origin. Defaults to LABBY_SERVER_URL.
-    #[arg(long)]
+    /// Filled from the invocation target selector before adapting to OAuth.
+    #[arg(skip)]
     pub server: Option<String>,
     /// Public HTTPS client metadata document for servers that require CIMD.
     #[arg(long, conflicts_with_all = ["client_id", "client_secret_env", "dynamic_registration"])]

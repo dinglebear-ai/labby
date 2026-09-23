@@ -52,13 +52,51 @@ pub struct ToolsRender {
     pub catalog_json: Arc<str>,
     /// Serialized catalog size in bytes (for tracing).
     pub serialized_size: usize,
+    /// Upstreams whose tools matched this execution's namespace/tool scope
+    /// but were withheld by its access mode. Discovery reports these so an
+    /// agent learns why a namespace is missing instead of seeing a silently
+    /// empty result. Never part of the cached catalog: it depends on the
+    /// per-execution scope.
+    pub withheld: Arc<[WithheldTools]>,
+}
+
+/// Tools from one upstream withheld from a read-only Code Mode catalog
+/// because the upstream does not annotate them `readOnlyHint: true`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct WithheldTools {
+    namespace: String,
+    tool_count: usize,
+}
+
+impl WithheldTools {
+    /// Summary for one upstream; `None` when nothing was withheld, so every
+    /// value reports at least one tool.
+    #[must_use]
+    pub fn new(namespace: impl Into<String>, tool_count: usize) -> Option<Self> {
+        (tool_count > 0).then(|| Self {
+            namespace: namespace.into(),
+            tool_count,
+        })
+    }
+
+    /// Configured upstream name (the `callTool` namespace).
+    #[must_use]
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+
+    /// Number of tools withheld from this upstream (at least one).
+    #[must_use]
+    pub fn tool_count(&self) -> usize {
+        self.tool_count
+    }
 }
 
 impl ToolsRender {
     /// An empty render — the shared shape every "no catalog available"
     /// fallback (a host with nothing configured, a fail-open degrade on a
     /// host error) should construct, rather than each call site duplicating
-    /// the same four-field literal and risking drift between them.
+    /// the same field literal and risking drift between them.
     #[must_use]
     pub fn empty() -> Self {
         Self {
@@ -67,6 +105,7 @@ impl ToolsRender {
             entries: Arc::from([]),
             catalog_json: Arc::from("[]"),
             serialized_size: 2,
+            withheld: Arc::from([]),
         }
     }
 }
@@ -438,6 +477,7 @@ impl CodeModeHost for NoopHost {
             entries: Arc::from([]),
             catalog_json: Arc::from("[]"),
             serialized_size: 2,
+            withheld: Arc::from([]),
         })
     }
 

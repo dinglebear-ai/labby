@@ -1106,6 +1106,101 @@
     "builtin": true
   },
   {
+    "service": "artifact_publish",
+    "action": "artifacts.publish_skill_archive",
+    "description": "Publish a skill archive to the authenticated team's Artifact authority",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "project_artifact_publish",
+    "required_capability": null,
+    "resource_family": "artifact_library",
+    "params": [
+      {
+        "name": "filename",
+        "ty": "string",
+        "required": true,
+        "description": "Archive filename ending in .zip, .tar.gz, or .tgz"
+      },
+      {
+        "name": "archive_base64",
+        "ty": "string",
+        "required": true,
+        "description": "Base64 encoded skill archive bytes"
+      },
+      {
+        "name": "namespace",
+        "ty": "string",
+        "required": false,
+        "description": "Optional Team Depot namespace"
+      }
+    ],
+    "returns": "IngestJobReceipt",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": false,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifact_publish",
+    "action": "help",
+    "description": "Show service actions",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [],
+    "returns": "HelpPayload",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": false,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
+    "service": "artifact_publish",
+    "action": "schema",
+    "description": "Show the schema for a specific action",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "action",
+        "ty": "string",
+        "required": true,
+        "description": "Action name to describe"
+      }
+    ],
+    "returns": "ActionSpec",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": false,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
     "service": "artifacts",
     "action": "artifacts.activate",
     "description": "Activate an exact stored revision as a new generation",
@@ -1323,6 +1418,56 @@
   },
   {
     "service": "artifacts",
+    "action": "artifacts.delete_remote",
+    "description": "Delete an ingested remote Artifact while preserving immutable bundle versions",
+    "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "namespace",
+        "ty": "string",
+        "required": true,
+        "description": "Remote Artifact namespace"
+      },
+      {
+        "name": "name",
+        "ty": "string",
+        "required": true,
+        "description": "Remote Artifact name"
+      },
+      {
+        "name": "expected_version",
+        "ty": "string",
+        "required": true,
+        "description": "Current Artifact state version required for optimistic concurrency"
+      }
+    ],
+    "returns": "DeleteReceipt",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
     "action": "artifacts.follow",
     "description": "Follow or unfollow an upstream Artifact while preserving revision identity",
     "destructive": false,
@@ -1380,6 +1525,90 @@
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.follow_managed",
+    "description": "Materialize one exact revision as a managed local mirror and create an explicit update subscription",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "source",
+        "ty": "object",
+        "required": true,
+        "description": "Server connection id plus exact immutable source, Artifact, and revision selector; never bytes, paths, endpoints, or credentials"
+      },
+      {
+        "name": "assignment_id",
+        "ty": "string",
+        "required": true,
+        "description": "Exact active source Assignment/share authorizing managed byte materialization"
+      },
+      {
+        "name": "idempotency_key",
+        "ty": "string",
+        "required": true,
+        "description": "Bounded request idempotency key (maximum 256 bytes)"
+      },
+      {
+        "name": "update_policy",
+        "ty": "string",
+        "required": true,
+        "description": "Follow policy: notify, auto_approved, or pinned"
+      }
+    ],
+    "returns": "ManagedArtifactReceipt",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.follow_update",
+    "description": "Apply one exact currently-authorized source revision to an existing followed managed mirror",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "source",
+        "ty": "object",
+        "required": true,
+        "description": "Server connection id plus exact immutable source, Artifact, and revision selector; never bytes, paths, endpoints, or credentials"
+      },
+      {
+        "name": "idempotency_key",
+        "ty": "string",
+        "required": true,
+        "description": "Bounded request idempotency key (maximum 256 bytes)"
+      }
+    ],
+    "returns": "ManagedArtifactReceipt",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1447,6 +1676,60 @@
   },
   {
     "service": "artifacts",
+    "action": "artifacts.fork_personal",
+    "description": "Fork one exact permitted source revision into a new caller-owned Personal Artifact",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "source",
+        "ty": "object",
+        "required": true,
+        "description": "Server connection id plus exact immutable source, Artifact, and revision selector; never bytes, paths, endpoints, or credentials"
+      },
+      {
+        "name": "assignment_id",
+        "ty": "string",
+        "required": true,
+        "description": "Exact active source Assignment/share authorizing managed byte materialization"
+      },
+      {
+        "name": "name",
+        "ty": "string",
+        "required": true,
+        "description": "Name for the new caller-owned Personal Artifact"
+      },
+      {
+        "name": "title",
+        "ty": "string",
+        "required": false,
+        "description": "Optional title for the new Personal Artifact"
+      },
+      {
+        "name": "idempotency_key",
+        "ty": "string",
+        "required": true,
+        "description": "Bounded request idempotency key (maximum 256 bytes)"
+      }
+    ],
+    "returns": "PersonalArtifactForkReceipt",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
     "action": "artifacts.get",
     "description": "Get one stored Skill summary without file bodies",
     "destructive": false,
@@ -1505,6 +1788,42 @@
       "mcp": true,
       "api": true,
       "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.get_remote_skill",
+    "description": "Get one remote Skill manifest and its exact resource inventory",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "uri",
+        "ty": "string",
+        "required": true,
+        "description": "Canonical remote SKILL.md URI returned by list_remote_skills"
+      }
+    ],
+    "returns": "RemoteSkill",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "uses the selected transport auth and gateway visibility policy",
@@ -1942,6 +2261,138 @@
   },
   {
     "service": "artifacts",
+    "action": "artifacts.list_remote_skills",
+    "description": "List canonical Skill summaries from one remote Artifact authority",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "cursor",
+        "ty": "string",
+        "required": false,
+        "description": "Opaque remote continuation cursor"
+      },
+      {
+        "name": "limit",
+        "ty": "integer",
+        "required": false,
+        "description": "Bounded remote page size"
+      }
+    ],
+    "returns": "RemoteSkillPage",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.load_remote_skill",
+    "description": "Load a remote Skill manifest with bounded byte continuation",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "uri",
+        "ty": "string",
+        "required": true,
+        "description": "Canonical remote SKILL.md URI returned by list_remote_skills"
+      },
+      {
+        "name": "offset",
+        "ty": "integer",
+        "required": false,
+        "description": "Continuation byte offset, from 0 through 16777216"
+      },
+      {
+        "name": "max_bytes",
+        "ty": "integer",
+        "required": false,
+        "description": "Maximum bytes to return, from 4 through 262144"
+      }
+    ],
+    "returns": "RemoteSkillContent",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.pin",
+    "description": "Materialize one exact revision as a managed local mirror without following future revisions",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "source",
+        "ty": "object",
+        "required": true,
+        "description": "Server connection id plus exact immutable source, Artifact, and revision selector; never bytes, paths, endpoints, or credentials"
+      },
+      {
+        "name": "assignment_id",
+        "ty": "string",
+        "required": true,
+        "description": "Exact active source Assignment/share authorizing managed byte materialization"
+      },
+      {
+        "name": "idempotency_key",
+        "ty": "string",
+        "required": true,
+        "description": "Bounded request idempotency key (maximum 256 bytes)"
+      }
+    ],
+    "returns": "ManagedArtifactReceipt",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
     "action": "artifacts.read",
     "description": "Read one bounded file from an immutable stored revision",
     "destructive": false,
@@ -1976,6 +2427,66 @@
       "mcp": true,
       "api": true,
       "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.read_remote_skill",
+    "description": "Read a remote Skill file or list one direct-child directory page",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "uri",
+        "ty": "string",
+        "required": true,
+        "description": "Canonical remote Skill resource or directory URI"
+      },
+      {
+        "name": "offset",
+        "ty": "integer",
+        "required": false,
+        "description": "File continuation byte offset, from 0 through 16777216"
+      },
+      {
+        "name": "max_bytes",
+        "ty": "integer",
+        "required": false,
+        "description": "Maximum file bytes to return, from 4 through 262144"
+      },
+      {
+        "name": "cursor",
+        "ty": "string",
+        "required": false,
+        "description": "Opaque remote continuation cursor"
+      },
+      {
+        "name": "limit",
+        "ty": "integer",
+        "required": false,
+        "description": "Maximum direct children to return, from 1 through 250"
+      }
+    ],
+    "returns": "RemoteSkillResource",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "uses the selected transport auth and gateway visibility policy",
@@ -2493,6 +3004,42 @@
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.transfer_options",
+    "description": "Evaluate current remote-use and distribution options for one exact source revision without mutating local state",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "source",
+        "ty": "object",
+        "required": true,
+        "description": "Server connection id plus exact immutable source, Artifact, and revision selector; never bytes, paths, endpoints, or credentials"
+      },
+      {
+        "name": "assignment_id",
+        "ty": "string",
+        "required": false,
+        "description": "Exact source Assignment/share whose distribution ceiling should be evaluated"
+      }
+    ],
+    "returns": "ArtifactTransferOptions",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -3351,101 +3898,6 @@
       "cli": false,
       "mcp": true,
       "api": true,
-      "web_ui": false
-    },
-    "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
-    "inventory_scope": "global_inventory_not_active_runtime_exposure",
-    "builtin": true
-  },
-  {
-    "service": "depot_publish",
-    "action": "depot.publish_skill_archive",
-    "description": "Publish a skill archive to the authenticated team's Depot",
-    "destructive": false,
-    "requires_admin": false,
-    "required_scopes": [],
-    "authorization_boundary": "project_artifact_publish",
-    "required_capability": null,
-    "resource_family": "artifact_library",
-    "params": [
-      {
-        "name": "filename",
-        "ty": "string",
-        "required": true,
-        "description": "Archive filename ending in .zip, .tar.gz, or .tgz"
-      },
-      {
-        "name": "archive_base64",
-        "ty": "string",
-        "required": true,
-        "description": "Base64 encoded skill archive bytes"
-      },
-      {
-        "name": "namespace",
-        "ty": "string",
-        "required": false,
-        "description": "Optional Team Depot namespace"
-      }
-    ],
-    "returns": "IngestJobReceipt",
-    "surface_availability": {
-      "cli": false,
-      "mcp": true,
-      "api": false,
-      "web_ui": false
-    },
-    "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
-    "inventory_scope": "global_inventory_not_active_runtime_exposure",
-    "builtin": false
-  },
-  {
-    "service": "depot_publish",
-    "action": "help",
-    "description": "Show service actions",
-    "destructive": false,
-    "requires_admin": false,
-    "required_scopes": [],
-    "authorization_boundary": "transport",
-    "required_capability": null,
-    "resource_family": null,
-    "params": [],
-    "returns": "HelpPayload",
-    "surface_availability": {
-      "cli": false,
-      "mcp": true,
-      "api": false,
-      "web_ui": false
-    },
-    "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
-    "inventory_scope": "global_inventory_not_active_runtime_exposure",
-    "builtin": true
-  },
-  {
-    "service": "depot_publish",
-    "action": "schema",
-    "description": "Show the schema for a specific action",
-    "destructive": false,
-    "requires_admin": false,
-    "required_scopes": [],
-    "authorization_boundary": "transport",
-    "required_capability": null,
-    "resource_family": null,
-    "params": [
-      {
-        "name": "action",
-        "ty": "string",
-        "required": true,
-        "description": "Action name to describe"
-      }
-    ],
-    "returns": "ActionSpec",
-    "surface_availability": {
-      "cli": false,
-      "mcp": true,
-      "api": false,
       "web_ui": false
     },
     "requires_http_subject": false,
@@ -4709,9 +5161,15 @@
         "ty": "boolean",
         "required": false,
         "description": "Also return servers already present in the gateway config"
+      },
+      {
+        "name": "explain",
+        "ty": "boolean",
+        "required": false,
+        "description": "Return redacted scan diagnostics with the discovered servers"
       }
     ],
-    "returns": "DiscoveredServerView[]",
+    "returns": "DiscoveredServerView[] or ExplainedDiscoveryView when explain=true",
     "surface_availability": {
       "cli": true,
       "mcp": true,
@@ -5006,6 +5464,12 @@
         "ty": "string[]",
         "required": false,
         "description": "Limit discovery to these client kinds. Empty means scan all."
+      },
+      {
+        "name": "dry_run",
+        "ty": "boolean",
+        "required": false,
+        "description": "Preview the exact import selection without changing gateway configuration"
       }
     ],
     "returns": "ImportResultView",
@@ -5757,6 +6221,12 @@
         "ty": "boolean",
         "required": false,
         "description": "When true, use broader host-wide process matching during cleanup"
+      },
+      {
+        "name": "wait_ms",
+        "ty": "integer",
+        "required": false,
+        "description": "Wait for completion for 0..=300000 milliseconds (default 20000). Zero returns acceptance without waiting; completed=false never means the restart finished."
       }
     ],
     "returns": "GatewayView + cleanup result",

@@ -482,8 +482,8 @@ pub async fn run(args: ProxyArgs, config: &LabConfig, format: OutputFormat) -> R
         {
             println!("MCP proxy ready");
             println!();
-            println!("  Server   {}", info.command);
-            println!("  URL      {public_url}");
+            println!("  Server   configured upstream command");
+            println!("  URL      configured public endpoint");
             println!(
                 "  Exposure {}",
                 if tailscale.is_some() {

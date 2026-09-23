@@ -132,6 +132,7 @@ impl Harness {
                             "https://www.googleapis.com/auth/drive.readonly".to_string(),
                         ]),
                         credential: UpstreamOauthCredentialSource::GoogleProvider { account: None },
+                        additional_endpoint_origins: vec![],
                         prefer_client_metadata_document: None,
                     }),
                     imported_from: None,

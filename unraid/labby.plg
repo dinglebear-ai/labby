@@ -41,9 +41,9 @@
   <!ENTITY tarballURL   "&repoURL;/releases/download/v&labbyVersion;/&tarball;">
   <!ENTITY tarballMD5   "a4852e705017f65505cc9069d870c695">
   <!ENTITY cfgMD5       "5b6c59610bde7ed647ae7360372fd504">
-  <!ENTITY pageMD5      "4740fe052993e2de5786fe7b717457f5">
+  <!ENTITY pageMD5      "91787120b8abd1be48a669146bdfc2fb">
   <!ENTITY dashboardMD5 "5ab4389ef0dd5743c5d295d07076ed26">
-  <!ENTITY dashboardStatusMD5 "cc67612bc2e68d36dbfa991ffdbca8f9">
+  <!ENTITY dashboardStatusMD5 "5ba962b5fedd587a2543462c8c87185d">
   <!ENTITY rcMD5        "6aabfdaf80dbcaadf72a6d47d85916e6">
   <!ENTITY preflightMD5 "70f9b0d26a1c4e5badcc11424381c156">
   <!ENTITY mountedMD5   "a6ef8ed960ca00812aa15dcd29a057e3">

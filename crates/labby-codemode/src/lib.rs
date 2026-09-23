@@ -38,6 +38,7 @@ mod execute;
 mod git;
 pub mod host;
 mod local_provider;
+mod namespace_alias;
 mod normalize;
 mod pool;
 mod preamble;
@@ -92,9 +93,15 @@ pub use error_contract::{
 pub use execute::{discovery_entry_visible, discovery_render_params, local_providers_allowed};
 pub use host::{
     CodeModeHost, ExecCtx, ResolvedSnippet, StepDecision, ToolCallOutcome, ToolsRender,
+    WithheldTools,
 };
 /// Re-export so hosts can name the config type from one crate path.
 pub use labby_runtime::CodeModeConfig;
+pub use local_provider::LOCAL_PROVIDER_NAMESPACES;
+pub use namespace_alias::{
+    NamespaceResolution, ambiguous_namespace_message, backtick_list, display_name,
+    namespace_alias_key, resolve_namespace_alias, unknown_namespace_guidance,
+};
 pub use normalize::normalize_user_code;
 pub use pool::{RunnerPool, RunnerSpawn};
 /// Synchronous runner-subprocess entrypoint. Re-exported unchanged: the

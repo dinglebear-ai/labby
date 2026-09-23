@@ -11,6 +11,24 @@ use serde_json::{Map, Value, json};
 /// Version number embedded in every structured agent-error envelope.
 pub const AGENT_ERROR_CONTRACT_VERSION: u32 = 1;
 
+/// Canonical operator commands for completing or removing a pending owner
+/// access bootstrap. Error producers compose these constants so recovery text
+/// cannot drift from the current CLI hierarchy.
+pub const ACCESS_BOOTSTRAP_CONSUME_COMMAND: &str = "labby auth bootstrap consume";
+pub const ACCESS_BOOTSTRAP_CLEANUP_COMMAND: &str = "labby auth bootstrap cleanup";
+
+/// Canonical owner-setup guidance shared by surface-specific setup errors.
+pub const ACCESS_SETUP_OPERATOR_GUIDANCE: &str = "Ask the operator of the Labby server to complete owner setup: installs with any OAuth provider (including bearer plus OAuth) complete browser owner setup in the Labby web UI, which takes effect without a restart; bearer-token-only installs run `labby setup` on the Labby server host and then restart the serving Labby process, because a running Labby only re-reads access setup at startup.";
+
+/// Canonical pending-bootstrap guidance, optionally including surface-specific
+/// arguments such as a known prepare id.
+#[must_use]
+pub fn pending_access_bootstrap_operator_guidance(command_arguments: &str) -> String {
+    format!(
+        "Ask the operator of the Labby server to finish any pending owner access bootstrap with `{ACCESS_BOOTSTRAP_CONSUME_COMMAND}{command_arguments}` or remove it with `{ACCESS_BOOTSTRAP_CLEANUP_COMMAND}{command_arguments}` while Labby is stopped."
+    )
+}
+
 // The sanitize/secret helpers moved to `crate::redact` (the charter home for
 // redaction). Re-exported here so existing `agent_error::…` imports keep
 // working. Pure module-placement move — zero behavior change beyond the
@@ -371,6 +389,9 @@ pub fn origin_for_kind(kind: &str) -> AgentErrorOrigin {
         | "stale_suggestion"
         | "merge_write_conflict"
         | "workspace_not_configured"
+        // The durable access store was never initialized: a deterministic
+        // setup gate evaluated before any dispatch, not a transport outage.
+        | "access_setup_required"
         | "restart_required"
         | "oauth_account_ambiguous"
         | "oauth_client_mismatch"
@@ -596,6 +617,17 @@ pub fn recovery_for_kind(
             action: AgentRecoveryAction::ReviseAndRetry,
             same_arguments: AgentSameArgumentsRetry::Never,
             guidance: "Have the operator set workspace.root to the intended existing directory on the Labby server and restart the serving process so it resolves the new root. Verify workspace access after startup before retrying; do not substitute an unrelated directory.".to_string(),
+            retry_after_ms: None,
+        },
+        // Not `retry_later`: the store stays uninitialized until an operator
+        // completes owner setup, so an unchanged retry can never succeed.
+        "access_setup_required" => AgentRecoveryAdvice {
+            action: AgentRecoveryAction::StartDependency,
+            same_arguments: AgentSameArgumentsRetry::Never,
+            guidance: format!(
+                "Labby's durable access store is not set up, so no authorization decision can be made and nothing ran. Do not run setup yourself. {ACCESS_SETUP_OPERATOR_GUIDANCE} {} Retry only after setup succeeds; do not retry unchanged before then.",
+                pending_access_bootstrap_operator_guidance("")
+            ),
             retry_after_ms: None,
         },
         "restart_required" => AgentRecoveryAdvice {
@@ -964,6 +996,30 @@ mod tests {
             assert_eq!(value.side_effects, AgentSideEffectRisk::NoneExpected);
             assert_eq!(value.recovery.action, action);
             assert!(value.recovery.guidance.contains(phrase), "{kind}");
+        }
+    }
+
+    #[test]
+    fn access_setup_required_is_a_deterministic_setup_gate_not_an_outage() {
+        let value = metadata_for_kind("access_setup_required", None);
+        assert_eq!(value.origin, AgentErrorOrigin::Validation);
+        assert_eq!(value.side_effects, AgentSideEffectRisk::NoneExpected);
+        assert_eq!(value.recovery.action, AgentRecoveryAction::StartDependency);
+        assert_eq!(
+            value.recovery.same_arguments,
+            AgentSameArgumentsRetry::Never
+        );
+        assert_eq!(value.recovery.retry_after_ms, None);
+        for phrase in [
+            "Ask the operator of the Labby server",
+            "`labby setup`",
+            "restart the serving Labby process",
+            "OAuth provider",
+            "browser owner setup",
+            "labby auth bootstrap consume",
+            "labby auth bootstrap cleanup",
+        ] {
+            assert!(value.recovery.guidance.contains(phrase), "{phrase}");
         }
     }
 

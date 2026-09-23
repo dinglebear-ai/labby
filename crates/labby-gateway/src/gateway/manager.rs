@@ -61,6 +61,7 @@ pub(super) struct OauthStatusDiscoverySnapshot {
 
 mod code_mode_discovery;
 mod code_mode_resolve;
+pub use code_mode_resolve::CodeModeExampleTool;
 mod code_mode_runtime;
 mod config_ops;
 mod config_transaction;
@@ -161,6 +162,7 @@ pub struct GatewayManager {
         Arc<dashmap::DashMap<String, tokio_util::sync::CancellationToken>>,
     pub(super) code_mode_app_state: CodeModeAppState,
     lazy_pool_init: Arc<Mutex<()>>,
+    code_mode_example_memo: code_mode_resolve::SharedCodeModeExampleMemo,
     notifier: Option<CatalogChangeNotifier>,
     pub(super) oauth_client_cache: Option<OauthClientCache>,
     pub(super) upstream_oauth_managers: Option<Arc<dashmap::DashMap<String, UpstreamOauthManager>>>,

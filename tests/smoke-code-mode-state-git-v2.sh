@@ -9,7 +9,7 @@ export LABBY_HOME="$TMP/lab-home"
 mkdir -p "$LABBY_HOME"
 
 cd "$ROOT"
-cargo run --all-features -- --json gateway code exec --code 'async () => {
+cargo run --all-features -- --json code run --code 'async () => {
   await state.mkdir({ path: "src" });
   await state.writeJson({ path: "src/config.json", value: { enabled: true }, pretty: true });
   await state.appendFile({ path: "src/app.rs", content: "fn main() {}\n" });

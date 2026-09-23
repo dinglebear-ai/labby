@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use labby_codemode::snippet::store::{SnippetInfo, builtin_snippet_dir, list_snippets};
 use labby_codemode::{
     CatalogDescriptor, CodeModeCaller, CodeModeSurface, CodeModeToolSafety, ToolScope, ToolsRender,
+    WithheldTools,
 };
 use sha2::{Digest, Sha256};
 
@@ -114,6 +115,7 @@ fn render_from_cached_catalog(
         entries,
         catalog_json,
         serialized_size,
+        withheld: std::sync::Arc::from([]),
     }
 }
 
@@ -150,71 +152,109 @@ pub(crate) async fn build_tools_render(
     let metadata_entries = manager
         .code_mode_metadata_entries(caller, surface, scope)
         .await;
-    catalog_from_tools(
-        manager,
-        filter_tools_for_access(manager, raw_tools, scope, caller),
-        include_snippets,
-        metadata_entries,
-    )
-    .await
+    let accessible = filter_in_process_for_access(manager, raw_tools, caller);
+    let (tools, withheld) = partition_tools_for_access(accessible, scope);
+    let mut render = catalog_from_tools(manager, tools, include_snippets, metadata_entries).await?;
+    render.withheld = withheld.into();
+    Ok(render)
 }
 
-fn filter_tools_for_access(
+fn filter_in_process_for_access(
     manager: &GatewayManager,
     tools: Vec<UpstreamTool>,
-    scope: &ToolScope,
     caller: &CodeModeCaller,
 ) -> Vec<UpstreamTool> {
     let published = manager.published_service_registry_snapshot().ok();
     tools
         .into_iter()
         .filter(|tool| {
-            if let Some(service_name) = tool
+            let Some(service_name) = tool
                 .upstream_name
                 .strip_prefix(labby_runtime::gateway_config::IN_PROCESS_UPSTREAM_PREFIX)
-            {
-                // Synthetic peers carry neither the product access runtime nor
-                // a transport AuthContext. Do not advertise unknown or admin
-                // operations merely because the peer can list them.
-                let Some(action_name) = tool.tool.name.strip_prefix(&format!("{service_name}."))
-                else {
-                    return false;
-                };
-                let Some(action) = published
-                    .as_ref()
-                    .and_then(|catalog| {
-                        catalog
-                            .services()
-                            .iter()
-                            .find(|service| service.name() == service_name)
-                    })
-                    .and_then(|service| {
-                        service
-                            .actions()
-                            .iter()
-                            .find(|action| action.name() == action_name)
-                    })
-                else {
-                    return false;
-                };
-                if action.requires_admin() {
-                    return false;
-                }
-                if service_name == "gateway"
-                    && !matches!(action_name, "help" | "schema")
-                    && !(action_name == "gateway.oauth.authorize"
-                        && manager.has_code_mode_personal_oauth_provider()
-                        && caller.authority_token().is_some()
-                        && caller.can_execute())
-                {
-                    return false;
-                }
+            else {
+                return true;
+            };
+            // Synthetic peers have no product access runtime or transport
+            // AuthContext. Only published, non-admin actions may be offered.
+            let Some(action_name) = tool.tool.name.strip_prefix(&format!("{service_name}.")) else {
+                return false;
+            };
+            let Some(action) = published
+                .as_ref()
+                .and_then(|catalog| {
+                    catalog
+                        .services()
+                        .iter()
+                        .find(|service| service.name() == service_name)
+                })
+                .and_then(|service| {
+                    service
+                        .actions()
+                        .iter()
+                        .find(|action| action.name() == action_name)
+                })
+            else {
+                return false;
+            };
+            if action.requires_admin() {
+                return false;
             }
-            scope.allows(tool.upstream_name.as_ref(), tool.tool.name.as_ref())
-                && (!scope.is_read_only()
-                    || super::code_mode_host::tool_is_explicitly_read_only(tool))
+            if service_name == "gateway"
+                && !matches!(action_name, "help" | "schema")
+                && !(action_name == "gateway.oauth.authorize"
+                    && manager.has_code_mode_personal_oauth_provider()
+                    && caller.authority_token().is_some()
+                    && caller.can_execute())
+            {
+                return false;
+            }
+            true
         })
         .collect()
+}
+
+/// Report only tools withheld by read-only annotation policy. Tools excluded
+/// by caller authority or scope are never counted as discoverable.
+fn partition_tools_for_access(
+    tools: Vec<UpstreamTool>,
+    scope: &ToolScope,
+) -> (Vec<UpstreamTool>, Vec<WithheldTools>) {
+    let mut withheld = std::collections::BTreeMap::<std::sync::Arc<str>, usize>::new();
+    let kept = tools
+        .into_iter()
+        .filter(|tool| {
+            if !scope.allows(tool.upstream_name.as_ref(), tool.tool.name.as_ref()) {
+                return false;
+            }
+            if scope.is_read_only() && !super::code_mode_host::tool_is_explicitly_read_only(tool) {
+                *withheld
+                    .entry(std::sync::Arc::clone(&tool.upstream_name))
+                    .or_default() += 1;
+                return false;
+            }
+            true
+        })
+        .collect();
+    let withheld = withheld
+        .into_iter()
+        .filter_map(|(namespace, tool_count)| WithheldTools::new(namespace.as_ref(), tool_count))
+        .collect();
+    (kept, withheld)
+}
+
+#[cfg(test)]
+fn filter_tools_for_access(
+    manager: &GatewayManager,
+    tools: Vec<UpstreamTool>,
+    scope: &ToolScope,
+    caller: &CodeModeCaller,
+) -> Vec<UpstreamTool> {
+    partition_tools_for_access(filter_in_process_for_access(manager, tools, caller), scope).0
+}
+
+#[cfg(test)]
+fn withheld_by_access(tools: &[UpstreamTool], scope: &ToolScope) -> Vec<WithheldTools> {
+    partition_tools_for_access(tools.to_vec(), scope).1
 }
 
 pub(super) async fn catalog_from_tools(
@@ -387,6 +427,7 @@ pub(super) async fn catalog_from_tools(
         entries,
         catalog_json,
         serialized_size,
+        withheld: std::sync::Arc::from([]),
     })
 }
 
@@ -1075,6 +1116,47 @@ mod tests {
         assert!(super::super::code_mode_host::tool_is_explicitly_read_only(
             &filtered[0]
         ));
+    }
+
+    #[test]
+    fn read_only_scope_reports_withheld_tools_per_upstream() {
+        let make = |upstream: &str, name: &str, read_only: bool| {
+            let mut tool = rmcp::model::Tool::new(
+                name.to_string(),
+                "fixture tool",
+                Arc::new(serde_json::Map::new()),
+            );
+            if read_only {
+                tool.annotations = Some(rmcp::model::ToolAnnotations::new().read_only(true));
+            }
+            UpstreamTool {
+                tool,
+                input_schema: None,
+                output_schema: None,
+                upstream_name: Arc::from(upstream),
+                destructive: false,
+            }
+        };
+        let tools = vec![
+            make("claude-macpoo", "Bash", false),
+            make("claude-macpoo", "Read", false),
+            make("annotated", "lookup", true),
+            make("annotated", "mutate", false),
+            make("out-of-scope", "Bash", false),
+        ];
+        let scope = ToolScope::new(
+            vec!["claude-macpoo".to_string(), "annotated".to_string()],
+            Vec::new(),
+        );
+
+        assert!(withheld_by_access(&tools, &scope).is_empty());
+        assert_eq!(
+            withheld_by_access(&tools, &scope.read_only()),
+            vec![
+                WithheldTools::new("annotated", 1).expect("nonzero"),
+                WithheldTools::new("claude-macpoo", 2).expect("nonzero"),
+            ]
+        );
     }
 
     #[test]

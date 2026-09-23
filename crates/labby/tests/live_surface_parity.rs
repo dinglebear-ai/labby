@@ -104,7 +104,7 @@ async fn one_public_identity_has_equivalent_api_browser_and_mcp_discovery() {
     let cli = action_scenarios::run_cli_in_install(
         &identity.root().join("home"),
         &identity.root().join("labby-home"),
-        &["gateway", "list", "--json"],
+        &["server", "list", "--json"],
     )
     .await
     .expect("CLI shared-state observation");
