@@ -626,7 +626,7 @@ export function ConsoleSidebar({ publicSetup = false }: { publicSetup?: boolean 
   }, [authority])
 
   const navSections = React.useMemo(
-    () => publicSetup
+    () => publicSetup || process.env.NEXT_PUBLIC_MOCK_DATA === 'true'
       ? consoleNavSections
       : capabilityAwareNavSections(authority?.capabilities ?? [], stashSupported),
     [authority?.capabilities, publicSetup, stashSupported],
