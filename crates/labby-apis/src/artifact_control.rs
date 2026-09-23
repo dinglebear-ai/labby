@@ -188,7 +188,7 @@ impl Operation {
                 "fdd4be598017b2dc7dacdb50121c680bf187d74c4aa1da9d98232c300b793909"
             }
             Self::ArtifactsList => {
-                "ae219779387114fe51269259a5a15c433fbc89135ee89a00a4e1340486f829c5"
+                "b9f0ed3dca904fea6d0f71ac814f14f682cb98c92337ed9ae61d8d5d9b33217a"
             }
             Self::CandidatesList => {
                 "43dcf18f5fd2e277fe21f98cde881f4125e315636ef241ac6b03526aad1d4142"
@@ -223,12 +223,12 @@ impl Operation {
                 "964f29b4c9d7e241eb40b1e008bf38f07c3959aae1f785f9d4b6210fc1bd0925"
             }
             Self::ArtifactsDeleteRemote => {
-                "ed4a3789a443220512602112aec2d3dffc8ce10a908b30f3dc924c7fbeef25af"
+                "9accbacc6ad40c4a51ff3317e014164741c012570c84fc3064c37734e9d8f9f7"
             }
             Self::SkillsList => "0db47745ef0e81cfef00f22118d4780c67bcf64111a20671366227f96125d178",
             Self::SkillsGet => "8c4fc62b36049b9ffa64dae2eea3c4fae05926ba0ee84c11568bd9e48c0087f4",
-            Self::SkillsLoad => "1e57d017464bf0caa2324d532f45f01f8f5c45c814a0a01a6f1baa25d35b0b08",
-            Self::SkillsRead => "f114bde7d077cb6e8991ab9552b0a8f766791d8f1f54f71c9ef97a11c04c17e8",
+            Self::SkillsLoad => "aec0c16df499c0594ea578400ac77a1f341ceb10d1a3ae7bd33d0d62a00fa00c",
+            Self::SkillsRead => "04a1903f5d932feb184d1a689cd0a29c08358f2e7c45b2f7b9d80bc5d16bf755",
             Self::SearchArd => "f02862af885d5d524a3eb6fbf6c8b0e80a951d0c80e5a43a4b92d4a326770478",
             Self::SearchMarketplace => {
                 "230081d99596c5eb013874d30d54846c44a48a1131463ebc66f72d0bd2a372d7"
