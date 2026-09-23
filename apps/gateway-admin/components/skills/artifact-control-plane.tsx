@@ -23,6 +23,23 @@ type Source = JsonObject & { enabled?: boolean; intervalSeconds?: number }
 type UploadRecord = JsonObject & { filename?: string }
 type AuthorityConnection = { id: string }
 type DeleteTarget = { kind: 'source' | 'upload' | 'bundle'; id: string } | null
+type DiscoveryRequest = { action: string; params: JsonObject; key: string }
+
+const REMOTE_CANDIDATE_PAGE_LIMIT = 10
+
+export function discoveryRequest(provider: string, query: string, source: string): DiscoveryRequest | undefined {
+  const selection: Record<string, DiscoveryRequest> = {
+    authority: { action: 'artifacts.search_remote', params: { query: query.trim(), limit: 50 }, key: 'results' },
+    authority_all: { action: 'artifacts.list_remote', params: { limit: 50 }, key: 'artifacts' },
+    candidates: { action: 'artifacts.list_candidates', params: { limit: REMOTE_CANDIDATE_PAGE_LIMIT }, key: 'candidates' },
+    skills_sh: { action: 'artifacts.search_skills_sh', params: { query: query.trim(), limit: 50 }, key: 'results' },
+    ard: { action: 'artifacts.search_ard', params: { registry: source.trim(), query: query.trim() }, key: 'results' },
+    marketplace: { action: 'artifacts.search_marketplace', params: { source: source.trim() }, key: 'plugins' },
+    mcp: { action: 'artifacts.list_mcp_registry', params: { ...(query.trim() ? { query: query.trim() } : {}), limit: 50 }, key: 'servers' },
+    acp: { action: 'artifacts.list_acp_registry', params: {}, key: 'agents' },
+  }
+  return selection[provider]
+}
 
 export function deleteRequest(target: NonNullable<DeleteTarget>) {
   switch (target.kind) {
@@ -236,17 +253,7 @@ function AvailableArtifactControlPlane({ mode }: { mode: 'full' | 'administratio
     const connectionId = selectedConnection
     setBusy('search')
     try {
-      const selection: Record<string, { action: string; params: JsonObject; key: string }> = {
-        authority: { action: 'artifacts.search_remote', params: { query: query.trim(), limit: 50 }, key: 'results' },
-        authority_all: { action: 'artifacts.list_remote', params: { limit: 50 }, key: 'artifacts' },
-        candidates: { action: 'artifacts.list_candidates', params: { limit: 50 }, key: 'candidates' },
-        skills_sh: { action: 'artifacts.search_skills_sh', params: { query: query.trim(), limit: 50 }, key: 'results' },
-        ard: { action: 'artifacts.search_ard', params: { registry: discoverySource.trim(), query: query.trim() }, key: 'results' },
-        marketplace: { action: 'artifacts.search_marketplace', params: { source: discoverySource.trim() }, key: 'plugins' },
-        mcp: { action: 'artifacts.list_mcp_registry', params: { ...(query.trim() ? { query: query.trim() } : {}), limit: 50 }, key: 'servers' },
-        acp: { action: 'artifacts.list_acp_registry', params: {}, key: 'agents' },
-      }
-      const selected = selection[discoveryProvider]
+      const selected = discoveryRequest(discoveryProvider, query, discoverySource)
       if (!selected || (['ard', 'marketplace'].includes(discoveryProvider) && !discoverySource.trim())) return
       const response = await controlPlaneAction<JsonObject>('artifacts', selected.action, selected.params)
       const discovered = rows(response, selected.key)

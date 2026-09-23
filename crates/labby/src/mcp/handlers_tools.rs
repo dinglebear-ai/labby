@@ -704,11 +704,10 @@ pub(crate) fn code_mode_app_text_note() -> String {
 /// Description for the optional `codemode_ui` MCP App twin.
 #[cfg(feature = "gateway")]
 pub(crate) fn code_mode_ui_description(upstreams: &[CodeModeUpstreamDescription]) -> String {
-    crate::mcp::call_tool_codemode::code_mode_description_with_suffix(
+    crate::mcp::call_tool_codemode::code_mode_tool_description(
+        crate::mcp::call_tool_codemode::CodeModeDescriptionVariant::Ui,
         upstreams,
-        &format!(
-            "This explicit UI entry point renders the Code Mode trace inspector. Use `{CODE_MODE_TOOL_NAME}` when nested upstream MCP Apps should become the active result UI."
-        ),
+        "",
     )
 }
 
@@ -1034,17 +1033,17 @@ pub(crate) fn code_mode_execute_schema() -> Arc<serde_json::Map<String, Value>> 
                 "code": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "JavaScript async arrow function to execute. Use await callTool(id, params) with JSON-serializable params."
+                    "description": "Body of the run, written as `async () => { ... }`. Its return value is the result, so return only the fields you need. Plain JavaScript: no TypeScript syntax, imports, or Node APIs."
                 },
                 "upstreams": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Optional upstream allowlist for this execution."
+                    "description": "Optional: limit this run to these upstreams. Use names as listed in the description or search results; case and `-`/`_`/`.` separators do not matter."
                 },
                 "tools": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Optional tool allowlist for this execution. Accepts raw tool names or <upstream>::<tool> ids."
+                    "description": "Optional: limit this run to these tools, as bare tool names or `upstream::tool` ids."
                 }
             },
             "required": ["code"]

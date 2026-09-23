@@ -97,3 +97,61 @@ fn denied() -> ToolError {
         required_scopes: vec![],
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::{
+        Extension, Router,
+        body::Body,
+        http::{Request, StatusCode, header},
+    };
+    use tower::ServiceExt as _;
+
+    /// Every authenticated service shares the access setup gate, not just the
+    /// gateway: the same uninitialized store answers HTTP 409 here too.
+    #[tokio::test]
+    async fn tasks_report_an_uninitialized_access_store_as_a_setup_gate() {
+        let state = super::super::uninitialized_access_state().await;
+        let identity = labby_auth::VerifiedIdentity::local_credential(
+            labby_auth::Authenticator::StaticBearer,
+            "static-bearer:primary",
+        )
+        .expect("static bearer identity");
+        let auth = labby_auth::AuthContext {
+            sub: "static-bearer:primary".to_string(),
+            actor_key: None,
+            scopes: vec!["lab:admin".to_string()],
+            issuer: "test".to_string(),
+            via_session: false,
+            csrf_token: None,
+            email: None,
+        };
+        let app: Router = super::routes(state.clone())
+            .router
+            .layer(Extension(auth))
+            .layer(Extension(identity))
+            .with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "action": "tasks.list", "params": {} }).to_string(),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let payload: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(payload["kind"], "access_setup_required", "{payload}");
+        assert_eq!(payload["recovery"]["same_arguments"], "never", "{payload}");
+    }
+}

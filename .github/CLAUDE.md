@@ -75,7 +75,7 @@ Release Please maintains the version and changelog PR, creates the immutable
 stable tag, and leaves the GitHub release as a draft. The tag triggers the
 heavy candidate workflow:
 
-- `release.yml` builds and smokes Linux, macOS, and Windows archives, builds and
+- `release.yml` builds and smokes Linux and macOS archives, builds and
   scans the container, runs N-1 stateful upgrade/rollback adapters, emits an
   SBOM per subject and a digest manifest, verifies provenance as a consumer,
   publishes npm/GHCR, and only then promotes the draft GitHub release.
@@ -93,8 +93,9 @@ ARM64 workflow, installer, and package contracts are explicitly enabled for
 Labby through the pinned fleet policy and repository contract. Keep that opt-in
 visible when adding ARM64 jobs or artifacts; QEMU and cross-platform emulation
 still require a deliberate implementation and verification plan.
-The supported binary artifacts are Linux x86_64, macOS arm64, and Windows
-x86_64. Keep each target native to its GitHub-hosted runner; do not add
+The supported release binary artifacts are Linux x86_64 and macOS arm64.
+Windows remains covered by required CI tests but is not a release target.
+Keep each release target native to its GitHub-hosted runner; do not add
 emulation, cross-platform image matrices, or QEMU setup.
 
 ## Editing rules

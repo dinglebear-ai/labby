@@ -1,7 +1,7 @@
 ---
 title: "CLI Design System Contract"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-09-20"
 ---
 
 # CLI Design System Contract
@@ -74,6 +74,8 @@ Rules:
 - `plain` disables styling even on TTYs
 - `color` forces styling for users who explicitly want it
 - non-TTY output in `auto` mode must render plain text with no ANSI escapes
+- `TERM=dumb` and CI disable automatic styling and animation
+- `COLUMNS` is clamped to a safe 40–240-column layout range; wide tables become compact key/value blocks when they do not fit
 - redirected, piped, or captured output must stay readable without color
 - all commands must use the same shared policy; command-local color heuristics are banned
 
@@ -413,6 +415,10 @@ Rules:
 - hints use muted styling
 - actionable commands or flags should be primary or accent
 - hints must remain skimmable and short
+
+## Progress Feedback
+
+Long-running commands may show bounded progress only when the shared render context identifies an interactive TTY. Progress must describe a meaningful phase, stop before the final result is printed, and never obscure an error. JSON, plain mode, `NO_COLOR`, non-TTY output, `TERM=dumb`, and CI do not animate.
 
 ## Accessibility And Pipeability
 

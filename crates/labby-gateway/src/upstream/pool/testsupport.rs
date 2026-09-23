@@ -106,6 +106,7 @@ pub(super) fn test_upstream_tools(
 
 #[derive(Clone, Default)]
 pub(super) struct StaticCatalogServer {
+    pub(super) list_resources_count: Arc<AtomicUsize>,
     pub(super) list_prompts_count: Arc<AtomicUsize>,
     pub(super) get_prompt_count: Arc<AtomicUsize>,
     pub(super) fail_list_prompts: Arc<AtomicBool>,
@@ -126,6 +127,7 @@ impl ServerHandler for StaticCatalogServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
+        self.list_resources_count.fetch_add(1, Ordering::SeqCst);
         Ok(ListResourcesResult::with_all_items(vec![
             Resource::new("file:///tmp/upstream-one", "upstream-one"),
             Resource::new(

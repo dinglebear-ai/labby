@@ -231,7 +231,67 @@ async fn q1_resources_prompts_templates_completions_and_collisions_round_trip() 
         .expect_err("unsupported server method must be explicit");
     assert_mcp_code(unsupported, ErrorCode::METHOD_NOT_FOUND);
 
+    // resources/list is served from Labby's cached snapshot: repeated listings
+    // issue no upstream RPC, and a silent upstream catalog change stays
+    // invisible until the upstream announces it (or Labby reconnects or
+    // reloads). Labby completes its refresh attempt for the exact sender
+    // before forwarding list_changed, so once the notification arrives the
+    // cache reflects that attempt; the list assertions below are what prove
+    // the refreshed catalog is served.
+    let listings_before = alpha.resource_lists();
+    for _ in 0..3 {
+        peer.list_resources(None).await.expect("cached listing");
+    }
+    assert_eq!(
+        alpha.resource_lists(),
+        listings_before,
+        "resources/list must be served from the cached snapshot"
+    );
     alpha.set_generation(1);
+    let silent = peer.list_resources(None).await.expect("silent listing");
+    assert!(
+        silent
+            .resources
+            .iter()
+            .any(|resource| resource.uri == "lab://upstream/alpha/fixture://dynamic-v0"),
+        "an unannounced upstream change is not visible yet: {silent:?}"
+    );
+    assert_eq!(alpha.resource_lists(), listings_before);
+    let mut resource_changes = peer
+        .listen(
+            SubscriptionFilter::builder()
+                .resources_list_changed()
+                .build(),
+        )
+        .await
+        .expect("resources list-change subscription");
+    alpha.announce_resource_list_changed_on_next_read();
+    peer.read_resource(ReadResourceRequestParams::new(
+        "lab://upstream/alpha/fixture://text",
+    ))
+    .await
+    .expect("read that carries alpha's list_changed announcement");
+    let notification = tokio::time::timeout(REQUEST_TIMEOUT, resource_changes.next())
+        .await
+        .expect("resources list-change deadline")
+        .expect("healthy resources list-change subscription")
+        .expect("resources list-change notification");
+    assert_eq!(
+        alpha.resource_lists(),
+        listings_before + 1,
+        "the announcement triggers exactly one re-list before it is forwarded"
+    );
+    assert!(
+        matches!(
+            notification,
+            ServerNotification::ResourceListChangedNotification(_)
+        ),
+        "unexpected notification: {notification:?}"
+    );
+    resource_changes
+        .cancel()
+        .await
+        .expect("resources subscription cancellation");
     let changed_resources = peer.list_resources(None).await.expect("changed resources");
     let changed_prompts = peer.list_prompts(None).await.expect("changed prompts");
     let changed_templates = peer

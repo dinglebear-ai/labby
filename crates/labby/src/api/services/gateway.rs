@@ -583,6 +583,36 @@ mod tests {
             .with_access_runtime(runtime)
     }
 
+    /// Field report (v1.20.1): an uninitialized access store answered HTTP 503
+    /// with a retryable transport error. It is a setup gate: HTTP 409, a
+    /// distinct kind, and no same-argument retry.
+    #[tokio::test]
+    async fn gateway_action_reports_an_uninitialized_access_store_as_a_setup_gate() {
+        let state = super::super::uninitialized_access_state()
+            .await
+            .with_gateway_manager(test_manager());
+        let app = build_router_with_bearer(state, Some("test-token".into()), None);
+        let response = post_gateway(app, json!({ "action": "gateway.list", "params": {} })).await;
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let payload: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(payload["kind"], "access_setup_required", "{payload}");
+        assert_eq!(payload["recovery"]["same_arguments"], "never", "{payload}");
+        assert_eq!(
+            payload["recovery"]["action"], "start_dependency",
+            "{payload}"
+        );
+        assert!(
+            payload["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("access setup is required")),
+            "{payload}"
+        );
+    }
+
     async fn authorized_test_state(manager: Arc<GatewayManager>) -> AppState {
         let identity = labby_auth::VerifiedIdentity::local_credential(
             labby_auth::Authenticator::StaticBearer,

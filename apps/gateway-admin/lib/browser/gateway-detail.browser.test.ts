@@ -502,11 +502,11 @@ test('compact actions retain labels, responsive targets, and working menus', { c
   const exportBox = await exportButton.boundingBox()
   assert.ok(exportBox && exportBox.width >= 44 && exportBox.height >= 44, 'mobile export icon retains a 44px touch target')
 
-  // The mobile filter sheet gave way to the filter rail, which phones fold
-  // behind a labeled disclosure; the kind buttons inside keep visible labels.
-  const filters = page.getByRole('button', { name: /^Filters · All artifacts/ })
+  // Phones expose the filter rail from a compact control inside search.
+  const filters = page.getByRole('button', { name: 'Toggle library filters' })
   await assert.doesNotReject(() => filters.waitFor())
-  assert.notEqual(await filters.evaluate((element) => getComputedStyle(element).fontSize), '0px')
+  const filterBox = await filters.boundingBox()
+  assert.ok(filterBox && filterBox.width >= 24 && filterBox.height >= 24)
   assert.equal(await filters.getAttribute('aria-expanded'), 'false')
   await filters.click()
   assert.equal(await filters.getAttribute('aria-expanded'), 'true')
@@ -545,13 +545,13 @@ test('Library follows responsive view defaults', { concurrency: false }, async (
   const browser = await chromium.launch({ headless: true })
   t.after(async () => { await browser.close() })
 
-  const page = await browser.newPage({ viewport: { width: 1000, height: 800 } })
+  const page = await browser.newPage({ viewport: { width: 1500, height: 800 } })
   await page.goto(`${baseUrl}/library/`, { waitUntil: 'networkidle' })
   await assert.doesNotReject(() => page.locator('table').waitFor())
 
   await page.setViewportSize({ width: 390, height: 844 })
   await assert.doesNotReject(() => page.locator('table').waitFor({ state: 'detached' }))
-  await page.setViewportSize({ width: 1000, height: 800 })
+  await page.setViewportSize({ width: 1500, height: 800 })
   await assert.doesNotReject(() => page.locator('table').waitFor())
   // The Library layout is viewport-driven: the finished mock removed the
   // operator view override, so widening the viewport restores the table.

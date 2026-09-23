@@ -577,6 +577,36 @@ mod tests {
     use tempfile::TempDir;
     use tower::ServiceExt;
 
+    const DEPOT_OPERATIONS_GOLDEN: &str = include_str!(
+        "../../../../../docs/contracts/fixtures/depot-control-plane/operations-v1.json"
+    );
+
+    fn catalog_operation(
+        name: &str,
+        required_scope: &str,
+        authorized: bool,
+        read_only: bool,
+        destructive: bool,
+    ) -> Value {
+        let fixture: Value = serde_json::from_str(DEPOT_OPERATIONS_GOLDEN).unwrap();
+        let mut definition = fixture["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|definition| definition["name"] == name)
+            .unwrap()
+            .clone();
+        let object = definition.as_object_mut().unwrap();
+        object.insert("requiredScope".into(), json!(required_scope));
+        object.insert("authorized".into(), json!(authorized));
+        object.insert("transportAvailable".into(), json!(true));
+        object.insert(
+            "annotations".into(),
+            json!({"readOnlyHint":read_only,"destructiveHint":destructive}),
+        );
+        definition
+    }
+
     struct Policy {
         scopes: Vec<String>,
     }
@@ -716,14 +746,39 @@ mod tests {
                 observed.fetch_add(1, Ordering::SeqCst);
                 if matches!(request.uri().path(), "/api/operations" | "/api/operations/catalog") {
                     Json(json!({"operations":[
-                        {"name":"depot.system.status","requiredScope":"read","transportAvailable":true,"authorized":true,"annotations":{"readOnlyHint":true,"destructiveHint":false}},
-                        {"name":"depot.sources.refresh","requiredScope":"write","transportAvailable":true,"authorized":false,"annotations":{"readOnlyHint":false,"destructiveHint":false}},
-                        {"name":"depot.tokens.revoke","requiredScope":"write","transportAvailable":true,"authorized":false,"annotations":{"readOnlyHint":false,"destructiveHint":true}},
-                        {"name":"depot.maintenance.upstream","requiredScope":"operator","transportAvailable":true,"authorized":false,"annotations":{"readOnlyHint":true,"destructiveHint":false}}
+                        catalog_operation("depot.system.status", "read", true, true, false),
+                        catalog_operation("depot.tokens.create", "write", false, false, false),
+                        catalog_operation("depot.tokens.revoke", "write", false, false, true),
+                        catalog_operation("depot.maintenance.upstream", "operator", false, true, false)
                     ]}))
                 } else {
                     Json(json!({"result":{"ok":true}}))
                 }
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (
+            url::Url::parse(&format!("http://{address}/")).unwrap(),
+            calls,
+        )
+    }
+
+    async fn incompatible_upstream() -> (url::Url, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&calls);
+        let mut definition = catalog_operation("depot.system.status", "read", true, true, false);
+        definition["inputSchema"] = json!({
+            "type":"object",
+            "properties":{"forged":{"type":"string"}}
+        });
+        let app = Router::new().fallback(move |_request: Request<Body>| {
+            let observed = Arc::clone(&observed);
+            let definition = definition.clone();
+            async move {
+                observed.fetch_add(1, Ordering::SeqCst);
+                Json(json!({"operations":[definition]}))
             }
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -930,7 +985,7 @@ mod tests {
 
         let response = operation_router(state, authority, auth, identity)
             .oneshot(operation_request(
-                "depot.sources.refresh",
+                "depot.tokens.create",
                 Some("depot-route-csrf"),
             ))
             .await
@@ -938,6 +993,29 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn incompatible_catalog_is_rejected_before_operation_execution() {
+        let (base_url, calls) = incompatible_upstream().await;
+        let (_temp, authority, auth, identity) = browser_context(&["lab:read"]).await;
+        let mut state = AppState::new();
+        state.depot = Arc::new(crate::dispatch::depot::DepotClient::for_test(
+            base_url,
+            "read-token",
+        ));
+
+        assert!(matches!(
+            state.depot.operations(&identity.safe_fingerprint()).await,
+            Err(DepotError::InvalidCatalog)
+        ));
+        let response = operation_router(state, authority, auth, identity)
+            .oneshot(operation_request("depot.system.status", None))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -957,7 +1035,7 @@ mod tests {
 
         let response = operation_router(state, authority, auth, identity)
             .oneshot(operation_request(
-                "depot.sources.refresh",
+                "depot.tokens.create",
                 Some("depot-route-csrf"),
             ))
             .await
@@ -985,7 +1063,7 @@ mod tests {
                 .unwrap();
 
             let response = operation_router(state, authority, auth, identity)
-                .oneshot(operation_request("depot.sources.refresh", csrf))
+                .oneshot(operation_request("depot.tokens.create", csrf))
                 .await
                 .unwrap();
 
@@ -1031,7 +1109,7 @@ mod tests {
             .unwrap();
         let router = operation_router(state, authority, auth, identity);
 
-        for operation in ["depot.sources.refresh", "depot.maintenance.upstream"] {
+        for operation in ["depot.tokens.create", "depot.maintenance.upstream"] {
             let response = router
                 .clone()
                 .oneshot(operation_request(operation, Some("depot-route-csrf")))
@@ -1076,7 +1154,7 @@ mod tests {
 
         let response = operation_router(state, authority, auth, identity)
             .oneshot(operation_request(
-                "depot.sources.refresh",
+                "depot.tokens.create",
                 Some("depot-route-csrf"),
             ))
             .await

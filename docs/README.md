@@ -10,7 +10,7 @@ Historical material that still has durable value lives under `docs/archive/` and
 
 - [Architecture](./ARCH.md) — workspace boundaries, runtime flow, and product surfaces.
 - [Architecture decisions](./adr/README.md) — accepted and proposed durable architecture choices, their boundaries, and alternatives.
-- [Labby product contracts over private Depot](./adr/0002-labby-product-contracts-over-private-depot.md) — accepted ownership and shared-shim decision, with a [current capability audit](./design/depot-capability-audit.md).
+- [Labby product contracts over private Depot](./adr/0002-labby-product-contracts-over-private-depot.md) — accepted ownership and shared-shim decision, with a [current capability audit](./design/depot-capability-audit.md) and [direct control-plane implementation specification](./design/labby-depot-direct-control-plane.md).
 - [Technology](./TECH.md) — toolchain, dependencies, build posture, Rustdoc, and release model.
 - [Conventions](./CONVENTIONS.md) — engineering rules that current code is expected to follow.
 - [Service documentation index](./services/README.md) and [service model](./dev/SERVICES.md) — product behavior plus the current registered-service and onboarding contracts.
@@ -37,7 +37,7 @@ The generated [service catalog](./generated/service-catalog.md) is authoritative
 | `agents` | [services/AGENT_TASKS.md](./services/AGENT_TASKS.md) | Immutable Agent definitions executed through the shared Assistant LLM provider, bounded sessions, and revocation |
 | `tasks` | [services/AGENT_TASKS.md](./services/AGENT_TASKS.md) and [services/TASKS.md](./services/TASKS.md) | Durable Agent Tasks, schedules, timezones, retries, and recovery |
 | `browser` | [services/BROWSER.md](./services/BROWSER.md) | Rust-native WebMCP browser bridge, pairing, discovery, consent, and bounded invocation |
-| `depot_publish` | [services/DEPOT_PROVIDERS.md](./services/DEPOT_PROVIDERS.md) | Bounded publication/provider projection into configured Depot authority |
+| `artifact_publish` | [services/ARTIFACT_PUBLISH.md](./services/ARTIFACT_PUBLISH.md) | Labby-owned protected archive publication workflow over configured Artifact authority |
 | `dev_containers` | [services/DEV_CONTAINERS.md](./services/DEV_CONTAINERS.md) | Owner-scoped development-container definitions, leases, recovery, and lifecycle |
 | `doctor` | [services/DOCTOR.md](./services/DOCTOR.md) | Always-on system, auth, OAuth relay, and proxy diagnostics |
 | `gateway` | [services/GATEWAY.md](./services/GATEWAY.md) | Upstream catalog, protected routes, virtual servers, OAuth, Code Mode host |

@@ -8,6 +8,7 @@ pub(crate) mod catalog;
 pub(crate) mod client;
 pub(crate) mod depot;
 pub(crate) mod dispatch;
+pub(crate) mod follow_reconciler;
 pub(crate) mod import;
 pub(crate) mod params;
 pub(crate) mod surface;
@@ -170,6 +171,67 @@ pub(crate) fn map_dispatch_error(error: dispatch::SkillLibraryDispatchError) -> 
                 .collect(),
             hint: Some("use skills schema to inspect supported actions".to_owned()),
         },
+    }
+}
+
+pub(crate) fn map_managed_distribution_error(
+    error: crate::dispatch::artifact_distribution::ManagedArtifactDistributionError,
+) -> ToolError {
+    use crate::dispatch::artifact_distribution::ManagedArtifactDistributionError;
+    match error {
+        ManagedArtifactDistributionError::Access(error) => {
+            crate::dispatch::access_errors::map_store_error("artifacts", error, || {
+                ToolError::Forbidden {
+                    message: "Artifact distribution access denied".to_owned(),
+                    required_scopes: Vec::new(),
+                }
+            })
+        }
+        ManagedArtifactDistributionError::Artifact(error) => {
+            map_dispatch_error(dispatch::SkillLibraryDispatchError::Artifact(error))
+        }
+        ManagedArtifactDistributionError::State(_) => ToolError::Conflict {
+            message: "Managed Artifact state conflicts with this request".to_owned(),
+            existing_id: "managed_artifact".to_owned(),
+        },
+    }
+}
+
+pub(crate) fn map_distribution_authorization_error(
+    error: auth::SkillLibraryAuthorizationError,
+) -> ToolError {
+    map_dispatch_error(dispatch::SkillLibraryDispatchError::Authorization(error))
+}
+
+pub(crate) fn artifact_distribution_denied() -> ToolError {
+    ToolError::Forbidden {
+        message: "Artifact distribution access denied".to_owned(),
+        required_scopes: Vec::new(),
+    }
+}
+
+pub(crate) fn map_distribution_acquisition_error(error: import::ImportAdapterError) -> ToolError {
+    match error {
+        import::ImportAdapterError::SourceUnavailable => ToolError::Sdk {
+            sdk_kind: "source_unavailable".to_owned(),
+            message: "Requested Artifact source is not configured".to_owned(),
+        },
+        import::ImportAdapterError::Artifact(ArtifactError::Conflict("provider_timeout")) => {
+            ToolError::Sdk {
+                sdk_kind: "timeout".to_owned(),
+                message: "Artifact source timed out".to_owned(),
+            }
+        }
+        import::ImportAdapterError::Artifact(ArtifactError::Conflict(
+            "source_authorization_expired",
+        )) => ToolError::Forbidden {
+            message: "Artifact source authorization failed".to_owned(),
+            required_scopes: Vec::new(),
+        },
+        import::ImportAdapterError::Artifact(error) => {
+            map_dispatch_error(dispatch::SkillLibraryDispatchError::Artifact(error))
+        }
+        import::ImportAdapterError::Dispatch(error) => map_dispatch_error(error),
     }
 }
 
