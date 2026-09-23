@@ -170,6 +170,13 @@ class IncusContract(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.splitlines(), ["1.102.3", "/fixture/install.sh"])
 
+    def test_tailscale_downloads_are_immutable(self):
+        for path in ("config/incus/labby-image.yaml", "scripts/incus-bootstrap.sh"):
+            with self.subTest(path=path):
+                text = self.text(path)
+                self.assertNotIn("https://tailscale.com/install.sh", text)
+                self.assertRegex(text, r"https://raw\.githubusercontent\.com/tailscale/tailscale/[0-9a-f]{40}/scripts/installer\.sh")
+
     def test_image_preflight_lint_runs_before_release(self):
         command = "shellcheck scripts/incus-bootstrap.sh scripts/ci/build-incus-image.sh scripts/ci/smoke-incus-image.sh"
         ci = self.text(".github/workflows/ci.yml")

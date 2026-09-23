@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from contextlib import closing
+import hashlib
 import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import os
@@ -1166,8 +1167,9 @@ sudo() { test "$*" = 'systemctl reset-failed labby.service'; record reset; }
                     expected = expected[:expected.index(failure) + 1]
                 self.assertEqual(calls.read_text().splitlines(), expected)
                 self.assertEqual(result.returncode, 1 if failure else 0, result.stderr)
-        upgrade = next(line for line in text.splitlines() if line.startswith("  upgrade)"))
-        self.assertIn('fi; begin_candidate_phase; "$repo_root/scripts/ci/verify-and-activate-release.sh"', upgrade)
+        upgrade = text[text.index("  upgrade)"):text.index("  verify-candidate)")]
+        self.assertLess(upgrade.index("recover_state restore"), upgrade.index("begin_candidate_phase"))
+        self.assertLess(upgrade.index("begin_candidate_phase"), upgrade.index('-- sudo "$candidate"'))
 
     def test_baseline_credentials_survive_formatting_but_reject_rotation(self) -> None:
         for adapter in ("host-service", "incus"):
@@ -1359,10 +1361,70 @@ if authenticated_action; then exit 93; fi
         self.assertFalse((ROOT / "scripts/ci/n-minus-one/compose").exists())
         macos = self.text("scripts/ci/n-minus-one/macos")
         seed = macos[macos.index("seed-state)"):macos.index("verify-previous)")]
-        self.assertIn("service restart", seed)
+        self.assertIn("service uninstall; seed_persisted_state; service install", seed)
         incus = self.text("scripts/ci/n-minus-one/incus")
         self.assertNotIn("target/debug/labby", incus)
         self.assertIn("LABBY_N_MINUS_ONE_CANDIDATE_BINARY", incus)
+
+    def test_recovery_capture_is_private_and_refuses_to_replace_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            binary = root / "labby"
+            binary.write_text('#!/bin/sh\nset -eu\ntest -s "$LABBY_RECOVERY_KEY_PATH"\n'
+                              'test "$LABBY_HOME" = "$EXPECTED_STATE"\n'
+                              'printf "%s\\n" "$*" >> "$CALLS"\n')
+            binary.chmod(0o755)
+            recovery = root / "recovery"
+            state = root / "state"
+            state.mkdir()
+            env = os.environ | {"EXPECTED_STATE": str(state), "CALLS": str(root / "calls")}
+            helper = ROOT / "scripts/ci/n-minus-one-recovery.sh"
+            args = ["bash", str(helper), "capture", str(binary), str(state), str(recovery)]
+            first = subprocess.run(args, env=env, capture_output=True, text=True)
+            self.assertEqual(0, first.returncode, first.stderr)
+            key = recovery / "key"
+            before = key.read_bytes()
+            self.assertGreaterEqual(len(before), 32)
+            self.assertEqual(0o600, key.stat().st_mode & 0o777)
+            self.assertEqual(0o700, recovery.stat().st_mode & 0o777)
+            repeat = subprocess.run(args, env=env, capture_output=True, text=True)
+            self.assertNotEqual(0, repeat.returncode)
+            self.assertEqual(before, key.read_bytes())
+            restored = subprocess.run(["bash", str(helper), "restore", str(binary), str(state), str(recovery)],
+                                      env=env, capture_output=True, text=True)
+            self.assertEqual(0, restored.returncode, restored.stderr)
+            self.assertEqual([f"state export --output {recovery}/bundle", f"state restore --bundle {recovery}/bundle"],
+                             (root / "calls").read_text().splitlines())
+
+    def test_macos_state_check_accepts_new_keys_but_rejects_changed_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp) / "labby-n-minus-one/macos"
+            state = work / "home/.labby"
+            state.mkdir(parents=True)
+            (work / "bin").mkdir()
+            binary = work / "bin/labby"
+            binary.write_text('#!/bin/sh\necho "labby 2.1.2"\n')
+            binary.chmod(0o755)
+            mocks = Path(tmp) / "commands"
+            mocks.mkdir()
+            for name, body in {"uname": "echo Darwin", "launchctl": "exit 0"}.items():
+                path = mocks / name
+                path.write_text(f"#!/bin/sh\n{body}\n")
+                path.chmod(0o755)
+            (state / "config.toml").write_text("config_version = 1\n")
+            with closing(sqlite3.connect(state / "usage.db")) as db:
+                db.execute("CREATE TABLE upstream_calls(id INTEGER PRIMARY KEY, ts_unix INTEGER, upstream_name TEXT, tool_name TEXT, actor TEXT, outcome TEXT)")
+            subprocess.run([sys.executable, str(ROOT / "scripts/ci/n-minus-one-durable-state.py"), "seed", str(state)],
+                           check=True, capture_output=True)
+            digest = hashlib.sha256((state / "config.toml").read_bytes()).hexdigest()
+            (work / "persisted-state.sha256").write_text(f"{digest}  config.toml\n")
+            env = os.environ | {"RUNNER_TEMP": tmp, "LABBY_CANDIDATE_VERSION": "v2.1.2", "PATH": f"{mocks}:{os.environ['PATH']}"}
+            args = ["bash", str(ROOT / "scripts/ci/n-minus-one/macos"), "verify-candidate"]
+            for token, expected in (("0" * 64, 0), ("1" * 64, 1)):
+                with self.subTest(token_preserved=expected == 0):
+                    (state / ".env").write_text(f"LABBY_AUTH_MODE=bearer\nLABBY_MCP_HTTP_TOKEN={token}\nLABBY_ACTOR_KEY_SECRET=fixture\n")
+                    result = subprocess.run(args, env=env, capture_output=True, text=True)
+                    self.assertEqual(expected, result.returncode, result.stdout + result.stderr)
 
     def test_post_rollback_requires_restart_and_authenticated_action(self) -> None:
         driver = (ROOT / "scripts/ci/qualify-n-minus-one.sh").read_text()

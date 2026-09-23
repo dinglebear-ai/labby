@@ -72,7 +72,9 @@ write_plist() {
     local escaped_port
     local update_argument=""
     local escaped_path
+    local escaped_home
     escaped_path=$(xml_escape "$PATH")
+    escaped_home=$(xml_escape "$HOME")
     if [[ "$service_auto_update" == 1 ]]; then
         update_argument='<string>--auto-update</string>'
     fi
@@ -114,6 +116,8 @@ write_plist() {
         <string>${escaped_path}</string>
         <key>LABBY_HOME</key>
         <string>${escaped_working_dir}</string>
+        <key>HOME</key>
+        <string>${escaped_home}</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>
