@@ -57,9 +57,8 @@ begin_candidate_phase() {
 }
 recover_state() {
   sudo env HOME=/home/labby bash "$repo_root/scripts/ci/n-minus-one-recovery.sh" "$1" \
-    "${LABBY_N_MINUS_ONE_CANDIDATE_BINARY:?candidate binary required}" "$LABBY_HOME" "$state_root/recovery"
-  # Recovery preserves modes and bytes; the host service owns the restored files.
-  if [[ "$1" == restore ]]; then sudo chown -R labby:labby "$LABBY_HOME"; fi
+    "${LABBY_N_MINUS_ONE_CANDIDATE_BINARY:?candidate binary required}" "$LABBY_HOME" \
+    /home/labby/.labby-n-minus-one-recovery labby
 }
 require_fixture() {
   [[ "$(uname -s)" == Linux ]] || { echo 'host-service N-1 requires Linux' >&2; exit 1; }

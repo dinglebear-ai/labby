@@ -378,6 +378,9 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
    binary rollback alone cannot undo forward-only database migrations. The
    bundle and its random owner-only recovery key remain outside `LABBY_HOME`
    in the disposable qualification fixture and are never uploaded as logs.
+   Linux service adapters run export and restore as the `labby` state owner,
+   not root. They stage the verified candidate in that owner's private recovery
+   directory so runner-only paths do not block access after dropping privileges.
    macOS uses a dedicated LaunchAgent and aligned `HOME`/`LABBY_HOME` so older
    releases cannot resolve state outside the fixture. Config bytes and the
    original credential must survive; startup may add unrelated dotenv keys.
