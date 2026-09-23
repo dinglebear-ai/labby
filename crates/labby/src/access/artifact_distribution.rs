@@ -105,6 +105,10 @@ CREATE INDEX artifact_mirrors_source
     ON artifact_mirrors(source_provider_authority, source_artifact_id, source_revision_id);
 CREATE INDEX artifact_mirrors_reconcile
     ON artifact_mirrors(status, last_checked_at, mirror_id);
+CREATE INDEX artifact_mirrors_purge
+    ON artifact_mirrors(status, updated_at, mirror_id);
+CREATE INDEX artifact_mirrors_local
+    ON artifact_mirrors(local_artifact_id, status);
 
 CREATE TABLE artifact_subscriptions (
     mirror_id TEXT PRIMARY KEY,
@@ -170,8 +174,28 @@ pub(crate) struct ArtifactDistributionAuthoritySnapshot {
     pub(crate) principal_id: String,
     pub(crate) organization_id: String,
     pub(crate) project_id: String,
+    /// Teams this caller actually holds in the authorizing project.
+    ///
+    /// An Assignment ceiling may only be read through a scope the caller holds; a caller who can
+    /// merely name another scope's `assignment_id` must not borrow its ceiling.
+    pub(crate) team_ids: Vec<String>,
     pub(crate) grants: ArtifactDistributionGrants,
     pub(crate) global_revision: u64,
+}
+
+impl ArtifactDistributionAuthoritySnapshot {
+    /// Whether this caller holds the Assignment scope itself.
+    ///
+    /// Naming an `assignment_id` is not authority: the scope that owns it must be one the caller
+    /// already holds, or its ceiling is not theirs to use.
+    pub(crate) fn holds_scope(&self, scope: &OwnerScope) -> bool {
+        match scope {
+            OwnerScope::Personal(principal) => principal.as_str() == self.principal_id,
+            OwnerScope::Team(team) => self.team_ids.iter().any(|held| held == team.as_str()),
+            OwnerScope::Project(project) => project.as_str() == self.project_id,
+            OwnerScope::Installation(_) => false,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -918,6 +942,7 @@ impl AccessStore {
                 principal_id: discover.principal_id,
                 organization_id: discover.organization_id,
                 project_id: discover.project_id,
+                team_ids: discover.team_ids,
                 grants,
                 global_revision: discover.global_revision,
             };
@@ -1192,12 +1217,19 @@ impl AccessStore {
         }).await
     }
 
+    /// Resolve one Assignment distribution record the caller actually holds.
+    ///
+    /// Naming an `assignment_id` is not authority. A record whose `source_scope` the caller does
+    /// not hold resolves to `None` so the absent-Assignment path fails closed, rather than letting
+    /// a caller borrow another scope's ceiling.
     pub(crate) async fn artifact_assignment_distribution(
         &self,
+        authority: &ArtifactDistributionAuthoritySnapshot,
         assignment_id: String,
         provider_authority: String,
         artifact_id: String,
     ) -> AccessStoreResult<Option<ArtifactAssignmentDistributionRecord>> {
+        let authority = authority.clone();
         validate_text(&assignment_id, 256)?;
         validate_text(&provider_authority, 512)?;
         validate_text(&artifact_id, 2048)?;
@@ -1242,6 +1274,9 @@ impl AccessStore {
                 .transpose()
         })
         .await
+        .map(|record: Option<ArtifactAssignmentDistributionRecord>| {
+            record.filter(|record| authority.holds_scope(&record.source_scope))
+        })
     }
 
     pub(crate) async fn artifact_transfer_options(
@@ -1249,7 +1284,7 @@ impl AccessStore {
         provider_authority: String,
         artifact_id: String,
         assignment_id: Option<String>,
-        grants: ArtifactDistributionGrants,
+        authority: &ArtifactDistributionAuthoritySnapshot,
         publication: ArtifactPublication,
         license: ArtifactLicenseState,
         destination: Option<ArtifactDestinationPolicy>,
@@ -1259,18 +1294,26 @@ impl AccessStore {
         if let Some(value) = assignment_id.as_deref() {
             validate_text(value, 256)?;
         }
+        let grants = authority.grants;
+        let authority = authority.clone();
         self.with_connection(move |connection| {
             let publisher = connection.query_row(
                 "SELECT allow_sync,allow_follow,allow_fork,allow_export,allow_reshare FROM artifact_source_policies WHERE provider_authority=?1 AND artifact_id=?2",
                 params![provider_authority,artifact_id],
                 |row| Ok(ArtifactDistributionCeiling { sync: row.get(0)?, follow: row.get(1)?, fork: row.get(2)?, export: row.get(3)?, reshare: row.get(4)? }),
             ).optional().map_err(map_sqlite_error)?.unwrap_or_default();
+            // The Assignment ceiling is only the caller's to use when they hold its scope; an
+            // unheld row resolves to None so byte movement fails closed.
             let assignment = if let Some(assignment_id) = assignment_id {
                 connection.query_row(
-                    "SELECT allow_sync,allow_follow,allow_fork,allow_export,allow_reshare FROM artifact_assignment_distributions WHERE assignment_id=?1 AND provider_authority=?2 AND artifact_id=?3 AND status='active'",
+                    "SELECT source_scope_kind,source_scope_id,allow_sync,allow_follow,allow_fork,allow_export,allow_reshare FROM artifact_assignment_distributions WHERE assignment_id=?1 AND provider_authority=?2 AND artifact_id=?3 AND status='active'",
                     params![assignment_id,provider_authority,artifact_id],
-                    |row| Ok(ArtifactDistributionCeiling { sync: row.get(0)?, follow: row.get(1)?, fork: row.get(2)?, export: row.get(3)?, reshare: row.get(4)? }),
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, ArtifactDistributionCeiling { sync: row.get(2)?, follow: row.get(3)?, fork: row.get(4)?, export: row.get(5)?, reshare: row.get(6)? })),
                 ).optional().map_err(map_sqlite_error)?
+                .map(|(scope_kind, scope_id, ceiling)| Ok::<_, AccessStoreError>((owner_from_parts(&scope_kind, scope_id)?, ceiling)))
+                .transpose()?
+                .filter(|(scope, _)| authority.holds_scope(scope))
+                .map(|(_, ceiling)| ceiling)
             } else { None };
             Ok(evaluate_transfer_options(ArtifactTransferFacts { grants, publisher, assignment, publication: &publication, license: &license, destination }))
         }).await
@@ -1281,7 +1324,7 @@ impl AccessStore {
         provider_authority: String,
         artifact_id: String,
         assignment_id: String,
-        grants: ArtifactDistributionGrants,
+        authority: &ArtifactDistributionAuthoritySnapshot,
         mode: ArtifactTransferMode,
     ) -> AccessStoreResult<ArtifactTransferDecision> {
         let publication = ArtifactPublication {
@@ -1297,7 +1340,7 @@ impl AccessStore {
             provider_authority,
             artifact_id,
             Some(assignment_id),
-            grants,
+            authority,
             publication,
             license,
             Some(ArtifactDestinationPolicy::local_personal()),
@@ -1403,10 +1446,58 @@ impl AccessStore {
         self.query_managed_artifact_mirrors(
             "status IN ('active','committing')
                        AND (last_checked_at IS NULL OR last_checked_at<=?1)
-                     ORDER BY COALESCE(last_checked_at,-9223372036854775808),mirror_id",
+                     ORDER BY last_checked_at,mirror_id",
             checked_before,
             limit,
         )
+        .await
+    }
+
+    /// Record that a purge was attempted, so a failing mirror does not hold the retry queue.
+    ///
+    /// The pending-purge scan orders by `updated_at`, so a deterministically failing purge would
+    /// otherwise stay at the head of every batch and starve newly restricted mirrors.
+    pub(crate) async fn mark_managed_artifact_purge_attempted(
+        &self,
+        mirror_id: String,
+        attempted_at: i64,
+    ) -> AccessStoreResult<()> {
+        validate_text(&mirror_id, 256)?;
+        self.with_connection(move |connection| {
+            connection
+                .execute(
+                    "UPDATE artifact_mirrors SET updated_at=?2 WHERE mirror_id=?1
+                     AND status IN ('access_revoked','source_withdrawn','failed')",
+                    params![mirror_id, attempted_at],
+                )
+                .map_err(map_sqlite_error)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// How many live mirrors besides `exclude_mirror_id` claim these local bytes.
+    ///
+    /// Managed bytes are shared by local Artifact id, so a purge is only safe once no other
+    /// non-terminal mirror still depends on them.
+    pub(crate) async fn managed_mirrors_claiming_local_artifact(
+        &self,
+        local_artifact_id: String,
+        exclude_mirror_id: String,
+    ) -> AccessStoreResult<usize> {
+        validate_text(&local_artifact_id, 2048)?;
+        validate_text(&exclude_mirror_id, 256)?;
+        self.with_connection(move |connection| {
+            let count: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM artifact_mirrors
+                     WHERE local_artifact_id=?1 AND mirror_id<>?2 AND status<>'removed'",
+                    params![local_artifact_id, exclude_mirror_id],
+                    |row| row.get(0),
+                )
+                .map_err(map_sqlite_error)?;
+            usize::try_from(count).map_err(|_| AccessStoreError::MalformedVocabulary)
+        })
         .await
     }
 
@@ -1419,9 +1510,9 @@ impl AccessStore {
         limit: usize,
     ) -> AccessStoreResult<Vec<ManagedArtifactMirror>> {
         self.query_managed_artifact_mirrors(
-            "status IN ('access_revoked','source_withdrawn') AND ?1=?1
+            "status IN ('access_revoked','source_withdrawn','failed') AND updated_at<=?1
                      ORDER BY updated_at,mirror_id",
-            0,
+            i64::MAX,
             limit,
         )
         .await
@@ -1909,7 +2000,15 @@ async fn transition_mirror(
         let allowed = match target {
             ManagedArtifactMirrorStatus::Committing => current.status == ManagedArtifactMirrorStatus::Pending,
             ManagedArtifactMirrorStatus::Active => current.status == ManagedArtifactMirrorStatus::Committing && local_revision_id.is_some(),
-            ManagedArtifactMirrorStatus::Removed => current.status != ManagedArtifactMirrorStatus::Removed,
+            // `Removed` means "restricted and bytes confirmed gone", so it is only reachable from a
+            // committed restriction. Allowing it from `active` would let a failed purge record a
+            // removal the pending-purge sweep can never revisit.
+            ManagedArtifactMirrorStatus::Removed => matches!(
+                current.status,
+                ManagedArtifactMirrorStatus::AccessRevoked
+                    | ManagedArtifactMirrorStatus::SourceWithdrawn
+                    | ManagedArtifactMirrorStatus::Failed
+            ),
             ManagedArtifactMirrorStatus::AccessRevoked | ManagedArtifactMirrorStatus::SourceWithdrawn | ManagedArtifactMirrorStatus::Failed => !current.status.is_terminal(),
             ManagedArtifactMirrorStatus::Pending => false,
         };
@@ -1951,7 +2050,7 @@ async fn transition_mirror(
         if target.is_terminal() {
             transaction
                 .execute(
-                    "UPDATE artifact_subscriptions SET status='paused',updated_at=?2 WHERE mirror_id=?1",
+                    "UPDATE artifact_subscriptions SET status='revoked',updated_at=?2 WHERE mirror_id=?1",
                     params![mirror_id, now],
                 )
                 .map_err(map_sqlite_error)?;
@@ -1998,6 +2097,28 @@ mod tests {
             fork: true,
             export: true,
             reshare: true,
+        }
+    }
+
+    /// An authority snapshot holding `scope`, with every distribution grant.
+    fn authority_holding(scope: OwnerScope) -> ArtifactDistributionAuthoritySnapshot {
+        // The principal is derived from the scope itself, so a Team-scoped authority is a
+        // different principal than the Personal scope owner and cannot hold it implicitly.
+        let (principal_id, team_ids) = match &scope {
+            OwnerScope::Personal(principal) => (principal.as_str().to_owned(), Vec::new()),
+            OwnerScope::Team(team) => (
+                format!("member-of-{}", team.as_str()),
+                vec![team.as_str().to_owned()],
+            ),
+            _ => ("other-principal".to_owned(), Vec::new()),
+        };
+        ArtifactDistributionAuthoritySnapshot {
+            principal_id,
+            organization_id: "organization".into(),
+            project_id: "bootstrap-default".into(),
+            team_ids,
+            grants: all_grants(),
+            global_revision: 0,
         }
     }
 
@@ -2387,6 +2508,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn assignment_ceiling_is_unusable_by_a_caller_who_does_not_hold_its_scope() {
+        let (_directory, store) = bootstrapped_store().await;
+        install_source_policy(&store).await;
+        install_assignment(&store).await;
+        let (publication, license) = transferable();
+        let borrowed = OwnerScope::Team(TeamId::new("other-team").unwrap());
+
+        // The Assignment is scoped to the bootstrap owner's Personal scope. A caller holding every
+        // distribution grant, but only some other team, must not borrow that ceiling.
+        let outsider = store
+            .artifact_transfer_options(
+                "depot".into(),
+                "artifact-a".into(),
+                Some("assignment-a".into()),
+                &authority_holding(borrowed.clone()),
+                publication.clone(),
+                license.clone(),
+                Some(ArtifactDestinationPolicy::local_personal()),
+            )
+            .await
+            .unwrap();
+        assert!(!outsider.allows(ArtifactTransferMode::Pin));
+        assert!(!outsider.allows(ArtifactTransferMode::Follow));
+        assert!(!outsider.allows(ArtifactTransferMode::Fork));
+        assert_eq!(
+            outsider.decision(ArtifactTransferMode::Pin).denied_by,
+            Some(ArtifactTransferDenyReason::AssignmentPolicy)
+        );
+        assert!(
+            store
+                .artifact_assignment_distribution(
+                    &authority_holding(borrowed),
+                    "assignment-a".into(),
+                    "depot".into(),
+                    "artifact-a".into(),
+                )
+                .await
+                .unwrap()
+                .is_none(),
+            "an unheld Assignment must not resolve"
+        );
+
+        // The scope holder still gets the ceiling.
+        let holder = store
+            .artifact_transfer_options(
+                "depot".into(),
+                "artifact-a".into(),
+                Some("assignment-a".into()),
+                &authority_holding(personal_owner()),
+                publication,
+                license,
+                Some(ArtifactDestinationPolicy::local_personal()),
+            )
+            .await
+            .unwrap();
+        assert!(holder.allows(ArtifactTransferMode::Pin));
+    }
+
+    #[tokio::test]
     async fn persisted_transfer_policy_defaults_assignment_distribution_to_deny() {
         let (_directory, store) = bootstrapped_store().await;
         install_source_policy(&store).await;
@@ -2397,7 +2577,7 @@ mod tests {
                 "depot".into(),
                 "artifact-a".into(),
                 Some("assignment-a".into()),
-                all_grants(),
+                &authority_holding(personal_owner()),
                 publication.clone(),
                 license.clone(),
                 Some(ArtifactDestinationPolicy::local_personal()),
@@ -2416,7 +2596,7 @@ mod tests {
                 "depot".into(),
                 "artifact-a".into(),
                 Some("assignment-a".into()),
-                all_grants(),
+                &authority_holding(personal_owner()),
                 publication,
                 license,
                 Some(ArtifactDestinationPolicy::local_personal()),

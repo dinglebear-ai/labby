@@ -15,10 +15,10 @@ use labby_runtime::artifacts::{
 use thiserror::Error;
 
 use crate::access::{
-    AccessStore, AccessStoreError, ArtifactAuthorityRecord, ArtifactSubscriptionUpdatePolicy,
-    BeginManagedArtifactMirrorUpdate, ManagedArtifactMirror, ManagedArtifactMirrorMode,
-    ManagedArtifactMirrorStatus, ManagedArtifactSubscription, StageArtifactAuthority,
-    StageManagedArtifactMirror,
+    AccessStore, AccessStoreError, ArtifactAuthorityRecord, ArtifactDistributionAuthoritySnapshot,
+    ArtifactSubscriptionUpdatePolicy, BeginManagedArtifactMirrorUpdate, ManagedArtifactMirror,
+    ManagedArtifactMirrorMode, ManagedArtifactMirrorStatus, ManagedArtifactSubscription,
+    StageArtifactAuthority, StageManagedArtifactMirror,
 };
 
 #[derive(Debug, Error)]
@@ -72,6 +72,8 @@ pub(crate) struct PersonalArtifactForkRequest {
     pub(crate) source_provider_authority: String,
     pub(crate) source_assignment_id: String,
     pub(crate) source_scope: OwnerScope,
+    /// The caller's durable authority, so the Assignment is re-resolved against scopes they hold.
+    pub(crate) authority: ArtifactDistributionAuthoritySnapshot,
     pub(crate) target_name: String,
     pub(crate) title: Option<String>,
     pub(crate) forked_at: Option<String>,
@@ -125,6 +127,32 @@ impl ManagedArtifactCoordinator {
 
         let source_artifact_id = request.acquisition.interchange.descriptor.id.clone();
         let source_revision_id = request.acquisition.interchange.revision.id.clone();
+
+        // `install_acquisition_exact` adopts a matching local Artifact. For a mirror that does not
+        // exist yet, pre-existing local bytes were materialized by something else — an
+        // `artifacts.import`, or another mirror — and adopting them would place content this
+        // mirror never installed under managed revocation, where a later purge would delete it.
+        // A mirror that already exists is a retry of its own install, so adoption is correct.
+        if self
+            .access
+            .managed_artifact_mirror(request.mirror_id.clone())
+            .await?
+            .is_none()
+            && self.artifacts.get(&source_artifact_id).is_ok()
+            && self
+                .access
+                .managed_mirrors_claiming_local_artifact(
+                    source_artifact_id.clone(),
+                    request.mirror_id.clone(),
+                )
+                .await?
+                == 0
+        {
+            return Err(ManagedArtifactDistributionError::State(
+                "local_artifact_not_managed",
+            ));
+        }
+
         let staged = self
             .access
             .stage_managed_artifact_mirror(StageManagedArtifactMirror {
@@ -225,6 +253,7 @@ impl ManagedArtifactCoordinator {
         let assignment = self
             .access
             .artifact_assignment_distribution(
+                &request.authority,
                 request.source_assignment_id.clone(),
                 request.source_provider_authority.clone(),
                 source_artifact_id.clone(),
@@ -498,7 +527,19 @@ impl ManagedArtifactCoordinator {
                 )
                 .await?
         };
-        self.purge_managed_bytes(&restricted.local_artifact_id)?;
+        // Managed bytes are keyed by local Artifact id, so another live mirror may still depend on
+        // them. Restriction of this mirror must not delete a mirror that is still authorized.
+        if self
+            .access
+            .managed_mirrors_claiming_local_artifact(
+                restricted.local_artifact_id.clone(),
+                restricted.mirror_id.clone(),
+            )
+            .await?
+            == 0
+        {
+            self.purge_managed_bytes(&restricted.local_artifact_id)?;
+        }
         let removed = self
             .access
             .restrict_managed_artifact_mirror(
@@ -519,6 +560,25 @@ mod tests {
     use labby_runtime::artifacts::{
         ArtifactImportRequest, ArtifactProvider, ArtifactProviderRequest, LocalArtifactProvider,
     };
+
+    /// Authority for the bootstrap owner's own Personal scope.
+    fn personal_authority() -> ArtifactDistributionAuthoritySnapshot {
+        ArtifactDistributionAuthoritySnapshot {
+            principal_id: "bootstrap-owner".into(),
+            organization_id: "organization".into(),
+            project_id: "bootstrap-default".into(),
+            team_ids: Vec::new(),
+            grants: crate::access::ArtifactDistributionGrants {
+                use_remote: true,
+                sync: true,
+                follow: true,
+                fork: true,
+                export: true,
+                reshare: true,
+            },
+            global_revision: 0,
+        }
+    }
 
     fn managed_authorization() -> ManagedArtifactAuthorization {
         let identity = VerifiedIdentity::external(
@@ -708,6 +768,7 @@ mod tests {
             source_scope: OwnerScope::Personal(
                 labby_primitives::access::PrincipalId::new("bootstrap-owner").unwrap(),
             ),
+            authority: personal_authority(),
             target_name: "my-personal-fork".into(),
             title: Some("My personal fork".into()),
             forked_at: Some("2026-09-17T12:00:00Z".into()),
@@ -814,6 +875,63 @@ mod tests {
                 .status,
             ManagedArtifactMirrorStatus::Removed
         );
+    }
+
+    #[tokio::test]
+    async fn pin_refuses_to_adopt_local_bytes_no_mirror_owns() {
+        let (_access_dir, access) = bootstrapped_access().await;
+        let source_dir = tempfile::tempdir().unwrap();
+        let source_package = tempfile::tempdir().unwrap();
+        std::fs::write(source_package.path().join("a.txt"), b"alpha").unwrap();
+        let source = ArtifactStore::new(source_dir.path().join("store")).unwrap();
+        let source_record = source
+            .import_local(
+                ArtifactImportRequest::new("resource", "upstream", "adoption-demo"),
+                source_package.path(),
+            )
+            .unwrap();
+        let acquisition = source_acquisition(&source, &source_record).await;
+        let policy_epoch = install_authority(&access, &source_record.descriptor.id).await;
+        let destination_dir = tempfile::tempdir().unwrap();
+        let destination =
+            Arc::new(ArtifactStore::new(destination_dir.path().join("store")).unwrap());
+
+        // The user already materialized this Artifact themselves; no mirror owns those bytes.
+        destination
+            .install_acquisition_exact(acquisition.clone())
+            .unwrap();
+
+        let coordinator = ManagedArtifactCoordinator::new(access, Arc::clone(&destination));
+        let refused = coordinator
+            .install(ManagedArtifactInstallRequest {
+                mirror_id: "mirror-adopt".into(),
+                operation_id: "operation-adopt".into(),
+                owner_principal_id: "bootstrap-owner".into(),
+                destination_id: None,
+                source_provider_authority: "depot".into(),
+                source_assignment_id: "assignment-test".into(),
+                source_scope: OwnerScope::Personal(
+                    labby_primitives::access::PrincipalId::new("bootstrap-owner").unwrap(),
+                ),
+                mode: ManagedArtifactMirrorMode::Pinned,
+                policy_epoch,
+                update_policy: None,
+                authorization: managed_authorization(),
+                now: 20,
+                acquisition,
+            })
+            .await;
+        assert!(
+            matches!(
+                refused,
+                Err(ManagedArtifactDistributionError::State(
+                    "local_artifact_not_managed"
+                ))
+            ),
+            "{refused:?}"
+        );
+        // The user's own copy is untouched and stayed out of managed revocation.
+        assert!(destination.get(&source_record.descriptor.id).is_ok());
     }
 
     #[tokio::test]

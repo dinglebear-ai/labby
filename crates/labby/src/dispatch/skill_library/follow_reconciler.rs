@@ -116,6 +116,11 @@ async fn tick(
     for mirror in store.managed_artifact_mirrors_pending_purge(64).await? {
         let mirror_id = mirror.mirror_id.clone();
         let restriction = mirror.status;
+        // Stamp before attempting: a purge that keeps failing must rotate to the back of the queue
+        // instead of occupying a batch slot forever and starving newly revoked mirrors.
+        store
+            .mark_managed_artifact_purge_attempted(mirror_id.clone(), now)
+            .await?;
         if let Err(error) = restrict(&store, runtime, &mirror, restriction, now).await {
             tracing::warn!(
                 mirror_id,
@@ -199,7 +204,7 @@ async fn reconcile_managed_authority(
             mirror.source_provider_authority.clone(),
             mirror.source_artifact_id.clone(),
             mirror.source_assignment_id.clone(),
-            decision.authority.grants,
+            &decision.authority,
             mode,
         )
         .await?;
@@ -221,6 +226,13 @@ async fn reconcile_managed_authority(
         .strip_prefix("depot:")
         .filter(|value| !value.is_empty())
     else {
+        // Only Depot heads are observable today, so source withdrawal cannot be detected for this
+        // mirror. Local authorization above still applies; surface the blind spot rather than
+        // recording a check that did not happen.
+        tracing::debug!(
+            mirror_id = mirror.mirror_id,
+            "managed Artifact source withdrawal is not observable for this provider"
+        );
         return Ok(());
     };
 
@@ -296,6 +308,11 @@ async fn reconcile_subscription(
     now: i64,
 ) -> Result<(), FollowReconcileError> {
     let store = access_runtime.store().await?;
+    // Stamp first: every failure exit below must still advance this subscription's place in the
+    // queue, or a permanently broken one starves auto-follow for the whole installation.
+    store
+        .observe_artifact_subscription(subscription.mirror_id.clone(), None, now)
+        .await?;
     let mirror = store
         .managed_artifact_mirror(subscription.mirror_id.clone())
         .await?
@@ -496,7 +513,7 @@ async fn reconcile_subscription(
             mirror.source_provider_authority.clone(),
             mirror.source_artifact_id.clone(),
             Some(mirror.source_assignment_id.clone()),
-            postflight.authority.grants,
+            &postflight.authority,
             acquisition.interchange.publication.clone(),
             acquisition.interchange.license.clone(),
             Some(ArtifactDestinationPolicy::local_personal()),

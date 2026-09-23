@@ -307,7 +307,7 @@ async fn transfer_options(
             provider_authority.clone(),
             artifact_id.clone(),
             request.assignment_id,
-            authority.grants,
+            &authority,
             acquisition.interchange.publication.clone(),
             acquisition.interchange.license.clone(),
             Some(ArtifactDestinationPolicy::local_personal()),
@@ -382,7 +382,7 @@ async fn install_managed(
                 provider_authority.clone(),
                 artifact_id.clone(),
                 Some(assignment_id.clone()),
-                authority.grants,
+                &authority,
                 acquisition.interchange.publication.clone(),
                 acquisition.interchange.license.clone(),
                 Some(ArtifactDestinationPolicy::local_personal()),
@@ -398,6 +398,7 @@ async fn install_managed(
         }
         let assignment = store
             .artifact_assignment_distribution(
+                &authority,
                 assignment_id.clone(),
                 provider_authority.clone(),
                 artifact_id.clone(),
@@ -483,7 +484,7 @@ async fn follow_update(
                 provider_authority.clone(),
                 artifact_id.clone(),
                 Some(mirror.source_assignment_id.clone()),
-                authority.grants,
+                &authority,
                 acquisition.interchange.publication.clone(),
                 acquisition.interchange.license.clone(),
                 Some(ArtifactDestinationPolicy::local_personal()),
@@ -556,7 +557,7 @@ async fn fork_personal(
                 provider_authority.clone(),
                 source_artifact_id.clone(),
                 Some(request.assignment_id.clone()),
-                authority.grants,
+                &authority,
                 acquisition.interchange.publication.clone(),
                 acquisition.interchange.license.clone(),
                 Some(ArtifactDestinationPolicy::local_personal()),
@@ -568,6 +569,7 @@ async fn fork_personal(
         }
         let assignment = store
             .artifact_assignment_distribution(
+                &authority,
                 request.assignment_id.clone(),
                 provider_authority.clone(),
                 source_artifact_id.clone(),
@@ -597,6 +599,7 @@ async fn fork_personal(
         let coordinator = ManagedArtifactCoordinator::new(store, Arc::clone(&service.store));
         let outcome = coordinator
             .fork_personal(PersonalArtifactForkRequest {
+                authority: authority.clone(),
                 operation_id,
                 owner_principal_id: authority.principal_id,
                 source_provider_authority: provider_authority,

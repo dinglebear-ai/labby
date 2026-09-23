@@ -191,12 +191,22 @@ impl ArtifactStore {
         validate_reference_id(expected_current_revision_id, "expected_current_revision_id")?;
         let _lock = self.lock(artifact_id)?;
         let Some(record) = self.read_record_optional(artifact_id)? else {
-            return Ok(false);
+            // A crash between persisting a revision and publishing the record leaves bytes with no
+            // record. Purge is a byte-removal guarantee, so remove whatever is on disk.
+            return self.purge_artifact_directory(artifact_id);
         };
         if record.current_revision_id != expected_current_revision_id {
             return Err(ArtifactError::Conflict("head_changed"));
         }
+        self.purge_artifact_directory(artifact_id)
+    }
+
+    /// Remove an Artifact's directory if it exists, reporting whether anything was removed.
+    fn purge_artifact_directory(&self, artifact_id: &str) -> Result<bool, ArtifactError> {
         let artifact_dir = self.artifact_dir(artifact_id)?;
+        if !artifact_dir.exists() {
+            return Ok(false);
+        }
         reject_existing_symlinks_in_path(&artifact_dir)
             .map_err(|_| ArtifactError::UnsafePath("stored_symlink"))?;
         std::fs::remove_dir_all(&artifact_dir)?;

@@ -142,10 +142,7 @@ pub(super) fn migrate_with_evidence(
     } else {
         None
     };
-    if legacy_v8 {
-        migrate_legacy_v8(connection)?;
-    }
-    migrate_found(connection, found)?;
+    migrate_found(connection, found, legacy_v8)?;
     if found == SCHEMA_VERSION {
         // A current-version store is a no-op only when it is actually the
         // exact current schema. Unknown fingerprints or same-version drift
@@ -213,11 +210,8 @@ fn validate_legacy_v8_before_migration(connection: &Connection) -> AccessStoreRe
 /// mean this store served a build whose data this transform cannot map, so it
 /// is refused rather than silently discarded; the caller keeps the untouched
 /// store and an operator decides.
-fn migrate_legacy_v8(connection: &mut Connection) -> AccessStoreResult<()> {
-    let transaction = connection
-        .transaction_with_behavior(TransactionBehavior::Exclusive)
-        .map_err(super::store::map_sqlite_error)?;
-    validate_legacy_v8_before_migration(&transaction)?;
+fn repair_legacy_v8(transaction: &Connection) -> AccessStoreResult<()> {
+    validate_legacy_v8_before_migration(transaction)?;
     for table in V8_LEGACY_OBSOLETE_TABLES {
         let present: bool = transaction
             .query_row(
@@ -250,16 +244,17 @@ fn migrate_legacy_v8(connection: &mut Connection) -> AccessStoreResult<()> {
             params![V8_SCHEMA_FINGERPRINT],
         )
         .map_err(super::store::map_sqlite_error)?;
-    // Prove the post-transform store is exactly the canonical v8 shape before
-    // publishing the transaction; the v8 -> current step revalidates it.
-    validate_v8_before_migration(&transaction)?;
-    transaction
-        .commit()
-        .map_err(super::store::map_sqlite_error)?;
-    Ok(())
+    // Prove the repaired store is exactly the canonical v8 shape. The caller's v8 -> current step
+    // runs in this same transaction, so a crash leaves the store untouched rather than stranded
+    // between the two shapes with its approval evidence already spent.
+    validate_v8_before_migration(transaction)
 }
 
-fn migrate_found(connection: &mut Connection, found: i64) -> AccessStoreResult<()> {
+fn migrate_found(
+    connection: &mut Connection,
+    found: i64,
+    legacy_v8: bool,
+) -> AccessStoreResult<()> {
     if found == 0 {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Exclusive)
@@ -546,7 +541,11 @@ fn migrate_found(connection: &mut Connection, found: i64) -> AccessStoreResult<(
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Exclusive)
             .map_err(super::store::map_sqlite_error)?;
-        validate_v8_before_migration(&transaction)?;
+        if legacy_v8 {
+            repair_legacy_v8(&transaction)?;
+        } else {
+            validate_v8_before_migration(&transaction)?;
+        }
         let bootstrap_trigger: String = transaction
             .query_row(
                 "SELECT sql FROM sqlite_schema WHERE type='trigger' AND name='seed_bootstrap_team_authority'",
