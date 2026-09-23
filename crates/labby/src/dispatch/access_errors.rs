@@ -40,13 +40,15 @@ pub(crate) fn map_store_error(
         | E::IdentityUnavailable
         | E::ProjectAccessUnavailable
         | E::TeamUnavailable
+        | E::ArtifactMirrorUnavailable
         | E::ForeignKeyViolation => denied(),
-        E::InvalidTeamInput | E::InvalidProjectLoadoutInput | E::InvalidBootstrapInput => {
-            ToolError::InvalidParam {
-                message: "invalid parameter `params`".to_owned(),
-                param: "params".to_owned(),
-            }
-        }
+        E::InvalidTeamInput
+        | E::InvalidProjectLoadoutInput
+        | E::InvalidBootstrapInput
+        | E::InvalidArtifactDistributionInput => ToolError::InvalidParam {
+            message: "invalid parameter `params`".to_owned(),
+            param: "params".to_owned(),
+        },
         // The caller already proved Team management authority; a missing
         // binding is a caller-fixable not-found inside that Team, never an
         // enumeration of other Teams' bindings.
@@ -61,6 +63,14 @@ pub(crate) fn map_store_error(
         E::ProjectLoadoutConflict => ToolError::Conflict {
             message: "project already has a different loadout assignment".to_owned(),
             existing_id: "project_loadout".to_owned(),
+        },
+        E::ArtifactDistributionConflict => ToolError::Conflict {
+            message: "artifact distribution state conflicts with the requested mutation".to_owned(),
+            existing_id: "artifact_distribution".to_owned(),
+        },
+        E::ArtifactMirrorStateConflict => ToolError::Conflict {
+            message: "managed artifact mirror state rejects the requested transition".to_owned(),
+            existing_id: "artifact_mirror".to_owned(),
         },
         E::BootstrapConflict => ToolError::Conflict {
             message: "owner bootstrap conflicts with existing state".to_owned(),
