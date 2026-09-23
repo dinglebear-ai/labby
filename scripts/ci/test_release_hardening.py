@@ -1396,6 +1396,65 @@ if authenticated_action; then exit 93; fi
             self.assertEqual([f"state export --output {recovery}/bundle", f"state restore --bundle {recovery}/bundle"],
                              (root / "calls").read_text().splitlines())
 
+    @unittest.skipUnless(sys.platform == "linux", "requires Linux service-account execution")
+    def test_service_recovery_uses_state_owner_and_private_accessible_candidate(self) -> None:
+        import pwd
+        # A root-run export on a service-owned installation is rejected by
+        # InstallationPaths. Exercise real uid switching and filesystem access,
+        # including a candidate that the service account cannot traverse.
+        owner = pwd.getpwnam("nobody")
+        sudo = [] if os.geteuid() == 0 else ["sudo", "-n"]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            root.chmod(0o755)
+            source = root / "runner-private"
+            source.mkdir(mode=0o700)
+            binary = source / "candidate"
+            binary.write_text(
+                '#!/usr/bin/python3\nimport os, pathlib, sys\n'
+                'state = pathlib.Path(os.environ["LABBY_HOME"])\n'
+                'key = pathlib.Path(os.environ["LABBY_RECOVERY_KEY_PATH"])\n'
+                'assert os.geteuid() == state.stat().st_uid, "wrong recovery uid"\n'
+                'assert key.stat().st_uid == os.geteuid(), "wrong key owner"\n'
+                'assert len(key.read_bytes()) == 32\n'
+                'assert key.stat().st_mode & 0o777 == 0o600\n'
+                'assert pathlib.Path(sys.argv[0]).parent.stat().st_mode & 0o777 == 0o700\n'
+                'if sys.argv[1:3] == ["state", "export"]:\n'
+                '    pathlib.Path(sys.argv[4]).write_text(state.joinpath("config.toml").read_text())\n'
+                'elif sys.argv[1:3] == ["state", "restore"]:\n'
+                '    state.joinpath("config.toml").write_text(pathlib.Path(sys.argv[4]).read_text())\n'
+                'else: sys.exit(64)\n'
+            )
+            binary.chmod(0o755)
+            state = root / "state"
+            state.mkdir(mode=0o700)
+            (state / "config.toml").write_text("baseline-state\n")
+            recovery = root / "recovery"
+            helper = ROOT / "scripts/ci/n-minus-one-recovery.sh"
+            args = ["bash", str(helper), "capture", str(binary), str(state), str(recovery), owner.pw_name]
+            try:
+                subprocess.run(sudo + ["chown", "-R", str(owner.pw_uid), str(state)], check=True)
+                capture = subprocess.run(sudo + args, text=True, capture_output=True)
+                self.assertEqual(0, capture.returncode, capture.stdout + capture.stderr)
+                self.assertEqual(owner.pw_uid, recovery.stat().st_uid)
+                self.assertEqual(0o700, recovery.stat().st_mode & 0o777)
+                # Inspect the private artifacts only as their owner (also on CI,
+                # where this test itself is an unprivileged runner user).
+                inspect = sudo + ["runuser", "-u", owner.pw_name, "--"]
+                self.assertEqual(str(owner.pw_uid), subprocess.check_output(
+                    inspect + ["stat", "-c", "%u", str(recovery / "key")], text=True).strip())
+                key_before = subprocess.check_output(inspect + ["sha256sum", str(recovery / "key")])
+                repeat = subprocess.run(sudo + args, text=True, capture_output=True)
+                self.assertNotEqual(0, repeat.returncode)
+                self.assertEqual(key_before, subprocess.check_output(inspect + ["sha256sum", str(recovery / "key")]))
+                subprocess.run(inspect + ["sh", "-c", 'printf "migrated-state\\n" > "$1/config.toml"', "fixture", str(state)], check=True)
+                args[2] = "restore"
+                restored = subprocess.run(sudo + args, text=True, capture_output=True)
+                self.assertEqual(0, restored.returncode, restored.stdout + restored.stderr)
+                self.assertEqual(b"baseline-state\n", subprocess.check_output(inspect + ["cat", str(state / "config.toml")]))
+            finally:
+                subprocess.run(sudo + ["chown", "-R", f"{os.getuid()}:{os.getgid()}", tmp], check=True)
+
     def test_macos_state_check_accepts_new_keys_but_rejects_changed_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp) / "labby-n-minus-one/macos"
