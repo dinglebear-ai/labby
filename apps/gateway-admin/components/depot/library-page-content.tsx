@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
-import { Box, Check, ChevronDown, ChevronRight, Download, Filter, Globe, GitFork, Loader2, LockKeyhole, Pencil, RefreshCw, Search, Send, Users, X } from 'lucide-react'
+import { Box, Check, ChevronRight, Download, Filter, Globe, GitFork, Loader2, LockKeyhole, Pencil, RefreshCw, Search, Send, Users, X } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { AppHeader } from '@/components/app-header'
@@ -39,17 +39,12 @@ export function libraryFilterKinds(artifacts: DepotArtifact[]) {
   return [...new Set([...ARTIFACT_TYPES, ...collectArtifactKinds(artifacts)])]
 }
 
-export function LibraryFilterRail({ artifacts, kind, onKind, tag, onTag, libraryView, onView }: { artifacts: DepotArtifact[]; kind: string; onKind: (kind: string) => void; tag?: string; onTag?: (tag: string | undefined) => void; libraryView?: LibraryView; onView?: (view: LibraryView) => void }) {
-  const [expanded, setExpanded] = useState(false)
-  const filtersId = useId()
-  return <aside aria-label="Library filters" data-lbrail="1" className="min-w-0 self-start lg:sticky lg:top-3">
-    <button type="button" aria-expanded={expanded} aria-controls={filtersId} onClick={() => setExpanded(value => !value)} className="flex min-h-11 w-full items-center gap-2 rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-strong px-3 text-left text-xs text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary min-[901px]:hidden">
-      <Filter aria-hidden="true" className="size-3.5 shrink-0"/><span className="min-w-0 flex-1 truncate">Filters · {kind === 'all' ? 'All artifacts' : artifactTypeDefinition(kind).label}{tag ? ` · ${tag}` : ''}</span><ChevronDown aria-hidden="true" className={`size-3.5 shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`}/>
-    </button>
-    <div id={filtersId} className={`${expanded ? 'block' : 'hidden'} space-y-3 max-[900px]:mt-3 min-[901px]:block`}>
-    <div className="rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-strong p-[7px] shadow-[var(--aurora-shadow-medium)]" style={{ minHeight: 281 }}>
+export function LibraryFilterRail({ artifacts, kind, onKind, tag, onTag, libraryView, onView, mobileOpen = false, id }: { artifacts: DepotArtifact[]; kind: string; onKind: (kind: string) => void; tag?: string; onTag?: (tag: string | undefined) => void; libraryView?: LibraryView; onView?: (view: LibraryView) => void; mobileOpen?: boolean; id?: string }) {
+  return <aside id={id} aria-label="Library filters" data-lbrail="1" className={`${mobileOpen ? 'block' : 'hidden'} min-w-0 self-start min-[901px]:block lg:sticky lg:top-3`}>
+    <div className="space-y-3">
+    <div className="rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-strong p-[7px] shadow-[var(--aurora-shadow-medium)]" >
       {libraryView && onView ? <>
-        {([['all', 'All Artifacts', Box], ['forks', 'Forks', GitFork], ['behind', 'Behind Upstream', RefreshCw], ['published', 'Published', Globe], ['team', 'Team', Users], ['private', 'Private', LockKeyhole]] as const).map(([value, label, Icon]) => <button key={value} type="button" title="Filter loaded library records" aria-pressed={libraryView === value} onClick={() => onView(value)} className="flex w-full items-center gap-[9px] rounded-lg border border-transparent px-[12px] text-left font-semibold text-aurora-text-muted hover:bg-aurora-hover-bg aria-pressed:border-aurora-border-strong aria-pressed:bg-aurora-selected-bg aria-pressed:text-aurora-text-primary" style={{ height: 44, fontSize: 15 }}><Icon size={15}/><span className="min-w-0 flex-1">{label}</span><span className="text-[10.5px] tabular-nums opacity-75">{filterLibraryView(artifacts, value).length}</span></button>)}
+        {([['all', 'All Artifacts', Box], ['forks', 'Forks', GitFork], ['behind', 'Behind Upstream', RefreshCw], ['published', 'Published', Globe], ['team', 'Team', Users], ['private', 'Private', LockKeyhole]] as const).map(([value, label, Icon]) => <button key={value} type="button" title="Filter loaded library records" aria-pressed={libraryView === value} onClick={() => onView(value)} className="flex w-full items-center gap-[9px] rounded-lg border border-transparent px-[12px] text-left font-semibold text-aurora-text-muted hover:bg-aurora-hover-bg aria-pressed:border-aurora-border-strong aria-pressed:bg-aurora-selected-bg aria-pressed:text-aurora-text-primary" style={{ height: 34, fontSize: 13 }}><Icon size={15}/><span className="min-w-0 flex-1">{label}</span><span className="text-[10.5px] tabular-nums opacity-75">{filterLibraryView(artifacts, value).length}</span></button>)}
       </> : <>
       <p className="px-2 pb-2 pt-1 text-[10px] font-semibold text-aurora-text-muted">Artifact types · loaded results</p>
       {['all', ...libraryFilterKinds(artifacts)].map(value => {
@@ -62,10 +57,10 @@ export function LibraryFilterRail({ artifacts, kind, onKind, tag, onTag, library
       })}
       </>}
     </div>
-    <section aria-label="Tags" className="overflow-hidden rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-strong" style={{ marginTop: 17, minHeight: 394 }}>
-      <h2 className="flex items-center border-b border-aurora-border-subtle bg-aurora-control-surface font-semibold uppercase text-aurora-text-muted" style={{ minHeight: 44, paddingInline: 16, fontSize: 12, letterSpacing: '.08em' }}>Tags</h2>
-      <div className="flex flex-wrap" style={{ gap: 6, padding: '12px 16px' }}>
-        {collectArtifactTags(artifacts).map(({ tag: value, count }) => <Button data-visible-label="1" key={value} variant="outline" size="sm" aria-pressed={tag === value} onClick={() => onTag?.(tag === value ? undefined : value)} className="max-w-full gap-[5px] rounded-full aria-pressed:border-aurora-accent-primary aria-pressed:bg-aurora-selected-bg" style={{ height: 27, paddingInline: 10, fontSize: 12 }}><span className="truncate">#{value}</span><span className="tabular-nums text-aurora-text-muted">{count}</span></Button>)}
+    <section aria-label="Tags" className="overflow-hidden rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-strong" style={{ marginTop: 12 }}>
+      <h2 className="flex items-center border-b border-aurora-border-subtle bg-aurora-control-surface font-semibold uppercase text-aurora-text-muted" style={{ minHeight: 36, paddingInline: 12, fontSize: 11, letterSpacing: '.08em' }}>Tags</h2>
+      <div className="flex flex-wrap" style={{ gap: 6, padding: '10px 12px' }}>
+        {collectArtifactTags(artifacts).map(({ tag: value, count }) => <Button data-visible-label="1" key={value} variant="outline" size="sm" aria-pressed={tag === value} onClick={() => onTag?.(tag === value ? undefined : value)} className="max-w-full gap-[5px] rounded-full aria-pressed:border-aurora-accent-primary aria-pressed:bg-aurora-selected-bg" style={{ height: 24, paddingInline: 8, fontSize: 11 }}><span className="truncate">#{value}</span><span className="tabular-nums text-aurora-text-muted">{count}</span></Button>)}
         {collectArtifactTags(artifacts).length === 0 ? <p className="text-xs leading-5 text-aurora-text-muted">No tags supplied in loaded results.</p> : null}
       </div>
     </section>
@@ -93,9 +88,9 @@ export function LibraryArtifactTable({ artifacts, onInspect }: { artifacts: Depo
   const toggleOne = (id: string) => setSelected(current => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next })
   const selectionButton = (checked: boolean, label: string, onClick: () => void) => <button type="button" aria-label={label} aria-pressed={checked} onClick={event => { event.stopPropagation(); onClick() }} className="grid shrink-0 place-items-center rounded-[4px] border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary" style={{ width: 18, height: 18, borderColor: checked ? 'var(--aurora-accent-primary)' : 'var(--aurora-border-strong)', background: checked ? 'color-mix(in srgb, var(--aurora-accent-primary) 22%, var(--aurora-control-surface))' : 'var(--aurora-control-surface)', color: 'var(--aurora-accent-strong)' }}>{checked ? <Check aria-hidden style={{ width: 12, height: 12 }}/> : null}</button>
   return <div className="aurora-scrollbar overflow-auto" style={{ maxHeight: '55.3vh' }}>
-    <table aria-label="Library artifacts" className="w-full min-w-[980px] table-fixed text-left">
-      <colgroup><col className="w-[156px]"/><col/><col className="w-[300px]"/><col className="w-[190px]"/><col className="w-[220px]"/><col className="w-[140px]"/><col className="w-[80px]"/></colgroup>
-      <thead className="sticky top-0 z-10 bg-aurora-panel-strong"><tr className="border-b border-aurora-border-subtle font-bold uppercase text-aurora-text-muted" style={{ height: 49, fontSize: 11, letterSpacing: '.12em' }}>
+    <table aria-label="Library artifacts" className="w-full min-w-[1120px] table-fixed text-left">
+      <colgroup><col className="w-[140px]"/><col className="w-[260px]"/><col className="w-[170px]"/><col className="w-[130px]"/><col className="w-[145px]"/><col className="w-[120px]"/><col className="w-[72px]"/></colgroup>
+      <thead className="sticky top-0 z-10 bg-aurora-panel-strong"><tr className="border-b border-aurora-border-subtle font-bold uppercase text-aurora-text-muted" style={{ height: 38, fontSize: 10, letterSpacing: '.1em' }}>
         <th scope="col" className="pl-4 pr-2"><div className="flex items-center" style={{ gap: 16 }}>{selectionButton(allSelected, allSelected ? 'Clear artifact selection' : 'Select all artifacts', toggleAll)}<span>Kind</span></div></th>
         {['Artifact', 'Tags', 'Visibility', 'Upstream', 'Updated'].map(label => <th key={label} scope="col" className="px-2">{label}</th>)}
         <th scope="col"><span className="sr-only">Actions</span></th>
@@ -104,11 +99,11 @@ export function LibraryArtifactTable({ artifacts, onInspect }: { artifacts: Depo
         const id = artifactId(artifact)
         const behind = artifact.upstreamBehind ?? 0
         const checked = selected.has(id)
-        return <tr key={id} onClick={() => onInspect(id)} className="group cursor-pointer border-b border-aurora-border-subtle/70 last:border-b-0 hover:bg-aurora-surface-muted focus-within:bg-aurora-surface-muted" style={{ height: 57 }}>
+        return <tr key={id} onClick={() => onInspect(id)} className="group cursor-pointer border-b border-aurora-border-subtle/70 last:border-b-0 hover:bg-aurora-surface-muted focus-within:bg-aurora-surface-muted" style={{ height: 46 }}>
           <td className="pl-4 pr-2"><div className="flex items-center" style={{ gap: 12 }}>{selectionButton(checked, `Select ${artifactLabel(artifact)}`, () => toggleOne(id))}<ArtifactTypeMark artifact={artifact} compact/></div></td>
           <td className="px-2"><button type="button" onClick={event => { event.stopPropagation(); onInspect(id) }} aria-label={`Inspect ${artifactLabel(artifact)}`} className="block w-full min-w-0 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary">
-            <span title={artifact.namespace ?? artifact.descriptor?.namespace} className="block truncate font-semibold text-aurora-text-primary" style={{ fontSize: 15, lineHeight: '19px' }}>{artifactLabel(artifact)}</span>
-            <span className="block truncate text-aurora-text-muted" style={{ fontSize: 12, lineHeight: '17px' }}>{artifactDescription(artifact)}</span>
+            <span title={artifact.namespace ?? artifact.descriptor?.namespace} className="block truncate font-semibold text-aurora-text-primary" style={{ fontSize: 13, lineHeight: '17px' }}>{artifactLabel(artifact)}</span>
+            <span className="block truncate text-aurora-text-muted" style={{ fontSize: 11, lineHeight: '15px' }}>{artifactDescription(artifact)}</span>
           </button></td>
           <td className="px-2 text-aurora-text-muted"><div className="flex gap-1.5 overflow-hidden" title={artifact.descriptor?.tags?.join(', ')}>{artifact.descriptor?.tags?.length ? artifact.descriptor.tags.map(tag => <span key={tag} className="max-w-[116px] shrink-0 truncate rounded border border-[color-mix(in_srgb,var(--aurora-accent-primary)_35%,transparent)] bg-[color-mix(in_srgb,var(--aurora-accent-primary)_10%,transparent)] px-[9px] font-[650] text-aurora-accent-strong" style={{ height: 24, lineHeight: '22px', fontSize: 11 }}>#{tag}</span>) : '—'}</div></td>
           <td className="truncate px-2 font-semibold" style={{ fontSize: 12.5 }}><LibraryVisibility visibility={artifact.publication?.visibility}/></td>
@@ -123,9 +118,9 @@ export function LibraryArtifactTable({ artifacts, onInspect }: { artifacts: Depo
 
 export function LibrarySortMenu({ sort, onSort }: { sort: 'catalog' | 'name' | 'kind'; onSort: (sort: 'catalog' | 'name' | 'kind') => void }) {
   const choices = [['catalog', 'Updated'], ['name', 'Name'], ['kind', 'Kind']] as const
-  return <div role="group" aria-label="Sort loaded library results" className="flex items-center" style={{ gap: 8 }}>{choices.map(([value, label]) => {
+  return <div role="group" aria-label="Sort loaded library results" className="flex items-center gap-1 rounded-aurora-1 border border-aurora-border-subtle bg-aurora-panel-low p-0.5">{choices.map(([value, label]) => {
     const active = sort === value
-    return <button data-visible-label="1" key={value} type="button" aria-pressed={active} onClick={() => onSort(value)} className="inline-flex items-center justify-center rounded-full border font-[650] transition-colors" style={{ height: 38, paddingInline: 16, fontSize: 14, borderColor: active ? 'var(--aurora-accent-primary)' : 'var(--aurora-border-subtle)', background: active ? 'var(--aurora-accent-primary)' : 'var(--aurora-panel-strong)', color: active ? 'var(--aurora-page-bg)' : 'var(--aurora-text-muted)', boxShadow: active ? '0 0 0 1px color-mix(in srgb, var(--aurora-accent-primary) 42%, transparent), 0 0 16px color-mix(in srgb, var(--aurora-accent-primary) 18%, transparent)' : undefined }}>{label}</button>
+    return <button data-visible-label="1" key={value} type="button" aria-pressed={active} onClick={() => onSort(value)} className="inline-flex items-center justify-center rounded-aurora-1 px-2.5 text-xs font-semibold text-aurora-text-muted transition-colors hover:text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary aria-pressed:bg-aurora-selected-bg aria-pressed:text-aurora-accent-strong" style={{ height: 28 }}>{label}</button>
   })}</div>
 }
 
@@ -153,6 +148,10 @@ function SessionLibraryPage() {
   const [detailLoading, setDetailLoading] = useState(false)
   const [copied, setCopied] = useState<string>()
   const [view, setViewState] = useState<ViewMode>('table')
+  const [narrowCollection, setNarrowCollection] = useState(false)
+  const collectionRef = useRef<HTMLElement | null>(null)
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const filtersId = useId()
   const listController = useRef<AbortController | null>(null)
 
   useEffect(() => {
@@ -163,6 +162,14 @@ function SessionLibraryPage() {
     applyResponsiveDefault()
     media.addEventListener('change', applyResponsiveDefault)
     return () => media.removeEventListener('change', applyResponsiveDefault)
+  }, [])
+
+  useEffect(() => {
+    const collection = collectionRef.current
+    if (!collection || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(([entry]) => setNarrowCollection((entry?.contentRect.width ?? 0) < 700))
+    observer.observe(collection)
+    return () => observer.disconnect()
   }, [])
 
   const load = useCallback(async (search: string, cursor?: string) => {
@@ -259,10 +266,11 @@ function SessionLibraryPage() {
     return count ? [`${count} files`] : []
   }, [detail, previewDetail])
   const previewMetricLabels = useMemo(() => previewDetail && USE_MOCK_DATA ? mockDepotMetricLabels(previewDetail) : undefined, [previewDetail])
+  const effectiveView = narrowCollection ? 'cards' : view
 
   return <>
-    <AppHeader breadcrumbs={[{ label: 'Labby' }, { label: 'Library' }]} />
-    <div data-library-page="1" className={`${AURORA_PAGE_SHELL} min-w-0 flex-1`}><div className={AURORA_PAGE_FRAME} style={{ gap: 20 }}>
+    <AppHeader breadcrumbs={[{ label: 'Library' }]} />
+    <div data-library-page="1" className={`${AURORA_PAGE_SHELL} min-w-0 flex-1`}><div className={AURORA_PAGE_FRAME} style={{ gap: 16 }}>
       <ConsoleHero actionPresentation="mixed" eyebrow="Depot · Library" title="Library" footer={<LibraryTabs active="artifacts" attached counts={state.error ? {} : libraryTabCounts} />} actions={<div className="flex items-center gap-[9px]"><Button variant="outline" size="icon" aria-label="Export loaded library metadata" title="Export loaded artifact metadata; this does not include artifact content" className="rounded-[10px]" disabled={state.loading || state.artifacts.length === 0} onClick={() => { const url = URL.createObjectURL(new Blob([JSON.stringify({ artifacts: state.artifacts, complete: !state.cursor, total: state.total }, null, 2)], { type: 'application/json' })); const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'library-metadata.json'; anchor.click(); URL.revokeObjectURL(url) }}><Download size={13}/></Button><LibraryNewLoadout/></div>} stats={[
         { label: 'Artifacts', value: state.total ?? '—', suffix: 'in library' },
         { label: 'Forks', value: state.loading ? '—' : filterLibraryView(state.artifacts, 'forks').length, suffix: 'tracking upstream', tone: 'var(--aurora-accent-pink)' },
@@ -270,14 +278,14 @@ function SessionLibraryPage() {
         { label: 'Public', value: state.loading ? '—' : filterLibraryView(state.artifacts, 'published').length, suffix: 'published', tone: 'var(--aurora-success)' },
         { label: 'Loadouts', value: state.loading ? '—' : state.artifacts.filter((artifact) => artifactKind(artifact) === 'loadout').length, suffix: 'bundled' },
       ]}/>
-      {state.error ? <DashboardPanel title="Library unavailable"><p role="alert" className="text-sm text-aurora-error">{state.error}</p><p className="text-sm text-aurora-text-muted">Refresh to retry loading the Labby Artifact catalog.</p></DashboardPanel> : null}
-      <div data-lbgrid="1" className="grid min-w-0 items-start max-[900px]:grid-cols-1" style={{ gridTemplateColumns: '307px minmax(0,1fr)', gap: 19 }}>
-      <LibraryFilterRail libraryView={libraryView} onView={setLibraryView} artifacts={state.artifacts} kind={kind} onKind={next => { setKind(next); updateUrl({ kind: next }) }} tag={tag} onTag={next => setTagSelection({ query, tag: next })} />
+      {state.error ? <DashboardPanel title="Library unavailable"><div className="flex flex-wrap items-center justify-between gap-3"><div><p role="alert" className="text-sm text-aurora-error">{state.error}</p><p className="mt-1 text-sm text-aurora-text-muted">The catalog could not be loaded. Try again after the connection is restored.</p></div><Button variant="outline" disabled={state.loading} onClick={() => void load(activeQuery)}><RefreshCw className="size-4"/>Retry loading</Button></div></DashboardPanel> : null}
+      <div data-lbgrid="1" className="grid min-w-0 items-start max-[900px]:grid-cols-1" style={{ gridTemplateColumns: '220px minmax(0,1fr)', gap: 16 }}>
+      <LibraryFilterRail id={filtersId} mobileOpen={filtersOpen} libraryView={libraryView} onView={setLibraryView} artifacts={state.artifacts} kind={kind} onKind={next => { setKind(next); updateUrl({ kind: next }) }} tag={tag} onTag={next => setTagSelection({ query, tag: next })} />
       <div className="min-w-0">
-      <section aria-label="Artifact collection" data-library-collection="1" className="overflow-hidden rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-strong shadow-[var(--aurora-shadow-medium)]"><div data-library-toolbar="1" className="flex flex-wrap items-center gap-[9px] border-b border-aurora-border-subtle bg-aurora-control-surface" style={{ padding: '12px 19px' }}><div data-library-search="1" className="relative min-w-24 flex-1" style={{ maxWidth: 494 }}><Search className="absolute top-1/2 -translate-y-1/2 text-aurora-text-muted" style={{ left: 14, width: 17, height: 17 }}/><Input aria-label="Search library" className="w-full pr-8" style={{ height: 48, borderRadius: 13, paddingLeft: 40, fontSize: 15 }} placeholder={`Filter ${state.total ?? state.artifacts.length} artifacts…`} value={query} onChange={(event) => setQuery(event.target.value)}/>{query ? <button type="button" aria-label="Clear library search" className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-aurora-text-muted" onClick={() => setQuery('')}><X className="size-4"/></button> : null}</div><span className="font-semibold tabular-nums text-aurora-text-muted" style={{ fontSize: 14, marginLeft: 8 }}>{visible.length} of {state.total ?? state.artifacts.length}</span><div className="flex-1"/><LibrarySortMenu sort={sort} onSort={setSort}/></div>
-        {view !== 'table' ? <div className={view === 'cards' ? 'grid gap-3 p-3 sm:grid-cols-2 xl:grid-cols-3' : 'divide-y divide-aurora-border-subtle'}>{visible.map((artifact) => { const id = artifactId(artifact); return <button key={id} type="button" onClick={() => updateUrl({ artifact: id })} className={view === 'cards' ? 'group rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-low p-4 text-left transition-[transform,border-color] hover:-translate-y-0.5 hover:border-aurora-border-strong' : 'group flex w-full items-start gap-3 px-3 py-3 text-left transition-colors hover:bg-aurora-surface-muted'}><ArtifactTypeMark artifact={artifact} compact/><span className="min-w-0 flex-1"><span className="block truncate font-semibold text-aurora-text-primary">{artifactLabel(artifact)}</span><span className="mt-1 line-clamp-2 block text-xs leading-5 text-aurora-text-muted">{artifactDescription(artifact)}</span><span className="mt-2 block truncate text-[11px] text-aurora-text-muted">{artifact.namespace ?? artifact.descriptor?.namespace ?? 'Unknown namespace'}</span></span><ChevronRight className="mt-1 size-4 shrink-0 text-aurora-text-muted group-hover:text-aurora-accent-primary"/></button> })}</div> : <LibraryArtifactTable artifacts={visible} onInspect={id => updateUrl({ artifact: id })}/>}
+      <section ref={collectionRef} aria-label="Artifact collection" data-library-collection="1" className="overflow-hidden rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-strong shadow-[var(--aurora-shadow-medium)]"><div data-library-toolbar="1" className="flex flex-wrap items-center gap-[9px] border-b border-aurora-border-subtle bg-aurora-control-surface" style={{ padding: '9px 12px' }}><div data-library-search="1" className="flex h-9 min-w-32 max-w-[360px] flex-1 items-center rounded-aurora-1 border border-aurora-border-subtle bg-aurora-panel-low focus-within:border-aurora-border-strong"><Search aria-hidden="true" className="ml-3 size-4 shrink-0 text-aurora-text-muted"/><Input aria-label="Search library" className="h-full min-w-0 flex-1 border-0 bg-transparent px-2 text-[13px] shadow-none focus-visible:ring-0" placeholder={`Filter ${state.total ?? state.artifacts.length} artifacts…`} value={query} onChange={(event) => setQuery(event.target.value)}/>{query ? <button type="button" aria-label="Clear library search" className="grid size-7 shrink-0 place-items-center text-aurora-text-muted hover:text-aurora-text-primary" onClick={() => setQuery('')}><X className="size-3.5"/></button> : null}<button type="button" aria-label="Toggle library filters" aria-expanded={filtersOpen} aria-controls={filtersId} aria-pressed={filtersOpen} title="Filters" onClick={() => setFiltersOpen(open => !open)} className="mr-1 grid size-7 shrink-0 place-items-center rounded-aurora-1 text-aurora-text-muted transition-colors hover:bg-aurora-hover-bg hover:text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary aria-pressed:bg-aurora-selected-bg aria-pressed:text-aurora-accent-strong min-[901px]:hidden"><Filter className="size-3.5"/></button></div><span className="font-semibold tabular-nums text-aurora-text-muted" style={{ fontSize: 12, marginLeft: 6 }}>{visible.length} of {state.total ?? state.artifacts.length}</span><div className="flex-1"/><LibrarySortMenu sort={sort} onSort={setSort}/></div>
+        {effectiveView !== 'table' ? <div className={effectiveView === 'cards' ? 'grid gap-3 p-3' : 'divide-y divide-aurora-border-subtle'} style={effectiveView === 'cards' ? { gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))' } : undefined}>{visible.map((artifact) => { const id = artifactId(artifact); return <button key={id} type="button" onClick={() => updateUrl({ artifact: id })} className={effectiveView === 'cards' ? 'group rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-low p-4 text-left transition-[transform,border-color] hover:-translate-y-0.5 hover:border-aurora-border-strong' : 'group flex w-full items-start gap-3 px-3 py-3 text-left transition-colors hover:bg-aurora-surface-muted'}><ArtifactTypeMark artifact={artifact} compact/><span className="min-w-0 flex-1"><span className="block truncate font-semibold text-aurora-text-primary">{artifactLabel(artifact)}</span><span className="mt-1 line-clamp-2 block text-xs leading-5 text-aurora-text-muted">{artifactDescription(artifact)}</span><span className="mt-2 block truncate text-[11px] text-aurora-text-muted">{artifact.namespace ?? artifact.descriptor?.namespace ?? 'Unknown namespace'}</span></span><ChevronRight className="mt-1 size-4 shrink-0 text-aurora-text-muted group-hover:text-aurora-accent-primary"/></button> })}</div> : <LibraryArtifactTable artifacts={visible} onInspect={id => updateUrl({ artifact: id })}/>}
         {state.loading && state.artifacts.length === 0 ? <p className="flex items-center justify-center gap-2 py-10 text-sm text-aurora-text-muted"><Loader2 className="size-4 animate-spin"/>Loading the Labby catalog…</p> : null}
-        {!state.loading && visible.length === 0 ? <p className="py-10 text-center text-sm text-aurora-text-muted">No loaded artifacts match this view.</p> : null}
+        {!state.loading && !state.error && visible.length === 0 ? <p className="py-10 text-center text-sm text-aurora-text-muted">{state.artifacts.length ? 'No artifacts match these filters.' : 'No artifacts in your library yet. Explore Discover to add one.'}</p> : null}
         {state.cursor ? <div className="border-t border-aurora-border-subtle p-3 text-center"><Button variant="outline" disabled={state.loading} onClick={() => void load(activeQuery, state.cursor)}>{state.loading ? <Loader2 className="size-4 animate-spin"/> : null}Load more</Button></div> : null}
       </section>
       <div aria-label="Library connection" className="mt-2 flex items-center gap-2 text-[10.5px] text-aurora-text-muted"><span>{state.loading ? 'Loading Library…' : state.error ? 'Library unavailable' : 'Depot catalog + live local projections'}</span><button type="button" className="ml-auto rounded px-1.5 hover:text-aurora-accent-strong" disabled={state.loading} onClick={() => void load(activeQuery)}>Refresh</button><a className="hover:text-aurora-accent-strong" href="/depot">Discover</a></div>

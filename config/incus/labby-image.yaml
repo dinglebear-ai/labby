@@ -295,7 +295,7 @@ actions:
       if ! command -v tailscale >/dev/null 2>&1; then
         tmp="$(mktemp -d)"
         trap 'rm -rf "$tmp"' EXIT
-        curl -fsSL --connect-timeout 10 --max-time 300 -o "$tmp/install.sh" https://tailscale.com/install.sh
+        curl -fsSL --connect-timeout 10 --max-time 300 -o "$tmp/install.sh" https://raw.githubusercontent.com/tailscale/tailscale/53a0d659afa51835dd7a9283873cca44261454f8/scripts/installer.sh
         echo "805e85ed6f6f81a7ea2e70d52d47e7d5290863299e5c922b2787d71aa312f22e  $tmp/install.sh" | sha256sum --check --strict
         TAILSCALE_VERSION=1.102.3 sh "$tmp/install.sh"
         tailscale version | grep -F '1.102.3'

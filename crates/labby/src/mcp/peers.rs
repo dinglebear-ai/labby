@@ -410,7 +410,9 @@ impl PeerNotifier {
         self,
         runtime: crate::dispatch::gateway::manager::GatewayRuntimeHandle,
     ) {
-        use crate::dispatch::upstream::pool::UpstreamNotificationEvent;
+        use crate::dispatch::upstream::pool::{
+            ListChangedKinds, ListChangedRefresher, UpstreamNotificationEvent,
+        };
 
         let mut pool_changes = runtime.subscribe_pool_changes();
         loop {
@@ -421,6 +423,18 @@ impl PeerNotifier {
                 continue;
             };
             let mut notifications = pool.subscribe_notifications();
+            // Per-upstream refresh workers scoped to this pool. The consumer
+            // never awaits an upstream RPC itself, so one slow or chatty
+            // upstream cannot delay another upstream's events or lag the bus.
+            // Dropping the refresher on a pool swap or consumer shutdown
+            // aborts every in-flight re-list.
+            let forwarder = self.clone();
+            let refresher = ListChangedRefresher::new(
+                Arc::clone(&pool),
+                move |upstream: &str, kinds: ListChangedKinds| {
+                    forwarder.forward_list_changed(upstream, kinds);
+                },
+            );
             loop {
                 tokio::select! {
                     changed = pool_changes.changed() => {
@@ -431,29 +445,22 @@ impl PeerNotifier {
                     }
                     event = notifications.recv() => {
                         match event {
+                            // Both the shared subscription stream and request-scoped relay
+                            // clients publish through this event bus. A list_changed only
+                            // records its kind here; the upstream's worker re-lists the
+                            // exact named catalog (tools, or the cache-only resources
+                            // snapshot) before that upstream's downstream notification is
+                            // forwarded, so peers never recompute a visible contract
+                            // against a stale cache. Prompts need no refresh and take the
+                            // same path so one upstream's notifications stay ordered.
                             Ok(UpstreamNotificationEvent::ToolListChanged { upstream }) => {
-                                // Re-list the exact named upstream before peers recompute their
-                                // visible contracts. Both the shared subscription stream and
-                                // request-scoped relay clients publish through this event bus.
-                                pool.refresh_tools_after_list_changed(&upstream).await;
-                                self.notify_catalog_changes(
-                                    &GatewayCatalogDiff {
-                                        tools_changed: true,
-                                        resources_changed: false,
-                                        prompts_changed: false,
-                                    },
-                                    labby_runtime::catalog_notify::SOURCE_UPSTREAM_SUBSCRIPTION,
-                                ).await;
+                                refresher.schedule(&upstream, ListChangedKinds::TOOLS);
                             }
                             Ok(UpstreamNotificationEvent::PromptListChanged { upstream }) => {
-                                self.notify_upstream_catalog_change(
-                                    false, false, true, upstream,
-                                );
+                                refresher.schedule(&upstream, ListChangedKinds::PROMPTS);
                             }
                             Ok(UpstreamNotificationEvent::ResourceListChanged { upstream }) => {
-                                self.notify_upstream_catalog_change(
-                                    false, true, false, upstream,
-                                );
+                                refresher.schedule(&upstream, ListChangedKinds::RESOURCES);
                             }
                             Ok(UpstreamNotificationEvent::ResourceUpdated { upstream, uri }) => {
                                 // Journal first. rmcp sends subscriptions/acknowledged before
@@ -512,6 +519,25 @@ impl PeerNotifier {
             &self.peers,
             diff.into(),
             source,
+        );
+    }
+
+    /// Forward one upstream's completed `list_changed` refresh. Tools stay a
+    /// global signal (every peer re-evaluates its own contract hash), while
+    /// resources and prompts are scoped to peers whose route allows the
+    /// upstream; `for_upstream` applies exactly that split, so all three kinds
+    /// share one call.
+    #[cfg(feature = "gateway")]
+    fn forward_list_changed(
+        &self,
+        upstream: &str,
+        kinds: crate::dispatch::upstream::pool::ListChangedKinds,
+    ) {
+        self.notify_upstream_catalog_change(
+            kinds.tools,
+            kinds.resources,
+            kinds.prompts,
+            upstream.to_string(),
         );
     }
 
@@ -675,5 +701,167 @@ mod lag_tests {
         assert!(convergence.tools_changed);
         assert!(convergence.resources_changed);
         assert!(convergence.prompts_changed);
+    }
+}
+
+/// End-to-end regressions for the real upstream-notification consumer.
+///
+/// The per-upstream worker machinery is unit-tested inside `labby-gateway`.
+/// What can only be proven here is the property this consumer owns: its
+/// `notifications.recv()` arms never await an upstream RPC, so a blocked
+/// re-list on one upstream cannot stall another upstream's events. Putting a
+/// `refresh_*_after_list_changed(&upstream).await` back into this loop makes
+/// these tests hang until their deadline and fail.
+#[cfg(all(test, feature = "gateway", feature = "proxy-testkit"))]
+mod upstream_notification_consumer_tests {
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    use labby_gateway::upstream::pool::notification_testkit::{
+        SubscriptionServer, add_subscription_server,
+    };
+    use labby_gateway::upstream::pool::{UpstreamNotificationEvent, UpstreamPool};
+
+    use super::PeerNotifier;
+
+    /// Generous, for setup steps whose only failure mode is never happening.
+    const DEADLINE: Duration = Duration::from_secs(30);
+
+    /// The bound that carries the actual regression, so it cannot be generous.
+    /// A blocked re-list does *not* wedge a serialized consumer forever: the
+    /// listing is itself bounded by `catalog_listing_timeout` (10 s), so an
+    /// inline-refresh consumer recovers after that and would satisfy any
+    /// larger deadline. This must stay comfortably below that timeout while
+    /// leaving room for an in-process refresh, which takes milliseconds.
+    /// Measured: ~0.3 s detached, ~10 s inline.
+    const UNBLOCKED_BOUND: Duration = Duration::from_secs(5);
+
+    async fn spawn_consumer(
+        notifier: PeerNotifier,
+        pool: &Arc<UpstreamPool>,
+    ) -> tokio::task::JoinHandle<()> {
+        let runtime = crate::dispatch::gateway::manager::GatewayRuntimeHandle::default();
+        runtime.swap(Some(Arc::clone(pool))).await;
+        tokio::spawn(notifier.run_upstream_notifications(runtime))
+    }
+
+    /// Republish `event` until `observed`, because the consumer subscribes to
+    /// the broadcast bus only once its task is first polled and the bus drops
+    /// events that predate a receiver. Re-delivery is harmless: repeats for one
+    /// upstream coalesce. This cannot mask the regression under test — an
+    /// inline-refresh consumer is blocked on the gate and would not process a
+    /// republished event either.
+    async fn publish_until(
+        pool: &Arc<UpstreamPool>,
+        event: UpstreamNotificationEvent,
+        label: &str,
+        mut observed: impl FnMut() -> bool,
+    ) {
+        tokio::time::timeout(DEADLINE, async {
+            while !observed() {
+                pool.publish_notification_event(event.clone());
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{label}"));
+    }
+
+    #[tokio::test]
+    async fn a_blocked_upstream_refresh_does_not_stall_another_upstreams_event() {
+        let pool = Arc::new(UpstreamPool::new());
+        let slow = SubscriptionServer::accepting();
+        let fast = SubscriptionServer::accepting();
+        add_subscription_server(&pool, "slow", slow.clone()).await;
+        add_subscription_server(&pool, "fast", fast.clone()).await;
+        // `slow`'s resources/list blocks indefinitely; `fast` has a new tool
+        // waiting to be discovered by its own re-list.
+        slow.close_resource_list_gate();
+        fast.replace_tools_and_notify(&["added_after_list_changed"])
+            .await;
+        let consumer = spawn_consumer(PeerNotifier::default(), &pool).await;
+
+        publish_until(
+            &pool,
+            UpstreamNotificationEvent::ResourceListChanged {
+                upstream: "slow".to_string(),
+            },
+            "the slow upstream's re-list is in flight",
+            || slow.resource_list_calls.load(Ordering::SeqCst) >= 1,
+        )
+        .await;
+
+        // The consumer has demonstrably subscribed, so one publish suffices.
+        pool.publish_notification_event(UpstreamNotificationEvent::ToolListChanged {
+            upstream: "fast".to_string(),
+        });
+        // The consumer must dispatch this while the other upstream's RPC is
+        // still outstanding. The refreshed catalog is the observable proof, and
+        // it is also what the ordering guarantee promises happens before this
+        // upstream's notification is forwarded.
+        tokio::time::timeout(UNBLOCKED_BOUND, async {
+            loop {
+                let tools = pool
+                    .healthy_tools_for_upstream("fast")
+                    .await
+                    .into_iter()
+                    .map(|tool| tool.tool.name.to_string())
+                    .collect::<Vec<_>>();
+                if tools == ["added_after_list_changed"] {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the fast upstream is refreshed while the slow one is blocked");
+        assert_eq!(
+            pool.cached_upstream_resources_allowed(None).await.len(),
+            0,
+            "the blocked upstream published nothing while its re-list is outstanding"
+        );
+
+        slow.open_resource_list_gate();
+        consumer.abort();
+    }
+
+    #[tokio::test]
+    async fn resource_updates_are_journaled_while_a_refresh_is_blocked() {
+        let pool = Arc::new(UpstreamPool::new());
+        let slow = SubscriptionServer::accepting();
+        add_subscription_server(&pool, "slow", slow.clone()).await;
+        slow.close_resource_list_gate();
+        let notifier = PeerNotifier::default();
+        let peers = notifier.peers.clone();
+        let consumer = spawn_consumer(notifier, &pool).await;
+
+        publish_until(
+            &pool,
+            UpstreamNotificationEvent::ResourceListChanged {
+                upstream: "slow".to_string(),
+            },
+            "the slow upstream's re-list is in flight",
+            || slow.resource_list_calls.load(Ordering::SeqCst) >= 1,
+        )
+        .await;
+
+        // A different edge event, queued on the same bus behind the blocked
+        // refresh. Under an inline refresh it would wait out the whole
+        // `catalog_listing_timeout`.
+        pool.publish_notification_event(UpstreamNotificationEvent::ResourceUpdated {
+            upstream: "other".to_string(),
+            uri: "lab://upstream/other/thing".to_string(),
+        });
+        tokio::time::timeout(UNBLOCKED_BOUND, async {
+            while peers.recent_resource_update_count().await == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("resource updates are delivered while another upstream's re-list blocks");
+
+        slow.open_resource_list_gate();
+        consumer.abort();
     }
 }

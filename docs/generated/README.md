@@ -27,3 +27,5 @@ just docs-check
 | `feature-matrix.md/json` | `labby docs generate` |
 | `mcp-help.md/json` | `labby docs generate` |
 | `cli-help.md` | `labby docs generate` |
+| `cli-help.json` | `labby docs generate` |
+| `cli-migration.md` | `labby docs generate` |

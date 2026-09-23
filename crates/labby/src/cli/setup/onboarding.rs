@@ -2,7 +2,7 @@
 
 #[cfg(target_os = "linux")]
 use std::io::Read as _;
-use std::io::{IsTerminal as _, Write as _};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
@@ -67,7 +67,7 @@ struct SetupPlan {
 }
 
 pub(super) async fn run(args: SetupArgs, format: OutputFormat) -> Result<ExitCode> {
-    let interactive = std::io::stdin().is_terminal() && !args.yes;
+    let interactive = crate::cli::helpers::interactive_allowed() && !args.yes;
     if interactive {
         print_banner();
     }

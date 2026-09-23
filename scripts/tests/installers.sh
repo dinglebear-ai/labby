@@ -702,6 +702,12 @@ EOF
 
     plist="$home/Library/LaunchAgents/ai.dinglebear.labby.plist"
     assert_contains "$plist" "<string>${labby_home}</string>"
+    python3 - "$plist" "$home" <<'PY'
+import plistlib, sys
+with open(sys.argv[1], "rb") as stream:
+    plist = plistlib.load(stream)
+assert plist["EnvironmentVariables"].get("HOME") == sys.argv[2], "LaunchAgent lost selected HOME"
+PY
     if grep -Fq "<string>${disposable}</string>" "$plist"; then
         fail "LaunchAgent persisted the disposable installer directory"
     fi

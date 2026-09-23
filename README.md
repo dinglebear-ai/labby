@@ -66,7 +66,7 @@ After installing Labby, configure proxy defaults once and launch a JavaScript
 stdio server without proxy flags:
 
 ```bash
-labby setup proxy
+labby config proxy set
 labby doctor proxy
 labby proxy /path/to/dist.js
 ```
@@ -101,6 +101,23 @@ The skill inspects the machine, asks for authentication/listener/deployment choi
 
 See [`plugins/labby/skills/install-labby/SKILL.md`](./plugins/labby/skills/install-labby/SKILL.md) for the orchestration contract and [`docs/adr/0001-install-labby-first-class-install-orchestrator.md`](./docs/adr/0001-install-labby-first-class-install-orchestrator.md) for the architecture decision.
 
+#### Install through APM
+
+Teams that standardize on the [Agent Package Manager](https://microsoft.github.io/apm/)
+get the skills and the MCP registration in one step:
+
+```bash
+apm install -g dinglebear-ai/labby
+```
+
+That deploys `install-labby`, `using-labby`, and `creating-snippets` into
+`~/.claude/skills` and `~/.agents/skills` and registers the `labby` stdio MCP
+server (`npx -y @dinglebear/labby mcp`) for Claude Code and Codex; `apm.yml` at
+the repository root is the manifest and `apm outdated -g` reports new
+releases. APM does not install the `labby` binary or provision a gateway host:
+run `$install-labby` (or the verified release installer below) and
+`labby setup` for that.
+
 #### Manual Verified Release
 
 Prerequisites for the verified release path are `curl`, `tar`, a SHA-256 tool (`sha256sum` or `shasum`), and an authenticated GitHub CLI (`gh`) build that supports `gh attestation verify`. The installer checks all of these before resolving or downloading any Labby release, so a fresh machine fails fast with an actionable dependency message rather than downloading an artifact it cannot verify (the `gh auth status` probe itself contacts GitHub, so the guarantee is about release downloads, not all network use). Ubuntu 26.04's distro package currently ships `gh 2.46.0`, which is too old for this trust path; install or upgrade GitHub CLI from GitHub's current official packages/releases, verify `gh attestation verify --help`, then run `gh auth login` (or provide `GH_TOKEN` for headless automation).
@@ -133,33 +150,14 @@ The npm launcher is a weaker trust path than the installer scripts. It
 downloads the release archive for the current platform and verifies only the
 `.sha256` sidecar (or the `SHA256SUMS` manifest) published next to it on the
 same release; it does not require `gh` and does not verify GitHub build
-provenance. Use `labby-install.sh` or `labby-install.ps1` when provenance
-verification matters.
-
-Windows PowerShell:
-
-```powershell
-$Version = "vX.Y.Z"
-$Base = "https://github.com/dinglebear-ai/labby/releases/download/$Version"
-Invoke-WebRequest "$Base/labby-install.ps1" -OutFile labby-install.ps1
-Invoke-WebRequest "$Base/labby-install.ps1.sha256" -OutFile labby-install.ps1.sha256
-gh attestation verify labby-install.ps1 `
-  --repo dinglebear-ai/labby `
-  --signer-workflow dinglebear-ai/labby/.github/workflows/release.yml `
-  --source-ref "refs/tags/$Version" `
-  --deny-self-hosted-runners
-$Expected = ((Get-Content labby-install.ps1.sha256) -split '\s+')[0]
-if ((Get-FileHash labby-install.ps1 -Algorithm SHA256).Hash.ToLower() -ne $Expected) { throw "installer digest mismatch" }
-$env:LABBY_INSTALL_VERSION = $Version
-& ./labby-install.ps1
-labby setup
-labby serve --host 127.0.0.1 --port 8765
-```
+provenance. Use `labby-install.sh` on Linux or macOS when provenance
+verification matters. Current releases do not publish Windows binaries or
+installers.
 
 The separately downloaded and attested install scripts resolve an immutable GitHub Release containing the current
 platform asset, require `gh`, verify the archive's attestation against the
 Labby repository, `release.yml`, exact tag, and hosted-runner policy, verify its checksum, and install `labby` onto the
-user PATH. On Linux and macOS the shell installer then runs `labby setup`, which
+user PATH. The shell installer then runs `labby setup`, which
 asks whether this machine should run a server or connect to an existing one.
 Server setup configures authentication and a managed native service, or an Incus
 container on supported Linux hosts. Client setup saves the explicit gateway URL
@@ -171,11 +169,10 @@ and expose it through a publicly reachable HTTPS `LABBY_PUBLIC_URL`; bearer-only
 mode is for local/CLI clients and is not the supported ChatGPT web path. The web
 UI offers bearer token sign-in only over HTTPS or a direct loopback connection;
 behind a TLS-terminating proxy, set `LABBY_PUBLIC_URL=https://...` to unlock it.
-The PowerShell installer installs the binary; run setup separately as shown above.
 
 For unattended shell installs, set `LABBY_SETUP_ROLE=server` or `client` and the
 corresponding `LABBY_SETUP_*` options. For a binary-only install, set
-`LABBY_INSTALL_NO_SETUP=1`. Manual and automatic `labby update` operations always
+`LABBY_INSTALL_NO_SETUP=1`. Manual and automatic `labby host update` operations always
 skip first-run setup. See the [setup guide](./docs/services/SETUP.md) for examples.
 
 Override install behavior with `LABBY_INSTALL_DIR`, `LABBY_INSTALL_VERSION`, or
@@ -192,15 +189,9 @@ it without downloading or changing `$LABBY_HOME`:
 LABBY_INSTALL_ROLLBACK=1 sh ./labby-install.sh
 ```
 
-```powershell
-$env:LABBY_INSTALL_ROLLBACK = '1'
-& .\labby-install.ps1
-```
-
 Rollback switches only the installed executable and receipt. It does not
 downgrade or delete configuration, credentials, databases, or other durable
-state. Inspect the receipt at `<install-dir>/.labby-install/receipt` on Unix or
-`receipt.json` on Windows.
+state. Inspect the receipt at `<install-dir>/.labby-install/receipt`.
 
 Release qualification can install an already-downloaded candidate without
 network or source fallback by setting `LABBY_INSTALL_LOCAL_BINARY` and its exact
@@ -231,16 +222,16 @@ updater job after the server passes its health check. See the
 For an installation without a persistent server, use the standalone daily job:
 
 ```bash
-labby update --auto-update enable
-labby update --auto-update status
-labby update --auto-update disable
+labby host update auto enable
+labby host update auto status
+labby host update auto disable
 ```
 
 Both modes require Apple Silicon and GitHub CLI (`gh`) for release attestation
 verification. They skip drafts, prereleases, missing platform assets, and versions
 equal to or older than the installed binary. The installer verifies attestations
 and checksums before atomic replacement. No separate language runtime is required.
-Use `labby update --automatic --dry-run` to check without installing.
+Use `labby host update --automatic --dry-run` to check without installing.
 
 ### Build From Source
 
@@ -359,24 +350,67 @@ set, it starts a standalone local gateway instead. See the
 [local bridge guide](./docs/surfaces/TRANSPORT.md#local-bridge-to-the-running-daemon)
 for client configuration and `LABBY_SERVER_URL` fail-closed behavior.
 
-### Manage Upstream MCP Gateways
+### Discover Commands
 
 ```bash
-labby gateway add \
-  --name github \
-  --url https://example.com/mcp \
-  --bearer-token-env GITHUB_MCP_TOKEN \
-  -y
-
-labby gateway reload
-labby gateway list
+labby --help
+labby help --all
+labby help server --all
+labby help --search oauth
+labby help --all --json
 ```
 
-Stdio upstreams execute local commands when tested or reconciled, so gateway
-tests and config mutations use the shared destructive-action confirmation gate.
+Public command names use separate words without hyphens. Flags and resource
+names retain normal syntax. Help and completion work offline, even with broken
+configuration. See the [CLI guide](./docs/surfaces/CLI.md) and
+[breaking migration map](./docs/generated/cli-migration.md).
+
+### Select A Gateway
+
+```bash
+labby context add homelab --server https://example.invalid --use
+labby auth login --context homelab
+labby --context homelab server list
+labby config check
+```
+
+Contexts save non-secret destinations in the existing host configuration.
+Explicit `--server` or `--context` never borrows an unrelated environment token
+and never falls back to local execution. Host-local commands remain local.
+
+### Manage Upstream MCP Servers
+
+```bash
+labby server add github \
+  --url https://example.com/mcp \
+  --bearer-token-env GITHUB_MCP_TOKEN
+
+labby gateway reload
+labby server list
+```
+
+Stdio upstreams can execute local commands when tested or reconciled. Review
+configuration before adding or testing them; the CLI retains each operation's
+existing authorization and confirmation requirements.
 The stdio spawn guard allows known runtimes such as `npx`, `uvx`, `docker`,
 `node`, `python`, `python3`, `deno`, `pipx`, and `dnx`; customize it in
 `[gateway]` inside `config.toml`.
+
+Missing creation arguments can be filled by `labby server add` in an interactive
+terminal. Scripts should use complete arguments and `--no-input --json`.
+Timeouts use explicit units, such as `30s` or `2m`.
+
+```bash
+labby server restart alpha beta --timeout 30s
+labby server restart --all --dry-run
+labby --context homelab completions refresh
+labby completions zsh --resources
+```
+
+Restart waits for observed completion and a connected replacement unless
+`--no-wait` is explicit. Bulk operations report every target and return a failing
+exit status when any target fails; uncertain operations are never replayed.
+Optional cached completion is authority-scoped and offline on every Tab key.
 
 ### Use Code Mode
 
@@ -384,15 +418,17 @@ When `[code_mode].enabled = true`, Labby hides raw proxied upstream tools from M
 `list_tools()` and exposes the canonical synthetic `codemode` tool.
 
 ```bash
-labby gateway code status
-labby gateway code enable
-labby gateway code exec --code 'async () => tools.length'
+labby code status
+labby code enable
+labby code search 'github issues' --limit 5
+labby code describe github.search_issues
+labby code run --file ./task.js
 ```
 
 MCP call shapes:
 
 ```json
-{ "code": "async () => (await codemode.search(\"github issues\")).results" }
+{ "code": "async () => (await codemode.search({\"query\":\"github issues\",\"limit\":5})).results" }
 ```
 
 ```json
@@ -409,12 +445,12 @@ from inside the sandbox.
 ### Work With Code Mode Snippets
 
 ```bash
-labby snippets list
-labby snippets get gateway-summary
-labby snippets create --name my-snippet --file ./my-snippet.js
-labby snippets validate my-snippet
-labby snippets exec my-snippet
-labby snippets test my-snippet
+labby snippet list
+labby snippet get gateway-summary
+labby snippet add my-snippet --file ./my-snippet.js
+labby snippet validate my-snippet
+labby snippet run my-snippet
+labby snippet test my-snippet
 ```
 
 Snippets are stored per-user under `$LABBY_HOME` and executed through the
@@ -431,13 +467,18 @@ labby doctor auth       # auth/OAuth env vars, files, permissions
 labby doctor proxy      # zero-route stdio-proxy config/dependency preflight
 labby doctor proxy --app-url URL --mcp-url URL --route /path
                         # routed public reverse-proxy checks remain available
-labby doctor oauth-relay
-labby health            # lightweight liveness/readiness probe
-labby logs              # tail the active deployment's service journal
+labby doctor relay
+labby gateway status    # query the selected daemon and its upstream state
+labby logs --lines 50    # bounded local rolling logs, without systemd
+labby logs --level error --query REQUEST_ID --json
+labby logs journal --follow  # explicitly stream the deployment journal
 ```
 
 `labby doctor --json` is the CI-friendly form; the exit code reflects the worst
-severity found.
+severity found. Runtime errors include their command, origin, side-effect
+classification, recovery guidance, and a request ID. `--json` errors remain one
+JSON envelope on stderr; command results stay on stdout. Use `-v` or `-vv` for
+diagnostics. `--quiet` suppresses console logs but never hides the actual error.
 
 > **Removed surfaces.** Earlier releases documented `labby marketplace`,
 > `labby stash`, `labby nodes`, and `labby deploy`, along with ACP chat, the MCP
@@ -618,9 +659,9 @@ just build            # cargo build --workspace --all-features
 just build-release    # release build, bin/labby install, ~/.local/bin symlink
 just service-install  # build and install the native persistent gateway service
 just service-status   # inspect the native service manager state
-labby setup host-service install --install-self -y # install current binary + start system service
-labby setup host-service restart --install-self -y # reinstall current binary + restart service
-labby setup host-service status --json # inspect the host Labby gateway service
+labby host service install --install-self -y # install current binary + start system service
+labby host service restart --install-self -y # reinstall current binary + restart service
+labby host service status --json # inspect the host Labby gateway service
 just host-sync        # repo dev shortcut: rebuild + install binary + restart host service
 just web-build        # cd apps/gateway-admin && pnpm build
 just web-watch        # rebuild web assets when frontend files change
@@ -659,8 +700,8 @@ remains the rebuild-and-restart developer shortcut.
 
 Release Please maintains the version/changelog pull request and creates the
 stable tag plus draft GitHub release when that pull request merges. The stable
-tag triggers the heavy GitHub-hosted candidate workflow. It builds Linux,
-macOS, and Windows archives with checksums, builds and smokes the Incus image,
+tag triggers the heavy GitHub-hosted candidate workflow. It builds Linux and
+macOS archives with checksums, builds and smokes the Incus image,
 publishes the npm launcher, and publishes Labby's
 `server.json` metadata to the official MCP Registry. Only after qualification
 and publication succeed does the workflow promote the draft GitHub release.
@@ -674,8 +715,9 @@ removed; operators run `labby setup` themselves. Do not reintroduce a `hooks/`
 directory, bundle a binary under `plugins/labby/bin/`, or add
 Docker/systemd bootstrap logic to plugin assets.
 
-`labby setup plugin-hook` remains a CLI command for on-demand audit and settings
-sync (`--no-repair` for read-only), exercised by `just validate-plugin`.
+`just validate-plugin` runs the supported read-only `labby setup check` flow
+against an isolated Labby home. Plugin lifecycle hooks and per-service plugin
+mutation commands remain retired.
 
 ## Related Servers
 

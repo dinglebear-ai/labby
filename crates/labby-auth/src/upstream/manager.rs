@@ -58,8 +58,8 @@ static SHARED_GOOGLE_REFRESH_FLIGHTS: OnceLock<Arc<RefreshLocks>> = OnceLock::ne
 
 pub use discovery::discover_published_metadata;
 use discovery::{
-    DynamicClientRegistrationUse, extract_state_param, google_offline_access_url,
-    is_known_split_endpoint_origin, url_origin,
+    DynamicClientRegistrationUse, configured_endpoint_origin_matches, extract_state_param,
+    google_offline_access_url, url_origin,
 };
 #[cfg(test)]
 use discovery::{
@@ -1332,9 +1332,10 @@ impl UpstreamOauthManager {
                     "{label} `{endpoint}` is not a valid URL"
                 )));
             };
-            if origin != issuer_origin
-                && !is_known_split_endpoint_origin(issuer_origin.as_str(), origin.as_str())
-            {
+            let configured_split_origin = self.upstream.oauth.as_ref().is_some_and(|oauth| {
+                configured_endpoint_origin_matches(&oauth.additional_endpoint_origins, &origin)
+            });
+            if origin != issuer_origin && !configured_split_origin {
                 return Err(OauthError::IssuerMismatch(format!(
                     "{label} origin `{origin}` does not match issuer origin `{issuer_origin}`"
                 )));
@@ -1882,6 +1883,7 @@ mod url_tests {
                     },
                     scopes: None,
                     credential: Default::default(),
+                    additional_endpoint_origins: vec![],
                     prefer_client_metadata_document: None,
                 }),
                 imported_from: None,
@@ -1956,6 +1958,7 @@ mod url_tests {
                     },
                     scopes: None,
                     credential: Default::default(),
+                    additional_endpoint_origins: vec![],
                     prefer_client_metadata_document: None,
                 }),
                 imported_from: None,
@@ -2083,6 +2086,7 @@ mod url_tests {
                         credential: UpstreamOauthCredentialSource::GoogleProvider {
                             account: Some(account.to_string()),
                         },
+                        additional_endpoint_origins: vec![],
                         prefer_client_metadata_document: None,
                     }),
                     imported_from: None,

@@ -36,8 +36,8 @@ launch history preserves known modes without inventing a mode for old receipts.
 
 ## What Operators Configure
 
-To proxy an upstream server through Labby, prefer `labby gateway add` and
-`labby gateway update`. For offline editing, first identify the selected
+To proxy an upstream server through Labby, prefer `labby server add` and
+`labby server set`. For offline editing, first identify the selected
 installation root: `LABBY_HOME` when set, otherwise `~/.labby`. Edit only its
 `config.toml`, optionally provide bearer-token env vars in its `.env`, then
 start `labby serve` normally. Labby does not merge a second XDG or
@@ -303,10 +303,10 @@ query or authorization code.
 CLI examples:
 
 ```bash
-labby gateway mcp auth start chrome-devtools
-labby gateway mcp auth open chrome-devtools --wait
-labby gateway mcp auth status chrome-devtools
-labby gateway mcp auth clear chrome-devtools
+labby server auth login --no-browser chrome-devtools
+labby server auth login chrome-devtools --wait
+labby server auth status chrome-devtools
+labby server auth logout chrome-devtools
 ```
 
 ### Spec-Aligned Invariants
@@ -329,10 +329,10 @@ labby gateway mcp auth clear chrome-devtools
   `authorization_endpoint`, `token_endpoint`, `revocation_endpoint`, and
   (when present) `registration_endpoint` and `userinfo_endpoint` origins
   (scheme + host + port) must match the issuer origin; any drift surfaces as
-  `oauth_issuer_mismatch` (RFC 8414 §3.3). Known provider split endpoints are
-  allowed when they are part of the provider's documented OAuth deployment;
-  today Labby allows Google's `https://accounts.google.com` issuer to use the
-  `https://oauth2.googleapis.com` token endpoint.
+  `oauth_issuer_mismatch` (RFC 8414 §3.3). A provider's documented split
+  endpoint origins must be declared per upstream with
+  `oauth.additional_endpoint_origins`; Labby does not hardcode provider
+  exceptions.
 - **Provider credential broker.** Generic upstream OAuth clients remain
   per-upstream and per-subject. Google-backed upstreams may instead use the
   authenticated subject's centralized, encrypted Google provider credential.
@@ -595,7 +595,8 @@ lab://upstream/remote-lab/lab://gateway/actions
 
 ### Operations
 
-- `list_resources()` queries all resource-enabled upstreams and returns namespaced URIs.
+- `resources/list` serves the cached per-upstream snapshot for regular upstreams and returns namespaced URIs. Labby refreshes that snapshot with a live `resources/list` on connect, reconnect, gateway reload, an upstream `resources/list_changed`, and when discovery finds a connected upstream with no snapshot yet. A snapshot older than 60 seconds on an upstream without a live `subscriptions/listen` stream is re-listed in the background while its current rows are served. OAuth subject-scoped upstreams are listed over the per-subject connection and cached with it under the same 60-second bound; an upstream `resources/list_changed` clears every subject's cached catalog for it.
+- Upstream `tools/list_changed` and `resources/list_changed` refreshes run on a worker per upstream, off the notification consumer, with a 250 ms coalescing window so a burst from one upstream collapses into one re-list. The downstream `list_changed` for that upstream is forwarded only after its refresh completes, and one upstream's slow re-list never delays another upstream's notifications. `prompts/list_changed` travels through the same worker without a re-list, because `prompts/list` is served live, so that one upstream's notifications stay ordered with each other. Events for the *same* upstream are serialized: one arriving while that upstream's re-list is in flight waits for that refresh plus the coalescing window, bounded by `catalog_listing_timeout`.
 - `read_resource()` strips the prefix, identifies the upstream by name, and forwards the read.
 
 Failed resource listings from individual upstreams are logged as warnings. Other upstreams continue to serve.
@@ -627,7 +628,7 @@ expose_skills = ["refunds"]   # omit to expose all
 Enable it from the CLI with:
 
 ```bash
-labby gateway add --name acme --command acme-mcp-server --proxy-skills true
+labby server add acme --command acme-mcp-server --proxy-skills true
 ```
 
 ### Per-origin namespacing
@@ -727,7 +728,7 @@ Keep this distinction explicit in operator docs:
 
 ### 1. Configure upstreams
 
-Prefer `labby gateway add`/`update`. For offline editing, add `[[upstream]]`
+Prefer `labby server add`/`set`. For offline editing, add `[[upstream]]`
 entries to the selected `$LABBY_HOME/config.toml` (normally
 `~/.labby/config.toml`).
 

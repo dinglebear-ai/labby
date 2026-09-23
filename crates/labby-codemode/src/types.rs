@@ -1372,6 +1372,13 @@ impl ToolScope {
             || self.access == CodeModeToolAccess::ReadOnly
     }
 
+    /// Borrow the `tools` allowlist (bare names or `namespace::tool` ids), if
+    /// tool scoping is active. Mirrors [`Self::allowed_namespaces`].
+    #[must_use]
+    pub fn allowed_tools(&self) -> Option<&BTreeSet<String>> {
+        (!self.tools.is_empty()).then_some(&self.tools)
+    }
+
     /// Borrow the explicit namespace allowlist, if namespace scoping is active.
     #[must_use]
     pub fn allowed_namespaces(&self) -> Option<&BTreeSet<String>> {

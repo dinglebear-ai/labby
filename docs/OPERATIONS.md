@@ -17,7 +17,7 @@ The Justfile is the source of truth for repo-local operator/developer helpers. H
 - `just validate-plugin` — validate the checked-in Labby plugin setup lifecycle against a temporary `LABBY_HOME`
 - `just host-sync` — rebuild/reinstall/restart the source checkout on the supported system-container host path
 
-For health/auth verification, use the shipped `labby health` and `labby doctor ...` commands plus focused integration tests. The repository does not currently ship `bin/health-check` or a top-level `scripts/check-oauth.sh` product interface. A legacy compatibility probe remains at `plugins/scripts/check-oauth.sh`, but it is not the canonical operator contract; do not substitute it for the built-in doctor surfaces in deployment guidance.
+For health/auth verification, use the shipped `labby gateway status` and `labby doctor ...` commands plus focused integration tests. The repository does not currently ship `bin/health-check` or a top-level `scripts/check-oauth.sh` product interface. A legacy compatibility probe remains at `plugins/scripts/check-oauth.sh`, but it is not the canonical operator contract; do not substitute it for the built-in doctor surfaces in deployment guidance.
 
 ## OAuth Auth State
 
@@ -75,7 +75,7 @@ last resort, not a substitute for subject-scoped revocation.
 
 Some MCP clients can pin the OAuth callback port but still redirect the browser to
 `http://127.0.0.1:<port>/...`. When the real callback listener lives on another machine, run
-`labby oauth relay-local` on the browser machine to accept that loopback redirect and forward it to
+`labby auth relay local` on the browser machine to accept that loopback redirect and forward it to
 the actual listener.
 
 Codex has two distinct setup shapes:
@@ -97,13 +97,13 @@ client-side Codex config setting, not a Labby server setting.
 Named-machine workflow:
 
 ```bash
-labby oauth relay-local --machine node-a --port 38935
+labby auth relay local --machine node-a --port 38935
 ```
 
 Ad hoc workflow:
 
 ```bash
-labby oauth relay-local \
+labby auth relay local \
   --forward-base http://node.internal.example:38935/callback/node-a \
   --port 38935
 ```
@@ -128,7 +128,7 @@ default_port = 38935
 ```
 
 2. Start the real OAuth client listener on the remote machine.
-3. Start `labby oauth relay-local` on the browser machine.
+3. Start `labby auth relay local` on the browser machine.
 4. Complete the OAuth login flow in the browser before either listener exits.
 
 Loopback redirects (`http://127.0.0.1`, `localhost`) and native-app private-use URI
@@ -158,8 +158,8 @@ machine target registered in `~/.labby/oauth-public-relay/registry.json`.
 Operational commands:
 
 ```bash
-labby oauth relay-registry list --json
-labby oauth relay-registry import --file /tmp/callback-relay-registry.json --json
+labby auth relay registry list --json
+labby auth relay registry import --file /tmp/callback-relay-registry.json --json
 curl -fsS --max-time 5 https://callback.example.com/healthz
 ```
 
@@ -197,9 +197,9 @@ Typical checks include:
 - auth acceptance
 - version reporting
 
-### `labby health`
+### `labby gateway status`
 
-`labby health` should expose normalized health status using shared service contracts.
+`labby gateway status` should expose normalized health status using shared service contracts.
 
 ## Code Mode Operations
 
@@ -219,7 +219,7 @@ Actions:
 1. Run `labby gateway reload` to rebuild the active upstream runtime pool.
 2. Reconnect the MCP client session so it receives the current gateway manager
    state and widget assets.
-3. If the issue is CLI-only, rerun `labby gateway code exec`; CLI executions
+3. If the issue is CLI-only, rerun `labby code run`; CLI executions
    build a fresh host-side execution envelope per process.
 
 ### Runner Pool Overflow Or Timeout Storms
@@ -265,7 +265,7 @@ Actions:
 1. Run `labby gateway reload` or a targeted catalog refresh path.
 2. Delete only the Code Mode catalog cache under the Labby home if the on-disk
    cache is suspected corrupt; do not delete auth or gateway config state.
-3. Re-run a small `labby --json gateway code exec --code 'async () => 1'`
+3. Re-run a small `labby --json code run --code 'async () => 1'`
    smoke to repopulate the cache.
 
 ### Snippet Caveats
@@ -283,8 +283,8 @@ To roll back Code Mode behavior quickly:
    gateway instance.
 2. Restart the gateway service so runner pools and in-memory catalog state are
    dropped.
-3. Re-enable only after `labby doctor`, `labby gateway list`, and a one-line
-   `gateway code exec` smoke pass.
+3. Re-enable only after `labby doctor`, `labby server list`, and a one-line
+   `code run` smoke pass.
 
 ## Install and Patch Workflows
 

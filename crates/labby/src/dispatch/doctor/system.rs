@@ -621,6 +621,34 @@ pub fn run_capability_checks() -> Vec<Finding> {
     by_check.into_values().collect()
 }
 
+/// Installation root the doctor inspects: the same root serve resolves,
+/// through the same resolver, so the doctor never probes a root the serving
+/// process would refuse. The typed error is returned to the caller, which
+/// reports it once and skips the probes that depend on the root.
+fn doctor_installation_root(
+    lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Result<std::path::PathBuf, crate::installation::InstallationError> {
+    crate::installation::InstallationPaths::resolve_with(lookup)
+        .map(|paths| paths.root().to_path_buf())
+}
+
+/// The one finding an unusable installation root produces. Its path-based
+/// probes are skipped rather than run against a guessed root, because a root
+/// the serving process refuses must not be reported as healthy.
+fn installation_root_finding(
+    service: &str,
+    error: &crate::installation::InstallationError,
+) -> Finding {
+    Finding {
+        service: service.to_string(),
+        check: "config:installation-root".to_string(),
+        severity: Severity::Fail,
+        message: format!(
+            "Labby installation root is unusable, so its file checks were skipped: {error}"
+        ),
+    }
+}
+
 /// Run all local system probes: env-var checks, config files, toolchain, and disk.
 ///
 /// Order: env-var checks first (preserves current `labby doctor` output), then
@@ -650,50 +678,59 @@ pub async fn run_system_checks() -> Vec<Finding> {
     }
 
     let home = std::env::var("HOME").unwrap_or_default();
-    let env_path = format!("{home}/.labby/.env");
-    let lab_dir = format!("{home}/.labby");
-    let config_path = format!("{home}/.labby/config.toml");
+    let install_root = match doctor_installation_root(|name| std::env::var_os(name)) {
+        Ok(root) => Some(root),
+        Err(error) => {
+            findings.push(installation_root_finding("lab", &error));
+            None
+        }
+    };
     let mut probes = Vec::new();
-    probes.push(process_probe(
-        "lab",
-        "config:~/.labby/.env",
-        path_test_command(&env_path, false),
-        format!("{env_path} found"),
-        Severity::Warn,
-        format!("{env_path} not found"),
-    ));
-    probes.push(process_probe(
-        "lab",
-        "config:~/.labby/.env:writable",
-        path_test_command(&env_path, true),
-        format!("{env_path} is writable"),
-        Severity::Fail,
-        format!("{env_path} is NOT writable or is missing"),
-    ));
-    probes.push(process_probe(
-        "lab",
-        "config:~/.labby:writable",
-        path_test_command(&lab_dir, true),
-        format!("{lab_dir} is writable"),
-        Severity::Fail,
-        format!("{lab_dir} is NOT writable or is missing"),
-    ));
-    probes.push(process_probe(
-        "lab",
-        "config:~/.labby/config.toml",
-        path_test_command(&config_path, false),
-        format!("{config_path} found"),
-        Severity::Warn,
-        format!("{config_path} not found"),
-    ));
-    probes.push(process_probe(
-        "system",
-        "config:backup-retention",
-        backup_retention_command(&config_path),
-        "config backup retention is within count and byte budgets".into(),
-        Severity::Warn,
-        "config backups exceed the count or byte retention budget".into(),
-    ));
+    if let Some(install_root) = install_root.as_deref() {
+        let env_path = install_root.join(".env").display().to_string();
+        let lab_dir = install_root.display().to_string();
+        let config_path = install_root.join("config.toml").display().to_string();
+        probes.push(process_probe(
+            "lab",
+            "config:installation-root/.env",
+            path_test_command(&env_path, false),
+            format!("{env_path} found"),
+            Severity::Warn,
+            format!("{env_path} not found"),
+        ));
+        probes.push(process_probe(
+            "lab",
+            "config:installation-root/.env:writable",
+            path_test_command(&env_path, true),
+            format!("{env_path} is writable"),
+            Severity::Fail,
+            format!("{env_path} is NOT writable or is missing"),
+        ));
+        probes.push(process_probe(
+            "lab",
+            "config:installation-root:writable",
+            path_test_command(&lab_dir, true),
+            format!("{lab_dir} is writable"),
+            Severity::Fail,
+            format!("{lab_dir} is NOT writable or is missing"),
+        ));
+        probes.push(process_probe(
+            "lab",
+            "config:installation-root/config.toml",
+            path_test_command(&config_path, false),
+            format!("{config_path} found"),
+            Severity::Warn,
+            format!("{config_path} not found"),
+        ));
+        probes.push(process_probe(
+            "system",
+            "config:backup-retention",
+            backup_retention_command(&config_path),
+            "config backup retention is within count and byte budgets".into(),
+            Severity::Warn,
+            "config backups exceed the count or byte retention budget".into(),
+        ));
+    }
 
     for (name, rel_path) in [
         (".claude", "claude"),
@@ -1321,7 +1358,7 @@ pub fn run_auth_checks() -> Vec<Finding> {
         Ok(config) => run_auth_checks_with_config(Some(&config)),
         Err(error) => {
             let mut findings = run_auth_checks_with_config(None);
-            findings.push(super::auth_config_error_finding(&error.to_string()));
+            findings.push(super::auth_config_error_finding(&format!("{error:#}")));
             findings
         }
     }
@@ -1331,7 +1368,7 @@ pub fn run_auth_checks_with_config(
     config: Option<&labby_auth::config::AuthConfig>,
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
-    let home = std::env::var("HOME").unwrap_or_default();
+    let install_root = doctor_installation_root(|name| std::env::var_os(name));
 
     let mode = config.map_or_else(
         || {
@@ -1679,22 +1716,41 @@ pub fn run_auth_checks_with_config(
 
     // --- Auth store files (only meaningful when OAuth is configured) ---
     if is_oauth || has_google {
-        let sqlite_path = config.map_or_else(
-            || {
-                std::env::var("LABBY_AUTH_SQLITE_PATH")
-                    .unwrap_or_else(|_| format!("{home}/.labby/auth.db"))
+        let store_paths = match config {
+            Some(config) => Some((
+                config.sqlite_path.display().to_string(),
+                config.key_path.display().to_string(),
+            )),
+            // Without a resolved auth config the default store paths come from
+            // the installation root, so an unusable root skips them entirely.
+            None => match install_root.as_ref() {
+                Ok(root) => Some((
+                    std::env::var("LABBY_AUTH_SQLITE_PATH")
+                        .unwrap_or_else(|_| root.join("auth.db").display().to_string()),
+                    std::env::var("LABBY_AUTH_KEY_PATH")
+                        .unwrap_or_else(|_| root.join("auth-jwt.pem").display().to_string()),
+                )),
+                Err(error) => {
+                    findings.push(installation_root_finding("auth", error));
+                    None
+                }
             },
-            |config| config.sqlite_path.display().to_string(),
-        );
-        let key_path = config.map_or_else(
-            || {
-                std::env::var("LABBY_AUTH_KEY_PATH")
-                    .unwrap_or_else(|_| format!("{home}/.labby/auth-jwt.pem"))
-            },
-            |config| config.key_path.display().to_string(),
-        );
+        };
+        let Some((sqlite_path, key_path)) = store_paths else {
+            return findings;
+        };
 
         let sqlite_exists = std::path::Path::new(&sqlite_path).exists();
+        if !sqlite_exists
+            && let Some(config) = config
+            && let Some(legacy) = crate::config::legacy_auth_store(config)
+        {
+            findings.push(auth_finding(
+                "auth:legacy-store",
+                Severity::Warn,
+                legacy.message(),
+            ));
+        }
         findings.push(auth_finding(
             "auth:sqlite-path",
             if sqlite_exists {
@@ -1847,6 +1903,63 @@ fn file_perms_check(service: &str, label: &str, path: &str) -> Finding {
 #[cfg(test)]
 mod auth_tests {
     use super::*;
+
+    fn lookup<'a>(
+        vars: &'a [(&'a str, &'a str)],
+    ) -> impl Fn(&str) -> Option<std::ffi::OsString> + 'a {
+        move |name| {
+            vars.iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| std::ffi::OsString::from(value))
+        }
+    }
+
+    #[test]
+    fn doctor_installation_root_honors_explicit_labby_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let instance = dir.path().join("instance");
+        let user = dir.path().join("user");
+        let vars = [
+            ("LABBY_HOME", instance.to_str().unwrap()),
+            ("HOME", user.to_str().unwrap()),
+        ];
+        let expected = crate::installation::InstallationPaths::from_root(&instance)
+            .unwrap()
+            .root()
+            .to_path_buf();
+        assert_eq!(doctor_installation_root(lookup(&vars)).unwrap(), expected);
+    }
+
+    #[test]
+    fn doctor_installation_root_defaults_to_user_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path().join("user");
+        let vars = [("HOME", user.to_str().unwrap())];
+        let expected = crate::installation::InstallationPaths::from_root(user.join(".labby"))
+            .unwrap()
+            .root()
+            .to_path_buf();
+        assert_eq!(doctor_installation_root(lookup(&vars)).unwrap(), expected);
+    }
+
+    /// An unusable root is reported, not guessed around: probing a path the
+    /// serving process would refuse can otherwise report a healthy install.
+    #[test]
+    fn doctor_installation_root_reports_an_invalid_root_as_one_failing_finding() {
+        let vars = [("LABBY_HOME", "relative/root"), ("HOME", "/Users/operator")];
+        let error = doctor_installation_root(lookup(&vars))
+            .expect_err("a relative LABBY_HOME is not a usable installation root");
+        let finding = installation_root_finding("lab", &error);
+        assert_eq!(finding.check, "config:installation-root");
+        assert!(matches!(finding.severity, Severity::Fail), "{finding:?}");
+        assert!(finding.message.contains("relative/root"), "{finding:?}");
+        assert!(finding.message.contains("must be absolute"), "{finding:?}");
+    }
+
+    #[test]
+    fn doctor_installation_root_requires_a_home_variable() {
+        assert!(doctor_installation_root(lookup(&[])).is_err());
+    }
 
     fn authelia_test_config(dir: &std::path::Path) -> labby_auth::config::AuthConfig {
         labby_auth::config::AuthConfigBuilder::new()

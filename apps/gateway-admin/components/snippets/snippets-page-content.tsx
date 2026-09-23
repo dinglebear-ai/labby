@@ -556,7 +556,7 @@ export function SnippetsPageContent() {
   }
 
   const copyRunCommand = async (snippet: SnippetInfo) => {
-    const command = `labby snippets exec ${snippet.name} --params '{}' --json`
+    const command = `labby snippet run ${snippet.name} --json`
     try {
       await navigator.clipboard.writeText(command)
       toast.success('Run command copied')

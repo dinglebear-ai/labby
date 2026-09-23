@@ -610,9 +610,7 @@ fn dispatch_resource_family(service: &str) -> Option<&'static str> {
 }
 
 fn authority_metadata(service: &str, action: &str, requires_admin: bool) -> AuthorityMetadata {
-    if service == crate::dispatch::depot_publish::SERVICE
-        && action == crate::dispatch::depot_publish::ACTION
-    {
+    if crate::dispatch::depot_publish::is_publish_call(service, action) {
         return AuthorityMetadata {
             boundary: "project_artifact_publish",
             capability: None,

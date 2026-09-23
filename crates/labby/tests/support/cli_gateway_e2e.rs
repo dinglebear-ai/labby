@@ -19,16 +19,33 @@ pub(crate) async fn run() {
     let owned = tempfile::tempdir().expect("owned gateway CLI home");
     std::fs::create_dir_all(owned.path().join("tmp")).unwrap();
     let upstream_script = owned.path().join("upstream.py");
-    std::fs::write(&upstream_script, "raise SystemExit\n").expect("owned upstream fixture");
+    std::fs::write(
+        &upstream_script,
+        r#"import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    if "id" not in request:
+        continue
+    method = request.get("method")
+    if method == "initialize":
+        result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}}, "serverInfo": {"name": "cli-lifecycle-fixture", "version": "1"}}
+    elif method == "tools/list":
+        result = {"tools": []}
+    else:
+        print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "error": {"code": -32601, "message": "Method not found"}}), flush=True)
+        continue
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+"#,
+    )
+    .expect("owned upstream fixture");
     let upstream_script = upstream_script.to_str().expect("UTF-8 fixture path");
 
     let add = success(
         &guard,
         owned.path(),
         &[
-            "gateway",
+            "server",
             "add",
-            "--name",
             UPSTREAM,
             "--command",
             "python3",
@@ -39,12 +56,7 @@ pub(crate) async fn run() {
     )
     .await;
     assert_eq!(add["config"]["name"], UPSTREAM);
-    let get = success(
-        &guard,
-        owned.path(),
-        &["gateway", "get", UPSTREAM, "--json"],
-    )
-    .await;
+    let get = success(&guard, owned.path(), &["server", "get", UPSTREAM, "--json"]).await;
     assert_eq!(get["config"]["name"], UPSTREAM);
     record(
         "gateway:gateway.add",
@@ -60,7 +72,7 @@ pub(crate) async fn run() {
     let discovered = success(
         &guard,
         owned.path(),
-        &["gateway", "discover", "--include-existing", "--json"],
+        &["server", "discover", "--include-existing", "--json"],
     )
     .await;
     assert!(discovered.is_array());
@@ -74,8 +86,9 @@ pub(crate) async fn run() {
         &guard,
         owned.path(),
         &[
-            "gateway",
-            "enrich",
+            "code",
+            "hints",
+            "preview",
             "--upstream",
             UPSTREAM,
             "--yes",
@@ -98,8 +111,8 @@ pub(crate) async fn run() {
         &guard,
         owned.path(),
         &[
-            "gateway",
-            "enrich",
+            "code",
+            "hints",
             "apply",
             "--upstream",
             UPSTREAM,
@@ -127,8 +140,8 @@ pub(crate) async fn run() {
         &guard,
         owned.path(),
         &[
-            "gateway",
-            "update",
+            "server",
+            "set",
             UPSTREAM,
             "--proxy-skills",
             "true",
@@ -137,12 +150,7 @@ pub(crate) async fn run() {
     )
     .await;
     assert_eq!(updated["config"]["proxy_skills"], true);
-    let updated_get = success(
-        &guard,
-        owned.path(),
-        &["gateway", "get", UPSTREAM, "--json"],
-    )
-    .await;
+    let updated_get = success(&guard, owned.path(), &["server", "get", UPSTREAM, "--json"]).await;
     assert_eq!(updated_get["config"]["proxy_skills"], true);
     record(
         "gateway:gateway.update",
@@ -153,14 +161,7 @@ pub(crate) async fn run() {
     let skills = asserted(
         &guard,
         owned.path(),
-        &[
-            "gateway",
-            "skills",
-            "list",
-            "--upstream",
-            UPSTREAM,
-            "--json",
-        ],
+        &["skill", "source", "list", "--upstream", UPSTREAM, "--json"],
     )
     .await;
     if cfg!(feature = "skills") {
@@ -182,7 +183,7 @@ pub(crate) async fn run() {
     let tested = success(
         &guard,
         owned.path(),
-        &["gateway", "test", "--name", UPSTREAM, "--json"],
+        &["server", "test", UPSTREAM, "--json"],
     )
     .await;
     assert_eq!(tested["name"], UPSTREAM);
@@ -196,7 +197,7 @@ pub(crate) async fn run() {
     let cleanup = success(
         &guard,
         owned.path(),
-        &["gateway", "mcp", "cleanup", UPSTREAM, "--dry-run", "--json"],
+        &["server", "cleanup", UPSTREAM, "--dry-run", "--json"],
     )
     .await;
     assert_eq!(cleanup["upstream"], UPSTREAM);
@@ -210,17 +211,15 @@ pub(crate) async fn run() {
     let disabled = success(
         &guard,
         owned.path(),
-        &["gateway", "mcp", "disable", UPSTREAM, "--json"],
+        &["server", "disable", UPSTREAM, "--json"],
     )
     .await;
-    assert_eq!(disabled["gateway"]["config"]["enabled"], false);
     assert_eq!(
-        success(
-            &guard,
-            owned.path(),
-            &["gateway", "get", UPSTREAM, "--json"]
-        )
-        .await["config"]["enabled"],
+        disabled["results"][0]["result"]["gateway"]["config"]["enabled"],
+        false
+    );
+    assert_eq!(
+        success(&guard, owned.path(), &["server", "get", UPSTREAM, "--json"]).await["config"]["enabled"],
         false
     );
     record(
@@ -232,17 +231,12 @@ pub(crate) async fn run() {
     let enabled = success(
         &guard,
         owned.path(),
-        &["gateway", "mcp", "enable", UPSTREAM, "--json"],
+        &["server", "enable", UPSTREAM, "--json"],
     )
     .await;
-    assert_eq!(enabled["config"]["enabled"], true);
+    assert_eq!(enabled["results"][0]["result"]["config"]["enabled"], true);
     assert_eq!(
-        success(
-            &guard,
-            owned.path(),
-            &["gateway", "get", UPSTREAM, "--json"]
-        )
-        .await["config"]["enabled"],
+        success(&guard, owned.path(), &["server", "get", UPSTREAM, "--json"]).await["config"]["enabled"],
         true
     );
     record(
@@ -254,11 +248,14 @@ pub(crate) async fn run() {
     let restarted = success(
         &guard,
         owned.path(),
-        &["gateway", "mcp", "restart", UPSTREAM, "--json"],
+        &["server", "restart", UPSTREAM, "--json"],
     )
     .await;
-    assert_eq!(restarted["gateway"]["config"]["name"], UPSTREAM);
-    assert!(restarted.get("cleanup").is_some());
+    assert_eq!(
+        restarted["results"][0]["result"]["gateway"]["config"]["name"],
+        UPSTREAM
+    );
+    assert!(restarted["results"][0]["result"].get("cleanup").is_some());
     record(
         "gateway:gateway.mcp.restart",
         EvidenceLevel::LiveStateTransition,
@@ -276,24 +273,11 @@ pub(crate) async fn run() {
     let loadout_add = success(
         &guard,
         owned.path(),
-        &[
-            "gateway",
-            "loadout",
-            "add",
-            LOADOUT,
-            "--upstream",
-            UPSTREAM,
-            "--json",
-        ],
+        &["loadout", "add", LOADOUT, "--upstream", UPSTREAM, "--json"],
     )
     .await;
     assert_eq!(loadout_add["name"], LOADOUT);
-    let loadout_get = success(
-        &guard,
-        owned.path(),
-        &["gateway", "loadout", "get", LOADOUT, "--json"],
-    )
-    .await;
+    let loadout_get = success(&guard, owned.path(), &["loadout", "get", LOADOUT, "--json"]).await;
     assert_eq!(loadout_get["upstreams"][0], UPSTREAM);
     record(
         "gateway:gateway.loadout.add",
@@ -310,9 +294,8 @@ pub(crate) async fn run() {
         &guard,
         owned.path(),
         &[
-            "gateway",
             "loadout",
-            "update",
+            "set",
             LOADOUT,
             "--description",
             "changed",
@@ -322,12 +305,7 @@ pub(crate) async fn run() {
     .await;
     assert_eq!(loadout_patch["description"], "changed");
     assert_eq!(
-        success(
-            &guard,
-            owned.path(),
-            &["gateway", "loadout", "get", LOADOUT, "--json"]
-        )
-        .await["description"],
+        success(&guard, owned.path(), &["loadout", "get", LOADOUT, "--json"]).await["description"],
         "changed"
     );
     record(
@@ -339,17 +317,12 @@ pub(crate) async fn run() {
     let loadout_remove = success(
         &guard,
         owned.path(),
-        &["gateway", "loadout", "remove", LOADOUT, "--json"],
+        &["loadout", "remove", LOADOUT, "--json"],
     )
     .await;
     assert_eq!(loadout_remove["name"], LOADOUT);
     assert_error_kind(
-        &asserted(
-            &guard,
-            owned.path(),
-            &["gateway", "loadout", "get", LOADOUT, "--json"],
-        )
-        .await,
+        &asserted(&guard, owned.path(), &["loadout", "get", LOADOUT, "--json"]).await,
         "not_found",
     );
     record(
@@ -365,12 +338,7 @@ pub(crate) async fn run() {
     )
     .await;
     assert_eq!(route_add["name"], ROUTE);
-    let route_get = success(
-        &guard,
-        owned.path(),
-        &["gateway", "protected-route", "get", ROUTE, "--json"],
-    )
-    .await;
+    let route_get = success(&guard, owned.path(), &["route", "get", ROUTE, "--json"]).await;
     assert_eq!(route_get["public_host"], "owned.test");
     record(
         "gateway:gateway.protected_route.add",
@@ -391,12 +359,7 @@ pub(crate) async fn run() {
     .await;
     assert_eq!(route_update["public_host"], "updated.test");
     assert_eq!(
-        success(
-            &guard,
-            owned.path(),
-            &["gateway", "protected-route", "get", ROUTE, "--json"]
-        )
-        .await["public_path"],
+        success(&guard, owned.path(), &["route", "get", ROUTE, "--json"]).await["public_path"],
         "/updated"
     );
     record(
@@ -405,20 +368,10 @@ pub(crate) async fn run() {
         "owned_route_patch_observed",
     );
 
-    let route_remove = success(
-        &guard,
-        owned.path(),
-        &["gateway", "protected-route", "remove", ROUTE, "--json"],
-    )
-    .await;
+    let route_remove = success(&guard, owned.path(), &["route", "remove", ROUTE, "--json"]).await;
     assert_eq!(route_remove["name"], ROUTE);
     assert_error_kind(
-        &asserted(
-            &guard,
-            owned.path(),
-            &["gateway", "protected-route", "get", ROUTE, "--json"],
-        )
-        .await,
+        &asserted(&guard, owned.path(), &["route", "get", ROUTE, "--json"]).await,
         "not_found",
     );
     record(
@@ -430,17 +383,12 @@ pub(crate) async fn run() {
     let removed = success(
         &guard,
         owned.path(),
-        &["gateway", "remove", UPSTREAM, "--json"],
+        &["server", "remove", UPSTREAM, "--json"],
     )
     .await;
     assert_eq!(removed["config"]["name"], UPSTREAM);
     assert_error_kind(
-        &asserted(
-            &guard,
-            owned.path(),
-            &["gateway", "get", UPSTREAM, "--json"],
-        )
-        .await,
+        &asserted(&guard, owned.path(), &["server", "get", UPSTREAM, "--json"]).await,
         "not_found",
     );
     record(
@@ -459,10 +407,8 @@ pub(crate) async fn run() {
 fn route_args(command: &'static str, host: &'static str, path: &'static str) -> Vec<&'static str> {
     match command {
         "add" => vec![
-            "gateway",
-            "protected-route",
+            "route",
             "add",
-            "--name",
             ROUTE,
             "--public-host",
             host,
@@ -473,9 +419,8 @@ fn route_args(command: &'static str, host: &'static str, path: &'static str) -> 
             "--json",
         ],
         "update" => vec![
-            "gateway",
-            "protected-route",
-            "update",
+            "route",
+            "replace",
             ROUTE,
             "--public-host",
             host,

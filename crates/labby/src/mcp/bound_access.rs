@@ -515,6 +515,11 @@ impl ProjectDiscoveryShadow<'_> {
             return None;
         };
         binding.validate_not_expired(now).ok()?;
+        if service.name == crate::dispatch::depot_publish::LEGACY_SERVICE {
+            // The provider-named alias remains callable for compatibility but
+            // is intentionally absent from new discovery responses.
+            return Some(false);
+        }
         if service.name == crate::dispatch::depot_publish::SERVICE {
             // This shim is owned by the protected route, not its published
             // builtin service catalog. Share the exception with wire discovery
@@ -2268,7 +2273,8 @@ mod tests {
         // Route-owned publishing must appear identically on the wire and in
         // peer hashes, without depending on a builtin virtual-server entry.
         let registry = crate::registry::build_default_registry();
-        let depot_service = registry.service("depot_publish").unwrap();
+        let publish_service = registry.service("artifact_publish").unwrap();
+        assert!(registry.service("depot_publish").is_none());
         for (upstream, expose_tools, expected) in [
             ("team-depot", true, true),
             ("catalog-depot", true, false),
@@ -2307,12 +2313,12 @@ mod tests {
             );
             let shadow = ProjectDiscoveryShadow::Bound(&transport);
             assert_eq!(
-                shadow.allows_builtin_service_descriptor(depot_service, current),
+                shadow.allows_builtin_service_descriptor(publish_service, current),
                 Some(expected)
             );
             assert_eq!(
                 shadow.allows_builtin_service_descriptor(
-                    depot_service,
+                    publish_service,
                     UNIX_EPOCH + std::time::Duration::from_secs(expiry),
                 ),
                 None,
@@ -2352,9 +2358,12 @@ mod tests {
                 .unwrap();
             assert_eq!(wire.tools, descriptors, "descriptor parity for {upstream}");
             assert_eq!(
-                wire.tools.iter().any(|tool| tool.name == "depot_publish"),
+                wire.tools
+                    .iter()
+                    .any(|tool| tool.name == "artifact_publish"),
                 expected
             );
+            assert!(!wire.tools.iter().any(|tool| tool.name == "depot_publish"));
         }
 
         manager.try_seed_config(config()).await.unwrap();

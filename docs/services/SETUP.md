@@ -6,18 +6,17 @@ updated: "2026-09-18"
 
 # Setup Service
 
-The `setup` service owns Labby's first-run, configuration, repair, plugin-lifecycle, proxy-configuration, and host-provisioning workflows. It is always compiled and is exposed through CLI, MCP, HTTP API, and the web UI.
+The `setup` service owns Labby's first-run, configuration, repair, proxy-configuration, and host-provisioning workflows. It is always compiled and is exposed through CLI, MCP, HTTP API, and the web UI.
 
 The generated [action catalog](../generated/action-catalog.md) is authoritative for exact action names, parameters, destructive flags, scopes, and surface availability.
 
 ## Responsibilities
 
 - bootstrap a new Labby home and supported host runtime
-- inspect setup state and service status
+- inspect setup state
 - stage, commit, and discard configuration drafts
 - expose schema-driven settings state and mutations
 - configure the direct stdio MCP proxy
-- install, uninstall, inspect, and synchronize the checked-in Claude plugin integration
 - repair supported setup state
 - project observational access-store health into setup checks without owning access-store repair
 
@@ -129,8 +128,8 @@ Automatic updates are opt-in. Without `LABBY_SERVICE_AUTO_UPDATE=1`, installatio
 does not enable them. Run `serve --auto-update` only under a supervisor configured
 to restart the process after a successful exit. It is unsupported for stdio MCP.
 
-For CLI-only installations, `labby update --auto-update enable` installs a separate
-daily LaunchAgent instead. Use `labby update --auto-update disable` to remove it.
+For CLI-only installations, `labby host update auto enable` installs a separate
+daily LaunchAgent instead. Use `labby host update auto disable` to remove it.
 macOS can retain old labels in Login Items after their LaunchAgent files are removed;
 the remaining service files determine what can start at login.
 

@@ -25,7 +25,7 @@ generated [service catalog](../generated/service-catalog.md) is authoritative.
 | `lab_admin` | runtime-conditional (`lab-admin`) | CLI, MCP | Explicitly enabled administrative actions |
 | `projects` | always on (caller-bound) | MCP, API, web | Team-owned Project lifecycle |
 | `server_logs` | always on | CLI, MCP, API | Local Labby server-log search and inspection |
-| `setup` | always on | CLI, MCP, API, web | Bootstrap, provisioning, plugin hooks, host service |
+| `setup` | always on | CLI, MCP, API, web | Bootstrap, provisioning, local repair, host service |
 | `snippets` | feature-gated (`gateway`) | CLI, MCP, API | Code Mode snippet storage and execution metadata |
 | `stash` | Linux only (caller-bound) | MCP, API, web | Principal- or Team-scoped File Stash |
 | `tasks` | always on (caller-bound) | MCP, API, web | Durable owner-scoped Agent Tasks, admission, execution, revocation |

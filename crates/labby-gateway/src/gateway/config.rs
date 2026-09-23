@@ -46,6 +46,7 @@ pub fn load_gateway_config(path: &Path) -> Result<GatewayConfig, ToolError> {
 // host preserves the exact foreign-key + non-gateway-section behavior.
 const KNOWN_LAB_CONFIG_KEYS: &[&str] = &[
     "code_mode",
+    "mcp_apps",
     "upstream_request_timeout_ms",
     "upstream_relay_timeout_ms",
     "upstream",
@@ -458,7 +459,7 @@ pub fn update_loadout(
         .ok_or_else(|| ToolError::Sdk {
             sdk_kind: "not_found".to_string(),
             message: format!(
-                "loadout `{name}` not found; run `gateway.loadout.list` or `labby gateway loadout list` to discover valid names"
+                "loadout `{name}` not found; run `gateway.loadout.list` or `labby loadout list` to discover valid names"
             ),
         })?;
     normalize_loadout(&mut loadout)?;
@@ -500,7 +501,7 @@ pub fn remove_loadout(
         .ok_or_else(|| ToolError::Sdk {
             sdk_kind: "not_found".to_string(),
             message: format!(
-                "loadout `{name}` not found; run `gateway.loadout.list` or `labby gateway loadout list` to discover valid names"
+                "loadout `{name}` not found; run `gateway.loadout.list` or `labby loadout list` to discover valid names"
             ),
         })?;
     let referenced_by = cfg

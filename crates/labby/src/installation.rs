@@ -22,11 +22,25 @@ impl InstallationPaths {
     /// Resolve the one installation root from `LABBY_HOME`, otherwise
     /// `$HOME/.labby` (`USERPROFILE` is the Windows fallback).
     pub fn resolve() -> Result<Self, InstallationError> {
-        if let Some(root) = non_empty_env_path("LABBY_HOME") {
+        Self::resolve_with(|name| std::env::var_os(name))
+    }
+
+    /// [`Self::resolve`] over an explicit variable lookup, so callers that
+    /// already hold an environment snapshot resolve the same root without
+    /// re-reading process state.
+    pub fn resolve_with(
+        lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
+    ) -> Result<Self, InstallationError> {
+        let non_empty = |name: &str| {
+            lookup(name)
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+        };
+        if let Some(root) = non_empty("LABBY_HOME") {
             return Self::from_root(root);
         }
-        let home = non_empty_env_path("HOME")
-            .or_else(|| non_empty_env_path("USERPROFILE"))
+        let home = non_empty("HOME")
+            .or_else(|| non_empty("USERPROFILE"))
             .ok_or(InstallationError::HomeUnavailable)?;
         Self::from_root(home.join(".labby"))
     }
@@ -189,12 +203,6 @@ pub enum InstallationError {
     },
 }
 
-fn non_empty_env_path(name: &str) -> Option<PathBuf> {
-    std::env::var_os(name)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-}
-
 fn validate_root_metadata(path: &Path, metadata: &fs::Metadata) -> Result<(), InstallationError> {
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return Err(InstallationError::InsecureRoot(path.to_path_buf()));
@@ -331,4 +339,106 @@ fn validate_lock_metadata(path: &Path, file: &File) -> Result<(), InstallationEr
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lookup(vars: &[(&str, &str)]) -> impl Fn(&str) -> Option<std::ffi::OsString> + use<> {
+        let vars: Vec<(String, String)> = vars
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+            .collect();
+        move |name| {
+            vars.iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| std::ffi::OsString::from(value))
+        }
+    }
+
+    /// The root selection is a contract every surface shares, so it is pinned
+    /// against literal expected paths rather than against `from_root`, which
+    /// would restate the implementation.
+    #[test]
+    fn resolve_with_selects_one_root_in_a_fixed_precedence() {
+        let directory = tempfile::tempdir().unwrap();
+        // Canonicalized once: the resolver canonicalizes its result, and on
+        // macOS the system temporary directory is itself a symlink.
+        let base = directory.path().canonicalize().unwrap();
+        let instance = base.join("instance");
+        let home = base.join("home");
+        let profile = base.join("profile");
+        let (instance, home, profile) = (
+            instance.to_str().unwrap(),
+            home.to_str().unwrap(),
+            profile.to_str().unwrap(),
+        );
+
+        for (label, vars, expected) in [
+            (
+                "explicit LABBY_HOME wins",
+                vec![
+                    ("LABBY_HOME", instance),
+                    ("HOME", home),
+                    ("USERPROFILE", profile),
+                ],
+                base.join("instance"),
+            ),
+            (
+                "empty LABBY_HOME falls back to the user home",
+                vec![("LABBY_HOME", ""), ("HOME", home)],
+                base.join("home/.labby"),
+            ),
+            (
+                "HOME precedes USERPROFILE",
+                vec![("HOME", home), ("USERPROFILE", profile)],
+                base.join("home/.labby"),
+            ),
+            (
+                "USERPROFILE alone is the Windows fallback",
+                vec![("USERPROFILE", profile)],
+                base.join("profile/.labby"),
+            ),
+        ] {
+            let resolved = InstallationPaths::resolve_with(lookup(&vars))
+                .unwrap_or_else(|error| panic!("{label}: {error}"));
+            assert_eq!(resolved.root(), expected, "{label}");
+        }
+    }
+
+    #[test]
+    fn resolve_with_reports_a_missing_or_invalid_root() {
+        assert!(matches!(
+            InstallationPaths::resolve_with(lookup(&[])),
+            Err(InstallationError::HomeUnavailable)
+        ));
+        assert!(matches!(
+            InstallationPaths::resolve_with(lookup(&[("HOME", ""), ("USERPROFILE", "")])),
+            Err(InstallationError::HomeUnavailable)
+        ));
+        assert!(matches!(
+            InstallationPaths::resolve_with(lookup(&[
+                ("LABBY_HOME", "relative/root"),
+                ("HOME", "/Users/operator"),
+            ])),
+            Err(InstallationError::RelativeRoot(root)) if root == Path::new("relative/root")
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_with_rejects_a_symlinked_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let base = directory.path().canonicalize().unwrap();
+        let target = base.join("target");
+        fs::create_dir(&target).unwrap();
+        let link = base.join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        assert!(matches!(
+            InstallationPaths::resolve_with(lookup(&[("LABBY_HOME", link.to_str().unwrap())])),
+            Err(InstallationError::InsecureRoot(root)) if root == link
+        ));
+    }
 }

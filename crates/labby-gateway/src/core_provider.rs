@@ -16,6 +16,10 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
 
+/// Code Mode namespace served by the Unraid Core provider (not a configured
+/// upstream).
+pub const CORE_PROVIDER_NAMESPACE: &str = "unraid";
+
 const PROVIDER_URL: &str = "http://unraid-core.local/v1/provider";
 const PROVIDER_PROTOCOL: &str = "1.0";
 const REQUEST_BYTES_MAX: usize = 1024 * 1024;
@@ -378,7 +382,7 @@ fn project_operation(
     }
     let safety = operation_safety(&operation)?;
     let descriptor = CatalogDescriptor::tool_with_safety(
-        "unraid",
+        CORE_PROVIDER_NAMESPACE,
         &operation.helper,
         &operation.summary,
         Some(arguments_schema(&operation.arguments)),
@@ -505,6 +509,9 @@ pub fn merge_tools_render(
         entries: entries.into(),
         serialized_size: catalog_json.len(),
         catalog_json: catalog_json.into(),
+        // Core operations are not upstream tools; the upstream withheld
+        // summary is unchanged by merging them.
+        withheld: base.withheld,
     })
 }
 
@@ -564,6 +571,21 @@ mod tests {
 
     #[cfg(unix)]
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    #[test]
+    fn merging_core_tools_preserves_upstream_withheld_summary() {
+        let mut base = ToolsRender::empty();
+        base.withheld =
+            std::sync::Arc::from([
+                labby_codemode::WithheldTools::new("claude-macpoo", 25).expect("nonzero")
+            ]);
+
+        let merged =
+            merge_tools_render(base, Vec::new(), &ToolScope::default().read_only()).expect("merge");
+
+        assert_eq!(merged.withheld.len(), 1);
+        assert_eq!(merged.withheld[0].namespace(), "claude-macpoo");
+    }
 
     #[test]
     fn shared_provider_fixture_matches_the_client_contract() {

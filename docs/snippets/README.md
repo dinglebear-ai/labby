@@ -145,7 +145,7 @@ The prompt can stay simple: name the snippet, collect arguments, and tell the mo
 
 ## Execution Contract
 
-`labby snippets exec` and the MCP/API `snippets.exec` action expect snippet code to evaluate to an async arrow function:
+`labby snippet run` and the MCP/API `snippets.exec` action expect snippet code to evaluate to an async arrow function:
 
 ```js
 async (input) => {
@@ -158,7 +158,7 @@ The returned value must be JSON-serializable. The sandbox has `callTool` and, wh
 CLI execution passes repeated `--param key=value` flags as the `input` object:
 
 ```bash
-labby snippets exec homelab-readonly-pulse --param host=node-a
+labby snippet run homelab-readonly-pulse --param host=node-a
 ```
 
 MCP and API callers pass the same shape through `params`:
@@ -199,17 +199,17 @@ inputs:
     required: false
 ```
 
-`labby snippets create` validates the body before saving. User-created Markdown gets frontmatter automatically when the input body does not already include it.
+`labby snippet add` validates the body before saving. User-created Markdown gets frontmatter automatically when the input body does not already include it.
 
-Use `labby snippets validate <name>` to validate an existing snippet without
+Use `labby snippet validate <name>` to validate an existing snippet without
 executing it, or pass `--file` / `--code` to validate an unsaved body:
 
 ```bash
-labby snippets validate draft --file draft-snippet.md
+labby snippet validate draft --file draft-snippet.md
 ```
 
-Use `labby snippets test <name>` to execute one snippet as a smoke test, or
-`labby snippets test --all` to run every listed snippet with its declared
+Use `labby snippet test <name>` to execute one snippet as a smoke test, or
+`labby snippet test --all` to run every listed snippet with its declared
 defaults. MCP/API callers use `snippets.test` with `{ "all": true }` for the
 same all-snippet check.
 
@@ -267,8 +267,7 @@ standalone local CLI command:
   "params": {
     "execution_id": "01JEXAMPLE",
     "name": "gateway-summary",
-    "description": "Summarize gateway health",
-    "confirm": true
+    "description": "Summarize gateway health"
   }
 }
 ```
@@ -278,6 +277,13 @@ only in memory and may expire, be evicted, disappear after restart/deploy, or
 live in another gateway process. Promoted snippets are written as plaintext
 executable content and may contain anything the original Code Mode source
 contained.
+
+Promotion is a destructive action. MCP may elicit confirmation. The HTTP API
+dispatches after `lab:admin` authorization, so its caller or operator must
+obtain explicit confirmation before submitting the request. There is no
+promotion CLI, and `confirm` is not part of the action payload. Inspect the
+retained source first and never promote literal credentials because the source
+is persisted verbatim as plaintext.
 
 Successful upstream MCP results are unwrapped before reaching snippet code when possible. Structured content is returned as the value; all-text content is parsed as JSON when possible; mixed content keeps its MCP content shape.
 
@@ -320,11 +326,12 @@ async () => {
   const timed = async (label, fn) => {
     const started = Date.now();
     try {
+      const result = await fn();
       return {
         label,
         ok: true,
         ms: Date.now() - started,
-        result: await fn()
+        result
       };
     } catch (error) {
       return {

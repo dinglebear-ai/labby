@@ -450,7 +450,7 @@ lsof -v 2>&1 | head -1
 rsync --version | head -1
 tailscale version | head -1
 labby --version
-labby skills --help | grep -q "Read Agent Skills visible to the local CLI"'
+labby skill --help | grep -q "Read locally visible skills"'
 
 log "checking image does not contain runtime secrets"
 # shellcheck disable=SC2016

@@ -21,7 +21,7 @@ use serde_json::{Map, Value, json};
 
 #[cfg(feature = "gateway")]
 use crate::mcp::call_tool_codemode::{
-    CodeModeUpstreamDescription, code_mode_description_with_suffix,
+    CodeModeDescriptionVariant, CodeModeUpstreamDescription, code_mode_tool_description,
 };
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog::{
@@ -318,7 +318,9 @@ fn builtin_service_annotations(service: &RegisteredService) -> ToolAnnotations {
             (false, derived_destructive, false, false)
         }
         "browser" | "gateway" | "setup" | "snippets" | "artifacts" | "bundles" | "jobs"
-        | "sources" | "uploads" | "depot_publish" => (false, derived_destructive, false, true),
+        | "sources" | "uploads" | "artifact_publish" | "depot_publish" => {
+            (false, derived_destructive, false, true)
+        }
         // `server_logs` is operationally read-only, but advertising it as such
         // would bypass the conservative next-hop gate described above.
         SERVER_LOGS_TOOL_NAME => (false, true, false, false),
@@ -368,6 +370,10 @@ fn settings_annotations() -> ToolAnnotations {
 pub(crate) enum ToolProjectionMode {
     #[default]
     Router,
+    #[allow(
+        dead_code,
+        reason = "atomic-only rollout is reserved while both modes coexist"
+    )]
     Atomic,
     Both,
 }
@@ -613,7 +619,11 @@ impl PermanentToolRegistry {
         with_labby_security(
             Tool::new(
                 CODE_MODE_TOOL_NAME,
-                code_mode_description_with_suffix(upstreams, &code_mode_app_text_note()),
+                code_mode_tool_description(
+                    CodeModeDescriptionVariant::Full,
+                    upstreams,
+                    &code_mode_app_text_note(),
+                ),
                 code_mode_execute_schema(),
             )
             .with_annotations(code_mode_full_annotations())
@@ -627,16 +637,15 @@ impl PermanentToolRegistry {
         &self,
         upstreams: &[CodeModeUpstreamDescription],
     ) -> Tool {
-        with_labby_security(Tool::new(
-            CODE_MODE_READ_TOOL_NAME,
-            code_mode_description_with_suffix(
-                upstreams,
-                "Read-only Code Mode execution. Only upstream tools explicitly annotated readOnly=true are discoverable and callable; artifact writes are disabled. Use codemode for write-capable execution.",
-            ),
-            code_mode_execute_schema(),
+        with_labby_security(
+            Tool::new(
+                CODE_MODE_READ_TOOL_NAME,
+                code_mode_tool_description(CodeModeDescriptionVariant::Read, upstreams, ""),
+                code_mode_execute_schema(),
+            )
+            .with_annotations(code_mode_read_annotations())
+            .with_raw_output_schema(code_mode_trace_output_schema()),
         )
-        .with_annotations(code_mode_read_annotations())
-        .with_raw_output_schema(code_mode_trace_output_schema()))
     }
 }
 
@@ -861,7 +870,7 @@ mod tests {
         ("dev_containers", false, true, false, false),
         ("projects", false, false, false, false),
         ("doctor", false, false, true, true),
-        ("depot_publish", false, false, false, true),
+        ("artifact_publish", false, false, false, true),
         ("artifacts", false, true, false, true),
         ("browser", false, true, false, true),
         ("bundles", false, true, false, true),
@@ -1070,7 +1079,7 @@ mod tests {
                 .as_array()
                 .expect("bounded action enum")
                 .len(),
-            31
+            41
         );
         let annotations = tool.annotations.as_ref().expect("mixed-operation hints");
         assert_eq!(annotations.read_only_hint, Some(false));
@@ -1149,7 +1158,7 @@ mod tests {
         // the shared metadata; only widening it needs a fresh review.
         let expected_callable = [
             "access",
-            "depot_publish",
+            "artifact_publish",
             "doctor",
             "fs",
             "jobs",
@@ -1337,7 +1346,7 @@ mod tests {
 
     #[test]
     fn atomic_descriptor_requires_and_embeds_complete_output_schema() {
-        fn status_output_schema() -> serde_json::Value {
+        fn status_output_schema() -> Value {
             serde_json::json!({
                 "type": "object",
                 "properties": { "healthy": { "type": "boolean" } },

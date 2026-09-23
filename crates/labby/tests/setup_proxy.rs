@@ -15,9 +15,9 @@ fn command(home: &std::path::Path) -> Command {
 fn setup_proxy_noninteractive_dry_run_is_supported() {
     let home = tempfile::tempdir().expect("temp home");
     let output = command(home.path())
-        .args(["--json", "setup", "proxy", "--yes", "--dry-run"])
+        .args(["--json", "config", "proxy", "set", "--yes", "--dry-run"])
         .output()
-        .expect("run labby setup proxy dry-run");
+        .expect("run labby config proxy set dry-run");
 
     assert!(
         output.status.success(),
@@ -36,16 +36,25 @@ fn setup_proxy_noninteractive_dry_run_is_supported() {
 fn setup_proxy_non_tty_without_yes_fails_without_reading_stdin() {
     let home = tempfile::tempdir().expect("temp home");
     let output = command(home.path())
-        .args(["setup", "proxy"])
+        .args(["--json", "--no-input", "config", "proxy", "set"])
         .stdin(std::process::Stdio::null())
         .output()
         .expect("run noninteractive setup proxy");
 
-    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["kind"], "confirmation_required");
+    assert_eq!(error["error"]["recovery"]["action"], "confirm");
+    assert_eq!(error["error"]["side_effects"], "none_expected");
     assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("setup proxy requires --yes when stdin is not a TTY")
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("--yes")
     );
+    assert!(!home.path().join(".labby/config.toml").exists());
+    assert!(!home.path().join(".labby/.env").exists());
 }
 
 #[test]
@@ -59,7 +68,9 @@ fn bearer_setup_preserves_comments_hardens_secret_and_is_byte_idempotent() {
     std::fs::write(&env, "# operator env\nUNRELATED=value\n").unwrap();
 
     let first = command(home.path())
-        .args(["--json", "setup", "proxy", "--yes", "--auth", "bearer"])
+        .args([
+            "--json", "config", "proxy", "set", "--yes", "--auth", "bearer",
+        ])
         .output()
         .expect("first bearer setup");
     assert!(
@@ -99,7 +110,9 @@ fn bearer_setup_preserves_comments_hardens_secret_and_is_byte_idempotent() {
     assert!(!String::from_utf8_lossy(&first.stderr).contains(token));
 
     let second = command(home.path())
-        .args(["--json", "setup", "proxy", "--yes", "--auth", "bearer"])
+        .args([
+            "--json", "config", "proxy", "set", "--yes", "--auth", "bearer",
+        ])
         .output()
         .expect("second bearer setup");
     assert!(second.status.success());
@@ -144,8 +157,9 @@ bearer_token_env = "LABBY_PROXY_TOKEN"
     let output = command(home.path())
         .args([
             "--json",
-            "setup",
+            "config",
             "proxy",
+            "set",
             "--yes",
             "--exposure",
             "local",
@@ -188,7 +202,14 @@ fn bearer_token_stdin_is_stored_but_never_printed() {
     let home = tempfile::tempdir().expect("temp home");
     let secret = "stdin-secret-with-spaces # not output";
     let mut child = command(home.path())
-        .args(["--json", "setup", "proxy", "--yes", "--bearer-token-stdin"])
+        .args([
+            "--json",
+            "config",
+            "proxy",
+            "set",
+            "--yes",
+            "--bearer-token-stdin",
+        ])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

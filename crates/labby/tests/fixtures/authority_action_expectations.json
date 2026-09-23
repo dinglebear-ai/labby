@@ -272,6 +272,24 @@
       "personal_no_membership": "allow",
       "platform_admin": "allow"
     },
+    "dev_containers:dev_containers.build": {
+      "required_capability": "scope.operate",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "dev_containers:dev_containers.build.get": {
+      "required_capability": "scope.read",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
     "dev_containers:dev_containers.create": {
       "required_capability": "scope.create",
       "team_member": "allow",
@@ -290,8 +308,53 @@
       "personal_no_membership": "deny",
       "platform_admin": "allow"
     },
+    "dev_containers:dev_containers.draft.create": {
+      "required_capability": "scope.create",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "dev_containers:dev_containers.draft.update": {
+      "required_capability": "scope.operate",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "dev_containers:dev_containers.environment.replace": {
+      "required_capability": "scope.operate",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "dev_containers:dev_containers.launch_reference": {
+      "required_capability": "scope.read",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
     "dev_containers:dev_containers.list": {
       "required_capability": "scope.read",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "dev_containers:dev_containers.rebuild": {
+      "required_capability": "scope.operate",
       "team_member": "allow",
       "team_admin": "allow",
       "team_owner": "allow",
@@ -319,6 +382,24 @@
     },
     "dev_containers:dev_containers.stop": {
       "required_capability": "scope.operate",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "dev_containers:dev_containers.templates.get": {
+      "required_capability": "scope.read",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "dev_containers:dev_containers.templates.list": {
+      "required_capability": "scope.read",
       "team_member": "allow",
       "team_admin": "allow",
       "team_owner": "allow",
@@ -444,6 +525,15 @@
       "platform_admin": "allow"
     },
     "gateway:gateway.get": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.host.metrics": {
       "required_capability": "platform.manage",
       "team_member": "deny",
       "team_admin": "deny",
@@ -1312,96 +1402,6 @@
       "team_member": "allow",
       "team_admin": "allow",
       "team_owner": "allow",
-      "other_team_member": "deny",
-      "personal_no_membership": "deny",
-      "platform_admin": "allow"
-    },
-    "dev_containers:dev_containers.build": {
-      "required_capability": "scope.operate",
-      "team_member": "allow",
-      "team_admin": "allow",
-      "team_owner": "allow",
-      "other_team_member": "deny",
-      "personal_no_membership": "deny",
-      "platform_admin": "allow"
-    },
-    "dev_containers:dev_containers.build.get": {
-      "required_capability": "scope.read",
-      "team_member": "allow",
-      "team_admin": "allow",
-      "team_owner": "allow",
-      "other_team_member": "deny",
-      "personal_no_membership": "deny",
-      "platform_admin": "allow"
-    },
-    "dev_containers:dev_containers.draft.create": {
-      "required_capability": "scope.create",
-      "team_member": "allow",
-      "team_admin": "allow",
-      "team_owner": "allow",
-      "other_team_member": "deny",
-      "personal_no_membership": "deny",
-      "platform_admin": "allow"
-    },
-    "dev_containers:dev_containers.draft.update": {
-      "required_capability": "scope.operate",
-      "team_member": "allow",
-      "team_admin": "allow",
-      "team_owner": "allow",
-      "other_team_member": "deny",
-      "personal_no_membership": "deny",
-      "platform_admin": "allow"
-    },
-    "dev_containers:dev_containers.environment.replace": {
-      "required_capability": "scope.operate",
-      "team_member": "allow",
-      "team_admin": "allow",
-      "team_owner": "allow",
-      "other_team_member": "deny",
-      "personal_no_membership": "deny",
-      "platform_admin": "allow"
-    },
-    "dev_containers:dev_containers.launch_reference": {
-      "required_capability": "scope.read",
-      "team_member": "allow",
-      "team_admin": "allow",
-      "team_owner": "allow",
-      "other_team_member": "deny",
-      "personal_no_membership": "deny",
-      "platform_admin": "allow"
-    },
-    "dev_containers:dev_containers.rebuild": {
-      "required_capability": "scope.operate",
-      "team_member": "allow",
-      "team_admin": "allow",
-      "team_owner": "allow",
-      "other_team_member": "deny",
-      "personal_no_membership": "deny",
-      "platform_admin": "allow"
-    },
-    "dev_containers:dev_containers.templates.get": {
-      "required_capability": "scope.read",
-      "team_member": "allow",
-      "team_admin": "allow",
-      "team_owner": "allow",
-      "other_team_member": "deny",
-      "personal_no_membership": "deny",
-      "platform_admin": "allow"
-    },
-    "dev_containers:dev_containers.templates.list": {
-      "required_capability": "scope.read",
-      "team_member": "allow",
-      "team_admin": "allow",
-      "team_owner": "allow",
-      "other_team_member": "deny",
-      "personal_no_membership": "deny",
-      "platform_admin": "allow"
-    },
-    "gateway:gateway.host.metrics": {
-      "required_capability": "platform.manage",
-      "team_member": "deny",
-      "team_admin": "deny",
-      "team_owner": "deny",
       "other_team_member": "deny",
       "personal_no_membership": "deny",
       "platform_admin": "allow"

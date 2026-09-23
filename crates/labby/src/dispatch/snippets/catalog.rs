@@ -39,7 +39,7 @@ struct SnippetValidationSchema {
 #[derive(JsonSchema)]
 #[serde(untagged)]
 enum SnippetTestResultSchema {
-    Single(SnippetTestSingleSchema),
+    Single(Box<SnippetTestSingleSchema>),
     All(SnippetTestAllSchema),
 }
 

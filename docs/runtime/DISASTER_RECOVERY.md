@@ -11,6 +11,15 @@ installation root and configured external authentication files. Stop the Labby
 daemon before using it; each operation acquires the same exclusive
 `lifecycle.lock` as the daemon and fails if the daemon is still running.
 
+Before upgrading across database schema changes, retain an offline export of
+the prior state. Rolling back only the executable (including installer,
+host-service, or Incus binary rollback) does not reverse database migrations.
+To return to the prior release, stop the service, use the compatible exporting
+binary to restore the pre-upgrade bundle, then reactivate the prior executable
+and verify readiness and authenticated work. Restoration returns state to the
+backup time; writes made after that snapshot are not retained. Keep a separate
+export of the newer state if those writes may need recovery.
+
 ```bash
 labby state export --output /secure/staging/labby-state-2026-09-04
 labby state verify --bundle /secure/staging/labby-state-2026-09-04

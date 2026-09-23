@@ -470,22 +470,32 @@ impl PeerContract {
             return Vec::new();
         };
         let mut upstreams = manager
-            .current_config()
+            .code_mode_enabled_upstream_hints()
             .await
-            .upstream
             .into_iter()
-            .filter(|upstream| upstream.enabled)
-            .filter(|upstream| self.route_scope.allows_upstream(&upstream.name))
-            .map(|upstream| CodeModeUpstreamDescription {
-                name: upstream.name,
-                hint: upstream
-                    .code_mode_hint
+            .filter(|(name, _)| self.route_scope.allows_upstream(name))
+            .map(|(name, hint)| CodeModeUpstreamDescription {
+                name,
+                hint: hint
                     .as_deref()
                     .and_then(labby_runtime::gateway_config::normalize_code_mode_hint),
+                example: None,
             })
             .collect::<Vec<_>>();
         upstreams.sort_by(|a, b| a.name.cmp(&b.name));
         upstreams.dedup_by(|a, b| a.name == b.name);
+        let names = upstreams
+            .iter()
+            .map(|upstream| upstream.name.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        if let Some((name, example)) = manager.code_mode_example_tool(&names).await
+            && let Some(upstream) = upstreams.iter_mut().find(|upstream| upstream.name == name)
+        {
+            upstream.example = crate::mcp::call_tool_codemode::CodeModeExampleCall::from_tool(
+                example.tool(),
+                example.input_schema(),
+            );
+        }
         upstreams
     }
 
@@ -818,6 +828,7 @@ mod tests {
             crate::mcp::call_tool_codemode::CodeModeUpstreamDescription {
                 name: "same-name-live-config".to_string(),
                 hint: Some("secret mutable hint".to_string()),
+                example: None,
             },
         ];
 
@@ -930,6 +941,7 @@ mod tests {
                 },
                 scopes: None,
                 credential: Default::default(),
+                additional_endpoint_origins: vec![],
                 prefer_client_metadata_document: None,
             }),
             imported_from: None,

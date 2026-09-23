@@ -1523,7 +1523,7 @@ mod tests {
     /// MCP-only service. Every other entry must resolve to a mounted route and be
     /// rejected by the shared authentication layer before its handler runs.
     fn registry_http_auth_probe(service: &str) -> Option<(Method, String)> {
-        if service == "lab_admin" || service == crate::dispatch::depot_publish::SERVICE {
+        if service == "lab_admin" || crate::dispatch::depot_publish::is_publish_service(service) {
             return None;
         }
         let path = match service {
@@ -1575,7 +1575,7 @@ mod tests {
             let Some((method, path)) = registry_http_auth_probe(service.name) else {
                 assert!(
                     service.name == "lab_admin"
-                        || service.name == crate::dispatch::depot_publish::SERVICE,
+                        || crate::dispatch::depot_publish::is_publish_service(service.name),
                     "only reviewed MCP-only services may omit an HTTP route"
                 );
                 continue;
