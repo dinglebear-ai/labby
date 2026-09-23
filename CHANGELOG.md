@@ -103,6 +103,13 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [2.1.2](https://github.com/dinglebear-ai/labby/compare/v2.1.1...v2.1.2) (2026-09-23)
+
+
+### Fixed
+
+* **release:** keep N-1 upgrade qualification noninteractive ([#755](https://github.com/dinglebear-ai/labby/issues/755)) ([8b7b294](https://github.com/dinglebear-ai/labby/commit/8b7b29483fbb5cd7299a647d13215447b92ab628))
+
 ## [2.1.1](https://github.com/dinglebear-ai/labby/compare/v2.1.0...v2.1.1) (2026-09-22)
 
 

@@ -486,7 +486,7 @@ dependencies = [
 
 [[package]]
 name = "labby-model"
-version = "2.1.1"
+version = "2.1.2"
 dependencies = [
  "serde",
  "serde_json",
