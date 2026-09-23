@@ -37,18 +37,20 @@ pub(crate) enum CodeModeDescriptionVariant {
 pub(crate) struct CodeModeUpstreamDescription {
     pub(crate) name: String,
     pub(crate) hint: Option<String>,
-    /// A real tool from this upstream used to render the example call.
+    /// A real tool from this upstream used to render the example call. At most
+    /// one upstream in a list carries one (the gateway picks a single example
+    /// per caller); the renderer uses the first it finds.
     pub(crate) example: Option<CodeModeExampleCall>,
 }
 
-/// A concrete upstream call rendered as the description's example.
+/// A concrete, read-only upstream call rendered as the description's example.
+/// Built only by [`CodeModeExampleCall::from_tool`], which enforces the name
+/// bounds; the gateway only offers explicitly read-only tools.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CodeModeExampleCall {
-    pub(crate) tool: String,
+    tool: String,
     /// JS object literal for the tool's required parameters.
-    pub(crate) args: String,
-    /// Whether the tool is explicitly read-only (eligible for `codemode_read`).
-    pub(crate) read_only: bool,
+    args: String,
 }
 
 impl CodeModeExampleCall {
@@ -56,13 +58,13 @@ impl CodeModeExampleCall {
     /// parameters, each with a `"<name>"` placeholder that is obviously not a
     /// real value. Only upstream *names* are rendered, never enum values or
     /// descriptions, and only when they are short and identifier-like.
-    /// Returns `None` when the tool is not usable as an example.
+    /// Returns `None` when the tool is not usable as an example. Callers must
+    /// only pass explicitly read-only tools.
     pub(crate) fn from_tool(
         tool: &str,
         input_schema: &serde_json::Map<String, Value>,
-        read_only: bool,
     ) -> Option<Self> {
-        if !read_only || !example_safe_name(tool, &['_', '-', '.']) {
+        if !example_safe_name(tool, &['_', '-', '.']) {
             return None;
         }
         let required = input_schema
@@ -92,7 +94,6 @@ impl CodeModeExampleCall {
         Some(Self {
             tool: tool.to_string(),
             args,
-            read_only,
         })
     }
 }
@@ -148,8 +149,8 @@ Workflow:
 tool's `path`, `id`, `helper`, and `signature`.
 2. Check (only if the signature is not enough): return `await codemode.describe(path)` and call \
 in the next run; output only reaches you if the script returns it.
-3. Call the `helper` as given (e.g. `codemode.my_server.get_issue(params)`; `-`/`.` become \
-`_`), or `callTool(\"upstream::tool\", params)` with raw names.
+3. Call the `helper` as given (e.g. `codemode.my_server.get_issue(params)`; names become valid JS \
+identifiers), or `callTool(\"upstream::tool\", params)` with raw names.
 Never guess tool or parameter names.
 
 Rules:
@@ -167,7 +168,7 @@ before retrying.";
 const TAIL_RULES: &str = "\
 - No `fetch`, `fs`, `require`, or Node APIs; all I/O goes through tools. Labby's own \
 services (e.g. `gateway`) are separate MCP tools, not callable here.
-- Optional inputs `upstreams` and `tools` narrow the run; upstream names ignore case and `-`/`_`.";
+- Optional inputs `upstreams` and `tools` narrow the run; upstream names ignore case and `-`/`_`/`.`.";
 
 fn globals_line(variant: CodeModeDescriptionVariant) -> &'static str {
     match variant {
@@ -180,12 +181,11 @@ fn globals_line(variant: CodeModeDescriptionVariant) -> &'static str {
 
 fn example_block(upstreams: &[CodeModeUpstreamDescription]) -> String {
     // Models copy the example verbatim, so it is only ever a read-only tool
-    // (enforced when the example is built) with placeholder arguments.
+    // (the gateway only offers those) with placeholder arguments.
     let example = upstreams.iter().find_map(|upstream| {
         upstream
             .example
             .as_ref()
-            .filter(|example| example.read_only)
             .map(|example| (upstream.name.as_str(), example))
     });
     match example {

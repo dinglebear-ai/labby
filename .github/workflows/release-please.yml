@@ -5,7 +5,7 @@ name: release-please
 # On every green CI run on main, release-please maintains a "release PR" that
 # bumps `.release-please-manifest.json` and updates CHANGELOG.md. Merging that
 # PR creates the git tag (vX.Y.Z) and a draft GitHub Release. Pushing that tag
-# triggers the GitHub-hosted candidate qualification for Linux/macOS/Windows
+# triggers the GitHub-hosted candidate qualification for Linux/macOS
 # archives and the Incus artifact before release promotion.
 #
 # release-type is "simple", NOT "rust". release-please's rust/cargo-workspace

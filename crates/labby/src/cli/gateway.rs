@@ -160,7 +160,7 @@ fn filtered_builtin_service_registry(config: &LabConfig) -> ToolRegistry {
 /// including when a non-explicit daemon's response does not decode). No other
 /// gateway subcommand builds the local manager. Building `GatewayManager`
 /// unconditionally up front has real side effects regardless of whether it is
-/// ever used: it opens (and creates, if absent) `~/.labby/auth.db` for the
+/// ever used: it opens (and creates, if absent) `$LABBY_HOME/auth.db` for the
 /// upstream OAuth credential store. Deferring it keeps that cost
 /// pay-for-what-you-use.
 pub(crate) struct LazyGatewayManager<'a> {

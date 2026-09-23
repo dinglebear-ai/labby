@@ -71,6 +71,10 @@ impl FileStashOwnerAuthorization {
 pub(crate) enum AccessSetupReason {
     Missing,
     Uninitialized,
+    /// An owner bootstrap proof was prepared but not yet consumed. Both
+    /// `labby setup` and browser owner setup refuse this state; the operator
+    /// must consume or clean up the pending access bootstrap.
+    ProofPending,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -598,7 +602,7 @@ impl AccessRuntime {
         match &*self.state.lock().await {
             RuntimeState::SetupRequired(reason) => AccessRuntimeStatus::SetupRequired(*reason),
             RuntimeState::Prepared => {
-                AccessRuntimeStatus::SetupRequired(AccessSetupReason::Uninitialized)
+                AccessRuntimeStatus::SetupRequired(AccessSetupReason::ProofPending)
             }
             RuntimeState::Ready { .. } => AccessRuntimeStatus::Ready,
             RuntimeState::Blocked(reason) => AccessRuntimeStatus::Blocked(*reason),
@@ -633,7 +637,7 @@ impl AccessRuntime {
             RuntimeState::Ready { store, .. } => Ok(store.clone()),
             RuntimeState::SetupRequired(reason) => Err(AccessRuntimeError::SetupRequired(*reason)),
             RuntimeState::Prepared => Err(AccessRuntimeError::SetupRequired(
-                AccessSetupReason::Uninitialized,
+                AccessSetupReason::ProofPending,
             )),
             RuntimeState::Blocked(reason) => Err(AccessRuntimeError::Blocked(*reason)),
         }
@@ -879,7 +883,7 @@ impl AccessRuntime {
             } => Ok(credential_reads.clone()),
             RuntimeState::SetupRequired(reason) => Err(AccessRuntimeError::SetupRequired(*reason)),
             RuntimeState::Prepared => Err(AccessRuntimeError::SetupRequired(
-                AccessSetupReason::Uninitialized,
+                AccessSetupReason::ProofPending,
             )),
             RuntimeState::Blocked(reason) => Err(AccessRuntimeError::Blocked(*reason)),
         }
@@ -1442,20 +1446,22 @@ mod tests {
         drop(store);
 
         let runtime = AccessRuntime::initialize(path).await;
+        // A pending proof is not an uninitialized store: both `labby setup`
+        // and browser owner setup refuse it, so it carries its own reason.
         assert_eq!(
             runtime.status().await,
-            AccessRuntimeStatus::SetupRequired(AccessSetupReason::Uninitialized)
+            AccessRuntimeStatus::SetupRequired(AccessSetupReason::ProofPending)
         );
         assert!(matches!(
             runtime.store().await,
             Err(AccessRuntimeError::SetupRequired(
-                AccessSetupReason::Uninitialized
+                AccessSetupReason::ProofPending
             ))
         ));
         assert!(matches!(
             runtime.credential_reads().await,
             Err(AccessRuntimeError::SetupRequired(
-                AccessSetupReason::Uninitialized
+                AccessSetupReason::ProofPending
             ))
         ));
     }

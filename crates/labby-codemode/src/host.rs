@@ -64,10 +64,32 @@ pub struct ToolsRender {
 /// because the upstream does not annotate them `readOnlyHint: true`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct WithheldTools {
+    namespace: String,
+    tool_count: usize,
+}
+
+impl WithheldTools {
+    /// Summary for one upstream; `None` when nothing was withheld, so every
+    /// value reports at least one tool.
+    #[must_use]
+    pub fn new(namespace: impl Into<String>, tool_count: usize) -> Option<Self> {
+        (tool_count > 0).then(|| Self {
+            namespace: namespace.into(),
+            tool_count,
+        })
+    }
+
     /// Configured upstream name (the `callTool` namespace).
-    pub namespace: String,
-    /// Number of tools withheld from this upstream.
-    pub tool_count: usize,
+    #[must_use]
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+
+    /// Number of tools withheld from this upstream (at least one).
+    #[must_use]
+    pub fn tool_count(&self) -> usize {
+        self.tool_count
+    }
 }
 
 impl ToolsRender {

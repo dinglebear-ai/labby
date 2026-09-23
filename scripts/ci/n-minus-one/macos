@@ -21,7 +21,7 @@ transport = "stdio"
 command = "labby"
 args = ["mcp"]
 EOF
-    printf 'LABBY_MCP_HTTP_TOKEN=%064d\n' 0 >"$labby_home/.env"; chmod 600 "$labby_home/.env"
+    printf 'LABBY_AUTH_MODE=bearer\nLABBY_MCP_HTTP_TOKEN=%064d\n' 0 >"$labby_home/.env"; chmod 600 "$labby_home/.env"
     python3 "$repo_root/scripts/ci/n-minus-one-durable-state.py" seed "$labby_home"
     hash_state >"$state_digest"
 }
@@ -60,7 +60,7 @@ authenticated_action() {
 case "${1:-}" in
     install-previous)
         mkdir -p "$work_root"
-        LABBY_INSTALL_DIR="$install_dir" LABBY_INSTALL_VERSION="$LABBY_PREVIOUS_VERSION" \
+        LABBY_INSTALL_NO_SETUP=1 LABBY_INSTALL_DIR="$install_dir" LABBY_INSTALL_VERSION="$LABBY_PREVIOUS_VERSION" \
             LABBY_ALLOW_SOURCE_FALLBACK=0 sh "$repo_root/scripts/install.sh"
         service install
         ;;
@@ -73,9 +73,10 @@ case "${1:-}" in
         "$repo_root/scripts/ci/verify-and-activate-release.sh" \
             --repo "$GITHUB_REPOSITORY" --workflow release.yml --ref "$GITHUB_REF" \
             --artifact "${LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE:?exact candidate archive is required}" -- \
-            env LABBY_INSTALL_DIR="$install_dir" LABBY_INSTALL_VERSION="$LABBY_CANDIDATE_VERSION" \
+            env LABBY_INSTALL_NO_SETUP=1 LABBY_INSTALL_DIR="$install_dir" LABBY_INSTALL_VERSION="$LABBY_CANDIDATE_VERSION" \
             LABBY_INSTALL_LOCAL_BINARY="$LABBY_N_MINUS_ONE_CANDIDATE_BINARY" \
             LABBY_INSTALL_LOCAL_SHA256="$LABBY_N_MINUS_ONE_CANDIDATE_SHA256" sh "$repo_root/scripts/install.sh"
+        LABBY_HOME="$labby_home" "$install_dir/labby" setup --bootstrap-static-owner
         service restart
         ;;
     verify-candidate) verify_version "$LABBY_CANDIDATE_VERSION"; verify_persisted_state; service status >/dev/null ;;

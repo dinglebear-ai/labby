@@ -533,6 +533,16 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         bearer_token_configured = bearer_token.is_some(),
         "http auth configuration resolved"
     );
+    // An installation that resolved a different root starts an empty
+    // authorization store. Name both paths once at startup; never migrate.
+    if let Some(legacy) = crate::config::legacy_auth_store(&auth_config) {
+        tracing::warn!(
+            subsystem = "api_server",
+            phase = "auth.config",
+            "{}",
+            legacy.message()
+        );
+    }
     let notifier = PeerNotifier::default();
     // WIRING (SEC): tighten loose ~/.labby/.env permissions at every startup so a
     // freshly-created file (which may be 0644) is corrected to 0600 before any
