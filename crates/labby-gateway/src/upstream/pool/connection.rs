@@ -238,6 +238,22 @@ impl<H: rmcp::ClientHandler> UpstreamConnection<H> {
 }
 
 impl UpstreamPool {
+    /// Run publication only while the cache and single-flight gate still name
+    /// the same connection. Reconcile takes these locks in the same order.
+    async fn with_current_subject_gate<T>(
+        &self,
+        key: &(String, String),
+        connect_lock: &Arc<Mutex<()>>,
+        publish: impl FnOnce(&mut HashMap<(String, String), SubjectScopedConnection>) -> T,
+    ) -> Option<T> {
+        let mut cache = self.subject_connections.write().await;
+        let gates = self.subject_connect_locks.read().await;
+        gates
+            .get(key)
+            .is_some_and(|current| Arc::ptr_eq(current, connect_lock))
+            .then(|| publish(&mut cache))
+    }
+
     pub(super) async fn acquire_peer(
         &self,
         upstream_name: &str,
@@ -450,37 +466,34 @@ impl UpstreamPool {
             let oauth_publication = self
                 .oauth_publication_guard(lifecycle_epoch.as_ref())
                 .await?;
-            let gate_is_current = self
-                .subject_connect_locks
-                .read()
-                .await
-                .get(&key)
-                .is_some_and(|current| Arc::ptr_eq(current, &connect_lock));
-            if !gate_is_current {
+            // Enforce the LRU cap BEFORE inserting so a burst of unique subjects
+            // can't push the live-peer (and FD) count past the bound. Evicted
+            // peers are shut down cleanly off-lock (P-H2).
+            let mut conn = Some(conn);
+            let evicted = self
+                .with_current_subject_gate(&key, &connect_lock, |cache| {
+                    let evicted = evict_lru_over_cap(cache, SUBJECT_CONN_MAX_ENTRIES - 1, &key);
+                    cache.insert(
+                        key.clone(),
+                        SubjectScopedConnection {
+                            optional_catalogs: Default::default(),
+                            _connection: conn.take().expect("connection published once"),
+                            peer: peer.clone(),
+                            tools: cached_tools,
+                            last_used: Instant::now(),
+                        },
+                    );
+                    evicted
+                })
+                .await;
+            let Some(evicted) = evicted else {
                 drop(oauth_publication);
-                conn.shutdown(&config.name, "subject.config.superseded")
+                conn.expect("unpublished connection remains owned")
+                    .shutdown(&config.name, "subject.config.superseded")
                     .await;
                 anyhow::bail!(
                     "upstream configuration changed while subject connection was being built"
                 );
-            }
-            // Enforce the LRU cap BEFORE inserting so a burst of unique subjects
-            // can't push the live-peer (and FD) count past the bound. Evicted
-            // peers are shut down cleanly off-lock (P-H2).
-            let evicted = {
-                let mut cache = self.subject_connections.write().await;
-                let evicted = evict_lru_over_cap(&mut cache, SUBJECT_CONN_MAX_ENTRIES - 1, &key);
-                cache.insert(
-                    key.clone(),
-                    SubjectScopedConnection {
-                        optional_catalogs: Default::default(),
-                        _connection: conn,
-                        peer: peer.clone(),
-                        tools: cached_tools,
-                        last_used: Instant::now(),
-                    },
-                );
-                evicted
             };
             for (name, evicted_conn) in evicted {
                 evicted_conn
@@ -553,20 +566,20 @@ impl UpstreamPool {
     ) -> Vec<(String, UpstreamConnection)> {
         let drained = {
             let mut cache = self.subject_connections.write().await;
+            let mut gates = self.subject_connect_locks.write().await;
             let keys = cache
                 .keys()
                 .filter(|(name, _)| name == upstream_name)
                 .cloned()
                 .collect::<Vec<_>>();
-            keys.into_iter()
+            let drained = keys
+                .into_iter()
                 .filter_map(|key| cache.remove(&key).map(|entry| (key.0, entry._connection)))
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            gates.retain(|(name, _), _| name != upstream_name);
+            drained
         };
         self.subject_connect_errors
-            .write()
-            .await
-            .retain(|(name, _), _| name != upstream_name);
-        self.subject_connect_locks
             .write()
             .await
             .retain(|(name, _), _| name != upstream_name);
@@ -738,6 +751,87 @@ mod tests {
 
     use super::super::testsupport::*;
     use super::super::{SubjectScopedConnection, UpstreamPool};
+
+    #[tokio::test]
+    async fn reconcile_before_subject_publication_rejects_the_old_gate() {
+        let pool = static_catalog_pool("alpha").await;
+        let key = ("alpha".to_string(), "alice".to_string());
+        let gate = Arc::new(tokio::sync::Mutex::new(()));
+        pool.subject_connect_locks
+            .write()
+            .await
+            .insert(key.clone(), Arc::clone(&gate));
+
+        let (paused, reached) = tokio::sync::oneshot::channel();
+        let (resume, resumed) = tokio::sync::oneshot::channel();
+        let publisher = {
+            let pool = Arc::clone(&pool);
+            tokio::spawn(async move {
+                paused.send(()).expect("signal before publication");
+                resumed.await.expect("resume publication");
+                pool.with_current_subject_gate(&key, &gate, |_| true).await
+            })
+        };
+        reached
+            .await
+            .expect("publisher reached publication boundary");
+        pool.detach_subject_connections_for("alpha").await;
+        resume.send(()).expect("resume publisher");
+        assert!(publisher.await.expect("publisher task").is_none());
+        assert!(pool.subject_connections.read().await.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn subject_reconcile_waits_for_publication_before_draining_peer() {
+        let pool = static_catalog_pool("alpha").await;
+        let key = ("alpha".to_string(), "alice".to_string());
+        let gate = Arc::new(tokio::sync::Mutex::new(()));
+        pool.subject_connect_locks
+            .write()
+            .await
+            .insert(key.clone(), Arc::clone(&gate));
+        let connection = pool
+            .connections
+            .write()
+            .await
+            .remove("alpha")
+            .expect("peer");
+        let peer = connection.peer.clone();
+        let (entered, reached) = tokio::sync::oneshot::channel();
+        let (resume, resumed) = std::sync::mpsc::channel();
+        let publisher = {
+            let pool = Arc::clone(&pool);
+            tokio::spawn(async move {
+                let inserted_key = key.clone();
+                pool.with_current_subject_gate(&key, &gate, move |cache| {
+                    entered.send(()).expect("pause before insertion");
+                    resumed.recv().expect("resume insertion");
+                    cache.insert(
+                        inserted_key,
+                        SubjectScopedConnection {
+                            optional_catalogs: Default::default(),
+                            _connection: connection,
+                            peer,
+                            tools: Vec::new(),
+                            last_used: std::time::Instant::now(),
+                        },
+                    );
+                })
+                .await
+            })
+        };
+        reached.await.expect("publication holds both locks");
+        assert!(pool.subject_connections.try_write().is_err());
+        assert!(pool.subject_connect_locks.try_write().is_err());
+        let drainer = {
+            let pool = Arc::clone(&pool);
+            tokio::spawn(async move { pool.detach_subject_connections_for("alpha").await })
+        };
+        resume.send(()).expect("resume publication");
+        assert!(publisher.await.expect("publisher task").is_some());
+        assert_eq!(drainer.await.expect("drainer task").len(), 1);
+        assert!(pool.subject_connections.read().await.is_empty());
+    }
 
     /// P-C1: inserting a `SubjectScopedConnection` into the cache and calling
     /// `acquire_or_connect_subject` again with the same `(upstream, subject)`

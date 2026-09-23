@@ -1088,6 +1088,21 @@ fn downstream_cancelled(reason: &str) -> String {
 }
 
 impl UpstreamPool {
+    /// Keep gate validation and relay cache publication atomic with reconcile.
+    async fn with_current_relay_gate<T>(
+        &self,
+        key: &RelayCacheKey,
+        connect_lock: &Arc<Mutex<()>>,
+        publish: impl FnOnce(&mut HashMap<RelayCacheKey, RelayCachedConnection>) -> T,
+    ) -> Option<T> {
+        let mut cache = self.relay_connections.write().await;
+        let gates = self.relay_connect_locks.read().await;
+        gates
+            .get(key)
+            .is_some_and(|current| Arc::ptr_eq(current, connect_lock))
+            .then(|| publish(&mut cache))
+    }
+
     async fn record_relay_failure_for(
         &self,
         upstream_name: &str,
@@ -2308,35 +2323,33 @@ impl UpstreamPool {
                 return None;
             }
         };
-        let gate_is_current = self
-            .relay_connect_locks
-            .read()
-            .await
-            .get(&key)
-            .is_some_and(|current| Arc::ptr_eq(current, &connect_lock));
-        if !gate_is_current {
-            drop(oauth_publication);
-            conn.shutdown(&config.name, "relay.config.superseded").await;
-            return None;
-        }
         // Enforce the LRU cap BEFORE inserting so a burst of unique sessions
         // cannot push the live-peer count past the bound; shut evicted peers
         // down off-lock.
-        let evicted = {
-            let mut cache = self.relay_connections.write().await;
-            let evicted = evict_relay_lru_over_cap(&mut cache, SUBJECT_CONN_MAX_ENTRIES - 1, &key);
-            cache.insert(
-                key.clone(),
-                RelayCachedConnection {
-                    _connection: conn,
-                    peer: peer.clone(),
-                    capability_fingerprint: requested_capability_fingerprint,
-                    routes: Arc::clone(&routes),
-                    cancellation_sender: cancellation_sender.clone(),
-                    last_used: Instant::now(),
-                },
-            );
-            evicted
+        let mut conn = Some(conn);
+        let evicted = self
+            .with_current_relay_gate(&key, &connect_lock, |cache| {
+                let evicted = evict_relay_lru_over_cap(cache, SUBJECT_CONN_MAX_ENTRIES - 1, &key);
+                cache.insert(
+                    key.clone(),
+                    RelayCachedConnection {
+                        _connection: conn.take().expect("connection published once"),
+                        peer: peer.clone(),
+                        capability_fingerprint: requested_capability_fingerprint,
+                        routes: Arc::clone(&routes),
+                        cancellation_sender: cancellation_sender.clone(),
+                        last_used: Instant::now(),
+                    },
+                );
+                evicted
+            })
+            .await;
+        let Some(evicted) = evicted else {
+            drop(oauth_publication);
+            conn.expect("unpublished connection remains owned")
+                .shutdown(&config.name, "relay.config.superseded")
+                .await;
+            return None;
         };
         for (name, evicted_conn) in evicted {
             evicted_conn.shutdown(&name, "relay.cache.lru_evict").await;
@@ -2368,19 +2381,19 @@ impl UpstreamPool {
     ) -> Vec<(String, UpstreamConnection<RelayClientHandler>)> {
         let drained: Vec<_> = {
             let mut cache = self.relay_connections.write().await;
+            let mut gates = self.relay_connect_locks.write().await;
             let keys = cache
                 .keys()
                 .filter(|(name, _, _, _)| name == upstream_name)
                 .cloned()
                 .collect::<Vec<_>>();
-            keys.into_iter()
+            let drained = keys
+                .into_iter()
                 .filter_map(|key| cache.remove(&key).map(|entry| (key.0, entry._connection)))
-                .collect()
+                .collect();
+            gates.retain(|(name, _, _, _), _| name != upstream_name);
+            drained
         };
-        self.relay_connect_locks
-            .write()
-            .await
-            .retain(|(name, _, _, _), _| name != upstream_name);
         drained
     }
 
@@ -2486,6 +2499,72 @@ mod tests {
 
     fn relay_cache_key(name: &str, session: u64, subject: Option<&str>) -> RelayCacheKey {
         relay_cache_key_for_capabilities(name, session, subject, &relay_test_capabilities())
+    }
+
+    #[tokio::test]
+    async fn reconcile_before_relay_publication_rejects_the_old_gate() {
+        let pool = Arc::new(UpstreamPool::new());
+        let key = relay_cache_key("alpha", 7, Some("alice"));
+        let gate = Arc::new(Mutex::new(()));
+        pool.relay_connect_locks
+            .write()
+            .await
+            .insert(key.clone(), Arc::clone(&gate));
+
+        let (paused, reached) = tokio::sync::oneshot::channel();
+        let (resume, resumed) = tokio::sync::oneshot::channel();
+        let publisher = {
+            let pool = Arc::clone(&pool);
+            tokio::spawn(async move {
+                paused.send(()).expect("signal before publication");
+                resumed.await.expect("resume publication");
+                pool.with_current_relay_gate(&key, &gate, |_| true).await
+            })
+        };
+        reached
+            .await
+            .expect("publisher reached publication boundary");
+        pool.detach_relay_connections_for("alpha").await;
+        resume.send(()).expect("resume publisher");
+        assert!(publisher.await.expect("publisher task").is_none());
+        assert!(pool.relay_connections.read().await.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn relay_reconcile_waits_for_publication_before_draining_peer() {
+        let pool = Arc::new(UpstreamPool::new());
+        let key = relay_cache_key("alpha", 7, Some("alice"));
+        let gate = Arc::new(Mutex::new(()));
+        pool.relay_connect_locks
+            .write()
+            .await
+            .insert(key.clone(), Arc::clone(&gate));
+        let (connection, _downstream) = live_relay_cached_connection(Instant::now()).await;
+        let (entered, reached) = tokio::sync::oneshot::channel();
+        let (resume, resumed) = std::sync::mpsc::channel();
+        let publisher = {
+            let pool = Arc::clone(&pool);
+            tokio::spawn(async move {
+                let inserted_key = key.clone();
+                pool.with_current_relay_gate(&key, &gate, move |cache| {
+                    entered.send(()).expect("pause before insertion");
+                    resumed.recv().expect("resume insertion");
+                    cache.insert(inserted_key, connection);
+                })
+                .await
+            })
+        };
+        reached.await.expect("publication holds both locks");
+        assert!(pool.relay_connections.try_write().is_err());
+        assert!(pool.relay_connect_locks.try_write().is_err());
+        let drainer = {
+            let pool = Arc::clone(&pool);
+            tokio::spawn(async move { pool.detach_relay_connections_for("alpha").await })
+        };
+        resume.send(()).expect("resume publication");
+        assert!(publisher.await.expect("publisher task").is_some());
+        assert_eq!(drainer.await.expect("drainer task").len(), 1);
+        assert!(pool.relay_connections.read().await.is_empty());
     }
 
     fn relay_cache_key_for_capabilities(
