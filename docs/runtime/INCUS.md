@@ -259,6 +259,13 @@ number. Do not set it during normal deployment.
 
 ## Tailscale
 
+Bootstrap and image provisioning use a commit-pinned official Tailscale
+installer with the reviewed SHA-256 and an explicit package version. Bootstrap
+ensures Tailscale is present before running the selected Labby binary's
+provisioning plan, including historical binaries whose embedded installer URL
+was mutable. An existing installation is left intact; checksum verification is
+never bypassed to recover from upstream installer changes.
+
 Tailscale runs inside the container and gets its own tailnet identity. `/dev/net/tun`
 passthrough is required.
 

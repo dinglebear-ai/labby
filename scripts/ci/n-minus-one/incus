@@ -28,6 +28,11 @@ call() {
   incus exec "$name" -- curl -fsS -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data "$2" "http://127.0.0.1:8765/v1/$1"
 }
 customized_state() { incus exec "$name" -- python3 /var/lib/labby/n-minus-one-durable-state.py verify /home/labby/.labby; call snippets '{"action":"snippets.get","params":{"name":"n-minus-one-state"}}' | grep -Fq 'preserved-state'; }
+recover_state() {
+  incus exec "$name" -- env HOME=/home/labby bash /var/lib/labby/n-minus-one/recovery.sh "$1" \
+    /var/lib/labby/n-minus-one/candidate /home/labby/.labby /var/lib/labby/n-minus-one/recovery
+  if [[ "$1" == restore ]]; then incus exec "$name" -- chown -R labby:labby /home/labby/.labby; fi
+}
 ensure_fixture() {
   [[ "$(uname -s)" == Linux ]] || { echo 'Incus N-1 requires Linux' >&2; exit 1; }
   if ! command -v incus >/dev/null; then sudo apt-get update; sudo apt-get install -y incus; fi
@@ -58,12 +63,23 @@ case "${1:-}" in
   seed-state) capture_baseline_token; call snippets '{"action":"snippets.create","params":{"name":"n-minus-one-state","body":"async () => ({ value: \"preserved-state\" })","description":"release qualification state","force":true}}' >/dev/null; incus file push -p "$repo_root/scripts/ci/n-minus-one-durable-state.py" "$name/var/lib/labby/n-minus-one-durable-state.py"; incus exec "$name" -- sh -ceu 'trap '\''systemctl start labby >/dev/null 2>&1 || true'\'' EXIT; install -d -m 0700 /var/lib/labby/n-minus-one; cp -a /usr/local/bin/labby /var/lib/labby/n-minus-one/labby; systemctl stop labby; [ -f /home/labby/.labby/config.toml ] || printf "config_version = 1\n" > /home/labby/.labby/config.toml; python3 /var/lib/labby/n-minus-one-durable-state.py seed /home/labby/.labby; chown -R labby:labby /home/labby/.labby; rm -rf /var/lib/labby/n-minus-one/full-state; cp -a /home/labby/.labby /var/lib/labby/n-minus-one/full-state; systemctl start labby; trap - EXIT; sha256sum /home/labby/.labby/config.toml >/var/lib/labby/n-minus-one-state.sha256' ;;
   verify-previous) version "$LABBY_PREVIOUS_VERSION"; customized_state ;;
   verify-provenance) "$repo_root/scripts/ci/verify-and-activate-release.sh" --repo "$GITHUB_REPOSITORY" --workflow release.yml --ref "$GITHUB_REF" --artifact "${candidate_archive:?candidate archive required}" -- true ;;
-  upgrade) "$repo_root/scripts/ci/verify-and-activate-release.sh" --repo "$GITHUB_REPOSITORY" --workflow release.yml --ref "$GITHUB_REF" --artifact "${candidate_archive:?candidate archive required}" -- "${LABBY_N_MINUS_ONE_CANDIDATE_BINARY:?candidate binary required}" host incus sync --container "$name" --binary "$LABBY_N_MINUS_ONE_CANDIDATE_BINARY" --no-web-assets; incus exec "$name" -- su -s /bin/sh labby -c 'LABBY_HOME=/home/labby/.labby /usr/local/bin/labby setup --bootstrap-static-owner'; incus exec "$name" -- systemctl restart labby ;;
+  upgrade)
+    "$repo_root/scripts/ci/verify-and-activate-release.sh" --repo "$GITHUB_REPOSITORY" --workflow release.yml --ref "$GITHUB_REF" --artifact "${candidate_archive:?candidate archive required}" -- true
+    incus file push "$repo_root/scripts/ci/n-minus-one-recovery.sh" "$name/var/lib/labby/n-minus-one/recovery.sh"
+    incus file push "${LABBY_N_MINUS_ONE_CANDIDATE_BINARY:?candidate binary required}" "$name/var/lib/labby/n-minus-one/candidate"
+    incus exec "$name" -- chmod 0755 /var/lib/labby/n-minus-one/candidate
+    incus exec "$name" -- systemctl stop labby
+    recover_state capture
+    incus exec "$name" -- systemctl start labby
+    "$repo_root/scripts/ci/verify-and-activate-release.sh" --repo "$GITHUB_REPOSITORY" --workflow release.yml --ref "$GITHUB_REF" --artifact "$candidate_archive" -- "$LABBY_N_MINUS_ONE_CANDIDATE_BINARY" host incus sync --container "$name" --binary "$LABBY_N_MINUS_ONE_CANDIDATE_BINARY" --no-web-assets
+    incus exec "$name" -- su -s /bin/sh labby -c 'LABBY_HOME=/home/labby/.labby /usr/local/bin/labby setup --bootstrap-static-owner'
+    incus exec "$name" -- systemctl restart labby
+    ;;
   verify-candidate) version "$LABBY_CANDIDATE_VERSION"; customized_state ;;
   authenticated-action) authenticated_action ;;
   restart) incus exec "$name" -- systemctl restart labby ;;
   verify-restart) version "$LABBY_CANDIDATE_VERSION"; authenticated_action; customized_state ;;
-  rollback) "${LABBY_N_MINUS_ONE_CANDIDATE_BINARY:?candidate binary required}" host incus sync --container "$name" --rollback ;;
+  rollback) incus exec "$name" -- systemctl stop labby; recover_state restore; "${LABBY_N_MINUS_ONE_CANDIDATE_BINARY:?candidate binary required}" host incus sync --container "$name" --rollback ;;
   verify-rollback) version "$LABBY_PREVIOUS_VERSION"; incus exec "$name" -- sh -c 'cd / && sha256sum -c /var/lib/labby/n-minus-one-state.sha256'; customized_state ;;
   *) echo "unknown stage: ${1:-}" >&2; exit 64 ;;
 esac
