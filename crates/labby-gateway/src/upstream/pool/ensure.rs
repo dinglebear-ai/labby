@@ -983,6 +983,8 @@ mod tests {
         let config = UpstreamConfig {
             display_name: None,
             lifecycle: None,
+            command: None,
+            url: Some("http://127.0.0.1:9/mcp".to_string()),
             oauth: Some(UpstreamOauthConfig {
                 mode: UpstreamOauthMode::AuthorizationCodePkce,
                 registration: UpstreamOauthRegistration::Dynamic,
