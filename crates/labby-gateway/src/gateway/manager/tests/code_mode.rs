@@ -1201,6 +1201,20 @@ async fn warm_public_catalog_bounds_cold_oauth_subject_enumeration() {
 async fn oauth_warm_up_admission_is_shared_across_subjects() {
     let private = fixture_oauth_upstream("private", "http://127.0.0.1:9/mcp");
     let (manager, pool) = code_mode_manager_with_upstreams(vec![private.clone()]).await;
+    manager
+        .seed_config_unchecked_for_tests(GatewayConfig {
+            gateway: labby_runtime::gateway_config::GatewayPreferences {
+                upstream_discovery_concurrency: Some(1),
+                ..Default::default()
+            },
+            code_mode: CodeModeConfig {
+                enabled: true,
+                ..CodeModeConfig::default()
+            },
+            upstream: vec![private.clone()],
+            ..GatewayConfig::default()
+        })
+        .await;
     pool.register_upstream_config_for_tests(&private);
 
     let subjects: Vec<String> = (0..12).map(|n| format!("subject-{n}")).collect();
@@ -1228,10 +1242,25 @@ async fn oauth_warm_up_admission_is_shared_across_subjects() {
         manager
             .code_mode_warm_up_task_spawns
             .load(Ordering::Relaxed)
-            <= 3,
-        "distinct subjects must share background warm-up admission"
+            <= 1,
+        "distinct subjects must obey configured shared warm-up admission"
     );
     drop(held_locks);
+}
+
+#[test]
+fn warm_up_timeout_respects_stdio_discovery_budget() {
+    let mut stdio = fixture_http_upstream("stdio");
+    stdio.command = Some("node".to_string());
+    stdio.url = None;
+    assert!(
+        super::super::code_mode_runtime::code_mode_warm_up_timeout(&stdio, Duration::from_secs(30),)
+            >= Duration::from_mins(1)
+    );
+    assert!(
+        super::super::code_mode_runtime::code_mode_warm_up_timeout(&stdio, Duration::from_secs(90),)
+            >= Duration::from_secs(90)
+    );
 }
 
 #[tokio::test]

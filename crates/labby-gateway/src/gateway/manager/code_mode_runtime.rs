@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use futures::StreamExt as _;
 use tokio::time::Instant;
@@ -40,10 +41,35 @@ const SEMANTIC_SEARCH_COOLDOWN: std::time::Duration = std::time::Duration::from_
 
 static CODE_MODE_WARM_UP_IN_FLIGHT: OnceLock<tokio::sync::Mutex<BTreeSet<String>>> =
     OnceLock::new();
-#[cfg(not(test))]
-const CODE_MODE_WARM_UP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 #[cfg(test)]
 const CODE_MODE_WARM_UP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+struct CodeModeWarmUpAdmission(Arc<AtomicUsize>);
+
+impl CodeModeWarmUpAdmission {
+    fn try_acquire(active: &Arc<AtomicUsize>, limit: usize) -> Option<Self> {
+        active
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                (current < limit).then_some(current + 1)
+            })
+            .ok()
+            .map(|_| Self(Arc::clone(active)))
+    }
+}
+
+impl Drop for CodeModeWarmUpAdmission {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+pub(super) fn code_mode_warm_up_timeout(
+    upstream: &UpstreamConfig,
+    request_timeout: std::time::Duration,
+) -> std::time::Duration {
+    crate::upstream::pool::upstream_discovery_timeout(upstream, request_timeout)
+        .saturating_add(std::time::Duration::from_secs(5))
+}
 
 fn merge_visible_catalog_tools(
     global: Vec<UpstreamTool>,
@@ -1461,8 +1487,10 @@ impl GatewayManager {
                 upstream.name,
                 oauth_subject.as_deref().unwrap_or("")
             );
-            let Ok(_warm_up_permit) = self.code_mode_warm_up_gate.clone().try_acquire_owned()
-            else {
+            let Some(warm_up_admission) = CodeModeWarmUpAdmission::try_acquire(
+                &self.code_mode_warm_up_active,
+                per_request_limit,
+            ) else {
                 // Opportunistic warm-up can be retried by a later request.
                 // Never queue a task beyond this request's lifetime.
                 continue;
@@ -1481,16 +1509,20 @@ impl GatewayManager {
             let upstream = upstream.clone();
             let owner = owner.clone();
             let oauth_subject = oauth_subject.clone();
+            #[cfg(not(test))]
+            let warm_up_timeout = code_mode_warm_up_timeout(&upstream, pool.request_timeout());
+            #[cfg(test)]
+            let warm_up_timeout = CODE_MODE_WARM_UP_TIMEOUT;
             #[cfg(test)]
             self.code_mode_warm_up_task_spawns
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                .fetch_add(1, Ordering::Relaxed);
             tokio::spawn(async move {
-                let _warm_up_permit = _warm_up_permit;
+                let _warm_up_admission = warm_up_admission;
                 // `ensure_tools_for_upstream` skips the upstream internally
                 // when it already has healthy tools.
                 let subject = upstream.oauth.as_ref().and(oauth_subject.as_deref());
                 match tokio::time::timeout(
-                    CODE_MODE_WARM_UP_TIMEOUT,
+                    warm_up_timeout,
                     pool.ensure_tools_for_upstream(&upstream, subject, owner.as_ref()),
                 )
                 .await
@@ -1515,7 +1547,7 @@ impl GatewayManager {
                         service = "gateway",
                         action = "code_mode.warm_upstream",
                         upstream = %upstream.name,
-                        timeout_seconds = CODE_MODE_WARM_UP_TIMEOUT.as_secs(),
+                        timeout_seconds = warm_up_timeout.as_secs(),
                         "code_mode upstream connection timed out during warm-up"
                     ),
                 }

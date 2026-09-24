@@ -283,7 +283,7 @@ impl GatewayManager {
             in_process_connector: None,
             code_mode_refresh_flights: Arc::new(Mutex::new(std::collections::HashMap::new())),
             code_mode_cache_sync_after: Arc::new(Mutex::new(None)),
-            code_mode_warm_up_gate: Arc::new(tokio::sync::Semaphore::new(3)),
+            code_mode_warm_up_active: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             #[cfg(test)]
             code_mode_warm_up_task_spawns: Arc::new(AtomicU64::new(0)),
             code_mode_catalog_render_cache: Arc::new(Mutex::new(None)),

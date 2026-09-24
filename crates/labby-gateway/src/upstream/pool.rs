@@ -154,6 +154,7 @@ pub use helpers::{
 };
 pub(crate) use helpers::{
     install_max_response_bytes_default, install_upstream_discovery_concurrency_default,
+    upstream_discovery_timeout,
 };
 pub use list_changed_refresh::{
     LIST_CHANGED_COALESCE_WINDOW, ListChangedKinds, ListChangedRefresher,
