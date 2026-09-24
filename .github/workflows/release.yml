@@ -150,7 +150,10 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Build natively
-        run: cargo build --workspace --all-features --locked --release --target ${{ matrix.target }}
+        # CI checks every workspace member. The release archives contain only
+        # the product CLI, so avoid compiling unrelated workspace binaries and
+        # fixture executables on each native release runner.
+        run: cargo build --package labby --bin labby --all-features --locked --release --target ${{ matrix.target }}
 
       - name: Package artifact
         run: |
