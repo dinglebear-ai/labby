@@ -1362,7 +1362,7 @@ fn merge_gate_shards_heavy_suites_to_stay_under_ten_minutes() {
         "the full gateway-only suite must run in required shards on pull requests"
     );
     for required in [
-        "--no-default-features --features gateway,proxy-testkit --locked --profile ci",
+        "--no-default-features --features \"gateway,proxy-testkit\" --locked --profile ci",
         "unit_packages=(-p labby)",
     ] {
         assert!(
