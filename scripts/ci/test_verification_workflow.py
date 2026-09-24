@@ -48,7 +48,9 @@ class VerificationWorkflowTests(unittest.TestCase):
     def test_schema_is_asserted_not_regenerated_in_ci(self) -> None:
         steps = self.workflow["jobs"]["core"]["steps"]
         runs = [step["run"] for step in steps if "run" in step]
-        self.assertIn("cargo test --manifest-path tools/verification/Cargo.toml --workspace --all-features --locked", runs)
+        test_command = "cargo test --manifest-path tools/verification/Cargo.toml --workspace --all-features --locked -- --test-threads=1"
+        self.assertIn(test_command, runs)
+        self.assertIn(test_command, (ROOT / "Justfile").read_text())
         self.assertIn("python3 -m unittest discover -s tools/verification/tests -p 'test_*.py' -v", runs)
         for step in steps:
             self.assertNotIn("continue-on-error", step)
