@@ -736,8 +736,8 @@ jobs:
     # Retired ACP, Registry, Marketplace, Deploy, Fleet, and Stash product
     # surfaces are deleted from the workspace. The matrix below covers every
     # supported standalone and composed Labby product slice.
-    # Every slice compiles. Gateway also runs its suite so omission-side tests
-    # execute; fs and skills run focused behavioral regressions for their
+    # Every slice compiles. The gateway-only suite runs in parallel shards
+    # below; fs and skills run focused behavioral regressions for their
     # feature boundaries.
     env:
       # lld only; see the `test` job for why CARGO_BUILD_JOBS must stay unset.
@@ -781,18 +781,6 @@ jobs:
             cargo check -p labby --no-default-features \
               --features ${{ matrix.slice }} --all-targets --locked
           fi
-      - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
-        if: matrix.slice == 'gateway' && github.event_name != 'pull_request'
-        with:
-          install_args: cargo:cargo-nextest
-      - name: Run gateway-slice test suite
-        # A second full product test run (24 minutes) in the gateway-only
-        # configuration. Pull requests keep the all-target compile proof
-        # above; the suite itself runs on pushes to main and manual runs.
-        if: matrix.slice == 'gateway' && github.event_name != 'pull_request'
-        run: >-
-          cargo nextest run -p labby --no-default-features
-          --features gateway,proxy-testkit --locked
       - name: Run fs-slice proxy preflight regression
         if: matrix.slice == 'fs'
         run: cargo test -p labby --no-default-features --features fs --locked --test doctor_proxy_preflight
@@ -801,6 +789,50 @@ jobs:
         run: |
           cargo test -p labby --no-default-features --features skills --locked skills::
           cargo test -p labby --no-default-features --features skills --locked skill_library
+
+  gateway-slice-tests:
+    name: Gateway-only tests (${{ matrix.shard }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs: [changes, frontend-assets]
+    if: ${{ needs.changes.outputs.rust_compile == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: gateway-admin-out
+          path: apps/gateway-admin/out
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "22"
+      - name: Install Rust and kache
+        uses: ./.github/actions/setup-rust-kache
+      - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
+        with:
+          install_args: cargo:cargo-nextest
+      - name: Warm gateway-only normal targets
+        run: cargo build -p labby --no-default-features --features gateway,proxy-testkit --lib --bins --locked
+      - name: Run gateway-only workspace partition
+        run: >-
+          cargo nextest run -p labby --no-default-features
+          --features gateway,proxy-testkit --locked --profile ci
+          --partition hash:${{ matrix.shard }}/4
+      - name: Upload nextest report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: gateway-only-nextest-${{ matrix.shard }}
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: warn
+          retention-days: 14
 
   extracted-crate-slices:
     name: Extracted crate slices
@@ -1664,6 +1696,7 @@ jobs:
       - incus-contract
       - desktop-web
       - desktop-rust
+      - gateway-slice-tests
     steps:
       - name: report changed-path routing drift
         if: ${{ needs.changes.outputs.gate_key_drift != '' }}
@@ -1750,3 +1783,4 @@ jobs:
           require_success_or_skipped incus-contract "${{ needs.incus-contract.result }}"
           require_success_or_skipped desktop-web "${{ needs.desktop-web.result }}"
           require_success_or_skipped desktop-rust "${{ needs.desktop-rust.result }}"
+          require_success_or_skipped gateway-slice-tests "${{ needs.gateway-slice-tests.result }}"
