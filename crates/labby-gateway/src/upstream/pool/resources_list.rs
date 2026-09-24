@@ -879,12 +879,6 @@ impl UpstreamPool {
                 {
                     Ok(Ok((peer, _tools))) => peer,
                     Ok(Err(error)) => {
-                        pool.record_failure_for(
-                            &config.name,
-                            UpstreamCapability::Resources,
-                            format!("upstream connect failed: {error}"),
-                        )
-                        .await;
                         log_upstream_request_error(
                             event,
                             started.elapsed().as_millis(),
@@ -900,12 +894,6 @@ impl UpstreamPool {
                             "subject-scoped upstream connection timed out after {}ms",
                             request_timeout.as_millis()
                         );
-                        pool.record_failure_for(
-                            &config.name,
-                            UpstreamCapability::Resources,
-                            error.clone(),
-                        )
-                        .await;
                         log_upstream_request_error(
                             event,
                             started.elapsed().as_millis(),
@@ -2068,6 +2056,7 @@ mod tests {
             },
         );
         let config = oauth_schema_config("linear");
+        pool.register_upstream_config_for_tests(&config);
 
         let alice = pool
             .subject_scoped_gateway_server_schema(&config, "alice")
@@ -2403,6 +2392,7 @@ mod tests {
         );
         let mut config = oauth_schema_config("google-drive");
         config.proxy_resources = true;
+        pool.register_upstream_config_for_tests(&config);
 
         let baseline_calls = resource_calls.load(Ordering::SeqCst);
         let resources = pool
@@ -2518,6 +2508,7 @@ mod tests {
         );
         let mut config = oauth_schema_config("tools-only");
         config.proxy_resources = true;
+        pool.register_upstream_config_for_tests(&config);
 
         let resources = pool
             .subject_scoped_resources(std::slice::from_ref(&config), "alice")
@@ -2599,6 +2590,7 @@ mod tests {
         pool.request_timeout = Duration::from_millis(25);
         let mut config = oauth_schema_config("slow");
         config.proxy_resources = true;
+        pool.register_upstream_config_for_tests(&config);
 
         let started = Instant::now();
         let resources = pool.subject_scoped_resources(&[config], "alice").await;
@@ -2632,6 +2624,7 @@ mod tests {
         });
         let mut config = oauth_schema_config("slow-connect");
         config.proxy_resources = true;
+        pool.register_upstream_config_for_tests(&config);
 
         let started = Instant::now();
         let resources = pool.subject_scoped_resources(&[config], "alice").await;

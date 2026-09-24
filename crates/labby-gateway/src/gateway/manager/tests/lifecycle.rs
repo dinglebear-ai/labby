@@ -619,6 +619,66 @@ async fn transactional_selective_probe_does_not_hold_publication_barrier() -> Re
 }
 
 #[tokio::test]
+async fn transactional_selective_prepare_wait_does_not_hold_publication_barrier() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let initial = GatewayConfig {
+        upstream: vec![fixture_http_upstream("alpha")],
+        ..GatewayConfig::default()
+    };
+    write_gateway_config(&path, &initial).expect("write initial config");
+
+    let manager = GatewayManager::new(path, GatewayRuntimeHandle::default());
+    manager.seed_config(initial.clone()).await;
+    let pool = Arc::new(manager.new_base_pool(
+        initial.upstream_request_timeout(),
+        initial.upstream_relay_timeout(),
+        initial.gateway.auto_reconnect,
+    ));
+    pool.seed_lazy_upstreams(&initial.upstream).await;
+    manager.runtime.swap(Some(Arc::clone(&pool))).await;
+
+    let gate = pool.lazy_connect_lock_for_tests("alpha").await;
+    let held = gate.lock().await;
+    let updating = {
+        let manager = manager.clone();
+        tokio::spawn(async move {
+            manager
+                .update(
+                    "alpha",
+                    crate::gateway::params::GatewayUpdatePatch {
+                        enabled: Some(false),
+                        ..Default::default()
+                    },
+                    None,
+                    None,
+                    None,
+                )
+                .await
+        })
+    };
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let (published, published_pool) =
+        tokio::time::timeout(Duration::from_secs(1), manager.published_config_and_pool())
+            .await
+            .expect("publication reader must not wait behind reconcile connect gate");
+    assert!(published.upstream[0].enabled);
+    assert!(
+        published_pool
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, &pool))
+    );
+
+    drop(held);
+    tokio::time::timeout(Duration::from_secs(5), updating)
+        .await
+        .expect("update completes after gate release")
+        .expect("update task")
+        .expect("update succeeds");
+}
+
+#[tokio::test]
 async fn transactional_selective_runtime_state_failure_restores_live_pool_and_config() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config.toml");

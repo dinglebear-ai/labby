@@ -637,9 +637,11 @@ async fn q1_hostile_catalogs_stop_at_cursor_page_item_and_byte_bounds() {
             .all(|template| !template.name.contains("bomb"))
     );
 
-    // Startup capability probing and the forced full reload exercise three
-    // independent resource-list passes. Each cursor/byte breach must stop on
-    // its first response. Prompt probing is one single-page capability check
+    // Startup probing and forced reload each make one bounded resource-list
+    // attempt. A rejected snapshot remains missing, so the subsequent client
+    // resources/list retries that upstream once through snapshot warm-up.
+    // The old duplicate reload pass is gone; each cursor/byte breach still
+    // stops on its first response. Prompt probing is one single-page check
     // plus the exact 64-page bounded reload pass.
     assert_eq!(
         cursor.resource_lists(),

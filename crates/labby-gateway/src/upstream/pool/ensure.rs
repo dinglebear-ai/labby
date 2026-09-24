@@ -66,6 +66,13 @@ fn validated_lazy_entry(config: &UpstreamConfig) -> Option<super::super::types::
 }
 
 impl UpstreamPool {
+    pub(super) fn upstream_config_matches(&self, config: &UpstreamConfig) -> bool {
+        let fingerprint = crate::gateway::code_mode::catalog_cache::fingerprint(config);
+        self.upstream_config_fingerprints
+            .get(&config.name)
+            .is_some_and(|current| current.as_str() == fingerprint)
+    }
+
     pub(super) async fn install_connected_tools(
         &self,
         config: &UpstreamConfig,
@@ -114,6 +121,9 @@ impl UpstreamPool {
                 continue;
             };
 
+            self.upstream_config_fingerprints
+                .entry(config.name.clone())
+                .or_insert_with(|| crate::gateway::code_mode::catalog_cache::fingerprint(config));
             catalog.entry(config.name.clone()).or_insert(entry);
 
             if config.proxy_resources {
@@ -130,6 +140,9 @@ impl UpstreamPool {
         let Some(entry) = validated_lazy_entry(config) else {
             return;
         };
+        self.upstream_config_fingerprints
+            .entry(config.name.clone())
+            .or_insert_with(|| crate::gateway::code_mode::catalog_cache::fingerprint(config));
         self.catalog
             .write()
             .await
@@ -211,8 +224,6 @@ impl UpstreamPool {
                 let started = Instant::now();
                 self.ensure_lazy_upstream_entry(config).await;
                 let (_peer, tools) = self.acquire_or_connect_subject(config, subject).await?;
-                self.record_success_for(&config.name, UpstreamCapability::Tools)
-                    .await;
                 tracing::info!(
                     surface = "dispatch",
                     service = "upstream.pool",
@@ -319,6 +330,10 @@ impl UpstreamPool {
             };
             let tool_count = tools.len();
             let supports_skills = peer_declares_skills(&conn.peer);
+            anyhow::ensure!(
+                self.upstream_config_matches(config),
+                "upstream configuration changed while connection was being built"
+            );
             let _oauth_publication = self
                 .oauth_publication_guard(lifecycle_epoch.as_ref())
                 .await?;
@@ -366,8 +381,6 @@ impl UpstreamPool {
         if config.oauth.is_some() && oauth_subject.is_some() {
             self.ensure_lazy_upstream_entry(config).await;
             let (_connection, _tools) = connector(config.clone()).await?;
-            self.record_success_for(&config.name, UpstreamCapability::Tools)
-                .await;
             return Ok(true);
         }
         if self.has_healthy_tools_for_upstream(&config.name).await {
@@ -499,6 +512,19 @@ impl UpstreamPool {
                 last_used: Instant::now(),
             },
         );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn register_upstream_config_for_tests(&self, config: &UpstreamConfig) {
+        self.upstream_config_fingerprints.insert(
+            config.name.clone(),
+            crate::gateway::code_mode::catalog_cache::fingerprint(config),
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn lazy_connect_lock_for_tests(&self, upstream_name: &str) -> Arc<Mutex<()>> {
+        self.lazy_connect_lock(upstream_name).await
     }
 
     pub(super) async fn lazy_connect_lock(&self, upstream_name: &str) -> Arc<Mutex<()>> {
@@ -905,6 +931,8 @@ mod tests {
         let config = UpstreamConfig {
             display_name: None,
             lifecycle: None,
+            command: None,
+            url: Some("http://127.0.0.1:9/mcp".to_string()),
             oauth: Some(UpstreamOauthConfig {
                 mode: UpstreamOauthMode::AuthorizationCodePkce,
                 registration: UpstreamOauthRegistration::Dynamic,
@@ -967,6 +995,8 @@ mod tests {
         let config = UpstreamConfig {
             display_name: None,
             lifecycle: None,
+            command: None,
+            url: Some("http://127.0.0.1:9/mcp".to_string()),
             oauth: Some(UpstreamOauthConfig {
                 mode: UpstreamOauthMode::AuthorizationCodePkce,
                 registration: UpstreamOauthRegistration::Dynamic,
@@ -1060,6 +1090,8 @@ mod tests {
         let config = UpstreamConfig {
             display_name: None,
             lifecycle: None,
+            command: None,
+            url: Some("http://127.0.0.1:9/mcp".to_string()),
             oauth: Some(UpstreamOauthConfig {
                 mode: UpstreamOauthMode::AuthorizationCodePkce,
                 registration: UpstreamOauthRegistration::Dynamic,
