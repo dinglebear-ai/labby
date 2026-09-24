@@ -634,6 +634,8 @@ pub struct GatewayClientView {
     #[serde(default)]
     pub subject: Option<String>,
     #[serde(default)]
+    pub authorized_client_id: Option<String>,
+    #[serde(default)]
     pub client_name: Option<String>,
     #[serde(default)]
     pub client_version: Option<String>,

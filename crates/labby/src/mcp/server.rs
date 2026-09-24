@@ -32,7 +32,9 @@ use tokio_util::sync::CancellationToken;
 use crate::access::AccessRuntime;
 #[cfg(feature = "gateway")]
 use crate::dispatch::gateway::manager::GatewayManager;
-use crate::mcp::context::{actor_key_from_extensions, subject_from_extensions};
+use crate::mcp::context::{
+    actor_key_from_extensions, authorized_client_id_from_extensions, subject_from_extensions,
+};
 use crate::mcp::provenance;
 use crate::mcp::route_scope::McpRouteScope;
 use crate::mcp::runtime::McpRouteRuntime;
@@ -480,6 +482,7 @@ fn connected_client_from_discovery(
         .filter(|value| !value.is_empty());
     labby_runtime::client_registry::ConnectedClient {
         subject_tag,
+        authorized_client_id: authorized_client_id_from_extensions(extensions).map(str::to_owned),
         client_name: client_info.as_ref().map(|info| info.name.clone()),
         client_version: client_info.as_ref().map(|info| info.version.clone()),
         transport: transport_label.to_string(),
@@ -1498,6 +1501,13 @@ mod tests {
         // above — an `http::request::Parts` carrying an `AuthContext`, wrapped in
         // `rmcp::model::Extensions`.
         fn extensions_with_subject(subject: &str) -> rmcp::model::Extensions {
+            extensions_with_subject_and_client(subject, None)
+        }
+
+        fn extensions_with_subject_and_client(
+            subject: &str,
+            authorized_client_id: Option<&str>,
+        ) -> rmcp::model::Extensions {
             let actor_key = crate::observability::activity::ActorKeyDeriver::from_secret(
                 "connected-client-test-secret",
             )
@@ -1517,6 +1527,13 @@ mod tests {
                     csrf_token: None,
                     email: None,
                 });
+            if let Some(client_id) = authorized_client_id {
+                parts
+                    .extensions
+                    .insert(labby_auth::auth_context::AuthorizedClientId(
+                        std::sync::Arc::from(client_id),
+                    ));
+            }
             let mut extensions = rmcp::model::Extensions::new();
             extensions.insert(parts);
             extensions
@@ -1624,10 +1641,31 @@ mod tests {
                 "2026-01-01T00:00:00Z".to_string(),
             );
 
+            assert_eq!(client.authorized_client_id, None);
             assert_eq!(client.client_name.as_deref(), Some("codex-cli"));
             assert_eq!(client.client_version.as_deref(), Some("0.9.2"));
             assert_eq!(client.transport, "stdio");
             assert_eq!(client.connected_at, "2026-01-01T00:00:00Z");
+        }
+
+        #[test]
+        fn verified_authorized_party_is_separate_from_self_declared_client_info() {
+            let extensions = extensions_with_subject_and_client("alice", Some("oauth-client-123"));
+            let client = connected_client_from_discovery(
+                Some(Implementation::new("totally-not-the-oauth-client", "9.9.9")),
+                &extensions,
+                "http",
+                "2026-01-01T00:00:00Z".to_string(),
+            );
+
+            assert_eq!(
+                client.authorized_client_id.as_deref(),
+                Some("oauth-client-123")
+            );
+            assert_eq!(
+                client.client_name.as_deref(),
+                Some("totally-not-the-oauth-client")
+            );
         }
     }
 
