@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run one shard of the workspace test suite for the `test` job in ci.yml.
+# Run one target-selecting shard of the workspace or gateway-only test suite.
 #
 # Shards select a small Cargo target set first: nextest compiles every selected
 # target before applying test filters, so a hash partition over the whole
@@ -9,16 +9,27 @@
 set -euo pipefail
 
 shard="${1:-}"
+suite="${2:-all-features}"
 labby_integration_shards=5
 unit_shards=4
 
 usage() {
-  echo "usage: $0 <unit-1..${unit_shards}|labby-int-1..${labby_integration_shards}|crates>" >&2
+  echo "usage: $0 <unit-1..${unit_shards}|labby-int-1..${labby_integration_shards}|crates> [all-features|gateway-only]" >&2
   exit 64
 }
 
 [ -n "$shard" ] || usage
-common=(--all-features --locked --profile ci)
+case "$suite" in
+  all-features)
+    common=(--all-features --locked --profile ci)
+    unit_packages=(--workspace)
+    ;;
+  gateway-only)
+    common=(--no-default-features --features gateway,proxy-testkit --locked --profile ci)
+    unit_packages=(-p labby)
+    ;;
+  *) usage ;;
+esac
 
 case "$shard" in
   unit-*)
@@ -32,7 +43,7 @@ case "$shard" in
     if [ "$index" -lt 1 ] || [ "$index" -gt "$unit_shards" ]; then
       usage
     fi
-    cargo nextest run --workspace "${common[@]}" --lib --bins \
+    cargo nextest run "${unit_packages[@]}" "${common[@]}" --lib --bins \
       --partition "hash:${index}/${unit_shards}"
     ;;
   labby-int-*)
@@ -65,6 +76,7 @@ case "$shard" in
       -E 'not test(live_labby::) | binary(=live_process_harness)'
     ;;
   crates)
+    [ "$suite" = all-features ] || usage
     # Integration tests of the extracted crates, then the workspace doctests
     # that used to run inside the blocking Rustdoc job.
     cargo nextest run --workspace --exclude labby "${common[@]}" --test '*'

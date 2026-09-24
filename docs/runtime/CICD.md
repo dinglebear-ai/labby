@@ -203,7 +203,7 @@ jobs when their changed-path category is enabled:
 | Compile | `rust_compile` | `cargo check --workspace --all-features` |
 | MSRV | `rust_compile` | `cargo +1.97.1 check --workspace --all-features --all-targets --locked` |
 | Feature slices | `rust_compile` | required by `ci-gate`; warm `labby` lib/bins at normal concurrency, then run `cargo check -p labby --no-default-features --features <slice> --all-targets --locked` for `gateway`, `gateway-host`, `integrated-gateway`, `fs`, and `skills` at the same concurrency so the heavy normal library is reused; fs and skills retain focused runtime tests |
-| Gateway-only runtime suite | `rust_compile` | required by `ci-gate` on pull requests and main; four nextest hash partitions cover the complete `gateway,proxy-testkit` suite in parallel, replacing the 24-minute serial main-only rerun |
+| Gateway-only runtime suite | `rust_compile` | required by `ci-gate` on pull requests and main; four unit partitions and five integration-target shards cover the `gateway,proxy-testkit` suite in parallel, replacing the 24-minute serial main-only rerun; shared embedded harness tests run once in their dedicated target |
 | Extracted crate slices | `rust_compile` | crate-specific `cargo check` commands for extracted runtime crates |
 | Generated docs freshness | `docs_check` | `just docs-check` |
 | Format | `rust_compile` | `cargo fmt --all -- --check` |
