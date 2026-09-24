@@ -17,6 +17,7 @@ use sha2::{Digest, Sha256};
 
 use crate::gateway::manager::GatewayManager;
 use crate::gateway::projection::{sanitize_schema, sanitize_tool_text};
+use crate::upstream::pool::ToolCatalogGeneration;
 use crate::upstream::types::{UpstreamRuntimeOwner, UpstreamTool};
 use labby_runtime::error::ToolError;
 use labby_runtime::lab_home;
@@ -27,15 +28,23 @@ use labby_runtime::lab_home;
 /// would otherwise keep serving a stale `.dts` from `codemode.describe()`.
 fn tool_shape_digest(tool: &UpstreamTool) -> String {
     let safety = normalized_tool_safety(tool);
-    let payload = serde_json::json!({
-        "description": tool.tool.description,
-        "input_schema": tool.input_schema,
-        "output_schema": tool.output_schema,
-        "safety": safety,
-    });
-    let serialized = serde_json::to_string(&payload).unwrap_or_default();
-    let digest = Sha256::digest(serialized.as_bytes());
-    digest.iter().map(|b| format!("{b:02x}")).collect()
+    // Borrow the large schemas instead of cloning them into a temporary JSON
+    // tree on every render-cache lookup.
+    #[derive(serde::Serialize)]
+    struct Shape<'a> {
+        description: &'a Option<std::borrow::Cow<'static, str>>,
+        input_schema: &'a Option<serde_json::Value>,
+        output_schema: &'a Option<serde_json::Value>,
+        safety: Option<CodeModeToolSafety>,
+    }
+    let shape = Shape {
+        description: &tool.tool.description,
+        input_schema: &tool.input_schema,
+        output_schema: &tool.output_schema,
+        safety,
+    };
+    let serialized = serde_json::to_vec(&shape).unwrap_or_default();
+    hex::encode(Sha256::digest(serialized))
 }
 
 fn normalized_tool_safety(tool: &UpstreamTool) -> Option<CodeModeToolSafety> {
@@ -135,13 +144,14 @@ pub(crate) async fn build_tools_render(
     caller: &CodeModeCaller,
     surface: CodeModeSurface,
 ) -> Result<ToolsRender, ToolError> {
-    let raw_tools = if use_cache {
-        manager
+    let (raw_tools, catalog_generation) = if use_cache {
+        let tools = manager
             .code_mode_catalog_tools_cached_allowed(Some(owner), oauth_subject, allowed_upstreams)
-            .await?
+            .await?;
+        (tools, None)
     } else {
         manager
-            .code_mode_catalog_tools_allowed(
+            .code_mode_catalog_tools_allowed_with_generation(
                 allow_cold_connect,
                 Some(owner),
                 oauth_subject,
@@ -154,7 +164,18 @@ pub(crate) async fn build_tools_render(
         .await;
     let accessible = filter_in_process_for_access(manager, raw_tools, caller);
     let (tools, withheld) = partition_tools_for_access(accessible, scope);
-    let mut render = catalog_from_tools(manager, tools, include_snippets, metadata_entries).await?;
+    let mut render = catalog_from_tools_with_generation(
+        manager,
+        tools,
+        include_snippets,
+        metadata_entries,
+        if oauth_subject.is_none() && allowed_upstreams.is_none() {
+            catalog_generation
+        } else {
+            None
+        },
+    )
+    .await?;
     render.withheld = withheld.into();
     Ok(render)
 }
@@ -257,16 +278,28 @@ fn withheld_by_access(tools: &[UpstreamTool], scope: &ToolScope) -> Vec<Withheld
     partition_tools_for_access(tools.to_vec(), scope).1
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) async fn catalog_from_tools(
     manager: &GatewayManager,
     raw_tools: Vec<UpstreamTool>,
     include_snippets: bool,
     metadata_entries: Vec<CatalogDescriptor>,
 ) -> Result<ToolsRender, ToolError> {
+    catalog_from_tools_with_generation(manager, raw_tools, include_snippets, metadata_entries, None)
+        .await
+}
+
+async fn catalog_from_tools_with_generation(
+    manager: &GatewayManager,
+    raw_tools: Vec<UpstreamTool>,
+    include_snippets: bool,
+    metadata_entries: Vec<CatalogDescriptor>,
+    catalog_generation: Option<ToolCatalogGeneration>,
+) -> Result<ToolsRender, ToolError> {
     // --- catalog render cache ---
-    // Compute a cheap fingerprint from the sorted healthy tool ids. This detects
-    // upstream additions/removals/renames without needing a pool generation
-    // counter. The sort makes the fingerprint order-independent.
+    // A stable pool generation covers tool shape, including schemas. Only a
+    // generation bracketed around the actual pool projection may use the cheap
+    // path; CLI, OAuth, and test callers retain the full shape digest.
     let snippet_fingerprint = if include_snippets {
         snippet_directory_fingerprint("admin")
             .await?
@@ -278,13 +311,14 @@ pub(super) async fn catalog_from_tools(
     let fingerprint = {
         let mut ids: Vec<String> = raw_tools
             .iter()
-            .map(|t| {
-                format!(
+            .map(|tool| match catalog_generation {
+                Some(_) => format!("{}::{}", tool.upstream_name, tool.tool.name),
+                None => format!(
                     "{}::{}::{}",
-                    t.upstream_name,
-                    t.tool.name,
-                    tool_shape_digest(t)
-                )
+                    tool.upstream_name,
+                    tool.tool.name,
+                    tool_shape_digest(tool)
+                ),
             })
             .collect();
         ids.extend(metadata_entries.iter().map(|entry| {
@@ -301,7 +335,18 @@ pub(super) async fn catalog_from_tools(
             )
         }));
         ids.sort_unstable();
-        format!("tools:\n{}\n{snippet_fingerprint}", ids.join("\n"))
+        let generation = catalog_generation
+            .map(|generation| {
+                format!(
+                    "generation:{}\n",
+                    hex::encode(generation.fingerprint_bytes())
+                )
+            })
+            .unwrap_or_default();
+        format!(
+            "tools:\n{generation}{}\n{snippet_fingerprint}",
+            ids.join("\n")
+        )
     };
 
     if let Some((entries, catalog_json, serialized_size)) =
@@ -755,6 +800,39 @@ mod tests {
     }
 
     #[test]
+    fn borrowed_shape_digest_matches_legacy_shape_and_tracks_schema_changes() {
+        let mut tool = safety_fixture(Some(rmcp::model::ToolAnnotations::new().read_only(true)));
+        tool.input_schema = Some(serde_json::json!({
+            "type": "object",
+            "properties": { "query": { "type": "string" } }
+        }));
+        tool.output_schema = Some(serde_json::json!({
+            "type": "object",
+            "properties": { "results": { "type": "array" } }
+        }));
+        let legacy_payload = serde_json::json!({
+            "description": tool.tool.description,
+            "input_schema": tool.input_schema,
+            "output_schema": tool.output_schema,
+            "safety": normalized_tool_safety(&tool),
+        });
+        let legacy_digest = hex::encode(Sha256::digest(
+            serde_json::to_vec(&legacy_payload).expect("shape serializes"),
+        ));
+        let original = tool_shape_digest(&tool);
+        assert_eq!(original, legacy_digest);
+
+        tool.input_schema = Some(serde_json::json!({ "type": "integer" }));
+        assert_ne!(tool_shape_digest(&tool), original);
+        tool.input_schema = Some(serde_json::json!({
+            "type": "object",
+            "properties": { "query": { "type": "string" } }
+        }));
+        tool.output_schema = Some(serde_json::json!({ "type": "boolean" }));
+        assert_ne!(tool_shape_digest(&tool), original);
+    }
+
+    #[test]
     fn snippet_membership_changes_rendered_embedding_identity() {
         use labby_codemode::snippet::store::{SnippetInfo, SnippetSource};
 
@@ -821,6 +899,58 @@ mod tests {
             .expect("second render");
 
         assert_ne!(first_render.fingerprint, second_render.fingerprint);
+    }
+
+    #[tokio::test]
+    async fn generation_key_tracks_pool_epoch_and_filtered_tool_membership() {
+        let dir = tempfile::tempdir().expect("temporary config root");
+        let manager = GatewayManager::new(
+            dir.path().join("config.toml"),
+            crate::gateway::runtime::GatewayRuntimeHandle::default(),
+        );
+        let generation = crate::upstream::pool::UpstreamPool::new()
+            .published_tool_catalog()
+            .await
+            .expect("published catalog")
+            .generation();
+        let next_generation = crate::upstream::pool::UpstreamPool::new()
+            .published_tool_catalog()
+            .await
+            .expect("published catalog")
+            .generation();
+        let tool = safety_fixture(None);
+        let first = catalog_from_tools_with_generation(
+            &manager,
+            vec![tool.clone()],
+            false,
+            Vec::new(),
+            Some(generation),
+        )
+        .await
+        .expect("first render");
+        let changed_generation = catalog_from_tools_with_generation(
+            &manager,
+            vec![tool.clone()],
+            false,
+            Vec::new(),
+            Some(next_generation),
+        )
+        .await
+        .expect("next generation render");
+        assert_ne!(first.fingerprint, changed_generation.fingerprint);
+
+        let mut renamed = tool;
+        renamed.tool.name = "renamed".into();
+        let changed_membership = catalog_from_tools_with_generation(
+            &manager,
+            vec![renamed],
+            false,
+            Vec::new(),
+            Some(generation),
+        )
+        .await
+        .expect("changed membership render");
+        assert_ne!(first.fingerprint, changed_membership.fingerprint);
     }
 
     #[tokio::test]
@@ -906,7 +1036,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let started = std::time::Instant::now();
-        let render = catalog_from_tools(&manager, tools, false, Vec::new())
+        let render = catalog_from_tools(&manager, tools.clone(), false, Vec::new())
             .await
             .expect("4k cold render");
         let elapsed = started.elapsed();
@@ -916,6 +1046,56 @@ mod tests {
             "4k cold render: elapsed_ms={} serialized_bytes={} bytes_per_tool={bytes_per_tool}",
             elapsed.as_millis(),
             render.serialized_size
+        );
+        let hot_started = std::time::Instant::now();
+        for _ in 0..5 {
+            catalog_from_tools(&manager, tools.clone(), false, Vec::new())
+                .await
+                .expect("4k hot render");
+        }
+        eprintln!(
+            "4k hot render: mean_ms={}",
+            hot_started.elapsed().as_millis() / 5
+        );
+        let digest_started = std::time::Instant::now();
+        for _ in 0..5 {
+            for tool in &tools {
+                std::hint::black_box(tool_shape_digest(tool));
+            }
+        }
+        eprintln!(
+            "4k shape digest: mean_ms={}",
+            digest_started.elapsed().as_millis() / 5
+        );
+        let generation = crate::upstream::pool::UpstreamPool::new()
+            .published_tool_catalog()
+            .await
+            .expect("published catalog")
+            .generation();
+        catalog_from_tools_with_generation(
+            &manager,
+            tools.clone(),
+            false,
+            Vec::new(),
+            Some(generation),
+        )
+        .await
+        .expect("prime generation-key render cache");
+        let cheap_started = std::time::Instant::now();
+        for _ in 0..5 {
+            catalog_from_tools_with_generation(
+                &manager,
+                tools.clone(),
+                false,
+                Vec::new(),
+                Some(generation),
+            )
+            .await
+            .expect("4k generation-key render");
+        }
+        eprintln!(
+            "4k generation-key render: mean_ms={}",
+            cheap_started.elapsed().as_millis() / 5
         );
         assert!(elapsed < std::time::Duration::from_secs(10));
         assert!(render.serialized_size < 4_000_000);

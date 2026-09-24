@@ -151,5 +151,5 @@ pub(crate) struct CatalogEmbeddingCache {
     pub fingerprint: String,
     /// `(entry.id, embedding_vector)` pairs. Callers should look up by id,
     /// not by index.
-    pub vectors: Vec<(String, Vec<f32>)>,
+    pub vectors: std::sync::Arc<Vec<(String, Vec<f32>)>>,
 }
