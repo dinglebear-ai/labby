@@ -69,6 +69,27 @@ jobs:
           npm test --prefix packages/labby-mcp
           npm run check --prefix packages/labby-mcp
           npm pack --dry-run --json ./packages/labby-mcp >/dev/null
+      - name: Validate publication credentials before building
+        env:
+          NPM_TOKEN_PRESENT: ${{ secrets.NPM_TOKEN != '' }}
+          MCP_PRIVATE_KEY_PRESENT: ${{ secrets.MCP_PRIVATE_KEY != '' }}
+        run: |
+          test "$NPM_TOKEN_PRESENT" = true || { echo '::error::NPM_TOKEN is not configured'; exit 1; }
+          test "$MCP_PRIVATE_KEY_PRESENT" = true || { echo '::error::MCP_PRIVATE_KEY is not configured'; exit 1; }
+      - name: Resolve N-1 baselines before building
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          releases="$RUNNER_TEMP/labby-releases.json"
+          merged="$RUNNER_TEMP/labby-merged-tags.txt"
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" >"$releases"
+          git tag --merged HEAD 'v*' >"$merged"
+          for archive in lab-x86_64-unknown-linux-gnu.tar.gz lab-aarch64-apple-darwin.tar.gz; do
+            python3 scripts/ci/resolve-n-minus-one-baseline.py \
+              --candidate "$GITHUB_REF_NAME" --releases "$releases" --merged-tags "$merged" \
+              --asset "$archive" --asset "$archive.sha256"
+          done
 
   frontend-assets:
     name: Frontend assets
