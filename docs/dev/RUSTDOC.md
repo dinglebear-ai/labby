@@ -91,7 +91,7 @@ A future cleanup can ratchet `missing_docs` to `deny` crate-by-crate once each c
 
 ## CI
 
-The dedicated `Rustdoc` CI job runs `just rustdoc` (the strict documentation build) whenever Rust compilation or workflow validation is selected by the changed-path classifier. The stable CI gate requires that job to succeed. The doctests that `just rustdoc-check` adds on top run in the non-blocking `Test (crates)` shard, because compiling every example as its own crate took most of the old job's nine minutes.
+The dedicated `Rustdoc` CI job runs `just rustdoc` (the strict documentation build) whenever Rust compilation or workflow validation is selected by the changed-path classifier. The stable CI gate requires that job to succeed. The doctests that `just rustdoc-check` adds on top run in the required `Test (crates)` shard, because compiling every example as its own crate took most of the old job's nine minutes.
 
 CI uploads both documentation trees as the `rustdoc-html` artifact:
 
