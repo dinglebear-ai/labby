@@ -14,17 +14,23 @@ use crate::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
 use crate::gateway::code_mode::{
     CodeModeExecutionSource, CodeModeHistoryEntry, CodeModeSourceLookup,
 };
-use crate::upstream::pool::UpstreamPool;
+use crate::upstream::pool::{ToolCatalogGeneration, UpstreamPool};
 use crate::upstream::types::{UpstreamRuntimeOwner, UpstreamTool};
 use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::{CodeModeConfig, GatewayConfig, UpstreamConfig};
 
-use super::GatewayManager;
+use super::{CodeModeEmbeddingFlight, CodeModeRefreshFlight, CodeModeRefreshKey, GatewayManager};
 
-/// How long a successful full-reprobe result is considered fresh.
-/// Back-to-back `refresh_code_mode_catalog` calls within this window
-/// return immediately without hitting upstreams again.
+/// How long a waiter may reuse the successful refresh it waited behind.
 const CATALOG_REFRESH_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+/// Limit the request-path OAuth probe; missing subjects continue warming in
+/// the background when a public catalog is already usable.
+const CODE_MODE_SUBJECT_ENUMERATION_BUDGET: std::time::Duration = std::time::Duration::from_secs(1);
+
+#[cfg(not(test))]
+const CATALOG_CACHE_SYNC_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+#[cfg(test)]
+const CATALOG_CACHE_SYNC_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// Cooldown after a TEI failure before the next attempt is tried. Hardcoded
 /// per the plan's YAGNI cut — long enough that a flapping/restarting TEI
@@ -49,6 +55,25 @@ fn merge_visible_catalog_tools(
         .into_values()
         .take(crate::upstream::pool::MAX_UPSTREAM_TOOLS)
         .collect()
+}
+
+async fn healthy_tools_with_generation(
+    pool: &UpstreamPool,
+    allowed: Option<&BTreeSet<String>>,
+) -> (Vec<UpstreamTool>, Option<ToolCatalogGeneration>) {
+    let before = pool
+        .published_tool_catalog()
+        .await
+        .ok()
+        .map(|snapshot| snapshot.generation());
+    let tools = pool.healthy_tools_allowed(allowed).await;
+    let after = pool
+        .published_tool_catalog()
+        .await
+        .ok()
+        .map(|snapshot| snapshot.generation());
+    let generation = if before == after { before } else { None };
+    (tools, generation)
 }
 
 #[derive(Debug, Clone)]
@@ -267,7 +292,8 @@ impl GatewayManager {
                 owner,
                 oauth_subject,
                 allowed_upstreams,
-            );
+            )
+            .await;
         }
         Ok(())
     }
@@ -368,6 +394,23 @@ impl GatewayManager {
         oauth_subject: Option<&str>,
         allowed_upstreams: Option<&BTreeSet<String>>,
     ) -> Result<Vec<UpstreamTool>, ToolError> {
+        self.code_mode_catalog_tools_allowed_with_generation(
+            allow_cold_connect,
+            owner,
+            oauth_subject,
+            allowed_upstreams,
+        )
+        .await
+        .map(|(tools, _)| tools)
+    }
+
+    pub(crate) async fn code_mode_catalog_tools_allowed_with_generation(
+        &self,
+        allow_cold_connect: bool,
+        owner: Option<&UpstreamRuntimeOwner>,
+        oauth_subject: Option<&str>,
+        allowed_upstreams: Option<&BTreeSet<String>>,
+    ) -> Result<(Vec<UpstreamTool>, Option<ToolCatalogGeneration>), ToolError> {
         // FU-1 (issue #210, lab-48z4k): builtin services join the Code Mode
         // catalog as in-process upstream peers so schema and capability
         // arrive together. Root scope only — a ProtectedSubset route's
@@ -388,8 +431,34 @@ impl GatewayManager {
                     .await;
             }
         }
+        // The long-lived pool already reprobes configured upstreams in the
+        // background when auto-reconnect is enabled. Once a real tool is
+        // available, a request can use that catalog instead of waiting for an
+        // unrelated slow upstream to consume the full refresh budget.
+        let mut warm_global = None;
+        let has_warm_catalog = if allow_cold_connect {
+            let auto_reconnect = self.config.read().await.gateway.auto_reconnect;
+            if auto_reconnect {
+                if let Some(pool) = self.current_pool().await {
+                    let (tools, generation) =
+                        healthy_tools_with_generation(&pool, allowed_upstreams).await;
+                    if all_tools_are_in_process(&tools) {
+                        false
+                    } else {
+                        warm_global = Some((pool, tools, generation));
+                        true
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
         let mut refresh_timed_out = false;
-        if allow_cold_connect {
+        if allow_cold_connect && !has_warm_catalog {
             let budget = {
                 let cfg = self.config.read().await;
                 catalog_connect_budget(&cfg.code_mode)
@@ -412,7 +481,7 @@ impl GatewayManager {
                     );
                 }
             }
-        } else {
+        } else if !allow_cold_connect {
             self.ensure_search_runtime_ready_allowed(
                 false,
                 owner,
@@ -422,13 +491,38 @@ impl GatewayManager {
             .await?;
         }
         let Some(pool) = self.current_pool().await else {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), None));
         };
-        let global = pool.healthy_tools_allowed(allowed_upstreams).await;
+        let (global, generation) = match warm_global {
+            Some((warm_pool, tools, generation)) if Arc::ptr_eq(&warm_pool, &pool) => {
+                (tools, generation)
+            }
+            _ => healthy_tools_with_generation(&pool, allowed_upstreams).await,
+        };
+        if has_warm_catalog {
+            self.schedule_code_mode_catalog_cache_sync(Arc::clone(&pool))
+                .await;
+        }
         let subject_scoped = if let Some(subject) = oauth_subject {
             let cfg = self.config.read().await;
-            pool.subject_scoped_upstream_tools_allowed(&cfg.upstream, subject, allowed_upstreams)
-                .await
+            if has_warm_catalog {
+                self.spawn_code_mode_upstream_connections(
+                    Arc::clone(&pool),
+                    &cfg,
+                    owner,
+                    Some(subject),
+                    allowed_upstreams,
+                )
+                .await;
+            }
+            pool.subject_scoped_upstream_tools_allowed_with_deadline(
+                &cfg.upstream,
+                subject,
+                allowed_upstreams,
+                crate::upstream::pool::MAX_UPSTREAM_TOOLS,
+                CODE_MODE_SUBJECT_ENUMERATION_BUDGET,
+            )
+            .await
         } else {
             Vec::new()
         };
@@ -440,7 +534,74 @@ impl GatewayManager {
                     .to_string(),
             });
         }
-        Ok(visible)
+        Ok((
+            visible,
+            if oauth_subject.is_none() {
+                generation
+            } else {
+                None
+            },
+        ))
+    }
+
+    /// Background recovery keeps the live pool current; publish its healthy
+    /// non-OAuth tools to the separate one-shot CLI cache at a bounded rate.
+    /// The old synchronous full-fleet refresh performed this write as a side
+    /// effect, so the warm fast path needs an independent publication path.
+    async fn schedule_code_mode_catalog_cache_sync(&self, pool: Arc<UpstreamPool>) {
+        let mut next = self.code_mode_cache_sync_after.lock().await;
+        let now = Instant::now();
+        let pool_identity = Arc::as_ptr(&pool) as usize;
+        if next.is_some_and(|(identity, deadline)| identity == pool_identity && now < deadline) {
+            return;
+        }
+        *next = Some((pool_identity, now + CATALOG_CACHE_SYNC_INTERVAL));
+        drop(next);
+
+        let manager = self.clone();
+        tokio::spawn(async move {
+            if !manager
+                .current_pool()
+                .await
+                .is_some_and(|current| Arc::ptr_eq(&current, &pool))
+            {
+                return;
+            }
+            let cfg = manager.config.read().await.clone();
+            let mut updates = Vec::new();
+            for upstream in cfg
+                .upstream
+                .iter()
+                .filter(|u| u.enabled && u.oauth.is_none())
+            {
+                let tools = pool.healthy_tools_for_upstream(&upstream.name).await;
+                if !tools.is_empty() {
+                    updates.push(
+                        crate::gateway::code_mode::catalog_cache::CatalogCacheUpdate {
+                            upstream_name: upstream.name.clone(),
+                            fingerprint: crate::gateway::code_mode::catalog_cache::fingerprint(
+                                upstream,
+                            ),
+                            tools,
+                        },
+                    );
+                }
+            }
+            if updates.is_empty()
+                || !manager
+                    .current_pool()
+                    .await
+                    .is_some_and(|current| Arc::ptr_eq(&current, &pool))
+            {
+                return;
+            }
+            crate::gateway::code_mode::catalog_cache::merge_and_store(
+                manager.code_mode_catalog_cache_path(),
+                updates,
+                Vec::new(),
+            )
+            .await;
+        });
     }
 
     /// One-shot CLI variant of `code_mode_catalog_tools`: serve the codemode
@@ -804,21 +965,18 @@ impl GatewayManager {
 
     /// Refresh the transient Code Mode catalog from live upstream metadata.
     ///
-    /// This is intentionally a manager-level policy: Code Mode needs a fresh
-    /// per-call catalog, while `UpstreamPool` only owns the connect/reprobe
-    /// mechanics. Reprobe uses existing live peers when possible and reconnects
-    /// when needed, so partial-but-healthy catalogs do not mask tool-list growth.
+    /// This is intentionally a manager-level policy for cold catalogs and
+    /// installations without background recovery. When auto-reconnect is on,
+    /// the pool's periodic probes keep a warm catalog current without making
+    /// each Code Mode request wait for the entire upstream fleet.
     ///
     /// **P-H1 improvements:**
     /// - Single-flight + TTL coalescing: while one refresh is in flight, a
     ///   concurrent caller that arrives within `CATALOG_REFRESH_TTL` of the last
     ///   completed refresh skips its own reprobe and rides on the in-flight one.
     ///   This bounds the cost of bursty back-to-back `search` calls **without**
-    ///   ever masking tool-list growth for a lone caller: an isolated
-    ///   `allow_cold_connect = true` call always reprobes, because reprobe is the
-    ///   system's growth-detection mechanism (see the read-only catalog expansion
-    ///   test). The TTL only suppresses *redundant concurrent* work, never the
-    ///   single-caller freshness contract.
+    ///   delaying a cold caller. The TTL suppresses redundant concurrent work;
+    ///   the warm catalog path relies on the pool's background probes instead.
     /// - Parallel reprobe: all enabled upstreams are probed concurrently, bounded by
     ///   `upstream_discovery_concurrency()` (default 3, env `LABBY_UPSTREAM_DISCOVERY_CONCURRENCY`).
     #[allow(dead_code)]
@@ -837,23 +995,40 @@ impl GatewayManager {
         oauth_subject: Option<&str>,
         allowed_upstreams: Option<&BTreeSet<String>>,
     ) -> Result<(), ToolError> {
+        let started = Instant::now();
         let cfg = self.config.read().await.clone();
         if !cfg.code_mode.enabled {
             return Ok(());
         }
 
-        // --- Single-flight + TTL coalescing ---
-        // try_lock succeeds only when no other refresh is in progress. If a
-        // concurrent caller already holds the lock AND the last refresh
-        // completed within the freshness window, coalesce onto the in-flight
-        // refresh rather than queueing a redundant reprobe. Crucially this only
-        // fires under genuine concurrency: a lone caller always acquires the
-        // lock and reprobes, so tool-list growth is never masked.
-        let _inflight_guard = match self.code_mode_refresh_inflight.try_lock() {
+        let pool = self.ensure_lazy_upstream_pool(owner).await;
+        let key = CodeModeRefreshKey {
+            pool_identity: Arc::as_ptr(&pool) as usize,
+            oauth_subject: oauth_subject.map(ToOwned::to_owned),
+            allowed_upstreams: allowed_upstreams.map(|scope| scope.iter().cloned().collect()),
+        };
+        let flight = {
+            let mut flights = self.code_mode_refresh_flights.lock().await;
+            flights.retain(|_, value| value.strong_count() > 0);
+            flights
+                .get(&key)
+                .and_then(std::sync::Weak::upgrade)
+                .unwrap_or_else(|| {
+                    let flight = Arc::new(CodeModeRefreshFlight::default());
+                    flights.insert(key, Arc::downgrade(&flight));
+                    flight
+                })
+        };
+
+        // --- Scope-keyed single-flight + TTL coalescing ---
+        // Only callers that actually waited for another refresh may reuse its
+        // successful result. A lone later caller still reprobes.
+        let _inflight_guard = match flight.in_flight.try_lock() {
             Ok(guard) => guard,
             Err(_) => {
+                let guard = flight.in_flight.lock().await;
                 let within_ttl = {
-                    let deadline_guard = self.code_mode_refresh_deadline.lock().await;
+                    let deadline_guard = flight.deadline.lock().await;
                     deadline_guard.is_some_and(|deadline| Instant::now() < deadline)
                 };
                 if within_ttl {
@@ -865,13 +1040,11 @@ impl GatewayManager {
                     );
                     return Ok(());
                 }
-                // Concurrent refresh in flight but TTL expired — wait for the
-                // lock so this caller still observes a fresh catalog.
-                self.code_mode_refresh_inflight.lock().await
+                guard
             }
         };
+        *flight.deadline.lock().await = None;
 
-        let pool = self.ensure_lazy_upstream_pool(owner).await;
         let concurrency = crate::upstream::pool::upstream_discovery_concurrency(
             cfg.gateway.upstream_discovery_concurrency,
         );
@@ -892,31 +1065,53 @@ impl GatewayManager {
             })
             .cloned()
             .collect();
+        let has_probes = !enabled_upstreams.is_empty();
 
-        let results: Vec<_> = futures::stream::iter(enabled_upstreams)
-            .map(|upstream| {
-                let pool = Arc::clone(&pool_arc);
-                let owner = owner_cloned.clone();
-                let oauth_subject = oauth_subject_cloned.clone();
-                async move {
-                    let subject = upstream.oauth.as_ref().and(oauth_subject.as_deref());
-                    let outcome = if upstream.oauth.is_some() {
-                        pool.ensure_tools_for_upstream(&upstream, subject, owner.as_ref())
-                            .await
-                    } else {
-                        pool.reprobe_tools_for_upstream_as(&upstream, None, owner.as_ref())
-                            .await
-                    };
-                    (upstream, outcome)
-                }
-            })
-            .buffer_unordered(concurrency)
-            .collect()
-            .await;
+        let mut probes = Box::pin(
+            futures::stream::iter(enabled_upstreams)
+                .map(|upstream| {
+                    let pool = Arc::clone(&pool_arc);
+                    let owner = owner_cloned.clone();
+                    let oauth_subject = oauth_subject_cloned.clone();
+                    async move {
+                        let subject = upstream.oauth.as_ref().and(oauth_subject.as_deref());
+                        let outcome = if upstream.oauth.is_some() {
+                            pool.ensure_tools_for_upstream(&upstream, subject, owner.as_ref())
+                                .await
+                        } else {
+                            pool.reprobe_tools_for_upstream_as(&upstream, None, owner.as_ref())
+                                .await
+                        };
+                        (upstream, outcome)
+                    }
+                })
+                .buffer_unordered(concurrency),
+        );
 
         let mut failures = Vec::new();
         let mut cache_updates = Vec::new();
-        for (upstream, outcome) in results {
+        // Leave time for completed probes to be published even when another
+        // upstream hangs. Dropping the remaining futures cancels only those
+        // probes; successful results are retained below.
+        let deadline = started
+            + catalog_connect_budget(&cfg.code_mode)
+                .saturating_sub(std::time::Duration::from_millis(250));
+        let mut timed_out = false;
+        loop {
+            let next = if has_probes {
+                match tokio::time::timeout_at(deadline, probes.next()).await {
+                    Ok(next) => next,
+                    Err(_) => {
+                        timed_out = true;
+                        break;
+                    }
+                }
+            } else {
+                probes.next().await
+            };
+            let Some((upstream, outcome)) = next else {
+                break;
+            };
             match outcome {
                 Ok(_) => {
                     // Keep the one-shot CLI catalog cache warm from the
@@ -942,16 +1137,23 @@ impl GatewayManager {
                 }
             }
         }
+        drop(probes);
         // No negative entries from this path: the long-lived MCP surface keeps
         // its own reprobe state and re-probes per call, so cross-invocation
         // suppression here would only mask upstream recovery. The negative cache
         // exists for one-shot CLI runs, which have no such in-process state.
-        crate::gateway::code_mode::catalog_cache::merge_and_store(
-            self.code_mode_catalog_cache_path(),
-            cache_updates,
-            Vec::new(),
-        )
-        .await;
+        let cache_path = self.code_mode_catalog_cache_path();
+        let cache_write = tokio::spawn(async move {
+            crate::gateway::code_mode::catalog_cache::merge_and_store(
+                cache_path,
+                cache_updates,
+                Vec::new(),
+            )
+            .await;
+        });
+        if let Err(err) = cache_write.await {
+            tracing::warn!(error = %err, "Code Mode catalog cache publication task failed");
+        }
 
         // origin/main widened this to include subject-scoped tools; #210 excludes
         // the synthetic in-process builtin peers. Both matter: the error must
@@ -960,30 +1162,38 @@ impl GatewayManager {
         let mut available = pool.healthy_tools_allowed(allowed_upstreams).await;
         if let Some(subject) = oauth_subject {
             available.extend(
-                pool.subject_scoped_upstream_tools_allowed(
+                pool.subject_scoped_upstream_tools_allowed_with_deadline(
                     &cfg.upstream,
                     subject,
                     allowed_upstreams,
+                    crate::upstream::pool::MAX_UPSTREAM_TOOLS,
+                    CODE_MODE_SUBJECT_ENUMERATION_BUDGET,
                 )
                 .await,
             );
         }
-        if !failures.is_empty() && all_tools_are_in_process(&available) {
+        if (timed_out || !failures.is_empty()) && all_tools_are_in_process(&available) {
             let details = failures
                 .iter()
                 .map(|failure| format!("{}: {}", failure.upstream, failure.message))
                 .collect::<Vec<_>>()
                 .join("; ");
+            let message = if timed_out {
+                "Code Mode catalog refresh timed out before any real upstream was usable"
+                    .to_string()
+            } else {
+                format!("failed to refresh Code Mode catalog: {details}")
+            };
             return Err(ToolError::Sdk {
                 sdk_kind: "upstream_connect_error".to_string(),
-                message: format!("failed to refresh Code Mode catalog: {details}"),
+                message,
             });
         }
 
         // Stamp the TTL deadline so a *concurrent* caller that arrives while a
         // later refresh is in flight can coalesce within the freshness window.
         {
-            let mut deadline_guard = self.code_mode_refresh_deadline.lock().await;
+            let mut deadline_guard = flight.deadline.lock().await;
             *deadline_guard = Some(Instant::now() + CATALOG_REFRESH_TTL);
         }
 
@@ -1017,37 +1227,45 @@ impl GatewayManager {
         let guard = self.code_mode_embedding_cache.read().await;
         guard.as_ref().and_then(|cache| {
             if cache.fingerprint == fingerprint {
-                Some(cache.vectors.clone())
+                Some(cache.vectors.as_ref().clone())
             } else {
                 None
             }
         })
     }
 
-    /// Single-flight: ensure the embedding cache is warm for `fingerprint`,
-    /// computing it via `embeddings::embed_via_tei` if needed. Holds the
-    /// write lock across the whole check-then-embed-then-store sequence so
-    /// concurrent callers against the same cold fingerprint serialize onto
-    /// one TEI call rather than firing redundant ones. Fail-open: returns an
-    /// empty `Vec` (and leaves the cache empty) on ANY embedding failure —
-    /// callers never see an `Err` from this method.
+    /// Single-flight per ranking corpus. The cache lock is never held during
+    /// TEI I/O, and warm hits share vectors without cloning their contents.
     pub(crate) async fn ensure_embeddings_for_fingerprint(
         &self,
         fingerprint: &str,
         entries: &[crate::gateway::code_mode::CatalogDescriptor],
-    ) -> Vec<(String, Vec<f32>)> {
+    ) -> Arc<Vec<(String, Vec<f32>)>> {
         let config = self.code_mode_config().await.semantic_search;
         if !config.is_configured() || entries.is_empty() {
-            return Vec::new();
+            return Arc::new(Vec::new());
         }
-        let mut guard = self.code_mode_embedding_cache.write().await;
-        if let Some(cache) = guard.as_ref()
-            && cache.fingerprint == fingerprint
-        {
-            return cache.vectors.clone();
+        if let Some(vectors) = self.cached_embeddings_shared(fingerprint).await {
+            return vectors;
+        }
+        let flight = {
+            let mut flights = self.code_mode_embedding_flights.lock().await;
+            flights.retain(|_, value| value.strong_count() > 0);
+            flights
+                .get(fingerprint)
+                .and_then(std::sync::Weak::upgrade)
+                .unwrap_or_else(|| {
+                    let flight = Arc::new(CodeModeEmbeddingFlight::default());
+                    flights.insert(fingerprint.to_string(), Arc::downgrade(&flight));
+                    flight
+                })
+        };
+        let _build_guard = flight.build.lock().await;
+        if let Some(vectors) = self.cached_embeddings_shared(fingerprint).await {
+            return vectors;
         }
         if !self.semantic_search_available_locked().await {
-            return Vec::new();
+            return Arc::new(Vec::new());
         }
         let ids: Vec<String> = entries.iter().map(|e| e.id.clone()).collect();
         let texts: Vec<String> = entries.iter().map(|e| e.description.clone()).collect();
@@ -1058,26 +1276,34 @@ impl GatewayManager {
         match crate::gateway::code_mode::embeddings::embed_via_tei(tei_url, &texts).await {
             Ok(vectors) if vectors.len() == ids.len() => {
                 self.record_semantic_search_recovery().await;
-                let pairs: Vec<(String, Vec<f32>)> = ids.into_iter().zip(vectors).collect();
-                *guard = Some(crate::gateway::code_mode::CatalogEmbeddingCache {
-                    fingerprint: fingerprint.to_string(),
-                    vectors: pairs.clone(),
-                });
+                let pairs = Arc::new(ids.into_iter().zip(vectors).collect());
+                *self.code_mode_embedding_cache.write().await =
+                    Some(crate::gateway::code_mode::CatalogEmbeddingCache {
+                        fingerprint: fingerprint.to_string(),
+                        vectors: Arc::clone(&pairs),
+                    });
                 pairs
             }
-            Ok(_) => Vec::new(),
+            Ok(_) => Arc::new(Vec::new()),
             Err(err) => {
                 self.record_semantic_search_failure(&err.to_string()).await;
-                Vec::new()
+                Arc::new(Vec::new())
             }
         }
     }
 
+    async fn cached_embeddings_shared(
+        &self,
+        fingerprint: &str,
+    ) -> Option<Arc<Vec<(String, Vec<f32>)>>> {
+        let guard = self.code_mode_embedding_cache.read().await;
+        guard.as_ref().and_then(|cache| {
+            (cache.fingerprint == fingerprint).then(|| Arc::clone(&cache.vectors))
+        })
+    }
+
     /// True when the semantic search cooldown has elapsed (or no failure has
-    /// been recorded yet) — i.e. it is safe to attempt a TEI call. Internal:
-    /// does not itself acquire `code_mode_embedding_cache`'s lock, so it is
-    /// safe to call while already holding that lock (as
-    /// `ensure_embeddings_for_fingerprint` does).
+    /// been recorded yet) — i.e. it is safe to attempt a TEI call.
     async fn semantic_search_available_locked(&self) -> bool {
         let guard = self.semantic_search_last_failure.read().await;
         match *guard {
@@ -1186,7 +1412,7 @@ impl GatewayManager {
     /// Unlike `refresh_code_mode_indexes_if_stale` this does NOT build vector
     /// search indexes.  It only ensures each enabled upstream has its tool list
     /// in the pool so `healthy_tools()` is non-empty.
-    fn spawn_code_mode_upstream_connections(
+    async fn spawn_code_mode_upstream_connections(
         &self,
         pool: Arc<UpstreamPool>,
         cfg: &GatewayConfig,
@@ -1208,22 +1434,44 @@ impl GatewayManager {
             if upstream.oauth.is_some() && oauth_subject.is_none() {
                 continue;
             }
+            let already_warm = if upstream.oauth.is_some() {
+                pool.has_cached_subject_tools_for_upstream(
+                    &upstream.name,
+                    oauth_subject
+                        .as_deref()
+                        .expect("OAuth subject checked above"),
+                )
+                .await
+            } else {
+                pool.has_healthy_tools_for_upstream(&upstream.name).await
+            };
+            if already_warm {
+                continue;
+            }
+            let warm_up_key = format!(
+                "{:p}:{}:{}",
+                Arc::as_ptr(&pool),
+                upstream.name,
+                oauth_subject.as_deref().unwrap_or("")
+            );
+            {
+                let mut in_flight = CODE_MODE_WARM_UP_IN_FLIGHT
+                    .get_or_init(|| tokio::sync::Mutex::new(BTreeSet::new()))
+                    .lock()
+                    .await;
+                if !in_flight.insert(warm_up_key.clone()) {
+                    continue;
+                }
+            }
             let pool = Arc::clone(&pool);
             let upstream = upstream.clone();
             let owner = owner.clone();
             let oauth_subject = oauth_subject.clone();
             let warm_up_gate = Arc::clone(&warm_up_gate);
+            #[cfg(test)]
+            self.code_mode_warm_up_task_spawns
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             tokio::spawn(async move {
-                let warm_up_key = upstream.name.clone();
-                {
-                    let mut in_flight = CODE_MODE_WARM_UP_IN_FLIGHT
-                        .get_or_init(|| tokio::sync::Mutex::new(BTreeSet::new()))
-                        .lock()
-                        .await;
-                    if !in_flight.insert(warm_up_key.clone()) {
-                        return;
-                    }
-                }
                 let Ok(_warm_up_permit) = warm_up_gate.acquire_owned().await else {
                     CODE_MODE_WARM_UP_IN_FLIGHT
                         .get_or_init(|| tokio::sync::Mutex::new(BTreeSet::new()))

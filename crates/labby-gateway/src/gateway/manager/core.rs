@@ -281,8 +281,10 @@ impl GatewayManager {
             code_mode_history: Arc::new(Mutex::new(CodeModeHistory::default())),
             code_mode_source_store: Arc::new(Mutex::new(CodeModeSourceStore::default())),
             in_process_connector: None,
-            code_mode_refresh_deadline: Arc::new(Mutex::new(None)),
-            code_mode_refresh_inflight: Arc::new(Mutex::new(())),
+            code_mode_refresh_flights: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            code_mode_cache_sync_after: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            code_mode_warm_up_task_spawns: Arc::new(AtomicU64::new(0)),
             code_mode_catalog_render_cache: Arc::new(Mutex::new(None)),
             code_mode_catalog_render_flights: Arc::new(
                 Mutex::new(std::collections::HashMap::new()),
@@ -292,6 +294,7 @@ impl GatewayManager {
             #[cfg(test)]
             _test_scratch_dir: None,
             code_mode_embedding_cache: Arc::new(RwLock::new(None)),
+            code_mode_embedding_flights: Arc::new(Mutex::new(std::collections::HashMap::new())),
             semantic_search_last_failure: Arc::new(RwLock::new(None)),
             code_mode_snippet_metadata_cache: Arc::new(Mutex::new(None)),
             code_mode_runner_pool: Arc::new(crate::gateway::code_mode::RunnerPool::from_env()?),

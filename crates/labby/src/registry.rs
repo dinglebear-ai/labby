@@ -355,6 +355,14 @@ impl labby_gateway::registry::InProcessServiceRegistry for ToolRegistry {
             // authenticated outer MCP surface instead of being silently
             // downgraded to their context-free fallback.
             .filter(|service| self.supports_context_free_dispatch(service.name))
+            // Route-owned shims such as artifact_publish are registered in
+            // the host registry for protected-route dispatch, but the root
+            // route intentionally never projects them. Starting a root-like
+            // in-process server for one returns zero tools and otherwise
+            // causes the pool's ensure loop to re-register it forever.
+            .filter(|service| {
+                crate::mcp::route_scope::McpRouteScope::Root.allows_service(service.name)
+            })
             .cloned()
             .map(
                 |service| -> Box<dyn labby_gateway::registry::InProcessService> {
@@ -1008,6 +1016,30 @@ mod tests {
                     .all(|service| service.service_name() != "artifacts")
             );
         }
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn route_owned_publish_shim_is_not_an_in_process_peer() {
+        use labby_gateway::registry::InProcessServiceRegistry as _;
+
+        let registry = build_default_registry();
+        assert!(
+            registry
+                .service(crate::dispatch::depot_publish::SERVICE)
+                .is_some()
+        );
+        let peers = registry.in_process_services();
+        assert!(
+            peers
+                .iter()
+                .any(|service| service.service_name() == "doctor")
+        );
+        assert!(
+            peers.iter().all(|service| {
+                service.service_name() != crate::dispatch::depot_publish::SERVICE
+            })
+        );
     }
 
     #[cfg(not(feature = "gateway"))]
