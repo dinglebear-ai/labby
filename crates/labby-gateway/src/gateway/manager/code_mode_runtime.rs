@@ -40,6 +40,10 @@ const SEMANTIC_SEARCH_COOLDOWN: std::time::Duration = std::time::Duration::from_
 
 static CODE_MODE_WARM_UP_IN_FLIGHT: OnceLock<tokio::sync::Mutex<BTreeSet<String>>> =
     OnceLock::new();
+// Admit work before spawning it. A per-request semaphore lets distinct OAuth
+// subjects accumulate unbounded background tasks after their request expires.
+const CODE_MODE_WARM_UP_LIMIT: usize = 3;
+static CODE_MODE_WARM_UP_GATE: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
 
 fn merge_visible_catalog_tools(
     global: Vec<UpstreamTool>,
@@ -1422,10 +1426,10 @@ impl GatewayManager {
     ) {
         let owner = owner.cloned();
         let oauth_subject = oauth_subject.map(ToOwned::to_owned);
-        let concurrency = crate::upstream::pool::upstream_discovery_concurrency(
+        let per_request_limit = crate::upstream::pool::upstream_discovery_concurrency(
             cfg.gateway.upstream_discovery_concurrency,
         );
-        let warm_up_gate = Arc::new(tokio::sync::Semaphore::new(concurrency));
+        let mut admitted = 0;
         for upstream in cfg
             .upstream
             .iter()
@@ -1448,12 +1452,24 @@ impl GatewayManager {
             if already_warm {
                 continue;
             }
+            if admitted >= per_request_limit {
+                continue;
+            }
             let warm_up_key = format!(
                 "{:p}:{}:{}",
                 Arc::as_ptr(&pool),
                 upstream.name,
                 oauth_subject.as_deref().unwrap_or("")
             );
+            let Ok(_warm_up_permit) = CODE_MODE_WARM_UP_GATE
+                .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(CODE_MODE_WARM_UP_LIMIT)))
+                .clone()
+                .try_acquire_owned()
+            else {
+                // Opportunistic warm-up can be retried by a later request.
+                // Never queue a task beyond this request's lifetime.
+                continue;
+            };
             {
                 let mut in_flight = CODE_MODE_WARM_UP_IN_FLIGHT
                     .get_or_init(|| tokio::sync::Mutex::new(BTreeSet::new()))
@@ -1463,23 +1479,16 @@ impl GatewayManager {
                     continue;
                 }
             }
+            admitted += 1;
             let pool = Arc::clone(&pool);
             let upstream = upstream.clone();
             let owner = owner.clone();
             let oauth_subject = oauth_subject.clone();
-            let warm_up_gate = Arc::clone(&warm_up_gate);
             #[cfg(test)]
             self.code_mode_warm_up_task_spawns
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             tokio::spawn(async move {
-                let Ok(_warm_up_permit) = warm_up_gate.acquire_owned().await else {
-                    CODE_MODE_WARM_UP_IN_FLIGHT
-                        .get_or_init(|| tokio::sync::Mutex::new(BTreeSet::new()))
-                        .lock()
-                        .await
-                        .remove(&warm_up_key);
-                    return;
-                };
+                let _warm_up_permit = _warm_up_permit;
                 // `ensure_tools_for_upstream` skips the upstream internally
                 // when it already has healthy tools.
                 let subject = upstream.oauth.as_ref().and(oauth_subject.as_deref());

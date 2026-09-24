@@ -1198,6 +1198,43 @@ async fn warm_public_catalog_bounds_cold_oauth_subject_enumeration() {
 }
 
 #[tokio::test]
+async fn oauth_warm_up_admission_is_shared_across_subjects() {
+    let private = fixture_oauth_upstream("private", "http://127.0.0.1:9/mcp");
+    let (manager, pool) = code_mode_manager_with_upstreams(vec![private.clone()]).await;
+    pool.register_upstream_config_for_tests(&private);
+
+    let subjects: Vec<String> = (0..12).map(|n| format!("subject-{n}")).collect();
+    let mut held_locks = Vec::new();
+    for subject in &subjects {
+        let lock = pool
+            .subject_connect_lock_for_tests("private", subject)
+            .await;
+        held_locks.push(lock.lock_owned().await);
+    }
+
+    let requests = subjects.into_iter().map(|subject| {
+        let manager = manager.clone();
+        async move {
+            manager
+                .code_mode_catalog_tools(false, None, Some(&subject))
+                .await
+        }
+    });
+    let results = futures::future::join_all(requests).await;
+    for result in results {
+        result.expect("cold subject catalog request stays bounded");
+    }
+    assert!(
+        manager
+            .code_mode_warm_up_task_spawns
+            .load(Ordering::Relaxed)
+            <= 3,
+        "distinct subjects must share background warm-up admission"
+    );
+    drop(held_locks);
+}
+
+#[tokio::test]
 async fn hanging_refresh_does_not_block_a_disjoint_scope() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
