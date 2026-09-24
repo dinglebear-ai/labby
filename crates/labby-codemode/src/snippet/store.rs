@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -30,7 +31,7 @@ const MAX_SNIPPET_CODE_BYTES: usize = crate::config::MAX_SOURCE_BYTES;
 const MAX_SNIPPET_FILE_BYTES: usize = 2 * crate::config::MAX_SOURCE_BYTES;
 
 /// Origin of a reusable Code Mode snippet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SnippetSource {
     /// Snippet shipped with Labby.
@@ -40,7 +41,7 @@ pub enum SnippetSource {
 }
 
 /// Discovery metadata for a built-in or user Code Mode snippet.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SnippetInfo {
     /// Optional exact-tool declaration used to scope native saved-snippet execution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -63,7 +64,7 @@ pub struct SnippetInfo {
 }
 
 /// Fully resolved snippet including its source body.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ResolvedSnippet {
     /// Optional declaration; an empty list expresses deny-all upstream access.
     /// Host saved-snippet execution intersects this with the caller policy.
@@ -102,7 +103,7 @@ pub struct SnippetFrontmatter {
 }
 
 /// Validation/default specification for one snippet input.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct SnippetInputSpec {
     /// Expected input value type.
@@ -119,7 +120,7 @@ pub struct SnippetInputSpec {
 }
 
 /// Supported validation types for declared snippet inputs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SnippetInputType {
     /// JSON string.
@@ -139,7 +140,7 @@ pub enum SnippetInputType {
 }
 
 /// Result returned after removing a user snippet.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SnippetRemoveResult {
     /// Snippet name requested for removal.
     pub name: String,

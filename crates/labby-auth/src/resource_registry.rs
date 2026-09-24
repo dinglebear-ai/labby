@@ -3,6 +3,7 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
@@ -11,7 +12,7 @@ pub const MAX_RESOURCE_LEASE_TTL: Duration = Duration::from_hours(24);
 pub const MAX_RESOURCE_LEASE_OWNER_LEN: usize = 128;
 const LEASE_ID_BYTES: usize = 32;
 
-#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 pub struct ResourceLease {
     pub id: String,
     pub resource: String,
@@ -31,7 +32,7 @@ impl std::fmt::Debug for ResourceLease {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 pub struct ResourceLeaseDiagnostic {
     pub resource: String,
     pub scopes: Vec<String>,

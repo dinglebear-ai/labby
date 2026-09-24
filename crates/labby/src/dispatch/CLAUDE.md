@@ -16,7 +16,7 @@ The current first-party dispatch modules are:
 - `skill_library.rs` plus `skill_library/`, and `skills.rs` plus `skills/`
 - `snippets/`
 
-Shared helpers live at this level: `clients.rs`, `error.rs`, `helpers.rs`, `oauth_subject.rs`, `path_safety.rs`, `redact.rs`, `security.rs`, and the upstream compatibility shim. `artifacts` owns Labby's durable local library plus bounded provider-backed discovery/lifecycle projections; `bundles`, `jobs`, `sources`, and `uploads` are supporting remote-authority services. The generated service/action catalogs are authoritative for exact live action names and feature exposure.
+Shared helpers live at this level: `clients.rs`, `error.rs`, `helpers.rs`, `oauth_subject.rs`, `path_safety.rs`, `redact.rs`, `schema.rs`, `security.rs`, and the upstream compatibility shim. `artifacts` owns Labby's durable local library plus bounded provider-backed discovery/lifecycle projections; `bundles`, `jobs`, `sources`, and `uploads` are supporting remote-authority services. The generated service/action catalogs are authoritative for exact live action names and feature exposure.
 
 Do not reintroduce retired standalone Marketplace, Stash, Fleet/device-runtime, ACP, Deploy-product, or Registry-browser dispatch modules. Bounded provider-backed discovery actions under `artifacts` are part of the current control plane and are not standalone product modules.
 

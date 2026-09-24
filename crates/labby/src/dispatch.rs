@@ -38,6 +38,7 @@ pub(crate) mod projects;
 pub mod redact;
 #[cfg(feature = "skills")]
 pub mod remote_control;
+pub(crate) mod schema;
 pub mod security;
 pub mod server_logs;
 pub mod setup;

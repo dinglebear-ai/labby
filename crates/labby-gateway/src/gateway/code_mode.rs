@@ -11,6 +11,7 @@
 pub(crate) mod catalog_cache;
 pub(crate) mod code_mode_host;
 pub(crate) mod embeddings;
+pub mod oauth;
 #[cfg(test)]
 mod reconstruction_tests;
 mod resources;

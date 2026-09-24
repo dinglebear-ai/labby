@@ -740,6 +740,7 @@ mod tests {
             requires_admin: false,
             params: &[],
             returns: "object",
+            output_schema: None,
         }];
 
     fn destructive_dispatch(

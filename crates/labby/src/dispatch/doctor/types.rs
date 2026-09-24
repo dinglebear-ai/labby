@@ -4,10 +4,11 @@
 //! and `cli/doctor.rs` without creating a cli → dispatch dependency.
 
 use labby_primitives::plugin::EnvVar;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Severity of a single doctor finding.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
     Ok,
@@ -16,7 +17,7 @@ pub enum Severity {
 }
 
 /// One entry in the doctor report.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Finding {
     pub service: String,
     pub check: String,
@@ -25,7 +26,7 @@ pub struct Finding {
 }
 
 /// Full doctor report.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Report {
     pub findings: Vec<Finding>,
 }

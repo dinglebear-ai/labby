@@ -12,6 +12,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         requires_admin: false,
         params: &[],
         returns: "Catalog",
+        output_schema: None,
     },
     ActionSpec {
         name: "schema",
@@ -25,6 +26,7 @@ pub const ACTIONS: &[ActionSpec] = &[
             description: "Action name to describe",
         }],
         returns: "Schema",
+        output_schema: None,
     },
     ActionSpec {
         name: "onboarding.audit",
@@ -38,5 +40,6 @@ pub const ACTIONS: &[ActionSpec] = &[
             description: "Services to audit",
         }],
         returns: "AuditReport",
+        output_schema: None,
     },
 ];

@@ -58,6 +58,7 @@ pub(crate) const CALLBACK_REMOTE_ACTIONS: [ActionSpec; 4] = [
         destructive: false,
         requires_admin: false,
         returns: "RemoteArtifactSearch",
+        output_schema: None,
         params: &[
             REMOTE_CONNECTION,
             ParamSpec {
@@ -75,6 +76,7 @@ pub(crate) const CALLBACK_REMOTE_ACTIONS: [ActionSpec; 4] = [
         destructive: false,
         requires_admin: false,
         returns: "RemoteArtifactPage",
+        output_schema: None,
         params: &[
             REMOTE_CONNECTION,
             REMOTE_CURSOR,
@@ -89,6 +91,7 @@ pub(crate) const CALLBACK_REMOTE_ACTIONS: [ActionSpec; 4] = [
         destructive: false,
         requires_admin: false,
         returns: "RemoteArtifact",
+        output_schema: None,
         params: &[
             REMOTE_CONNECTION,
             ParamSpec {
@@ -105,6 +108,7 @@ pub(crate) const CALLBACK_REMOTE_ACTIONS: [ActionSpec; 4] = [
         destructive: false,
         requires_admin: true,
         returns: "ArtifactCandidatePage",
+        output_schema: None,
         params: &[REMOTE_CONNECTION, REMOTE_CURSOR, REMOTE_LIMIT],
     },
 ];

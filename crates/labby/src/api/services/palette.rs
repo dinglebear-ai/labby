@@ -866,6 +866,7 @@ mod tests {
             requires_admin: false,
             params: TEST_ACTION_PARAMS,
             returns: "object",
+            output_schema: None,
         },
         ActionSpec {
             name: "admin.run",
@@ -874,6 +875,7 @@ mod tests {
             requires_admin: true,
             params: &[],
             returns: "object",
+            output_schema: None,
         },
     ];
 

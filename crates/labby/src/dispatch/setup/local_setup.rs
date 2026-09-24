@@ -8,6 +8,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::access::{AccessHealthStatus, inspect_health};
@@ -21,7 +22,7 @@ pub enum Mode {
     Repair,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
 pub struct SetupCheck {
     pub name: &'static str,
     pub ok: bool,
@@ -33,14 +34,14 @@ pub struct SetupCheck {
     pub message: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SetupSeverity {
     Blocking,
     Advisory,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
 pub struct SetupReport {
     pub exit_policy: &'static str,
     pub ran_repair: bool,

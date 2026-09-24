@@ -370,6 +370,7 @@ const fn spec(
         destructive,
         requires_admin,
         returns,
+        output_schema: None,
         params,
     }
 }

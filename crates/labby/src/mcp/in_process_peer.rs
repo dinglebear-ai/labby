@@ -55,6 +55,7 @@ pub(crate) fn connector() -> InProcessConnector {
 pub(crate) fn build_peer_server(service: &RegisteredService) -> LabMcpServer {
     let mut registry = ToolRegistry::new();
     registry.register(service.clone());
+    registry.set_tool_projection_mode(crate::mcp::permanent_tools::ToolProjectionMode::Both);
     LabMcpServer {
         installation_id: None,
         registry: Arc::new(registry),
@@ -251,12 +252,20 @@ mod tests {
         Box::pin(async { Ok(serde_json::json!({})) })
     }
 
+    fn test_demo_list_schema() -> Value {
+        serde_json::json!({
+            "type": "array",
+            "items": { "type": "object" }
+        })
+    }
+
     const TEST_ACTIONS: &[labby_primitives::action::ActionSpec] =
         &[labby_primitives::action::ActionSpec {
             name: "demo.list",
             description: "List demo entries",
             params: &[],
             returns: "DemoList",
+            output_schema: Some(test_demo_list_schema),
             destructive: false,
             requires_admin: false,
         }];
@@ -319,19 +328,40 @@ mod tests {
 
         assert_eq!(
             registration.tools.len(),
-            1,
-            "the peer must expose exactly its own service tool"
+            2,
+            "the migration peer must expose its router and complete atomic tools"
         );
-        let tool = &registration.tools[0];
-        assert_eq!(tool.name.as_ref(), "gateway-alpha");
-        let schema = tool
+        let router = registration
+            .tools
+            .iter()
+            .find(|tool| tool.name.as_ref() == "gateway-alpha")
+            .expect("legacy router remains available");
+        let router_schema = router
             .output_schema
             .as_ref()
-            .expect("builtin peer tool carries the envelope outputSchema");
+            .expect("builtin peer router carries the envelope outputSchema");
         assert_eq!(
-            schema["properties"]["ok"]["const"],
+            router_schema["properties"]["ok"]["const"],
             serde_json::json!(true),
             "schema and capability must arrive together (FU-1)"
+        );
+
+        let atomic = registration
+            .tools
+            .iter()
+            .find(|tool| tool.name.as_ref() == "gateway-alpha.demo.list")
+            .expect("complete action schema publishes an atomic tool");
+        assert_eq!(
+            atomic.input_schema["additionalProperties"],
+            serde_json::json!(false)
+        );
+        let atomic_schema = atomic
+            .output_schema
+            .as_ref()
+            .expect("atomic peer tool carries its full output schema");
+        assert_eq!(
+            atomic_schema["properties"]["data"]["type"],
+            serde_json::json!("array")
         );
     }
 }
