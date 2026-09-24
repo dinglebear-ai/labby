@@ -12,3 +12,4 @@ accepted or implemented.
 | [0003](./0003-code-mode-first-party-execution-plane.md) | Proposed | Use Code Mode as Labby's bounded first-party execution plane |
 | [0004](./0004-skill-aware-snippets-and-execution-receipts.md) | Proposed | Resolve snippet skills through host policy and retain execution receipts |
 | [0005](./0005-artifact-store-backed-local-library.md) | Proposed | Use the ArtifactStore-backed Library as Labby's local artifact authority |
+| [0006](./0006-code-mode-does-not-suppress-labby-actions.md) | Accepted | Keep all eligible Labby atomic actions available when Code Mode is enabled |
