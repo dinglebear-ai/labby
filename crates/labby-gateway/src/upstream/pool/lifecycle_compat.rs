@@ -72,21 +72,6 @@ fn no_compatible_protocol_version(error: &anyhow::Error) -> bool {
     })
 }
 
-/// A legacy peer rejected `server/discover` with a JSON-RPC error whose id it
-/// could not correlate. The Python MCP SDK answers an unsupported
-/// `MCP-Protocol-Version` header with `"id": "server-error"`, and rmcp keeps
-/// only the ids, so the "unsupported protocol version" text never reaches the
-/// message match below. A modern peer echoes the request id, so an
-/// uncorrelated rejection of the discovery request is legacy evidence.
-fn discovery_rejected_without_correlation(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| {
-        matches!(
-            cause.downcast_ref::<ClientInitializeError>(),
-            Some(ClientInitializeError::UncorrelatedErrorResponse { .. })
-        )
-    })
-}
-
 fn modern_discovery_error_must_not_downgrade(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         let Some(ClientInitializeError::JsonRpcError(error)) =
@@ -98,6 +83,11 @@ fn modern_discovery_error_must_not_downgrade(error: &anyhow::Error) -> bool {
             || error.code == ErrorCode::MISSING_REQUIRED_CLIENT_CAPABILITY
             || error.code == ErrorCode::UNSUPPORTED_PROTOCOL_VERSION
     })
+}
+
+fn http_status_code(message: &str) -> Option<u16> {
+    let start = message.find("http ")? + "http ".len();
+    message.get(start..start + 3)?.parse().ok()
 }
 
 /// Which kind of transport produced a connect error.
@@ -127,10 +117,7 @@ pub(super) fn compatibility_retry(
     if modern_discovery_error_must_not_downgrade(error) {
         return None;
     }
-    if discovery_response_was_misclassified(error)
-        || no_compatible_protocol_version(error)
-        || discovery_rejected_without_correlation(error)
-    {
+    if discovery_response_was_misclassified(error) || no_compatible_protocol_version(error) {
         return Some(LifecycleAttempt::LegacyInitialize);
     }
 
@@ -138,7 +125,21 @@ pub(super) fn compatibility_retry(
 
     if message.contains("unsupported mcp-protocol-version")
         || message.contains("unsupported protocol version")
-        || message.contains("method not found")
+    {
+        return None;
+    }
+
+    if let Some(status) = http_status_code(&message) {
+        if matches!(status, 401 | 403 | 429) || status >= 500 {
+            return None;
+        }
+        if transport == LifecycleTransport::Network && matches!(status, 400 | 404 | 405 | 415 | 422)
+        {
+            return Some(LifecycleAttempt::LegacyInitialize);
+        }
+    }
+
+    if message.contains("method not found")
         || message.contains("method not supported")
         || message.contains("unknown method")
         || (message.contains("-32601") && message.contains("server/discover"))
@@ -346,10 +347,31 @@ mod tests {
     }
 
     #[test]
+    fn plain_legacy_http_4xx_can_retry_on_network_transports() {
+        for message in [
+            "HTTP 400 Bad Request",
+            "HTTP 404 Not Found",
+            "HTTP 405 Method Not Allowed",
+            "HTTP 415 Unsupported Media Type",
+            "HTTP 422 Unprocessable Entity",
+        ] {
+            assert_eq!(
+                compatibility_retry(&anyhow::anyhow!(message), LifecycleTransport::Network),
+                Some(LifecycleAttempt::LegacyInitialize),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
     fn does_not_downgrade_operational_or_authentication_failures() {
         for message in [
             "HTTP 401 Unauthorized",
+            "HTTP 401 Unauthorized: method not found",
+            "HTTP 403 Forbidden: expect initialize request",
+            "HTTP 429 Too Many Requests: method not found",
             "HTTP 500 Internal Server Error",
+            "HTTP 500 Internal Server Error: method not found",
             "connection timed out",
             "certificate verify failed",
             "connection closed: initialize response",
