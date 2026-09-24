@@ -19,7 +19,9 @@ verify-check:
 
 verify-test:
     python3 -m unittest discover -s tools/verification/tests -p 'test_*.py' -v
-    cargo test --manifest-path tools/verification/Cargo.toml --workspace --all-features --locked
+    # The backend fixtures launch and terminate process groups; running those
+    # tests concurrently makes CI failures intermittent and hard to attribute.
+    cargo test --manifest-path tools/verification/Cargo.toml --workspace --all-features --locked -- --test-threads=1
 
 verify-lint:
     cargo clippy --manifest-path tools/verification/Cargo.toml --workspace --all-features --all-targets --locked -- -D warnings
