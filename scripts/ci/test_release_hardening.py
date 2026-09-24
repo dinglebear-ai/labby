@@ -1468,6 +1468,33 @@ if authenticated_action; then exit 93; fi
             self.assertEqual([f"state export --output {recovery}/bundle", f"state restore --bundle {recovery}/bundle"],
                              (root / "calls").read_text().splitlines())
 
+    def test_recovery_capture_repairs_inherited_write_bits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shims = root / "shims"
+            shims.mkdir()
+            dd = shims / "dd"
+            dd.write_text(
+                '#!/bin/sh\n/bin/dd "$@" || exit\n'
+                'for arg in "$@"; do case "$arg" in of=*) chmod 0666 "${arg#of=}";; esac; done\n'
+            )
+            dd.chmod(0o755)
+            binary = root / "labby"
+            binary.write_text("#!/bin/sh\nexit 0\n")
+            binary.chmod(0o755)
+            state = root / "state"
+            state.mkdir()
+            recovery = root / "recovery"
+            env = os.environ | {"PATH": f"{shims}:{os.environ['PATH']}"}
+            helper = ROOT / "scripts/ci/n-minus-one-recovery.sh"
+            capture = subprocess.run(
+                ["bash", str(helper), "capture", str(binary), str(state), str(recovery)],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, capture.returncode, capture.stderr)
+            self.assertEqual(0o700, recovery.stat().st_mode & 0o777)
+            self.assertEqual(0o600, (recovery / "key").stat().st_mode & 0o777)
+
     @unittest.skipUnless(sys.platform == "linux", "requires Linux service-account execution")
     def test_service_recovery_uses_state_owner_and_private_accessible_candidate(self) -> None:
         import pwd
