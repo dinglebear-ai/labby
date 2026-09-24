@@ -1337,17 +1337,39 @@ fn merge_gate_shards_heavy_suites_to_stay_under_ten_minutes() {
     let gateway_shards = workflow["jobs"]["gateway-slice-tests"]["strategy"]["matrix"]["shard"]
         .as_array()
         .expect("gateway-only suite declares a shard matrix");
-    assert!(
+    assert_eq!(
         gateway_shards
             .iter()
-            .map(|shard| shard.as_i64().expect("gateway shard index"))
-            .collect::<Vec<_>>()
-            == [1, 2, 3, 4]
-            && gateway_slices.contains("--features gateway,proxy-testkit --locked --profile ci")
-            && gateway_slices.contains("--partition hash:${{ matrix.shard }}/4")
-            && !gateway_slices.contains("github.event_name != 'pull_request'"),
-        "the full gateway-only suite must run in four required partitions on pull requests"
+            .map(|shard| shard.as_str().expect("gateway shard name"))
+            .collect::<Vec<_>>(),
+        [
+            "unit-1",
+            "unit-2",
+            "unit-3",
+            "unit-4",
+            "labby-int-1",
+            "labby-int-2",
+            "labby-int-3",
+            "labby-int-4",
+            "labby-int-5",
+        ],
+        "the gateway-only suite must select bounded Cargo targets"
     );
+    assert!(
+        gateway_slices
+            .contains("scripts/ci/run-test-shard.sh \"${{ matrix.shard }}\" gateway-only")
+            && !gateway_slices.contains("github.event_name != 'pull_request'"),
+        "the full gateway-only suite must run in required shards on pull requests"
+    );
+    for required in [
+        "--no-default-features --features gateway,proxy-testkit --locked --profile ci",
+        "unit_packages=(-p labby)",
+    ] {
+        assert!(
+            shard_runner.contains(required),
+            "gateway-only shard runner must keep `{required}`"
+        );
+    }
 
     let conformance_lanes = workflow["jobs"]["mcp-conformance"]["strategy"]["matrix"]["lane"]
         .as_array()

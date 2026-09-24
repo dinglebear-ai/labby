@@ -799,7 +799,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [unit-1, unit-2, unit-3, unit-4, labby-int-1, labby-int-2, labby-int-3, labby-int-4, labby-int-5]
     env:
       RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     steps:
@@ -820,11 +820,10 @@ jobs:
           install_args: cargo:cargo-nextest
       - name: Warm gateway-only normal targets
         run: cargo build -p labby --no-default-features --features gateway,proxy-testkit --lib --bins --locked
-      - name: Run gateway-only workspace partition
-        run: >-
-          cargo nextest run -p labby --no-default-features
-          --features gateway,proxy-testkit --locked --profile ci
-          --partition hash:${{ matrix.shard }}/4
+      - name: Run gateway-only target shard
+        env:
+          CARGO_BUILD_JOBS: ${{ startsWith(matrix.shard, 'unit-') && '2' || '4' }}
+        run: scripts/ci/run-test-shard.sh "${{ matrix.shard }}" gateway-only
       - name: Upload nextest report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
