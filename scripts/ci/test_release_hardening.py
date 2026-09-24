@@ -119,7 +119,7 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertEqual(["unix", "macos", "incus", "host-service"], [row["deployment"] for row in matrix])
         self.assertNotIn("continue-on-error", release["jobs"]["upgrade-qualification"])
         self.assertFalse(any("advisory" in row for row in matrix))
-        self.assertIn('chmod -R go-w "$LABBY_HOME/skills/n-minus-one"', self.text("scripts/ci/n-minus-one/host-service"))
+        self.assertIn('chmod -R go-w "$LABBY_HOME"', self.text("scripts/ci/n-minus-one/host-service"))
         self.assertNotIn("deployment: compose", workflow)
 
     def test_n_minus_one_baseline_is_resolved_from_published_releases(self) -> None:
