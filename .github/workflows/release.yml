@@ -42,6 +42,8 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "lts/*"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
       - name: Validate release tag, ancestry, and version lockstep
         if: startsWith(github.ref, 'refs/tags/')
         run: |
@@ -76,6 +78,10 @@ jobs:
         run: |
           test "$NPM_TOKEN_PRESENT" = true || { echo '::error::NPM_TOKEN is not configured'; exit 1; }
           test "$MCP_PRIVATE_KEY_PRESENT" = true || { echo '::error::MCP_PRIVATE_KEY is not configured'; exit 1; }
+      - name: Validate npm publication identity before building
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm whoami >/dev/null
       - name: Resolve N-1 baselines before building
         env:
           GH_TOKEN: ${{ github.token }}
@@ -342,7 +348,10 @@ jobs:
     # Advisory: build-desktop.yml marks its build job continue-on-error, so a
     # missing Apple signing identity or a failed bundle never blocks stable
     # promotion. Its assets are uploaded when present.
-    needs: upgrade-qualification
+    # This is an additive artifact with no registry side effects. Build it in
+    # parallel with CLI binaries and N-1 qualification, then keep waiting for
+    # it before creating the complete release manifest.
+    needs: preflight
     permissions:
       contents: read
       id-token: write
