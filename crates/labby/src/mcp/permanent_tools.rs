@@ -366,6 +366,7 @@ fn settings_annotations() -> ToolAnnotations {
         .open_world(false)
 }
 
+#[allow(dead_code)] // Atomic-only mode is retained for staged host rollout.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum ToolProjectionMode {
     #[default]

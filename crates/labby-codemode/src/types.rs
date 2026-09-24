@@ -1035,6 +1035,12 @@ fn entry_serialized_size(entry: &CodeModeHistoryEntry) -> usize {
 pub enum CodeModeCaller {
     /// Trusted local caller that is granted all Code Mode capabilities.
     TrustedLocal,
+    /// Request-bound product authority captured by the host. The token stays
+    /// outside the sandbox and is never propagated to an MCP upstream.
+    WithAuthority {
+        caller: Box<CodeModeCaller>,
+        authority_token: String,
+    },
     /// Authenticated/scoped caller with host-computed capability booleans.
     Scoped {
         /// Capabilities granted by the host surface.
@@ -1084,6 +1090,11 @@ impl fmt::Debug for CodeModeCaller {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::TrustedLocal => formatter.write_str("TrustedLocal"),
+            Self::WithAuthority { caller, .. } => formatter
+                .debug_struct("WithAuthority")
+                .field("caller", caller)
+                .field("authority_token", &"[REDACTED]")
+                .finish(),
             Self::Scoped { capabilities, sub } => formatter
                 .debug_struct("Scoped")
                 .field("capabilities", capabilities)
@@ -1187,10 +1198,30 @@ pub fn destructive_permitted(surface: CodeModeSurface, caller: &CodeModeCaller) 
 }
 
 impl CodeModeCaller {
+    /// Product-host request context token, never exposed to sandbox code.
+    #[must_use]
+    pub fn authority_token(&self) -> Option<&str> {
+        match self {
+            Self::WithAuthority {
+                authority_token, ..
+            } => Some(authority_token),
+            _ => None,
+        }
+    }
+
+    /// Inner caller after removing the host-only authority wrapper.
+    #[must_use]
+    pub fn without_authority(&self) -> &Self {
+        match self {
+            Self::WithAuthority { caller, .. } => caller.without_authority(),
+            _ => self,
+        }
+    }
     /// Return whether the caller may use reusable Code Mode snippets.
     #[must_use]
     pub fn can_use_snippets(&self) -> bool {
         match self {
+            Self::WithAuthority { caller, .. } => caller.can_use_snippets(),
             Self::TrustedLocal => true,
             Self::Scoped { capabilities, .. }
             | Self::ScopedPrivate { capabilities, .. }
@@ -1204,6 +1235,7 @@ impl CodeModeCaller {
     #[must_use]
     pub fn can_execute(&self) -> bool {
         match self {
+            Self::WithAuthority { caller, .. } => caller.can_execute(),
             Self::TrustedLocal => true,
             Self::Scoped { capabilities, .. }
             | Self::ScopedPrivate { capabilities, .. }
@@ -1217,6 +1249,7 @@ impl CodeModeCaller {
     #[must_use]
     pub fn can_read(&self) -> bool {
         match self {
+            Self::WithAuthority { caller, .. } => caller.can_read(),
             Self::TrustedLocal => true,
             Self::Scoped { capabilities, .. }
             | Self::ScopedPrivate { capabilities, .. }
@@ -1232,6 +1265,7 @@ impl CodeModeCaller {
     #[must_use]
     pub fn is_admin(&self) -> bool {
         match self {
+            Self::WithAuthority { caller, .. } => caller.is_admin(),
             Self::TrustedLocal => true,
             Self::Scoped { capabilities, .. }
             | Self::ScopedPrivate { capabilities, .. }
@@ -1245,6 +1279,7 @@ impl CodeModeCaller {
     #[must_use]
     pub fn subject(&self) -> Option<&str> {
         match self {
+            Self::WithAuthority { caller, .. } => caller.subject(),
             Self::TrustedLocal => None,
             Self::Scoped { sub, .. }
             | Self::ScopedPrivate { sub, .. }
@@ -1259,6 +1294,7 @@ impl CodeModeCaller {
     #[must_use]
     pub fn host_provider_token(&self) -> Option<&str> {
         match self {
+            Self::WithAuthority { caller, .. } => caller.host_provider_token(),
             Self::ScopedHostProvider { provider_token, .. }
             | Self::ScopedHostProviderSkills { provider_token, .. } => Some(provider_token),
             _ => None,
@@ -1269,6 +1305,7 @@ impl CodeModeCaller {
     #[must_use]
     pub fn host_provider_request_id(&self) -> Option<&str> {
         match self {
+            Self::WithAuthority { caller, .. } => caller.host_provider_request_id(),
             Self::ScopedHostProvider {
                 provider_request_id,
                 ..

@@ -15,7 +15,8 @@ use super::facade::{SkillRegistryContext, code_mode_skill_context};
 pub(crate) struct CanonicalCodeModeSkillProvider;
 
 fn context_for(caller: &CodeModeCaller) -> Result<Arc<SkillRegistryContext>, ToolError> {
-    match caller {
+    match caller.without_authority() {
+        CodeModeCaller::WithAuthority { .. } => unreachable!("authority wrapper was removed"),
         CodeModeCaller::ScopedSkills {
             skill_context_token,
             ..

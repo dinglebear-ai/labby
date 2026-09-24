@@ -16,6 +16,8 @@ pub mod catalog;
 pub(crate) mod catalog_churn;
 pub(crate) mod catalog_coalesce;
 pub(crate) mod catalog_notifications;
+#[cfg(feature = "gateway")]
+pub(crate) mod code_mode_authority;
 pub mod completion;
 pub mod context;
 pub mod elicitation;
