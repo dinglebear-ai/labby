@@ -103,6 +103,28 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [2.3.1](https://github.com/dinglebear-ai/labby/compare/v2.3.0...v2.3.1) (2026-09-24)
+
+
+### Fixed
+
+* catch release failures before tagging ([#785](https://github.com/dinglebear-ai/labby/issues/785)) ([cb13e67](https://github.com/dinglebear-ai/labby/commit/cb13e675ac36b261526683627da6f960c8a4b92f))
+
+## [2.3.0](https://github.com/dinglebear-ai/labby/compare/v2.2.1...v2.3.0) (2026-09-24)
+
+
+### Added
+
+* **mcp:** atomic first-party tool projection ([#736](https://github.com/dinglebear-ai/labby/issues/736)) ([d17d45a](https://github.com/dinglebear-ai/labby/commit/d17d45aef3b58377df87ab3eb100edde64f1f8b8))
+
+
+### Fixed
+
+* **depot:** align pinned operation schemas ([#764](https://github.com/dinglebear-ai/labby/issues/764)) ([65302f2](https://github.com/dinglebear-ai/labby/commit/65302f26364e102573823a08972bc1c4fd212699))
+* **gateway:** harden connection lifecycle reliability ([#733](https://github.com/dinglebear-ai/labby/issues/733)) ([8cf781c](https://github.com/dinglebear-ai/labby/commit/8cf781c99818e759763fccd39b494a8db6d6286e))
+* **gateway:** isolate a rejected resource snapshot to its own upstream ([#747](https://github.com/dinglebear-ai/labby/issues/747)) ([24b918b](https://github.com/dinglebear-ai/labby/commit/24b918b65a9fd64cc2c7d9c3c9a7cee7d3ca77bf))
+* **web:** compact Library layout and clarify catalog failures ([37af9ce](https://github.com/dinglebear-ai/labby/commit/37af9ce967108fde9ead7971c90f7f0f0261656b))
+
 ## [2.2.1](https://github.com/dinglebear-ai/labby/compare/v2.2.0...v2.2.1) (2026-09-23)
 
 

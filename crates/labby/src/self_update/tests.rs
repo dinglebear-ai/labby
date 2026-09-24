@@ -29,7 +29,25 @@ fn schedule_lock_excludes_other_processes_and_survives_replacement() {
         .unwrap();
     assert!(child.success());
     drop(lock);
-    assert!(acquire_schedule_lock(&plist).is_ok());
+    // A child that briefly held an inherited descriptor may still be
+    // finishing kernel cleanup when wait() returns on macOS. Require the
+    // released lock to become available within a bounded interval, while
+    // still failing immediately for unrelated filesystem errors.
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        match acquire_schedule_lock(&plist) {
+            Ok(_lock) => break,
+            Err(error)
+                if matches!(
+                    error.downcast_ref::<fs::TryLockError>(),
+                    Some(fs::TryLockError::WouldBlock)
+                ) && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("schedule lock was not released: {error:#}"),
+        }
+    }
 }
 
 #[cfg(unix)]

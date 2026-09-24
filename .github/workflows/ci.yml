@@ -834,9 +834,8 @@ jobs:
   feature-slices:
     name: Feature slice (${{ matrix.slice }})
     runs-on: ubuntu-24.04
-    # Non-blocking: ci-gate does not wait for this job, and a failure here
-    # must not fail the CI run that release-please consumes.
-    continue-on-error: true
+    # Each supported slice must compile and its focused suite must pass before
+    # release-please can create a tag from a green main CI run.
     timeout-minutes: 30
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
@@ -1266,11 +1265,9 @@ jobs:
     # Runs on GitHub-hosted runners with the fleet kache like every other Rust
     # job. The self-hosted rust pool has two runners shared with other repos,
     # so a shard matrix there serialised behind whatever else was queued and
-    # took longer than the single job it replaced. It is non-blocking: ci-gate
-    # does not wait for it, and continue-on-error keeps a red workspace suite
-    # from failing the CI run that release-please consumes.
+    # took longer than the single job it replaced. Every shard is required by
+    # ci-gate so release-please cannot tag while the workspace suite is red.
     runs-on: ubuntu-24.04
-    continue-on-error: true
     timeout-minutes: 60
     env:
       # lld keeps the link step cheap. Do NOT reintroduce CARGO_BUILD_JOBS
@@ -1602,7 +1599,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     needs: changes
-    if: ${{ needs.changes.outputs.release == 'true' }}
+    if: ${{ needs.changes.outputs.release == 'true' || needs.changes.outputs.workflow == 'true' }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -1611,6 +1608,10 @@ jobs:
         run: |
           bash scripts/check-version-sync.sh
           bash scripts/check-rust-toolchain-sync.sh
+      - name: Exercise release qualification contracts before tagging
+        run: |
+          python3 -m pip install --disable-pip-version-check PyYAML==6.0.2
+          python3 -m unittest scripts.ci.test_release_hardening
 
   incus-contract:
     name: Incus source contract
@@ -1734,7 +1735,7 @@ jobs:
     env:
       RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     needs: [changes, frontend-assets]
-    # Coverage is a required regression gate for Rust changes, including PRs.
+    # Collect coverage on main and scheduled runs without delaying PR checks.
     if: ${{ needs.changes.outputs.rust_test == 'true' && github.event_name != 'pull_request' }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
@@ -1823,7 +1824,9 @@ jobs:
       - clippy
       - test-windows
       - test-fork
+      - test
       - codemode-runner-smoke
+      - feature-slices
       - mcp-regressions
       - mcp-conformance
       - release-contract
@@ -1907,7 +1910,9 @@ jobs:
           require_success_or_skipped clippy "${{ needs.clippy.result }}"
           require_success_or_skipped test-windows "${{ needs.test-windows.result }}"
           require_success_or_skipped test-fork "${{ needs.test-fork.result }}"
+          require_success_or_skipped test "${{ needs.test.result }}"
           require_success_or_skipped codemode-runner-smoke "${{ needs.codemode-runner-smoke.result }}"
+          require_success_or_skipped feature-slices "${{ needs.feature-slices.result }}"
           require_success_or_skipped mcp-regressions "${{ needs.mcp-regressions.result }}"
           require_success_or_skipped mcp-conformance "${{ needs.mcp-conformance.result }}"
           require_success_or_skipped release-contract "${{ needs.release-contract.result }}"

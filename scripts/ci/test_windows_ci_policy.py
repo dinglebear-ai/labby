@@ -101,11 +101,11 @@ class WindowsCiPolicyTests(unittest.TestCase):
                     f"{path.name}:{name} must refuse fork pull requests",
                 )
 
-    def test_ci_gate_does_not_wait_on_self_hosted_or_heavy_jobs(self) -> None:
+    def test_ci_gate_waits_for_required_suites_but_not_advisory_jobs(self) -> None:
         gate = yaml.safe_load(self.workflow)["jobs"]["ci-gate"]["needs"]
-        for job in ("test", "rust-coverage", "feature-slices", "live-e2e-core"):
-            self.assertNotIn(job, gate, f"{job} must stay out of the merge gate")
-        for job in ("test-windows", "test-fork", "clippy"):
+        for job in ("rust-coverage", "live-e2e-core"):
+            self.assertNotIn(job, gate, f"{job} remains advisory")
+        for job in ("test", "feature-slices", "test-windows", "test-fork", "clippy"):
             self.assertIn(job, gate)
 
 

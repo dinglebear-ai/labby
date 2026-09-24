@@ -202,7 +202,7 @@ jobs when their changed-path category is enabled:
 | Browser extension | `browser_extension` | frozen npm install, Node tests, and TypeScript type-check for extension and shared Browser Bridge protocol changes; explicitly aggregated by `ci-gate` |
 | Compile | `rust_compile` | `cargo check --workspace --all-features` |
 | MSRV | `rust_compile` | `cargo +1.97.1 check --workspace --all-features --all-targets --locked` |
-| Feature slices | `rust_compile` | warm `labby` lib/bins at normal concurrency, then run `cargo check -p labby --no-default-features --features <slice> --all-targets --locked` for `gateway`, `gateway-host`, `integrated-gateway`, `fs`, and `skills` at the same concurrency so the heavy normal library is reused; gateway, fs, and skills retain focused runtime tests |
+| Feature slices | `rust_compile` | required by `ci-gate`; warm `labby` lib/bins at normal concurrency, then run `cargo check -p labby --no-default-features --features <slice> --all-targets --locked` for `gateway`, `gateway-host`, `integrated-gateway`, `fs`, and `skills` at the same concurrency so the heavy normal library is reused; gateway, fs, and skills retain focused runtime tests |
 | Extracted crate slices | `rust_compile` | crate-specific `cargo check` commands for extracted runtime crates |
 | Generated docs freshness | `docs_check` | `just docs-check` |
 | Format | `rust_compile` | `cargo fmt --all -- --check` |
@@ -211,14 +211,14 @@ jobs when their changed-path category is enabled:
 | JavaScript advisories | `javascript_advisories` | lockfile-aware `npm audit`/`pnpm audit` across every committed JavaScript dependency graph, with a checked, expiring exception policy |
 | Labby desktop shell | `desktop` | frozen install and static loader build |
 | Labby desktop Tauri | `desktop` | independent lockfile audit plus required Linux tests and an advisory native Windows build/test smoke |
-| Rust coverage | `rust_test` | Required PR/push LCOV gate with project and critical auth/gateway/dispatch/config floors |
-| Tests (Linux) | `rust_test` | warm normal `labby` lib/bins first, then `cargo nextest run --workspace --all-features --profile ci` on GitHub-hosted `ubuntu-24.04` |
+| Rust coverage | `rust_test` on main, schedule, or manual runs | advisory LCOV run with project and critical auth/gateway/dispatch/config floors; it does not delay PR checks or release tagging |
+| Tests (Linux) | `rust_test` | required by `ci-gate`; warm normal `labby` lib/bins first, then run sharded `cargo nextest` across the workspace with all features on GitHub-hosted `ubuntu-24.04` |
 | Tests (Linux fork PR fallback) | `rust_test` | same warm-up plus nextest run on GitHub-hosted `ubuntu-24.04` without repository secrets |
 | Tests (Windows) | `rust_test` | same nextest run on GitHub-hosted `windows-latest`, including fork PRs; required by `ci-gate` |
 | macOS updater lifecycle | `workflow`, `release`, or `rust_test` | shell installer contracts plus focused Rust self-update and gateway recovery tests on the native macOS runner; required by `ci-gate` |
 | MCP conformance | `rust_test` or `workflow` | Labby's revision-pinned rmcp authenticated smoke, dated `2026-07-28` suites, and the checked MCP/OpenAI auth denominator in `tools/verification/conformance/auth-requirements.json` |
 | MCP upstream drift | weekly/manual separate workflow | compares pinned MCP spec and rmcp commits, maps upstream changes to Labby code and required tests, and opens or updates one actionable issue |
-| Release metadata contract | `release` | version and Rust toolchain lockstep only; release builds do not run in PR CI |
+| Release metadata contract | `release` or `workflow` | required by `ci-gate`; version and Rust toolchain lockstep plus executable release hardening and seeded N-1 fixture permission tests before tagging; release builds do not run in PR CI |
 | Incus source contract | `incus` | runs the image release ShellCheck command at default severity and validates the Incus supply manifest, image-definition pins, install guidance, and rolling-pointer contract |
 
 Every distributable or deployable Labby binary must include the `skills`
@@ -347,14 +347,14 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
 2. Merging that PR creates the stable `vX.Y.Z` tag plus a draft GitHub release.
 3. The immutable tag triggers candidate work; no maintainer manually publishes
    the draft. Preflight requires stable SemVer, ancestry from `origin/main`, and
-   exact Cargo/npm/MCP/release-manifest version lockstep.
+   exact Cargo/npm/MCP/release-manifest version lockstep. It also checks the
+   required npm/MCP publisher credentials and resolves both platform N-1
+   baselines before starting frontend or native builds.
 4. Each platform archive is built, smoke-tested, and attested in its build job.
    The N-1 matrix verifies that exact archive attestation before extraction,
    checks the archive sidecar, and records an archive-to-extracted-binary digest
    binding. It then invokes a platform-owned adapter for Unix, macOS, Incus,
-   and host-service deployment. The host-service leg is advisory: it runs
-   and reports, but cannot block a release, until the service can write its
-   logs under the v1.16 systemd sandbox. N-1 is the newest published
+   and host-service deployment. All four legs must pass. N-1 is the newest published
    (non-draft, non-prerelease) `vX.Y.Z` release that is older than the
    candidate, merged into it, and carries the leg's archive and `.sha256`
    sidecar (`scripts/ci/resolve-n-minus-one-baseline.py`). Newer tags whose

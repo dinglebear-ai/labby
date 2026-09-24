@@ -1064,7 +1064,7 @@ const ADVISORY_JOBS: &[&str] = &["desktop-windows", "verification-t1"];
 /// CI wall clock; `ci-gate` no longer waits on them and they are
 /// `continue-on-error`, so a failure here cannot fail the CI run that
 /// release-please consumes to cut a release tag.
-const NON_BLOCKING_JOBS: &[&str] = &["test", "rust-coverage", "feature-slices", "live-e2e-core"];
+const NON_BLOCKING_JOBS: &[&str] = &["rust-coverage", "live-e2e-core"];
 
 fn gated_changed_path_keys(workflow: &str) -> BTreeSet<String> {
     workflow
@@ -1432,8 +1432,7 @@ fn non_blocking_jobs_declare_continue_on_error() {
     }
 }
 
-/// This contract must be able to block a merge. The workspace suite that
-/// also runs it is non-blocking, so a gating job has to execute it too.
+/// This contract must run in a job that can block a merge.
 #[test]
 fn ci_contract_runs_inside_a_gating_job() {
     let text = ci_workflow_text();
