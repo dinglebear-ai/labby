@@ -6,6 +6,12 @@
 use axum::http::request::Parts;
 use std::sync::Arc;
 
+/// Cryptographically verified OAuth client identity from a signed access-token
+/// `azp` claim. This extension is deliberately separate from `AuthContext` so
+/// non-OAuth authentication paths cannot accidentally claim a verified client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorizedClientId(pub Arc<str>);
+
 /// Stored in request extensions by the HTTP auth middleware (see
 /// [`crate::middleware::AuthLayer`]).
 #[derive(Debug, Clone)]
