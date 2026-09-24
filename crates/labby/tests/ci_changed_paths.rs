@@ -875,7 +875,7 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
     let feature_slices = workflow
         .split("  feature-slices:\n")
         .nth(1)
-        .and_then(|section| section.split("\n  extracted-crate-slices:").next())
+        .and_then(|section| section.split("\n  gateway-slice-tests:").next())
         .expect("feature-slices job");
     assert!(
         feature_slices.contains("if: matrix.slice == 'fs'"),
@@ -1254,11 +1254,9 @@ fn nextest_ci_isolates_process_harnesses_and_timing_oracles() {
     }
 }
 
-/// The merge gate must finish in about ten minutes. That budget is kept by
-/// fanning the long serial suites out across matrix shards, by moving the
-/// slow non-gating suites (coverage, the gateway-slice re-run, doctests) off
-/// the pull-request path, and by caching the macOS build that has no fleet
-/// kache. Regressing any of these silently reinstates a 35-minute gate.
+/// Keep long suites parallel and catch the gateway-only runtime suite on pull
+/// requests. The old serial gateway-only run added about 24 minutes after
+/// merge, delaying Release Please and discovering failures too late.
 #[test]
 fn merge_gate_shards_heavy_suites_to_stay_under_ten_minutes() {
     let text = ci_workflow_text();
@@ -1331,15 +1329,24 @@ fn merge_gate_shards_heavy_suites_to_stay_under_ten_minutes() {
         coverage.contains("branches: [main]") && !coverage.contains("pull_request:"),
         "coverage must run separately on main without entering pull-request CI"
     );
-    let feature_slices = text
-        .split("  feature-slices:\n")
+    let gateway_slices = text
+        .split("  gateway-slice-tests:\n")
         .nth(1)
         .and_then(|section| section.split("\n  extracted-crate-slices:").next())
-        .expect("feature-slices job");
+        .expect("gateway-slice-tests job");
+    let gateway_shards = workflow["jobs"]["gateway-slice-tests"]["strategy"]["matrix"]["shard"]
+        .as_array()
+        .expect("gateway-only suite declares a shard matrix");
     assert!(
-        feature_slices
-            .contains("if: matrix.slice == 'gateway' && github.event_name != 'pull_request'"),
-        "the gateway-slice full suite must stay off the pull-request path"
+        gateway_shards
+            .iter()
+            .map(|shard| shard.as_i64().expect("gateway shard index"))
+            .collect::<Vec<_>>()
+            == [1, 2, 3, 4]
+            && gateway_slices.contains("--features gateway,proxy-testkit --locked --profile ci")
+            && gateway_slices.contains("--partition hash:${{ matrix.shard }}/4")
+            && !gateway_slices.contains("github.event_name != 'pull_request'"),
+        "the full gateway-only suite must run in four required partitions on pull requests"
     );
 
     let conformance_lanes = workflow["jobs"]["mcp-conformance"]["strategy"]["matrix"]["lane"]
