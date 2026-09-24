@@ -25,7 +25,7 @@ case "$suite" in
     unit_packages=(--workspace)
     ;;
   gateway-only)
-    common=(--no-default-features --features gateway,proxy-testkit --locked --profile ci)
+    common=(--no-default-features --features "gateway,proxy-testkit" --locked --profile ci)
     unit_packages=(-p labby)
     ;;
   *) usage ;;
