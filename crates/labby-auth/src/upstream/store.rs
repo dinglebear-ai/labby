@@ -486,9 +486,15 @@ mod tests {
             "load must not consume state before issuer validation"
         );
 
-        store.delete(csrf).await.expect("delete should consume state");
+        store
+            .delete(csrf)
+            .await
+            .expect("delete should consume state");
 
-        let replay = store.load(csrf).await.expect("replay load should not error");
+        let replay = store
+            .load(csrf)
+            .await
+            .expect("replay load should not error");
         assert!(replay.is_none(), "deleted state must reject replay");
     }
 
