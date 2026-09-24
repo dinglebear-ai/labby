@@ -103,6 +103,13 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [2.3.1](https://github.com/dinglebear-ai/labby/compare/v2.3.0...v2.3.1) (2026-09-24)
+
+
+### Fixed
+
+* catch release failures before tagging ([#785](https://github.com/dinglebear-ai/labby/issues/785)) ([cb13e67](https://github.com/dinglebear-ai/labby/commit/cb13e675ac36b261526683627da6f960c8a4b92f))
+
 ## [2.3.0](https://github.com/dinglebear-ai/labby/compare/v2.2.1...v2.3.0) (2026-09-24)
 
 
