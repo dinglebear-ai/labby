@@ -119,8 +119,27 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertEqual(["unix", "macos", "incus", "host-service"], [row["deployment"] for row in matrix])
         self.assertNotIn("continue-on-error", release["jobs"]["upgrade-qualification"])
         self.assertFalse(any("advisory" in row for row in matrix))
-        self.assertIn('chmod -R go-w "$LABBY_HOME/skills/n-minus-one"', self.text("scripts/ci/n-minus-one/host-service"))
+        self.assertIn('chmod -R go-w "$LABBY_HOME"', self.text("scripts/ci/n-minus-one/host-service"))
         self.assertNotIn("deployment: compose", workflow)
+
+    def test_release_blockers_run_before_tag_creation(self) -> None:
+        ci = yaml.load(self.text(".github/workflows/ci.yml"), Loader=yaml.BaseLoader)
+        jobs = ci["jobs"]
+        self.assertNotIn("continue-on-error", jobs["feature-slices"])
+        self.assertIn("feature-slices", jobs["ci-gate"]["needs"])
+        self.assertNotIn("continue-on-error", jobs["test"])
+        self.assertIn("test", jobs["ci-gate"]["needs"])
+        release_contract = jobs["release-contract"]
+        self.assertIn("needs.changes.outputs.workflow", release_contract["if"])
+        self.assertIn("scripts.ci.test_release_hardening", str(release_contract["steps"]))
+
+    def test_release_preflight_checks_baselines_and_credentials_before_builds(self) -> None:
+        release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
+        preflight = str(release["jobs"]["preflight"]["steps"])
+        self.assertIn("NPM_TOKEN_PRESENT", preflight)
+        self.assertIn("MCP_PRIVATE_KEY_PRESENT", preflight)
+        self.assertIn("resolve-n-minus-one-baseline.py", preflight)
+        self.assertIn("preflight", release["jobs"]["frontend-assets"]["needs"])
 
     def test_n_minus_one_baseline_is_resolved_from_published_releases(self) -> None:
         release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
@@ -1317,6 +1336,23 @@ if authenticated_action; then exit 93; fi
                 self.assertNotEqual(0, subprocess.run(["python3", str(helper), "verify", tmp], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode, relative)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(saved)
+
+    def test_durable_state_seed_secures_nested_directories(self) -> None:
+        helper = ROOT / "scripts/ci/n-minus-one-durable-state.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with closing(sqlite3.connect(root / "auth.db")) as database, database:
+                database.execute("CREATE TABLE registered_clients(client_id TEXT PRIMARY KEY, redirect_uris TEXT, created_at INTEGER)")
+            directories = (root, root / "skills", root / "skills/n-minus-one",
+                           root / "artifacts", root / "artifacts/n-minus-one",
+                           root / "snippets", root / "snippets/n-minus-one")
+            for directory in directories:
+                directory.mkdir(parents=True, exist_ok=True)
+                directory.chmod(0o777)
+            result = subprocess.run([sys.executable, str(helper), "seed", tmp], capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            for directory in directories:
+                self.assertEqual(0o700, directory.stat().st_mode & 0o777, str(directory))
 
     def test_durable_state_seeds_only_what_an_older_baseline_created(self) -> None:
         helper = ROOT / "scripts/ci/n-minus-one-durable-state.py"
