@@ -1017,13 +1017,7 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
     // CARGO_BUILD_JOBS by name, so a substring check would match the very
     // explanation of why it is absent.
     let parsed = ci_workflow_yaml(&workflow);
-    for job in [
-        "feature-slices",
-        "mcp-regressions",
-        "test",
-        "test-fork",
-        "rust-coverage",
-    ] {
+    for job in ["feature-slices", "mcp-regressions", "test", "test-fork"] {
         let env = &parsed["jobs"][job]["env"];
         // These jobs must NOT pin CARGO_BUILD_JOBS. Cargo forwards it to every
         // build script as NUM_JOBS, and aws-lc-sys compiles 414 C and 902
@@ -1059,12 +1053,9 @@ const RUNTIME_ONLY_CHANGE_OUTPUTS: &[&str] = &["gate_key_drift"];
 /// Jobs that stay visible on pull requests but must not block `ci-gate`.
 const ADVISORY_JOBS: &[&str] = &["desktop-windows", "verification-t1"];
 
-/// Heavy suites that report on every run but deliberately do not gate a merge.
-/// They each re-run the test suite in a different configuration and dominated
-/// CI wall clock; `ci-gate` no longer waits on them and they are
-/// `continue-on-error`, so a failure here cannot fail the CI run that
-/// release-please consumes to cut a release tag.
-const NON_BLOCKING_JOBS: &[&str] = &["rust-coverage", "live-e2e-core"];
+/// Live E2E reports on PRs without blocking the CI workflow that Release
+/// Please consumes. Coverage has its own push-triggered workflow.
+const NON_BLOCKING_JOBS: &[&str] = &["live-e2e-core"];
 
 fn gated_changed_path_keys(workflow: &str) -> BTreeSet<String> {
     workflow
@@ -1354,12 +1345,11 @@ fn merge_gate_shards_heavy_suites_to_stay_under_ten_minutes() {
         "the blocking Rustdoc job builds docs only; doctests run in the test `crates` shard"
     );
 
-    let coverage_if = workflow["jobs"]["rust-coverage"]["if"]
-        .as_str()
-        .expect("rust-coverage has an if");
+    let coverage = fs::read_to_string(repo_root().join(".github/workflows/rust-coverage.yml"))
+        .expect("read rust-coverage.yml");
     assert!(
-        coverage_if.contains("github.event_name != 'pull_request'"),
-        "coverage must stay off the pull-request path"
+        coverage.contains("branches: [main]") && !coverage.contains("pull_request:"),
+        "coverage must run separately on main without entering pull-request CI"
     );
     let feature_slices = text
         .split("  feature-slices:\n")
