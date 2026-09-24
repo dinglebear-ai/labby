@@ -4,12 +4,12 @@
 //! upstream × subject combination.  The underlying `SqliteStore` is `Clone` so the
 //! shared connection pool is cheap to duplicate.
 //!
-//! # `StateStore::load` is a consuming take
+//! # OAuth state ordering
 //!
-//! `StateStore::load` calls `take_upstream_oauth_state` (DELETE … RETURNING) rather than
-//! a plain SELECT.  This is intentional: consuming state on first read closes the replay
-//! window.  `StateStore::delete` is therefore a no-op — the row is already gone after
-//! a successful `load`.
+//! `StateStore::load` is deliberately non-consuming. rmcp loads callback state,
+//! validates RFC 9207 issuer, and only then calls `StateStore::delete`. The delete
+//! is the one-time consume point, so malformed callbacks cannot burn a legitimate
+//! PKCE flow while successful callbacks still reject replay.
 //!
 //! # Lifetime pattern
 //!
@@ -232,8 +232,8 @@ impl CredentialStore for SqliteCredentialStore {
 
 /// Per-`(upstream_name, subject)` state store backed by SQLite.
 ///
-/// The `load` method uses `take_upstream_oauth_state` (atomic DELETE … RETURNING)
-/// rather than a SELECT, consuming the row on first read.  `delete` is a no-op.
+/// `load` reads without consuming so rmcp can validate callback issuer first.
+/// `delete` is the scoped one-time consume point after validation succeeds.
 pub struct SqliteStateStore {
     store: SqliteStore,
     upstream_name: String,
@@ -313,7 +313,7 @@ impl StateStore for SqliteStateStore {
             let now = now_unix();
             let row = self
                 .store
-                .take_upstream_oauth_state(&self.upstream_name, &self.subject, csrf_token, now)
+                .load_upstream_oauth_state(&self.upstream_name, &self.subject, csrf_token, now)
                 .await
                 .map_err(|e| AuthError::InternalError(e.to_string()))?;
 
@@ -346,16 +346,23 @@ impl StateStore for SqliteStateStore {
 
     fn delete<'life0, 'life1, 'async_trait>(
         &'life0 self,
-        _csrf_token: &'life1 str,
+        csrf_token: &'life1 str,
     ) -> Pin<Box<dyn Future<Output = Result<(), AuthError>> + Send + 'async_trait>>
     where
         'life0: 'async_trait,
         'life1: 'async_trait,
         Self: 'async_trait,
     {
-        // `load` already performs an atomic DELETE … RETURNING; a separate
-        // delete call would be a double-delete with no effect.
-        Box::pin(async move { Ok(()) })
+        Box::pin(async move {
+            self.store
+                .delete_upstream_oauth_state_for_owner(
+                    &self.upstream_name,
+                    &self.subject,
+                    csrf_token,
+                )
+                .await
+                .map_err(|e| AuthError::InternalError(e.to_string()))
+        })
     }
 }
 
