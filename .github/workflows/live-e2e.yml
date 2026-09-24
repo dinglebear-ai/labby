@@ -37,6 +37,10 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
+      # The product E2E script builds the all-features CLI before browser tests.
+      # Restore Cargo artifacts through the same credentialless fallback used
+      # by CI so every PR does not pay for a cold Rust build here.
+      - uses: ./.github/actions/setup-rust-kache
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
         with:
           version: 9.15.9
@@ -135,4 +139,3 @@ jobs:
           path: ${{ runner.temp }}/labby-live-e2e-${{ github.run_id }}-${{ github.run_attempt }}-live-e2e-core/artifacts/
           if-no-files-found: error
           retention-days: 3
-
