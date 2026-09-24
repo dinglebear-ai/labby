@@ -234,7 +234,6 @@ mod tests {
     #[test]
     fn retries_only_for_explicit_lifecycle_incompatibility() {
         for message in [
-            "HTTP 400: Unsupported MCP-Protocol-Version: 2026-07-28",
             "JSON-RPC error: -32601: server/discover",
             "server/discover failed: No valid session ID provided",
             "JSON-RPC error: -32601: server/discover",
@@ -283,9 +282,7 @@ mod tests {
     }
 
     #[test]
-    fn retries_when_discovery_is_rejected_with_an_uncorrelated_error() {
-        // Python MCP SDK servers (deepwiki, Windows-MCP) reject the 2026
-        // protocol header with `"id": "server-error"`.
+    fn uncorrelated_discover_error_is_not_legacy_evidence() {
         let error = anyhow::Error::new(ClientInitializeError::UncorrelatedErrorResponse {
             expected: rmcp::model::RequestId::Number(0),
             received: rmcp::model::RequestId::String("server-error".into()),
@@ -293,9 +290,25 @@ mod tests {
         for transport in [LifecycleTransport::Network, LifecycleTransport::Stdio] {
             assert_eq!(
                 compatibility_retry(&error, transport),
-                Some(LifecycleAttempt::LegacyInitialize),
-                "{transport:?}"
+                None,
+                "uncorrelated middleware errors must not force a legacy downgrade over {transport:?}"
             );
+        }
+    }
+
+    #[test]
+    fn unsupported_protocol_text_alone_is_not_legacy_evidence() {
+        for message in [
+            "HTTP 400: Unsupported MCP-Protocol-Version: 2026-07-28",
+            "unsupported protocol version",
+        ] {
+            for transport in [LifecycleTransport::Network, LifecycleTransport::Stdio] {
+                assert_eq!(
+                    compatibility_retry(&anyhow::anyhow!(message), transport),
+                    None,
+                    "{message} over {transport:?}"
+                );
+            }
         }
     }
 

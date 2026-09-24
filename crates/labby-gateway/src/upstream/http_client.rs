@@ -1326,6 +1326,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn malformed_json_request_response_is_terminal_and_redacted() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/mcp"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                b"{not-json Bearer top-secret".to_vec(),
+                "application/json",
+            ))
+            .mount(&server)
+            .await;
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            build(1024).post_message(
+                format!("{}/mcp", server.uri()).into(),
+                jsonrpc_request(),
+                None,
+                None,
+                HashMap::new(),
+            ),
+        )
+        .await
+        .expect("malformed request response must terminate promptly");
+        let error = result.expect_err("malformed JSON for a request must be terminal");
+        let text = error.to_string();
+        assert!(
+            matches!(error, StreamableHttpError::UnexpectedServerResponse(_)),
+            "unexpected error: {text}"
+        );
+        assert!(!text.contains("top-secret"), "raw upstream body leaked: {text}");
+    }
+
+    #[tokio::test]
+    async fn discover_client_error_is_recorrelated_without_losing_error_code() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/mcp"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "server-error",
+                "error": {
+                    "code": rmcp::model::ErrorCode::UNSUPPORTED_PROTOCOL_VERSION.0,
+                    "message": "unsupported protocol version"
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let response = build(1024)
+            .post_message(
+                format!("{}/mcp", server.uri()).into(),
+                jsonrpc_request_with_method("server/discover"),
+                None,
+                None,
+                HashMap::new(),
+            )
+            .await
+            .expect("sessionless discover rejection must remain a JSON-RPC response");
+
+        let StreamableHttpPostResponse::Json(message, _) = response else {
+            panic!("discover rejection must be re-correlated as JSON-RPC: {response:?}");
+        };
+        let value = serde_json::to_value(message).expect("serialize response");
+        assert_eq!(value.get("id"), Some(&serde_json::json!(1)));
+        assert_eq!(
+            value.pointer("/error/code").and_then(Value::as_i64),
+            Some(i64::from(rmcp::model::ErrorCode::UNSUPPORTED_PROTOCOL_VERSION.0))
+        );
+    }
+
+    #[tokio::test]
     async fn non_success_jsonrpc_error_with_matching_id_is_delivered() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
