@@ -127,6 +127,8 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         jobs = ci["jobs"]
         self.assertNotIn("continue-on-error", jobs["feature-slices"])
         self.assertIn("feature-slices", jobs["ci-gate"]["needs"])
+        self.assertNotIn("continue-on-error", jobs["test"])
+        self.assertIn("test", jobs["ci-gate"]["needs"])
         release_contract = jobs["release-contract"]
         self.assertIn("needs.changes.outputs.workflow", release_contract["if"])
         self.assertIn("scripts.ci.test_release_hardening", str(release_contract["steps"]))

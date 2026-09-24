@@ -1265,11 +1265,9 @@ jobs:
     # Runs on GitHub-hosted runners with the fleet kache like every other Rust
     # job. The self-hosted rust pool has two runners shared with other repos,
     # so a shard matrix there serialised behind whatever else was queued and
-    # took longer than the single job it replaced. It is non-blocking: ci-gate
-    # does not wait for it, and continue-on-error keeps a red workspace suite
-    # from failing the CI run that release-please consumes.
+    # took longer than the single job it replaced. Every shard is required by
+    # ci-gate so release-please cannot tag while the workspace suite is red.
     runs-on: ubuntu-24.04
-    continue-on-error: true
     timeout-minutes: 60
     env:
       # lld keeps the link step cheap. Do NOT reintroduce CARGO_BUILD_JOBS
@@ -1826,6 +1824,7 @@ jobs:
       - clippy
       - test-windows
       - test-fork
+      - test
       - codemode-runner-smoke
       - feature-slices
       - mcp-regressions
@@ -1911,6 +1910,7 @@ jobs:
           require_success_or_skipped clippy "${{ needs.clippy.result }}"
           require_success_or_skipped test-windows "${{ needs.test-windows.result }}"
           require_success_or_skipped test-fork "${{ needs.test-fork.result }}"
+          require_success_or_skipped test "${{ needs.test.result }}"
           require_success_or_skipped codemode-runner-smoke "${{ needs.codemode-runner-smoke.result }}"
           require_success_or_skipped feature-slices "${{ needs.feature-slices.result }}"
           require_success_or_skipped mcp-regressions "${{ needs.mcp-regressions.result }}"

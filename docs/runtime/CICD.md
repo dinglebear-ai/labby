@@ -212,7 +212,7 @@ jobs when their changed-path category is enabled:
 | Labby desktop shell | `desktop` | frozen install and static loader build |
 | Labby desktop Tauri | `desktop` | independent lockfile audit plus required Linux tests and an advisory native Windows build/test smoke |
 | Rust coverage | `rust_test` on main, schedule, or manual runs | advisory LCOV run with project and critical auth/gateway/dispatch/config floors; it does not delay PR checks or release tagging |
-| Tests (Linux) | `rust_test` | warm normal `labby` lib/bins first, then `cargo nextest run --workspace --all-features --profile ci` on GitHub-hosted `ubuntu-24.04` |
+| Tests (Linux) | `rust_test` | required by `ci-gate`; warm normal `labby` lib/bins first, then run sharded `cargo nextest` across the workspace with all features on GitHub-hosted `ubuntu-24.04` |
 | Tests (Linux fork PR fallback) | `rust_test` | same warm-up plus nextest run on GitHub-hosted `ubuntu-24.04` without repository secrets |
 | Tests (Windows) | `rust_test` | same nextest run on GitHub-hosted `windows-latest`, including fork PRs; required by `ci-gate` |
 | macOS updater lifecycle | `workflow`, `release`, or `rust_test` | shell installer contracts plus focused Rust self-update and gateway recovery tests on the native macOS runner; required by `ci-gate` |
