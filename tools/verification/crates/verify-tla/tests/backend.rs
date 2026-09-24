@@ -66,17 +66,20 @@ fn exact_release_help_exit_one_is_available() {
 
 #[test]
 fn bounded_success_and_violation_are_distinct() {
+    // This fixture tests TLC verdicts. Process deadlines are covered below;
+    // allow CI scheduling delays during the integrity and version probes.
+    let semantic_plan = plan(5_000);
     let (_dir, backend) = fixture(
         "#!/bin/sh\ncase \"$*\" in *-help*) echo 'TLC Version 2.19';; *) echo 'Model checking completed. No error has been found';; esac\n",
     );
     assert!(matches!(
-        backend.run(&plan(1000)).verdict,
+        backend.run(&semantic_plan).verdict,
         Verdict::Bounded { .. }
     ));
     let (_dir, backend) = fixture(
         "#!/bin/sh\ncase \"$*\" in *-help*) echo 'TLC Version 2.19';; *) echo 'Error: Invariant SingleTerminal is violated.'; exit 12;; esac\n",
     );
-    let report = backend.run(&plan(1000));
+    let report = backend.run(&semantic_plan);
     assert!(
         matches!(report.verdict, Verdict::Falsified { .. }),
         "{report:?}"

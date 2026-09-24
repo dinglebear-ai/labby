@@ -117,9 +117,9 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         release = yaml.load(workflow, Loader=yaml.BaseLoader)
         matrix = release["jobs"]["upgrade-qualification"]["strategy"]["matrix"]["include"]
         self.assertEqual(["unix", "macos", "incus", "host-service"], [row["deployment"] for row in matrix])
-        # Only host-service is advisory, until its v1.16 log-directory bug is fixed.
-        self.assertEqual("${{ matrix.advisory == 'true' }}", release["jobs"]["upgrade-qualification"]["continue-on-error"])
-        self.assertEqual({"host-service": "true"}, {row["deployment"]: row["advisory"] for row in matrix if "advisory" in row})
+        self.assertNotIn("continue-on-error", release["jobs"]["upgrade-qualification"])
+        self.assertFalse(any("advisory" in row for row in matrix))
+        self.assertIn('chmod -R go-w "$LABBY_HOME/skills/n-minus-one"', self.text("scripts/ci/n-minus-one/host-service"))
         self.assertNotIn("deployment: compose", workflow)
 
     def test_n_minus_one_baseline_is_resolved_from_published_releases(self) -> None:
