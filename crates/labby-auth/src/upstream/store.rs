@@ -453,36 +453,36 @@ mod tests {
         assert!(result.is_none(), "unknown state token must return None");
     }
 
-    /// Loading a state token a second time returns `None` (replay prevention).
-    ///
-    /// `SqliteStateStore::load` uses an atomic DELETE … RETURNING so the first
-    /// successful load consumes the row.  A subsequent call for the same token
-    /// must return `None` rather than re-authorizing the flow.
+    /// Loading state is non-consuming so rmcp can validate RFC 9207 issuer
+    /// before committing the one-time callback state. Deletion is the consume
+    /// point: after it succeeds, replay must fail closed.
     #[tokio::test]
-    async fn replayed_state_is_rejected() {
+    async fn state_is_consumed_only_by_delete() {
         let sqlite = temp_store().await;
         let store = make_state_store(sqlite, "acme", "alice");
         let csrf = "csrf-replay-test";
 
-        // Save state once.
         store
             .save(csrf, sample_stored_state(csrf))
             .await
             .expect("save should succeed");
 
-        // First load consumes the row.
         let first = store.load(csrf).await.expect("first load should not error");
         assert!(first.is_some(), "first load must return the stored state");
 
-        // Second load must return None — the row no longer exists.
         let second = store
             .load(csrf)
             .await
-            .expect("second load should not error");
+            .expect("validation-time reload should not error");
         assert!(
-            second.is_none(),
-            "replayed (already-consumed) state token must return None"
+            second.is_some(),
+            "load must not consume state before issuer validation"
         );
+
+        store.delete(csrf).await.expect("delete should consume state");
+
+        let replay = store.load(csrf).await.expect("replay load should not error");
+        assert!(replay.is_none(), "deleted state must reject replay");
     }
 
     #[tokio::test]
