@@ -372,6 +372,18 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
    readable, and repeat the authenticated action. A missing command or adapter
    is a hard failure. The archive is the attestation subject; the extracted
    binary digest is the activation-integrity binding, not a claimed attestation.
+   Before candidate activation, each supported adapter stops the service and
+   exports an authenticated offline state bundle with the verified candidate.
+   Rollback restores that bundle before reactivating the older executable:
+   binary rollback alone cannot undo forward-only database migrations. The
+   bundle and its random owner-only recovery key remain outside `LABBY_HOME`
+   in the disposable qualification fixture and are never uploaded as logs.
+   Linux service adapters run export and restore as the `labby` state owner,
+   not root. They stage the verified candidate in that owner's private recovery
+   directory so runner-only paths do not block access after dropping privileges.
+   macOS uses a dedicated LaunchAgent and aligned `HOME`/`LABBY_HOME` so older
+   releases cannot resolve state outside the fixture. Config bytes and the
+   original credential must survive; startup may add unrelated dotenv keys.
 5. The final gated job verifies archive checksums and creates one SPDX JSON SBOM
    for each archive and installer. It records every
    subject digest in `release-manifest.json`, records every published checksum

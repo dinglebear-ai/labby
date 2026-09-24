@@ -485,6 +485,27 @@
             "minLength": 1,
             "type": "string"
           },
+          "kind": {
+            "description": "Optional Artifact kind filter.",
+            "enum": [
+              "skill",
+              "prompt",
+              "agent-definition",
+              "agent-runtime",
+              "mcp-server",
+              "mcp-config",
+              "agent-plugin",
+              "apm-package",
+              "package",
+              "agent",
+              "mcp",
+              "repository",
+              "command",
+              "hook"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
           "limit": {
             "description": "Maximum Artifacts to return.",
             "maximum": 200,
@@ -524,7 +545,7 @@
         ],
         "type": "object"
       },
-      "schemaFingerprint": "ae219779387114fe51269259a5a15c433fbc89135ee89a00a4e1340486f829c5",
+      "schemaFingerprint": "b9f0ed3dca904fea6d0f71ac814f14f682cb98c92337ed9ae61d8d5d9b33217a",
       "title": "List Bazaar artifacts",
       "requiredScope": "read",
       "transportAvailable": true
@@ -2351,7 +2372,7 @@
         "additionalProperties": false,
         "properties": {
           "expectedVersion": {
-            "description": "Optional current revision id from skills/get; stale versions are rejected atomically.",
+            "description": "Current revision id from skills/get; stale versions are rejected atomically.",
             "minLength": 1,
             "type": "string"
           },
@@ -2387,7 +2408,7 @@
         ],
         "type": "object"
       },
-      "schemaFingerprint": "ed4a3789a443220512602112aec2d3dffc8ce10a908b30f3dc924c7fbeef25af",
+      "schemaFingerprint": "9accbacc6ad40c4a51ff3317e014164741c012570c84fc3064c37734e9d8f9f7",
       "title": "Delete ingested skill",
       "requiredScope": "write",
       "transportAvailable": true
@@ -3082,7 +3103,7 @@
           },
           "offset": {
             "description": "Optional continuation byte offset.",
-            "maximum": 16777216,
+            "maximum": 524288,
             "minimum": 0,
             "type": "integer"
           },
@@ -3117,7 +3138,7 @@
         "required": [],
         "type": "object"
       },
-      "schemaFingerprint": "1e57d017464bf0caa2324d532f45f01f8f5c45c814a0a01a6f1baa25d35b0b08",
+      "schemaFingerprint": "aec0c16df499c0594ea578400ac77a1f341ceb10d1a3ae7bd33d0d62a00fa00c",
       "title": "Load Depot skill",
       "requiredScope": "read",
       "transportAvailable": true
@@ -3153,7 +3174,7 @@
           },
           "offset": {
             "description": "Optional file continuation byte offset.",
-            "maximum": 16777216,
+            "maximum": 524288,
             "minimum": 0,
             "type": "integer"
           },
@@ -3188,7 +3209,7 @@
         "required": [],
         "type": "object"
       },
-      "schemaFingerprint": "f114bde7d077cb6e8991ab9552b0a8f766791d8f1f54f71c9ef97a11c04c17e8",
+      "schemaFingerprint": "04a1903f5d932feb184d1a689cd0a29c08358f2e7c45b2f7b9d80bc5d16bf755",
       "title": "Read Depot skill resource",
       "requiredScope": "read",
       "transportAvailable": true

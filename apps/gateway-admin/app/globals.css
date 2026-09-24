@@ -970,7 +970,80 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
 [data-mobile-nav-backdrop] {
   display: none;
 }
+[data-library-page] [data-console-hero-main] {
+  padding: 14px 18px 12px !important;
+}
+
+[data-library-page] [data-console-hero-title] {
+  font-size: 24px !important;
+}
+
+[data-library-page] [data-console-hero-stats] {
+  padding: 7px 8px 8px !important;
+}
+
+[data-library-page] [data-console-hero-stat] {
+  gap: 3px !important;
+}
+
+[data-library-page] [data-console-hero-stat-value] {
+  font-size: 18px !important;
+}
+
+[data-phoenix-docked='right'] [data-lbgrid] {
+  grid-template-columns: minmax(0, 1fr) !important;
+  position: relative;
+}
+
+[data-phoenix-docked='right'] [data-lbrail] {
+  position: absolute;
+  z-index: 30;
+  top: 48px;
+  right: 8px;
+  width: min(320px, calc(100% - 16px));
+  max-height: min(70vh, 600px);
+  overflow: auto;
+  box-shadow: var(--aurora-shadow-strong);
+}
+
+[data-phoenix-docked='right'] [data-lbrail].hidden {
+  display: none !important;
+}
+
+[data-phoenix-docked='right'] [data-library-search] button[aria-label='Toggle library filters'] {
+  display: grid !important;
+}
+
+@media (max-width: 1100px) {
+  [data-phoenix-docked='right'] [data-library-page] [data-mobile-grid2] {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+}
+
+@media (max-width: 600px) {
+  [data-phoenix-docked='right'] [data-library-page] [data-mobile-grid2] {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+}
+
 @media (max-width: 900px) {
+  [data-lbgrid] {
+    grid-template-columns: minmax(0, 1fr) !important;
+    position: relative;
+  }
+  [data-lbrail] {
+    position: absolute;
+    z-index: 30;
+    top: 48px;
+    right: 8px;
+    width: min(320px, calc(100% - 16px));
+    max-height: min(70vh, 600px);
+    overflow: auto;
+    box-shadow: var(--aurora-shadow-strong);
+  }
+  [data-library-page] [data-mobile-grid2] {
+    grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
+  }
   [data-mobile-only] {
     display: inline-flex !important;
   }
@@ -1087,6 +1160,9 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
 }
 
 @media (max-width: 520px) {
+  [data-library-page] [data-mobile-grid2] {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
   header[data-topbar]:has([data-actioncluster] > *) {
     height: 104px !important;
     padding-bottom: 48px !important;
