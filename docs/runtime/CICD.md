@@ -344,7 +344,10 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
 
 ## Release Process
 
-1. Release Please prepares the version/changelog PR.
+1. Release Please prepares the version/changelog PR after green main CI. If
+   another trigger sees an open release PR built from the same main commit, it
+   preserves that branch and its running checks instead of rewriting identical
+   commits. Manual dispatch can still force a refresh.
 2. Merging that PR creates the stable `vX.Y.Z` tag plus a draft GitHub release.
 3. The immutable tag triggers candidate work; no maintainer manually publishes
    the draft. Preflight requires stable SemVer, ancestry from `origin/main`, and
