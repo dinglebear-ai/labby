@@ -309,6 +309,7 @@ mod tests {
             destructive: false,
             requires_admin: false,
             returns: "Value",
+            output_schema: None,
             params: &[],
         },
         ActionSpec {
@@ -317,6 +318,7 @@ mod tests {
             destructive: true,
             requires_admin: false,
             returns: "void",
+            output_schema: None,
             params: &[ParamSpec {
                 name: "id",
                 ty: "string",

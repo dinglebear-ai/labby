@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock, PoisonError};
 
 use futures::stream::{self, StreamExt};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
@@ -65,7 +66,7 @@ pub(crate) struct CodeModeArtifactWrite {
 /// [`write_code_mode_artifact`] is by convention the sole producer, which keeps
 /// the digest and byte-count honest. serde serializes the fields into the
 /// execution response regardless of their visibility.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CodeModeArtifactReceipt {
     pub(crate) path: String,
     pub(crate) absolute_path: String,

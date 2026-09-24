@@ -632,6 +632,43 @@ impl LabMcpServer {
             }
         };
 
+        // Capture the real transport identity for first-party personal OAuth.
+        // Team-bound routes deliberately do not receive this context: their
+        // gateway credential subject is not the caller's personal identity.
+        let personal_authority = if !read_only && self.route_scope.bound_team_id().is_none() {
+            match (
+                auth,
+                crate::mcp::context::verified_identity_from_extensions(&context.extensions),
+            ) {
+                (Some(auth), Some(identity))
+                    if auth
+                        .scopes
+                        .iter()
+                        .any(|scope| matches!(scope.as_str(), "lab" | "lab:admin")) =>
+                {
+                    Some(
+                        crate::mcp::code_mode_authority::register_personal_authority(
+                            Arc::clone(&self.access_runtime),
+                            identity.clone(),
+                            crate::access::AuthorityCeiling::from_auth_context(auth),
+                            auth.sub.clone(),
+                            self.route_scope.allowed_upstreams().cloned(),
+                        ),
+                    )
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let caller = match personal_authority.as_ref() {
+            Some(authority) => CodeModeCaller::WithAuthority {
+                caller: Box::new(caller),
+                authority_token: authority.token().to_owned(),
+            },
+            None => caller,
+        };
+
         // Per-run caller identity stamped onto journal rows at the flush
         // boundary (captured once, not per step). Fingerprint is cloned here
         // because `capability_filter` is moved into `execute()` below.

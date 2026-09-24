@@ -187,6 +187,7 @@ const fn action(
         requires_admin: false,
         params,
         returns: "object",
+        output_schema: None,
     }
 }
 /// Installation-scoped administration: the shared evaluator demands
@@ -203,6 +204,7 @@ const fn admin_action(
         requires_admin: true,
         params,
         returns: "object",
+        output_schema: None,
     }
 }
 

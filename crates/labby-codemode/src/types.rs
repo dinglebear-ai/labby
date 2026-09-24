@@ -7,6 +7,7 @@
 use std::collections::{BTreeSet, VecDeque};
 use std::fmt;
 
+use schemars::JsonSchema;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -100,7 +101,7 @@ pub fn namespaced_tool_id(namespace: &str, tool: &str) -> String {
 ///
 /// A descriptor carries discovery metadata only. Its presence never grants
 /// execution or access; dispatch/load operations remain separately authorized.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct CatalogDescriptor {
     /// Exact upstream-tool declaration for snippets; absent for normal tools
     /// and legacy snippets. An explicit empty declaration remains visible.
@@ -143,7 +144,7 @@ pub struct CatalogDescriptor {
 /// Optional booleans preserve fail-closed semantics: an omitted fact is
 /// unknown. This type deliberately carries no approval/access policy or raw
 /// upstream annotation text.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CodeModeToolSafety {
     /// Whether the upstream explicitly classifies the tool as read-only.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -162,7 +163,9 @@ impl CodeModeToolSafety {
 }
 
 /// Kind of object represented by a Code Mode discovery descriptor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, PartialOrd, Ord,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum CodeModeCatalogKind {
     /// Host-provided callable tool.
@@ -209,7 +212,7 @@ impl CodeModeCatalogKind {
 }
 
 /// Named snippet input plus its validation/default specification.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CodeModeSnippetInputEntry {
     /// Input parameter name.
     pub name: String,
@@ -436,7 +439,7 @@ fn snippet_input_json_type(ty: SnippetInputType) -> Option<&'static str> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub(crate) struct CodeModeDiscoveryEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) tools: Option<crate::snippet::tool_declarations::SnippetToolDeclarations>,
@@ -492,14 +495,28 @@ impl CodeModeDiscoveryEntry {
 /// `_meta.ui.resourceUri`, before the result envelope is discarded. `ui_meta`
 /// holds the `_meta.ui` object verbatim (including `resourceUri`) so the final
 /// `execute` response can mirror the widget identically.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct UiLink {
     /// Raw `_meta.ui` object advertised by the tool result.
     pub ui_meta: Value,
 }
 
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct CodeModeExecutedCallSchema {
+    id: String,
+    namespace: String,
+    tool: String,
+    ok: bool,
+    elapsed_ms: u128,
+    start_ms: Option<u128>,
+    params: Option<Value>,
+    error_kind: Option<String>,
+    ui: Option<Value>,
+}
+
 /// Serializable result envelope for one Code Mode execution.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct CodeModeExecutionResponse {
     /// Stable execution identifier used for journals, artifacts, and promotion.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -519,6 +536,7 @@ pub struct CodeModeExecutionResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui: Option<UiLink>,
     /// Metadata for every host-brokered call attempted during execution.
+    #[schemars(with = "Vec<CodeModeExecutedCallSchema>")]
     pub calls: Vec<CodeModeExecutedCall>,
     /// Captured console.log/warn/error lines from the runner. Sourced from the
     /// javy runner subprocess (drained from its stderr); the current javy path
@@ -672,7 +690,7 @@ impl From<CodeModeCallError> for CodeModeExecutionError {
 }
 
 /// Kind of operation recorded in the bounded Code Mode history.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CodeModeHistoryKind {
     /// JavaScript execution entry.
@@ -680,7 +698,7 @@ pub enum CodeModeHistoryKind {
 }
 
 /// Bounded observability record for one Code Mode operation.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct CodeModeHistoryEntry {
     /// Stable execution identifier, when one was assigned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -706,6 +724,7 @@ pub struct CodeModeHistoryEntry {
     pub error_kind: Option<String>,
     /// Bounded tool-call trace captured for the operation.
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[schemars(with = "Vec<CodeModeExecutedCallSchema>")]
     pub calls: Vec<CodeModeExecutedCall>,
     /// Search result count for discovery operations that populate this field.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1016,6 +1035,12 @@ fn entry_serialized_size(entry: &CodeModeHistoryEntry) -> usize {
 pub enum CodeModeCaller {
     /// Trusted local caller that is granted all Code Mode capabilities.
     TrustedLocal,
+    /// Request-bound product authority captured by the host. The token stays
+    /// outside the sandbox and is never propagated to an MCP upstream.
+    WithAuthority {
+        caller: Box<CodeModeCaller>,
+        authority_token: String,
+    },
     /// Authenticated/scoped caller with host-computed capability booleans.
     Scoped {
         /// Capabilities granted by the host surface.
@@ -1065,6 +1090,11 @@ impl fmt::Debug for CodeModeCaller {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::TrustedLocal => formatter.write_str("TrustedLocal"),
+            Self::WithAuthority { caller, .. } => formatter
+                .debug_struct("WithAuthority")
+                .field("caller", caller)
+                .field("authority_token", &"[REDACTED]")
+                .finish(),
             Self::Scoped { capabilities, sub } => formatter
                 .debug_struct("Scoped")
                 .field("capabilities", capabilities)
@@ -1168,10 +1198,30 @@ pub fn destructive_permitted(surface: CodeModeSurface, caller: &CodeModeCaller) 
 }
 
 impl CodeModeCaller {
+    /// Product-host request context token, never exposed to sandbox code.
+    #[must_use]
+    pub fn authority_token(&self) -> Option<&str> {
+        match self {
+            Self::WithAuthority {
+                authority_token, ..
+            } => Some(authority_token),
+            _ => None,
+        }
+    }
+
+    /// Inner caller after removing the host-only authority wrapper.
+    #[must_use]
+    pub fn without_authority(&self) -> &Self {
+        match self {
+            Self::WithAuthority { caller, .. } => caller.without_authority(),
+            _ => self,
+        }
+    }
     /// Return whether the caller may use reusable Code Mode snippets.
     #[must_use]
     pub fn can_use_snippets(&self) -> bool {
         match self {
+            Self::WithAuthority { caller, .. } => caller.can_use_snippets(),
             Self::TrustedLocal => true,
             Self::Scoped { capabilities, .. }
             | Self::ScopedPrivate { capabilities, .. }
@@ -1185,6 +1235,7 @@ impl CodeModeCaller {
     #[must_use]
     pub fn can_execute(&self) -> bool {
         match self {
+            Self::WithAuthority { caller, .. } => caller.can_execute(),
             Self::TrustedLocal => true,
             Self::Scoped { capabilities, .. }
             | Self::ScopedPrivate { capabilities, .. }
@@ -1198,6 +1249,7 @@ impl CodeModeCaller {
     #[must_use]
     pub fn can_read(&self) -> bool {
         match self {
+            Self::WithAuthority { caller, .. } => caller.can_read(),
             Self::TrustedLocal => true,
             Self::Scoped { capabilities, .. }
             | Self::ScopedPrivate { capabilities, .. }
@@ -1213,6 +1265,7 @@ impl CodeModeCaller {
     #[must_use]
     pub fn is_admin(&self) -> bool {
         match self {
+            Self::WithAuthority { caller, .. } => caller.is_admin(),
             Self::TrustedLocal => true,
             Self::Scoped { capabilities, .. }
             | Self::ScopedPrivate { capabilities, .. }
@@ -1226,6 +1279,7 @@ impl CodeModeCaller {
     #[must_use]
     pub fn subject(&self) -> Option<&str> {
         match self {
+            Self::WithAuthority { caller, .. } => caller.subject(),
             Self::TrustedLocal => None,
             Self::Scoped { sub, .. }
             | Self::ScopedPrivate { sub, .. }
@@ -1240,6 +1294,7 @@ impl CodeModeCaller {
     #[must_use]
     pub fn host_provider_token(&self) -> Option<&str> {
         match self {
+            Self::WithAuthority { caller, .. } => caller.host_provider_token(),
             Self::ScopedHostProvider { provider_token, .. }
             | Self::ScopedHostProviderSkills { provider_token, .. } => Some(provider_token),
             _ => None,
@@ -1250,6 +1305,7 @@ impl CodeModeCaller {
     #[must_use]
     pub fn host_provider_request_id(&self) -> Option<&str> {
         match self {
+            Self::WithAuthority { caller, .. } => caller.host_provider_request_id(),
             Self::ScopedHostProvider {
                 provider_request_id,
                 ..

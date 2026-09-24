@@ -4,6 +4,7 @@
 //! Keep these types independent of the retired service SDK surface.
 
 use labby_primitives::plugin_ui::{FieldKind, UiSchema};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
@@ -13,7 +14,7 @@ use thiserror::Error;
 pub const SECRET_SENTINEL: &str = "***";
 
 /// Fully normalized, replay-stable bootstrap request. This contains no secret.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AccessBootstrapManifest {
     pub version: u8,
     pub installation_id: String,
@@ -44,7 +45,7 @@ pub struct AccessBootstrapPrepare {
     pub ttl_seconds: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AccessBootstrapPrepareOutcome {
     pub prepare_id: String,
     pub proof_id: String,
@@ -54,7 +55,7 @@ pub struct AccessBootstrapPrepareOutcome {
     pub credential_file: PathBuf,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PrepareJournalState {
     Allocating,
@@ -66,7 +67,7 @@ pub enum PrepareJournalState {
     ManualFileCleanupRequired,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PrepareFileIdentity {
     pub path: PathBuf,
     pub digest_hex: String,
@@ -102,7 +103,7 @@ pub struct PrepareFileIdentity {
 }
 
 /// Secret-free, installation-owned crash recovery authority.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PrepareJournal {
     pub version: u8,
     pub prepare_id: String,
@@ -125,7 +126,7 @@ pub struct PrepareJournal {
 }
 
 /// First-run setup state machine.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SetupState {
     /// `~/.labby/.env` does not exist at all.
@@ -141,7 +142,7 @@ pub enum SetupState {
 }
 
 /// Snapshot returned by `setup.state` to the wizard / settings UI.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SetupSnapshot {
     pub first_run: bool,
     pub env_path: PathBuf,
@@ -156,14 +157,14 @@ pub struct SetupSnapshot {
 }
 
 /// Single key=value entry within a draft mutation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DraftEntry {
     pub key: String,
     pub value: String,
 }
 
 /// Outcome envelope for `setup.draft.commit` and `setup.finalize`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CommitOutcome {
     pub written: usize,
     pub skipped: Vec<String>,

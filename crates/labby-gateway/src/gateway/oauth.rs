@@ -1,10 +1,11 @@
+use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::gateway::manager::GatewayManager;
 use labby_auth::upstream::types::{BeginAuthorization, GoogleCredentialBrokerStatus};
 use labby_runtime::error::ToolError;
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
 pub struct UpstreamOauthStatusView {
     pub authenticated: bool,
     pub upstream: String,
@@ -37,7 +38,7 @@ pub struct UpstreamOauthStatusView {
     pub discovery_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum UpstreamOauthConnectionState {
     Connected,
@@ -49,7 +50,7 @@ pub enum UpstreamOauthConnectionState {
     Disconnected,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct ProbeResult {
     pub upstream: String,
     pub url: String,

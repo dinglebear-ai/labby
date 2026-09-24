@@ -17,7 +17,7 @@ use std::sync::{Arc, LazyLock};
 
 use rmcp::model::{MetaObject, Tool, ToolAnnotations};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Map, Value, json};
 
 #[cfg(feature = "gateway")]
 use crate::mcp::call_tool_codemode::{
@@ -42,20 +42,101 @@ use crate::mcp::handlers_tools::{
 #[cfg(feature = "skills")]
 use crate::mcp::handlers_tools::{skill_library_tool_description, skill_library_tool_meta};
 use crate::registry::RegisteredService;
+use labby_primitives::action::{ActionSpec, ParamSpec};
 
 /// Shared `{action, params, instance}` input schema advertised by every
 /// builtin service tool. Kept private so callers must go through
 /// [`PermanentToolRegistry::builtin_service_tool`]; the single definition site
 /// exists for drift prevention, not performance.
-fn builtin_action_schema() -> Arc<serde_json::Map<String, Value>> {
-    static BUILTIN_ACTION_SCHEMA: LazyLock<Arc<serde_json::Map<String, Value>>> =
+fn builtin_action_schema() -> Arc<Map<String, Value>> {
+    static BUILTIN_ACTION_SCHEMA: LazyLock<Arc<Map<String, Value>>> =
         LazyLock::new(|| Arc::new(action_schema()));
     Arc::clone(&BUILTIN_ACTION_SCHEMA)
 }
 
+fn atomic_action_input_schema(action: &ActionSpec) -> Arc<Map<String, Value>> {
+    let mut properties = Map::new();
+    let mut required = Vec::new();
+
+    for param in action.params {
+        let mut schema = param_json_schema(param);
+        if let Value::Object(map) = &mut schema
+            && !param.description.is_empty()
+        {
+            map.insert(
+                "description".to_string(),
+                Value::String(param.description.to_string()),
+            );
+        }
+        properties.insert(param.name.to_string(), schema);
+        if param.required {
+            required.push(Value::String(param.name.to_string()));
+        }
+    }
+
+    let mut schema = Map::from_iter([
+        ("type".to_string(), Value::String("object".to_string())),
+        ("properties".to_string(), Value::Object(properties)),
+        ("additionalProperties".to_string(), Value::Bool(false)),
+    ]);
+    if !required.is_empty() {
+        schema.insert("required".to_string(), Value::Array(required));
+    }
+    Arc::new(schema)
+}
+
+fn param_json_schema(param: &ParamSpec) -> Value {
+    let ty = param.ty.trim();
+    if let Some(item) = ty.strip_suffix("[]") {
+        return json!({
+            "type": "array",
+            "items": type_label_json_schema(item)
+        });
+    }
+    if ty.contains('|')
+        && ty.split('|').all(|part| {
+            !matches!(
+                part.trim(),
+                "string" | "number" | "integer" | "boolean" | "object" | "array" | "null"
+            )
+        })
+    {
+        return json!({
+            "type": "string",
+            "enum": ty.split('|').map(str::trim).collect::<Vec<_>>()
+        });
+    }
+    if ty.contains('|') {
+        return json!({
+            "anyOf": ty
+                .split('|')
+                .map(|part| type_label_json_schema(part.trim()))
+                .collect::<Vec<_>>()
+        });
+    }
+    type_label_json_schema(ty)
+}
+
+fn type_label_json_schema(ty: &str) -> Value {
+    match ty {
+        "string" => json!({ "type": "string" }),
+        "integer" | "int" | "i64" | "u64" | "usize" => json!({ "type": "integer" }),
+        "number" | "float" | "f64" => json!({ "type": "number" }),
+        "boolean" | "bool" => json!({ "type": "boolean" }),
+        "object" | "json" | "value" => json!({ "type": "object" }),
+        "array" | "list" => json!({ "type": "array" }),
+        "null" => json!({ "type": "null" }),
+        _ => json!({ "description": format!("Labby type hint: {ty}") }),
+    }
+}
+
+fn atomic_action_tool_name(service: &RegisteredService, action: &ActionSpec) -> String {
+    format!("{}.{}", service.name, action.name)
+}
+
 #[cfg(feature = "skills")]
-fn skill_action_schema(allowed_actions: Option<&[String]>) -> Arc<serde_json::Map<String, Value>> {
-    static MANAGEMENT: LazyLock<Arc<serde_json::Map<String, Value>>> =
+fn skill_action_schema(allowed_actions: Option<&[String]>) -> Arc<Map<String, Value>> {
+    static MANAGEMENT: LazyLock<Arc<Map<String, Value>>> =
         LazyLock::new(|| action_enum_schema(&crate::dispatch::artifacts::ACTIONS));
     let Some(allowed) = allowed_actions else {
         return Arc::clone(&MANAGEMENT);
@@ -72,9 +153,7 @@ fn skill_action_schema(allowed_actions: Option<&[String]>) -> Arc<serde_json::Ma
 }
 
 #[cfg(feature = "skills")]
-fn action_enum_schema(
-    actions: &[labby_primitives::action::ActionSpec],
-) -> Arc<serde_json::Map<String, Value>> {
+fn action_enum_schema(actions: &[ActionSpec]) -> Arc<Map<String, Value>> {
     let mut schema = action_schema();
     schema["properties"]["action"]["enum"] = Value::Array(
         actions
@@ -100,9 +179,9 @@ fn action_enum_schema(
 /// advertised schemas at once, client-side. If `build_success` ever grows a
 /// field, this schema changes in the same commit anyway — the open object just
 /// means clients do not break first.
-fn dispatch_envelope_output_schema() -> Arc<serde_json::Map<String, Value>> {
-    static ENVELOPE_OUTPUT_SCHEMA: LazyLock<Arc<serde_json::Map<String, Value>>> = LazyLock::new(
-        || match serde_json::json!({
+fn dispatch_envelope_output_schema() -> Arc<Map<String, Value>> {
+    static ENVELOPE_OUTPUT_SCHEMA: LazyLock<Arc<Map<String, Value>>> = LazyLock::new(|| {
+        match serde_json::json!({
             "type": "object",
             "properties": {
                 "ok": { "const": true },
@@ -117,9 +196,30 @@ fn dispatch_envelope_output_schema() -> Arc<serde_json::Map<String, Value>> {
         }) {
             Value::Object(map) => Arc::new(map),
             _ => unreachable!("dispatch envelope output schema must be an object"),
-        },
-    );
+        }
+    });
     Arc::clone(&ENVELOPE_OUTPUT_SCHEMA)
+}
+
+fn atomic_dispatch_output_schema(
+    service: &RegisteredService,
+    action: &ActionSpec,
+) -> Option<Arc<Map<String, Value>>> {
+    let data_schema = (action.output_schema?)();
+    match json!({
+        "type": "object",
+        "properties": {
+            "ok": { "const": true },
+            "service": { "const": service.name },
+            "action": { "const": action.name },
+            "data": data_schema
+        },
+        "required": ["ok", "service", "action", "data"],
+        "additionalProperties": true
+    }) {
+        Value::Object(map) => Some(Arc::new(map)),
+        _ => unreachable!("atomic dispatch output schema must be an object"),
+    }
 }
 
 /// Typed dispatcher key for a permanent product tool.
@@ -266,6 +366,31 @@ fn settings_annotations() -> ToolAnnotations {
         .open_world(false)
 }
 
+#[allow(dead_code)] // Atomic-only mode is retained for staged host rollout.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ToolProjectionMode {
+    #[default]
+    Router,
+    #[allow(
+        dead_code,
+        reason = "atomic-only rollout is reserved while both modes coexist"
+    )]
+    Atomic,
+    Both,
+}
+
+impl ToolProjectionMode {
+    #[must_use]
+    pub(crate) const fn includes_router(self) -> bool {
+        matches!(self, Self::Router | Self::Both)
+    }
+
+    #[must_use]
+    pub(crate) const fn includes_atomic(self) -> bool {
+        matches!(self, Self::Atomic | Self::Both)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct PermanentToolRegistry;
 
@@ -322,6 +447,32 @@ impl PermanentToolRegistry {
     /// Canonical descriptor for the `artifacts` service with its Artifact
     /// Library presentation binding. The underlying service remains callable
     /// as ordinary text on hosts that do not render MCP Apps.
+    #[must_use]
+    pub(crate) fn atomic_action_tool(
+        &self,
+        service: &RegisteredService,
+        action: &ActionSpec,
+    ) -> Option<Tool> {
+        if matches!(action.name, "help" | "schema") {
+            return None;
+        }
+        let output_schema = atomic_dispatch_output_schema(service, action)?;
+        let annotations = ToolAnnotations::new()
+            .read_only(false)
+            .destructive(action.destructive)
+            .idempotent(false)
+            .open_world(true);
+        Some(with_labby_security(
+            Tool::new(
+                atomic_action_tool_name(service, action),
+                action.description,
+                atomic_action_input_schema(action),
+            )
+            .with_annotations(annotations)
+            .with_raw_output_schema(output_schema),
+        ))
+    }
+
     #[cfg(feature = "skills")]
     #[must_use]
     pub(crate) fn skill_library_tool(
@@ -504,8 +655,9 @@ mod tests {
     #[cfg(feature = "gateway")]
     use super::is_reserved_non_upstream_tool_name;
     use super::{
-        PermanentToolId, PermanentToolRegistry, SkillLibraryDescriptorMode,
-        dispatch_envelope_output_schema, with_labby_security,
+        PermanentToolId, PermanentToolRegistry, SkillLibraryDescriptorMode, ToolProjectionMode,
+        atomic_action_input_schema, atomic_action_tool_name, dispatch_envelope_output_schema,
+        with_labby_security,
     };
     #[cfg(feature = "gateway")]
     use crate::mcp::call_tool_codemode::CODE_MODE_DESCRIPTION_MAX_BYTES;
@@ -1112,6 +1264,137 @@ mod tests {
         assert!(description.contains("nested upstream MCP Apps"));
     }
 
+    #[test]
+    fn first_party_projection_mode_defaults_to_router_and_models_dual_publication() {
+        assert_eq!(ToolProjectionMode::default(), ToolProjectionMode::Router);
+        assert!(ToolProjectionMode::Router.includes_router());
+        assert!(!ToolProjectionMode::Router.includes_atomic());
+        assert!(!ToolProjectionMode::Atomic.includes_router());
+        assert!(ToolProjectionMode::Atomic.includes_atomic());
+        assert!(ToolProjectionMode::Both.includes_router());
+        assert!(ToolProjectionMode::Both.includes_atomic());
+    }
+
+    #[test]
+    fn atomic_input_schema_projects_action_params_without_router_wrapper() {
+        static PARAMS: &[labby_primitives::action::ParamSpec] = &[
+            labby_primitives::action::ParamSpec {
+                name: "name",
+                ty: "string",
+                required: true,
+                description: "Human-readable name.",
+            },
+            labby_primitives::action::ParamSpec {
+                name: "tags",
+                ty: "string[]",
+                required: false,
+                description: "Optional tags.",
+            },
+            labby_primitives::action::ParamSpec {
+                name: "mode",
+                ty: "fast|safe",
+                required: false,
+                description: "Execution mode.",
+            },
+            labby_primitives::action::ParamSpec {
+                name: "cursor",
+                ty: "string|null",
+                required: false,
+                description: "Optional cursor.",
+            },
+        ];
+        let action = labby_primitives::action::ActionSpec {
+            name: "status.get",
+            description: "Get status",
+            destructive: false,
+            requires_admin: false,
+            params: PARAMS,
+            returns: "Status",
+            output_schema: None,
+        };
+
+        let schema = atomic_action_input_schema(&action);
+        assert_eq!(schema["type"], serde_json::json!("object"));
+        assert_eq!(schema["additionalProperties"], serde_json::json!(false));
+        assert_eq!(schema["required"], serde_json::json!(["name"]));
+        assert_eq!(
+            schema["properties"]["name"]["type"],
+            serde_json::json!("string")
+        );
+        assert_eq!(
+            schema["properties"]["tags"]["items"]["type"],
+            serde_json::json!("string")
+        );
+        assert_eq!(
+            schema["properties"]["mode"]["enum"],
+            serde_json::json!(["fast", "safe"])
+        );
+        assert_eq!(
+            schema["properties"]["cursor"]["anyOf"][1]["type"],
+            serde_json::json!("null")
+        );
+        assert_eq!(
+            schema["properties"]["name"]["description"],
+            serde_json::json!("Human-readable name.")
+        );
+        assert!(schema["properties"].get("action").is_none());
+        assert!(schema["properties"].get("params").is_none());
+        assert_eq!(
+            atomic_action_tool_name(&service("gateway"), &action),
+            "gateway.status.get"
+        );
+    }
+
+    #[test]
+    fn atomic_descriptor_requires_and_embeds_complete_output_schema() {
+        fn status_output_schema() -> Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": { "healthy": { "type": "boolean" } },
+                "required": ["healthy"],
+                "additionalProperties": false
+            })
+        }
+
+        let service = service("doctor");
+        let missing = labby_primitives::action::ActionSpec {
+            name: "status.get",
+            description: "Get status",
+            destructive: false,
+            requires_admin: false,
+            params: &[],
+            returns: "Status",
+            output_schema: None,
+        };
+        assert!(
+            PermanentToolRegistry::new()
+                .atomic_action_tool(&service, &missing)
+                .is_none()
+        );
+
+        let complete = labby_primitives::action::ActionSpec {
+            output_schema: Some(status_output_schema),
+            ..missing
+        };
+        let tool = PermanentToolRegistry::new()
+            .atomic_action_tool(&service, &complete)
+            .expect("complete schema publishes atomic tool");
+        assert_eq!(tool.name.as_ref(), "doctor.status.get");
+        let output = tool.output_schema.expect("atomic output schema");
+        assert_eq!(
+            output["properties"]["service"]["const"],
+            serde_json::json!("doctor")
+        );
+        assert_eq!(
+            output["properties"]["action"]["const"],
+            serde_json::json!("status.get")
+        );
+        assert_eq!(
+            output["properties"]["data"]["properties"]["healthy"]["type"],
+            serde_json::json!("boolean")
+        );
+    }
+
     #[cfg(feature = "gateway")]
     #[test]
     fn codemode_read_descriptor_is_truthfully_annotated_and_bounded() {
@@ -1145,7 +1428,7 @@ pub(crate) fn with_labby_security(mut tool: Tool) -> Tool {
     }])
     .expect("static OAuth security scheme serializes");
     tool.meta
-        .get_or_insert_with(|| MetaObject(serde_json::Map::new()))
+        .get_or_insert_with(|| MetaObject(Map::new()))
         .0
         .insert("securitySchemes".to_string(), schemes);
     tool

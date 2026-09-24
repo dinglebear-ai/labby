@@ -254,6 +254,7 @@ impl GatewayManager {
             execution_capability_publication: Arc::new(std::sync::RwLock::new(())),
             execution_capability_provider: None,
             code_mode_skill_provider: None,
+            code_mode_personal_oauth_provider: None,
             agent_executions: Arc::new(agent_executions),
             agent_execution_cancellations: Arc::new(dashmap::DashMap::new()),
             code_mode_app_state: CodeModeAppState::default(),
@@ -346,6 +347,20 @@ impl GatewayManager {
     ) -> Self {
         self.code_mode_skill_provider = Some(provider);
         self
+    }
+
+    /// Attach the product authority adapter for personal OAuth Code Mode calls.
+    #[must_use]
+    pub fn with_code_mode_personal_oauth_provider(
+        mut self,
+        provider: Arc<dyn crate::gateway::code_mode::oauth::CodeModePersonalOauthProvider>,
+    ) -> Self {
+        self.code_mode_personal_oauth_provider = Some(provider);
+        self
+    }
+
+    pub(crate) fn has_code_mode_personal_oauth_provider(&self) -> bool {
+        self.code_mode_personal_oauth_provider.is_some()
     }
 
     /// Override the subprocess used for Code Mode runner execution.

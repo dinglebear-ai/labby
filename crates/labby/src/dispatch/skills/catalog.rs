@@ -21,6 +21,7 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "Catalog",
+        output_schema: None,
         params: &[],
     },
     ActionSpec {
@@ -29,6 +30,7 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "Schema",
+        output_schema: None,
         params: &[ParamSpec {
             name: "action",
             ty: "string",
@@ -42,6 +44,7 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "SkillListResponse",
+        output_schema: None,
         params: &[
             ORIGIN_PARAM,
             ParamSpec {
@@ -58,6 +61,7 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "SkillSearchResponse",
+        output_schema: None,
         params: &[
             ParamSpec {
                 name: "query",
@@ -80,6 +84,7 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "SkillGetResponse",
+        output_schema: None,
         params: &[URI_PARAM],
     },
     ActionSpec {
@@ -88,6 +93,7 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "VisibleSkillFile",
+        output_schema: None,
         params: &[URI_PARAM],
     },
 ];

@@ -79,6 +79,7 @@ pub const ACTIONS: &[ActionSpec] = &[ActionSpec {
     destructive: false,
     requires_admin: false,
     returns: "IngestJobReceipt",
+    output_schema: None,
     params: PARAMS,
 }];
 

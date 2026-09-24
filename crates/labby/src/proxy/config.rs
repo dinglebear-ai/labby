@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_PROXY_PORT_RANGE_START: u16 = 49_152;
@@ -5,7 +6,9 @@ pub const DEFAULT_PROXY_PORT_RANGE_END: u16 = 65_535;
 pub const DEFAULT_PROXY_SHUTDOWN_GRACE_MS: u64 = 3_000;
 pub const DEFAULT_PROXY_BEARER_TOKEN_ENV: &str = "LABBY_PROXY_BEARER_TOKEN";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, clap::ValueEnum, Default,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ProxyExposure {
     #[default]
@@ -13,7 +16,9 @@ pub enum ProxyExposure {
     Local,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, clap::ValueEnum, Default,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ProxyAuthMode {
     #[default]

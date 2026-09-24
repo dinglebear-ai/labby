@@ -1323,6 +1323,11 @@ a `lab:read`-only connector cannot initiate authorization. Use a `lab`-scoped
 connector for the same account to establish the grant, then retry from the
 read-only connector. Open the returned `authorization_url` in a browser signed into the same
 Labby account, approve the upstream authorization, then retry the upstream call.
+On a Code Mode-enabled MCP connection, discover and describe the projected
+`gateway.gateway.oauth.authorize` action before calling it with the same
+`upstream` argument. Code Mode exposes it only when the verified personal caller
+has the required execution context; listing a tool is not proof that an
+upstream credential already exists or that authorization has completed.
 The action obtains the credential subject from the verified transport context,
 rejects subject overrides and route-hidden upstreams, and cannot replace central
 Google-provider or shared operator credentials. The callback requires the matching

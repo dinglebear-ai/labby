@@ -1,6 +1,51 @@
 //! Browser action metadata shared by CLI, MCP, API, and generated docs.
 
+use labby_browser::{BrowserRecord, DocumentSession, PairingStatus, SessionPage};
 use labby_primitives::action::{ActionSpec, ParamSpec};
+use schemars::JsonSchema;
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct BrowserStatusSchema {
+    available: bool,
+    database: String,
+    connected_browser_ids: Vec<String>,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct BrowserListEntrySchema {
+    id: String,
+    display_name: String,
+    extension_id: String,
+    paired_at: i64,
+    last_seen_at: Option<i64>,
+    revoked_at: Option<i64>,
+    connected: bool,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct BrowserListSchema {
+    browsers: Vec<BrowserListEntrySchema>,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct BrowserPairingEntrySchema {
+    id: String,
+    display_name: String,
+    extension_id: String,
+    status: PairingStatus,
+    expires_at: i64,
+    browser_id: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct BrowserPairingListSchema {
+    pairings: Vec<BrowserPairingEntrySchema>,
+}
 
 pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
@@ -9,6 +54,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "BrowserBridgeStatus",
+        output_schema: Some(crate::dispatch::schema::for_type::<BrowserStatusSchema>),
         params: &[],
     },
     ActionSpec {
@@ -17,6 +63,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "BrowserList",
+        output_schema: Some(crate::dispatch::schema::for_type::<BrowserListSchema>),
         params: &[],
     },
     ActionSpec {
@@ -25,6 +72,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "Browser",
+        output_schema: Some(crate::dispatch::schema::for_type::<BrowserRecord>),
         params: &[ParamSpec {
             name: "browser_id",
             ty: "string",
@@ -38,6 +86,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "BrowserPairingList",
+        output_schema: Some(crate::dispatch::schema::for_type::<BrowserPairingListSchema>),
         params: &[],
     },
     ActionSpec {
@@ -46,6 +95,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "Browser",
+        output_schema: Some(crate::dispatch::schema::for_type::<BrowserRecord>),
         params: &[
             ParamSpec {
                 name: "pairing_id",
@@ -67,6 +117,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "BrowserSessionList",
+        output_schema: Some(crate::dispatch::schema::for_type::<SessionPage>),
         params: &[
             ParamSpec {
                 name: "cursor",
@@ -88,6 +139,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "BrowserSession",
+        output_schema: Some(crate::dispatch::schema::for_type::<DocumentSession>),
         params: &[ParamSpec {
             name: "session_id",
             ty: "string",
@@ -101,6 +153,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "BrowserSession",
+        output_schema: Some(crate::dispatch::schema::for_type::<DocumentSession>),
         params: &[
             ParamSpec {
                 name: "session_id",
@@ -129,6 +182,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: true,
         requires_admin: true,
         returns: "PageToolResult",
+        output_schema: None,
         params: &[
             ParamSpec {
                 name: "browser_id",

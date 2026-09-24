@@ -570,6 +570,7 @@ impl PeerContract {
             SkillLibraryDescriptorMode::Hidden
         };
 
+        let tool_projection_mode = self.registry.tool_projection_mode();
         for service in self.registry.services() {
             #[cfg(feature = "skills")]
             if service.name == "artifacts"
@@ -588,19 +589,51 @@ impl PeerContract {
                 {
                     continue;
                 }
-                builtin_names.insert(service.name.to_string());
-                if hide_raw_tools && service.name != SERVER_LOGS_TOOL_NAME {
-                    continue;
+                if tool_projection_mode.includes_router() {
+                    builtin_names.insert(service.name.to_string());
+                    if !(hide_raw_tools && service.name != SERVER_LOGS_TOOL_NAME) {
+                        advertised_names.insert(service.name.to_string());
+                        descriptors.push(self.registry.permanent_tools().builtin_service_tool(
+                            service,
+                            server_logs_app_visible,
+                            skill_library_mode,
+                        ));
+                    }
                 }
-                advertised_names.insert(service.name.to_string());
-                descriptors.push(self.registry.permanent_tools().builtin_service_tool(
-                    service,
-                    server_logs_app_visible,
-                    skill_library_mode,
-                ));
+                if tool_projection_mode.includes_atomic() {
+                    #[cfg(feature = "gateway")]
+                    let allowed_actions = match &self.gateway_manager {
+                        Some(manager) => {
+                            manager.allowed_mcp_actions_for_service(service.name).await
+                        }
+                        None => None,
+                    };
+                    #[cfg(not(feature = "gateway"))]
+                    let allowed_actions: Option<Vec<String>> = None;
+
+                    for action in service.actions {
+                        if allowed_actions.as_ref().is_some_and(|allowed| {
+                            !allowed.iter().any(|candidate| candidate == action.name)
+                        }) {
+                            continue;
+                        }
+                        let Some(tool) = self
+                            .registry
+                            .permanent_tools()
+                            .atomic_action_tool(service, action)
+                        else {
+                            continue;
+                        };
+                        let name = tool.name.to_string();
+                        builtin_names.insert(name.clone());
+                        if !hide_raw_tools {
+                            advertised_names.insert(name);
+                            descriptors.push(tool);
+                        }
+                    }
+                }
             }
         }
-
         #[cfg(feature = "gateway")]
         if visibility.exposes_synthetic_tools()
             && (!matches!(project_shadow, ProjectDiscoveryShadow::Bound(_))
