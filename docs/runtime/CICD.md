@@ -347,7 +347,9 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
 2. Merging that PR creates the stable `vX.Y.Z` tag plus a draft GitHub release.
 3. The immutable tag triggers candidate work; no maintainer manually publishes
    the draft. Preflight requires stable SemVer, ancestry from `origin/main`, and
-   exact Cargo/npm/MCP/release-manifest version lockstep.
+   exact Cargo/npm/MCP/release-manifest version lockstep. It also checks the
+   required npm/MCP publisher credentials and resolves both platform N-1
+   baselines before starting frontend or native builds.
 4. Each platform archive is built, smoke-tested, and attested in its build job.
    The N-1 matrix verifies that exact archive attestation before extraction,
    checks the archive sidecar, and records an archive-to-extracted-binary digest

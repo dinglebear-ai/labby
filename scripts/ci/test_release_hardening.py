@@ -131,6 +131,14 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("needs.changes.outputs.workflow", release_contract["if"])
         self.assertIn("scripts.ci.test_release_hardening", str(release_contract["steps"]))
 
+    def test_release_preflight_checks_baselines_and_credentials_before_builds(self) -> None:
+        release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
+        preflight = str(release["jobs"]["preflight"]["steps"])
+        self.assertIn("NPM_TOKEN_PRESENT", preflight)
+        self.assertIn("MCP_PRIVATE_KEY_PRESENT", preflight)
+        self.assertIn("resolve-n-minus-one-baseline.py", preflight)
+        self.assertIn("preflight", release["jobs"]["frontend-assets"]["needs"])
+
     def test_n_minus_one_baseline_is_resolved_from_published_releases(self) -> None:
         release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
         steps = release["jobs"]["upgrade-qualification"]["steps"]
