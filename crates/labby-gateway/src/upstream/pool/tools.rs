@@ -1402,7 +1402,13 @@ impl UpstreamPool {
             .filter(|tool| entry.exposure_policy.matches(tool.tool.name.as_ref()))
             .count();
         let discovered_resource_count = entry.resource_count;
-        let exposed_resource_count = if entry.resource_health.is_routable() {
+        // A rejected snapshot leaves `resource_count` describing what the
+        // upstream returned — the exposure editor still shows those rows — but
+        // none of them are retained, listable or routable, so the upstream
+        // exposes nothing until it is re-listed.
+        let exposed_resource_count = if entry.resource_health.is_routable()
+            && !catalog.resource_rows_withheld(upstream_name)
+        {
             entry.resource_count
         } else {
             0
@@ -2042,6 +2048,7 @@ mod tests {
         });
         pool.install_test_subject_tools_for_upstream(&config, "alice", vec![tool])
             .await;
+        pool.register_upstream_config_for_tests(&config);
 
         let listed = pool
             .cached_mcp_app_tools_allowed(

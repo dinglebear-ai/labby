@@ -35,6 +35,15 @@ pub struct UpstreamCachedSummary {
     pub supports_skills: Option<bool>,
 }
 
+// The upstream listing-error prefixes are a cross-crate classification
+// contract, so they live in the dependency-leaf primitives crate: two of the
+// classifiers (the gateway projection and the doctor gateway check) are
+// compiled in feature slices that do not include this crate at all. They are
+// re-exported here so the producers in this module keep one obvious import.
+pub use labby_primitives::mcp::{
+    UPSTREAM_PROMPT_LISTING_ERROR_PREFIX, UPSTREAM_RESOURCE_LISTING_ERROR_PREFIX,
+};
+
 /// Per-upstream timeout for initial discovery (`list_tools`).
 pub(super) const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(15);
 /// Stdio discovery includes process/package-runner/SSH cold start, not just RPC.
@@ -76,6 +85,9 @@ pub(super) const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// overrides it from `upstream_relay_timeout_ms`. See `pool/relay.rs`.
 pub(super) const DEFAULT_RELAY_TIMEOUT: Duration = Duration::from_mins(5);
 pub(super) const STDIO_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+/// Maximum number of cached connections shut down concurrently during sweep,
+/// reconcile, or pool drain. Bounds cleanup fan-out without restoring N×timeout latency.
+pub(super) const CONNECTION_SHUTDOWN_CONCURRENCY: usize = 16;
 /// Idle TTL for per-`(upstream, subject)` cached connections.
 ///
 /// A connection that has not been used for this long will be evicted from

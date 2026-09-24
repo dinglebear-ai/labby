@@ -135,7 +135,7 @@ mod validate;
 pub use capability_call::CapabilityCallError;
 pub use catalog_publication::{
     PromptCatalogGeneration, ResourceCatalogGeneration, ResourceTemplateCatalogGeneration,
-    ToolCatalogGeneration,
+    ToolCatalogGeneration, WithheldSnapshot,
 };
 pub(crate) use catalog_publication::{
     PromptCatalogPublicationError, PublishedPromptCatalogSnapshot, PublishedPromptRoute,
@@ -148,6 +148,7 @@ pub(crate) use checked_call::CheckedToolCallError;
 pub(crate) use connect_stdio::connect_direct_stdio;
 use helpers::{DEFAULT_RELAY_TIMEOUT, DEFAULT_REQUEST_TIMEOUT};
 pub use helpers::{
+    UPSTREAM_PROMPT_LISTING_ERROR_PREFIX, UPSTREAM_RESOURCE_LISTING_ERROR_PREFIX,
     UpstreamCachedSummary, in_process_upstream_name, redact_resource_uri_for_logging,
     upstream_destructive_from_annotations, upstream_discovery_concurrency,
 };
@@ -165,6 +166,8 @@ pub use resources_list::{ListedUpstreamResource, ListedUpstreamResourceTemplate}
 pub(crate) use resources_read::ExactResourceReadError;
 pub(crate) use stdio_stderr::install_upstream_stderr_level_default;
 pub use task_route::TaskRouteAuthorization;
+#[cfg(test)]
+pub(crate) use tools::MAX_UPSTREAM_RESOURCES;
 pub use tools::{
     MAX_UPSTREAM_TOOLS, tool_is_mcp_app_host_visible_for_config,
     upstream_has_mcp_app_ui_owner_for_config,
@@ -192,6 +195,12 @@ pub(super) struct SubjectScopedConnection {
     pub(super) tools: Vec<rmcp::model::Tool>,
     /// Wall-clock instant when this entry was last used.
     pub(super) last_used: Instant,
+}
+
+#[derive(Clone)]
+pub(super) struct SubjectConnectErrorEntry {
+    pub(super) message: String,
+    pub(super) recorded_at: Instant,
 }
 
 /// Cumulative SEP-2243 recovery counters for one upstream.
@@ -327,8 +336,12 @@ pub struct UpstreamPool {
     /// Shared with `OauthClientCache`: readers cover the entire authenticated
     /// connect-and-publish path; credential mutation takes the sole writer.
     oauth_invalidation_barrier: Arc<RwLock<()>>,
+    /// Stable config fingerprint for each upstream name. Selective reconcile
+    /// replaces changed fingerprints before publishing the new revision so a
+    /// request carrying stale config cannot publish or reuse a connection.
+    upstream_config_fingerprints: Arc<DashMap<String, String>>,
     /// Background reprobe task cancellation tokens, keyed by upstream name.
-    probe_tasks: Arc<RwLock<HashMap<String, CancellationToken>>>,
+    probe_tasks: Arc<RwLock<HashMap<String, Arc<CancellationToken>>>>,
     /// Shared fleet-wide gate for periodic reprobes. Per-upstream tasks retain
     /// independent schedules, but only a bounded number may probe concurrently.
     reprobe_semaphore: Arc<tokio::sync::Semaphore>,
@@ -359,6 +372,8 @@ pub struct UpstreamPool {
     skills_refresh_tasks: TaskTracker,
     /// Cancels every tracked background Skill refresh when this pool generation drains.
     skills_refresh_cancel: CancellationToken,
+    /// Owns long-lived probe and subject/relay sweep tasks so drain can await them.
+    lifecycle_tasks: TaskTracker,
     /// Per-`(upstream, subject)` cached connections for the OAuth / subject-scoped
     /// proxy path.  Reused across calls for the same subject so we pay TLS +
     /// `initialize` + `tools/list` only once per idle-TTL window (P-C1 fix).
@@ -369,7 +384,7 @@ pub struct UpstreamPool {
     /// failed, kept until a connect for that pair succeeds or the pair is
     /// evicted. Identity-scoped views read it so an OAuth upstream whose
     /// subject cannot connect shows why instead of an empty `last_error`.
-    subject_connect_errors: Arc<RwLock<HashMap<(String, String), String>>>,
+    subject_connect_errors: Arc<RwLock<HashMap<(String, String), SubjectConnectErrorEntry>>>,
     /// Per-`(upstream, subject)` single-flight locks so concurrent first-requests
     /// for the same key do not open duplicate OAuth connections (mirrors the
     /// `lazy_connect_locks` gate used by the normal pool path).
@@ -399,7 +414,7 @@ pub struct UpstreamPool {
     /// Cancellation token for the background subject-connection sweep task.
     /// `None` until the first subject-scoped connect arms it; cancelled and
     /// cleared on `drain_for_swap` (P-H2). Mirrors the `probe_tasks` lifecycle.
-    subject_sweep_task: Arc<RwLock<Option<CancellationToken>>>,
+    subject_sweep_task: Arc<RwLock<Option<Arc<CancellationToken>>>>,
     /// Request/session identity stamped onto spawned stdio upstreams.
     runtime_origin: Option<String>,
     /// Structured owner metadata stamped onto spawned stdio upstreams.
@@ -626,6 +641,7 @@ impl UpstreamPool {
             subscribable_resource_uris: Arc::new(ArcSwap::from_pointee(BTreeSet::new())),
             oauth_client_cache: None,
             oauth_invalidation_barrier: Arc::new(RwLock::new(())),
+            upstream_config_fingerprints: Arc::new(DashMap::new()),
             probe_tasks: Arc::new(RwLock::new(HashMap::new())),
             reprobe_semaphore: Arc::new(tokio::sync::Semaphore::new(
                 upstream_discovery_concurrency(None),
@@ -641,6 +657,7 @@ impl UpstreamPool {
             skills_fetch_locks: Arc::new(skills_cache::SkillsFetchLocks::default()),
             skills_refresh_tasks: TaskTracker::new(),
             skills_refresh_cancel: CancellationToken::new(),
+            lifecycle_tasks: TaskTracker::new(),
             subject_connections: Arc::new(RwLock::new(HashMap::new())),
             subject_connect_errors: Arc::new(RwLock::new(HashMap::new())),
             subject_connect_locks: Arc::new(RwLock::new(HashMap::new())),

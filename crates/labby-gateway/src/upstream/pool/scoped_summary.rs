@@ -44,7 +44,13 @@ impl UpstreamPool {
             return SubjectSummary::default();
         };
         let key = (config.name.clone(), subject.to_owned());
-        let last_error = self.subject_connect_errors.read().await.get(&key).cloned();
+        let last_error = self
+            .subject_connect_errors
+            .read()
+            .await
+            .get(&key)
+            .filter(|entry| entry.recorded_at.elapsed() < SUBJECT_CONN_IDLE_TTL)
+            .map(|entry| entry.message.clone());
         let cache = self.subject_connections.read().await;
         let Some(entry) = cache.get(&key) else {
             return SubjectSummary {

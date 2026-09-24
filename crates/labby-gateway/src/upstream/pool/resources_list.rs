@@ -113,7 +113,14 @@ impl UpstreamPool {
         self.apply_to_observed_catalog(observed, |catalog| {
             let entry = catalog.get_mut(name).expect("observed entry validated");
             super::health::record_success_on_entry(name, entry, UpstreamCapability::Resources);
-            catalog.set_resource_template_source(name, observed.incarnation(), templates);
+            // A rejected snapshot is recorded durably in the retained source
+            // state, which is what `withheld_snapshots` reports to operator
+            // surfaces. It deliberately does not go into the entry's
+            // capability error slot: resources, resource templates and
+            // resource reads share that slot and every success clears it, so
+            // the next sibling listing would erase the warning while the
+            // upstream stayed withheld.
+            let _ = catalog.set_resource_template_source(name, observed.incarnation(), templates);
         })
         .await
         .is_some()
@@ -153,10 +160,20 @@ impl UpstreamPool {
             let entry = catalog.get_mut(name).expect("observed entry validated");
             super::health::record_success_on_entry(name, entry, UpstreamCapability::Resources);
             let changed = entry.resource_uris != resource_uris;
+            // `resource_count`/`resource_uris` describe what the upstream
+            // *returned*, which the exposure editor still needs to show even
+            // when the rows are not retained. Whether those rows are listable
+            // is a separate question, answered by the retained source state:
+            // `cached_upstream_summary` consults it so a withheld upstream
+            // does not advertise exposed resources. Do not zero these fields
+            // here — that would hide the rejected rows from the editor.
             entry.resource_count = resources.len();
             entry.resource_uris = resource_uris;
             let policy = entry.resource_exposure_policy.clone();
-            catalog.set_resource_source(name, observed.incarnation(), resources);
+            // The rejection is durable in the retained source state (see
+            // `apply_observed_resource_template_success`); it must not go into
+            // the shared capability error slot, which the next listing clears.
+            let _ = catalog.set_resource_source(name, observed.incarnation(), resources);
             (policy, changed)
         })
         .await
@@ -174,7 +191,10 @@ impl UpstreamPool {
                 name,
                 entry,
                 UpstreamCapability::Resources,
-                format!("failed to list resources from upstream: {error_text}"),
+                format!(
+                    "{} {error_text}",
+                    super::helpers::UPSTREAM_RESOURCE_LISTING_ERROR_PREFIX
+                ),
             );
             entry.resource_count = 0;
             entry.resource_uris.clear();
@@ -879,12 +899,6 @@ impl UpstreamPool {
                 {
                     Ok(Ok((peer, _tools))) => peer,
                     Ok(Err(error)) => {
-                        pool.record_failure_for(
-                            &config.name,
-                            UpstreamCapability::Resources,
-                            format!("upstream connect failed: {error}"),
-                        )
-                        .await;
                         log_upstream_request_error(
                             event,
                             started.elapsed().as_millis(),
@@ -900,12 +914,6 @@ impl UpstreamPool {
                             "subject-scoped upstream connection timed out after {}ms",
                             request_timeout.as_millis()
                         );
-                        pool.record_failure_for(
-                            &config.name,
-                            UpstreamCapability::Resources,
-                            error.clone(),
-                        )
-                        .await;
                         log_upstream_request_error(
                             event,
                             started.elapsed().as_millis(),
@@ -1137,6 +1145,7 @@ mod tests {
 
     use super::super::super::types::{ToolExposurePolicy, UpstreamTool};
     use super::super::SubjectScopedConnection;
+    use super::super::catalog_publication::WithheldSnapshot;
     use super::super::entries::healthy_in_process_entry;
     use super::super::helpers::normalize_resource_result_uri;
     use super::super::testsupport::{StaticCatalogServer, catalog_pool_with_server};
@@ -2068,6 +2077,7 @@ mod tests {
             },
         );
         let config = oauth_schema_config("linear");
+        pool.register_upstream_config_for_tests(&config);
 
         let alice = pool
             .subject_scoped_gateway_server_schema(&config, "alice")
@@ -2222,6 +2232,157 @@ mod tests {
         );
         pool.warm_cold_resource_snapshots_allowed(None).await;
         assert_eq!(resource_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn rejected_snapshot_excludes_only_its_own_upstream_from_publication() {
+        // A snapshot rejection is a per-upstream admission verdict: the rows
+        // of one upstream were not retained. The published route catalog and
+        // the cached listing are fleet-wide projections, so the verdict must
+        // remove exactly that upstream and leave every other upstream's
+        // routes published. A fleet-wide Err here would let one server with
+        // a duplicate URI take every other server's `lab://upstream/...`
+        // routes off the air (lab-xtgnz).
+        let pool = catalog_pool_with_server("healthy", StaticCatalogServer::default()).await;
+        let rejected = catalog_pool_with_server("dupes", RejectedCatalogServer::default()).await;
+        let (connection, entry) = rejected.remove_connection_catalog_entry("dupes").await;
+        pool.install_connection_catalog_entry(
+            "dupes".to_string(),
+            connection.expect("fixture connection"),
+            entry.expect("fixture entry"),
+        )
+        .await
+        .expect("connection identity");
+        pool.resource_upstreams
+            .write()
+            .await
+            .push("dupes".to_string());
+
+        pool.list_upstream_resources().await;
+
+        let healthy_rows = vec![
+            ("healthy", "file:///tmp/upstream-one"),
+            (
+                "healthy",
+                "lab://upstream/old-name/file:///tmp/upstream-two",
+            ),
+        ];
+        let published = pool
+            .published_resource_catalog()
+            .await
+            .expect("one rejected snapshot must not unpublish the fleet");
+        assert_eq!(
+            published
+                .routes()
+                .iter()
+                .map(|route| (route.upstream_name.as_ref(), route.native_uri.as_ref()))
+                .collect::<Vec<_>>(),
+            healthy_rows
+        );
+        let cached = pool.cached_upstream_resources_allowed(None).await;
+        assert_eq!(
+            cached
+                .iter()
+                .map(|(name, resource)| (name.as_str(), resource.uri.as_str()))
+                .collect::<Vec<_>>(),
+            healthy_rows
+        );
+
+        // The rejection stays visible per upstream, as durable state rather
+        // than as a capability error: the upstream itself answered, so its
+        // resources circuit stays closed and nothing is recorded in the
+        // shared error slot.
+        assert_eq!(
+            pool.withheld_snapshots("dupes").await,
+            vec![WithheldSnapshot {
+                family: "resources",
+                reason: "duplicate_uri",
+            }],
+            "the stable operator-facing kind, not a Debug rendering of the enum"
+        );
+        assert!(pool.withheld_snapshots("healthy").await.is_empty());
+        assert!(
+            pool.upstream_capability_health("dupes", UpstreamCapability::Resources)
+                .await
+                .expect("dupes entry")
+                .is_routable()
+        );
+        // A withheld upstream must not advertise resources it cannot serve.
+        assert_eq!(
+            pool.cached_upstream_summary("dupes")
+                .await
+                .expect("dupes summary")
+                .exposed_resource_count,
+            0
+        );
+    }
+
+    /// Resources, resource templates and resource reads share one capability
+    /// error slot, and every success clears it. A rejection recorded there
+    /// would therefore be erased by the next sibling listing while the
+    /// upstream stayed withheld — leaving it indistinguishable from healthy.
+    /// The warning must outlive that, so it is derived from the retained
+    /// snapshot state instead.
+    #[tokio::test]
+    async fn a_rejected_snapshot_survives_a_later_template_listing() {
+        #[derive(Clone, Default)]
+        struct DuplicateResourcesValidTemplatesServer;
+
+        impl ServerHandler for DuplicateResourcesValidTemplatesServer {
+            fn get_info(&self) -> ServerInfo {
+                ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+            }
+
+            async fn list_resources(
+                &self,
+                _request: Option<PaginatedRequestParams>,
+                _context: RequestContext<RoleServer>,
+            ) -> Result<ListResourcesResult, ErrorData> {
+                Ok(ListResourcesResult::with_all_items(vec![
+                    Resource::new("file:///tmp/twice", "first"),
+                    Resource::new("file:///tmp/twice", "second"),
+                ]))
+            }
+
+            async fn list_resource_templates(
+                &self,
+                _request: Option<PaginatedRequestParams>,
+                _context: RequestContext<RoleServer>,
+            ) -> Result<ListResourceTemplatesResult, ErrorData> {
+                Ok(ListResourceTemplatesResult::with_all_items(vec![
+                    ResourceTemplate::new("file:///ok/{id}", "ok"),
+                ]))
+            }
+        }
+
+        let pool = catalog_pool_with_server("dupes", DuplicateResourcesValidTemplatesServer).await;
+        pool.list_upstream_resources().await;
+        let withheld = vec![WithheldSnapshot {
+            family: "resources",
+            reason: "duplicate_uri",
+        }];
+        assert_eq!(pool.withheld_snapshots("dupes").await, withheld);
+
+        // The sibling listing succeeds and clears the shared error slot.
+        pool.list_upstream_resource_templates_allowed(None).await;
+        assert_eq!(
+            pool.upstream_capability_error("dupes", UpstreamCapability::Resources)
+                .await,
+            None,
+            "the shared slot is cleared by the template success, which is why \
+             the rejection must not live there"
+        );
+        assert_eq!(
+            pool.withheld_snapshots("dupes").await,
+            withheld,
+            "the resource rows are still withheld, so the operator must still see it"
+        );
+        assert!(
+            pool.cached_upstream_resources_allowed(None)
+                .await
+                .is_empty(),
+            "the withholding the warning describes is still in force"
+        );
     }
 
     #[tokio::test]
@@ -2403,6 +2564,7 @@ mod tests {
         );
         let mut config = oauth_schema_config("google-drive");
         config.proxy_resources = true;
+        pool.register_upstream_config_for_tests(&config);
 
         let baseline_calls = resource_calls.load(Ordering::SeqCst);
         let resources = pool
@@ -2518,6 +2680,7 @@ mod tests {
         );
         let mut config = oauth_schema_config("tools-only");
         config.proxy_resources = true;
+        pool.register_upstream_config_for_tests(&config);
 
         let resources = pool
             .subject_scoped_resources(std::slice::from_ref(&config), "alice")
@@ -2599,6 +2762,7 @@ mod tests {
         pool.request_timeout = Duration::from_millis(25);
         let mut config = oauth_schema_config("slow");
         config.proxy_resources = true;
+        pool.register_upstream_config_for_tests(&config);
 
         let started = Instant::now();
         let resources = pool.subject_scoped_resources(&[config], "alice").await;
@@ -2632,6 +2796,7 @@ mod tests {
         });
         let mut config = oauth_schema_config("slow-connect");
         config.proxy_resources = true;
+        pool.register_upstream_config_for_tests(&config);
 
         let started = Instant::now();
         let resources = pool.subject_scoped_resources(&[config], "alice").await;
