@@ -20,6 +20,8 @@ import time
 import unittest
 import yaml
 
+from scripts.ci.mcp_registry_canonical import manifest_sha256
+
 
 ROOT = Path(__file__).resolve().parents[2]
 LINUX_ASSETS = ("lab-x86_64-unknown-linux-gnu.tar.gz", "lab-x86_64-unknown-linux-gnu.tar.gz.sha256")
@@ -642,7 +644,8 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
     def test_mcp_observer_never_copies_expected_digest(self) -> None:
         observer = self.text("scripts/ci/observe-release.py")
         self.assertNotIn('observed["mcp"] = dist["mcp"]', observer)
-        self.assertIn("hashlib.sha256(canonical).hexdigest()", observer)
+        self.assertIn("manifest_sha256(server)", observer)
+        self.assertIn("mcp_registry_canonical.py server.json", self.text(".github/workflows/mcp-registry.yml"))
 
     def test_lifecycle_inventory_routes_every_script_and_public_copy(self) -> None:
         inventory = json.loads(self.text("scripts/ci/lifecycle-scripts.json"))
@@ -818,6 +821,35 @@ class PromotionDurabilityTests(unittest.TestCase):
 class ReleaseHelperTests(unittest.TestCase):
     def text(self, relative: str) -> str:
         return (ROOT / relative).read_text()
+
+    def test_mcp_digest_matches_registry_default_false_omissions(self) -> None:
+        # The public v2.2.1 entry dropped these false flags and previously
+        # produced a different digest despite describing the same package.
+        submitted = {
+            "name": "ai.dinglebear/labby",
+            "packages": [{
+                "identifier": "@dinglebear/labby",
+                "packageArguments": [{
+                    "value": "mcp", "isRequired": True,
+                    "isSecret": False, "isRepeated": False,
+                }],
+                "environmentVariables": [{
+                    "name": "LABBY_LOG", "isRequired": False,
+                    "isSecret": False,
+                }],
+                "enabled": False,
+            }],
+        }
+        served = json.loads(json.dumps(submitted))
+        argument = served["packages"][0]["packageArguments"][0]
+        argument.pop("isSecret")
+        argument.pop("isRepeated")
+        variable = served["packages"][0]["environmentVariables"][0]
+        variable.pop("isRequired")
+        variable.pop("isSecret")
+        self.assertEqual(manifest_sha256(submitted), manifest_sha256(served))
+        served["packages"][0]["enabled"] = True
+        self.assertNotEqual(manifest_sha256(submitted), manifest_sha256(served))
 
     def test_immutable_uploader_reuses_equal_bytes_and_rejects_drift(self) -> None:
         helper = ROOT / "scripts/ci/upload-immutable-release-assets.sh"
