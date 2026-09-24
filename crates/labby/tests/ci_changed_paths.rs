@@ -469,8 +469,8 @@ fn live_e2e_orchestrator_binds_release_binary_and_verifiable_evidence() {
 
 #[test]
 fn live_e2e_ci_routes_scheduled_and_manual_events_to_extended_tiers() {
-    let workflow =
-        fs::read_to_string(repo_root().join(".github/workflows/ci.yml")).expect("read CI workflow");
+    let workflow = fs::read_to_string(repo_root().join(".github/workflows/live-e2e.yml"))
+        .expect("read Live E2E workflow");
     assert!(workflow.contains("github.event_name == 'schedule' && 'nightly'"));
     assert!(workflow.contains("github.event_name == 'workflow_dispatch' && 'manual'"));
     assert!(workflow.contains("labby-live-e2e.sh \"$LABBY_E2E_TIER\""));
@@ -812,19 +812,6 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         );
     }
 
-    for non_blocking in NON_BLOCKING_JOBS {
-        assert!(
-            workflow.contains(&format!("  {non_blocking}:")),
-            "CI must retain the non-blocking {non_blocking} job"
-        );
-        // Match the whole list entry: `- test` is a prefix of `- test-windows`.
-        assert!(
-            !gate.contains(&format!("- {non_blocking}\n"))
-                && !gate.contains(&format!("needs.{non_blocking}.result")),
-            "ci-gate must not aggregate non-blocking job {non_blocking}"
-        );
-    }
-
     assert!(
         gate.contains("HEAD_REPOSITORY") && gate.contains("fork safety"),
         "ci-gate must document the narrow fork-safety exception for skipped changes"
@@ -1053,10 +1040,6 @@ const RUNTIME_ONLY_CHANGE_OUTPUTS: &[&str] = &["gate_key_drift"];
 /// Jobs that stay visible on pull requests but must not block `ci-gate`.
 const ADVISORY_JOBS: &[&str] = &["desktop-windows", "verification-t1"];
 
-/// Live E2E reports on PRs without blocking the CI workflow that Release
-/// Please consumes. Coverage has its own push-triggered workflow.
-const NON_BLOCKING_JOBS: &[&str] = &["live-e2e-core"];
-
 fn gated_changed_path_keys(workflow: &str) -> BTreeSet<String> {
     workflow
         .split("needs.changes.outputs.")
@@ -1178,10 +1161,7 @@ fn ci_gate_aggregates_every_non_advisory_job() {
         .join("\n");
 
     for name in &jobs {
-        if name == "ci-gate"
-            || ADVISORY_JOBS.contains(&name.as_str())
-            || NON_BLOCKING_JOBS.contains(&name.as_str())
-        {
+        if name == "ci-gate" || ADVISORY_JOBS.contains(&name.as_str()) {
             continue;
         }
         assert!(
@@ -1407,21 +1387,6 @@ fn merge_gate_shards_heavy_suites_to_stay_under_ten_minutes() {
     );
 }
 
-/// The non-blocking suites are kept off `ci-gate` on purpose, and that only
-/// stays safe while each of them also carries `continue-on-error: true`:
-/// without it a red suite still fails the CI run that release-please reads.
-#[test]
-fn non_blocking_jobs_declare_continue_on_error() {
-    let workflow = ci_workflow_yaml(&ci_workflow_text());
-    for job in NON_BLOCKING_JOBS {
-        assert_eq!(
-            workflow["jobs"][*job]["continue-on-error"].as_bool(),
-            Some(true),
-            "non-blocking job `{job}` must declare continue-on-error: true"
-        );
-    }
-}
-
 /// This contract must run in a job that can block a merge.
 #[test]
 fn ci_contract_runs_inside_a_gating_job() {
@@ -1453,7 +1418,7 @@ fn ci_contract_runs_inside_a_gating_job() {
         .map(|(name, _)| name.clone())
         .expect("a job runs the ci_changed_paths contract");
     assert!(
-        gate_needs.contains(&host) && !NON_BLOCKING_JOBS.contains(&host.as_str()),
+        gate_needs.contains(&host),
         "the CI contract runs only in `{host}`, which cannot block a merge"
     );
 }

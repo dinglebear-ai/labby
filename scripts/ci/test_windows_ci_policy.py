@@ -104,6 +104,7 @@ class WindowsCiPolicyTests(unittest.TestCase):
     def test_ci_gate_waits_for_required_suites_but_not_advisory_jobs(self) -> None:
         gate = yaml.safe_load(self.workflow)["jobs"]["ci-gate"]["needs"]
         for job in ("rust-coverage", "live-e2e-core"):
+            self.assertNotIn(job, yaml.safe_load(self.workflow)["jobs"], f"{job} must run independently of CI")
             self.assertNotIn(job, gate, f"{job} remains advisory")
         for job in ("test", "feature-slices", "test-windows", "test-fork", "clippy"):
             self.assertIn(job, gate)

@@ -211,6 +211,7 @@ jobs when their changed-path category is enabled:
 | JavaScript advisories | `javascript_advisories` | lockfile-aware `npm audit`/`pnpm audit` across every committed JavaScript dependency graph, with a checked, expiring exception policy |
 | Labby desktop shell | `desktop` | frozen install and static loader build |
 | Labby desktop Tauri | `desktop` | independent lockfile audit plus required Linux tests and an advisory native Windows build/test smoke |
+| Live E2E | separate pull-request, push-to-main, weekly, or manual workflow | hermetic browser/product shards and evidence uploads run beside required CI; same-repository PRs run this signal and fork PRs do not run untrusted product code |
 | Rust coverage | separate push-to-main, weekly, or manual workflow | LCOV run with project and critical auth/gateway/dispatch/config floors; its own workflow reports failures while the main CI run can finish and trigger Release Please without waiting for a second full workspace suite |
 | Tests (Linux) | `rust_test` | required by `ci-gate`; warm normal `labby` lib/bins first, then run sharded `cargo nextest` across the workspace with all features on GitHub-hosted `ubuntu-24.04` |
 | Tests (Linux fork PR fallback) | `rust_test` | same warm-up plus nextest run on GitHub-hosted `ubuntu-24.04` without repository secrets |
