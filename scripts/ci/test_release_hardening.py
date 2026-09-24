@@ -1567,6 +1567,20 @@ if authenticated_action; then exit 93; fi
         self.assertIn("--disable-auto", workflow[pause:release])
         self.assertIn("auto_merge_pr", workflow[pause:release])
 
+    def test_release_please_preserves_checks_when_main_has_not_advanced(self) -> None:
+        workflow = yaml.safe_load(self.text(".github/workflows/release-please.yml"))
+        jobs = workflow["jobs"]
+        pause = jobs["stabilize-release-pr"]
+        self.assertIn("skip_refresh", pause["outputs"])
+        script = pause["steps"][0]["run"]
+        self.assertIn("pulls/$number/commits?per_page=1", script)
+        self.assertIn(".[0].parents[0].sha", script)
+        self.assertIn("git/ref/heads/main", script)
+        self.assertIn("$GITHUB_EVENT_NAME\" == workflow_run", script)
+        self.assertIn("skip_refresh=true", script)
+        for job in ("release-please", "sync-release-version"):
+            self.assertIn("needs.stabilize-release-pr.outputs.skip_refresh != 'true'", jobs[job]["if"])
+
     def test_release_metadata_sync_repairs_partial_release_please_failure(self) -> None:
         workflow = self.text(".github/workflows/release-please.yml")
         sync = workflow[workflow.index("  sync-release-version:") :]
