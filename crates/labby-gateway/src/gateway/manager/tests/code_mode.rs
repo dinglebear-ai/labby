@@ -1235,6 +1235,55 @@ async fn oauth_warm_up_admission_is_shared_across_subjects() {
 }
 
 #[tokio::test]
+async fn stalled_oauth_warm_ups_release_admission_for_other_subjects() {
+    let private = fixture_oauth_upstream("private", "http://127.0.0.1:9/mcp");
+    let (manager, pool) = code_mode_manager_with_upstreams(vec![private.clone()]).await;
+    pool.register_upstream_config_for_tests(&private);
+
+    let subjects = ["held-0", "held-1", "held-2", "next"];
+    let mut held_locks = Vec::new();
+    for subject in subjects {
+        let lock = pool
+            .subject_connect_lock_for_tests("private", subject)
+            .await;
+        held_locks.push(lock.lock_owned().await);
+    }
+
+    let requests = subjects[..3].iter().map(|subject| {
+        let manager = manager.clone();
+        async move {
+            manager
+                .code_mode_catalog_tools(false, None, Some(subject))
+                .await
+        }
+    });
+    for result in futures::future::join_all(requests).await {
+        result.expect("stalled subject request stays bounded");
+    }
+    assert_eq!(
+        manager
+            .code_mode_warm_up_task_spawns
+            .load(Ordering::Relaxed),
+        3,
+        "three held subjects fill background admission"
+    );
+
+    tokio::time::sleep(Duration::from_millis(1_200)).await;
+    manager
+        .code_mode_catalog_tools(false, None, Some("next"))
+        .await
+        .expect("new subject retries after held warm-ups expire");
+    assert_eq!(
+        manager
+            .code_mode_warm_up_task_spawns
+            .load(Ordering::Relaxed),
+        4,
+        "expired warm-ups release a permit for another subject"
+    );
+    drop(held_locks);
+}
+
+#[tokio::test]
 async fn hanging_refresh_does_not_block_a_disjoint_scope() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

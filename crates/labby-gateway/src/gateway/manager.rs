@@ -230,6 +230,9 @@ pub struct GatewayManager {
     /// Next time a warm live catalog may publish its healthy non-OAuth tools
     /// to the one-shot CLI cache without making discovery wait for disk I/O.
     pub(super) code_mode_cache_sync_after: Arc<Mutex<Option<(usize, Instant)>>>,
+    /// Shared admission for background Code Mode connection attempts across
+    /// requests and OAuth subjects handled by this manager.
+    pub(super) code_mode_warm_up_gate: Arc<tokio::sync::Semaphore>,
     #[cfg(test)]
     pub(super) code_mode_warm_up_task_spawns: Arc<AtomicU64>,
     /// Cached rendered Code Mode discovery catalog, keyed by a fingerprint of

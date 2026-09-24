@@ -40,10 +40,10 @@ const SEMANTIC_SEARCH_COOLDOWN: std::time::Duration = std::time::Duration::from_
 
 static CODE_MODE_WARM_UP_IN_FLIGHT: OnceLock<tokio::sync::Mutex<BTreeSet<String>>> =
     OnceLock::new();
-// Admit work before spawning it. A per-request semaphore lets distinct OAuth
-// subjects accumulate unbounded background tasks after their request expires.
-const CODE_MODE_WARM_UP_LIMIT: usize = 3;
-static CODE_MODE_WARM_UP_GATE: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+#[cfg(not(test))]
+const CODE_MODE_WARM_UP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+#[cfg(test)]
+const CODE_MODE_WARM_UP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 fn merge_visible_catalog_tools(
     global: Vec<UpstreamTool>,
@@ -1461,10 +1461,7 @@ impl GatewayManager {
                 upstream.name,
                 oauth_subject.as_deref().unwrap_or("")
             );
-            let Ok(_warm_up_permit) = CODE_MODE_WARM_UP_GATE
-                .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(CODE_MODE_WARM_UP_LIMIT)))
-                .clone()
-                .try_acquire_owned()
+            let Ok(_warm_up_permit) = self.code_mode_warm_up_gate.clone().try_acquire_owned()
             else {
                 // Opportunistic warm-up can be retried by a later request.
                 // Never queue a task beyond this request's lifetime.
@@ -1492,26 +1489,35 @@ impl GatewayManager {
                 // `ensure_tools_for_upstream` skips the upstream internally
                 // when it already has healthy tools.
                 let subject = upstream.oauth.as_ref().and(oauth_subject.as_deref());
-                if let Err(err) = pool
-                    .ensure_tools_for_upstream(&upstream, subject, owner.as_ref())
-                    .await
+                match tokio::time::timeout(
+                    CODE_MODE_WARM_UP_TIMEOUT,
+                    pool.ensure_tools_for_upstream(&upstream, subject, owner.as_ref()),
+                )
+                .await
                 {
-                    tracing::warn!(
+                    Ok(Ok(_)) => tracing::debug!(
+                        surface = "dispatch",
+                        service = "gateway",
+                        action = "code_mode.warm_upstream",
+                        upstream = %upstream.name,
+                        "code_mode upstream connected"
+                    ),
+                    Ok(Err(err)) => tracing::warn!(
                         surface = "dispatch",
                         service = "gateway",
                         action = "code_mode.warm_upstream",
                         upstream = %upstream.name,
                         error = %err,
                         "code_mode upstream connection failed during warm-up"
-                    );
-                } else {
-                    tracing::debug!(
+                    ),
+                    Err(_) => tracing::warn!(
                         surface = "dispatch",
                         service = "gateway",
                         action = "code_mode.warm_upstream",
                         upstream = %upstream.name,
-                        "code_mode upstream connected"
-                    );
+                        timeout_seconds = CODE_MODE_WARM_UP_TIMEOUT.as_secs(),
+                        "code_mode upstream connection timed out during warm-up"
+                    ),
                 }
                 CODE_MODE_WARM_UP_IN_FLIGHT
                     .get_or_init(|| tokio::sync::Mutex::new(BTreeSet::new()))
