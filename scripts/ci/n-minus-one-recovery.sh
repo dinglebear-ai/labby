@@ -31,6 +31,10 @@ case "$operation" in
             install -m 0555 "$binary" "$recovery/candidate"
             chown "$owner" "$recovery" "$LABBY_RECOVERY_KEY_PATH"
         fi
+        # A parent default ACL can override umask during creation. Enforce the
+        # candidate's owner-only key and directory contract after chown.
+        chmod 0700 "$recovery"
+        chmod 0600 "$LABBY_RECOVERY_KEY_PATH"
         run_candidate state export --output "$recovery/bundle"
         ;;
     restore)
