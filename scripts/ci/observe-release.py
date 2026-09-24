@@ -7,6 +7,7 @@ and registry.modelcontextprotocol.io/v0.1.
 from __future__ import annotations
 import argparse, hashlib, json, os, subprocess, urllib.parse
 from pathlib import Path
+from mcp_registry_canonical import manifest_sha256
 
 def run(*command: str) -> str:
     return subprocess.check_output(command, text=True, stderr=subprocess.STDOUT).strip()
@@ -72,11 +73,10 @@ try:
     url = f'https://registry.modelcontextprotocol.io/v0.1/servers/{name}/versions/{dist["mcp"]["version"]}'
     payload = json.loads(run(curl, "--fail", "--silent", "--show-error", url))
     server = payload.get("server", payload)
-    canonical = json.dumps(server, sort_keys=True, separators=(",", ":")).encode()
     observed["mcp"] = {
         "name": server.get("name"),
         "version": server.get("version"),
-        "manifest_sha256": hashlib.sha256(canonical).hexdigest(),
+        "manifest_sha256": manifest_sha256(server),
     }
 except Exception as error: observed["mcp"] = {"error": str(error)}
 args.output.write_text(json.dumps({"subjects": subjects, "unexpected_assets": unexpected_assets, "attestations": attestations, "distributions": observed}, indent=2, sort_keys=True) + "\n")
