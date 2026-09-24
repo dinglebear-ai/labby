@@ -349,8 +349,11 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
 3. The immutable tag triggers candidate work; no maintainer manually publishes
    the draft. Preflight requires stable SemVer, ancestry from `origin/main`, and
    exact Cargo/npm/MCP/release-manifest version lockstep. It also checks the
-   required npm/MCP publisher credentials and resolves both platform N-1
+   required npm/MCP publisher credentials, verifies npm authentication, and resolves both platform N-1
    baselines before starting frontend or native builds.
+   The advisory desktop bundle starts after preflight in parallel with the
+   CLI builds and upgrade qualification; promotion still waits for its result
+   so any successful desktop asset enters the release manifest.
 4. Each platform archive is built, smoke-tested, and attested in its build job.
    The N-1 matrix verifies that exact archive attestation before extraction,
    checks the archive sidecar, and records an archive-to-extracted-binary digest

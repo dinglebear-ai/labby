@@ -138,8 +138,12 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         preflight = str(release["jobs"]["preflight"]["steps"])
         self.assertIn("NPM_TOKEN_PRESENT", preflight)
         self.assertIn("MCP_PRIVATE_KEY_PRESENT", preflight)
+        self.assertIn("npm whoami", preflight)
         self.assertIn("resolve-n-minus-one-baseline.py", preflight)
         self.assertIn("preflight", release["jobs"]["frontend-assets"]["needs"])
+        self.assertEqual("preflight", release["jobs"]["desktop-candidate"]["needs"])
+        for job in ("npm-candidate", "release"):
+            self.assertIn("desktop-candidate", release["jobs"][job]["needs"])
 
     def test_n_minus_one_baseline_is_resolved_from_published_releases(self) -> None:
         release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
