@@ -31,7 +31,26 @@ const MAX_RESOURCE_ROW_BYTES: usize = 1024 * 1024;
 enum SourceAdmissionError {
     Invalid,
     Duplicate,
-    TooManyBytes,
+    RowTooLarge,
+    RetentionBudget,
+}
+
+impl SourceAdmissionError {
+    /// Stable, lowercase operator-facing kind for this verdict.
+    ///
+    /// These strings are an operator surface contract, so they are written
+    /// out here rather than derived from a `Debug` impl: a rename of an enum
+    /// variant must not silently change what an operator reads. The publication
+    /// error the caller receives deliberately keeps both byte verdicts collapsed
+    /// into `TooManyBytes`; only this reason separates them.
+    const fn reason(self) -> &'static str {
+        match self {
+            Self::Invalid => "invalid_uri",
+            Self::Duplicate => "duplicate_uri",
+            Self::RowTooLarge => "row_too_large",
+            Self::RetentionBudget => "retention_budget",
+        }
+    }
 }
 
 fn validate_source_rows<'a, T: serde::Serialize + 'a>(
@@ -54,11 +73,11 @@ fn validate_source_rows<'a, T: serde::Serialize + 'a>(
             .map_err(|_| SourceAdmissionError::Invalid)?
             .len();
         if bytes > MAX_RESOURCE_ROW_BYTES {
-            return Err(SourceAdmissionError::TooManyBytes);
+            return Err(SourceAdmissionError::RowTooLarge);
         }
         total
             .checked_add(bytes)
-            .ok_or(SourceAdmissionError::TooManyBytes)
+            .ok_or(SourceAdmissionError::RetentionBudget)
     })
 }
 
@@ -70,7 +89,7 @@ fn checked_retained_bytes(
         .and_then(|existing| existing.checked_add(candidate))
         .filter(|total| *total <= MAX_RESOURCE_CATALOG_BYTES)
         .map(|_| candidate)
-        .ok_or(SourceAdmissionError::TooManyBytes)
+        .ok_or(SourceAdmissionError::RetentionBudget)
 }
 
 pub(super) fn is_ui_resource_uri(uri: &str) -> bool {
@@ -178,6 +197,24 @@ pub struct PublishedResourceRoute {
     pub upstream_name: Arc<str>,
     pub native_uri: Arc<str>,
     pub resource: Resource,
+}
+
+/// One upstream's currently withheld snapshot, for operator surfaces.
+///
+/// This is derived from the same retained state that decides whether the
+/// upstream contributes routes, so an operator view built from it cannot
+/// disagree with what is actually published. It is deliberately not read from
+/// the entry's capability `last_error` slot: resources, resource templates and
+/// resource reads share that one slot and each success clears it, so a
+/// rejection recorded there is erased by the next listing of the sibling
+/// family.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WithheldSnapshot {
+    /// `resources` or `resource templates`.
+    pub family: &'static str,
+    /// Stable lowercase kind: `duplicate_uri`, `invalid_uri`, `row_too_large`
+    /// or `retention_budget`.
+    pub reason: &'static str,
 }
 
 /// Upstreams whose cached resource snapshot needs a re-list, by urgency.
@@ -401,7 +438,10 @@ enum ResourceTemplateSourceState {
     Ready(ResourceTemplateSource),
     Failed {
         incarnation: super::incarnation::ConnectionIncarnation,
+        #[allow(dead_code, reason = "kept for parity with the resource source verdict")]
         error: ResourceTemplateCatalogPublicationError,
+        /// Stable operator-facing kind; see [`WithheldSnapshot`].
+        reason: &'static str,
     },
 }
 
@@ -427,7 +467,10 @@ enum ResourceSourceState {
     Failed {
         incarnation: super::incarnation::ConnectionIncarnation,
         listed_at: Instant,
+        #[allow(dead_code, reason = "the typed verdict is returned to the caller")]
         error: ResourceCatalogPublicationError,
+        /// Stable operator-facing kind; see [`WithheldSnapshot`].
+        reason: &'static str,
     },
 }
 
@@ -555,12 +598,19 @@ impl CatalogState {
         }
     }
 
+    /// Retain `upstream`'s listed rows as its resource snapshot, or reject the
+    /// whole listing. Returns the rejection verdict, when there is one, so the
+    /// listing path can record it as the upstream's resources-capability
+    /// error. A rejection is a per-upstream verdict: it withholds this
+    /// upstream's rows from the cached listing and the published route
+    /// projection and never unpublishes any other upstream.
+    #[must_use = "a rejected snapshot withholds this upstream from the catalog"]
     pub(super) fn set_resource_source(
         &mut self,
         upstream: &str,
         incarnation: super::incarnation::ConnectionIncarnation,
         resources: &[Resource],
-    ) {
+    ) -> Option<ResourceCatalogPublicationError> {
         let existing_retained = self
             .resource_sources
             .iter()
@@ -578,27 +628,37 @@ impl CatalogState {
             resources.iter(),
         )
         .and_then(|candidate| checked_retained_bytes(existing_retained, candidate))
-        .map_err(|error| match error {
-            SourceAdmissionError::Invalid => ResourceCatalogPublicationError::InvalidResource,
-            SourceAdmissionError::Duplicate => ResourceCatalogPublicationError::DuplicateResource,
-            SourceAdmissionError::TooManyBytes => ResourceCatalogPublicationError::TooManyBytes,
+        .map_err(|admission| {
+            let error = match admission {
+                SourceAdmissionError::Invalid => ResourceCatalogPublicationError::InvalidResource,
+                SourceAdmissionError::Duplicate => {
+                    ResourceCatalogPublicationError::DuplicateResource
+                }
+                SourceAdmissionError::RowTooLarge | SourceAdmissionError::RetentionBudget => {
+                    ResourceCatalogPublicationError::TooManyBytes
+                }
+            };
+            (error, admission.reason())
         });
         let listed_at = Instant::now();
-        let source = match retained_bytes {
+        let (source, rejection) = match retained_bytes {
             Ok(retained_bytes) => {
                 let (ui_resources, resources): (Vec<_>, Vec<_>) = resources
                     .iter()
                     .cloned()
                     .partition(|resource| is_ui_resource_uri(&resource.uri));
-                ResourceSourceState::Ready(ResourceSource {
-                    incarnation,
-                    listed_at,
-                    resources: resources.into(),
-                    ui_resources: ui_resources.into(),
-                    retained_bytes,
-                })
+                (
+                    ResourceSourceState::Ready(ResourceSource {
+                        incarnation,
+                        listed_at,
+                        resources: resources.into(),
+                        ui_resources: ui_resources.into(),
+                        retained_bytes,
+                    }),
+                    None,
+                )
             }
-            Err(error) => {
+            Err((error, reason)) => {
                 // The rows are not retained, so cached listings omit this
                 // upstream until a re-list succeeds. Say so once per verdict;
                 // the entry's resource health stays routable because the
@@ -609,17 +669,22 @@ impl CatalogState {
                     action = "resources.snapshot",
                     upstream,
                     row_count = resources.len(),
-                    error = ?error,
+                    reason,
                     "resource snapshot rejected; cached resources/list omits this upstream until it is re-listed"
                 );
-                ResourceSourceState::Failed {
-                    incarnation,
-                    listed_at,
-                    error,
-                }
+                (
+                    ResourceSourceState::Failed {
+                        incarnation,
+                        listed_at,
+                        error,
+                        reason,
+                    },
+                    Some(error),
+                )
             }
         };
         self.resource_sources.insert(upstream.to_string(), source);
+        rejection
     }
 
     pub(super) fn remove_resource_source(&mut self, upstream: &str) {
@@ -641,6 +706,54 @@ impl CatalogState {
             }
             _ => None,
         }
+    }
+
+    /// Every snapshot family `upstream`'s current connection currently has
+    /// withheld from the catalog, with a stable operator-facing reason.
+    ///
+    /// Empty when nothing is withheld. A source bound to an older incarnation
+    /// describes a connection that no longer exists and is ignored.
+    pub(super) fn withheld_snapshots(&self, upstream: &str) -> Vec<WithheldSnapshot> {
+        let Some(current) = self.incarnation(upstream) else {
+            return Vec::new();
+        };
+        let mut withheld = Vec::new();
+        if let Some(ResourceSourceState::Failed {
+            incarnation,
+            reason,
+            ..
+        }) = self.resource_sources.get(upstream)
+            && *incarnation == current
+        {
+            withheld.push(WithheldSnapshot {
+                family: "resources",
+                reason,
+            });
+        }
+        if let Some(ResourceTemplateSourceState::Failed {
+            incarnation,
+            reason,
+            ..
+        }) = self.resource_template_sources.get(upstream)
+            && *incarnation == current
+        {
+            withheld.push(WithheldSnapshot {
+                family: "resource templates",
+                reason,
+            });
+        }
+        withheld
+    }
+
+    /// Whether `upstream`'s current regular-resource rows are withheld, so the
+    /// operator summary does not advertise rows nothing can list or route.
+    pub(super) fn resource_rows_withheld(&self, upstream: &str) -> bool {
+        self.incarnation(upstream).is_some_and(|current| {
+            matches!(
+                self.resource_sources.get(upstream),
+                Some(ResourceSourceState::Failed { incarnation, .. }) if *incarnation == current
+            )
+        })
     }
 
     /// When `upstream`'s current connection last settled a resources/list
@@ -681,7 +794,7 @@ impl CatalogState {
                     SourceAdmissionError::Duplicate => {
                         PromptCatalogPublicationError::DuplicatePrompt
                     }
-                    SourceAdmissionError::TooManyBytes => {
+                    SourceAdmissionError::RowTooLarge | SourceAdmissionError::RetentionBudget => {
                         PromptCatalogPublicationError::TooManyBytes
                     }
                 });
@@ -795,12 +908,17 @@ impl CatalogState {
         Ok((determinant, Arc::from(routes)))
     }
 
+    /// Retain `upstream`'s listed templates as its template snapshot, or
+    /// reject the whole listing. Returns the rejection verdict, when there is
+    /// one. Like `set_resource_source`, a rejection withholds only this
+    /// upstream's templates from the published projection.
+    #[must_use = "a rejected snapshot withholds this upstream from the catalog"]
     pub(super) fn set_resource_template_source(
         &mut self,
         upstream: &str,
         incarnation: super::incarnation::ConnectionIncarnation,
         templates: &[ResourceTemplate],
-    ) {
+    ) -> Option<ResourceTemplateCatalogPublicationError> {
         let templates = templates
             .iter()
             .filter(|template| !is_ui_resource_uri(&template.uri_template))
@@ -821,27 +939,52 @@ impl CatalogState {
             templates.iter().copied(),
         )
         .and_then(|candidate| checked_retained_bytes(existing_retained, candidate))
-        .map_err(|error| match error {
-            SourceAdmissionError::Invalid => {
-                ResourceTemplateCatalogPublicationError::InvalidTemplate
-            }
-            SourceAdmissionError::Duplicate => {
-                ResourceTemplateCatalogPublicationError::DuplicateTemplate
-            }
-            SourceAdmissionError::TooManyBytes => {
-                ResourceTemplateCatalogPublicationError::TooManyBytes
-            }
+        .map_err(|admission| {
+            let error = match admission {
+                SourceAdmissionError::Invalid => {
+                    ResourceTemplateCatalogPublicationError::InvalidTemplate
+                }
+                SourceAdmissionError::Duplicate => {
+                    ResourceTemplateCatalogPublicationError::DuplicateTemplate
+                }
+                SourceAdmissionError::RowTooLarge | SourceAdmissionError::RetentionBudget => {
+                    ResourceTemplateCatalogPublicationError::TooManyBytes
+                }
+            };
+            (error, admission.reason())
         });
-        let source = match retained_bytes {
-            Ok(retained_bytes) => ResourceTemplateSourceState::Ready(ResourceTemplateSource {
-                incarnation,
-                templates: templates.into_iter().cloned().collect::<Vec<_>>().into(),
-                retained_bytes,
-            }),
-            Err(error) => ResourceTemplateSourceState::Failed { incarnation, error },
+        let (source, rejection) = match retained_bytes {
+            Ok(retained_bytes) => (
+                ResourceTemplateSourceState::Ready(ResourceTemplateSource {
+                    incarnation,
+                    templates: templates.into_iter().cloned().collect::<Vec<_>>().into(),
+                    retained_bytes,
+                }),
+                None,
+            ),
+            Err((error, reason)) => {
+                tracing::warn!(
+                    surface = "dispatch",
+                    service = "upstream.pool",
+                    action = "resource_templates.snapshot",
+                    upstream,
+                    row_count = templates.len(),
+                    reason,
+                    "resource template snapshot rejected; the published template catalog omits this upstream until it is re-listed"
+                );
+                (
+                    ResourceTemplateSourceState::Failed {
+                        incarnation,
+                        error,
+                        reason,
+                    },
+                    Some(error),
+                )
+            }
         };
         self.resource_template_sources
             .insert(upstream.to_string(), source);
+        rejection
     }
 
     pub(super) fn remove_resource_template_source(&mut self, upstream: &str) {
@@ -880,13 +1023,14 @@ impl CatalogState {
                 }
                 ResourceTemplateSourceState::Failed {
                     incarnation: source_incarnation,
-                    error,
+                    ..
                 } => {
+                    // Same contract as `resource_projection`: an incarnation
+                    // mismatch is an invariant violation, while a rejected
+                    // snapshot withholds only this upstream's templates. The
+                    // second loop already skips non-`Ready` sources.
                     if incarnation != Some(*source_incarnation) {
                         return Err(ResourceTemplateCatalogPublicationError::InvalidTemplate);
-                    }
-                    if entry.proxy_resources && entry.resource_health.is_routable() {
-                        return Err(*error);
                     }
                 }
             }
@@ -957,15 +1101,23 @@ impl CatalogState {
                 .ok_or(ResourceCatalogPublicationError::InvalidResource)?;
             let source = match source {
                 ResourceSourceState::Ready(source) => source,
-                ResourceSourceState::Failed {
-                    incarnation, error, ..
-                } => {
+                ResourceSourceState::Failed { incarnation, .. } => {
+                    // An incarnation mismatch is an internal invariant
+                    // violation: the source does not describe the connection
+                    // the catalog is holding, so nothing here is publishable.
                     if self.incarnation(upstream) != Some(*incarnation) {
                         return Err(ResourceCatalogPublicationError::InvalidResource);
                     }
-                    if entry.proxy_resources && entry.resource_health.is_routable() {
-                        return Err(*error);
-                    }
+                    // A rejected snapshot is this upstream's verdict alone.
+                    // Its rows were never retained, so it contributes no
+                    // routes and no retained bytes; every other upstream stays
+                    // published. Failing the whole projection here would let
+                    // one upstream's duplicate URI, control character,
+                    // oversized row, or byte-budget breach take the fleet's
+                    // `lab://upstream/...` routes off the air (lab-xtgnz).
+                    // The rejection stays operator-visible through the
+                    // upstream's resources-capability error, recorded where
+                    // the snapshot is set.
                     continue;
                 }
             };
@@ -1300,6 +1452,19 @@ impl UpstreamPool {
         self.catalog.read().await.published_resources.clone()
     }
 
+    /// Snapshot families `upstream` currently has withheld from the catalog
+    /// because their listed rows were rejected at admission.
+    ///
+    /// Operator surfaces read this instead of the entry's capability
+    /// `last_error`: resources, resource templates and resource reads share one
+    /// error slot and each success clears it, so a rejection recorded there
+    /// does not survive the next listing. This reads the retained state that
+    /// decides the withholding itself, so the warning and the published
+    /// catalog cannot disagree.
+    pub async fn withheld_snapshots(&self, upstream: &str) -> Vec<WithheldSnapshot> {
+        self.catalog.read().await.withheld_snapshots(upstream)
+    }
+
     /// Connected, routable, resource-proxying upstreams whose cached snapshot
     /// cannot serve a `resources/list` as-is, split by why.
     ///
@@ -1523,7 +1688,9 @@ impl UpstreamPool {
             .iter()
             .map(|resource| resource.uri.clone())
             .collect();
-        catalog.set_resource_source(upstream, incarnation, &resources);
+        // The verdict is read back through `withheld_snapshots`; this fixture
+        // deliberately installs rejected rows too.
+        let _ = catalog.set_resource_source(upstream, incarnation, &resources);
     }
 
     #[cfg(test)]
@@ -1548,7 +1715,7 @@ impl UpstreamPool {
                 incarnation
             }
         };
-        catalog.set_resource_template_source(upstream, incarnation, &templates);
+        let _ = catalog.set_resource_template_source(upstream, incarnation, &templates);
     }
 }
 
@@ -1564,7 +1731,12 @@ mod tests {
     use crate::upstream::pool::entries::healthy_in_process_entry;
     use crate::upstream::types::{ToolExposurePolicy, ToolPattern};
 
-    fn install_resource_source(state: &mut CatalogState, upstream: &str, resources: Vec<Resource>) {
+    /// Install `upstream` with `resources` and return its admission verdict.
+    fn install_resource_source(
+        state: &mut CatalogState,
+        upstream: &str,
+        resources: Vec<Resource>,
+    ) -> Option<ResourceCatalogPublicationError> {
         let incarnation =
             super::super::incarnation::next_connection_incarnation().expect("identity");
         let mut entry = healthy_in_process_entry(Arc::from(upstream), HashMap::new());
@@ -1575,7 +1747,7 @@ mod tests {
             .collect();
         state.entries.insert(upstream.to_string(), entry);
         state.bind_incarnation(upstream, incarnation);
-        state.set_resource_source(upstream, incarnation, &resources);
+        state.set_resource_source(upstream, incarnation, &resources)
     }
 
     fn install_prompt_source(state: &mut CatalogState, upstream: &str, prompts: Vec<Prompt>) {
@@ -1858,8 +2030,8 @@ mod tests {
         state.set_prompt_source("alpha", incarnation, &[Prompt::new("one", Some(""), None)]);
         let resource = Resource::new("file:///one", "one");
         state.entries.get_mut("alpha").expect("entry").resource_uris = vec![resource.uri.clone()];
-        state.set_resource_source("alpha", incarnation, &[resource]);
-        state.set_resource_template_source(
+        let _ = state.set_resource_source("alpha", incarnation, &[resource]);
+        let _ = state.set_resource_template_source(
             "alpha",
             incarnation,
             &[ResourceTemplate::new("file:///{id}", "template")],
@@ -1894,12 +2066,12 @@ mod tests {
         ));
         let prompt = state.published_prompts.clone().expect("prompt");
 
-        state.set_resource_source(
+        let _ = state.set_resource_source(
             "alpha",
             incarnation,
             &[Resource::new("file:///changed", "changed")],
         );
-        state.set_resource_template_source(
+        let _ = state.set_resource_template_source(
             "alpha",
             incarnation,
             &[ResourceTemplate::new("https://changed/{id}", "changed")],
@@ -1973,21 +2145,36 @@ mod tests {
     fn resource_projection_rejects_duplicate_and_recovers_without_losing_other_sources() {
         let mut state = CatalogState::new();
         install_resource_source(&mut state, "alpha", vec![Resource::new("file:///ok", "ok")]);
-        install_resource_source(
-            &mut state,
-            "beta",
-            vec![
-                Resource::new("file:///dup", "one"),
-                Resource::new("file:///dup", "two"),
-            ],
+        assert_eq!(
+            install_resource_source(
+                &mut state,
+                "beta",
+                vec![
+                    Resource::new("file:///dup", "one"),
+                    Resource::new("file:///dup", "two"),
+                ],
+            ),
+            Some(ResourceCatalogPublicationError::DuplicateResource),
+            "the duplicate is still rejected exactly, at admission"
         );
         state.publish_if_changed();
-        assert!(matches!(
-            state.published_resources,
-            Err(ResourceCatalogPublicationError::DuplicateResource)
-        ));
+        // The rejection is beta's verdict, not the fleet's: alpha keeps its
+        // published route while beta publishes nothing until it is re-listed.
+        // Failing the whole projection would make one upstream's duplicate
+        // URI unpublish every other upstream (lab-xtgnz).
+        assert_eq!(
+            state
+                .published_resources
+                .clone()
+                .expect("a rejected source does not unpublish the fleet")
+                .routes()
+                .iter()
+                .map(|route| (route.upstream_name.as_ref(), route.native_uri.as_ref()))
+                .collect::<Vec<_>>(),
+            vec![("alpha", "file:///ok")]
+        );
         let incarnation = state.incarnation("beta").expect("beta identity");
-        state.set_resource_source(
+        let _ = state.set_resource_source(
             "beta",
             incarnation,
             &[Resource::new("file:///fixed", "fixed")],
@@ -2007,26 +2194,46 @@ mod tests {
     }
 
     #[test]
-    fn hidden_multi_upstream_source_bytes_fail_closed_globally() {
+    fn hidden_multi_upstream_source_bytes_are_budgeted_at_admission() {
+        // Retention is charged fleet-wide even for rows no exposure policy
+        // publishes: the bound is about memory, not about routes. The verdict
+        // is returned to the upstream that would cross the budget, and the
+        // upstreams admitted before it keep their snapshots, so the
+        // projection stays publishable.
         let mut state = CatalogState::new();
+        let mut verdicts = Vec::new();
         for upstream in ["alpha", "beta", "gamma"] {
             let resources = (0..3)
                 .map(|index| {
                     Resource::new(format!("file:///{upstream}/{index}"), "x".repeat(950_000))
                 })
                 .collect();
-            install_resource_source(&mut state, upstream, resources);
+            verdicts.push(install_resource_source(&mut state, upstream, resources));
             state
                 .entries
                 .get_mut(upstream)
                 .expect("entry")
                 .resource_exposure_policy = ToolExposurePolicy::AllowList(Vec::new());
         }
+        assert_eq!(
+            verdicts,
+            vec![
+                None,
+                None,
+                Some(ResourceCatalogPublicationError::TooManyBytes)
+            ],
+            "hidden rows still consume the fleet retention budget"
+        );
         state.publish_if_changed();
-        assert!(matches!(
-            state.published_resources,
-            Err(ResourceCatalogPublicationError::TooManyBytes)
-        ));
+        assert!(
+            state
+                .published_resources
+                .clone()
+                .expect("a retention breach does not unpublish the fleet")
+                .routes()
+                .is_empty(),
+            "the exposure policy hides every row that was admitted"
+        );
     }
 
     #[test]
@@ -2037,7 +2244,7 @@ mod tests {
         state.publish_if_changed();
         let first = state.published_resources.clone().expect("first");
         let incarnation = state.incarnation("alpha").expect("identity");
-        state.set_resource_source("alpha", incarnation, &rows);
+        let _ = state.set_resource_source("alpha", incarnation, &rows);
         state.publish_if_changed();
         let identical = state.published_resources.clone().expect("identical");
         assert!(Arc::ptr_eq(&first, &identical));
@@ -2110,7 +2317,7 @@ mod tests {
             .clone()
             .expect("old source cleared");
         assert!(empty.routes().is_empty());
-        state.set_resource_source("alpha", replacement, &rows);
+        let _ = state.set_resource_source("alpha", replacement, &rows);
         state.publish_if_changed();
         let rebound = state.published_resources.clone().expect("rebound");
         assert_eq!(rebound.routes().len(), 1);
@@ -2141,7 +2348,13 @@ mod tests {
             Err(ResourceCatalogPublicationError::TooManyRoutes)
         ));
         let incarnation = state.incarnation("alpha").expect("identity");
-        state.set_resource_source("alpha", incarnation, &[Resource::new("bad\nuri", "bad")]);
+        // A control character is caught at admission and is that upstream's
+        // verdict. With alpha the only upstream, isolating it leaves an empty
+        // — not unavailable — catalog.
+        assert_eq!(
+            state.set_resource_source("alpha", incarnation, &[Resource::new("bad\nuri", "bad")]),
+            Some(ResourceCatalogPublicationError::InvalidResource)
+        );
         state
             .entries
             .get_mut("alpha")
@@ -2149,11 +2362,15 @@ mod tests {
             .resource_count = 1;
         state.entries.get_mut("alpha").expect("alpha").resource_uris = vec!["bad\nuri".into()];
         state.publish_if_changed();
-        assert!(matches!(
-            state.published_resources,
-            Err(ResourceCatalogPublicationError::InvalidResource)
-        ));
-        state.set_resource_source(
+        assert!(
+            state
+                .published_resources
+                .clone()
+                .expect("a rejected source is excluded, not fatal")
+                .routes()
+                .is_empty()
+        );
+        let _ = state.set_resource_source(
             "alpha",
             incarnation,
             &[Resource::new("file:///fixed", "fixed")],
@@ -2210,7 +2427,7 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        state.set_resource_source("alpha", incarnation, &exact_bytes);
+        let _ = state.set_resource_source("alpha", incarnation, &exact_bytes);
         state
             .entries
             .get_mut("alpha")
@@ -2228,7 +2445,12 @@ mod tests {
             "file:///oversized",
             MAX_RESOURCE_ROW_BYTES + 1,
         )];
-        state.set_resource_source("alpha", incarnation, &oversized);
+        // One byte past the per-row cap is still rejected exactly; the
+        // verdict now lands on the upstream rather than on the catalog.
+        assert_eq!(
+            state.set_resource_source("alpha", incarnation, &oversized),
+            Some(ResourceCatalogPublicationError::TooManyBytes)
+        );
         state
             .entries
             .get_mut("alpha")
@@ -2237,10 +2459,194 @@ mod tests {
         state.entries.get_mut("alpha").expect("alpha").resource_uris =
             vec!["file:///oversized".into()];
         state.publish_if_changed();
-        assert!(matches!(
-            state.published_resources,
-            Err(ResourceCatalogPublicationError::TooManyBytes)
+        assert!(
+            state
+                .published_resources
+                .clone()
+                .expect("a rejected source is excluded, not fatal")
+                .routes()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn fleet_byte_budget_breach_excludes_only_the_breaching_upstream() {
+        // The retention budget is fleet-wide, but a breach is decided at
+        // admission for the upstream whose rows would cross it. Isolating that
+        // upstream keeps the budget exact while the upstreams admitted before
+        // it stay published; a fleet-wide Err would punish the servers that
+        // stayed within their share.
+        let mut state = CatalogState::new();
+        let half_budget = |upstream: &str| {
+            (0..4)
+                .map(|index| {
+                    resource_with_serialized_size(
+                        &format!("file:///{upstream}/{index}"),
+                        MAX_RESOURCE_ROW_BYTES,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            install_resource_source(&mut state, "alpha", half_budget("alpha")),
+            None
+        );
+        assert_eq!(
+            install_resource_source(&mut state, "beta", half_budget("beta")),
+            None,
+            "exactly MAX_RESOURCE_CATALOG_BYTES across the fleet is admitted"
+        );
+        assert_eq!(
+            install_resource_source(
+                &mut state,
+                "gamma",
+                vec![Resource::new("file:///gamma/over", "over")]
+            ),
+            Some(ResourceCatalogPublicationError::TooManyBytes),
+            "the first row past the fleet budget is rejected at admission"
+        );
+        state.publish_if_changed();
+        let published = state
+            .published_resources
+            .clone()
+            .expect("a budget breach by one upstream keeps the fleet published");
+        let owners = published
+            .routes()
+            .iter()
+            .map(|route| route.upstream_name.as_ref())
+            .collect::<Vec<_>>();
+        assert_eq!(owners.iter().filter(|owner| **owner == "alpha").count(), 4);
+        assert_eq!(owners.iter().filter(|owner| **owner == "beta").count(), 4);
+        assert!(
+            !owners.contains(&"gamma"),
+            "the breaching upstream publishes nothing until it is re-listed"
+        );
+        assert_eq!(
+            state.withheld_snapshots("gamma"),
+            vec![WithheldSnapshot {
+                family: "resources",
+                reason: "retention_budget",
+            }],
+            "the budget breach is distinguishable from an oversized single row"
+        );
+
+        // Admission is order-dependent by construction: the budget is charged
+        // against what is already retained, so the upstream that arrives after
+        // the budget is full is the one rejected. Pin that, so an
+        // implementation that instead evicted an already-admitted upstream
+        // (say, largest-first) could not pass. Re-listing alpha with one more
+        // row now exceeds what is left, so alpha — not gamma — becomes the
+        // withheld one and its previously published routes disappear.
+        let alpha_incarnation = state.incarnation("alpha").expect("alpha identity");
+        let mut larger = half_budget("alpha");
+        larger.push(resource_with_serialized_size(
+            "file:///alpha/extra",
+            MAX_RESOURCE_ROW_BYTES,
         ));
+        assert_eq!(
+            state.set_resource_source("alpha", alpha_incarnation, &larger),
+            Some(ResourceCatalogPublicationError::TooManyBytes)
+        );
+        state.entries.get_mut("alpha").expect("alpha").resource_uris =
+            larger.iter().map(|row| row.uri.clone()).collect();
+        state.publish_if_changed();
+        let published = state
+            .published_resources
+            .clone()
+            .expect("the re-list rejection is still per-upstream");
+        assert!(
+            published
+                .routes()
+                .iter()
+                .all(|route| route.upstream_name.as_ref() == "beta"),
+            "alpha's routes go away with alpha's snapshot; beta is untouched"
+        );
+        assert_eq!(published.routes().len(), 4);
+    }
+
+    #[test]
+    fn retention_budget_rejects_whichever_upstream_is_admitted_last() {
+        // The reverse-order companion to the case above: with the same three
+        // upstreams admitted in a different order, the rejection follows
+        // admission order rather than any property of the upstream itself.
+        let mut state = CatalogState::new();
+        let half_budget = |upstream: &str| {
+            (0..4)
+                .map(|index| {
+                    resource_with_serialized_size(
+                        &format!("file:///{upstream}/{index}"),
+                        MAX_RESOURCE_ROW_BYTES,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            install_resource_source(&mut state, "gamma", half_budget("gamma")),
+            None
+        );
+        assert_eq!(
+            install_resource_source(&mut state, "beta", half_budget("beta")),
+            None
+        );
+        assert_eq!(
+            install_resource_source(&mut state, "alpha", half_budget("alpha")),
+            Some(ResourceCatalogPublicationError::TooManyBytes),
+            "alpha was admitted last this time, so alpha is the rejected one"
+        );
+        state.publish_if_changed();
+        let published = state
+            .published_resources
+            .clone()
+            .expect("a retention breach does not unpublish the fleet");
+        assert!(
+            published
+                .routes()
+                .iter()
+                .all(|route| route.upstream_name.as_ref() != "alpha")
+        );
+        assert_eq!(published.routes().len(), 8);
+        assert!(state.withheld_snapshots("gamma").is_empty());
+    }
+
+    #[test]
+    fn a_source_bound_to_a_stale_incarnation_fails_the_projection() {
+        // The one fleet-wide Err this change deliberately preserves. A source
+        // whose incarnation does not match the catalog's does not describe the
+        // connection being published, so it is an internal invariant
+        // violation rather than a per-upstream verdict — excluding it would
+        // publish a catalog derived from state nobody can explain.
+        let mut state = CatalogState::new();
+        install_resource_source(&mut state, "alpha", vec![Resource::new("file:///a", "a")]);
+        state.publish_if_changed();
+        assert!(state.published_resources.is_ok());
+
+        let stale = state.incarnation("alpha").expect("alpha identity");
+        let current = super::super::incarnation::next_connection_incarnation().expect("identity");
+        state.incarnations.insert("alpha".to_string(), current);
+        // A rejected snapshot left over from the previous connection.
+        assert_eq!(
+            state.set_resource_source(
+                "alpha",
+                stale,
+                &[
+                    Resource::new("file:///dup", "one"),
+                    Resource::new("file:///dup", "two"),
+                ],
+            ),
+            Some(ResourceCatalogPublicationError::DuplicateResource)
+        );
+        state.publish_if_changed();
+        assert!(
+            matches!(
+                state.published_resources,
+                Err(ResourceCatalogPublicationError::InvalidResource)
+            ),
+            "an incarnation mismatch is still fatal to the projection"
+        );
+        assert!(
+            state.withheld_snapshots("alpha").is_empty(),
+            "a stale source describes a connection that no longer exists"
+        );
     }
 
     #[test]
@@ -2262,11 +2668,12 @@ mod tests {
         assert_eq!(first.generation(), second.generation());
     }
 
+    /// Install `upstream` with `templates` and return its admission verdict.
     fn install_resource_template_source(
         state: &mut CatalogState,
         upstream: &str,
         templates: Vec<ResourceTemplate>,
-    ) {
+    ) -> Option<ResourceTemplateCatalogPublicationError> {
         let incarnation =
             super::super::incarnation::next_connection_incarnation().expect("identity");
         state.entries.insert(
@@ -2274,7 +2681,49 @@ mod tests {
             healthy_in_process_entry(Arc::from(upstream), HashMap::new()),
         );
         state.bind_incarnation(upstream, incarnation);
-        state.set_resource_template_source(upstream, incarnation, &templates);
+        state.set_resource_template_source(upstream, incarnation, &templates)
+    }
+
+    #[test]
+    fn rejected_template_snapshot_excludes_only_its_own_upstream() {
+        // Same contract as the resource projection: a per-upstream admission
+        // verdict must not unpublish the other upstreams' templates.
+        let mut state = CatalogState::new();
+        assert_eq!(
+            install_resource_template_source(
+                &mut state,
+                "omega",
+                vec![ResourceTemplate::new("file:///ok/{id}", "ok")],
+            ),
+            None
+        );
+        assert_eq!(
+            install_resource_template_source(
+                &mut state,
+                "alpha",
+                vec![
+                    ResourceTemplate::new("file:///dup/{id}", "one"),
+                    ResourceTemplate::new("file:///dup/{id}", "two"),
+                ],
+            ),
+            Some(ResourceTemplateCatalogPublicationError::DuplicateTemplate)
+        );
+        state.publish_if_changed();
+        let published = state
+            .published_resource_templates
+            .clone()
+            .expect("one rejected template snapshot must not unpublish the fleet");
+        assert_eq!(
+            published
+                .routes()
+                .iter()
+                .map(|route| (
+                    route.upstream_name.as_ref(),
+                    route.native_uri_template.as_ref()
+                ))
+                .collect::<Vec<_>>(),
+            vec![("omega", "file:///ok/{id}")]
+        );
     }
 
     #[test]
@@ -2342,7 +2791,7 @@ mod tests {
         state.publish_if_changed();
         let first = state.published_resource_templates.clone().expect("first");
         let incarnation = state.incarnation("alpha").expect("identity");
-        state.set_resource_template_source("alpha", incarnation, &rows);
+        let _ = state.set_resource_template_source("alpha", incarnation, &rows);
         state.publish_if_changed();
         assert!(Arc::ptr_eq(
             &first,
@@ -2397,7 +2846,7 @@ mod tests {
                 .routes()
                 .is_empty()
         );
-        state.set_resource_template_source("alpha", replacement, &rows);
+        let _ = state.set_resource_template_source("alpha", replacement, &rows);
         state.publish_if_changed();
         let rebound = state.published_resource_templates.clone().expect("rebound");
         assert_eq!(rebound.routes().len(), 1);
@@ -2413,31 +2862,48 @@ mod tests {
     #[test]
     fn resource_template_structural_failures_are_typed_and_recover() {
         let mut state = CatalogState::new();
-        install_resource_template_source(
-            &mut state,
-            "alpha",
-            vec![
-                ResourceTemplate::new("file:///{id}", "one"),
-                ResourceTemplate::new("file:///{id}", "two"),
-            ],
+        // Each structural failure is still typed exactly, but it is now the
+        // upstream's admission verdict rather than a fleet-wide publication
+        // failure, so the catalog stays available with that upstream excluded.
+        assert_eq!(
+            install_resource_template_source(
+                &mut state,
+                "alpha",
+                vec![
+                    ResourceTemplate::new("file:///{id}", "one"),
+                    ResourceTemplate::new("file:///{id}", "two"),
+                ],
+            ),
+            Some(ResourceTemplateCatalogPublicationError::DuplicateTemplate)
         );
         state.publish_if_changed();
-        assert!(matches!(
-            state.published_resource_templates,
-            Err(ResourceTemplateCatalogPublicationError::DuplicateTemplate)
-        ));
+        assert!(
+            state
+                .published_resource_templates
+                .clone()
+                .expect("a rejected source is excluded, not fatal")
+                .routes()
+                .is_empty()
+        );
         let incarnation = state.incarnation("alpha").expect("identity");
-        state.set_resource_template_source(
-            "alpha",
-            incarnation,
-            &[ResourceTemplate::new("bad\ntemplate", "bad")],
+        assert_eq!(
+            state.set_resource_template_source(
+                "alpha",
+                incarnation,
+                &[ResourceTemplate::new("bad\ntemplate", "bad")],
+            ),
+            Some(ResourceTemplateCatalogPublicationError::InvalidTemplate)
         );
         state.publish_if_changed();
-        assert!(matches!(
-            state.published_resource_templates,
-            Err(ResourceTemplateCatalogPublicationError::InvalidTemplate)
-        ));
-        state.set_resource_template_source(
+        assert!(
+            state
+                .published_resource_templates
+                .clone()
+                .expect("a rejected source is excluded, not fatal")
+                .routes()
+                .is_empty()
+        );
+        let _ = state.set_resource_template_source(
             "alpha",
             incarnation,
             &[ResourceTemplate::new("file:///fixed/{id}", "fixed")],
@@ -2475,7 +2941,7 @@ mod tests {
             super::super::tools::MAX_UPSTREAM_RESOURCES
         );
         let incarnation = state.incarnation("alpha").expect("identity");
-        state.set_resource_template_source(
+        let _ = state.set_resource_template_source(
             "alpha",
             incarnation,
             &(0..=super::super::tools::MAX_UPSTREAM_RESOURCES)
@@ -2487,7 +2953,7 @@ mod tests {
             state.published_resource_templates,
             Err(ResourceTemplateCatalogPublicationError::TooManyRoutes)
         ));
-        state.set_resource_template_source(
+        let _ = state.set_resource_template_source(
             "alpha",
             incarnation,
             &[ResourceTemplate::new("file:///{id}", "fixed")],
@@ -2526,7 +2992,7 @@ mod tests {
             .clone()
             .expect("resource snapshot");
         let tool_snapshot = state.published.clone().expect("tool snapshot");
-        state.set_resource_template_source(
+        let _ = state.set_resource_template_source(
             "alpha",
             incarnation,
             &[ResourceTemplate::new("file:///changed/{id}", "changed")],
@@ -2584,20 +3050,27 @@ mod tests {
         );
 
         let incarnation = state.incarnation("alpha").expect("identity");
-        state.set_resource_template_source(
-            "alpha",
-            incarnation,
-            &[template_with_serialized_size(
-                "file:///oversized/{id}",
-                MAX_RESOURCE_ROW_BYTES + 1,
-            )],
+        assert_eq!(
+            state.set_resource_template_source(
+                "alpha",
+                incarnation,
+                &[template_with_serialized_size(
+                    "file:///oversized/{id}",
+                    MAX_RESOURCE_ROW_BYTES + 1,
+                )],
+            ),
+            Some(ResourceTemplateCatalogPublicationError::TooManyBytes)
         );
         state.publish_if_changed();
-        assert!(matches!(
-            state.published_resource_templates,
-            Err(ResourceTemplateCatalogPublicationError::TooManyBytes)
-        ));
-        state.set_resource_template_source(
+        assert!(
+            state
+                .published_resource_templates
+                .clone()
+                .expect("a rejected source is excluded, not fatal")
+                .routes()
+                .is_empty()
+        );
+        let _ = state.set_resource_template_source(
             "alpha",
             incarnation,
             &[ResourceTemplate::new("file:///fixed/{id}", "fixed")],
@@ -2605,6 +3078,10 @@ mod tests {
         state.publish_if_changed();
         assert!(state.published_resource_templates.is_ok());
 
+        // The retention budget is fleet-wide, so the upstream that would
+        // cross it is rejected while the ones admitted before it keep their
+        // templates published.
+        let mut verdicts = Vec::new();
         for upstream in ["alpha", "beta", "gamma"] {
             let rows = (0..3)
                 .map(|index| {
@@ -2614,17 +3091,33 @@ mod tests {
                     )
                 })
                 .collect::<Vec<_>>();
-            if upstream == "alpha" {
-                state.set_resource_template_source(upstream, incarnation, &rows);
+            verdicts.push(if upstream == "alpha" {
+                state.set_resource_template_source(upstream, incarnation, &rows)
             } else {
-                install_resource_template_source(&mut state, upstream, rows);
-            }
+                install_resource_template_source(&mut state, upstream, rows)
+            });
         }
+        assert_eq!(
+            verdicts,
+            vec![
+                None,
+                None,
+                Some(ResourceTemplateCatalogPublicationError::TooManyBytes)
+            ]
+        );
         state.publish_if_changed();
-        assert!(matches!(
-            state.published_resource_templates,
-            Err(ResourceTemplateCatalogPublicationError::TooManyBytes)
-        ));
+        let published = state
+            .published_resource_templates
+            .clone()
+            .expect("a retention breach does not unpublish the fleet");
+        assert!(
+            published
+                .routes()
+                .iter()
+                .all(|route| route.upstream_name.as_ref() != "gamma"),
+            "the breaching upstream publishes nothing until it is re-listed"
+        );
+        assert_eq!(published.routes().len(), 6);
     }
 
     fn entry(upstream: &str, tool_name: &str) -> UpstreamEntry {

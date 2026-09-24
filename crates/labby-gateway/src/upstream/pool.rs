@@ -135,7 +135,7 @@ mod validate;
 pub use capability_call::CapabilityCallError;
 pub use catalog_publication::{
     PromptCatalogGeneration, ResourceCatalogGeneration, ResourceTemplateCatalogGeneration,
-    ToolCatalogGeneration,
+    ToolCatalogGeneration, WithheldSnapshot,
 };
 pub(crate) use catalog_publication::{
     PromptCatalogPublicationError, PublishedPromptCatalogSnapshot, PublishedPromptRoute,
@@ -148,6 +148,7 @@ pub(crate) use checked_call::CheckedToolCallError;
 pub(crate) use connect_stdio::connect_direct_stdio;
 use helpers::{DEFAULT_RELAY_TIMEOUT, DEFAULT_REQUEST_TIMEOUT};
 pub use helpers::{
+    UPSTREAM_PROMPT_LISTING_ERROR_PREFIX, UPSTREAM_RESOURCE_LISTING_ERROR_PREFIX,
     UpstreamCachedSummary, in_process_upstream_name, redact_resource_uri_for_logging,
     upstream_destructive_from_annotations, upstream_discovery_concurrency,
 };
@@ -165,6 +166,8 @@ pub use resources_list::{ListedUpstreamResource, ListedUpstreamResourceTemplate}
 pub(crate) use resources_read::ExactResourceReadError;
 pub(crate) use stdio_stderr::install_upstream_stderr_level_default;
 pub use task_route::TaskRouteAuthorization;
+#[cfg(test)]
+pub(crate) use tools::MAX_UPSTREAM_RESOURCES;
 pub use tools::{
     MAX_UPSTREAM_TOOLS, tool_is_mcp_app_host_visible_for_config,
     upstream_has_mcp_app_ui_owner_for_config,

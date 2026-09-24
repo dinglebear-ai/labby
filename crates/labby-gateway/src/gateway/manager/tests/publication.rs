@@ -6,6 +6,7 @@ use crate::gateway::manager::{
     LoadoutResourceCatalogPublicationError, LoadoutResourceTemplateCatalogPublicationError,
     LoadoutToolCatalogPublicationError,
 };
+use crate::upstream::pool::{MAX_UPSTREAM_RESOURCES, WithheldSnapshot};
 use labby_runtime::gateway_config::{
     GatewayLoadoutConfig, ProtectedGatewaySubsetTarget, ProtectedMcpRouteConfig,
     ProtectedMcpRouteTarget, VirtualServerConfig, VirtualServerMcpPolicyConfig,
@@ -437,12 +438,15 @@ async fn loadout_resource_template_catalog_redacts_errors_and_bounds_config_chur
         result.err(),
         Some(LoadoutResourceTemplateCatalogPublicationError::Unstable)
     );
+    // A per-upstream admission failure (duplicate template) only withholds
+    // that upstream, so it cannot make the catalog unavailable. This case
+    // deliberately exercises the still-fleet-wide route cap instead; see the
+    // resource-catalog test above.
     pool.insert_resource_template_routes_for_tests(
         "alpha",
-        vec![
-            ResourceTemplate::new("file:///dup/{id}", "one"),
-            ResourceTemplate::new("file:///dup/{id}", "two"),
-        ],
+        (0..=MAX_UPSTREAM_RESOURCES)
+            .map(|index| ResourceTemplate::new(format!("file:///{index}/{{id}}"), "row"))
+            .collect(),
     )
     .await;
     assert_eq!(
@@ -701,13 +705,18 @@ async fn loadout_resource_catalog_redacts_missing_states_and_bounds_churn() {
 
     let invalid_runtime = GatewayRuntimeHandle::default();
     let invalid_pool = Arc::new(UpstreamPool::new());
+    // A per-upstream admission failure (duplicate URI) only withholds that
+    // upstream, so it cannot make the catalog unavailable. This case
+    // deliberately exercises the failure mode that IS still fleet-wide: the
+    // MAX_UPSTREAM_RESOURCES route cap is accumulated across every upstream
+    // and fails the whole projection, so one upstream can still take the
+    // catalog down this way. Narrowing that is tracked separately.
     invalid_pool
         .insert_resource_routes_for_tests(
             "alpha",
-            vec![
-                Resource::new("file:///dup", "one"),
-                Resource::new("file:///dup", "two"),
-            ],
+            (0..=MAX_UPSTREAM_RESOURCES)
+                .map(|index| Resource::new(format!("file:///{index}"), "row"))
+                .collect(),
         )
         .await;
     invalid_runtime.swap(Some(invalid_pool)).await;
@@ -722,6 +731,54 @@ async fn loadout_resource_catalog_redacts_missing_states_and_bounds_churn() {
             .err(),
         Some(LoadoutResourceCatalogPublicationError::CatalogUnavailable)
     );
+}
+
+/// The loadout surface must not re-propagate a per-upstream admission verdict
+/// as a fleet-wide `CatalogUnavailable`. This is the layer an agent actually
+/// reads, so isolation that holds in the pool but is lost here would be
+/// invisible to every consumer.
+#[tokio::test]
+async fn loadout_resource_catalog_excludes_only_the_rejected_upstream() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_resource_routes_for_tests("alpha", vec![Resource::new("file:///alpha", "alpha")])
+        .await;
+    pool.insert_resource_routes_for_tests(
+        "beta",
+        vec![
+            Resource::new("file:///dup", "one"),
+            Resource::new("file:///dup", "two"),
+        ],
+    )
+    .await;
+    runtime.swap(Some(Arc::clone(&pool))).await;
+    let manager = GatewayManager::new(dir.path().join("isolated.toml"), runtime);
+    manager
+        .seed_config(config_with_loadout(loadout("project", &["alpha", "beta"])))
+        .await;
+
+    let snapshot = manager
+        .published_loadout_resource_catalog_snapshot("project")
+        .await
+        .expect("a rejected upstream must not make the loadout catalog unavailable");
+    assert_eq!(
+        snapshot
+            .routes()
+            .iter()
+            .map(|route| (route.upstream_name.as_ref(), route.native_uri.as_ref()))
+            .collect::<Vec<_>>(),
+        vec![("alpha", "file:///alpha")]
+    );
+    assert_eq!(
+        pool.withheld_snapshots("beta").await,
+        vec![WithheldSnapshot {
+            family: "resources",
+            reason: "duplicate_uri",
+        }],
+        "the stable operator-facing kind, not a Debug rendering of the enum"
+    );
+    assert!(pool.withheld_snapshots("alpha").await.is_empty());
 }
 
 #[tokio::test]
@@ -1693,12 +1750,14 @@ async fn unified_loadout_mcp_catalog_bounds_sustained_resource_template_churn() 
         result.err(),
         Some(LoadoutMcpCatalogPublicationError::Unstable)
     );
+    // A per-upstream admission failure (duplicate template) only withholds
+    // that upstream, so it cannot make the unified catalog unavailable. This
+    // case deliberately exercises the still-fleet-wide route cap instead.
     pool.insert_resource_template_routes_for_tests(
         "alpha",
-        vec![
-            ResourceTemplate::new("file:///dup/{id}", "one"),
-            ResourceTemplate::new("file:///dup/{id}", "two"),
-        ],
+        (0..=MAX_UPSTREAM_RESOURCES)
+            .map(|index| ResourceTemplate::new(format!("file:///{index}/{{id}}"), "row"))
+            .collect(),
     )
     .await;
     assert_eq!(
