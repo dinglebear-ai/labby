@@ -54,6 +54,8 @@ pub mod skills;
 #[cfg(feature = "gateway")]
 pub(crate) mod tool_execution;
 #[cfg(feature = "gateway")]
+pub(crate) mod trace_context;
+#[cfg(feature = "gateway")]
 pub mod upstream;
 
 #[allow(unused_imports)]

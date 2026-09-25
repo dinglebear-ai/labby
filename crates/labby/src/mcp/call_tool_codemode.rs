@@ -42,6 +42,7 @@ use crate::mcp::result_format::{
     hash_arguments, tool_error_envelope,
 };
 use crate::mcp::server::LabMcpServer;
+use crate::mcp::trace_context::request_trace_context;
 
 type SharedCodeModeResult = Result<CodeModeExecutionResponse, CodeModeExecutionError>;
 
@@ -833,13 +834,14 @@ impl LabMcpServer {
             }
             InflightCodeModeRole::Leader(leader) => {
                 let result = broker
-                    .execute(
+                    .execute_with_trace_context(
                         code,
                         caller,
                         self.code_mode_surface(),
                         config,
                         capability_filter,
                         Some(Arc::<str>::from(execution_id.as_str())),
+                        request_trace_context(&context.extensions),
                     )
                     .await;
                 leader.complete(&result);

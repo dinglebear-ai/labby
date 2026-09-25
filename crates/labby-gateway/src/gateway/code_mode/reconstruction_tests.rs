@@ -96,6 +96,8 @@ async fn cold_manager_reconstruction_preserves_only_explicitly_flushed_state() {
             ExecCtx {
                 seq: 9,
                 execution_id: Some(Arc::from("durable")),
+                call_ordinal: None,
+                trace_context: None,
                 step_ordinal: Some(2),
             },
             &"n".repeat(100_000),
@@ -120,6 +122,8 @@ async fn cold_manager_reconstruction_preserves_only_explicitly_flushed_state() {
             ExecCtx {
                 seq: 10,
                 execution_id: Some(Arc::from("unflushed")),
+                call_ordinal: None,
+                trace_context: None,
                 step_ordinal: Some(0),
             },
             "not-durable",

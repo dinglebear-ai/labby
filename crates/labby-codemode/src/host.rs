@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 
+use labby_primitives::trace::TraceContext;
 use serde_json::Value;
 
 use crate::CodeModeCallError;
@@ -105,6 +106,10 @@ pub struct ExecCtx {
     pub seq: u64,
     /// Durable execution identifier when journaling is active.
     pub execution_id: Option<Arc<str>>,
+    /// Monotonic host-brokered call ordinal, aligned with `response.calls[]`.
+    pub call_ordinal: Option<u64>,
+    /// Request-owned trace context inherited from the outer MCP call.
+    pub trace_context: Option<Arc<TraceContext>>,
     /// Monotonic durable-step ordinal for a `codemode.step` boundary.
     pub step_ordinal: Option<u64>,
 }
@@ -116,6 +121,8 @@ impl ExecCtx {
         Self {
             seq: 0,
             execution_id: None,
+            call_ordinal: None,
+            trace_context: None,
             step_ordinal: None,
         }
     }
@@ -506,6 +513,8 @@ mod tests {
         let ctx = ExecCtx::none();
         assert_eq!(ctx.seq, 0);
         assert!(ctx.execution_id.is_none());
+        assert!(ctx.call_ordinal.is_none());
+        assert!(ctx.trace_context.is_none());
         assert!(ctx.step_ordinal.is_none());
     }
 
@@ -514,10 +523,14 @@ mod tests {
         let ctx = ExecCtx {
             seq: 7,
             execution_id: Some(Arc::from("exec_abc")),
+            call_ordinal: Some(3),
+            trace_context: None,
             step_ordinal: Some(2),
         };
         assert_eq!(ctx.seq, 7);
         assert_eq!(ctx.execution_id.as_deref(), Some("exec_abc"));
+        assert_eq!(ctx.call_ordinal, Some(3));
+        assert!(ctx.trace_context.is_none());
         assert_eq!(ctx.step_ordinal, Some(2));
     }
 

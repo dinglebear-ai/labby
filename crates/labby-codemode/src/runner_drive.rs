@@ -15,6 +15,7 @@ use std::sync::{
 use std::time::Duration;
 
 use futures::{StreamExt, stream::FuturesUnordered};
+use labby_primitives::trace::TraceContext;
 use serde_json::{Value, json};
 use tokio::process::ChildStdin;
 use tokio::sync::Mutex;
@@ -197,6 +198,8 @@ pub(crate) struct RunnerConfig {
     /// on the write-free/standalone path; flows into every [`ExecCtx`] so the
     /// host's `record_step` can key its per-execution journal buffer.
     pub execution_id: Option<Arc<str>>,
+    /// Request-owned trace context inherited from the outer MCP call.
+    pub trace_context: Option<Arc<TraceContext>>,
     /// Loaded OpenAPI specs for the `openapi` local provider (cheap `Arc` clone).
     pub openapi_registry: labby_openapi::OpenApiRegistry,
     /// Hardened dispatch client for the `openapi` provider (cheap `Arc` clone).
@@ -287,6 +290,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         capability_filter: ToolScope,
         snippet_max_bytes: usize,
         execution_id: Option<Arc<str>>,
+        trace_context: Option<Arc<TraceContext>>,
     ) -> Result<CodeModeExecutionResponse, CodeModeExecutionError> {
         // Read the openapi registry/client from the host at the config-build site
         // (per the plan's I4 fix — do NOT thread them down the positional arg
@@ -323,6 +327,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             capability_filter,
             snippet_max_bytes: snippet_max_bytes.min(MAX_SNIPPET_RESOLVED_BYTES_PER_RUN),
             execution_id,
+            trace_context,
             openapi_registry,
             openapi_http_client,
         };
@@ -617,12 +622,14 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                             // sandbox JS cannot loop them into unbounded
                             // host round trips.
                             let is_internal = id.starts_with("__lab_internal::");
-                            if is_internal {
+                            let call_ordinal = if is_internal {
                                 state.internal_calls_enqueued =
                                     state.internal_calls_enqueued.saturating_add(1);
+                                None
                             } else {
                                 state.calls_enqueued = state.calls_enqueued.saturating_add(1);
-                            }
+                                Some(state.calls_enqueued.saturating_sub(1))
+                            };
                             if is_internal
                                 && state.internal_calls_enqueued > MAX_INTERNAL_CALLS_PER_RUN
                             {
@@ -669,6 +676,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                                         enqueue_local_provider_call(
                                             self,
                                             seq,
+                                            call_ordinal,
                                             id,
                                             local,
                                             params,
@@ -699,6 +707,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                                         enqueue_tool_call(
                                             self,
                                             seq,
+                                            call_ordinal,
                                             id,
                                             params,
                                             tool_deadline,
@@ -952,6 +961,7 @@ fn classify_line_result(
 fn enqueue_tool_call<'a, H: CodeModeHost>(
     broker: &'a CodeModeBroker<'a, H>,
     seq: u64,
+    call_ordinal: Option<u64>,
     id: String,
     params: Value,
     tool_deadline: tokio::time::Instant,
@@ -966,6 +976,7 @@ fn enqueue_tool_call<'a, H: CodeModeHost>(
     let capability_filter = cfg.capability_filter.clone();
     let surface = cfg.surface;
     let execution_id = cfg.execution_id.clone();
+    let trace_context = cfg.trace_context.clone();
     let cancellation = cancellation.clone();
     pending_tool_calls.push(Box::pin(async move {
         let start_ms = execution_start.elapsed().as_millis();
@@ -973,6 +984,8 @@ fn enqueue_tool_call<'a, H: CodeModeHost>(
         let ctx = ExecCtx {
             seq,
             execution_id,
+            call_ordinal,
+            trace_context,
             step_ordinal: None,
         };
         let result = broker
@@ -1006,6 +1019,7 @@ fn enqueue_tool_call<'a, H: CodeModeHost>(
 fn enqueue_local_provider_call<'a, H: CodeModeHost>(
     broker: &'a CodeModeBroker<'a, H>,
     seq: u64,
+    call_ordinal: Option<u64>,
     id: String,
     local: LocalProviderCall,
     params: Value,
@@ -1017,6 +1031,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
     let caller = cfg.caller.clone();
     let capability_filter = cfg.capability_filter.clone();
     let execution_id = cfg.execution_id.clone();
+    let trace_context = cfg.trace_context.clone();
     let openapi_registry = cfg.openapi_registry.clone();
     let openapi_http_client = cfg.openapi_http_client.clone();
     pending_tool_calls.push(Box::pin(async move {
@@ -1045,6 +1060,8 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
         let ctx = ExecCtx {
             seq,
             execution_id,
+            call_ordinal,
+            trace_context,
             step_ordinal: None,
         };
         // Reserved decision hook runs BEFORE dispatch. The default
@@ -1522,6 +1539,7 @@ mod tests {
             capability_filter: ToolScope::default(),
             snippet_max_bytes: MAX_SNIPPET_RESOLVED_BYTES_PER_RUN,
             execution_id: None,
+            trace_context: None,
             openapi_registry: labby_openapi::OpenApiRegistry::default(),
             openapi_http_client: labby_openapi::http::build_dispatch_client()
                 .expect("test dispatch client"),
@@ -2323,6 +2341,176 @@ sleep 3600
                 .all(|(exec, _, _)| exec.as_deref() == Some("exec_test")),
             "execution_id must reach record_step"
         );
+    }
+
+    /// External call ordinals are assigned at enqueue time, not completion
+    /// time. Concurrent calls may settle out of order, but the final
+    /// `response.calls[]` is seq-sorted and each host context must carry the
+    /// zero-based ordinal matching that final array position.
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn call_ordinal_and_trace_context_align_with_fan_out_response_order() {
+        use std::collections::HashMap;
+        use std::sync::Mutex as StdMutex;
+
+        use crate::host::{ResolvedSnippet, ToolCallOutcome, ToolsRender};
+        use crate::types::{CodeModeCaller, CodeModeSurface, ToolScope};
+        use labby_primitives::trace::TraceContext;
+        use labby_runtime::CodeModeConfig;
+
+        type Recorded = HashMap<String, (Option<u64>, Option<String>, Option<String>)>;
+
+        struct RecordingCallHost {
+            pool: RunnerPool,
+            recorded: Arc<StdMutex<Recorded>>,
+        }
+
+        impl CodeModeHost for RecordingCallHost {
+            async fn list_tools(
+                &self,
+                _caller: &CodeModeCaller,
+                _surface: CodeModeSurface,
+                _scope: &ToolScope,
+                _include_snippets: bool,
+                _use_cache: bool,
+            ) -> Result<ToolsRender, ToolError> {
+                Ok(ToolsRender {
+                    fingerprint: "recording-call".to_string(),
+                    embedding_fingerprint: "recording-call".to_string(),
+                    entries: Arc::from([]),
+                    catalog_json: Arc::from("[]"),
+                    serialized_size: 2,
+                })
+            }
+
+            async fn call_tool(
+                &self,
+                id: &str,
+                _params: Value,
+                _caller: &CodeModeCaller,
+                _surface: CodeModeSurface,
+                _scope: &ToolScope,
+                ctx: ExecCtx,
+            ) -> Result<ToolCallOutcome, CodeModeCallError> {
+                let trace_id = ctx
+                    .trace_context
+                    .as_ref()
+                    .map(|trace| trace.trace_id().to_hex());
+                self.recorded.lock().expect("recorded mutex").insert(
+                    id.to_string(),
+                    (
+                        ctx.call_ordinal,
+                        ctx.execution_id.as_deref().map(ToString::to_string),
+                        trace_id,
+                    ),
+                );
+                if id == "stub::slow" {
+                    tokio::time::sleep(Duration::from_millis(75)).await;
+                }
+                Ok(ToolCallOutcome {
+                    value: json!({"id": id}),
+                    ui: None,
+                })
+            }
+
+            async fn resolve_snippet(
+                &self,
+                _name: &str,
+                _input: Value,
+            ) -> Result<ResolvedSnippet, ToolError> {
+                Err(ToolError::Sdk {
+                    sdk_kind: "not_found".to_string(),
+                    message: "RecordingCallHost exposes no snippets".to_string(),
+                })
+            }
+
+            async fn semantic_rank(
+                &self,
+                _query: String,
+                _top_k: usize,
+                _kinds: &[crate::CodeModeCatalogKind],
+                _caller: &CodeModeCaller,
+                _surface: CodeModeSurface,
+                _scope: &ToolScope,
+            ) -> Result<Vec<(String, f32)>, ToolError> {
+                Ok(Vec::new())
+            }
+
+            async fn config(&self) -> CodeModeConfig {
+                CodeModeConfig::default()
+            }
+
+            fn runner_pool(&self) -> &RunnerPool {
+                &self.pool
+            }
+
+            fn openapi_registry(&self) -> labby_openapi::OpenApiRegistry {
+                labby_openapi::OpenApiRegistry::default()
+            }
+
+            fn openapi_http_client(&self) -> reqwest::Client {
+                labby_openapi::http::build_dispatch_client().expect("test dispatch client")
+            }
+        }
+
+        let script = r#"
+exec 3<&0
+cat <&3 >/dev/null &
+printf '{"type":"tool_call","seq":10,"id":"stub::slow","params":{}}
+'
+printf '{"type":"tool_call","seq":11,"id":"stub::fast","params":{}}
+'
+sleep 1
+printf '{"type":"done"}
+'
+sleep 3600
+"#;
+        let recorded: Arc<StdMutex<Recorded>> = Arc::new(StdMutex::new(HashMap::new()));
+        let host = RecordingCallHost {
+            pool: RunnerPool::from_env().expect("test process must expose current executable"),
+            recorded: Arc::clone(&recorded),
+        };
+        let broker = CodeModeBroker::new(Some(&host));
+        let mut cfg = test_config(Duration::from_secs(30));
+        cfg.execution_id = Some(Arc::<str>::from("exec_fanout"));
+        cfg.trace_context = Some(Arc::new(TraceContext::fresh(0).expect("trace context")));
+        let expected_trace_id = cfg
+            .trace_context
+            .as_ref()
+            .expect("trace context")
+            .trace_id()
+            .to_hex();
+
+        let mut runner = PooledRunner::spawn_stub_script(script).expect("spawn script stub");
+        let outcome = broker
+            .drive_runner(&mut runner, &cfg, tokio::time::Instant::now() + cfg.timeout)
+            .await;
+        let response = match outcome {
+            DriveOutcome::Completed(response) => response,
+            DriveOutcome::ExecutionError(err)
+            | DriveOutcome::RunnerUnavailableBeforeActivity(err)
+            | DriveOutcome::RunnerUnhealthy(err) => {
+                panic!("run must complete, got error kind `{}`", err.kind())
+            }
+        };
+
+        assert_eq!(
+            response
+                .calls
+                .iter()
+                .map(|call| call.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["stub::slow", "stub::fast"],
+            "final calls remain in runner seq order even when fast settles first"
+        );
+        let recorded = recorded.lock().expect("recorded mutex");
+        for (ordinal, call) in response.calls.iter().enumerate() {
+            let (seen_ordinal, execution_id, trace_id) =
+                recorded.get(&call.id).expect("recorded host call");
+            assert_eq!(*seen_ordinal, Some(ordinal as u64));
+            assert_eq!(execution_id.as_deref(), Some("exec_fanout"));
+            assert_eq!(trace_id.as_deref(), Some(expected_trace_id.as_str()));
+        }
     }
 
     #[cfg(not(windows))]

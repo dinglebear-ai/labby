@@ -30,6 +30,7 @@
 
 use std::{future::Future, pin::Pin, sync::Arc, time::Instant};
 
+use labby_gateway::trace_context::inject_outbound_tool_trace;
 use labby_gateway::upstream::pool::{CapabilityCallError, TaskRouteAuthorization, UpstreamPool};
 use labby_gateway::upstream::tool_error::{mcp_error_data_kind, safety_hints_from_annotations};
 use labby_runtime::agent_error::sanitize_error_text;
@@ -53,6 +54,7 @@ use crate::mcp::result_format::{
     tool_error_envelope,
 };
 use crate::mcp::server::{LabMcpServer, LabRequestCancellation};
+use crate::mcp::trace_context::{request_trace_context, resolve_inbound_trace};
 use crate::mcp::upstream::{normalize_upstream_result, qualified_upstream_tool};
 
 use crate::config::UpstreamConfig;
@@ -412,6 +414,24 @@ impl LabMcpServer {
                 None,
             ));
         }
+        let request_trace = match request_trace_context(&context.extensions) {
+            Some(trace) => trace,
+            None => {
+                resolve_inbound_trace(upstream_request.meta.as_ref())
+                    .map_err(|error| {
+                        tracing::error!(
+                            surface = "mcp",
+                            service = "trace_context",
+                            action = "upstream.resolve",
+                            error = %error,
+                            "failed to establish upstream request trace context"
+                        );
+                        ErrorData::internal_error("request tracing could not be initialized", None)
+                    })?
+                    .context
+            }
+        };
+
         // Upstream tools don't use lab's action/params wrapper — they receive
         // raw arguments. Use "call_tool" as the action label for logging/envelopes.
         let upstream_action = "call_tool";
@@ -525,7 +545,25 @@ impl LabMcpServer {
                 "proxying to upstream"
             );
 
-            let upstream_params = prepare_upstream_tool_request(upstream_request.clone(), service);
+            let mut upstream_params =
+                prepare_upstream_tool_request(upstream_request.clone(), service);
+            let outbound_trace =
+                inject_outbound_tool_trace(&mut upstream_params, request_trace.as_ref(), None)
+                    .map_err(|error| {
+                        tracing::error!(
+                            surface = "mcp",
+                            service = "trace_context",
+                            action = "upstream.inject",
+                            error = %error,
+                            "failed to generate outbound upstream trace context"
+                        );
+                        ErrorData::internal_error("request tracing could not be initialized", None)
+                    })?;
+            let outbound_span = tracing::info_span!(
+                "mcp.upstream",
+                trace_id = %outbound_trace.trace_id().to_hex(),
+                span_id = %outbound_trace.span_id().to_hex(),
+            );
 
             // The 2026-07-28 protocol declares client capabilities per request.
             // Relay only when this request carries capabilities that the normal
@@ -581,7 +619,8 @@ impl LabMcpServer {
                         capabilities,
                         self.request_subject(context).map(str::to_owned),
                         self.route_scope.task_authorization(),
-                    );
+                    )
+                    .instrument(outbound_span.clone());
                     tokio::pin!(call);
                     tokio::select! {
                         // At the deadline the timeout classification wins over
@@ -617,6 +656,7 @@ impl LabMcpServer {
                         upstream_params,
                         Some(&relay_cancellation_token(context)),
                     )
+                    .instrument(outbound_span.clone())
                     .await
                     .map(|result| result.map_err(UpstreamCallFailure::classified)),
             };
@@ -842,8 +882,28 @@ impl LabMcpServer {
                     .arguments
                     .as_ref()
                     .map_or(0, estimate_tokens_args);
-                let upstream_params =
+                let mut upstream_params =
                     prepare_upstream_tool_request(upstream_request.clone(), service);
+                let outbound_trace =
+                    inject_outbound_tool_trace(&mut upstream_params, request_trace.as_ref(), None)
+                        .map_err(|error| {
+                            tracing::error!(
+                                surface = "mcp",
+                                service = "trace_context",
+                                action = "upstream.inject",
+                                error = %error,
+                                "failed to generate subject-scoped upstream trace context"
+                            );
+                            ErrorData::internal_error(
+                                "request tracing could not be initialized",
+                                None,
+                            )
+                        })?;
+                let outbound_span = tracing::info_span!(
+                    "mcp.upstream",
+                    trace_id = %outbound_trace.trace_id().to_hex(),
+                    span_id = %outbound_trace.span_id().to_hex(),
+                );
                 // Relay path: for OAuth/subject-scoped upstreams, route
                 // over a dedicated relay-handled connection so the upstream's
                 // MRTR input requirements are preserved for the downstream
@@ -877,6 +937,7 @@ impl LabMcpServer {
                             self.request_subject(context).map(str::to_owned),
                             self.route_scope.task_authorization(),
                         )
+                        .instrument(outbound_span.clone())
                         .await
                         {
                             Some(result) => result.map_err(UpstreamCallFailure::classified),
@@ -895,6 +956,7 @@ impl LabMcpServer {
                             upstream_params,
                             Some(&relay_cancellation_token(context)),
                         )
+                        .instrument(outbound_span.clone())
                         .await
                         .map_err(UpstreamCallFailure::classified)
                     };
@@ -1259,16 +1321,18 @@ mod tests {
 
     mod proxy_health {
         use std::pin::Pin;
-        use std::sync::Arc;
+        use std::sync::{Arc, Mutex};
         use std::time::{Duration, Instant};
 
         use futures::future::BoxFuture;
         use rmcp::model::{
             CallToolRequestParams, CallToolResponse, CallToolResult, ErrorData, NumberOrString,
-            ServerCapabilities, ServerInfo, Tool,
+            RequestMetaObject, ServerCapabilities, ServerInfo, Tool,
         };
         use rmcp::{RoleClient, RoleServer, ServerHandler, ServiceExt};
-        use serde_json::Value;
+        use serde_json::{Value, json};
+
+        use labby_primitives::trace::TraceParent;
 
         use crate::dispatch::upstream::pool::{
             InProcessConnector, InProcessRegistration, UpstreamConnection, UpstreamPool,
@@ -1299,6 +1363,30 @@ mod tests {
                     "unknown field `since`, expected project, tool, limit",
                     None,
                 ))
+            }
+        }
+
+        /// Upstream that records the actual request metadata received after the
+        /// gateway has applied its child trace context.
+        struct TraceRecordingServer {
+            seen_meta: Arc<Mutex<Option<RequestMetaObject>>>,
+        }
+
+        impl ServerHandler for TraceRecordingServer {
+            fn get_info(&self) -> ServerInfo {
+                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            }
+
+            async fn call_tool(
+                &self,
+                params: CallToolRequestParams,
+                _: rmcp::service::RequestContext<RoleServer>,
+            ) -> Result<CallToolResponse, ErrorData> {
+                *self
+                    .seen_meta
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = params.meta;
+                Ok(CallToolResult::success(vec![]).into())
             }
         }
 
@@ -1456,9 +1544,10 @@ mod tests {
             }
         }
 
-        /// Drive the real upstream-proxy tail and return the completed error
-        /// envelope (`structured_content`).
-        async fn call_through_proxy(server: LabMcpServer) -> Value {
+        async fn call_through_proxy_response(
+            server: LabMcpServer,
+            request: CallToolRequestParams,
+        ) -> CallToolResponse {
             let resolved = PreResolvedUpstreamTool {
                 upstream_name: UPSTREAM_NAME.to_string(),
                 tool: UpstreamTool {
@@ -1478,12 +1567,12 @@ mod tests {
                 NumberOrString::String(Arc::from("proxy-health-test")),
                 running.peer().clone(),
             );
-            let response = running
+            running
                 .service()
                 .call_tool_upstream_impl(
                     TOOL_NAME,
                     "call_tool",
-                    CallToolRequestParams::new(TOOL_NAME),
+                    request,
                     Some(resolved),
                     Instant::now(),
                     "test-subject",
@@ -1491,7 +1580,14 @@ mod tests {
                     &context,
                 )
                 .await
-                .expect("proxy tail returns a result envelope");
+                .expect("proxy tail returns a result envelope")
+        }
+
+        /// Drive the real upstream-proxy tail and return the completed error
+        /// envelope (`structured_content`).
+        async fn call_through_proxy(server: LabMcpServer) -> Value {
+            let response =
+                call_through_proxy_response(server, CallToolRequestParams::new(TOOL_NAME)).await;
             let CallToolResponse::Complete(result) = response else {
                 panic!("expected a completed result from the proxy tail");
             };
@@ -1499,6 +1595,58 @@ mod tests {
             result
                 .structured_content
                 .expect("error envelope in structured_content")
+        }
+
+        #[tokio::test]
+        async fn proxy_derives_sep414_child_and_preserves_unrelated_meta() {
+            const INBOUND: &str = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+            let seen_meta = Arc::new(Mutex::new(None));
+            let upstream = TraceRecordingServer {
+                seen_meta: Arc::clone(&seen_meta),
+            };
+            let pool = pool_with_upstream(in_process_connection(upstream).await, None).await;
+            let server = proxy_test_server(pool).await;
+
+            let mut meta = RequestMetaObject::new();
+            meta.set_traceparent(INBOUND);
+            meta.set_tracestate("vendor=value");
+            meta.set_baggage("userId=alice");
+            meta.insert("custom".to_string(), json!({"keep": true}));
+            let mut request = CallToolRequestParams::new(TOOL_NAME);
+            request.meta = Some(meta);
+
+            let response = call_through_proxy_response(server, request).await;
+            let CallToolResponse::Complete(result) = response else {
+                panic!("expected a completed result from the proxy tail");
+            };
+            assert_ne!(result.is_error, Some(true));
+
+            let meta = seen_meta
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+                .expect("upstream received request metadata");
+            let inbound = TraceParent::parse(INBOUND).expect("valid inbound traceparent");
+            let outbound = TraceParent::parse(
+                meta.get_traceparent()
+                    .expect("gateway injected child traceparent"),
+            )
+            .expect("valid outbound traceparent");
+
+            assert_eq!(outbound.trace_id(), inbound.trace_id());
+            assert_ne!(
+                outbound.parent_id(),
+                inbound.parent_id(),
+                "gateway must derive a fresh child span for the upstream operation"
+            );
+            assert_eq!(meta.get_tracestate(), Some("vendor=value"));
+            assert_eq!(meta.get_baggage(), Some("userId=alice"));
+            assert_eq!(meta.get("custom"), Some(&json!({"keep": true})));
+            assert!(
+                meta.get(labby_primitives::trace::MCP_LABBY_TRACE_META_KEY)
+                    .is_none(),
+                "direct calls do not invent Code Mode correlation"
+            );
         }
 
         /// (a) A valid MCP application error through the proxy must leave the
