@@ -261,7 +261,10 @@ impl LabMcpServer {
                 ToolAccess::Direct
             };
             let auth = auth_context_from_extensions(&context.extensions);
-            let subject = oauth_upstream_subject_for_request(auth, self.request_subject(context))
+            let subject = auth
+                .and_then(|auth| {
+                    oauth_upstream_subject_for_request(Some(auth), self.request_subject(context))
+                })
                 .map(|subject| subject.into_owned());
             let scope = match self.route_scope.allowed_upstreams() {
                 None => SkillCallerScope::root(subject, access),
