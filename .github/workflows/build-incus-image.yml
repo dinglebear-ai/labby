@@ -152,6 +152,7 @@ jobs:
         run: |
           set -euo pipefail
           (cd dist && sha256sum --check --strict SHA256SUMS)
+          (cd dist && sha256sum --check --strict labby-incus-x86_64-unknown-linux-gnu.tar.xz.sha256)
           # The hosted builder writes SHA256SUMS with `find .`, so names start
           # with "./".
           asset_sha256=$(awk '{ name = $2; sub(/^\.\//, "", name) } name == "labby-incus-x86_64-unknown-linux-gnu.tar.xz" { print $1 }' dist/SHA256SUMS)
@@ -172,6 +173,7 @@ jobs:
           verify_dir="$(mktemp -d)"
           gh release download "$RELEASE_TAG" --dir "$verify_dir"
           (cd "$verify_dir" && sha256sum --check --strict SHA256SUMS)
+          (cd "$verify_dir" && sha256sum --check --strict labby-incus-x86_64-unknown-linux-gnu.tar.xz.sha256)
           python3 scripts/ci/verify-incus-image-manifest.py "$verify_dir"
       - name: Attest independent image release assets
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
