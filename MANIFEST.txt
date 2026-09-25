@@ -173,3 +173,4 @@ NOTES
 The archive commit graph preserves every pre-archive unpublished branch tip, every orphan detached HEAD, and every dirty worktree snapshot.
 Dirty snapshots were created using temporary Git index files; source worktrees and real indexes were not modified.
 The labby-incus-latest local tag differs from the remote tag and blocked a tag-inclusive fetch; branch refs were refreshed separately.
+POST_AUDIT_ROOT_SNAPSHOT	fe4faa1697eb7093bd60dc6dc2a909bd0d16c824	head=9b1fdd2e3b3753782409d2fdd2ccf202a6e68724	path=/Users/jmagar/workspace/labby
