@@ -17,9 +17,9 @@ use rmcp::RoleServer;
 use rmcp::model::{CustomRequest, CustomResult, ErrorData};
 use rmcp::service::RequestContext;
 
-use crate::mcp::context::{
-    auth_context_from_extensions, code_mode_read_scope_allowed, oauth_upstream_subject_for_request,
-};
+use crate::mcp::context::{auth_context_from_extensions, code_mode_read_scope_allowed};
+#[cfg(feature = "gateway")]
+use crate::mcp::context::oauth_upstream_subject_for_request;
 use crate::mcp::server::LabMcpServer;
 use crate::skills::aggregate::ToolAccess;
 #[cfg(test)]
