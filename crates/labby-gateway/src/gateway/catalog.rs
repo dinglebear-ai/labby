@@ -244,6 +244,14 @@ pub const ACTIONS: &[ActionSpec] = &[
         ],
     },
     ActionSpec {
+        name: "gateway.enrich.status",
+        description: "Inspect approved Code Mode hints, provider activity counters, concurrency, hard caps, and automatic enrichment policy",
+        destructive: false,
+        requires_admin: true,
+        returns: "GatewayEnrichmentStatusView",
+        params: &[],
+    },
+    ActionSpec {
         name: "gateway.enrich.apply",
         description: "Persist an operator-approved Code Mode upstream hint after hash validation",
         destructive: false,

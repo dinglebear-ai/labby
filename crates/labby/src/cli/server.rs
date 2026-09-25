@@ -157,6 +157,15 @@ impl CodeArgs {
         match self.command {
             CodeCommand::Core(command) => GatewayCommand::Code(GatewayCodeArgs { command }),
             CodeCommand::Hints(args) => GatewayCommand::Enrich(match args.command {
+                HintCommand::Status => GatewayEnrichArgs {
+                    command: Some(GatewayEnrichCommand::Status),
+                    upstreams: Vec::new(),
+                    all: false,
+                    provider: "deterministic".to_string(),
+                    max_upstreams: None,
+                    timeout_ms: None,
+                    yes: false,
+                },
                 HintCommand::Preview(args) => args,
                 HintCommand::Apply(args) => GatewayEnrichArgs {
                     command: Some(GatewayEnrichCommand::Apply(args)),
@@ -180,6 +189,8 @@ pub struct HintArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum HintCommand {
+    /// Show approved hints, provider counters, concurrency, and hard enrichment limits.
+    Status,
     /// Generate and preview metadata suggestions before applying them.
     Preview(GatewayEnrichArgs),
     /// Apply an explicitly approved, hash-bound metadata suggestion.

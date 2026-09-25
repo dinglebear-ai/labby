@@ -42,6 +42,39 @@ async fn enrich_preview_returns_suggestion_without_persisting_config() {
 }
 
 #[tokio::test]
+async fn enrichment_status_reports_hints_limits_and_provider_counters() {
+    let mut github = fixture_http_upstream("github");
+    github.code_mode_hint = Some("Repository and issue operations".to_string());
+    let (manager, _pool) =
+        code_mode_manager_with_upstreams(vec![github, fixture_http_upstream("hidden")]).await;
+
+    let status = manager
+        .enrichment_status_scoped(GatewayEnrichmentScope {
+            route_visible_upstreams: Some(std::collections::BTreeSet::from(["github".to_string()])),
+            oauth_subject: None,
+        })
+        .await;
+
+    assert_eq!(status.visible_upstream_count, 1);
+    assert_eq!(status.hinted_upstream_count, 1);
+    assert_eq!(status.hints.len(), 1);
+    assert_eq!(status.hints[0].upstream, "github");
+    assert_eq!(
+        status.hints[0].hint.as_deref(),
+        Some("Repository and issue operations")
+    );
+    assert_eq!(status.providers.len(), 3);
+    assert_eq!(status.limits.max_manual_upstreams, MAX_MANUAL_UPSTREAMS);
+    assert_eq!(status.limits.provider_concurrency, 2);
+    assert_eq!(status.limits.provider_rate_limit_per_minute, 6);
+    assert_eq!(
+        status.limits.automatic_provider,
+        GatewayEnrichmentProvider::Deterministic
+    );
+    assert_eq!(status.limits.automatic_max_upstreams, 1);
+}
+
+#[tokio::test]
 async fn enrich_preview_requires_explicit_selection_or_all() {
     let (manager, _pool) =
         code_mode_manager_with_upstreams(vec![fixture_http_upstream("github")]).await;

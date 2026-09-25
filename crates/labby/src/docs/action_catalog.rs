@@ -30,6 +30,8 @@ const CLI_ACTION_BINDINGS: &[(&str, &str)] = &[
     #[cfg(feature = "gateway")]
     ("gateway", "gateway.enrich.preview"),
     #[cfg(feature = "gateway")]
+    ("gateway", "gateway.enrich.status"),
+    #[cfg(feature = "gateway")]
     ("gateway", "gateway.get"),
     #[cfg(feature = "gateway")]
     ("gateway", "gateway.import"),

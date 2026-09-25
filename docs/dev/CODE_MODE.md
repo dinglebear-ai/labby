@@ -140,6 +140,25 @@ once (a one-time `tools/list_changed`), resets on any config change, and is
 dropped only when a healthy upstream shows the tool is gone or no longer
 read-only.
 
+### Upstream hint enrichment and visibility
+
+`code_mode_hint` is operator-approved, model-facing display metadata. It changes neither routing nor authorization. Add/import automatically runs one bounded **deterministic** preview for the new upstream; that automatic path never invokes Claude or Codex and never persists the proposal.
+
+Provider-backed enrichment is explicit:
+
+```bash
+labby code hints status
+labby code hints preview --upstream github
+labby code hints preview --upstream github --provider codex
+labby code hints preview --all --provider claude --max-upstreams 10
+```
+
+One preview request produces at most one Claude/Codex subprocess invocation for the whole collected batch. Collection is capped at 25 upstreams, 100 tools/upstream, 300 tools total, 50 resources/upstream, 50 prompts/upstream, and 64 KiB provider input. Provider subprocess concurrency is 2, and process-backed Claude/Codex previews share a strict sliding-window limit of 6 launches per 60 seconds; `labby code hints status` reports that explicitly along with provider run counters, waiting/in-flight counts, approved hints, and all hard caps.
+
+Claude runs locally with `--print --output-format json --safe-mode --bare --tools "" --permission-mode plan --no-session-persistence --max-budget-usd 0.10`. Codex runs with `exec --sandbox read-only --ask-for-approval never --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check -`. Both get a cleared environment, temporary HOME/XDG directories, sanitized metadata, bounded output, and only the provider credential environment variables needed by that CLI.
+
+Every provider execution emits structured `gateway.enrich.provider` start/finish events, plus an `acquired` event for Claude/Codex after a provider slot is obtained. Applying a proposal is a separate hash-bound operation and fails with `stale_suggestion` if the upstream metadata changed.
+
 ### Capability catalog
 
 Code Mode discovery is represented by a source-neutral `CatalogDescriptor`,

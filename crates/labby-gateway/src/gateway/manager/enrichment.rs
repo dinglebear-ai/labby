@@ -2,16 +2,22 @@ use labby_runtime::catalog_notify::SOURCE_GATEWAY_ENRICH_HINT;
 use labby_runtime::error::ToolError;
 
 use crate::gateway::enrichment::collector::{
-    EnrichmentInputStats, SelectedUpstream, UpstreamEnrichmentInput, collect_enrichment_inputs,
-    select_upstreams_for_preview,
+    EnrichmentInputStats, MAX_MANUAL_UPSTREAMS, MAX_PROMPTS_PER_UPSTREAM, MAX_PROVIDER_INPUT_BYTES,
+    MAX_RESOURCES_PER_UPSTREAM, MAX_TOOLS_PER_UPSTREAM, MAX_TOTAL_TOOLS, SelectedUpstream,
+    UpstreamEnrichmentInput, collect_enrichment_inputs, select_upstreams_for_preview,
 };
-use crate::gateway::enrichment::provider::{ProviderRunner, run_provider_preview};
+use crate::gateway::enrichment::provider::{
+    DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS,
+    PROVIDER_CONCURRENCY, PROVIDER_RATE_LIMIT_PER_MINUTE, ProviderRunner,
+    in_flight_provider_runs, provider_metrics, run_provider_preview, waiting_provider_runs,
+};
 use crate::gateway::params::{
     GatewayEnrichApplyParams, GatewayEnrichPreviewParams, GatewayEnrichmentScope,
 };
 use crate::gateway::types::{
-    GatewayCatalogDiff, GatewayEnrichmentPreviewStatsView, GatewayEnrichmentPreviewView,
-    GatewayEnrichmentProvider, GatewayHintApplyView, GatewayHintProposalStatus,
+    GatewayCatalogDiff, GatewayEnrichmentHintView, GatewayEnrichmentLimitsView,
+    GatewayEnrichmentPreviewStatsView, GatewayEnrichmentPreviewView, GatewayEnrichmentProvider,
+    GatewayEnrichmentStatusView, GatewayHintApplyView, GatewayHintProposalStatus,
     GatewayHintProposalView,
 };
 
@@ -67,6 +73,60 @@ impl GatewayManager {
             stats: collected.stats.into(),
             proposals,
         })
+    }
+
+    pub(crate) async fn enrichment_status_scoped(
+        &self,
+        scope: GatewayEnrichmentScope,
+    ) -> GatewayEnrichmentStatusView {
+        let cfg = self.current_config().await;
+        let mut hints = cfg
+            .upstream
+            .into_iter()
+            .filter(|upstream| {
+                scope
+                    .route_visible_upstreams
+                    .as_ref()
+                    .is_none_or(|visible| visible.contains(&upstream.name))
+            })
+            .map(|upstream| GatewayEnrichmentHintView {
+                upstream: upstream.name,
+                enabled: upstream.enabled,
+                hint: upstream
+                    .code_mode_hint
+                    .as_deref()
+                    .and_then(labby_runtime::gateway_config::normalize_code_mode_hint),
+            })
+            .collect::<Vec<_>>();
+        hints.sort_by(|left, right| left.upstream.cmp(&right.upstream));
+        let hinted_upstream_count = hints.iter().filter(|entry| entry.hint.is_some()).count();
+        let visible_upstream_count = hints.len();
+
+        GatewayEnrichmentStatusView {
+            hints,
+            hinted_upstream_count,
+            visible_upstream_count,
+            providers: provider_metrics(),
+            waiting_provider_runs: waiting_provider_runs(),
+            in_flight_provider_runs: in_flight_provider_runs(),
+            limits: GatewayEnrichmentLimitsView {
+                max_manual_upstreams: MAX_MANUAL_UPSTREAMS,
+                max_tools_per_upstream: MAX_TOOLS_PER_UPSTREAM,
+                max_total_tools: MAX_TOTAL_TOOLS,
+                max_resources_per_upstream: MAX_RESOURCES_PER_UPSTREAM,
+                max_prompts_per_upstream: MAX_PROMPTS_PER_UPSTREAM,
+                max_provider_input_bytes: MAX_PROVIDER_INPUT_BYTES,
+                provider_concurrency: PROVIDER_CONCURRENCY,
+                default_timeout_ms: DEFAULT_TIMEOUT_MS,
+                min_timeout_ms: MIN_TIMEOUT_MS,
+                max_timeout_ms: MAX_TIMEOUT_MS,
+                max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
+                provider_rate_limit_per_minute: PROVIDER_RATE_LIMIT_PER_MINUTE as u64,
+                automatic_provider: GatewayEnrichmentProvider::Deterministic,
+                automatic_timeout_ms: 2_000,
+                automatic_max_upstreams: 1,
+            },
+        }
     }
 
     pub async fn apply_enrichment(

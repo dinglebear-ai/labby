@@ -349,6 +349,8 @@ pub struct GatewayEnrichArgs {
 #[derive(Debug, Subcommand)]
 pub enum GatewayEnrichCommand {
     #[command(skip)]
+    Status,
+    #[command(skip)]
     Apply(GatewayEnrichApplyArgs),
 }
 

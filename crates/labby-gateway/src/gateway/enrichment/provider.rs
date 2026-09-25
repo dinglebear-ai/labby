@@ -1,9 +1,10 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 #[cfg(test)]
 use std::path::PathBuf;
 use std::path::{Path, PathBuf as StdPathBuf};
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use labby_runtime::error::ToolError;
 use process_wrap::tokio::ChildWrapper;
@@ -17,17 +18,118 @@ use tokio::sync::Semaphore;
 use crate::gateway::enrichment::collector::{UpstreamEnrichmentInput, sanitize_metadata_text};
 use crate::gateway::enrichment::summarizer;
 use crate::gateway::types::{
-    GatewayEnrichmentProvider, GatewayHintProposalStatus, GatewayHintProposalView,
+    GatewayEnrichmentProvider, GatewayEnrichmentProviderMetricsView, GatewayHintProposalStatus,
+    GatewayHintProposalView,
 };
 
-const DEFAULT_TIMEOUT_MS: u64 = 15_000;
-const DEFAULT_MAX_OUTPUT_BYTES: usize = 32 * 1024;
-const MIN_TIMEOUT_MS: u64 = 100;
-const MAX_TIMEOUT_MS: u64 = 60_000;
-const PROVIDER_CONCURRENCY: usize = 2;
+pub(crate) const DEFAULT_TIMEOUT_MS: u64 = 15_000;
+pub(crate) const DEFAULT_MAX_OUTPUT_BYTES: usize = 32 * 1024;
+pub(crate) const MIN_TIMEOUT_MS: u64 = 100;
+pub(crate) const MAX_TIMEOUT_MS: u64 = 60_000;
+pub(crate) const PROVIDER_CONCURRENCY: usize = 2;
+pub(crate) const PROVIDER_RATE_LIMIT_PER_MINUTE: usize = 6;
+const PROVIDER_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 const PROVIDER_STDERR_PREVIEW_BYTES: usize = 512;
 
 static PROVIDER_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
+static PROVIDER_RATE_LIMITER: OnceLock<Mutex<ProviderRateLimiter>> = OnceLock::new();
+static PROVIDER_WAITING: AtomicU64 = AtomicU64::new(0);
+static PROVIDER_IN_FLIGHT: AtomicU64 = AtomicU64::new(0);
+
+struct ProviderCounters {
+    started: AtomicU64,
+    succeeded: AtomicU64,
+    failed: AtomicU64,
+}
+
+impl ProviderCounters {
+    const fn new() -> Self {
+        Self {
+            started: AtomicU64::new(0),
+            succeeded: AtomicU64::new(0),
+            failed: AtomicU64::new(0),
+        }
+    }
+
+    fn snapshot(
+        &self,
+        provider: GatewayEnrichmentProvider,
+    ) -> GatewayEnrichmentProviderMetricsView {
+        GatewayEnrichmentProviderMetricsView {
+            provider,
+            started: self.started.load(Ordering::Relaxed),
+            succeeded: self.succeeded.load(Ordering::Relaxed),
+            failed: self.failed.load(Ordering::Relaxed),
+        }
+    }
+}
+
+static DETERMINISTIC_COUNTERS: ProviderCounters = ProviderCounters::new();
+static CLAUDE_COUNTERS: ProviderCounters = ProviderCounters::new();
+static CODEX_COUNTERS: ProviderCounters = ProviderCounters::new();
+
+#[derive(Debug, Default)]
+struct ProviderRateLimiter {
+    starts: VecDeque<Instant>,
+}
+
+impl ProviderRateLimiter {
+    fn admit(&mut self, now: Instant) -> bool {
+        while self
+            .starts
+            .front()
+            .is_some_and(|started| now.duration_since(*started) >= PROVIDER_RATE_LIMIT_WINDOW)
+        {
+            self.starts.pop_front();
+        }
+        if self.starts.len() >= PROVIDER_RATE_LIMIT_PER_MINUTE {
+            return false;
+        }
+        self.starts.push_back(now);
+        true
+    }
+}
+
+fn admit_process_provider_run() -> Result<(), ToolError> {
+    let limiter = PROVIDER_RATE_LIMITER.get_or_init(|| Mutex::new(ProviderRateLimiter::default()));
+    let mut limiter = limiter.lock().map_err(|_| ToolError::Sdk {
+        sdk_kind: "provider_unavailable".to_string(),
+        message: "gateway enrichment provider rate limiter is unavailable".to_string(),
+    })?;
+    if limiter.admit(Instant::now()) {
+        return Ok(());
+    }
+    Err(ToolError::Sdk {
+        sdk_kind: "rate_limited".to_string(),
+        message: format!(
+            "gateway enrichment provider rate limit exceeded ({PROVIDER_RATE_LIMIT_PER_MINUTE} launches per 60 seconds)"
+        ),
+    })
+}
+
+fn provider_counters(provider: GatewayEnrichmentProvider) -> &'static ProviderCounters {
+    match provider {
+        GatewayEnrichmentProvider::Deterministic => &DETERMINISTIC_COUNTERS,
+        GatewayEnrichmentProvider::Claude => &CLAUDE_COUNTERS,
+        GatewayEnrichmentProvider::Codex => &CODEX_COUNTERS,
+    }
+}
+
+pub(crate) fn provider_metrics() -> Vec<GatewayEnrichmentProviderMetricsView> {
+    vec![
+        DETERMINISTIC_COUNTERS.snapshot(GatewayEnrichmentProvider::Deterministic),
+        CLAUDE_COUNTERS.snapshot(GatewayEnrichmentProvider::Claude),
+        CODEX_COUNTERS.snapshot(GatewayEnrichmentProvider::Codex),
+    ]
+}
+
+pub(crate) fn waiting_provider_runs() -> u64 {
+    PROVIDER_WAITING.load(Ordering::Relaxed)
+}
+
+pub(crate) fn in_flight_provider_runs() -> u64 {
+    PROVIDER_IN_FLIGHT.load(Ordering::Relaxed)
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct ProviderRunner {
@@ -53,27 +155,132 @@ pub(crate) async fn run_provider_preview(
     inputs: &[UpstreamEnrichmentInput],
     runner: &ProviderRunner,
 ) -> Result<Vec<GatewayHintProposalView>, ToolError> {
-    match provider {
+    let counters = provider_counters(provider);
+    counters.started.fetch_add(1, Ordering::Relaxed);
+    let started = Instant::now();
+    let tool_count = inputs
+        .iter()
+        .map(|input| input.tool_names.len())
+        .sum::<usize>();
+    let resource_count = inputs
+        .iter()
+        .map(|input| input.resource_count)
+        .sum::<usize>();
+    let prompt_count = inputs.iter().map(|input| input.prompt_count).sum::<usize>();
+    tracing::info!(
+        surface = "dispatch",
+        service = "gateway",
+        action = "gateway.enrich.provider",
+        event = "start",
+        provider = ?provider,
+        upstream_count = inputs.len(),
+        tool_count,
+        resource_count,
+        prompt_count,
+        timeout_ms = provider_timeout(runner.timeout_ms).as_millis(),
+        max_output_bytes = runner.max_output_bytes,
+        process_backed = !matches!(provider, GatewayEnrichmentProvider::Deterministic),
+        provider_concurrency = PROVIDER_CONCURRENCY,
+        provider_rate_limit_per_minute = PROVIDER_RATE_LIMIT_PER_MINUTE,
+        "gateway enrichment provider run started"
+    );
+
+    let result = match provider {
         GatewayEnrichmentProvider::Deterministic => Ok(summarizer::summarize_batch(inputs)),
         GatewayEnrichmentProvider::Claude | GatewayEnrichmentProvider::Codex => {
-            let semaphore = PROVIDER_SEMAPHORE
-                .get_or_init(|| Arc::new(Semaphore::new(PROVIDER_CONCURRENCY)))
-                .clone();
-            let timeout = provider_timeout(runner.timeout_ms);
-            let _permit = tokio::time::timeout(timeout, semaphore.acquire_owned())
-                .await
-                .map_err(|_| ToolError::Sdk {
-                    sdk_kind: "provider_timeout".to_string(),
-                    message: "gateway enrichment provider timed out".to_string(),
-                })?
-                .map_err(|_| ToolError::Sdk {
-                    sdk_kind: "provider_unavailable".to_string(),
-                    message: "gateway enrichment provider concurrency limiter is closed"
-                        .to_string(),
-                })?;
-            run_process_provider(provider, inputs, runner).await
+            run_process_provider_bounded(provider, inputs, runner).await
+        }
+    };
+
+    match &result {
+        Ok(proposals) => {
+            counters.succeeded.fetch_add(1, Ordering::Relaxed);
+            tracing::info!(
+                surface = "dispatch",
+                service = "gateway",
+                action = "gateway.enrich.provider",
+                event = "finish",
+                provider = ?provider,
+                outcome = "ok",
+                proposal_count = proposals.len(),
+                elapsed_ms = started.elapsed().as_millis(),
+                "gateway enrichment provider run finished"
+            );
+        }
+        Err(err) => {
+            counters.failed.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(
+                surface = "dispatch",
+                service = "gateway",
+                action = "gateway.enrich.provider",
+                event = "finish",
+                provider = ?provider,
+                outcome = "error",
+                kind = %err.kind(),
+                elapsed_ms = started.elapsed().as_millis(),
+                waiting_provider_runs = PROVIDER_WAITING.load(Ordering::Relaxed),
+                in_flight_provider_runs = PROVIDER_IN_FLIGHT.load(Ordering::Relaxed),
+                "gateway enrichment provider run failed"
+            );
         }
     }
+
+    result
+}
+
+async fn run_process_provider_bounded(
+    provider: GatewayEnrichmentProvider,
+    inputs: &[UpstreamEnrichmentInput],
+    runner: &ProviderRunner,
+) -> Result<Vec<GatewayHintProposalView>, ToolError> {
+    #[cfg(test)]
+    let enforce_rate_limit = runner.program_override.is_none();
+    #[cfg(not(test))]
+    let enforce_rate_limit = true;
+    if enforce_rate_limit {
+        admit_process_provider_run()?;
+    }
+    let semaphore = PROVIDER_SEMAPHORE
+        .get_or_init(|| Arc::new(Semaphore::new(PROVIDER_CONCURRENCY)))
+        .clone();
+    let timeout = provider_timeout(runner.timeout_ms);
+    PROVIDER_WAITING.fetch_add(1, Ordering::Relaxed);
+    let wait_started = Instant::now();
+    let permit_result = tokio::time::timeout(timeout, semaphore.acquire_owned()).await;
+    PROVIDER_WAITING.fetch_sub(1, Ordering::Relaxed);
+    let queue_wait_ms = wait_started.elapsed().as_millis();
+    let permit = match permit_result {
+        Ok(Ok(permit)) => permit,
+        Ok(Err(_)) => {
+            return Err(ToolError::Sdk {
+                sdk_kind: "provider_unavailable".to_string(),
+                message: "gateway enrichment provider concurrency limiter is closed".to_string(),
+            });
+        }
+        Err(_) => {
+            return Err(ToolError::Sdk {
+                sdk_kind: "provider_timeout".to_string(),
+                message: "gateway enrichment provider timed out while waiting for a provider slot"
+                    .to_string(),
+            });
+        }
+    };
+    PROVIDER_IN_FLIGHT.fetch_add(1, Ordering::Relaxed);
+    tracing::info!(
+        surface = "dispatch",
+        service = "gateway",
+        action = "gateway.enrich.provider",
+        event = "acquired",
+        provider = ?provider,
+        queue_wait_ms,
+        waiting_provider_runs = PROVIDER_WAITING.load(Ordering::Relaxed),
+        in_flight_provider_runs = PROVIDER_IN_FLIGHT.load(Ordering::Relaxed),
+        "gateway enrichment provider slot acquired"
+    );
+    let result = run_process_provider(provider, inputs, runner).await;
+    PROVIDER_IN_FLIGHT.fetch_sub(1, Ordering::Relaxed);
+    drop(permit);
+    result
 }
 
 fn provider_timeout(timeout_ms: u64) -> Duration {
@@ -663,6 +870,17 @@ mod tests {
             ToolError::Sdk { sdk_kind, message } => (sdk_kind, message),
             other => panic!("expected sdk error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn provider_rate_limiter_enforces_sliding_window() {
+        let mut limiter = ProviderRateLimiter::default();
+        let start = Instant::now();
+        for offset in 0..PROVIDER_RATE_LIMIT_PER_MINUTE {
+            assert!(limiter.admit(start + Duration::from_millis(offset as u64)));
+        }
+        assert!(!limiter.admit(start + Duration::from_secs(1)));
+        assert!(limiter.admit(start + PROVIDER_RATE_LIMIT_WINDOW));
     }
 
     #[tokio::test]

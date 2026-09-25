@@ -610,6 +610,9 @@ pub(super) async fn dispatch_command(
                             }),
                         )
                     }
+                    Some(GatewayEnrichCommand::Status) => {
+                        ("gateway.enrich.status".to_string(), json!({}))
+                    }
                     Some(GatewayEnrichCommand::Apply(args)) => {
                         confirmed = args.yes;
                         (

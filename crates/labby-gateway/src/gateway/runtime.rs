@@ -629,6 +629,10 @@ impl GatewayManager {
             rows.push(super::types::GatewayMcpRuntimeView {
                 notification_incidents,
                 name: upstream.name.clone(),
+                code_mode_hint: upstream
+                    .code_mode_hint
+                    .as_deref()
+                    .and_then(labby_runtime::gateway_config::normalize_code_mode_hint),
                 enabled: upstream.enabled,
                 connected,
                 discovered_tool_count: summary.discovered_tool_count,

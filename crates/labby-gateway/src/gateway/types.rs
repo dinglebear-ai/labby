@@ -349,6 +349,52 @@ pub struct GatewayEnrichmentPreviewStatsView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GatewayEnrichmentHintView {
+    pub upstream: String,
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GatewayEnrichmentProviderMetricsView {
+    pub provider: GatewayEnrichmentProvider,
+    pub started: u64,
+    pub succeeded: u64,
+    pub failed: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GatewayEnrichmentLimitsView {
+    pub max_manual_upstreams: usize,
+    pub max_tools_per_upstream: usize,
+    pub max_total_tools: usize,
+    pub max_resources_per_upstream: usize,
+    pub max_prompts_per_upstream: usize,
+    pub max_provider_input_bytes: usize,
+    pub provider_concurrency: usize,
+    pub default_timeout_ms: u64,
+    pub min_timeout_ms: u64,
+    pub max_timeout_ms: u64,
+    pub max_output_bytes: usize,
+    pub provider_rate_limit_per_minute: u64,
+    pub automatic_provider: GatewayEnrichmentProvider,
+    pub automatic_timeout_ms: u64,
+    pub automatic_max_upstreams: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GatewayEnrichmentStatusView {
+    pub hints: Vec<GatewayEnrichmentHintView>,
+    pub hinted_upstream_count: usize,
+    pub visible_upstream_count: usize,
+    pub providers: Vec<GatewayEnrichmentProviderMetricsView>,
+    pub waiting_provider_runs: u64,
+    pub in_flight_provider_runs: u64,
+    pub limits: GatewayEnrichmentLimitsView,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GatewayHintApplyView {
     pub upstream: String,
     pub hint: String,
@@ -645,6 +691,8 @@ pub struct GatewayMcpRuntimeView {
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub notification_incidents: std::collections::HashMap<String, String>,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_mode_hint: Option<String>,
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]

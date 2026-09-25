@@ -349,6 +349,12 @@ shared by the gateway and MCP crates:
 
 Adding or renaming a label is a change to this table in the same commit.
 
+### Code Mode hint enrichment
+
+Every hint provider execution logs `service="gateway"`, `action="gateway.enrich.provider"`. The `start` event records provider, upstream/tool/resource/prompt counts, timeout, output cap, concurrency, and whether the run is process-backed. Claude/Codex additionally emit `acquired` with queue wait plus waiting/in-flight counts. The `finish` event records provider, outcome, elapsed time, proposal count on success, and typed error kind on failure.
+
+Logs intentionally omit upstream descriptions, provider prompts/stdout, credentials, and generated hint text. Approved hints and provider counters are exposed by `gateway.enrich.status` / `labby code hints status`. Those counters are process-lifetime metrics. The same status payload exposes all hard caps, current waiting/in-flight jobs, automatic deterministic-only enrichment policy, global provider concurrency of 2, and a strict process-backed provider rate limit of 6 launches per 60 seconds; `provider_rate_limit_per_minute: 6`.
+
 **The fanout is per peer, not a broadcast.** `tools/list_changed` is a claim
 about one session's tool list, and two sessions can hold different contracts
 over the same gateway state — `McpRouteScope` restricts which upstreams and

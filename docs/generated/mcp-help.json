@@ -1998,6 +1998,17 @@
           "returns": "GatewayEnrichmentPreviewView"
         },
         {
+          "name": "gateway.enrich.status",
+          "description": "Inspect approved Code Mode hints, provider activity counters, concurrency, hard caps, and automatic enrichment policy",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [],
+          "returns": "GatewayEnrichmentStatusView"
+        },
+        {
           "name": "gateway.enrich.apply",
           "description": "Persist an operator-approved Code Mode upstream hint after hash validation",
           "destructive": false,

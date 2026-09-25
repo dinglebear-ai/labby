@@ -552,6 +552,21 @@ mod tests {
     }
 
     #[test]
+    fn gateway_enrich_status_parser_maps_to_status_action() {
+        let cli = Cli::try_parse_from(["lab", "code", "hints", "status"])
+            .expect("gateway enrich status parses");
+
+        let Command::Gateway(args) = cli.command.into_operation() else {
+            panic!("expected gateway command");
+        };
+        let GatewayCommand::Enrich(args) = args.command else {
+            panic!("expected gateway enrich command");
+        };
+
+        assert!(matches!(args.command, Some(GatewayEnrichCommand::Status)));
+    }
+
+    #[test]
     fn gateway_enrich_preview_parser_captures_approval_args() {
         let cli = Cli::try_parse_from([
             "lab",

@@ -5379,6 +5379,31 @@
   },
   {
     "service": "gateway",
+    "action": "gateway.enrich.status",
+    "description": "Inspect approved Code Mode hints, provider activity counters, concurrency, hard caps, and automatic enrichment policy",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
+    "params": [],
+    "returns": "GatewayEnrichmentStatusView",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "gateway",
     "action": "gateway.get",
     "description": "Get one configured gateway",
     "destructive": false,

@@ -96,6 +96,9 @@ pub async fn dispatch_with_manager_scoped(
                     .await?,
             )
         }
+        "gateway.enrich.status" => {
+            to_json(manager.enrichment_status_scoped(enrichment_scope).await)
+        }
         "gateway.enrich.apply" => {
             let params: GatewayEnrichApplyParams = parse_params(params_value)?;
             to_json(

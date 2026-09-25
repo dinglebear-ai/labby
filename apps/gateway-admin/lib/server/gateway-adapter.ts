@@ -106,6 +106,7 @@ export interface BackendGatewayRuntimeView {
 export interface BackendGatewayMcpRuntimeView {
   notification_incidents?: Record<string, string>
   name: string
+  code_mode_hint?: string | null
   enabled?: boolean
   connected?: boolean
   discovered_tool_count?: number

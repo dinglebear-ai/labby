@@ -7922,6 +7922,7 @@
               "gateway.code_mode.set",
               "gateway.server.get",
               "gateway.enrich.preview",
+              "gateway.enrich.status",
               "gateway.enrich.apply",
               "gateway.usage.metrics",
               "gateway.usage.calls",

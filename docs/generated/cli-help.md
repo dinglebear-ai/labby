@@ -4467,8 +4467,48 @@ Preview and approve upstream metadata hints
 Usage: labby code hints [OPTIONS] <COMMAND>
 
 Commands:
+  status   Show approved hints, provider counters, concurrency, and hard enrichment limits
   preview  Generate and preview metadata suggestions before applying them
   apply    Apply an explicitly approved, hash-bound metadata suggestion
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby code hints status`
+
+```text
+Show approved hints, provider counters, concurrency, and hard enrichment limits
+
+Usage: labby code hints status [OPTIONS]
 
 Options:
       --json
