@@ -801,7 +801,13 @@ pub fn discovery_render_params(
     scope: &ToolScope,
 ) -> (bool, bool) {
     let include_snippets = caller.can_use_snippets() && !scope.is_scoped();
-    let use_cache = surface == CodeModeSurface::Cli && scope.allowed_namespaces().is_none();
+    // Unscoped discovery may reuse the persistent catalog on both CLI and MCP.
+    // Actual callTool dispatch remains live/fresh, while a dead unrelated upstream
+    // can no longer force every MCP execution to synchronously reprobe the fleet.
+    // Explicitly scoped runs stay live because their small allowlist is both cheap
+    // to refresh and may contain subject-scoped OAuth catalogs that are never persisted.
+    let use_cache = matches!(surface, CodeModeSurface::Cli | CodeModeSurface::Mcp)
+        && scope.allowed_namespaces().is_none();
     (include_snippets, use_cache)
 }
 
@@ -1046,6 +1052,18 @@ mod tests {
             logs: Vec::new(),
             artifacts: Vec::new(),
         }
+    }
+
+    #[test]
+    fn unscoped_mcp_discovery_reuses_the_resilient_catalog_cache() {
+        let caller = CodeModeCaller::TrustedLocal;
+        let unscoped = ToolScope::default();
+        let scoped = ToolScope::scoped_namespaces(vec!["github".to_string()], vec![]);
+
+        assert!(discovery_render_params(&caller, CodeModeSurface::Cli, &unscoped).1);
+        assert!(discovery_render_params(&caller, CodeModeSurface::Mcp, &unscoped).1);
+        assert!(!discovery_render_params(&caller, CodeModeSurface::Mcp, &scoped).1);
+        assert!(!discovery_render_params(&caller, CodeModeSurface::Api, &unscoped).1);
     }
 
     #[test]

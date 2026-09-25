@@ -11,7 +11,7 @@
 //! must take effect immediately, not after a TTL, and a cache populated under
 //! one policy must never keep serving under it once the policy changes.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use labby_runtime::gateway_config::UpstreamConfig;
@@ -283,25 +283,29 @@ impl UpstreamPool {
         // Upstreams connect lazily: a cold gateway has a seeded catalog entry but
         // no live connection until something asks for one, so acquiring the peer
         // directly reports "not connected" on every first read — the normal
-        // state for `labby mcp`, not an error.
-        //
-        // The pool checks connection presence under its lazy-connect lock;
-        // skills-only peers do not need an exposed tool to remain reusable.
-        if self
-            .ensure_connection_for_upstream(config, subject, None)
-            .await
-            .is_err()
-        {
-            return Err(UpstreamSkillsError::Unavailable);
-        }
-        let peer = self
-            .acquire_peer(
+        // state for `labby mcp`, not an error. OAuth peers are different: they
+        // live in the per-(upstream, subject) cache and must never be looked up
+        // through the process-global `connections` map.
+        let peer = if config.oauth.is_some() {
+            let subject = subject.ok_or(UpstreamSkillsError::Unavailable)?;
+            self.acquire_or_connect_subject(config, subject)
+                .await
+                .map(|(peer, _)| peer)
+                .map_err(|_| UpstreamSkillsError::Unavailable)?
+        } else {
+            // The pool checks connection presence under its lazy-connect lock;
+            // skills-only peers do not need an exposed tool to remain reusable.
+            self.ensure_connection_for_upstream(config, None, None)
+                .await
+                .map_err(|_| UpstreamSkillsError::Unavailable)?;
+            self.acquire_peer(
                 &config.name,
                 super::super::types::UpstreamCapability::Skills,
                 "skills.list",
             )
             .await
-            .ok_or(UpstreamSkillsError::Unavailable)?;
+            .ok_or(UpstreamSkillsError::Unavailable)?
+        };
 
         // An upstream that never declared the extension is not a failure — it
         // simply has no skills, and caching that avoids re-asking every read.
@@ -345,12 +349,24 @@ impl UpstreamPool {
                         catalog_entry.skill_names = skill_names;
                     }
                 }
-                for excluded in &excluded {
+                if !excluded.is_empty() {
+                    let mut reasons = BTreeMap::<&str, usize>::new();
+                    for rejected in &excluded {
+                        *reasons.entry(rejected.reason.as_str()).or_default() += 1;
+                    }
+                    let sample_skills = excluded
+                        .iter()
+                        .take(8)
+                        .map(|rejected| {
+                            super::helpers::redact_resource_uri_for_logging(&rejected.uri)
+                        })
+                        .collect::<Vec<_>>();
                     tracing::warn!(
                         upstream = %config.name,
-                        reason = excluded.reason.as_str(),
-                        skill = %super::helpers::redact_resource_uri_for_logging(&excluded.uri),
-                        "excluded an upstream skill at ingest"
+                        excluded_count = excluded.len(),
+                        reasons = ?reasons,
+                        sample_skills = ?sample_skills,
+                        "excluded upstream skills at ingest"
                     );
                 }
                 Ok(entry)

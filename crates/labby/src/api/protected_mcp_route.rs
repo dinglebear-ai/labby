@@ -33,11 +33,11 @@ pub(super) use policy::{
     protected_route_json_rpc_error,
 };
 
-fn team_member_auto_provision_candidate(has_oauth_delegation: bool, upstreams: &[String]) -> bool {
+fn team_member_auto_provision_candidate(has_oauth_delegation: bool, services: &[String]) -> bool {
     has_oauth_delegation
-        && upstreams
+        && services
             .iter()
-            .any(|upstream| upstream == crate::dispatch::depot_publish::REQUIRED_UPSTREAM)
+            .any(|service| service == crate::dispatch::depot_publish::SERVICE)
 }
 
 fn team_admission_unavailable(stage: &'static str) -> axum::response::Response {
@@ -118,7 +118,7 @@ async fn protected_mcp_route_entry(
             }
             if team_member_auto_provision_candidate(
                 authenticated.oauth_delegation.is_some(),
-                &target.upstreams,
+                &target.services,
             ) {
                 let authorized = match state.oauth_state.as_deref() {
                     Some(auth) => match auth.is_current_identity_authorized(&identity).await {
@@ -486,8 +486,7 @@ mod depot_publish_revalidation_tests {
             gateway_runtime,
         ));
         let config: crate::config::GatewayConfig = serde_json::from_value(serde_json::json!({
-            "upstream": [{"name":"team-depot", "url":"http://127.0.0.1:4100/mcp"}],
-            "loadouts": [{"name":"production", "upstreams":["team-depot"]}],
+            "loadouts": [{"name":"production", "services":["artifact_publish"]}],
             "protected_mcp_routes": [{"name":"team", "enabled":true, "public_host":"labby.example", "public_path":"/mcp/team", "scopes":["lab"],
                 "target":{"kind":"gateway_subset", "project_id":"bootstrap-default", "loadout":"production"}}]
         })).unwrap();
@@ -673,17 +672,17 @@ mod team_member_provisioning_tests {
     }
 
     #[test]
-    fn auto_provision_requires_oauth_and_the_exact_team_depot_upstream() {
-        let team = vec!["team-depot".to_string()];
-        assert!(team_member_auto_provision_candidate(true, &team));
-        assert!(!team_member_auto_provision_candidate(false, &team));
-        for upstreams in [
+    fn auto_provision_requires_oauth_and_the_artifact_publish_service() {
+        let publish = vec![crate::dispatch::depot_publish::SERVICE.to_string()];
+        assert!(team_member_auto_provision_candidate(true, &publish));
+        assert!(!team_member_auto_provision_candidate(false, &publish));
+        for services in [
             Vec::<String>::new(),
-            vec!["catalog-depot".to_string()],
-            vec!["team-depot-evil".to_string()],
-            vec!["TEAM-DEPOT".to_string()],
+            vec!["gateway".to_string()],
+            vec!["depot_publish".to_string()],
+            vec!["artifact_publish_extra".to_string()],
         ] {
-            assert!(!team_member_auto_provision_candidate(true, &upstreams));
+            assert!(!team_member_auto_provision_candidate(true, &services));
         }
     }
 }

@@ -25,6 +25,7 @@ use super::GatewayManager;
 /// Back-to-back `refresh_code_mode_catalog` calls within this window
 /// return immediately without hitting upstreams again.
 const CATALOG_REFRESH_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+const MAX_CATALOG_CONNECT_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Cooldown after a TEI failure before the next attempt is tried. Hardcoded
 /// per the plan's YAGNI cut — long enough that a flapping/restarting TEI
@@ -88,13 +89,14 @@ fn all_tools_are_in_process(tools: &[UpstreamTool]) -> bool {
     })
 }
 
-/// Wall-clock a Code Mode catalog build may spend contacting upstreams:
-/// half the configured execution timeout, so proxy generation leaves the
-/// sandbox roughly the other half (less the broker's response reserve and
-/// catalog rendering). Shared by one-shot CLI cold-connects and the long-lived
-/// MCP refresh path so neither surface can consume the whole execution budget.
+/// Wall-clock a Code Mode catalog build may spend contacting upstreams.
+/// Discovery is metadata work, not the requested tool execution: cap it at five
+/// seconds even when the execution timeout is much larger so one stalled peer
+/// cannot consume half of a normal MCP request. Shorter configured execution
+/// timeouts still donate at most half their budget to discovery.
 fn catalog_connect_budget(code_mode: &CodeModeConfig) -> std::time::Duration {
-    std::time::Duration::from_millis(code_mode.timeout_ms) / 2
+    (std::time::Duration::from_millis(code_mode.timeout_ms) / 2)
+        .min(MAX_CATALOG_CONNECT_BUDGET)
 }
 
 /// Restore configuration order after concurrent probes settle in arbitrary

@@ -527,9 +527,10 @@ impl ProjectDiscoveryShadow<'_> {
             let loadout = binding.core().route().effective_loadout();
             return Some(
                 loadout.expose_tools
-                    && loadout.upstreams.iter().any(|upstream| {
-                        upstream == crate::dispatch::depot_publish::REQUIRED_UPSTREAM
-                    }),
+                    && loadout
+                        .services
+                        .iter()
+                        .any(|service| service == crate::dispatch::depot_publish::SERVICE),
             );
         }
         if self.allows_builtin_service(service.name, now) != Some(true) {
@@ -2275,14 +2276,17 @@ mod tests {
         let registry = crate::registry::build_default_registry();
         let publish_service = registry.service("artifact_publish").unwrap();
         assert!(registry.service("depot_publish").is_none());
-        for (upstream, expose_tools, expected) in [
-            ("team-depot", true, true),
-            ("catalog-depot", true, false),
-            ("team-depot", false, false),
+        for (publish_enabled, expose_tools, expected) in [
+            (true, true, true),
+            (false, true, false),
+            (true, false, false),
         ] {
             let mut team_config = config();
-            team_config.upstream[0].name = upstream.into();
-            team_config.loadouts[0].upstreams = vec![upstream.into()];
+            if publish_enabled {
+                team_config.loadouts[0]
+                    .services
+                    .push(crate::dispatch::depot_publish::SERVICE.into());
+            }
             team_config.loadouts[0].expose_tools = expose_tools;
             manager.try_seed_config(team_config).await.unwrap();
             let core = bind_access_context(
@@ -2326,10 +2330,15 @@ mod tests {
             );
 
             let mut server = project_shadow_test_server();
+            let route_services = if publish_enabled {
+                vec!["fs", "setup", crate::dispatch::depot_publish::SERVICE]
+            } else {
+                vec!["fs", "setup"]
+            };
             server.route_scope = crate::mcp::route_scope::McpRouteScope::protected_subset(
                 "project-route",
-                [upstream],
-                ["fs", "setup"],
+                ["alpha"],
+                route_services,
                 false,
             );
             let (io, _client) = tokio::io::duplex(64 * 1024);
@@ -2356,7 +2365,10 @@ mod tests {
                 .list_tools_impl(None, context)
                 .await
                 .unwrap();
-            assert_eq!(wire.tools, descriptors, "descriptor parity for {upstream}");
+            assert_eq!(
+                wire.tools, descriptors,
+                "descriptor parity for publish_enabled={publish_enabled} expose_tools={expose_tools}"
+            );
             assert_eq!(
                 wire.tools
                     .iter()

@@ -104,6 +104,7 @@ async function initialize() {
     await chrome.storage.local.set({baseUrl: settings.baseUrl});
   }
   const identity = await ensureIdentity();
+  const {pairingId} = await chrome.storage.local.get("pairingId");
   if (!channel) {
     channel = new LabbyBrowserChannel({
       baseUrl: settings.baseUrl,
@@ -115,7 +116,7 @@ async function initialize() {
       onEvent: handleServerEvent,
       onError: reportBridgeFailure
     });
-    channel.connect();
+    if (identity.browserId || pairingId) channel.connect();
   }
   if (settings.scanningPaused) await closeAllObservations();
   else if (identity.browserId) await scanAll();
@@ -267,6 +268,8 @@ async function finalizePairingExpiry(generation) {
     await chrome.storage.local.remove(["pairingId", "pairingFingerprint"]);
     if (generation !== pairingGeneration) return;
     await chrome.storage.local.set({bridgeStatus: {state: "error", message: "pairing_expired", updatedAt: Date.now()}});
+    const identity = await ensureIdentity();
+    if (!identity.browserId) channel?.close();
   });
 }
 
@@ -593,7 +596,9 @@ async function handleUiMessage(message) {
     let identity;
     try {
       identity = await ensureIdentity();
-      reply = await requireChannel().message("pairing.request", {display_name: message.displayName || "Chrome", public_key: identity.publicKey, scanning_mode: "granted_sites"});
+      const pairingChannel = requireChannel();
+      await pairingChannel.ensureConnected();
+      reply = await pairingChannel.message("pairing.request", {display_name: message.displayName || "Chrome", public_key: identity.publicKey, scanning_mode: "granted_sites"});
       if (!reply?.payload?.pairing_id) throw new Error("invalid_pairing_reply");
     } catch (error) {
       /** @type {number | undefined} */

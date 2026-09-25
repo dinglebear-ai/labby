@@ -258,7 +258,12 @@ impl LabMcpServer {
             } else {
                 ToolAccess::Direct
             };
-            let subject = self.request_subject(context).map(str::to_string);
+            let subject = self
+                .route_oauth_subject(
+                    self.request_subject(context)
+                        .map(std::borrow::Cow::Borrowed),
+                )
+                .map(std::borrow::Cow::into_owned);
             let scope = match self.route_scope.allowed_upstreams() {
                 None => SkillCallerScope::root(subject, access),
                 Some(allowed) => {

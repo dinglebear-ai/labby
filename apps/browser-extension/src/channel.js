@@ -79,6 +79,12 @@ export class LabbyBrowserChannel {
     };
   }
 
+  async ensureConnected() {
+    const socket = this.socket;
+    if (!socket || socket.readyState === WebSocket.CLOSING || socket.readyState === WebSocket.CLOSED) this.connect();
+    await this.ready;
+  }
+
   /** @param {WebSocket} socket */
   startHeartbeat(socket) {
     this.stopHeartbeat();

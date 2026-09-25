@@ -259,6 +259,21 @@ where
             kind = e.kind(),
             "dispatch error"
         ),
+        Err(e) if matches!(e.kind(), "forbidden" | "unauthorized") => tracing::info!(
+            surface = surface,
+            service,
+            action = action_log.as_str(),
+            request_id,
+            actor_key = meta.actor_key,
+            actor_label = meta.actor_label,
+            agent_kind = meta.agent_kind,
+            ip = meta.ip.as_deref(),
+            elapsed_ms,
+            input_tokens,
+            output_tokens = 0,
+            kind = e.kind(),
+            "dispatch denied"
+        ),
         Err(e) => tracing::warn!(
             surface = surface,
             service,

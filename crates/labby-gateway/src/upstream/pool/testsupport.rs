@@ -29,7 +29,7 @@ use labby_runtime::gateway_config::UpstreamConfig;
 use super::super::types::{UpstreamRuntimeMetadata, UpstreamTool};
 use super::entries::healthy_in_process_entry;
 use super::helpers::IN_PROCESS_PEER_BUFFER_BYTES;
-use super::{UpstreamConnection, UpstreamPool};
+use super::{SubjectScopedConnection, UpstreamConnection, UpstreamPool};
 
 pub(super) fn test_upstream_config() -> UpstreamConfig {
     UpstreamConfig {
@@ -170,8 +170,47 @@ impl ServerHandler for StaticCatalogServer {
     }
 }
 
-pub(crate) async fn static_catalog_pool(upstream_name: &str) -> Arc<UpstreamPool> {
-    static_catalog_pool_with_server(upstream_name, StaticCatalogServer::default()).await
+pub(super) async fn install_subject_connection_with_server<S>(
+    pool: &UpstreamPool,
+    upstream_name: &str,
+    subject: &str,
+    server: S,
+)
+where
+    S: ServerHandler,
+{
+    let (server_transport, client_transport) = tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
+    let server_task = tokio::spawn(async move {
+        let running = server
+            .serve(server_transport)
+            .await
+            .expect("subject fixture server starts");
+        running.waiting().await.expect("subject fixture server runs");
+    });
+    let client_service: rmcp::service::RunningService<RoleClient, ()> = ()
+        .serve(client_transport)
+        .await
+        .expect("subject fixture client starts");
+    let peer = client_service.peer().clone();
+    pool.subject_connections.write().await.insert(
+        (upstream_name.to_string(), subject.to_string()),
+        SubjectScopedConnection {
+            optional_catalogs: Default::default(),
+            _connection: UpstreamConnection {
+                _client_service: client_service.into(),
+                _server_task: Some(server_task),
+                peer: peer.clone(),
+                runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
+            },
+            peer,
+            tools: Vec::new(),
+            last_used: std::time::Instant::now(),
+        },
+    );
+}
+
+pub(crate) async fn static_catalog_pool(upstream_name: &str) -> Arc<UpstreamPool> {    static_catalog_pool_with_server(upstream_name, StaticCatalogServer::default()).await
 }
 
 pub(super) async fn static_catalog_pool_with_server(

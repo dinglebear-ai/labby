@@ -44,7 +44,6 @@ pub const ACTION: &str = "artifacts.publish_skill_archive";
 pub const LEGACY_SERVICE: &str = "depot_publish";
 /// Hidden compatibility action accepted with [`LEGACY_SERVICE`].
 pub const LEGACY_ACTION: &str = "depot.publish_skill_archive";
-pub const REQUIRED_UPSTREAM: &str = "team-depot";
 pub const UPLOAD_CREATE_OPERATION: &str = "depot.uploads.create";
 pub const UPLOAD_PUT_OPERATION: &str = "depot.uploads.put";
 pub const INGEST_START_OPERATION: &str = "depot.ingest.start";

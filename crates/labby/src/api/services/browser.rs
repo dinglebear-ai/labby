@@ -314,12 +314,21 @@ async fn handle_socket(
     preauth_permit: PreauthClientPermit,
 ) {
     if let Err(error) = run_socket(socket, &extension_id, preauth_permit).await {
-        tracing::warn!(
-            surface = "api",
-            service = "browser",
-            kind = error.kind(),
-            "browser extension connection ended"
-        );
+        match error {
+            labby_browser::BrowserError::ToolTimeout
+            | labby_browser::BrowserError::ConnectionClosed => tracing::info!(
+                surface = "api",
+                service = "browser",
+                kind = error.kind(),
+                "browser extension connection ended"
+            ),
+            _ => tracing::warn!(
+                surface = "api",
+                service = "browser",
+                kind = error.kind(),
+                "browser extension connection ended"
+            ),
+        }
     }
 }
 

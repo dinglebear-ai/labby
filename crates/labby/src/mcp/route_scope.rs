@@ -206,8 +206,7 @@ impl McpRouteScope {
                 ..
             } => {
                 if crate::dispatch::depot_publish::is_publish_service(service) {
-                    *expose_tools
-                        && upstreams.contains(crate::dispatch::depot_publish::REQUIRED_UPSTREAM)
+                    *expose_tools && services.contains(crate::dispatch::depot_publish::SERVICE)
                 } else {
                     services.contains(service)
                 }
@@ -349,22 +348,27 @@ mod tests {
     }
 
     #[test]
-    fn artifact_publish_is_owned_only_by_team_depot_protected_routes() {
-        let allowed = McpRouteScope::protected_subset("linear", ["team-depot"], ["skills"], false);
-        let wrong_upstream =
-            McpRouteScope::protected_subset("linear", ["catalog-depot"], ["skills"], false);
+    fn artifact_publish_is_owned_only_by_routes_that_publish_the_service() {
+        let allowed = McpRouteScope::protected_subset(
+            "linear",
+            ["unrelated-upstream"],
+            ["skills", "artifact_publish"],
+            false,
+        );
+        let missing_service =
+            McpRouteScope::protected_subset("linear", ["team-depot"], ["skills"], false);
         assert!(allowed.allows_service("artifact_publish"));
         assert!(allowed.allows_service("depot_publish"));
-        assert!(!wrong_upstream.allows_service("artifact_publish"));
-        assert!(!wrong_upstream.allows_service("depot_publish"));
+        assert!(!missing_service.allows_service("artifact_publish"));
+        assert!(!missing_service.allows_service("depot_publish"));
     }
 
     #[test]
     fn explicit_publish_service_cannot_bypass_team_route_capabilities() {
         for (upstream, expose_tools, expected) in [
-            ("catalog-depot", true, false),
+            ("catalog-depot", true, true),
             ("team-depot", false, false),
-            ("team-depot", true, true),
+            ("unrelated-upstream", true, true),
         ] {
             let scope = McpRouteScope::protected_subset_with_capabilities(
                 "team",
