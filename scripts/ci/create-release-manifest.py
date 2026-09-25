@@ -13,12 +13,14 @@ parser.add_argument("--repository", required=True)
 parser.add_argument("--output", type=Path, default=Path("release-manifest.json"))
 parser.add_argument("--npm-package", default="@dinglebear/labby")
 parser.add_argument("--incus-asset", default="labby-incus-x86_64-unknown-linux-gnu.tar.xz")
-parser.add_argument("--incus-sha256", default="pending")
+parser.add_argument("--incus-sha256")
 parser.add_argument("--mcp-name", default="ai.dinglebear/labby")
 parser.add_argument("--mcp-manifest-sha256", default="pending")
 parser.add_argument("subjects", nargs="+")
 args = parser.parse_args()
 for label, value in (("Incus", args.incus_sha256), ("MCP manifest", args.mcp_manifest_sha256)):
+    if value is None and label == "Incus":
+        continue
     if not re.fullmatch(r"[0-9a-f]{64}", value):
         raise SystemExit(f"{label} digest must be 64 lowercase hex characters")
 
@@ -56,9 +58,10 @@ version = args.tag.removeprefix("v")
 distributions: dict[str, object] = {
     "github": {"repository": args.repository, "tag": args.tag},
     "npm": {"package": args.npm_package, "version": version, "tag": "latest"},
-    "incus": {"asset": args.incus_asset, "sha256": args.incus_sha256},
     "mcp": {"name": args.mcp_name, "version": version, "manifest_sha256": args.mcp_manifest_sha256},
 }
+if args.incus_sha256:
+    distributions["incus"] = {"asset": args.incus_asset, "sha256": args.incus_sha256}
 attested_names = sorted(
     [row["name"] for row in subjects]
     + [row["sbom"]["name"] for row in subjects]

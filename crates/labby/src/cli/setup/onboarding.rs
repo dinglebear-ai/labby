@@ -877,13 +877,13 @@ async fn apply_incus_server(plan: &SetupPlan, format: OutputFormat) -> Result<se
     let image = ensure_release_incus_image()?;
     let args = crate::cli::incus::IncusSetupArgs {
         image: Some(image),
-        skip_install: true,
+        version: Some(format!("v{}", env!("CARGO_PKG_VERSION"))),
         yes: true,
         dry_run: false,
         ..crate::cli::incus::IncusSetupArgs::default()
     };
     crate::cli::incus::run_setup(args, format).await?;
-    // The release image owns the guest's internal :8765 listener. Host
+    // The installed release owns the guest's internal :8765 listener. Host
     // publishing and operator-specific authentication are applied afterwards,
     // keeping immutable image bytes free of user secrets.
     let token = configure_incus_server(plan)?;
@@ -913,7 +913,7 @@ async fn apply_incus_server(_plan: &SetupPlan, _format: OutputFormat) -> Result<
 fn ensure_release_incus_image() -> Result<String> {
     const IMAGE_ASSET: &str = "labby-incus-x86_64-unknown-linux-gnu.tar.xz";
     const REPO: &str = "dinglebear-ai/labby";
-    const SIGNER_WORKFLOW: &str = "dinglebear-ai/labby/.github/workflows/release.yml";
+    const SIGNER_WORKFLOW: &str = "dinglebear-ai/labby/.github/workflows/incus-image.yml";
 
     if !cfg!(target_arch = "x86_64") {
         bail!("the prebuilt Labby Incus image is currently published only for x86_64 Linux hosts");
@@ -922,9 +922,26 @@ fn ensure_release_incus_image() -> Result<String> {
         bail!("GitHub CLI (gh) is required to verify the Labby release manifest and Incus image");
     }
 
-    let version = env!("CARGO_PKG_VERSION");
-    let tag = format!("v{version}");
-    let source_ref = format!("refs/tags/{tag}");
+    let pointer = Command::new("gh")
+        .args([
+            "api",
+            "repos/dinglebear-ai/labby/git/ref/tags/labby-incus-latest",
+            "--jq",
+            ".object.sha",
+        ])
+        .output()
+        .context("resolve latest qualified Incus image")?;
+    if !pointer.status.success() {
+        bail!("could not resolve the qualified Incus image pointer");
+    }
+    let commit = String::from_utf8(pointer.stdout)
+        .context("Incus image pointer is not UTF-8")?
+        .trim()
+        .to_string();
+    if commit.len() != 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("Incus image pointer is not a commit SHA");
+    }
+    let tag = format!("incus-{commit}");
     let temp = tempfile::tempdir().context("create Incus release download directory")?;
     let temp_path = temp
         .path()
@@ -940,18 +957,18 @@ fn ensure_release_incus_image() -> Result<String> {
             "--repo",
             REPO,
             "--pattern",
-            "release-manifest.json",
+            "incus-image-manifest.json",
             "--pattern",
             IMAGE_ASSET,
             "--dir",
             temp_path,
         ],
-        "download exact Labby Incus release",
+        "download qualified Incus image release",
     )?;
-    let manifest = temp.path().join("release-manifest.json");
+    let manifest = temp.path().join("incus-image-manifest.json");
     let image = temp.path().join(IMAGE_ASSET);
     if !manifest.is_file() || !image.is_file() {
-        bail!("release {tag} is missing its immutable manifest or prebuilt Incus image");
+        bail!("image release {tag} is missing its immutable manifest or prebuilt Incus image");
     }
 
     run_status(
@@ -967,36 +984,73 @@ fn ensure_release_incus_image() -> Result<String> {
             "--signer-workflow",
             SIGNER_WORKFLOW,
             "--source-ref",
-            &source_ref,
+            "refs/heads/main",
             "--deny-self-hosted-runners",
         ],
-        "verify Labby release manifest provenance",
+        "verify Incus image manifest provenance",
+    )?;
+    run_status(
+        "gh",
+        &[
+            "attestation",
+            "verify",
+            image.to_str().context("Incus image path is not UTF-8")?,
+            "--repo",
+            REPO,
+            "--signer-workflow",
+            SIGNER_WORKFLOW,
+            "--source-ref",
+            "refs/heads/main",
+            "--deny-self-hosted-runners",
+        ],
+        "verify Incus image provenance",
     )?;
 
     let manifest_value: serde_json::Value = serde_json::from_reader(
         std::fs::File::open(&manifest).context("open verified release manifest")?,
     )
     .context("parse verified release manifest")?;
+    if manifest_value
+        .get("schema")
+        .and_then(serde_json::Value::as_str)
+        != Some("ai.dinglebear.labby/incus-image-manifest/v1")
+        || manifest_value
+            .get("commit")
+            .and_then(serde_json::Value::as_str)
+            != Some(commit.as_str())
+        || manifest_value
+            .get("tag")
+            .and_then(serde_json::Value::as_str)
+            != Some(tag.as_str())
+    {
+        bail!("Incus image manifest does not match the qualified pointer");
+    }
     let incus = manifest_value
-        .pointer("/distributions/incus")
+        .get("assets")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|assets| {
+            assets.iter().find(|asset| {
+                asset.get("name").and_then(serde_json::Value::as_str) == Some(IMAGE_ASSET)
+            })
+        })
         .and_then(serde_json::Value::as_object)
-        .context("release manifest is missing the Incus distribution")?;
+        .context("image manifest is missing the Incus asset")?;
     let manifest_asset = incus
         .get("asset")
         .and_then(serde_json::Value::as_str)
-        .context("release manifest is missing the Incus asset name")?;
+        .context("image manifest is missing the Incus asset name")?;
     let expected_sha256 = incus
         .get("sha256")
         .and_then(serde_json::Value::as_str)
-        .context("release manifest is missing the Incus SHA-256")?;
+        .context("image manifest is missing the Incus SHA-256")?;
     if manifest_asset != IMAGE_ASSET {
         bail!(
-            "release manifest Incus asset {manifest_asset:?} does not match the supported asset {IMAGE_ASSET:?}"
+            "image manifest Incus asset {manifest_asset:?} does not match the supported asset {IMAGE_ASSET:?}"
         );
     }
     if expected_sha256.len() != 64 || !expected_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
     {
-        bail!("release manifest contains an invalid Incus SHA-256");
+        bail!("image manifest contains an invalid Incus SHA-256");
     }
     let actual_sha256 = sha256_file(&image)?;
     if !actual_sha256.eq_ignore_ascii_case(expected_sha256) {
@@ -1005,7 +1059,7 @@ fn ensure_release_incus_image() -> Result<String> {
         );
     }
 
-    let alias = format!("labby-release-{version}-{}", &actual_sha256[..12]);
+    let alias = format!("labby-image-{}", &actual_sha256[..12]);
     if command_ok("incus", &["image", "info", &alias]) {
         return Ok(alias);
     }

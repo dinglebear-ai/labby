@@ -599,24 +599,24 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("scripts/ci/create-release-manifest.py", workflow)
         self.assertIn("release-manifest.json", workflow)
         self.assertIn("scripts/ci/reconcile-release.py", reminder)
+        self.assertIn("/^v\\d+\\.\\d+\\.\\d+$/", reminder)
         self.assertIn("manage-release-incident.sh", reminder)
         self.assertIn("Release publication is incomplete", self.text("scripts/ci/manage-release-incident.sh"))
-        for surface in ("github", "npm", "incus", "mcp"):
+        for surface in ("github", "npm", "mcp"):
             self.assertIn(f'"{surface}"', self.text("scripts/ci/reconcile-release.py"))
         self.assertNotIn('"ghcr"', self.text("scripts/ci/reconcile-release.py"))
 
     def test_candidate_publishers_are_called_before_stable_promotion(self) -> None:
         release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
         jobs = release["jobs"]
-        self.assertEqual("./.github/workflows/build-incus-image.yml", jobs["incus-candidate"]["uses"])
+        self.assertNotIn("incus-candidate", jobs)
         self.assertEqual("./.github/workflows/mcp-registry.yml", jobs["mcp-candidate"]["uses"])
-        self.assertIn("incus-candidate", jobs["release"]["needs"])
         self.assertIn("mcp-candidate", jobs["release"]["needs"])
         # The MCP Registry verifies the npm version it references, so npm's
         # candidate publication must finish before mcp-candidate starts.
         self.assertIn("npm-candidate", jobs["mcp-candidate"]["needs"])
         self.assertIn("npm-candidate", jobs["release"]["needs"])
-        for gate in ("upgrade-qualification", "incus-candidate"):
+        for gate in ("upgrade-qualification",):
             self.assertIn(gate, jobs["npm-candidate"]["needs"])
         publish = next(step for step in jobs["npm-candidate"]["steps"] if step.get("name") == "Publish candidate-tagged npm launcher")
         self.assertIn('--tag "candidate-$version"', publish["run"])
@@ -628,13 +628,16 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
 
     def test_incus_candidate_is_immutable_and_pointer_is_transactional(self) -> None:
         release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
-        self.assertEqual("write", release["jobs"]["incus-candidate"]["permissions"]["contents"])
+        self.assertNotIn("incus-candidate", release["jobs"])
         incus = self.text(".github/workflows/build-incus-image.yml")
         self.assertNotIn("ROLLING_TAG", incus)
         self.assertNotIn("git push -f", incus)
-        workflow = self.text(".github/workflows/release.yml")
-        self.assertIn("scripts/ci/promote-incus-pointer.sh promote", workflow)
-        self.assertIn("scripts/ci/promote-incus-pointer.sh rollback", workflow)
+        self.assertIn("scripts/ci/promote-incus-pointer.sh promote", incus)
+        self.assertIn("scripts/ci/promote-incus-pointer.sh rollback", incus)
+        image = yaml.load(self.text(".github/workflows/incus-image.yml"), Loader=yaml.BaseLoader)
+        self.assertEqual("./.github/workflows/build-incus-image.yml", image["jobs"]["image"]["uses"])
+        self.assertIn("config/incus/**", image["on"]["pull_request"]["paths"])
+        self.assertIn("config/incus/**", image["on"]["push"]["paths"])
 
     def test_immutable_release_assets_are_never_clobbered(self) -> None:
         for path in (".github/workflows/release.yml", ".github/workflows/build-incus-image.yml"):
@@ -705,7 +708,7 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertEqual(job["concurrency"]["cancel-in-progress"], "false")
         rollback = next(step["run"] for step in job["steps"] if step.get("name") == "Roll back partial publication")
         self.assertLess(rollback.index("promote-npm-pointer.py rollback"), rollback.index('gh release edit "$RELEASE_TAG" --draft=true'))
-        self.assertIn('if [[ "$npm_rc" != 0 || "$pointer_rc" != 0 ]]', rollback)
+        self.assertIn('if [[ "$npm_rc" != 0 ]]', rollback)
         self.assertIn('refusing to replace a newer Incus stable generation', self.text("scripts/ci/promote-incus-pointer.sh"))
 
     def test_n_minus_one_uses_real_runtime_schema_not_probe_tables(self) -> None:
@@ -1148,6 +1151,34 @@ class ReleaseHelperTests(unittest.TestCase):
                 broken[broken.index(flag) + 1] = "bad"
                 self.assertNotEqual(0, subprocess.run(broken, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode)
 
+    def test_version_release_manifest_omits_independent_image(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            archive = work / "lab.tar.gz"
+            sbom = work / "lab.spdx.json"
+            archive.write_bytes(b"binary archive")
+            sbom.write_bytes(b"sbom")
+            manifest = work / "release-manifest.json"
+            subprocess.run([
+                "python3", str(ROOT / "scripts/ci/create-release-manifest.py"),
+                "--tag", "v1.2.3", "--repository", "dinglebear-ai/labby",
+                "--mcp-manifest-sha256", "a" * 64,
+                "--output", str(manifest), str(archive), str(sbom),
+            ], check=True)
+            data = json.loads(manifest.read_text())
+            self.assertEqual({"github", "npm", "mcp"}, set(data["distributions"]))
+            observed = work / "observed.json"
+            observed.write_text(json.dumps({
+                "subjects": [data["subjects"][0], data["subjects"][0]["sbom"]],
+                "distributions": data["distributions"],
+                "attestations": [{"subject": row["subject"], "status": "verified"} for row in data["attestations"]],
+            }))
+            result = subprocess.run([
+                "python3", str(ROOT / "scripts/ci/reconcile-release.py"),
+                "--manifest", str(manifest), "--observed", str(observed),
+            ], capture_output=True, text=True, check=False)
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+
     def test_reconciler_requires_every_distribution_and_exact_subject(self) -> None:
         expected = {
             "schema": "ai.dinglebear.labby/release-manifest/v1", "tag": "v1.2.3",
@@ -1172,7 +1203,7 @@ class ReleaseHelperTests(unittest.TestCase):
 
     def test_upgrade_qualification_consumes_exact_built_candidate(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
-        job = workflow[workflow.index("  upgrade-qualification:"):workflow.index("  incus-candidate:")]
+        job = workflow[workflow.index("  upgrade-qualification:"):workflow.index("  desktop-candidate:")]
         self.assertIn("actions/download-artifact@", job)
         self.assertIn("LABBY_N_MINUS_ONE_CANDIDATE_BINARY", job)
         self.assertIn("LABBY_N_MINUS_ONE_CANDIDATE_SHA256", job)
@@ -1183,7 +1214,7 @@ class ReleaseHelperTests(unittest.TestCase):
         build = workflow[workflow.index("  build:"):workflow.index("  upgrade-qualification:")]
         self.assertIn("actions/attest-build-provenance@", build)
         self.assertIn("subject-path: ${{ matrix.archive }}", build)
-        qualification = workflow[workflow.index("  upgrade-qualification:"):workflow.index("  incus-candidate:")]
+        qualification = workflow[workflow.index("  upgrade-qualification:"):workflow.index("  desktop-candidate:")]
         verify = qualification.index("verify-release-provenance.sh")
         extract = qualification.index("tar -C candidate")
         self.assertLess(verify, extract)

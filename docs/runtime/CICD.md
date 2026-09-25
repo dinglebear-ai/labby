@@ -221,14 +221,15 @@ jobs when their changed-path category is enabled:
 | MCP conformance | `rust_test` or `workflow` | Labby's revision-pinned rmcp authenticated smoke, dated `2026-07-28` suites, and the checked MCP/OpenAI auth denominator in `tools/verification/conformance/auth-requirements.json` |
 | MCP upstream drift | weekly/manual separate workflow | compares pinned MCP spec and rmcp commits, maps upstream changes to Labby code and required tests, and opens or updates one actionable issue |
 | Release metadata contract | `release` or `workflow` | required by `ci-gate`; version and Rust toolchain lockstep plus executable release hardening and seeded N-1 fixture permission tests before tagging; release builds do not run in PR CI |
-| Incus source contract | `incus` | runs the image release ShellCheck command at default severity and validates the Incus supply manifest, image-definition pins, install guidance, and rolling-pointer contract |
+| Incus source contract | `incus` | runs ShellCheck and validates the Incus supply manifest, image-definition pins, install guidance, and rolling-pointer contract; image-changing PRs also run the separate image build and smoke workflow |
 
 Every distributable or deployable Labby binary must include the `skills`
 feature. The Cargo feature graph makes `gateway` depend on `skills`, so the
 default `gateway-host`, the sealed `integrated-gateway`, and `all` profiles all
 include it. Featureless and non-gateway slices exist only to verify dependency
-boundaries. Release binaries and the Incus image
-each run a packaged-artifact smoke that proves the Skills CLI surface exists.
+boundaries. Release binaries run a packaged-artifact smoke. The independent
+Incus image smoke installs a candidate CLI after launch and proves its Skills
+surface works in the container.
 The standalone Skills job runs the `skills::` test filter, covering shared
 registry/provider behavior as well as MCP adapters without gateway support.
 The focused MCP job also runs `skills_mcp_e2e` cases prefixed `skills_`:
@@ -401,8 +402,8 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
    the exact repository, signer workflow, source ref, and hosted-runner policy.
    Offline consumers may pass a downloaded bundle and trusted root through the
    same GitHub CLI verification contract.
-7. If publication fails, the rollback transaction attempts Incus-pointer and
-   npm stable-pointer restoration before returning a previously draft GitHub
+7. If publication fails, the rollback transaction attempts npm stable-pointer
+   restoration before returning a previously draft GitHub
    release to draft. Attempted npm writes are explicitly compensated even when
    registry reads still show the old tag. If either consumer pointer cannot be
    restored, release assets remain public and recovery reports failure.
@@ -411,17 +412,11 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
    MCP versions are immutable, a failed transaction also records either
    published identity as `manual_reconciliation_required`; rollback can never
    claim success while one remains externally visible.
-8. The Incus and MCP Registry workflows are reusable calls from the candidate
-   graph. Incus publishes only immutable, version-namespaced candidate assets;
-   the parent release transaction verifies that generation in place, records
-   its checksummed `generation.json` alongside the versioned release, and moves
-   only the rolling Git ref with a force-with-lease compare-and-swap. The
-   recovery receipt retains the exact prior ref target, so rollback is another
-   pointer-only leased CAS and never rewrites generation contents.
-   They return validated 64-hex subject digests before the stable GitHub release
-   becomes visible. The MCP Registry only accepts a manifest whose npm version
+8. The MCP Registry workflow is a reusable call from the candidate graph. It
+   returns a validated manifest digest before the stable GitHub release becomes
+   visible. The MCP Registry only accepts a manifest whose npm version
    is already published with a matching `mcpName`, so the `npm-candidate` job
-   runs after the upgrade and Incus gates and before the registry call. It
+   runs after the upgrade gates and before the registry call. It
    publishes the immutable npm version under a version-specific candidate
    dist-tag; the `latest` consumer pointer is not advanced yet. No
    distribution workflow is triggered by `release.published`.
@@ -429,7 +424,7 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
    `release.yml` promote the draft through the verified promotion helper. It
    advances and verifies npm's `latest` dist-tag only after that promotion.
    A shared concurrency group serializes promotion and rollback across tags;
-   npm and Incus version guards reject an older run after a newer promotion.
+   npm version guards reject an older run after a newer promotion.
    Promotion failure enters the same recovery path and retains an actionable
    record of immutable registry identities that cannot be deleted.
 10. The aggregate reconciler runs immediately after Release completes and on a
@@ -439,7 +434,7 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
    published releases from before the manifest contract remain excluded. It keeps each
    version's result independent so a newer complete release cannot hide an older
    incomplete one. It downloads each manifest and observes
-   GitHub assets, npm version, Incus asset digest, and the MCP v0.1
+   GitHub assets, npm version, and the MCP v0.1
    version endpoint. The MCP publisher and observer hash the same canonical JSON
    object, so reconciliation fails closed unless the complete registry object,
    not merely its name and version, matches the published manifest digest. It
@@ -455,6 +450,20 @@ an existing byte-identical asset is reused and byte drift fails closed rather
 than clobbering it. Publishers are idempotent and the aggregate
 incident remains open until observations match the manifest. Never create a
 replacement tag or bump the version merely to hide partial publication.
+
+### Independent Incus image
+
+`incus-image.yml` runs on pull requests and main pushes that change the image
+definition, pinned supply, bootstrap, or image build/smoke/promotion logic. A
+manual run on `main` can rebuild it when an external supply source needs
+requalification. PR runs build and smoke without publishing. A successful main
+run creates an immutable `incus-<full commit SHA>` GitHub release with a
+checksummed image manifest, attests and verifies the artifacts, and advances
+`labby-incus-latest` with a leased rollback-capable pointer update. The image
+contains the container substrate and toolchains; bootstrap installs the selected
+Labby release. Normal `vX.Y.Z` releases never wait for or publish an image.
+Older version releases with an Incus asset remain covered by the reconciler's
+legacy manifest check.
 
 **Tag format:** `vX.Y.Z` — no other formats are accepted.
 

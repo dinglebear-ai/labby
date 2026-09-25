@@ -87,13 +87,14 @@ after `tailscale up`, and is cleared/redacted from both `labby.cfg` and
 blank when saving also clears any previously stored key, which is how to
 recover from an expired or failed preauth key.
 
-The Incus image pin is a separate config value from the plugin package
-version and the bundled native `labbyVersion`, but it is **not** meant to
-drift far from `labbyVersion` — both should run the same labby so native and
-incus mode behave identically. They diverged only because the incus image
-stopped publishing after `v1.8.5` (the `publish-image` CI bug below). With
-that fixed, bump `INCUS_IMAGE_VERSION` toward `labbyVersion` whenever a
-release publishes a matching image (see "Keeping the incus pin current").
+The current Unraid plugin still pins a legacy, versioned Incus image that
+contains a Labby binary. Its image pin is separate from the plugin package
+version and bundled native `labbyVersion`. New Incus substrate images are
+published independently under `incus-<commit>` tags and contain no Labby
+binary. Do not point this legacy plugin at one of those images: its startup
+path still expects a bundled executable. The normal Labby release no longer
+produces a new versioned image asset; updating the plugin's Incus consumer is
+a separate packaging change.
 
 `INCUS_IMAGE_VERSION` defaults to `"1.8.5"`, the newest release whose
 `labby-incus-x86_64-unknown-linux-gnu.tar.xz` asset both exists and was
@@ -137,17 +138,11 @@ workspace and would otherwise delete `dist/`) and pins `GH_REPO`;
 `incus_publish_job_checks_out_before_downloading_artifacts` in
 `crates/labby/tests/ci_changed_paths.rs` guards both halves.
 
-So going forward, every stable release publishes both the native tarball
-*and* the incus image. When bumping the plugin to bundle a newer labby,
-bump the two versions **together**: set `labbyVersion` and
-`tarballMD5` (native, per "Keeping the `.plg` in sync") and
-`INCUS_IMAGE_VERSION` and `INCUS_IMAGE_SHA256` (incus) to the same release,
-so both modes run the same labby. Never bump one without the other, and
-always confirm the image's `labby --version` (not its tag) before pinning.
-The current default is `1.8.5` for incus against `1.8.9` native only because
-`1.8.9` predates the publishing fix and has no image yet; the next release
-built with the fix should land both at the same version. Tracked as
-`lab-26zqj`.
+For this plugin version, keep the verified legacy `1.8.5` image pin until the
+Unraid Incus bootstrap is updated to install the plugin's selected Labby
+binary into an independent substrate image. The plugin's native binary pin
+can change separately; a native update does not update its Incus binary.
+The historical image publication gap was tracked as `lab-26zqj`.
 
 ## Layout
 

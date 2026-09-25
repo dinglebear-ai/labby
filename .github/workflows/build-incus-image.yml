@@ -6,6 +6,13 @@ on:
       release_tag:
         required: true
         type: string
+      source_ref:
+        required: true
+        type: string
+      publish:
+        required: false
+        default: false
+        type: boolean
     outputs:
       asset_sha256:
         value: ${{ jobs.publish-image.outputs.asset_sha256 }}
@@ -20,9 +27,11 @@ permissions:
 jobs:
   build-image:
     name: Build and smoke hosted x86_64 image
+    permissions:
+      contents: read
     uses: dinglebear-ai/workflows/.github/workflows/hosted-incus-image.yml@b2813662ca27ca8868752fb353d9dd568f2f97f9
     with:
-      checkout-ref: ${{ inputs.release_tag }}
+      checkout-ref: ${{ inputs.source_ref }}
       artifact-name: labby-incus-image
       artifact-directory: dist
       # Off: the hosted builder requires non-empty KACHE credentials when
@@ -75,26 +84,21 @@ jobs:
           pnpm build
         )
         git diff --exit-code -- apps/gateway-admin/public/install.sh
-        # CI qualifies every workspace member. The image packages only the
-        # Labby CLI, so compile that release target once on this builder.
+        # The image is independent of the Labby version. Compile the current
+        # CLI only to smoke the installation and provisioning paths.
         cargo build --package labby --bin labby --all-features --locked --release \
           --target x86_64-unknown-linux-gnu
-        mkdir -p target/incus-image-input
-        cp target/x86_64-unknown-linux-gnu/release/labby \
-          target/incus-image-input/labby
-        tar -C target/incus-image-input -czf \
-          target/incus-image-input/lab-x86_64-unknown-linux-gnu.tar.gz labby
         image_serial="${GITHUB_REF_NAME}-${GITHUB_SHA::12}"
         image_serial="${image_serial//[^A-Za-z0-9_.-]/-}"
         scripts/ci/build-incus-image.sh \
           "$image_serial" \
-          target/incus-image-input/lab-x86_64-unknown-linux-gnu.tar.gz \
           dist
       smoke-command: |
         EXPORT_DIR="$GITHUB_WORKSPACE/dist" \
         IMAGE_ALIAS="labby-incus-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
         SMOKE_CONTAINER_NAME="labby-incus-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
         SMOKE_PROFILE_NAME="labby-gateway-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+        SMOKE_LABBY_BINARY="$GITHUB_WORKSPACE/target/x86_64-unknown-linux-gnu/release/labby" \
         SMOKE_EXPECT_ANDROID_SDK=0 \
           scripts/ci/smoke-incus-image.sh
     secrets:
@@ -103,11 +107,14 @@ jobs:
 
   publish-image:
     name: Publish immutable candidate assets
+    if: ${{ inputs.publish }}
     needs: [build-image]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     outputs:
       asset_sha256: ${{ steps.publish.outputs.asset_sha256 }}
     steps:
@@ -150,9 +157,60 @@ jobs:
           asset_sha256=$(awk '{ name = $2; sub(/^\.\//, "", name) } name == "labby-incus-x86_64-unknown-linux-gnu.tar.xz" { print $1 }' dist/SHA256SUMS)
           [[ "$asset_sha256" =~ ^[0-9a-f]{64}$ ]]
           echo "asset_sha256=$asset_sha256" >> "$GITHUB_OUTPUT"
+          python3 scripts/ci/create-incus-image-manifest.py \
+            --tag "$RELEASE_TAG" --repository "$GITHUB_REPOSITORY" \
+            --commit "$GITHUB_SHA" --directory dist
+          if ! gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" \
+              --title "Labby Incus image ${GITHUB_SHA::12}" --draft \
+              --notes "Independent Incus substrate image. Install the desired Labby version with scripts/incus-bootstrap.sh."
+          fi
+          [[ $(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft) == true ]]
           mapfile -d '' assets < <(find dist -maxdepth 1 -type f -print0)
           scripts/ci/upload-immutable-release-assets.sh -- "${assets[@]}"
 
           verify_dir="$(mktemp -d)"
           gh release download "$RELEASE_TAG" --dir "$verify_dir"
           (cd "$verify_dir" && sha256sum --check --strict SHA256SUMS)
+          python3 scripts/ci/verify-incus-image-manifest.py "$verify_dir"
+      - name: Attest independent image release assets
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
+        with:
+          subject-path: dist/*
+      - name: Verify image provenance as a consumer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for artifact in dist/*; do
+            scripts/ci/verify-release-provenance.sh \
+              --repo "$GITHUB_REPOSITORY" --workflow incus-image.yml \
+              --ref "$GITHUB_REF" --artifact "$artifact"
+          done
+      - name: Promote verified image pointer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          INCUS_POINTER_RECEIPT: /tmp/labby-incus-pointer-receipt
+        run: scripts/ci/promote-incus-pointer.sh promote
+      - name: Publish image release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          gh release edit "$RELEASE_TAG" --draft=false
+          [[ $(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft) == false ]]
+      - name: Roll back failed image promotion
+        if: ${{ failure() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          INCUS_POINTER_RECEIPT: /tmp/labby-incus-pointer-receipt
+        run: |
+          set -u
+          if [[ -f "$INCUS_POINTER_RECEIPT/state" ]]; then
+            scripts/ci/promote-incus-pointer.sh rollback
+          fi
+          if gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft | grep -Fx false; then
+            gh release edit "$RELEASE_TAG" --draft=true
+          fi
