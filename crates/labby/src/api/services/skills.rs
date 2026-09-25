@@ -4,7 +4,7 @@ use std::sync::Arc;
 use axum::{
     Extension, Json,
     extract::{ConnectInfo, State},
-    http::HeaderMap,
+    http::{HeaderMap, header},
     routing::post,
 };
 use labby_auth::{Authenticator, VerifiedIdentity};
@@ -141,6 +141,43 @@ fn require_read_scope(
     })
 }
 
+fn artifact_client_hint(headers: &HeaderMap) -> &'static str {
+    let origin = headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok());
+    if origin.is_some_and(|value| value.starts_with("chrome-extension://")) {
+        "chrome_extension_origin"
+    } else if headers
+        .get("sec-fetch-site")
+        .is_some_and(|value| value == "same-origin")
+    {
+        "same_origin_web"
+    } else {
+        "unidentified"
+    }
+}
+
+fn missing_library_context(
+    action: &str,
+    reason: &'static str,
+    message: &'static str,
+    client_hint: &'static str,
+) -> ToolError {
+    tracing::warn!(
+        surface = "api",
+        service = "artifacts",
+        action,
+        reason,
+        client_hint,
+        kind = "forbidden",
+        "artifacts action rejected before Skill Library authorization"
+    );
+    ToolError::Forbidden {
+        message: message.to_owned(),
+        required_scopes: Vec::new(),
+    }
+}
+
 pub(crate) async fn handle(
     State(state): State<AppState>,
     peer: Option<Extension<ConnectInfo<SocketAddr>>>,
@@ -152,10 +189,18 @@ pub(crate) async fn handle(
     let request_id = headers
         .get("x-request-id")
         .and_then(|value| value.to_str().ok());
+    let client_hint = artifact_client_hint(&headers);
     if identity
         .as_ref()
         .is_some_and(|identity| identity.authenticator() == Authenticator::ProductCredential)
     {
+        tracing::warn!(
+            surface = "api", service = "artifacts", action = %req.action,
+            reason = "product_credential_wrong_route",
+            client_hint,
+            kind = "forbidden",
+            "artifacts action rejected before Skill Library authorization"
+        );
         return Err(ToolError::Forbidden {
             message: "project product credentials must use their bound protected MCP route"
                 .to_string(),
@@ -203,17 +248,29 @@ pub(crate) async fn handle(
                     sdk_kind: "service_unavailable".to_owned(),
                     message: "Skill Library is unavailable".to_owned(),
                 })?;
-                let identity = verified_identity.ok_or_else(|| ToolError::Forbidden {
-                    message: "Skill Library identity is required".to_owned(),
-                    required_scopes: vec![],
+                let identity = verified_identity.ok_or_else(|| {
+                    missing_library_context(
+                        &action,
+                        "identity",
+                        "Skill Library identity is required",
+                        client_hint,
+                    )
                 })?;
-                let auth = auth_for_library.ok_or_else(|| ToolError::Forbidden {
-                    message: "Skill Library authentication is required".to_owned(),
-                    required_scopes: vec![],
+                let auth = auth_for_library.ok_or_else(|| {
+                    missing_library_context(
+                        &action,
+                        "authentication",
+                        "Skill Library authentication is required",
+                        client_hint,
+                    )
                 })?;
-                let project_id = project_id.ok_or_else(|| ToolError::Forbidden {
-                    message: "Skill Library project context is required".to_owned(),
-                    required_scopes: vec![],
+                let project_id = project_id.ok_or_else(|| {
+                    missing_library_context(
+                        &action,
+                        "project_context",
+                        "Skill Library project context is required",
+                        client_hint,
+                    )
                 })?;
                 let csrf_verified = auth.via_session
                     && auth.csrf_token.as_deref().is_some_and(|token| {
@@ -303,6 +360,24 @@ mod tests {
             csrf_token: None,
             email: None,
         }
+    }
+
+    #[test]
+    fn artifact_client_hint_distinguishes_extension_and_same_origin_web_without_logging_origin() {
+        let mut headers = axum::http::HeaderMap::new();
+        assert_eq!(super::artifact_client_hint(&headers), "unidentified");
+        headers.insert("sec-fetch-site", "same-origin".parse().unwrap());
+        assert_eq!(super::artifact_client_hint(&headers), "same_origin_web");
+        headers.insert(
+            header::ORIGIN,
+            "chrome-extension://abcdefghijklmnopabcdefghijklmnop"
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(
+            super::artifact_client_hint(&headers),
+            "chrome_extension_origin"
+        );
     }
 
     fn app(auth: Option<AuthContext>, identity: Option<VerifiedIdentity>) -> Router {

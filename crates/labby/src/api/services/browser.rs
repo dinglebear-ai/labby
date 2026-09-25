@@ -317,6 +317,8 @@ async fn handle_socket(
         tracing::warn!(
             surface = "api",
             service = "browser",
+            client = "labby-webmcp-browser-extension",
+            extension_id = %labby_auth::util::fingerprint(&extension_id),
             kind = error.kind(),
             "browser extension connection ended"
         );
