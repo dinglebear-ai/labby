@@ -33,6 +33,50 @@ Nested `codemode.run()` inherits the already-established execution scope. Truste
 local saved snippets may compose inside that declared scope; route-scoped callers
 still cannot use nested snippet resolution to widen their authority.
 
+## Skill Resolution Policy
+
+Markdown snippets may declare a bounded `skills` policy. The policy is preserved in
+`SnippetInfo`, resolved snippet metadata, and Code Mode discovery so resolver-aware
+clients can select expertise without hard-coding one Skill into every workflow.
+
+Dynamic discovery uses search queries and ordered sources:
+
+```yaml
+skills:
+  resolution: dynamic
+  queries: ["{{task}}", "rust security review"]
+  sources: ["team", "public", "mounted"]
+  max_candidates: 20
+  max_selected: 5
+  max_bytes_per_skill: 16384
+```
+
+Pinned workflows use exact `skill://` identifiers and must not also declare dynamic
+queries:
+
+```yaml
+skills:
+  resolution: pinned
+  pinned: ["skill://team-depot/skill/unmarket/core-qa-evidence/SKILL.md"]
+  sources: ["team"]
+```
+
+Trust is source-defined rather than author-defined: `team` is authoritative,
+`public` and `mounted` are advisory, and `skills_sh` is an untrusted candidate
+source. Snippet authors cannot promote an external source to authoritative trust.
+
+Skill policy never grants tools. The snippet's `tools` declaration remains the
+authority ceiling. In particular, using `skills_sh` requires the snippet to already
+declare an exact `*::depot.skills.search_skills_sh` tool id; the policy cannot add
+that capability itself. Limits are validated before publication, pinned values must
+be bounded `skill://` URIs, and malformed or repeated policy blocks are rejected.
+
+The declaration is intentionally separate from execution. Current saved-snippet
+execution still runs the snippet body unchanged; a resolver may consume the policy
+and load Skill instructions, but those instructions cannot widen the execution
+scope. This keeps the policy usable for adaptive workflows without silently changing
+legacy snippets.
+
 ## Administrative Actions
 
 Reading snippet bodies, executing or testing snippets, creating/removing snippets, and promotion flows require the scopes shown in the generated catalog. Promotion and removal are destructive actions.

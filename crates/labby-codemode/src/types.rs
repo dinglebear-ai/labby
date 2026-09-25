@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 
 use crate::CodeModeCallError;
 use crate::error::ToolError;
+use crate::snippet::skill_declarations::SnippetSkillPolicy;
 use crate::snippet::store::{SnippetInfo, SnippetInputSpec, SnippetInputType};
 
 use super::artifacts::CodeModeArtifactReceipt;
@@ -106,6 +107,9 @@ pub struct CatalogDescriptor {
     /// and legacy snippets. An explicit empty declaration remains visible.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<crate::snippet::tool_declarations::SnippetToolDeclarations>,
+    /// Optional snippet skill-resolution policy; metadata only, never authority.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skills: Option<SnippetSkillPolicy>,
     /// Catalog entry class.
     pub kind: CodeModeCatalogKind,
     /// Stable Code Mode identifier.
@@ -253,6 +257,7 @@ impl CatalogDescriptor {
         Self {
             kind: CodeModeCatalogKind::Tool,
             tools: None,
+            skills: None,
             id: namespaced_tool_id(namespace, tool),
             name: tool.to_string(),
             namespace: namespace.to_string(),
@@ -289,6 +294,7 @@ impl CatalogDescriptor {
         Self {
             kind,
             tools: None,
+            skills: None,
             id: id.to_string(),
             name: name.to_string(),
             namespace: namespace.to_string(),
@@ -375,6 +381,7 @@ impl CatalogDescriptor {
         Self {
             kind: CodeModeCatalogKind::Snippet,
             tools: info.tools.clone(),
+            skills: info.skills.clone(),
             id: format!("snippet::{}", info.name),
             name: info.name.clone(),
             namespace: "snippet".to_string(),
@@ -440,6 +447,8 @@ fn snippet_input_json_type(ty: SnippetInputType) -> Option<&'static str> {
 pub(crate) struct CodeModeDiscoveryEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) tools: Option<crate::snippet::tool_declarations::SnippetToolDeclarations>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) skills: Option<SnippetSkillPolicy>,
     pub(crate) kind: CodeModeCatalogKind,
     pub(crate) id: String,
     pub(crate) path: String,
@@ -470,6 +479,7 @@ impl CodeModeDiscoveryEntry {
         Self {
             kind: entry.kind,
             tools: entry.tools.clone(),
+            skills: entry.skills.clone(),
             id: entry.id.clone(),
             path,
             namespace: entry.namespace.clone(),

@@ -43,6 +43,13 @@ inputs:
 tools:
   - axon::axon
   - github::search_issues
+skills:
+  resolution: dynamic
+  queries: ["{{task}}", "repository research"]
+  sources: ["team", "public", "mounted"]
+  max_candidates: 20
+  max_selected: 5
+  max_bytes_per_skill: 16384
 ---
 
 ## Tutorial: How This Snippet Is Built
@@ -86,6 +93,19 @@ Rules:
 - Mark genuinely required values with `required: true`.
 - Keep unknown input rejection useful: declared inputs cause `snippets.exec` to reject unexpected caller params.
 - Mirror upstream schemas in the generated call params. Snippet inputs describe user-facing knobs; upstream schemas validate each MCP tool call.
+
+## Skill-Aware Snippets
+
+Use a `skills` block when the workflow should select expertise at runtime instead of baking one Skill into the snippet. Choose one mode:
+
+- `resolution: dynamic` requires one or more `queries` and searches the declared `sources`.
+- `resolution: pinned` requires one or more exact `skill://` URIs in `pinned` and must not declare `queries`.
+
+Available sources are `team`, `public`, `mounted`, and `skills_sh`. Their trust is fixed by Labby: team Skills are authoritative; public/mounted Skills are advisory; skills.sh results are candidates only. Do not represent an external Skill as policy authority.
+
+Skill metadata never expands tool access. If `sources` contains `skills_sh`, first discover the exact Depot `depot.skills.search_skills_sh` tool id and include that exact id in `tools`; validation rejects the snippet otherwise. A Skill may recommend a tool call, but the call still fails unless the caller scope and snippet `tools` declaration permit it.
+
+Keep `max_candidates`, `max_selected`, and `max_bytes_per_skill` small. Skill policies are bounded and appear in snippet discovery metadata, but the current execution engine does not silently fetch or inject Skill bodies into user input. Resolver-aware workflows must consume the declaration explicitly.
 
 ## Authoring Workflow
 
