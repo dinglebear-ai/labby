@@ -1709,7 +1709,7 @@ mod tests {
                 iat: crate::util::now_unix() as usize,
                 jti: "missing-identity-provenance".to_string(),
                 scope: "lab:read".to_string(),
-                azp: String::new(),
+                azp: "test-client".to_string(),
                 identity_issuer: None,
                 identity_credential_id: None,
             })
@@ -1774,7 +1774,7 @@ mod tests {
                 iat: crate::util::now_unix() as usize,
                 jti: "conflicting-identity-provenance".to_string(),
                 scope: "lab:read".to_string(),
-                azp: String::new(),
+                azp: "test-client".to_string(),
                 identity_issuer: Some(crate::google::GOOGLE_ISSUER.to_string()),
                 identity_credential_id: Some("machine-client:ambiguous".to_string()),
             })
@@ -1827,7 +1827,7 @@ mod tests {
                 iat: crate::util::now_unix() as usize,
                 jti: "identity-link-test".to_string(),
                 scope: "lab:read".to_string(),
-                azp: String::new(),
+                azp: "test-client".to_string(),
                 identity_issuer: Some(crate::google::GOOGLE_ISSUER.to_string()),
                 identity_credential_id: None,
             })
@@ -1908,7 +1908,7 @@ mod tests {
                     iat: crate::util::now_unix() as usize,
                     jti: jti.to_string(),
                     scope: "lab:read".to_string(),
-                    azp: String::new(),
+                    azp: "test-client".to_string(),
                     identity_issuer: Some(identity_issuer.to_string()),
                     identity_credential_id: None,
                 })
@@ -1962,7 +1962,7 @@ mod tests {
             iat: crate::util::now_unix() as usize,
             jti: "j-1".to_string(),
             scope: "syslog:read".to_string(),
-            azp: String::new(),
+            azp: "test-client".to_string(),
             identity_issuer: Some(crate::google::GOOGLE_ISSUER.to_string()),
             identity_credential_id: None,
         };
@@ -2002,7 +2002,7 @@ mod tests {
             iat: crate::util::now_unix() as usize,
             jti: "j-1".to_string(),
             scope: "syslog:read".to_string(),
-            azp: String::new(),
+            azp: "test-client".to_string(),
             identity_issuer: Some(crate::google::GOOGLE_ISSUER.to_string()),
             identity_credential_id: None,
         };
@@ -2132,7 +2132,7 @@ mod tests {
                 iat: crate::util::now_unix() as usize,
                 jti: "exact-resource".to_string(),
                 scope: "mcp:read".to_string(),
-                azp: String::new(),
+                azp: "test-client".to_string(),
                 identity_issuer: Some(crate::google::GOOGLE_ISSUER.to_string()),
                 identity_credential_id: None,
             })
@@ -2193,7 +2193,7 @@ mod tests {
                 iat: usize::try_from(now - 7_200).unwrap(),
                 jti: "expired-http-token".to_string(),
                 scope: "mcp:read".to_string(),
-                azp: String::new(),
+                azp: "test-client".to_string(),
                 identity_issuer: Some(crate::google::GOOGLE_ISSUER.to_string()),
                 identity_credential_id: None,
             })
@@ -2239,7 +2239,7 @@ mod tests {
                 iat: crate::util::now_unix() as usize,
                 jti: "insufficient-scope".to_string(),
                 scope: "mcp:read".to_string(),
-                azp: String::new(),
+                azp: "test-client".to_string(),
                 identity_issuer: Some(crate::google::GOOGLE_ISSUER.to_string()),
                 identity_credential_id: None,
             })
