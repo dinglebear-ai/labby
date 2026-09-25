@@ -599,7 +599,7 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("scripts/ci/create-release-manifest.py", workflow)
         self.assertIn("release-manifest.json", workflow)
         self.assertIn("scripts/ci/reconcile-release.py", reminder)
-        self.assertIn("/^v\\d+\\.\\d+\\.\\d+$/", reminder)
+        self.assertIn('[[ "$tag" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]] || continue', reminder)
         self.assertIn("manage-release-incident.sh", reminder)
         self.assertIn("Release publication is incomplete", self.text("scripts/ci/manage-release-incident.sh"))
         for surface in ("github", "npm", "mcp"):
@@ -1646,7 +1646,7 @@ if authenticated_action; then exit 93; fi
 
     def test_reconciler_runs_immediately_after_release(self) -> None:
         reminder = self.text(".github/workflows/release-publish-reminder.yml")
-        self.assertIn('workflows: ["Release", "release-please"]', reminder)
+        self.assertIn('workflows: ["Release", "release-please", "Incus image"]', reminder)
 
     def test_existing_auto_merge_is_paused_before_release_please_refreshes(self) -> None:
         workflow = self.text(".github/workflows/release-please.yml")
