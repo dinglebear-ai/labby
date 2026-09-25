@@ -1152,11 +1152,12 @@ fn codemode_proxy_routes_through_call_tool() {
 /// `codemode.describe` (`generate_discovery_js`'s output) closely enough to
 /// prove two things the string-matching tests can't, by calling `describe()`
 /// twice in one run: (a) a successful `describe_types` round trip lands the
-/// type body in markdown, and (b) a REJECTED `describe_types` call is caught
-/// and `describe()` still resolves (never rejects) with markdown minus the
-/// type section — the specific behavior the try/catch fix added.
+/// type body in markdown with `schema_status=complete`, and (b) a REJECTED
+/// `describe_types` call is caught and returned as an explicit
+/// `schema_status=unavailable` + `schema_error` instead of silently looking
+/// like a complete description with its parameter section missing.
 #[test]
-fn codemode_describe_degrades_gracefully_when_describe_types_call_fails() {
+fn codemode_describe_surfaces_schema_error_when_describe_types_call_fails() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_labby"))
         .args(["internal", "code-mode-runner"])
         .stdin(Stdio::piped())
@@ -1183,16 +1184,27 @@ codemode.describe = async function(target) {
     "\n\n- kind: `tool`\n- id: `" + entry.id + "`\n- helper: `" + entry.helper +
     "`\n- signature: `" + entry.signature + "`\n";
   var typeBody = null;
+  var schemaStatus = null;
+  var schemaError = null;
   try {
     var typeResponse = await callTool("__lab_internal::describe_types", { id: entry.id });
     typeBody = typeResponse && typeResponse.dts;
+    if (typeBody) {
+      schemaStatus = "complete";
+      markdown += "\nParameters (TypeScript):\n\n```typescript\n" + typeBody + "```\n";
+    } else {
+      schemaStatus = "unavailable";
+      schemaError = { kind: "schema_unavailable", message: "no declaration" };
+      markdown += "\nParameters (TypeScript): unavailable. Inspect `schema_error`.\n";
+    }
   } catch (e) {
-    typeBody = null;
+    schemaStatus = "unavailable";
+    var typeErrorMessage = String(e && e.message ? e.message : e);
+    try { schemaError = JSON.parse(typeErrorMessage); }
+    catch (_parseError) { schemaError = { kind: "schema_lookup_failed", message: typeErrorMessage }; }
+    markdown += "\nParameters (TypeScript): unavailable. Inspect `schema_error`.\n";
   }
-  if (typeBody) {
-    markdown += "\nParameters (TypeScript):\n\n```typescript\n" + typeBody + "```\n";
-  }
-  return { path: entry.path, id: entry.id, kind: "tool", markdown: markdown };
+  return { path: entry.path, id: entry.id, kind: "tool", schema_status: schemaStatus, schema_error: schemaError, markdown: markdown };
 };
 "##;
     let code = r#"async () => {
@@ -1255,6 +1267,8 @@ codemode.describe = async function(target) {
             && succeeded_markdown.contains("DemoPingInput"),
         "a successful describe_types round trip must land the type body in markdown: {succeeded_markdown}"
     );
+    assert_eq!(result["succeeded"]["schema_status"], "complete");
+    assert!(result["succeeded"]["schema_error"].is_null());
 
     let failed_markdown = result["failed"]["markdown"]
         .as_str()
@@ -1264,8 +1278,15 @@ codemode.describe = async function(target) {
         "the already-resolved path/description must survive a type-fetch failure: {failed_markdown}"
     );
     assert!(
-        !failed_markdown.contains("Parameters (TypeScript)"),
-        "no type section must be appended when describe_types rejected: {failed_markdown}"
+        failed_markdown.contains("Parameters (TypeScript): unavailable")
+            && failed_markdown.contains("schema_error"),
+        "a type-fetch failure must be explicit in the returned docs: {failed_markdown}"
+    );
+    assert_eq!(result["failed"]["schema_status"], "unavailable");
+    assert!(
+        result["failed"]["schema_error"].is_object(),
+        "the lookup failure must be preserved as structured schema_error: {}",
+        result["failed"]
     );
 
     drop(stdin);

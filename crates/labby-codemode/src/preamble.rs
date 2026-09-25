@@ -511,6 +511,8 @@ codemode.describe = async function(target) {{
   }}
   var entry = exact[0];
   var markdown;
+  var schemaStatus = null;
+  var schemaError = null;
   if (entry.kind === "snippet") {{
     var inputLines = (entry.inputs || []).map(function(input) {{
       var bits = ["- `" + input.name + "` (" + input.ty + ")"];
@@ -531,24 +533,49 @@ codemode.describe = async function(target) {{
     markdown += "\nDeclared upstream tools: " + toolDeclaration + "\nExecution policy: native snippets.exec/test intersects a nonempty declaration with caller authority and never grants authority. Nested codemode.run retains the enclosing run scope; it does not reapply the declaration.\n";
   }} else if (entry.kind === "tool") {{
     markdown = "# " + entry.path + "\n\n" + entry.description + "\n\n- kind: `tool`\n- id: `" + entry.id + "`\n- helper: `" + entry.helper + "`\n- signature: `" + entry.signature + "`\n";
-    // Fetched from the host on demand rather than embedded in the sandbox
-    // preamble up front — the host already has this cached from the same
-    // catalog render this execution's discovery index was built from, so
-    // this is usually a cheap round trip, not a fresh computation (see the
-    // Rust-side `describe_types` dispatch comment for when it isn't). Caught,
-    // not propagated: the target is already fully resolved above (path/id/
-    // helper/signature), so a transient failure fetching the type body alone
-    // must not fail the whole `describe()` call — degrade to no type section
-    // instead, matching the host's own fail-open behavior for this lookup.
+    // Fetch the declaration through the reserved host bridge. The host
+    // resolves this from the exact catalog snapshot used to build this
+    // execution's discovery index, so describe() does not re-enumerate the
+    // broad live catalog after it has already resolved a target.
     var typeBody = null;
     try {{
       var typeResponse = await callTool("__lab_internal::describe_types", {{ id: entry.id }});
       typeBody = typeResponse && typeResponse.dts;
+      if (typeBody) {{
+        schemaStatus = "complete";
+        markdown += "\nParameters (TypeScript):\n\n```typescript\n" + typeBody + "```\n";
+      }} else {{
+        schemaStatus = "unavailable";
+        schemaError = {{
+          kind: "schema_unavailable",
+          message: "The resolved tool has no available parameter declaration.",
+          recovery: {{
+            action: "revise_and_retry",
+            same_arguments: "conditional",
+            guidance: "Retry this Code Mode execution with top-level upstreams: [\"" + entry.namespace + "\"] using the canonical upstream id, or retry later."
+          }}
+        }};
+        markdown += "\nParameters (TypeScript): unavailable. Inspect `schema_error` for recovery guidance.\n";
+      }}
     }} catch (e) {{
-      typeBody = null;
-    }}
-    if (typeBody) {{
-      markdown += "\nParameters (TypeScript):\n\n```typescript\n" + typeBody + "```\n";
+      schemaStatus = "unavailable";
+      var typeErrorMessage = String(e && e.message ? e.message : e);
+      try {{
+        schemaError = JSON.parse(typeErrorMessage);
+      }} catch (_parseError) {{
+        schemaError = {{ kind: "schema_lookup_failed", message: typeErrorMessage }};
+      }}
+      if (!schemaError || typeof schemaError !== "object" || Array.isArray(schemaError)) {{
+        schemaError = {{ kind: "schema_lookup_failed", message: typeErrorMessage }};
+      }}
+      if (!schemaError.recovery) {{
+        schemaError.recovery = {{
+          action: "revise_and_retry",
+          same_arguments: "conditional",
+          guidance: "Retry this Code Mode execution with top-level upstreams: [\"" + entry.namespace + "\"] using the canonical upstream id, or retry later."
+        }};
+      }}
+      markdown += "\nParameters (TypeScript): unavailable. Inspect `schema_error` for the lookup failure and recovery guidance.\n";
     }}
   }} else {{
     markdown = "# " + entry.path + "\n\n" + entry.description
@@ -565,6 +592,8 @@ codemode.describe = async function(target) {{
     helper: entry.helper,
     tags: entry.tags || [],
     safety: entry.safety,
+    schema_status: schemaStatus,
+    schema_error: schemaError,
     markdown: markdown
   }};
 }};

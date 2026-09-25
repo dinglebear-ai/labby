@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::CodeModeCallError;
 use crate::error::ToolError;
-use crate::host::{CodeModeHost, ExecCtx, ToolCallOutcome, ToolsRender};
+use crate::host::{CodeModeHost, ExecCtx, ToolCallOutcome};
 use labby_runtime::{CodeModeConfig, CodeModeResultShapePolicy};
 
 use super::CodeModeBroker;
@@ -212,9 +212,22 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             });
         };
         let (include_snippets, use_cache) = discovery_render_params(caller, surface, scope);
+        let render_started = std::time::Instant::now();
         let render = host
             .list_tools(caller, surface, scope, include_snippets, use_cache)
             .await?;
+        tracing::debug!(
+            surface = "dispatch",
+            service = "code_mode",
+            action = "catalog.snapshot",
+            elapsed_ms = render_started.elapsed().as_millis(),
+            entry_count = render.entries.len(),
+            "captured Code Mode discovery catalog snapshot"
+        );
+        *self.discovery_render.lock().map_err(|_| ToolError::Sdk {
+            sdk_kind: "internal_error".to_string(),
+            message: "Code Mode discovery snapshot lock is poisoned".to_string(),
+        })? = Some(render.clone());
         let catalog = render
             .entries
             .iter()
@@ -625,35 +638,34 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                         param: "id".to_string(),
                     });
                 };
-                // Re-fetches the same catalog render `build_code_mode_proxy` already
-                // pulled for this execution — same caller/surface/scope, so on the
-                // common path (tool set unchanged since execution start) this hits
-                // the manager's `CatalogRenderCache` fingerprint and returns the
-                // already-computed `.dts` rather than regenerating it. Not a
-                // guarantee: any surface/scope can reach this cache (see
-                // `CatalogRenderCache`'s doc comment in `labby-gateway`), and a
-                // concurrent execution with a different tool set can evict the
-                // single slot between this call and the one `build_code_mode_proxy`
-                // made — in that case this re-runs the live catalog build instead.
-                // The sandbox only ever asks for the ONE id it already resolved via
-                // the (already-embedded, schema-free) discovery index, so this
-                // stays a single lookup per `codemode.describe()` call either way —
-                // never a bulk catalog dump into the sandbox.
-                let (include_snippets, use_cache) = discovery_render_params(caller, surface, scope);
-                let render = host
-                    .list_tools(caller, surface, scope, include_snippets, use_cache)
-                    .await
-                    .unwrap_or_else(|err| {
-                        tracing::warn!(
-                            surface = "dispatch",
-                            service = "code_mode",
-                            action = "describe_types",
-                            kind = err.kind(),
-                            error = %err,
-                            "describe_types: list_tools failed; degrading to no type info"
-                        );
-                        ToolsRender::empty()
-                    });
+                // Prefer the exact render captured while building this execution's
+                // discovery proxy. This makes describe() a lookup over the same
+                // authorized snapshot that resolved the target instead of a second
+                // live catalog enumeration that can be slower, fail independently,
+                // or observe a different tool set. Direct internal-call tests and
+                // other paths that bypass proxy construction retain a live fallback,
+                // but failures there are propagated so callers can surface an
+                // explicit incomplete-schema state.
+                let lookup_started = std::time::Instant::now();
+                let snapshot = self
+                    .discovery_render
+                    .lock()
+                    .map_err(|_| ToolError::Sdk {
+                        sdk_kind: "internal_error".to_string(),
+                        message: "Code Mode discovery snapshot lock is poisoned".to_string(),
+                    })?
+                    .clone();
+                let (render, catalog_source) = if let Some(render) = snapshot {
+                    (render, "execution_snapshot")
+                } else {
+                    let (include_snippets, use_cache) =
+                        discovery_render_params(caller, surface, scope);
+                    (
+                        host.list_tools(caller, surface, scope, include_snippets, use_cache)
+                            .await?,
+                        "live_fallback",
+                    )
+                };
                 // `list_tools` only filters on the caller's allowed namespaces;
                 // the finer-grained per-tool grant (`scope.allows`) is applied by
                 // `discovery_entry_visible` at the point the sandbox's own
@@ -669,6 +681,16 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                     .find(|entry| entry.id == id && discovery_entry_visible(entry, scope))
                     .map(|entry| entry.dts.clone())
                     .filter(|dts| !dts.is_empty());
+                tracing::debug!(
+                    surface = "dispatch",
+                    service = "code_mode",
+                    action = "describe_types",
+                    catalog_source,
+                    elapsed_ms = lookup_started.elapsed().as_millis(),
+                    entry_count = render.entries.len(),
+                    schema_found = dts.is_some(),
+                    "resolved Code Mode tool parameter declaration"
+                );
                 Ok(serde_json::json!({ "dts": dts }))
             }
             _ => Err(ToolError::Sdk {
@@ -1032,7 +1054,7 @@ mod scoped_call_id_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::NoopHost;
+    use crate::host::{NoopHost, ToolsRender};
     use crate::types::{CodeModeCallerCapabilities, UiLink};
     use serde_json::json;
 
@@ -1309,6 +1331,7 @@ mod tests {
         entries: Arc<[CatalogDescriptor]>,
         catalog_json: Arc<str>,
         fail_list_tools: bool,
+        list_tools_calls: std::sync::atomic::AtomicUsize,
     }
 
     impl FixtureHost {
@@ -1320,6 +1343,7 @@ mod tests {
                 entries: Arc::from(entries),
                 catalog_json: Arc::from(catalog_json),
                 fail_list_tools: false,
+                list_tools_calls: std::sync::atomic::AtomicUsize::new(0),
             }
         }
 
@@ -1330,6 +1354,11 @@ mod tests {
                 fail_list_tools: true,
                 ..Self::new(Vec::new())
             }
+        }
+
+        fn list_tools_call_count(&self) -> usize {
+            self.list_tools_calls
+                .load(std::sync::atomic::Ordering::Relaxed)
         }
     }
 
@@ -1342,6 +1371,8 @@ mod tests {
             _include_snippets: bool,
             _use_cache: bool,
         ) -> Result<ToolsRender, ToolError> {
+            self.list_tools_calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if self.fail_list_tools {
                 return Err(ToolError::Sdk {
                     sdk_kind: "upstream_connect_error".to_string(),
@@ -1784,6 +1815,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn describe_types_reuses_execution_snapshot_for_broad_and_narrow_catalogs() {
+        let catalog = || {
+            let mut entries = (0..512)
+                .map(|index| {
+                    CatalogDescriptor::tool(
+                        "bulk",
+                        &format!("tool_{index}"),
+                        "Broad catalog fixture",
+                        None,
+                        None,
+                    )
+                })
+                .collect::<Vec<_>>();
+            entries.push(CatalogDescriptor::tool(
+                "linear-notification-worker",
+                "prepare_developer_handoff",
+                "Prepare a developer handoff",
+                Some(json!({
+                    "type": "object",
+                    "properties": { "issue": { "type": "string" } },
+                    "required": ["issue"]
+                })),
+                None,
+            ));
+            entries
+        };
+
+        for scope in [
+            ToolScope::default(),
+            ToolScope::scoped_namespaces(vec!["linear-notification-worker".to_string()], vec![]),
+        ] {
+            let host = FixtureHost::new(catalog());
+            let broker = CodeModeBroker::new(Some(&host));
+
+            let _proxy = broker
+                .build_code_mode_proxy(&CodeModeCaller::TrustedLocal, CodeModeSurface::Cli, &scope)
+                .await
+                .expect("discovery proxy must build");
+            assert_eq!(
+                host.list_tools_call_count(),
+                1,
+                "proxy construction should enumerate the catalog exactly once"
+            );
+
+            let result = broker
+                .call_tool_id(
+                    "__lab_internal::describe_types",
+                    json!({ "id": "linear-notification-worker::prepare_developer_handoff" }),
+                    CodeModeCaller::TrustedLocal,
+                    CodeModeSurface::Cli,
+                    &scope,
+                    ExecCtx::none(),
+                )
+                .await
+                .expect("describe_types must resolve from the captured execution snapshot");
+
+            assert!(
+                result["dts"]
+                    .as_str()
+                    .is_some_and(|dts| dts.contains("issue")),
+                "captured snapshot must retain the target parameter declaration: {result}"
+            );
+            assert_eq!(
+                host.list_tools_call_count(),
+                1,
+                "describe_types must not re-enumerate the live catalog after discovery"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn dispatch_internal_call_describe_types_returns_null_for_unknown_id() {
         let host = FixtureHost::new(vec![CatalogDescriptor::tool(
             "github",
@@ -1840,6 +1942,11 @@ mod tests {
         ]);
         let broker = CodeModeBroker::new(Some(&host));
         let scope = ToolScope::new(vec![], vec!["github::allowed_tool".to_string()]);
+        let _proxy = broker
+            .build_code_mode_proxy(&CodeModeCaller::TrustedLocal, CodeModeSurface::Cli, &scope)
+            .await
+            .expect("scoped discovery proxy must build");
+        assert_eq!(host.list_tools_call_count(), 1);
 
         let allowed = broker
             .call_tool_id(
@@ -1897,11 +2004,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_internal_call_describe_types_degrades_on_host_error() {
+    async fn dispatch_internal_call_describe_types_propagates_host_error() {
         let host = FixtureHost::failing();
         let broker = CodeModeBroker::new(Some(&host));
 
-        let result = broker
+        let error = broker
             .call_tool_id(
                 "__lab_internal::describe_types",
                 json!({ "id": "github::list_tags" }),
@@ -1911,8 +2018,12 @@ mod tests {
                 ExecCtx::none(),
             )
             .await
-            .expect("a host list_tools failure must fail open, not propagate as an error");
-        assert_eq!(result, json!({ "dts": null }));
+            .expect_err("a host list_tools failure must remain observable to describe()");
+        assert_eq!(error.kind(), "upstream_connect_error");
+        assert!(
+            error.to_string().contains("simulated list_tools failure"),
+            "the original lookup failure must be preserved: {error}"
+        );
     }
 
     #[tokio::test]
