@@ -116,10 +116,8 @@ fn deadline_and_output_are_incomplete() {
     let (_dir, backend) = fixture(
         "#!/bin/sh\ncase \"$*\" in *-help*) echo 'TLC Version 2.19';; *) yes x | head -c 9000000;; esac\n",
     );
-    assert!(matches!(
-        backend.run(&plan(2000)).verdict,
-        Verdict::Incomplete { .. }
-    ));
+    let report = backend.run(&plan(2000));
+    assert!(matches!(report.verdict, Verdict::Incomplete { .. }), "{report:?}");
 }
 
 #[test]
