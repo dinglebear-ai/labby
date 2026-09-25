@@ -1,4 +1,0 @@
-# The conformance runner is strict: an unlisted failure fails CI, and any
-# expected failure that starts passing also fails CI.
-server: []
-client: []
