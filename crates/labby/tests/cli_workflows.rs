@@ -160,6 +160,7 @@ async fn auth_status_reports_saved_presence_without_claiming_online_authenticati
     );
     assert_eq!(value["saved_session"], false);
     assert_eq!(value["verified_online"], false);
+    assert!(value["granted_scopes"].is_null());
     let logout = success(
         &run(
             home.path(),

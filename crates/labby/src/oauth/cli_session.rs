@@ -12,6 +12,7 @@ use base64::Engine as _;
 use labby_auth::config::AuthConfig;
 use labby_auth::upstream::runtime::build_upstream_oauth_runtime_with_redirect;
 use labby_runtime::gateway_config::{UpstreamConfig, UpstreamOauthRegistration};
+use rusqlite::OptionalExtension as _;
 use sha2::{Digest, Sha256};
 use url::Url;
 
@@ -384,13 +385,53 @@ pub(crate) fn stored_identity(server: &Url) -> Result<Option<String>> {
     Ok(parse_profile(raw.as_bytes())?.map(|profile| profile.upstream_name))
 }
 
-/// Stored presence is not proof of an unexpired or authorized remote session.
+/// Stored scopes describe only this CLI's saved grant; they do not describe a
+/// separate MCP client's token or prove current authorization at the server.
 pub(crate) fn status(server: &Url) -> Result<serde_json::Value> {
-    let configured = stored_identity(server)?.is_some();
+    let identity = stored_identity(server)?;
+    let configured = identity.is_some();
+    let granted_scopes = identity
+        .as_deref()
+        .map(|identity| saved_granted_scopes(&profile_path(server)?.join("oauth.db"), identity))
+        .transpose()?
+        .flatten();
     Ok(
         serde_json::json!({"server":server.as_str(),"saved_session":configured,"verified_online":false,
-        "guidance":if configured { "A local OAuth session is saved. This offline check did not refresh credentials or verify remote authorization." } else { "No saved OAuth session exists for this destination. Use labby auth login --server URL." }}),
+        "granted_scopes":granted_scopes,
+        "guidance":if configured { "Scopes, when shown, are from this CLI's saved OAuth grant. This offline check did not refresh credentials or verify remote authorization; it does not inspect Codex or another MCP client's token." } else { "No saved OAuth session exists for this destination. Use labby auth login --server URL." }}),
     )
+}
+
+fn saved_granted_scopes(path: &Path, identity: &str) -> Result<Option<Vec<String>>> {
+    let metadata = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    ensure!(metadata.is_file(), "invalid CLI OAuth database path");
+    // SQLite's NOFOLLOW also rejects macOS's /var ancestor symlink. Canonicalize
+    // the validated parent while retaining NOFOLLOW for the database entry.
+    let canonical_path = path
+        .parent()
+        .context("CLI OAuth database has no parent directory")?
+        .canonicalize()?
+        .join(
+            path.file_name()
+                .context("CLI OAuth database has no filename")?,
+        );
+    let db = rusqlite::Connection::open_with_flags(
+        canonical_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )?;
+    let raw: Option<String> = db
+        .query_row(
+            "SELECT granted_scopes_json FROM upstream_oauth_credentials WHERE upstream_name = ?1 AND subject = ?2",
+            rusqlite::params![identity, SUBJECT],
+            |row| row.get(0),
+        )
+        .optional()?;
+    raw.map(|raw| serde_json::from_str(&raw).map_err(Into::into))
+        .transpose()
 }
 
 async fn clear_profile_credentials(
@@ -474,6 +515,48 @@ pub(crate) async fn token(server: &Url) -> Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_scopes_read_only_from_selected_cli_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("oauth.db");
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE upstream_oauth_credentials (upstream_name TEXT, subject TEXT, granted_scopes_json TEXT);").unwrap();
+        db.execute(
+            "INSERT INTO upstream_oauth_credentials VALUES (?1, ?2, ?3)",
+            rusqlite::params!["operator-server-current", SUBJECT, r#"["lab:read","lab"]"#],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO upstream_oauth_credentials VALUES (?1, ?2, ?3)",
+            rusqlite::params!["operator-server-old", SUBJECT, r#"["lab:admin"]"#],
+        )
+        .unwrap();
+        drop(db);
+
+        assert_eq!(
+            saved_granted_scopes(&path, "operator-server-current").unwrap(),
+            Some(vec!["lab:read".into(), "lab".into()])
+        );
+        assert_eq!(saved_granted_scopes(&path, "missing").unwrap(), None);
+        assert_eq!(
+            saved_granted_scopes(&dir.path().join("missing.db"), "missing").unwrap(),
+            None
+        );
+        assert!(!dir.path().join("missing.db").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_scopes_reject_symlinked_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.db");
+        std::fs::write(&target, b"untouched").unwrap();
+        let path = dir.path().join("oauth.db");
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        assert!(saved_granted_scopes(&path, "operator-server").is_err());
+        assert_eq!(std::fs::read(target).unwrap(), b"untouched");
+    }
 
     #[tokio::test]
     async fn logout_clears_only_the_selected_identity_and_is_idempotent() {
