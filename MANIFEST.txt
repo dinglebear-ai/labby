@@ -1,0 +1,92 @@
+Labby local-state archive from macpoo
+Date: 2026-09-25
+Repository: dinglebear-ai/labby
+
+UNPUBLISHED_BRANCHES 57
+BRANCH ci/probe-self-hosted 73786f0ba001567234c4e475f73662206f1d26d7 unique_vs_origin=1
+BRANCH claude/apm-manifest 54671d428ed0643ce963a1ebf1af3b7f320afa73 unique_vs_origin=1
+BRANCH claude/codemode-followups 148007af0dd6f7b382901c5492461ffa2e48caa1 unique_vs_origin=3
+BRANCH claude/labby-logs-tootie-incus-735dba 891512543d661ed031b59dd7170babb112acc942 unique_vs_origin=1
+BRANCH claude/log-review-031aa6 891512543d661ed031b59dd7170babb112acc942 unique_vs_origin=1
+BRANCH claude/macpoo-route-visibility-573697 68e7215eafb68ce1b99559e151971926906a415c unique_vs_origin=5
+BRANCH claude/recent-branches-prs-9aa573 891512543d661ed031b59dd7170babb112acc942 unique_vs_origin=1
+BRANCH claude/systematic-debugging-a0a2a9 891512543d661ed031b59dd7170babb112acc942 unique_vs_origin=1
+BRANCH claude/team-depot-ingestion-config-eef1ee 891512543d661ed031b59dd7170babb112acc942 unique_vs_origin=1
+BRANCH codex/774-auth-state-ordering 9f27ecd5cb318a703154516764b4f9a65051c69e unique_vs_origin=3
+BRANCH codex/auth-status-scopes 891512543d661ed031b59dd7170babb112acc942 unique_vs_origin=1
+BRANCH codex/ci-gateway-slice-parallel 06fc271c9bb8d22a9dbeda77c942562e507002cf unique_vs_origin=3
+BRANCH codex/ci-queue-prewarm-stability 42750a1cc162ff70e621931719d6f371acb2ea2c unique_vs_origin=1
+BRANCH codex/codemode-native-parity 891512543d661ed031b59dd7170babb112acc942 unique_vs_origin=1
+BRANCH codex/decouple-advisory-coverage d98b4c9561ac06054e5b4fbcc4ed3bc2701c8263 unique_vs_origin=4
+BRANCH codex/extension-attribution 89b75622e9658972483535502adbc080008b30a9 unique_vs_origin=1
+BRANCH codex/file-stash-cleanup-retry-test aee937533e67f5b4057521428d04554c7c381464 unique_vs_origin=1
+BRANCH codex/host-recovery-permissions 7a9cea4f8902c47f79282013a8cc5b26147a2211 unique_vs_origin=5
+BRANCH codex/incus-binary-only 31885b3ae5df415888fea5f299ca32506583f052 unique_vs_origin=1
+BRANCH codex/incus-release-decoupling 390ff7f1057947c5cab37831b30a560166de77f9 unique_vs_origin=5
+BRANCH codex/labby-code-mode-refresh 72c27c2eb196b25c0855e17f5d3cf1097ed5ac76 unique_vs_origin=5
+BRANCH codex/library-catalog-502-20260923 d738b8af6c2587f6c4b3f5a3d4d9c29d96e41a43 unique_vs_origin=1
+BRANCH codex/library-polish-20260923 14d8f1f662a019eb43e7c957ce80fcc6e7c6b07d unique_vs_origin=1
+BRANCH codex/live-e2e-cargo-cache 09ad9d5733d43ab5e038bf6d3d4979c079180cbb unique_vs_origin=1
+BRANCH codex/n-minus-one-setup 20c4778556d4574b93b905e433ff17d161265ba0 unique_vs_origin=1
+BRANCH codex/p0-client-identity-azp-20260924 29e19c7a32ac428c01c23740a1266dd918aa3702 unique_vs_origin=1
+BRANCH codex/pr-736-lavra-remediation 806246e8f9fec61a88d3849813ae6784df21193a unique_vs_origin=3
+BRANCH codex/pr-744-review fcd5a4c642d39cb0bf7f74131a75e622291cc21e unique_vs_origin=8
+BRANCH codex/pr-763-ci-release e444eeee3d7e6a2be9d263e58c853c0067033cc5 unique_vs_origin=3
+BRANCH codex/pr763-postmerge-ci af400d381fee042a23ce7a107177ccd0ea2766fa unique_vs_origin=1
+BRANCH codex/recovery-service-owner b5032472caecf3f0488186c4ee78e636009c9bf3 unique_vs_origin=1
+BRANCH codex/release-2.1.0 f46d9cdee0021ab55e23bcaaa1eba0dcc0ba2545 unique_vs_origin=3
+BRANCH codex/release-230-host-fixture 6c4b524c6dbc160667f547304ce87ac3fd525bb2 unique_vs_origin=7
+BRANCH codex/release-230-q3-ci 056e4687fb6e12453dd22a0b49ad00377ffce985 unique_vs_origin=1
+BRANCH codex/release-231-lock-fix dbb06eff07f4d1b5c9d549c0db729dfefb80936e unique_vs_origin=3
+BRANCH codex/release-qualification-recovery aaf981603704a3c4efb0c6f6c6493671bc604189 unique_vs_origin=1
+BRANCH codex/release-windows-fix 36b6d84ed3bc94bf92b8a869ea7a002d30aad824 unique_vs_origin=2
+BRANCH codex/review-labby-733 e243cbe5c462d64d58d049821c3ed1eb5239e17f unique_vs_origin=9
+BRANCH codex/review-labby-736 a353d548f9a872fc0f24f02075c3b8bba7660bf6 unique_vs_origin=5
+BRANCH codex/stabilize-macos-lock-test ddc876a6ffe819acb4f8f3a344217165e437892f unique_vs_origin=1
+BRANCH codex/updater-lock-test-lifecycle b37d06d87013d7c3404c0f963f34dccdee0b07e4 unique_vs_origin=1
+BRANCH docs/lab-actions-visible-with-codemode-20260924 7337cb510e367d4fbdf2c6790ea70bf52c8f2dfd unique_vs_origin=1
+BRANCH feat/issue-731-web-mcp-apps c586abbc61fadb76515d25349216b7fc917216f3 unique_vs_origin=1
+BRANCH feat/multi-provider-signin 93dfde095bd37d31189582d3251687544d08c3be unique_vs_origin=1
+BRANCH feat/snippet-skill-resolution-20260920 ee69e4c0e6b5fea80cc3cfb065dfcdf9ca7b194b unique_vs_origin=1
+BRANCH fix/access-setup-required-and-labby-home-auth 2177a71a104c4a8698ed846d1db20b0ed53b6ccb unique_vs_origin=9
+BRANCH fix/detach-list-changed-refresh bdddbf3f21ea669c89c26800a0c201c0e7001d2b unique_vs_origin=2
+BRANCH fix/managed-mirror-purge-retry 0c419d23b1806f0a401b674dc23bc5fa3acb5561 unique_vs_origin=7
+BRANCH fix/release-preflight-version-marker 5b43dd1ab719b6ec5c1f37d194dfb05aaeb94458 unique_vs_origin=1
+BRANCH fix/resource-catalog-snapshot-20260921 5e7a766b4525f8e0aa8c310fe59255c751ed36fe unique_vs_origin=8
+BRANCH fix/resource-projection-per-upstream-failure 16c18720583f90a6e74eb6f9f22a274fe656836d unique_vs_origin=3
+BRANCH gateway-linear cf4900254e951ec98b232f57e436aab6b0496c0d unique_vs_origin=3
+BRANCH gateway-linear-on-main 6eae35703f5d540b14ecb2644542bae5c30612e6 unique_vs_origin=6
+BRANCH issue-709-atomic-tools 72fa0b80f4ea1dc12ed3a773fb49c8f1dab7370b unique_vs_origin=2
+BRANCH worktree-agent-a9426dd9d875102d9 a97c5b26358058d9d027d0b16d3f9a6e37150f93 unique_vs_origin=1
+BRANCH worktree-agent-aa84ac03d3e41c35b 9e8a829997410b7e4d368219e43d543fd394e3f4 unique_vs_origin=1
+BRANCH worktree-gateway-review-fixes de41829c1cc23e46eabf66594836e75fbf3865d8 unique_vs_origin=4
+
+ORPHAN_DETACHED_HEADS 2
+DETACHED ba2be6b3ff14c5d4e2902ba97a707b1f1700e614 paths=/Users/jmagar/.codex/worktrees/review-labby-747;/Users/jmagar/.codex/worktrees/review-labby-combined
+DETACHED 4df9d5bc821e19da2daa58a0c74a3d13ce363f63 paths=/Users/jmagar/.codex/worktrees/review-labby-752
+
+DIRTY_WORKTREE_SNAPSHOTS 20
+WIP bd68ff5d5b1c734e455bbce808380a8062f56067 head=ba2be6b3ff14c5d4e2902ba97a707b1f1700e614 branch=DETACHED changes=100 untracked=0 path=/Users/jmagar/.codex/worktrees/review-labby-combined
+WIP 2338071b6abf27cd8d05ca8a08b08c73c3e2dd8b head=97c67a2bba8beb977374a7534f12f4f6c95dea61 branch=fix/787-codemode-describe-schema changes=12 untracked=0 path=/Users/jmagar/workspace/labby
+WIP f9d37f3ede5470941dfe2d113c2519c743853743 head=41ef5fb4936a49993bc36fc95ee95760100a9e30 branch=fix/mcp-app-visibility-stale-writer changes=3 untracked=0 path=/Users/jmagar/workspace/labby-mcp-app-fix
+WIP 6e44a2a9b05ab6007845868894c792435c2fba77 head=3345daa9cafb9c9c2dac93ab8f009db65b309625 branch=codex/774-http-lifecycle-parity changes=1 untracked=0 path=/Users/jmagar/workspace/labby-worktrees/774-http-lifecycle-parity
+WIP 6ba2013d71fd94b4a2f11940aae9c629ed725130 head=891512543d661ed031b59dd7170babb112acc942 branch=codex/auth-status-scopes changes=3 untracked=0 path=/Users/jmagar/workspace/labby-worktrees/auth-status-scopes
+WIP fdbf813fe996d17f1d6adef55a4f440dd4532f6f head=891512543d661ed031b59dd7170babb112acc942 branch=codex/codemode-native-parity changes=5 untracked=0 path=/Users/jmagar/workspace/labby-worktrees/codemode-native-parity
+WIP 131a73fc7708606e0cda3a94e2b16e8d960fe6a0 head=65302f26364e102573823a08972bc1c4fd212699 branch=codex/enrichment-observability-20260923 changes=23 untracked=0 path=/Users/jmagar/workspace/labby-worktrees/enrichment-observability-20260923
+WIP 9e039ddd2dc91530e6321137c4348a197da669b4 head=65302f26364e102573823a08972bc1c4fd212699 branch=codex/isolate-upstreams-20260923 changes=13 untracked=0 path=/Users/jmagar/workspace/labby-worktrees/isolate-upstreams-20260923
+WIP 23bb5a4ae5ded76d7b699afddd1f2331dc476590 head=72fa0b80f4ea1dc12ed3a773fb49c8f1dab7370b branch=issue-709-atomic-tools changes=10 untracked=0 path=/Users/jmagar/workspace/labby-worktrees/issue-709-atomic-tools
+WIP 5f57feed1cca8dfc6fff84853f997014e9d2003e head=41ef5fb4936a49993bc36fc95ee95760100a9e30 branch=skill/map-issue-185 changes=16 untracked=2 path=/Users/jmagar/workspace/labby-worktrees/map-issue-185
+WIP 453e25c8028ce71a5350dd45e30b2cf0628fafbe head=24b918b65a9fd64cc2c7d9c3c9a7cee7d3ca77bf branch=docs/mcp-observability-adr-20260924 changes=3 untracked=1 path=/Users/jmagar/workspace/labby-worktrees/mcp-observability-adr-20260924
+WIP cc98840038acb61e0b492ea0545710f2891dd264 head=29e19c7a32ac428c01c23740a1266dd918aa3702 branch=codex/p0-client-identity-azp-20260924 changes=2 untracked=0 path=/Users/jmagar/workspace/labby-worktrees/p0-client-identity-azp-20260924
+WIP 449f12135e898c595685bf768127c53ca58b7720 head=24b918b65a9fd64cc2c7d9c3c9a7cee7d3ca77bf branch=codex/p0-client-identity-unification-20260924 changes=16 untracked=0 path=/Users/jmagar/workspace/labby-worktrees/p0-client-identity-unification-20260924
+WIP 5a1189ec8c5e04abb195b0b694f6022d9c1438fa head=ee69e4c0e6b5fea80cc3cfb065dfcdf9ca7b194b branch=feat/snippet-skill-resolution-20260920 changes=11 untracked=1 path=/Users/jmagar/workspace/labby-worktrees/snippet-skill-resolution-20260920
+WIP 340d518477a3903a2b1e4071d52a9d31fa591d91 head=41ef5fb4936a49993bc36fc95ee95760100a9e30 branch=feat/issue-185-trace-propagation-onepr changes=19 untracked=3 path=/Users/jmagar/workspace/labby/.claude/worktrees/gateway-full-review/.claude/worktrees/issue185-onepr
+WIP 3cccf0defe69c97e57374fd55086ba211ecb4709 head=6eae35703f5d540b14ecb2644542bae5c30612e6 branch=gateway-linear-on-main changes=1 untracked=0 path=/Users/jmagar/workspace/labby/.claude/worktrees/gateway-review-fixes
+WIP 070ce060236637fe230f41a6715d072e5c2b8c52 head=d06b89b2b6ed09903406bc3086b3fbbcfa3044a5 branch=issue-731-lifecycle-hardening changes=12 untracked=0 path=/Users/jmagar/workspace/labby/.claude/worktrees/issue-731
+WIP de350e169a0cf8cd2c006131756ccf0b78468361 head=28ee7b740311ac6c859e7bfb5871feb771e76db3 branch=codex/tla-output-lifecycle changes=1 untracked=0 path=/Users/jmagar/workspace/labby/.worktrees/codex/tla-output-lifecycle
+WIP c31bb86c52e0558e88024e7a20761a7f3993da41 head=1151b03de24ca2c1ef3f647b58e7e632b9f4a2bd branch=codex/fix-merged-review-findings changes=37 untracked=0 path=/private/tmp/labby-merged-review-20260923
+WIP 99384ff1695ef035e56d1e9a271e5ed448c8f0c7 head=f8da6d13bfa33a7fc337795df764ee3af6645aa1 branch=DETACHED changes=2 untracked=0 path=/private/tmp/labby-pr780-maincheck
+
+Restore examples:
+  git branch restored/<name> <BRANCH_SHA>
+  git branch restored/wip <WIP_COMMIT_SHA>
