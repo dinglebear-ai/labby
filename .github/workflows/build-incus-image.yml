@@ -75,7 +75,9 @@ jobs:
           pnpm build
         )
         git diff --exit-code -- apps/gateway-admin/public/install.sh
-        cargo build --workspace --all-features --locked --release \
+        # CI qualifies every workspace member. The image packages only the
+        # Labby CLI, so compile that release target once on this builder.
+        cargo build --package labby --bin labby --all-features --locked --release \
           --target x86_64-unknown-linux-gnu
         mkdir -p target/incus-image-input
         cp target/x86_64-unknown-linux-gnu/release/labby \

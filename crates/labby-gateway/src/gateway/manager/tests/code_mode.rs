@@ -901,6 +901,48 @@ async fn code_mode_catalog_preserves_upstream_output_schema_for_describe_types()
         "signature must not degrade typed output to unknown: {}",
         entry.signature
     );
+
+    let warmed = CodeModeHost::list_tools(
+        &manager,
+        &CodeModeCaller::TrustedLocal,
+        CodeModeSurface::Mcp,
+        &ToolScope::default(),
+        false,
+        false,
+    )
+    .await
+    .expect("same catalog serves from render cache");
+    assert_eq!(warmed.fingerprint, render.fingerprint);
+
+    let changed_schema = json!({
+        "type": "object",
+        "properties": { "count": { "type": "integer" } },
+        "required": ["count"]
+    });
+    pool.insert_entry_for_tests(
+        "alpha",
+        healthy_entry_with_typed_tool("alpha", "typed", changed_schema.clone()),
+    )
+    .await;
+    let changed = CodeModeHost::list_tools(
+        &manager,
+        &CodeModeCaller::TrustedLocal,
+        CodeModeSurface::Mcp,
+        &ToolScope::default(),
+        false,
+        false,
+    )
+    .await
+    .expect("changed schema invalidates render cache");
+    assert_ne!(changed.fingerprint, render.fingerprint);
+    assert_eq!(
+        changed
+            .entries
+            .iter()
+            .find(|entry| entry.id == "alpha::typed")
+            .and_then(|entry| entry.output_schema.clone()),
+        Some(changed_schema)
+    );
 }
 
 #[tokio::test]
@@ -977,6 +1019,401 @@ async fn code_mode_host_list_tools_for_mcp_cold_connects_with_a_finite_budget() 
 }
 
 #[tokio::test]
+async fn warm_code_mode_catalog_does_not_wait_for_an_unrelated_hanging_upstream() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind hanging upstream fixture");
+    let addr = listener.local_addr().expect("listener addr");
+    tokio::spawn(async move {
+        while let Ok((socket, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let _socket = socket;
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            });
+        }
+    });
+
+    let mut hanging = fixture_http_upstream("alpha");
+    hanging.url = Some(format!("http://{addr}/mcp"));
+    let upstreams = vec![hanging, fixture_http_upstream("beta")];
+    let (manager, pool) = code_mode_manager_with_upstreams(upstreams.clone()).await;
+    manager
+        .seed_config_unchecked_for_tests(GatewayConfig {
+            gateway: labby_runtime::gateway_config::GatewayPreferences {
+                auto_reconnect: true,
+                ..Default::default()
+            },
+            code_mode: CodeModeConfig {
+                enabled: true,
+                timeout_ms: 4_000,
+                ..CodeModeConfig::default()
+            },
+            upstream: upstreams,
+            ..GatewayConfig::default()
+        })
+        .await;
+    let mut beta = healthy_entry_with_tool("beta", "ping");
+    let ping = beta.tools.get_mut("ping").expect("fixture tool");
+    ping.destructive = false;
+    ping.tool.annotations = Some(rmcp::model::ToolAnnotations::new().read_only(true));
+    pool.insert_entry_for_tests("beta", beta).await;
+
+    let render = tokio::time::timeout(
+        Duration::from_secs(1),
+        CodeModeHost::list_tools(
+            &manager,
+            &CodeModeCaller::TrustedLocal,
+            CodeModeSurface::Mcp,
+            &ToolScope::default().read_only(),
+            false,
+            false,
+        ),
+    )
+    .await
+    .expect("a warm catalog must not wait for an unrelated upstream")
+    .expect("healthy cached tools remain available");
+    assert_eq!(render.entries.len(), 1);
+    assert_eq!(render.entries[0].id, "beta::ping");
+}
+
+#[tokio::test]
+async fn warm_catalog_publishes_changed_tools_to_the_one_shot_cache() {
+    let upstream = fixture_http_upstream("alpha");
+    let (manager, pool) = code_mode_manager_with_upstreams(vec![upstream.clone()]).await;
+    manager
+        .seed_config_unchecked_for_tests(GatewayConfig {
+            gateway: labby_runtime::gateway_config::GatewayPreferences {
+                auto_reconnect: true,
+                ..Default::default()
+            },
+            code_mode: CodeModeConfig {
+                enabled: true,
+                ..CodeModeConfig::default()
+            },
+            upstream: vec![upstream],
+            ..GatewayConfig::default()
+        })
+        .await;
+    let cache_path = manager.code_mode_catalog_cache_path();
+
+    for name in ["ping", "pong"] {
+        pool.insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", name))
+            .await;
+        manager
+            .code_mode_catalog_tools(true, None, None)
+            .await
+            .expect("warm catalog is available without network refresh");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if std::fs::read_to_string(&cache_path)
+                    .is_ok_and(|persisted| persisted.contains(&format!("\"{name}\"")))
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("background publication updates the one-shot cache");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+#[tokio::test]
+async fn warm_non_cold_catalog_skips_tasks_for_healthy_upstreams() {
+    let upstreams = vec![
+        fixture_http_upstream("alpha"),
+        fixture_http_upstream("beta"),
+    ];
+    let (manager, pool) = code_mode_manager_with_upstreams(upstreams).await;
+    pool.insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "ping"))
+        .await;
+    pool.insert_entry_for_tests("beta", healthy_entry_with_tool("beta", "pong"))
+        .await;
+
+    for _ in 0..3 {
+        let tools = manager
+            .code_mode_catalog_tools(false, None, None)
+            .await
+            .expect("healthy catalog available");
+        assert_eq!(tools.len(), 2);
+    }
+    assert_eq!(
+        manager
+            .code_mode_warm_up_task_spawns
+            .load(Ordering::Relaxed),
+        0,
+        "healthy upstreams should be filtered before task creation"
+    );
+}
+
+#[tokio::test]
+async fn warm_public_catalog_bounds_cold_oauth_subject_enumeration() {
+    let public = fixture_http_upstream("public");
+    let private = fixture_oauth_upstream("private", "http://127.0.0.1:9/mcp");
+    let upstreams = vec![public, private.clone()];
+    let (manager, pool) = code_mode_manager_with_upstreams(upstreams.clone()).await;
+    manager
+        .seed_config_unchecked_for_tests(GatewayConfig {
+            gateway: labby_runtime::gateway_config::GatewayPreferences {
+                auto_reconnect: true,
+                ..Default::default()
+            },
+            code_mode: CodeModeConfig {
+                enabled: true,
+                ..CodeModeConfig::default()
+            },
+            upstream: upstreams,
+            ..GatewayConfig::default()
+        })
+        .await;
+    pool.insert_entry_for_tests("public", healthy_entry_with_tool("public", "ping"))
+        .await;
+    pool.register_upstream_config_for_tests(&private);
+    let lock = pool
+        .subject_connect_lock_for_tests("private", "alice")
+        .await;
+    let guard = lock.lock().await;
+
+    for _ in 0..2 {
+        let started = tokio::time::Instant::now();
+        let tools = tokio::time::timeout(
+            Duration::from_millis(1_500),
+            manager.code_mode_catalog_tools(true, None, Some("alice")),
+        )
+        .await
+        .expect("hanging OAuth enumeration has a finite Code Mode budget")
+        .expect("warm public catalog remains available");
+        assert_eq!(tool_ids(&tools), vec!["public::ping"]);
+        assert!(
+            started.elapsed() >= Duration::from_millis(800),
+            "fixture must actually hold the subject connection"
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(1_500),
+            "subject discovery must stay within its one-second budget"
+        );
+    }
+    drop(guard);
+}
+
+#[tokio::test]
+async fn oauth_warm_up_admission_is_shared_across_subjects() {
+    let private = fixture_oauth_upstream("private", "http://127.0.0.1:9/mcp");
+    let (manager, pool) = code_mode_manager_with_upstreams(vec![private.clone()]).await;
+    manager
+        .seed_config_unchecked_for_tests(GatewayConfig {
+            gateway: labby_runtime::gateway_config::GatewayPreferences {
+                upstream_discovery_concurrency: Some(1),
+                ..Default::default()
+            },
+            code_mode: CodeModeConfig {
+                enabled: true,
+                ..CodeModeConfig::default()
+            },
+            upstream: vec![private.clone()],
+            ..GatewayConfig::default()
+        })
+        .await;
+    pool.register_upstream_config_for_tests(&private);
+
+    let subjects: Vec<String> = (0..12).map(|n| format!("subject-{n}")).collect();
+    let mut held_locks = Vec::new();
+    for subject in &subjects {
+        let lock = pool
+            .subject_connect_lock_for_tests("private", subject)
+            .await;
+        held_locks.push(lock.lock_owned().await);
+    }
+
+    let requests = subjects.into_iter().map(|subject| {
+        let manager = manager.clone();
+        async move {
+            manager
+                .code_mode_catalog_tools(false, None, Some(&subject))
+                .await
+        }
+    });
+    let results = futures::future::join_all(requests).await;
+    for result in results {
+        result.expect("cold subject catalog request stays bounded");
+    }
+    assert!(
+        manager
+            .code_mode_warm_up_task_spawns
+            .load(Ordering::Relaxed)
+            <= 1,
+        "distinct subjects must obey configured shared warm-up admission"
+    );
+    drop(held_locks);
+}
+
+#[test]
+fn warm_up_timeout_respects_stdio_discovery_budget() {
+    let mut stdio = fixture_http_upstream("stdio");
+    stdio.command = Some("node".to_string());
+    stdio.url = None;
+    assert!(
+        super::super::code_mode_runtime::code_mode_warm_up_timeout(&stdio, Duration::from_secs(30),)
+            >= Duration::from_mins(1)
+    );
+    assert!(
+        super::super::code_mode_runtime::code_mode_warm_up_timeout(&stdio, Duration::from_secs(90),)
+            >= Duration::from_secs(90)
+    );
+}
+
+#[tokio::test]
+async fn stalled_oauth_warm_ups_release_admission_for_other_subjects() {
+    let private = fixture_oauth_upstream("private", "http://127.0.0.1:9/mcp");
+    let (manager, pool) = code_mode_manager_with_upstreams(vec![private.clone()]).await;
+    pool.register_upstream_config_for_tests(&private);
+
+    let subjects = ["held-0", "held-1", "held-2", "next"];
+    let mut held_locks = Vec::new();
+    for subject in subjects {
+        let lock = pool
+            .subject_connect_lock_for_tests("private", subject)
+            .await;
+        held_locks.push(lock.lock_owned().await);
+    }
+
+    let requests = subjects[..3].iter().map(|subject| {
+        let manager = manager.clone();
+        async move {
+            manager
+                .code_mode_catalog_tools(false, None, Some(subject))
+                .await
+        }
+    });
+    for result in futures::future::join_all(requests).await {
+        result.expect("stalled subject request stays bounded");
+    }
+    assert_eq!(
+        manager
+            .code_mode_warm_up_task_spawns
+            .load(Ordering::Relaxed),
+        3,
+        "three held subjects fill background admission"
+    );
+
+    tokio::time::sleep(Duration::from_millis(1_200)).await;
+    manager
+        .code_mode_catalog_tools(false, None, Some("next"))
+        .await
+        .expect("new subject retries after held warm-ups expire");
+    assert_eq!(
+        manager
+            .code_mode_warm_up_task_spawns
+            .load(Ordering::Relaxed),
+        4,
+        "expired warm-ups release a permit for another subject"
+    );
+    drop(held_locks);
+}
+
+#[tokio::test]
+async fn hanging_refresh_does_not_block_a_disjoint_scope() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind hanging upstream fixture");
+    let addr = listener.local_addr().expect("listener addr");
+    tokio::spawn(async move {
+        while let Ok((socket, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let _socket = socket;
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            });
+        }
+    });
+    let mut hanging = fixture_http_upstream("alpha");
+    hanging.url = Some(format!("http://{addr}/mcp"));
+    let upstreams = vec![hanging, fixture_http_upstream("beta")];
+    let (manager, pool) = code_mode_manager_with_upstreams(upstreams.clone()).await;
+    manager
+        .seed_config_unchecked_for_tests(GatewayConfig {
+            code_mode: CodeModeConfig {
+                enabled: true,
+                timeout_ms: 4_000,
+                ..CodeModeConfig::default()
+            },
+            upstream: upstreams,
+            ..GatewayConfig::default()
+        })
+        .await;
+    pool.insert_live_tool_server_for_tests(
+        "beta",
+        Arc::new(tokio::sync::RwLock::new(vec!["ping".to_string()])),
+    )
+    .await;
+
+    let first = manager.clone();
+    let hanging_refresh = tokio::spawn(async move {
+        let alpha = std::collections::BTreeSet::from(["alpha".to_string()]);
+        first
+            .refresh_code_mode_catalog_allowed(None, None, Some(&alpha))
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let beta = std::collections::BTreeSet::from(["beta".to_string()]);
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        manager.refresh_code_mode_catalog_allowed(None, None, Some(&beta)),
+    )
+    .await
+    .expect("disjoint scope must not wait for alpha")
+    .expect("beta refresh succeeds");
+    hanging_refresh.abort();
+}
+
+#[tokio::test]
+async fn completed_probe_is_cached_when_another_probe_times_out() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind hanging upstream fixture");
+    let addr = listener.local_addr().expect("listener addr");
+    tokio::spawn(async move {
+        while let Ok((socket, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let _socket = socket;
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            });
+        }
+    });
+    let mut hanging = fixture_http_upstream("alpha");
+    hanging.url = Some(format!("http://{addr}/mcp"));
+    let upstreams = vec![hanging, fixture_http_upstream("beta")];
+    let (manager, pool) = code_mode_manager_with_upstreams(upstreams.clone()).await;
+    manager
+        .seed_config_unchecked_for_tests(GatewayConfig {
+            code_mode: CodeModeConfig {
+                enabled: true,
+                timeout_ms: 2_000,
+                ..CodeModeConfig::default()
+            },
+            upstream: upstreams,
+            ..GatewayConfig::default()
+        })
+        .await;
+    pool.insert_live_tool_server_for_tests(
+        "beta",
+        Arc::new(tokio::sync::RwLock::new(vec!["ping".to_string()])),
+    )
+    .await;
+
+    manager
+        .refresh_code_mode_catalog_allowed(None, None, None)
+        .await
+        .expect("a completed beta probe makes the catalog usable");
+    let cache = std::fs::read_to_string(manager.code_mode_catalog_cache_path())
+        .expect("completed probe is persisted");
+    assert!(
+        cache.contains("\"ping\""),
+        "cache must contain beta: {cache}"
+    );
+}
+
+#[tokio::test]
 async fn code_mode_host_mcp_refresh_budget_fails_closed_without_a_real_upstream() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -997,6 +1434,10 @@ async fn code_mode_host_mcp_refresh_budget_fails_closed_without_a_real_upstream(
     let (manager, _pool) = code_mode_manager_with_upstreams(upstreams.clone()).await;
     manager
         .seed_config_unchecked_for_tests(GatewayConfig {
+            gateway: labby_runtime::gateway_config::GatewayPreferences {
+                auto_reconnect: true,
+                ..Default::default()
+            },
             code_mode: CodeModeConfig {
                 enabled: true,
                 timeout_ms: 2_000,
@@ -2332,6 +2773,92 @@ async fn semantic_rank_never_returns_ids_outside_scope_filtered_catalog() {
         .unwrap();
     assert!(result.is_empty());
 }
+#[tokio::test]
+async fn warm_embedding_cache_shares_vectors_without_copying() {
+    let (manager, _pool) = code_mode_manager_with_upstreams(Vec::new()).await;
+    let mut cfg = manager.code_mode_config().await;
+    cfg.semantic_search.tei_url = Some("http://127.0.0.1:1".to_string());
+    manager
+        .seed_config_unchecked_for_tests(GatewayConfig {
+            code_mode: cfg,
+            ..GatewayConfig::default()
+        })
+        .await;
+    let vectors = Arc::new(vec![("alpha::ping".to_string(), vec![0.25, 0.75])]);
+    *manager.code_mode_embedding_cache.write().await =
+        Some(crate::gateway::code_mode::CatalogEmbeddingCache {
+            fingerprint: "warm".to_string(),
+            vectors: Arc::clone(&vectors),
+        });
+    let entries = vec![labby_codemode::CatalogDescriptor::tool(
+        "alpha", "ping", "Ping", None, None,
+    )];
+    let first = manager
+        .ensure_embeddings_for_fingerprint("warm", &entries)
+        .await;
+    let second = manager
+        .ensure_embeddings_for_fingerprint("warm", &entries)
+        .await;
+    assert!(Arc::ptr_eq(&vectors, &first));
+    assert!(Arc::ptr_eq(&first, &second));
+}
+
+#[tokio::test]
+async fn slow_embedding_does_not_block_another_fingerprint() {
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/info"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({
+            "max_client_batch_size": 128
+        })))
+        .mount(&server)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/embed"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(&request.body).expect("valid TEI request");
+            let response = wiremock::ResponseTemplate::new(200).set_body_json(json!([[1.0, 0.0]]));
+            if body["inputs"][0] == "slow" {
+                response.set_delay(Duration::from_secs(1))
+            } else {
+                response
+            }
+        })
+        .mount(&server)
+        .await;
+    let (manager, _pool) = code_mode_manager_with_upstreams(Vec::new()).await;
+    let mut cfg = manager.code_mode_config().await;
+    cfg.semantic_search.tei_url = Some(server.uri());
+    manager
+        .seed_config_unchecked_for_tests(GatewayConfig {
+            code_mode: cfg,
+            ..GatewayConfig::default()
+        })
+        .await;
+    let slow = vec![labby_codemode::CatalogDescriptor::tool(
+        "alpha", "slow", "slow", None, None,
+    )];
+    let fast = vec![labby_codemode::CatalogDescriptor::tool(
+        "alpha", "fast", "fast", None, None,
+    )];
+    let slow_manager = manager.clone();
+    let slow_call = tokio::spawn(async move {
+        slow_manager
+            .ensure_embeddings_for_fingerprint("slow", &slow)
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(75)).await;
+    let fast_vectors = tokio::time::timeout(
+        Duration::from_millis(700),
+        manager.ensure_embeddings_for_fingerprint("fast", &fast),
+    )
+    .await
+    .expect("unrelated corpus must not wait for slow TEI request");
+    assert_eq!(fast_vectors.len(), 1);
+    assert_eq!(slow_call.await.expect("slow task joins").len(), 1);
+}
+
 #[tokio::test]
 async fn ensure_embeddings_unreachable_tei_fails_open_and_records_cooldown() {
     let (manager, _pool) = code_mode_manager_with_upstreams(Vec::new()).await;

@@ -103,6 +103,21 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [2.3.2](https://github.com/dinglebear-ai/labby/compare/v2.3.1...v2.3.2) (2026-09-24)
+
+
+### Fixed
+
+* **ci:** keep host recovery key private during upgrade ([2333525](https://github.com/dinglebear-ai/labby/commit/2333525fe36a468223a9a71c507825afa1e261c8))
+* **ci:** normalize MCP Registry manifest digests ([b5d1fbd](https://github.com/dinglebear-ai/labby/commit/b5d1fbdb759bf829116c6c40a3767a0b292b95e5))
+
+## [2.3.1](https://github.com/dinglebear-ai/labby/compare/v2.3.0...v2.3.1) (2026-09-24)
+
+
+### Fixed
+
+* catch release failures before tagging ([#785](https://github.com/dinglebear-ai/labby/issues/785)) ([cb13e67](https://github.com/dinglebear-ai/labby/commit/cb13e675ac36b261526683627da6f960c8a4b92f))
+
 ## [2.3.0](https://github.com/dinglebear-ai/labby/compare/v2.2.1...v2.3.0) (2026-09-24)
 
 

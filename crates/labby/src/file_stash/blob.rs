@@ -1213,7 +1213,17 @@ mod tests {
         ));
         let store = runtime.store().await.unwrap();
         assert_eq!(store.usage("owner".into()).await.unwrap().reserved_bytes, 2);
-        blobs.cleanup_expired().await.unwrap();
+        // The injected unlink failure can land in the write cleanup or in
+        // this first janitor pass. The next pass must clear the same
+        // reservation either way.
+        match blobs.cleanup_expired().await {
+            Ok(_) => {}
+            Err(FileStashStoreError::Unavailable) => {
+                blobs.cleanup_expired().await.unwrap();
+            }
+            Err(error) => panic!("unexpected cleanup error: {error:?}"),
+        }
+        assert!(FAIL_UNLINK_NAME.lock().unwrap().is_none());
         assert_eq!(store.usage("owner".into()).await.unwrap().reserved_bytes, 0);
     }
 

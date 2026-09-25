@@ -20,6 +20,8 @@ import time
 import unittest
 import yaml
 
+from scripts.ci.mcp_registry_canonical import manifest_sha256
+
 
 ROOT = Path(__file__).resolve().parents[2]
 LINUX_ASSETS = ("lab-x86_64-unknown-linux-gnu.tar.gz", "lab-x86_64-unknown-linux-gnu.tar.gz.sha256")
@@ -138,8 +140,12 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         preflight = str(release["jobs"]["preflight"]["steps"])
         self.assertIn("NPM_TOKEN_PRESENT", preflight)
         self.assertIn("MCP_PRIVATE_KEY_PRESENT", preflight)
+        self.assertIn("npm whoami", preflight)
         self.assertIn("resolve-n-minus-one-baseline.py", preflight)
         self.assertIn("preflight", release["jobs"]["frontend-assets"]["needs"])
+        self.assertEqual("preflight", release["jobs"]["desktop-candidate"]["needs"])
+        for job in ("npm-candidate", "release"):
+            self.assertIn("desktop-candidate", release["jobs"][job]["needs"])
 
     def test_n_minus_one_baseline_is_resolved_from_published_releases(self) -> None:
         release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
@@ -638,7 +644,8 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
     def test_mcp_observer_never_copies_expected_digest(self) -> None:
         observer = self.text("scripts/ci/observe-release.py")
         self.assertNotIn('observed["mcp"] = dist["mcp"]', observer)
-        self.assertIn("hashlib.sha256(canonical).hexdigest()", observer)
+        self.assertIn("manifest_sha256(server)", observer)
+        self.assertIn("mcp_registry_canonical.py server.json", self.text(".github/workflows/mcp-registry.yml"))
 
     def test_lifecycle_inventory_routes_every_script_and_public_copy(self) -> None:
         inventory = json.loads(self.text("scripts/ci/lifecycle-scripts.json"))
@@ -814,6 +821,35 @@ class PromotionDurabilityTests(unittest.TestCase):
 class ReleaseHelperTests(unittest.TestCase):
     def text(self, relative: str) -> str:
         return (ROOT / relative).read_text()
+
+    def test_mcp_digest_matches_registry_default_false_omissions(self) -> None:
+        # The public v2.2.1 entry dropped these false flags and previously
+        # produced a different digest despite describing the same package.
+        submitted = {
+            "name": "ai.dinglebear/labby",
+            "packages": [{
+                "identifier": "@dinglebear/labby",
+                "packageArguments": [{
+                    "value": "mcp", "isRequired": True,
+                    "isSecret": False, "isRepeated": False,
+                }],
+                "environmentVariables": [{
+                    "name": "LABBY_LOG", "isRequired": False,
+                    "isSecret": False,
+                }],
+                "enabled": False,
+            }],
+        }
+        served = json.loads(json.dumps(submitted))
+        argument = served["packages"][0]["packageArguments"][0]
+        argument.pop("isSecret")
+        argument.pop("isRepeated")
+        variable = served["packages"][0]["environmentVariables"][0]
+        variable.pop("isRequired")
+        variable.pop("isSecret")
+        self.assertEqual(manifest_sha256(submitted), manifest_sha256(served))
+        served["packages"][0]["enabled"] = True
+        self.assertNotEqual(manifest_sha256(submitted), manifest_sha256(served))
 
     def test_immutable_uploader_reuses_equal_bytes_and_rejects_drift(self) -> None:
         helper = ROOT / "scripts/ci/upload-immutable-release-assets.sh"
@@ -1432,6 +1468,33 @@ if authenticated_action; then exit 93; fi
             self.assertEqual([f"state export --output {recovery}/bundle", f"state restore --bundle {recovery}/bundle"],
                              (root / "calls").read_text().splitlines())
 
+    def test_recovery_capture_repairs_inherited_write_bits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shims = root / "shims"
+            shims.mkdir()
+            dd = shims / "dd"
+            dd.write_text(
+                '#!/bin/sh\n/bin/dd "$@" || exit\n'
+                'for arg in "$@"; do case "$arg" in of=*) chmod 0666 "${arg#of=}";; esac; done\n'
+            )
+            dd.chmod(0o755)
+            binary = root / "labby"
+            binary.write_text("#!/bin/sh\nexit 0\n")
+            binary.chmod(0o755)
+            state = root / "state"
+            state.mkdir()
+            recovery = root / "recovery"
+            env = os.environ | {"PATH": f"{shims}:{os.environ['PATH']}"}
+            helper = ROOT / "scripts/ci/n-minus-one-recovery.sh"
+            capture = subprocess.run(
+                ["bash", str(helper), "capture", str(binary), str(state), str(recovery)],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, capture.returncode, capture.stderr)
+            self.assertEqual(0o700, recovery.stat().st_mode & 0o777)
+            self.assertEqual(0o600, (recovery / "key").stat().st_mode & 0o777)
+
     @unittest.skipUnless(sys.platform == "linux", "requires Linux service-account execution")
     def test_service_recovery_uses_state_owner_and_private_accessible_candidate(self) -> None:
         import pwd
@@ -1562,6 +1625,20 @@ if authenticated_action; then exit 93; fi
         self.assertIn("needs: stabilize-release-pr", workflow[release:])
         self.assertIn("--disable-auto", workflow[pause:release])
         self.assertIn("auto_merge_pr", workflow[pause:release])
+
+    def test_release_please_preserves_checks_when_main_has_not_advanced(self) -> None:
+        workflow = yaml.safe_load(self.text(".github/workflows/release-please.yml"))
+        jobs = workflow["jobs"]
+        pause = jobs["stabilize-release-pr"]
+        self.assertIn("skip_refresh", pause["outputs"])
+        script = pause["steps"][0]["run"]
+        self.assertIn("pulls/$number/commits?per_page=1", script)
+        self.assertIn(".[0].parents[0].sha", script)
+        self.assertIn("git/ref/heads/main", script)
+        self.assertIn("$GITHUB_EVENT_NAME\" == workflow_run", script)
+        self.assertIn("skip_refresh=true", script)
+        for job in ("release-please", "sync-release-version"):
+            self.assertIn("needs.stabilize-release-pr.outputs.skip_refresh != 'true'", jobs[job]["if"])
 
     def test_release_metadata_sync_repairs_partial_release_please_failure(self) -> None:
         workflow = self.text(".github/workflows/release-please.yml")
