@@ -144,3 +144,4 @@ AGENTS.override.md
 
 # Local binary artifacts
 plugins/bitwarden/bin/
+/worktrees/
