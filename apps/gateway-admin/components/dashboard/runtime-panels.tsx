@@ -11,8 +11,10 @@ import { DashboardPanel } from './panel'
 /** Serialized GatewayClientView; connected_at is the observed connection time. */
 export interface ConnectedClient {
   subject: string | null
+  client_id: string | null
   client_name: string | null
   client_version: string | null
+  client_info_source: string
   transport: string
   connected_at: string
 }

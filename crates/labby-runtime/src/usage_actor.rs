@@ -7,29 +7,37 @@ tokio::task_local! {
     static ATTRIBUTION: Option<UsageAttribution>;
 }
 
-/// Inbound identity is verified; client labels are bounded, self-reported MCP
-/// initialize metadata. Agent/task IDs are supplied only by trusted execution.
+/// Inbound actor and `client_id` are verified identity facts; `client_name` /
+/// `client_version` are bounded, self-reported MCP metadata. Agent/task IDs are
+/// supplied only by trusted execution.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UsageAttribution {
     pub inbound_actor: Option<String>,
     pub actor_kind: Option<String>,
     pub surface: Option<String>,
+    /// Authenticated OAuth client id from the validated JWT azp claim.
+    pub client_id: Option<String>,
+    /// Self-declared MCP client implementation name.
     pub client_name: Option<String>,
+    /// Self-declared MCP client implementation version.
     pub client_version: Option<String>,
+    /// Provenance for MCP clientInfo: request_context, legacy_peer, or absent.
+    pub client_info_source: Option<String>,
     pub agent_id: Option<String>,
     pub task_id: Option<String>,
     pub harness_id: Option<String>,
     pub upstream_subject_tag: Option<String>,
 }
+fn bounded_label(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(128)
+        .collect::<String>()
+}
+
 impl UsageAttribution {
     pub fn inbound(actor: Option<String>, surface: &str, client: Option<(&str, &str)>) -> Self {
-        let label = |value: &str| {
-            value
-                .chars()
-                .filter(|c| !c.is_control())
-                .take(128)
-                .collect::<String>()
-        };
         Self {
             inbound_actor: actor,
             actor_kind: Some(
@@ -41,10 +49,21 @@ impl UsageAttribution {
                 .into(),
             ),
             surface: Some(surface.into()),
-            client_name: client.map(|(name, _)| label(name)),
-            client_version: client.map(|(_, version)| label(version)),
+            client_name: client.map(|(name, _)| bounded_label(name)),
+            client_version: client.map(|(_, version)| bounded_label(version)),
             ..Self::default()
         }
+    }
+
+    #[must_use]
+    pub fn with_authenticated_client(
+        mut self,
+        client_id: Option<&str>,
+        client_info_source: &str,
+    ) -> Self {
+        self.client_id = client_id.map(bounded_label);
+        self.client_info_source = Some(bounded_label(client_info_source));
+        self
     }
 }
 pub async fn scope_attributed<T>(
@@ -79,9 +98,12 @@ mod tests {
             Some("sub:verified".into()),
             "mcp",
             Some((&"x".repeat(1000), "1\n2")),
-        );
+        )
+        .with_authenticated_client(Some(&"z".repeat(1000)), "request_context");
+        assert_eq!(value.client_id.as_ref().unwrap().len(), 128);
         assert_eq!(value.client_name.as_ref().unwrap().len(), 128);
         assert_eq!(value.client_version.as_deref(), Some("12"));
+        assert_eq!(value.client_info_source.as_deref(), Some("request_context"));
         scope_attributed(value.clone(), async {
             tokio::task::yield_now().await;
             assert_eq!(attribution(), Some(value));

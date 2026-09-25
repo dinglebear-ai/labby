@@ -55,8 +55,10 @@ export interface UsageAttribution {
   inbound_actor?: string | null
   actor_kind?: string | null
   surface?: string | null
+  client_id?: string | null
   client_name?: string | null
   client_version?: string | null
+  client_info_source?: string | null
   agent_id?: string | null
   task_id?: string | null
   harness_id?: string | null

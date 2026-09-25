@@ -1,7 +1,7 @@
 ---
 title: "Observability"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-09-24"
 ---
 
 # Observability
@@ -147,6 +147,18 @@ The raw subject remains a credential-adjacent identifier and must not be stored
 in persisted log fields or returned to the Activity UI. A short redacted display
 tag is allowed only for human diagnostics and must not be used for
 authorization or filtering.
+
+### MCP Client Identity
+
+Labby keeps authenticated OAuth client identity separate from MCP implementation metadata.
+
+- `client_id` is the validated JWT `azp` (Authorized Party) claim. Labby-minted access tokens bind `azp` to the OAuth `client_id`, and access-token validation rejects an empty `azp`.
+- `client_name` and `client_version` come from MCP `clientInfo`. They are self-declared protocol metadata and must never be treated as authenticated identity.
+- For MCP 2026-07-28 requests, request-scoped `RequestContext::client_info()` is authoritative for the current request's `clientInfo` metadata.
+- Legacy initialized sessions may fall back to the peer's retained initialize metadata only when request-scoped `clientInfo` is absent.
+- `client_info_source` records `request_context`, `legacy_peer`, or `absent` so operators can detect legacy fallback use.
+
+The same resolver must feed usage attribution and the connected-client/session registry. Do not introduce a separate client-identification path for diagnostics, policy, or telemetry. Authorization may use the validated OAuth client identity where appropriate; it must not use `clientInfo.name` as a security principal.
 
 ### Shared Outbound Requests
 

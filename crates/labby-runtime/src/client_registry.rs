@@ -49,7 +49,8 @@ fn truncate_field(mut value: String) -> String {
     value
 }
 
-/// One inbound MCP client session, captured at `initialize` time.
+/// One inbound MCP client/session observation, captured from modern `server/discover`
+/// request context or the legacy initialize fallback.
 ///
 /// `subject_tag` is a pre-redacted display tag (see
 /// `redact_subject_for_logging` in `labby`'s `mcp::context`) — this type must
@@ -60,10 +61,17 @@ pub struct ConnectedClient {
     /// Redacted actor display tag, e.g. `"sub:ab12cd34ef56..."`. `None` for
     /// unauthenticated/loopback-dev sessions.
     pub subject_tag: Option<String>,
-    /// MCP `clientInfo.name` declared during the initialize handshake.
+    /// Authenticated OAuth client id from the validated JWT `azp` claim.
+    /// `None` for non-OAuth transports/authenticators.
+    #[serde(default)]
+    pub client_id: Option<String>,
+    /// MCP `clientInfo.name` declared by the client.
     pub client_name: Option<String>,
-    /// MCP `clientInfo.version` declared during the initialize handshake.
+    /// MCP `clientInfo.version` declared by the client.
     pub client_version: Option<String>,
+    /// Provenance for clientInfo resolution: request_context, legacy_peer, or absent.
+    #[serde(default)]
+    pub client_info_source: String,
     /// `"stdio"`, `"http"`, `"in-process"` (built-in service peers), or
     /// `"test"` — set from `LabMcpServer::transport_label` at construction.
     pub transport: String,
@@ -84,8 +92,10 @@ impl ClientRegistryHandle {
     pub async fn push(&self, client: ConnectedClient) {
         let client = ConnectedClient {
             subject_tag: client.subject_tag.map(truncate_field),
+            client_id: client.client_id.map(truncate_field),
             client_name: client.client_name.map(truncate_field),
             client_version: client.client_version.map(truncate_field),
+            client_info_source: client.client_info_source,
             transport: client.transport,
             connected_at: client.connected_at,
         };
@@ -109,8 +119,10 @@ mod tests {
     fn sample(name: &str) -> ConnectedClient {
         ConnectedClient {
             subject_tag: Some("sub:deadbeef".to_string()),
+            client_id: Some("oauth-client".to_string()),
             client_name: Some(name.to_string()),
             client_version: Some("1.0.0".to_string()),
+            client_info_source: "request_context".to_string(),
             transport: "mcp".to_string(),
             connected_at: "2026-01-01T00:00:00Z".to_string(),
         }

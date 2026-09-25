@@ -21,7 +21,7 @@ const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
 // actual writers regardless of connection count, so this does not buy write
 // parallelism, only concurrent readers alongside a writer.
 const SQLITE_POOL_SIZE: usize = 4;
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 /// Max rows deleted per `DELETE` statement in `prune_older_than`'s batching
 /// loop, so a large prune backlog doesn't hold the writer lock in one shot.
 const PRUNE_BATCH_SIZE: i64 = 5_000;
@@ -94,8 +94,8 @@ impl UsageStore {
             conn.execute(
                 "INSERT INTO upstream_calls (
                     ts_unix, upstream_name, tool_name, capability, operation,
-                    subject_scoped, actor, outcome, elapsed_ms, response_bytes, inbound_actor,actor_kind,surface,client_name,client_version,agent_id,task_id,harness_id,upstream_subject_tag
-                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
+                    subject_scoped, actor, outcome, elapsed_ms, response_bytes, inbound_actor,actor_kind,surface,client_id,client_name,client_version,client_info_source,agent_id,task_id,harness_id,upstream_subject_tag
+                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
                 params![
                     record.ts_unix,
                     record.upstream_name,
@@ -110,8 +110,10 @@ impl UsageStore {
                     attribution.inbound_actor,
                     attribution.actor_kind,
                     attribution.surface,
+                    attribution.client_id,
                     attribution.client_name,
                     attribution.client_version,
+                    attribution.client_info_source,
                     attribution.agent_id,
                     attribution.task_id,
                     attribution.harness_id,
@@ -311,7 +313,10 @@ fn open_connection(path: &Path) -> Result<Connection, ToolError> {
     .map_err(sqlite_error)?;
     conn.execute_batch("BEGIN IMMEDIATE;")
         .map_err(sqlite_error)?;
-    if let Err(error) = migrate_v2(&conn).and_then(|()| migrate_v3(&conn)) {
+    if let Err(error) = migrate_v2(&conn)
+        .and_then(|()| migrate_v3(&conn))
+        .and_then(|()| migrate_v4(&conn))
+    {
         drop(conn.execute_batch("ROLLBACK;"));
         return Err(error);
     }
@@ -385,6 +390,28 @@ fn migrate_v3(conn: &Connection) -> Result<(), ToolError> {
     }
     Ok(())
 }
+
+fn migrate_v4(conn: &Connection) -> Result<(), ToolError> {
+    let mut statement = conn
+        .prepare("PRAGMA table_info(upstream_calls)")
+        .map_err(sqlite_error)?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(sqlite_error)?
+        .collect::<rusqlite::Result<std::collections::HashSet<_>>>()
+        .map_err(sqlite_error)?;
+    drop(statement);
+    for name in ["client_id", "client_info_source"] {
+        if !columns.contains(name) {
+            conn.execute_batch(&format!(
+                "ALTER TABLE upstream_calls ADD COLUMN {name} TEXT CHECK({name} IS NULL OR length({name})<=512);"
+            ))
+            .map_err(sqlite_error)?;
+        }
+    }
+    Ok(())
+}
+
 fn read_attribution(
     row: &rusqlite::Row<'_>,
     start: usize,
@@ -393,12 +420,14 @@ fn read_attribution(
         inbound_actor: row.get(start)?,
         actor_kind: row.get(start + 1)?,
         surface: row.get(start + 2)?,
-        client_name: row.get(start + 3)?,
-        client_version: row.get(start + 4)?,
-        agent_id: row.get(start + 5)?,
-        task_id: row.get(start + 6)?,
-        harness_id: row.get(start + 7)?,
-        upstream_subject_tag: row.get(start + 8)?,
+        client_id: row.get(start + 3)?,
+        client_name: row.get(start + 4)?,
+        client_version: row.get(start + 5)?,
+        client_info_source: row.get(start + 6)?,
+        agent_id: row.get(start + 7)?,
+        task_id: row.get(start + 8)?,
+        harness_id: row.get(start + 9)?,
+        upstream_subject_tag: row.get(start + 10)?,
     };
     Ok((value != Default::default()).then_some(value))
 }
@@ -667,7 +696,7 @@ impl UsageStore {
             // top-actor ranking.
             let mut actor_stmt = conn
                 .prepare(&format!(
-                    "SELECT actor, COUNT(*) AS calls, inbound_actor,actor_kind,surface,client_name,client_version,agent_id,NULL,harness_id,NULL FROM upstream_calls {where_clause} GROUP BY actor,inbound_actor,actor_kind,surface,client_name,client_version,agent_id,harness_id ORDER BY calls DESC, actor ASC"
+                    "SELECT actor, COUNT(*) AS calls, inbound_actor,actor_kind,surface,client_id,client_name,client_version,client_info_source,agent_id,NULL,harness_id,NULL FROM upstream_calls {where_clause} GROUP BY actor,inbound_actor,actor_kind,surface,client_id,client_name,client_version,client_info_source,agent_id,harness_id ORDER BY calls DESC, actor ASC"
                 ))
                 .map_err(sqlite_error)?;
             let actor_counts = actor_stmt
@@ -863,7 +892,7 @@ impl UsageStore {
             let mut stmt = conn
                 .prepare(&format!(
                     "SELECT id, ts_unix, upstream_name, tool_name, capability, operation, \
-                     subject_scoped, actor, outcome, elapsed_ms, response_bytes, inbound_actor,actor_kind,surface,client_name,client_version,agent_id,task_id,harness_id,upstream_subject_tag \
+                     subject_scoped, actor, outcome, elapsed_ms, response_bytes, inbound_actor,actor_kind,surface,client_id,client_name,client_version,client_info_source,agent_id,task_id,harness_id,upstream_subject_tag \
                      FROM upstream_calls {page_where} \
                      ORDER BY ts_unix DESC, id DESC LIMIT ?{}",
                     bind.len()
@@ -1162,7 +1191,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn usage_v3_migration_preserves_legacy_and_new_attribution_on_reopen() {
+    async fn usage_v4_migration_preserves_authenticated_client_attribution_on_reopen() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("v2.db");
         let connection = rusqlite::Connection::open(&path).unwrap();
@@ -1173,11 +1202,14 @@ mod tests {
         let store = UsageStore::open(path.clone()).await.unwrap();
         let mut record = sample_record(200);
         record.actor = "sub:verified".into();
-        record.attribution = Some(labby_runtime::usage_actor::UsageAttribution::inbound(
+        let mut attribution = labby_runtime::usage_actor::UsageAttribution::inbound(
             Some("sub:verified".into()),
             "mcp",
             Some(("Example client", "1.2")),
-        ));
+        );
+        attribution.client_id = Some("oauth-client".into());
+        attribution.client_info_source = Some("request_context".into());
+        record.attribution = Some(attribution);
         store.record_call(record).await.unwrap();
         drop(store);
         for _ in 0..2 {
@@ -1190,9 +1222,12 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(rows.len(), 2);
+            let attribution = rows[0].attribution.as_ref().unwrap();
+            assert_eq!(attribution.client_id.as_deref(), Some("oauth-client"));
+            assert_eq!(attribution.client_name.as_deref(), Some("Example client"));
             assert_eq!(
-                rows[0].attribution.as_ref().unwrap().client_name.as_deref(),
-                Some("Example client")
+                attribution.client_info_source.as_deref(),
+                Some("request_context")
             );
             assert_eq!(rows[1].actor, "legacy-oauth-tag");
             assert_eq!(rows[1].attribution, None);
@@ -1204,7 +1239,7 @@ mod tests {
                 })
                 .await
                 .unwrap();
-            assert_eq!(version, 3);
+            assert_eq!(version, 4);
         }
     }
 

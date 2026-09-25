@@ -5269,8 +5269,10 @@ async fn clients_list_dispatch_returns_observed_redacted_client_projection() {
     registry
         .push(ConnectedClient {
             subject_tag: Some("sub:ab12cd34ef56".into()),
+            client_id: Some("oauth-client".into()),
             client_name: Some("operator-client".into()),
             client_version: Some("1.2.3".into()),
+            client_info_source: "request_context".into(),
             transport: "http".into(),
             connected_at: "2026-09-13T05:00:00Z".into(),
         })
@@ -5283,8 +5285,10 @@ async fn clients_list_dispatch_returns_observed_redacted_client_projection() {
         result,
         json!([{
             "subject": "sub:ab12cd34ef56",
+            "client_id": "oauth-client",
             "client_name": "operator-client",
             "client_version": "1.2.3",
+            "client_info_source": "request_context",
             "transport": "http",
             "connected_at": "2026-09-13T05:00:00Z"
         }])

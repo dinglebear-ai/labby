@@ -6,6 +6,27 @@
 use axum::http::request::Parts;
 use std::sync::Arc;
 
+/// OAuth client identity authenticated by a validated Labby access token.
+///
+/// This is the JWT azp (Authorized Party) claim. Unlike MCP clientInfo,
+/// which is self-declared protocol metadata, this value comes from a signed
+/// access token accepted by the auth boundary and can therefore be used as the
+/// authoritative OAuth client identifier for diagnostics and attribution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorizedParty(String);
+
+impl AuthorizedParty {
+    #[must_use]
+    pub(crate) fn from_validated_access_token(client_id: String) -> Self {
+        Self(client_id)
+    }
+
+    #[must_use]
+    pub fn client_id(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Stored in request extensions by the HTTP auth middleware (see
 /// [`crate::middleware::AuthLayer`]).
 #[derive(Debug, Clone)]

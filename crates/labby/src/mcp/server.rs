@@ -32,7 +32,9 @@ use tokio_util::sync::CancellationToken;
 use crate::access::AccessRuntime;
 #[cfg(feature = "gateway")]
 use crate::dispatch::gateway::manager::GatewayManager;
-use crate::mcp::context::{actor_key_from_extensions, subject_from_extensions};
+use crate::mcp::context::{
+    RequestClientIdentity, actor_key_from_extensions, subject_from_extensions,
+};
 use crate::mcp::provenance;
 use crate::mcp::route_scope::McpRouteScope;
 use crate::mcp::runtime::McpRouteRuntime;
@@ -470,7 +472,7 @@ fn mcp_extensions() -> ExtensionCapabilities {
 /// site in `discover`).
 #[cfg(feature = "gateway")]
 fn connected_client_from_discovery(
-    client_info: Option<rmcp::model::Implementation>,
+    identity: RequestClientIdentity,
     extensions: &rmcp::model::Extensions,
     transport_label: &str,
     connected_at: String,
@@ -480,8 +482,13 @@ fn connected_client_from_discovery(
         .filter(|value| !value.is_empty());
     labby_runtime::client_registry::ConnectedClient {
         subject_tag,
-        client_name: client_info.as_ref().map(|info| info.name.clone()),
-        client_version: client_info.as_ref().map(|info| info.version.clone()),
+        client_id: identity.client_id,
+        client_name: identity.client_info.as_ref().map(|info| info.name.clone()),
+        client_version: identity
+            .client_info
+            .as_ref()
+            .map(|info| info.version.clone()),
+        client_info_source: identity.client_info_source.label().to_string(),
         transport: transport_label.to_string(),
         connected_at,
     }
@@ -660,9 +667,9 @@ impl ServerHandler for LabMcpServer {
     ) -> Result<DiscoverResult, ErrorData> {
         #[cfg(feature = "gateway")]
         {
-            let client_info = context.client_info();
+            let identity = self.request_client_identity(&context);
             let connected_client = connected_client_from_discovery(
-                client_info,
+                identity,
                 &context.extensions,
                 self.transport_label,
                 jiff::Timestamp::now().to_string(),
@@ -1493,6 +1500,15 @@ mod tests {
         use rmcp::model::Implementation;
 
         use super::super::connected_client_from_discovery;
+        use crate::mcp::context::{ClientInfoSource, RequestClientIdentity};
+
+        fn identity(client_info: Option<Implementation>) -> RequestClientIdentity {
+            RequestClientIdentity {
+                client_id: None,
+                client_info,
+                client_info_source: ClientInfoSource::RequestContext,
+            }
+        }
 
         // Same `Extensions` fabrication as `verify_upstream_subject_resolution_support`
         // above — an `http::request::Parts` carrying an `AuthContext`, wrapped in
@@ -1526,7 +1542,7 @@ mod tests {
         fn never_stores_the_raw_authenticated_subject() {
             let extensions = extensions_with_subject("jacob@example.com");
             let client = connected_client_from_discovery(
-                Some(Implementation::new("claude-code", "2.4.1")),
+                identity(Some(Implementation::new("claude-code", "2.4.1"))),
                 &extensions,
                 "stdio",
                 "2026-01-01T00:00:00Z".to_string(),
@@ -1543,13 +1559,13 @@ mod tests {
         #[test]
         fn redaction_is_deterministic_for_the_same_subject() {
             let a = connected_client_from_discovery(
-                None,
+                identity(None),
                 &extensions_with_subject("same-subject"),
                 "http",
                 "2026-01-01T00:00:00Z".to_string(),
             );
             let b = connected_client_from_discovery(
-                None,
+                identity(None),
                 &extensions_with_subject("same-subject"),
                 "http",
                 "2026-01-01T00:00:00Z".to_string(),
@@ -1561,13 +1577,13 @@ mod tests {
         #[test]
         fn distinct_subjects_redact_to_distinct_tags() {
             let a = connected_client_from_discovery(
-                None,
+                identity(None),
                 &extensions_with_subject("alice"),
                 "http",
                 "2026-01-01T00:00:00Z".to_string(),
             );
             let b = connected_client_from_discovery(
-                None,
+                identity(None),
                 &extensions_with_subject("bob"),
                 "http",
                 "2026-01-01T00:00:00Z".to_string(),
@@ -1593,7 +1609,7 @@ mod tests {
             let mut extensions = rmcp::model::Extensions::new();
             extensions.insert(parts);
             let client = connected_client_from_discovery(
-                None,
+                identity(None),
                 &extensions,
                 "http",
                 "2026-01-01T00:00:00Z".to_string(),
@@ -1605,7 +1621,7 @@ mod tests {
         fn no_auth_context_yields_no_subject_tag() {
             let extensions = rmcp::model::Extensions::new();
             let client = connected_client_from_discovery(
-                None,
+                identity(None),
                 &extensions,
                 "in-process",
                 "2026-01-01T00:00:00Z".to_string(),
@@ -1615,10 +1631,29 @@ mod tests {
         }
 
         #[test]
+        fn authenticated_client_id_is_preserved_separately_from_client_info() {
+            let extensions = rmcp::model::Extensions::new();
+            let client = connected_client_from_discovery(
+                RequestClientIdentity {
+                    client_id: Some("oauth-client-123".to_string()),
+                    client_info: Some(Implementation::new("codex-cli", "0.9.2")),
+                    client_info_source: ClientInfoSource::RequestContext,
+                },
+                &extensions,
+                "http",
+                "2026-01-01T00:00:00Z".to_string(),
+            );
+
+            assert_eq!(client.client_id.as_deref(), Some("oauth-client-123"));
+            assert_eq!(client.client_name.as_deref(), Some("codex-cli"));
+            assert_eq!(client.client_info_source, "request_context");
+        }
+
+        #[test]
         fn client_info_and_transport_pass_through_unmodified() {
             let extensions = rmcp::model::Extensions::new();
             let client = connected_client_from_discovery(
-                Some(Implementation::new("codex-cli", "0.9.2")),
+                identity(Some(Implementation::new("codex-cli", "0.9.2"))),
                 &extensions,
                 "stdio",
                 "2026-01-01T00:00:00Z".to_string(),

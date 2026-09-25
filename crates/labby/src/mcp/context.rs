@@ -42,7 +42,65 @@ pub(crate) fn redacted_oauth_subject_label() -> &'static str {
     "[redacted]"
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClientInfoSource {
+    RequestContext,
+    LegacyPeer,
+    Absent,
+}
+
+impl ClientInfoSource {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::RequestContext => "request_context",
+            Self::LegacyPeer => "legacy_peer",
+            Self::Absent => "absent",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RequestClientIdentity {
+    pub(crate) client_id: Option<String>,
+    pub(crate) client_info: Option<rmcp::model::Implementation>,
+    pub(crate) client_info_source: ClientInfoSource,
+}
+
+fn resolve_request_client_identity(
+    request_client_info: Option<rmcp::model::Implementation>,
+    legacy_client_info: Option<rmcp::model::Implementation>,
+    extensions: &rmcp::model::Extensions,
+) -> RequestClientIdentity {
+    let (client_info, client_info_source) = if let Some(info) = request_client_info {
+        (Some(info), ClientInfoSource::RequestContext)
+    } else if let Some(info) = legacy_client_info {
+        (Some(info), ClientInfoSource::LegacyPeer)
+    } else {
+        (None, ClientInfoSource::Absent)
+    };
+    RequestClientIdentity {
+        client_id: authorized_party_from_extensions(extensions).map(str::to_owned),
+        client_info,
+        client_info_source,
+    }
+}
 impl LabMcpServer {
+    pub(crate) fn request_client_identity(
+        &self,
+        context: &RequestContext<RoleServer>,
+    ) -> RequestClientIdentity {
+        let request_client_info = context.client_info();
+        let legacy_client_info = context
+            .peer
+            .peer_info()
+            .map(|info| info.client_info.clone());
+        resolve_request_client_identity(
+            request_client_info,
+            legacy_client_info,
+            &context.extensions,
+        )
+    }
+
     pub(crate) fn request_usage_attribution(
         &self,
         context: &RequestContext<RoleServer>,
@@ -51,14 +109,16 @@ impl LabMcpServer {
             .request_actor_key(context)
             .map(redact_actor_key_for_logging)
             .filter(|value| !value.is_empty());
-        let peer = context.peer.peer_info();
-        let client = peer.as_ref().map(|info| {
-            (
-                info.client_info.name.as_str(),
-                info.client_info.version.as_str(),
-            )
-        });
+        let identity = self.request_client_identity(context);
+        let client = identity
+            .client_info
+            .as_ref()
+            .map(|info| (info.name.as_str(), info.version.as_str()));
         labby_runtime::usage_actor::UsageAttribution::inbound(actor, "mcp", client)
+            .with_authenticated_client(
+                identity.client_id.as_deref(),
+                identity.client_info_source.label(),
+            )
     }
 
     #[cfg(feature = "gateway")]
@@ -303,6 +363,16 @@ pub(crate) fn upstream_uses_capability_relay(config: &crate::config::UpstreamCon
 
 pub(crate) fn subject_from_extensions(extensions: &rmcp::model::Extensions) -> Option<&str> {
     auth_context_from_extensions(extensions).map(|auth| auth.sub.as_str())
+}
+
+pub(crate) fn authorized_party_from_extensions(
+    extensions: &rmcp::model::Extensions,
+) -> Option<&str> {
+    let parts = extensions.get::<Parts>()?;
+    parts
+        .extensions
+        .get::<labby_auth::auth_context::AuthorizedParty>()
+        .map(labby_auth::auth_context::AuthorizedParty::client_id)
 }
 
 pub(crate) fn actor_key_from_extensions(extensions: &rmcp::model::Extensions) -> Option<&str> {

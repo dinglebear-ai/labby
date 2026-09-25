@@ -2,9 +2,10 @@
 //! Distributed from `server.rs` (bead `lab-kvji.24.1.6`).
 
 use super::{
-    AbsentAuth, actor_key_from_extensions, builtin_action_requires_admin,
+    AbsentAuth, ClientInfoSource, actor_key_from_extensions, builtin_action_requires_admin,
     code_mode_read_scope_allowed, forwardable_client_capabilities, resolve_caller_authorization,
-    subject_from_extensions, tool_execute_builtin_action_allowed, tool_execute_scope_allowed,
+    resolve_request_client_identity, subject_from_extensions, tool_execute_builtin_action_allowed,
+    tool_execute_scope_allowed,
 };
 #[cfg(feature = "gateway")]
 use super::{
@@ -105,6 +106,38 @@ fn forwardable_capabilities_are_derived_from_current_request_metadata() {
     assert_eq!(
         forwardable_client_capabilities(Some(&empty)),
         Some(rmcp::model::ClientCapabilities::default())
+    );
+}
+
+#[test]
+fn request_scoped_client_info_wins_over_legacy_peer_metadata() {
+    let request = rmcp::model::Implementation::new("request-client", "2.0.0");
+    let legacy = rmcp::model::Implementation::new("legacy-client", "1.0.0");
+    let identity = resolve_request_client_identity(
+        Some(request),
+        Some(legacy),
+        &rmcp::model::Extensions::new(),
+    );
+
+    assert_eq!(
+        identity.client_info_source,
+        ClientInfoSource::RequestContext
+    );
+    let info = identity.client_info.expect("request client info");
+    assert_eq!(info.name, "request-client");
+    assert_eq!(info.version, "2.0.0");
+}
+
+#[test]
+fn legacy_peer_client_info_is_only_a_fallback() {
+    let legacy = rmcp::model::Implementation::new("legacy-client", "1.0.0");
+    let identity =
+        resolve_request_client_identity(None, Some(legacy), &rmcp::model::Extensions::new());
+
+    assert_eq!(identity.client_info_source, ClientInfoSource::LegacyPeer);
+    assert_eq!(
+        identity.client_info.as_ref().map(|info| info.name.as_str()),
+        Some("legacy-client")
     );
 }
 

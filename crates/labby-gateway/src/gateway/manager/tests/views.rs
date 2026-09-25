@@ -24,8 +24,10 @@ async fn clients_reflects_entries_pushed_to_the_wired_registry() {
     client_registry
         .push(labby_runtime::client_registry::ConnectedClient {
             subject_tag: Some("sub:deadbeef".to_string()),
+            client_id: Some("oauth-client".to_string()),
             client_name: Some("claude-code".to_string()),
             client_version: Some("1.2.3".to_string()),
+            client_info_source: "request_context".to_string(),
             transport: "mcp".to_string(),
             connected_at: "2026-01-01T00:00:00Z".to_string(),
         })
@@ -33,7 +35,9 @@ async fn clients_reflects_entries_pushed_to_the_wired_registry() {
 
     let clients = manager.clients().await.expect("clients");
     assert_eq!(clients.len(), 1);
+    assert_eq!(clients[0].client_id.as_deref(), Some("oauth-client"));
     assert_eq!(clients[0].client_name.as_deref(), Some("claude-code"));
+    assert_eq!(clients[0].client_info_source, "request_context");
     // The redacted subject tag must survive the view projection unchanged —
     // this is the ONLY subject-shaped value that should ever reach this
     // dispatch-layer type; a raw subject must never appear here.

@@ -632,10 +632,15 @@ pub struct GatewayRuntimeOwnerView {
 pub struct GatewayClientView {
     #[serde(default)]
     pub subject: Option<String>,
+    /// Authenticated OAuth client id from the validated access-token azp claim.
+    #[serde(default)]
+    pub client_id: Option<String>,
     #[serde(default)]
     pub client_name: Option<String>,
     #[serde(default)]
     pub client_version: Option<String>,
+    #[serde(default)]
+    pub client_info_source: String,
     pub transport: String,
     pub connected_at: String,
 }
