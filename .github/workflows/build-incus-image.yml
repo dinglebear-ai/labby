@@ -184,8 +184,9 @@ jobs:
           set -euo pipefail
           for artifact in dist/*; do
             scripts/ci/verify-release-provenance.sh \
-              --repo "$GITHUB_REPOSITORY" --workflow incus-image.yml \
-              --ref "$GITHUB_REF" --artifact "$artifact"
+              --repo "$GITHUB_REPOSITORY" --workflow build-incus-image.yml \
+              --ref "$GITHUB_REF" --source-digest "$GITHUB_SHA" \
+              --artifact "$artifact"
           done
       - name: Promote verified image pointer
         env:
