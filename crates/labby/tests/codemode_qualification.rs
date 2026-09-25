@@ -205,7 +205,13 @@ async fn q3_dependent_call_consumes_actual_first_result() {
 async fn q3_seeded_bounded_stress_has_literal_counts_and_no_duplicate_effects() {
     const WORKLOAD: u64 = 12;
     const EXPECTED_ERRORS: u64 = 3;
-    let limits = Limits::default();
+    // This fixture verifies fanout accounting, not the deadline boundary.
+    // Leave room for twelve concurrent calls under the full CI test matrix;
+    // the timeout-specific case below exercises the strict budget.
+    let limits = Limits {
+        timeout_ms: 5_000,
+        ..Limits::default()
+    };
     let runner = CodeModeQualification::start(limits)
         .await
         .expect("Q3 runner");
@@ -235,7 +241,12 @@ async fn q3_seeded_bounded_stress_has_literal_counts_and_no_duplicate_effects() 
         .await
         .expect("bounded stress response");
     assert!(!execution.is_error);
-    assert_eq!(execution.structured["result"]["fulfilled"], json!(9));
+    assert_eq!(
+        execution.structured["result"]["fulfilled"],
+        json!(9),
+        "stress result: {}",
+        execution.structured
+    );
     assert_eq!(
         execution.structured["result"]["rejected"],
         json!(EXPECTED_ERRORS)
@@ -441,7 +452,10 @@ async fn q3_queue_limit_rejects_before_dispatch_and_settles_started_effect() {
         // Match the normal Code Mode budget so the 500ms response reserve
         // cannot exhaust a cold proxy before the queue oracle begins.
         timeout_ms: 2_000,
-        upstream_request_timeout_ms: Some(50),
+        // The safe prewarm crosses a real stdio process and can take more
+        // than 50ms on a busy CI runner. Keep this below forge.delay's
+        // deterministic 250ms so the queue oracle still proves timeout.
+        upstream_request_timeout_ms: Some(150),
         upstream_max_in_flight: Some(1),
         ..Limits::default()
     };

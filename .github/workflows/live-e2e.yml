@@ -1,0 +1,141 @@
+name: Live E2E
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '23 9 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: live-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  KACHE_S3_ACCESS_KEY: ""
+  KACHE_S3_SECRET_KEY: ""
+  KACHE_S3_ENDPOINT: ${{ vars.KACHE_S3_ENDPOINT }}
+  KACHE_S3_BUCKET: ${{ vars.KACHE_S3_BUCKET }}
+  KACHE_S3_PREFIX: ""
+  KACHE_S3_PREFIX_ENFORCED: ${{ vars.KACHE_S3_PREFIX_ENFORCED }}
+
+jobs:
+  live-e2e-core:
+    name: Live E2E core
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      # The product E2E script builds the all-features CLI before browser tests.
+      # Restore Cargo artifacts through the same credentialless fallback used
+      # by CI so every PR does not pay for a cold Rust build here.
+      - uses: ./.github/actions/setup-rust-kache
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: apps/gateway-admin/pnpm-lock.yaml
+      - run: pnpm --dir apps/gateway-admin install --frozen-lockfile
+      - name: Install Playwright runtime libraries
+        run: |
+          set -euo pipefail
+          # Hosted Ubuntu images can change their preinstalled package set.
+          # Install the required Chromium runtime libraries when needed.
+          if dpkg -s libasound2t64 libatk-bridge2.0-0t64 libgbm1 libnss3 libxkbcommon0 >/dev/null 2>&1; then
+            echo "Playwright runtime libraries already installed; skipping apt-get"
+            exit 0
+          fi
+          if [ "$(id -u)" = "0" ]; then
+            apt-get update || echo "::warning::apt-get update reported a failing index; continuing to install."
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              libasound2t64 \
+              libatk-bridge2.0-0t64 \
+              libatk1.0-0t64 \
+              libatspi2.0-0t64 \
+              libcairo2 \
+              libcups2t64 \
+              libdbus-1-3 \
+              libdrm2 \
+              libgbm1 \
+              libglib2.0-0t64 \
+              libnspr4 \
+              libnss3 \
+              libpango-1.0-0 \
+              libx11-6 \
+              libxcb1 \
+              libxcomposite1 \
+              libxdamage1 \
+              libxext6 \
+              libxfixes3 \
+              libxkbcommon0 \
+              libxrandr2
+
+          else
+            sudo apt-get update || echo "::warning::apt-get update reported a failing index; continuing to install."
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              libasound2t64 \
+              libatk-bridge2.0-0t64 \
+              libatk1.0-0t64 \
+              libatspi2.0-0t64 \
+              libcairo2 \
+              libcups2t64 \
+              libdbus-1-3 \
+              libdrm2 \
+              libgbm1 \
+              libglib2.0-0t64 \
+              libnspr4 \
+              libnss3 \
+              libpango-1.0-0 \
+              libx11-6 \
+              libxcb1 \
+              libxcomposite1 \
+              libxdamage1 \
+              libxext6 \
+              libxfixes3 \
+              libxkbcommon0 \
+              libxrandr2
+          fi
+      - name: Install Playwright browser
+        # Deliberately not `--with-deps`: that delegates to apt inside
+        # Playwright's installer, which exits 100 when any configured index
+        # fails, including third-party lists none of these packages come from.
+        # The runtime libraries are installed above with the same guarded,
+        # best-effort refresh the Gateway Admin browser job uses.
+        run: pnpm --dir apps/gateway-admin exec playwright install chromium
+      - name: Build Gateway Admin assets for this revision
+        run: pnpm --dir apps/gateway-admin build
+      - name: Select exclusive live E2E run root
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_root="${RUNNER_TEMP}/labby-live-e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}"
+          test ! -e "$run_root"
+          printf 'LABBY_E2E_RUN_ROOT=%s\n' "$run_root" >> "$GITHUB_ENV"
+      - name: Run bounded hermetic product E2E shards
+        env:
+          CARGO_BUILD_JOBS: "2"
+          LABBY_E2E_SEED: "1"
+          LABBY_E2E_TIER: ${{ github.event_name == 'schedule' && 'nightly' || github.event_name == 'workflow_dispatch' && 'manual' || 'pr' }}
+        run: scripts/ci/labby-live-e2e.sh "$LABBY_E2E_TIER" "$LABBY_E2E_SEED"
+      - name: Upload concise live E2E evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: labby-live-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/labby-live-e2e-${{ github.run_id }}-${{ github.run_attempt }}-live-e2e-core/artifacts/
+          if-no-files-found: error
+          retention-days: 3

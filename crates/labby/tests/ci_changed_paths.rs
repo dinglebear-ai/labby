@@ -469,8 +469,8 @@ fn live_e2e_orchestrator_binds_release_binary_and_verifiable_evidence() {
 
 #[test]
 fn live_e2e_ci_routes_scheduled_and_manual_events_to_extended_tiers() {
-    let workflow =
-        fs::read_to_string(repo_root().join(".github/workflows/ci.yml")).expect("read CI workflow");
+    let workflow = fs::read_to_string(repo_root().join(".github/workflows/live-e2e.yml"))
+        .expect("read Live E2E workflow");
     assert!(workflow.contains("github.event_name == 'schedule' && 'nightly'"));
     assert!(workflow.contains("github.event_name == 'workflow_dispatch' && 'manual'"));
     assert!(workflow.contains("labby-live-e2e.sh \"$LABBY_E2E_TIER\""));
@@ -812,19 +812,6 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         );
     }
 
-    for non_blocking in NON_BLOCKING_JOBS {
-        assert!(
-            workflow.contains(&format!("  {non_blocking}:")),
-            "CI must retain the non-blocking {non_blocking} job"
-        );
-        // Match the whole list entry: `- test` is a prefix of `- test-windows`.
-        assert!(
-            !gate.contains(&format!("- {non_blocking}\n"))
-                && !gate.contains(&format!("needs.{non_blocking}.result")),
-            "ci-gate must not aggregate non-blocking job {non_blocking}"
-        );
-    }
-
     assert!(
         gate.contains("HEAD_REPOSITORY") && gate.contains("fork safety"),
         "ci-gate must document the narrow fork-safety exception for skipped changes"
@@ -888,7 +875,7 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
     let feature_slices = workflow
         .split("  feature-slices:\n")
         .nth(1)
-        .and_then(|section| section.split("\n  extracted-crate-slices:").next())
+        .and_then(|section| section.split("\n  gateway-slice-tests:").next())
         .expect("feature-slices job");
     assert!(
         feature_slices.contains("if: matrix.slice == 'fs'"),
@@ -1017,13 +1004,7 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
     // CARGO_BUILD_JOBS by name, so a substring check would match the very
     // explanation of why it is absent.
     let parsed = ci_workflow_yaml(&workflow);
-    for job in [
-        "feature-slices",
-        "mcp-regressions",
-        "test",
-        "test-fork",
-        "rust-coverage",
-    ] {
+    for job in ["feature-slices", "mcp-regressions", "test", "test-fork"] {
         let env = &parsed["jobs"][job]["env"];
         // These jobs must NOT pin CARGO_BUILD_JOBS. Cargo forwards it to every
         // build script as NUM_JOBS, and aws-lc-sys compiles 414 C and 902
@@ -1058,13 +1039,6 @@ const RUNTIME_ONLY_CHANGE_OUTPUTS: &[&str] = &["gate_key_drift"];
 
 /// Jobs that stay visible on pull requests but must not block `ci-gate`.
 const ADVISORY_JOBS: &[&str] = &["desktop-windows", "verification-t1"];
-
-/// Heavy suites that report on every run but deliberately do not gate a merge.
-/// They each re-run the test suite in a different configuration and dominated
-/// CI wall clock; `ci-gate` no longer waits on them and they are
-/// `continue-on-error`, so a failure here cannot fail the CI run that
-/// release-please consumes to cut a release tag.
-const NON_BLOCKING_JOBS: &[&str] = &["test", "rust-coverage", "feature-slices", "live-e2e-core"];
 
 fn gated_changed_path_keys(workflow: &str) -> BTreeSet<String> {
     workflow
@@ -1187,10 +1161,7 @@ fn ci_gate_aggregates_every_non_advisory_job() {
         .join("\n");
 
     for name in &jobs {
-        if name == "ci-gate"
-            || ADVISORY_JOBS.contains(&name.as_str())
-            || NON_BLOCKING_JOBS.contains(&name.as_str())
-        {
+        if name == "ci-gate" || ADVISORY_JOBS.contains(&name.as_str()) {
             continue;
         }
         assert!(
@@ -1283,11 +1254,9 @@ fn nextest_ci_isolates_process_harnesses_and_timing_oracles() {
     }
 }
 
-/// The merge gate must finish in about ten minutes. That budget is kept by
-/// fanning the long serial suites out across matrix shards, by moving the
-/// slow non-gating suites (coverage, the gateway-slice re-run, doctests) off
-/// the pull-request path, and by caching the macOS build that has no fleet
-/// kache. Regressing any of these silently reinstates a 35-minute gate.
+/// Keep long suites parallel and catch the gateway-only runtime suite on pull
+/// requests. The old serial gateway-only run added about 24 minutes after
+/// merge, delaying Release Please and discovering failures too late.
 #[test]
 fn merge_gate_shards_heavy_suites_to_stay_under_ten_minutes() {
     let text = ci_workflow_text();
@@ -1354,23 +1323,53 @@ fn merge_gate_shards_heavy_suites_to_stay_under_ten_minutes() {
         "the blocking Rustdoc job builds docs only; doctests run in the test `crates` shard"
     );
 
-    let coverage_if = workflow["jobs"]["rust-coverage"]["if"]
-        .as_str()
-        .expect("rust-coverage has an if");
+    let coverage = fs::read_to_string(repo_root().join(".github/workflows/rust-coverage.yml"))
+        .expect("read rust-coverage.yml");
     assert!(
-        coverage_if.contains("github.event_name != 'pull_request'"),
-        "coverage must stay off the pull-request path"
+        coverage.contains("branches: [main]") && !coverage.contains("pull_request:"),
+        "coverage must run separately on main without entering pull-request CI"
     );
-    let feature_slices = text
-        .split("  feature-slices:\n")
+    let gateway_slices = text
+        .split("  gateway-slice-tests:\n")
         .nth(1)
         .and_then(|section| section.split("\n  extracted-crate-slices:").next())
-        .expect("feature-slices job");
-    assert!(
-        feature_slices
-            .contains("if: matrix.slice == 'gateway' && github.event_name != 'pull_request'"),
-        "the gateway-slice full suite must stay off the pull-request path"
+        .expect("gateway-slice-tests job");
+    let gateway_shards = workflow["jobs"]["gateway-slice-tests"]["strategy"]["matrix"]["shard"]
+        .as_array()
+        .expect("gateway-only suite declares a shard matrix");
+    assert_eq!(
+        gateway_shards
+            .iter()
+            .map(|shard| shard.as_str().expect("gateway shard name"))
+            .collect::<Vec<_>>(),
+        [
+            "unit-1",
+            "unit-2",
+            "unit-3",
+            "unit-4",
+            "labby-int-1",
+            "labby-int-2",
+            "labby-int-3",
+            "labby-int-4",
+            "labby-int-5",
+        ],
+        "the gateway-only suite must select bounded Cargo targets"
     );
+    assert!(
+        gateway_slices
+            .contains("scripts/ci/run-test-shard.sh \"${{ matrix.shard }}\" gateway-only")
+            && !gateway_slices.contains("github.event_name != 'pull_request'"),
+        "the full gateway-only suite must run in required shards on pull requests"
+    );
+    for required in [
+        "--no-default-features --features \"gateway,proxy-testkit\" --locked --profile ci",
+        "unit_packages=(-p labby)",
+    ] {
+        assert!(
+            shard_runner.contains(required),
+            "gateway-only shard runner must keep `{required}`"
+        );
+    }
 
     let conformance_lanes = workflow["jobs"]["mcp-conformance"]["strategy"]["matrix"]["lane"]
         .as_array()
@@ -1417,23 +1416,7 @@ fn merge_gate_shards_heavy_suites_to_stay_under_ten_minutes() {
     );
 }
 
-/// The non-blocking suites are kept off `ci-gate` on purpose, and that only
-/// stays safe while each of them also carries `continue-on-error: true`:
-/// without it a red suite still fails the CI run that release-please reads.
-#[test]
-fn non_blocking_jobs_declare_continue_on_error() {
-    let workflow = ci_workflow_yaml(&ci_workflow_text());
-    for job in NON_BLOCKING_JOBS {
-        assert_eq!(
-            workflow["jobs"][*job]["continue-on-error"].as_bool(),
-            Some(true),
-            "non-blocking job `{job}` must declare continue-on-error: true"
-        );
-    }
-}
-
-/// This contract must be able to block a merge. The workspace suite that
-/// also runs it is non-blocking, so a gating job has to execute it too.
+/// This contract must run in a job that can block a merge.
 #[test]
 fn ci_contract_runs_inside_a_gating_job() {
     let text = ci_workflow_text();
@@ -1464,7 +1447,7 @@ fn ci_contract_runs_inside_a_gating_job() {
         .map(|(name, _)| name.clone())
         .expect("a job runs the ci_changed_paths contract");
     assert!(
-        gate_needs.contains(&host) && !NON_BLOCKING_JOBS.contains(&host.as_str()),
+        gate_needs.contains(&host),
         "the CI contract runs only in `{host}`, which cannot block a merge"
     );
 }

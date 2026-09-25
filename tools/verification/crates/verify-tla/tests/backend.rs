@@ -57,7 +57,11 @@ fn exact_release_help_exit_one_is_available() {
     let (_dir, backend) = fixture(
         "#!/bin/sh\ncase \"$*\" in *-help*) echo 'TLC Version 2.19'; exit 1;; *) echo 'Model checking completed. No error has been found';; esac\n",
     );
-    assert!(matches!(backend.availability(), Availability::Ready { .. }));
+    let availability = backend.availability();
+    assert!(
+        matches!(availability, Availability::Ready { .. }),
+        "{availability:?}"
+    );
     assert!(matches!(
         backend.run(&plan(1000)).verdict,
         Verdict::Bounded { .. }
@@ -119,10 +123,11 @@ fn deadline_and_output_are_incomplete() {
     let (_dir, backend) = fixture(
         "#!/bin/sh\ncase \"$*\" in *-help*) echo 'TLC Version 2.19';; *) yes x | head -c 9000000;; esac\n",
     );
-    assert!(matches!(
-        backend.run(&plan(2000)).verdict,
-        Verdict::Incomplete { .. }
-    ));
+    let report = backend.run(&plan(2000));
+    assert!(
+        matches!(report.verdict, Verdict::Incomplete { .. }),
+        "{report:?}"
+    );
 }
 
 #[test]
@@ -211,8 +216,8 @@ fn successful_scope_records_deadline_without_simulation_depth() {
         "#!/bin/sh\ncase \"$*\" in *-depth*) exit 99;; *-help*) echo 'TLC Version 2.19'; exit 1;; *) echo 'Model checking completed. No error has been found';; esac\n",
     );
     let report = backend.run(&plan(5000));
-    let Verdict::Bounded { bounds } = report.verdict else {
-        panic!("expected successful finite model result");
+    let Verdict::Bounded { bounds } = &report.verdict else {
+        panic!("expected successful finite model result, got {report:?}");
     };
     assert_eq!(bounds["scope"], "registered_module_and_config");
     assert_eq!(bounds["timeout_ms"], 5000);

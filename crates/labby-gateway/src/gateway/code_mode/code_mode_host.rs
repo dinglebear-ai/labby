@@ -321,10 +321,9 @@ impl CodeModeHost for GatewayManager {
         use_cache: bool,
     ) -> Result<ToolsRender, ToolError> {
         // Catalog readers must receive a discoverable catalog even when the
-        // long-lived gateway has not contacted an upstream yet. The refresh is
-        // bounded by the catalog cold-connect budget; without it, MCP's
-        // documented search -> describe -> call workflow starts with an empty
-        // catalog and can only succeed by guessing a raw tool id.
+        // long-lived gateway has not contacted an upstream yet. Cold refresh
+        // is bounded by the catalog connect budget; once a real tool is warm,
+        // background probes keep it current without delaying every request.
         let allow_cold_connect = true;
         let owner = runtime_owner(caller, surface);
         let oauth_subject = oauth_subject(caller);
@@ -898,11 +897,10 @@ impl CodeModeHost for GatewayManager {
             return Ok(Vec::new());
         }
         let allowed_ids = semantic_candidate_ids(&render.entries, scope, kinds);
-        let scoped_vectors: Vec<(String, Vec<f32>)> = vectors
-            .into_iter()
-            .filter(|(id, _)| allowed_ids.contains(id.as_str()))
-            .collect();
-        if scoped_vectors.is_empty() {
+        if !vectors
+            .iter()
+            .any(|(id, _)| allowed_ids.contains(id.as_str()))
+        {
             return Ok(Vec::new());
         }
         let query_vec = match super::embeddings::embed_via_tei(
@@ -922,10 +920,11 @@ impl CodeModeHost for GatewayManager {
             }
         };
         self.record_semantic_search_recovery().await;
-        Ok(super::embeddings::rank_top_k_by_similarity(
+        Ok(super::embeddings::rank_top_k_by_similarity_where(
             &query_vec,
-            &scoped_vectors,
+            &vectors,
             top_k,
+            |id| allowed_ids.contains(id),
         ))
     }
 

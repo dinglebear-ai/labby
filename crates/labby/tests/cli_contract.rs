@@ -409,6 +409,9 @@ fn runtime_command(home: &std::path::Path, args: &[&str]) -> Command {
         .env("LABBY_HOME", home.join(".labby"))
         .stdin(std::process::Stdio::null())
         .current_dir(home);
+    if let Some(profile_file) = std::env::var_os("LLVM_PROFILE_FILE") {
+        command.env("LLVM_PROFILE_FILE", profile_file);
+    }
     command
 }
 

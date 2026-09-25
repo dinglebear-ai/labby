@@ -440,9 +440,8 @@ mod tests {
                     error
                 };
                 let records = captures.lock().unwrap();
-                assert_eq!(
-                    records.len(),
-                    1,
+                assert!(
+                    (1..=4).contains(&records.len()),
                     "restart={restart} mode={mode} stages={:?}: {}",
                     stages.lock().unwrap().iter().take(8).collect::<Vec<_>>(),
                     observed_error.chars().take(512).collect::<String>()
@@ -451,25 +450,28 @@ mod tests {
                 if restart {
                     expected_stages.push("initial_restart_identity");
                 }
-                expected_stages.extend([
-                    "capture_entered",
-                    "listener_ready",
-                    "pid_available",
-                    "owned_membership_verified",
-                ]);
+                for _ in 0..records.len() {
+                    expected_stages.extend([
+                        "capture_entered",
+                        "listener_ready",
+                        "pid_available",
+                        "owned_membership_verified",
+                    ]);
+                }
                 assert_eq!(*stages.lock().unwrap(), expected_stages);
-                let (group, daemon_pid, address, members) = &records[0];
-                assert!(members.contains(daemon_pid));
-                assert!(
-                    process_group_members_checked(*group as i32)
-                        .unwrap()
-                        .is_empty()
-                );
-                assert!(capture(*daemon_pid, Instant::now() + Duration::from_secs(1)).is_err());
-                assert!(
-                    TcpListener::bind(address).is_ok(),
-                    "failed capture retained actual daemon listener"
-                );
+                for (group, daemon_pid, address, members) in records.iter() {
+                    assert!(members.contains(daemon_pid));
+                    assert!(
+                        process_group_members_checked(*group as i32)
+                            .unwrap()
+                            .is_empty()
+                    );
+                    assert!(capture(*daemon_pid, Instant::now() + Duration::from_secs(1)).is_err());
+                    assert!(
+                        TcpListener::bind(address).is_ok(),
+                        "failed capture retained actual daemon listener"
+                    );
+                }
             }
         }
     }

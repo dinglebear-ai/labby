@@ -75,6 +75,7 @@ jobs:
       pull-requests: write
     outputs:
       auto_merge_pr: ${{ steps.pr.outputs.auto_merge_pr }}
+      skip_refresh: ${{ steps.pr.outputs.skip_refresh }}
     steps:
       - name: Disable auto-merge during release branch refresh
         id: pr
@@ -88,9 +89,27 @@ jobs:
             --jq '.[0] // empty')"
           if [[ -z "$pr" ]]; then
             echo 'auto_merge_pr=' >>"$GITHUB_OUTPUT"
+            echo 'skip_refresh=false' >>"$GITHUB_OUTPUT"
             exit 0
           fi
           number="$(jq -r '.number' <<<"$pr")"
+          # A manual run may already have prepared this release PR while the
+          # same main CI run was still finishing advisory jobs. Recreating the
+          # same release commits force-pushes a new SHA and cancels PR checks.
+          # The first PR commit's parent is the main revision it was built on.
+          # Refresh only when main has actually advanced; a manual dispatch
+          # remains an explicit way to request a fresh calculation.
+          if [[ "$GITHUB_EVENT_NAME" == workflow_run ]]; then
+            main_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+            release_base_sha="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$number/commits?per_page=1" --jq '.[0].parents[0].sha // empty')"
+            if [[ -n "$release_base_sha" && "$release_base_sha" == "$main_sha" ]]; then
+              echo 'auto_merge_pr=' >>"$GITHUB_OUTPUT"
+              echo 'skip_refresh=true' >>"$GITHUB_OUTPUT"
+              echo "Release PR #$number already includes current main $main_sha; preserving its checks"
+              exit 0
+            fi
+          fi
+          echo 'skip_refresh=false' >>"$GITHUB_OUTPUT"
           if [[ "$(jq -r '.autoMergeRequest != null' <<<"$pr")" == true ]]; then
             gh pr merge "$number" --repo "$GITHUB_REPOSITORY" --disable-auto
             echo "auto_merge_pr=$number" >>"$GITHUB_OUTPUT"
@@ -100,7 +119,7 @@ jobs:
 
   release-please:
     needs: stabilize-release-pr
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ needs.stabilize-release-pr.outputs.skip_refresh != 'true' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -127,7 +146,7 @@ jobs:
     # release-please can update the branch and then fail before emitting its
     # outputs. Always inspect the canonical open release PR so that a partial
     # action failure cannot leave its generated commit without metadata.
-    if: ${{ always() && !cancelled() && needs.stabilize-release-pr.result == 'success' }}
+    if: ${{ always() && !cancelled() && needs.stabilize-release-pr.result == 'success' && needs.stabilize-release-pr.outputs.skip_refresh != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:

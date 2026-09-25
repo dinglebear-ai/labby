@@ -49,7 +49,7 @@ pub(super) const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(15);
 /// Stdio discovery includes process/package-runner/SSH cold start, not just RPC.
 pub(super) const STDIO_DISCOVERY_TIMEOUT: Duration = Duration::from_mins(1);
 
-pub(super) fn upstream_discovery_timeout(
+pub(crate) fn upstream_discovery_timeout(
     config: &UpstreamConfig,
     request_timeout: Duration,
 ) -> Duration {
