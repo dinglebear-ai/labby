@@ -30,6 +30,27 @@ test('Phoenix preserves reasoning, hooks and subagents behind distinct icon node
   assert.doesNotMatch(html, /private-ish visible reasoning summary/)
 })
 
+test('Phoenix groups adjacent tool calls but keeps separate calls and boundaries', () => {
+  const html = renderToStaticMarkup(<PhoenixEventTimeline events={[
+    { method: 'item/started', params: { item: { id: 'm1', type: 'mcpToolCall', server: 'labby', tool: 'gateway.status', status: 'inProgress' } } },
+    { method: 'item/completed', params: { item: { id: 'm1', type: 'mcpToolCall', server: 'labby', tool: 'gateway.status', status: 'completed' } } },
+    { method: 'item/completed', params: { item: { id: 'm2', type: 'mcpToolCall', server: 'labby', tool: 'gateway.status', status: 'completed' } } },
+    { method: 'item/completed', params: { item: { id: 'c1', type: 'commandExecution', command: 'inspect logs', status: 'completed' } } },
+    { method: 'item/completed', params: { item: { id: 'm4', type: 'mcpToolCall', server: 'labby', tool: 'gateway.health', status: 'completed' } } },
+    { method: 'item/reasoning/textDelta', params: { delta: 'considering results' } },
+    { method: 'item/completed', params: { item: { id: 'm3', type: 'mcpToolCall', server: 'labby', tool: 'server_logs.search', status: 'completed' } } },
+  ]}/>)
+  assert.match(html, /data-phoenix-tool-group="4"/)
+  assert.match(html, /aria-label="4 tool calls: labby · gateway.status, 2 calls; Command; labby · gateway.health"/)
+  assert.equal((html.match(/data-phoenix-tool=/g) ?? []).length, 3)
+  assert.match(html, /data-phoenix-tool-count="2"/)
+  assert.doesNotMatch(html, />4 tool calls</)
+  assert.equal((html.match(/data-phoenix-tool-group=/g) ?? []).length, 1)
+  assert.ok(html.indexOf('data-phoenix-tool-group="4"') < html.indexOf('aria-label="Reasoning. 1 event"'))
+  assert.ok(html.indexOf('aria-label="Reasoning. 1 event"') < html.indexOf('aria-label="labby · server_logs.search. 1 event"'))
+  assert.doesNotMatch(html, /considering results/)
+})
+
 test('Phoenix context usage honors App Server token usage notifications', () => {
   const events = [{ method: 'thread/tokenUsage/updated', params: { tokenUsage: { total: { totalTokens: 4096 }, modelContextWindow: 200_000 } } }]
   assert.equal(phoenixTotalTokens(events), 4096)

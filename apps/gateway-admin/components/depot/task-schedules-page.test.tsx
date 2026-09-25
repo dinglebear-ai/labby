@@ -41,6 +41,21 @@ test('schedule rows expose real action callbacks without optimistic switch succe
     assert.deepEqual(operations, ['pause', 'run', 'edit', 'delete'])
   } finally { await view.unmount() }
 })
+test('completed scheduled task output is visible with truncation context', async () => {
+  authenticate()
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body))
+    if (body.action === 'tasks.get') return Response.json({ task_id: 'run-1', state: 'succeeded', attempt: 1 })
+    if (body.action === 'tasks.result') return Response.json({ task_id: 'run-1', state: 'succeeded', attempt: 1, output: 'Review completed', output_digest: 'sha256:123', output_truncated: true })
+    throw new Error(`Unexpected action ${body.action}`)
+  }
+  const view = await renderClient(<TaskScheduleRows rows={[{ ...row, last_task_id: 'run-1' }]} agents={[agent]} states={{}} canOperate canDelete onToggle={() => {}} onRun={() => {}} onEdit={() => {}} onDelete={() => {}} />)
+  try {
+    await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Inspect Daily review"]')!.click())
+    await waitFor(() => assert.match(view.container.querySelector('[aria-label="Task output"]')?.textContent ?? '', /Review completed/))
+    assert.match(view.container.textContent ?? '', /Output truncated/)
+  } finally { await view.unmount() }
+})
 test('task workspace survives strict effect restart and retains denied mutation state', async () => {
   authenticate()
   let pauseCalls = 0

@@ -15,10 +15,10 @@ use labby_runtime::artifacts::{
 use thiserror::Error;
 
 use crate::access::{
-    AccessStore, AccessStoreError, ArtifactAuthorityRecord, ArtifactSubscriptionUpdatePolicy,
-    BeginManagedArtifactMirrorUpdate, ManagedArtifactMirror, ManagedArtifactMirrorMode,
-    ManagedArtifactMirrorStatus, ManagedArtifactSubscription, StageArtifactAuthority,
-    StageManagedArtifactMirror,
+    AccessStore, AccessStoreError, ArtifactAuthorityRecord, ArtifactAuthorityStatus,
+    ArtifactSubscriptionUpdatePolicy, BeginManagedArtifactMirrorUpdate, ManagedArtifactMirror,
+    ManagedArtifactMirrorMode, ManagedArtifactMirrorStatus, ManagedArtifactSubscription,
+    StageArtifactAuthority, StageManagedArtifactMirror,
 };
 
 #[derive(Debug, Error)]
@@ -255,7 +255,7 @@ impl ManagedArtifactCoordinator {
             })
             .await?;
         let authority = match authority.status {
-            crate::access::ArtifactAuthorityStatus::Pending => {
+            ArtifactAuthorityStatus::Pending => {
                 self.access
                     .mark_artifact_authority_committing(
                         descriptor.id.clone(),
@@ -264,9 +264,8 @@ impl ManagedArtifactCoordinator {
                     )
                     .await?
             }
-            crate::access::ArtifactAuthorityStatus::Committing
-            | crate::access::ArtifactAuthorityStatus::Active => authority,
-            crate::access::ArtifactAuthorityStatus::Failed => {
+            ArtifactAuthorityStatus::Committing | ArtifactAuthorityStatus::Active => authority,
+            ArtifactAuthorityStatus::Failed => {
                 return Err(ManagedArtifactDistributionError::State(
                     "personal_fork_authority_failed",
                 ));
@@ -295,9 +294,8 @@ impl ManagedArtifactCoordinator {
             ));
         }
         let authority = self
-            .access
-            .activate_artifact_authority(
-                artifact.descriptor.id.clone(),
+            .finish_personal_fork(
+                &artifact,
                 request.operation_id,
                 request.policy_epoch,
                 request.now,
@@ -307,6 +305,112 @@ impl ManagedArtifactCoordinator {
             artifact,
             authority,
         })
+    }
+
+    async fn finish_personal_fork(
+        &self,
+        artifact: &ArtifactRecord,
+        operation_id: String,
+        policy_epoch: u64,
+        now: i64,
+    ) -> Result<ArtifactAuthorityRecord, ManagedArtifactDistributionError> {
+        let artifact_id = artifact.descriptor.id.clone();
+        match self
+            .access
+            .activate_artifact_authority(
+                artifact_id.clone(),
+                operation_id.clone(),
+                policy_epoch,
+                now,
+            )
+            .await
+        {
+            Ok(authority) => Ok(authority),
+            Err(AccessStoreError::NotAuthorized) => {
+                // The policy changed after the ArtifactStore commit. The
+                // committing authority denies reads until the exact fork is
+                // removed; a failed purge remains available for reconciliation.
+                self.purge_personal_fork(artifact)?;
+                self.access
+                    .remove_incomplete_artifact_authority(artifact_id, operation_id)
+                    .await?;
+                Err(AccessStoreError::NotAuthorized.into())
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn purge_personal_fork(
+        &self,
+        artifact: &ArtifactRecord,
+    ) -> Result<(), ManagedArtifactDistributionError> {
+        if artifact.lineage.forked_from_artifact_id.is_none() {
+            return Err(ManagedArtifactDistributionError::State(
+                "personal_fork_lineage_missing",
+            ));
+        }
+        self.artifacts
+            .purge_artifact_exact(&artifact.descriptor.id, &artifact.current_revision_id)?;
+        Ok(())
+    }
+
+    /// Complete or unwind a fork that outlived its request. Only stale
+    /// non-active authorities reach this path, after the live commit grace.
+    pub(crate) async fn recover_incomplete_personal_fork(
+        &self,
+        authority: ArtifactAuthorityRecord,
+        now: i64,
+    ) -> Result<(), ManagedArtifactDistributionError> {
+        let artifact = match self.artifacts.get(&authority.artifact_id) {
+            Ok(artifact) => Some(artifact),
+            Err(ArtifactError::NotFound("record")) => None,
+            Err(error) => return Err(error.into()),
+        };
+        match (authority.status, artifact) {
+            (ArtifactAuthorityStatus::Committing, Some(artifact)) => {
+                if artifact.lineage.forked_from_artifact_id.is_none() {
+                    return Err(ManagedArtifactDistributionError::State(
+                        "personal_fork_lineage_missing",
+                    ));
+                }
+                match self
+                    .finish_personal_fork(
+                        &artifact,
+                        authority.operation_id,
+                        authority.policy_epoch,
+                        now,
+                    )
+                    .await
+                {
+                    Ok(_)
+                    | Err(ManagedArtifactDistributionError::Access(
+                        AccessStoreError::NotAuthorized,
+                    )) => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            (
+                ArtifactAuthorityStatus::Pending
+                | ArtifactAuthorityStatus::Committing
+                | ArtifactAuthorityStatus::Failed,
+                artifact,
+            ) => {
+                if let Some(artifact) = artifact {
+                    self.purge_personal_fork(&artifact)?;
+                } else {
+                    self.artifacts
+                        .purge_uncommitted_artifact(&authority.artifact_id)?;
+                }
+                self.access
+                    .remove_incomplete_artifact_authority(
+                        authority.artifact_id,
+                        authority.operation_id,
+                    )
+                    .await?;
+            }
+            (ArtifactAuthorityStatus::Active, _) => {}
+        }
+        Ok(())
     }
 
     pub(crate) async fn apply_follow_update(
@@ -716,10 +820,7 @@ mod tests {
             acquisition,
         };
         let outcome = coordinator.fork_personal(request.clone()).await.unwrap();
-        assert_eq!(
-            outcome.authority.status,
-            crate::access::ArtifactAuthorityStatus::Active
-        );
+        assert_eq!(outcome.authority.status, ArtifactAuthorityStatus::Active);
         assert_eq!(outcome.authority.owner.id(), "bootstrap-owner");
         assert_ne!(outcome.artifact.descriptor.id, source_record.descriptor.id);
         assert_eq!(
@@ -739,6 +840,153 @@ mod tests {
             Err(ArtifactError::NotFound("record"))
         ));
         assert_eq!(coordinator.fork_personal(request).await.unwrap(), outcome);
+    }
+
+    #[tokio::test]
+    async fn personal_fork_epoch_drift_cleans_bytes_and_allows_recovery_retry() {
+        let (_access_dir, access) = bootstrapped_access().await;
+        let source_dir = tempfile::tempdir().unwrap();
+        let source_package = tempfile::tempdir().unwrap();
+        std::fs::write(source_package.path().join("a.txt"), b"alpha").unwrap();
+        let source = ArtifactStore::new(source_dir.path().join("store")).unwrap();
+        let source_record = source
+            .import_local(
+                ArtifactImportRequest::new("resource", "upstream", "fork-recovery-demo"),
+                source_package.path(),
+            )
+            .unwrap();
+        let acquisition = source_acquisition(&source, &source_record).await;
+        let policy_epoch = install_authority(&access, &source_record.descriptor.id).await;
+        let destination_dir = tempfile::tempdir().unwrap();
+        let destination =
+            Arc::new(ArtifactStore::new(destination_dir.path().join("store")).unwrap());
+        let coordinator = ManagedArtifactCoordinator::new(access.clone(), Arc::clone(&destination));
+        let descriptor =
+            ArtifactDescriptor::for_identity("resource", "personal", "retry-fork").unwrap();
+        let owner = OwnerScope::Personal(
+            labby_primitives::access::PrincipalId::new("bootstrap-owner").unwrap(),
+        );
+        let operation_id = "fork-before-policy-drift".to_string();
+        access
+            .stage_artifact_authority(StageArtifactAuthority {
+                artifact_id: descriptor.id.clone(),
+                operation_id: operation_id.clone(),
+                owner: owner.clone(),
+                policy_epoch,
+                now: 20,
+            })
+            .await
+            .unwrap();
+        access
+            .mark_artifact_authority_committing(descriptor.id.clone(), operation_id.clone(), 21)
+            .await
+            .unwrap();
+        let fork_request = ArtifactForkRequest {
+            source_artifact_id: source_record.descriptor.id.clone(),
+            namespace: "personal".into(),
+            name: "retry-fork".into(),
+            title: None,
+            following: false,
+            forked_at: None,
+        };
+        let artifact = destination
+            .fork_acquisition_exact(acquisition.clone(), fork_request.clone())
+            .unwrap();
+
+        access
+            .put_artifact_source_policy(crate::access::ArtifactSourcePolicyRecord {
+                provider_authority: "depot:drift".into(),
+                artifact_id: "unrelated-artifact".into(),
+                source_scope: owner.clone(),
+                policy_epoch: 1,
+                ceiling: crate::access::ArtifactDistributionCeiling {
+                    sync: true,
+                    follow: true,
+                    fork: true,
+                    export: true,
+                    reshare: true,
+                },
+                updated_at: 22,
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            coordinator
+                .finish_personal_fork(&artifact, operation_id, policy_epoch, 23)
+                .await,
+            Err(ManagedArtifactDistributionError::Access(
+                AccessStoreError::NotAuthorized
+            ))
+        ));
+        assert!(matches!(
+            destination.get(&descriptor.id),
+            Err(ArtifactError::NotFound("record"))
+        ));
+        assert!(
+            access
+                .artifact_authority(descriptor.id.clone())
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let new_epoch = access
+            .artifact_distribution_authority(
+                VerifiedIdentity::external(
+                    Authenticator::BrowserSession,
+                    "https://accounts.google.com",
+                    "owner",
+                )
+                .unwrap(),
+                "bootstrap-default".into(),
+                None,
+            )
+            .await
+            .unwrap()
+            .global_revision;
+        let retry_operation = "fork-after-policy-drift".to_string();
+        access
+            .stage_artifact_authority(StageArtifactAuthority {
+                artifact_id: descriptor.id.clone(),
+                operation_id: retry_operation.clone(),
+                owner,
+                policy_epoch: new_epoch,
+                now: 24,
+            })
+            .await
+            .unwrap();
+        access
+            .mark_artifact_authority_committing(descriptor.id.clone(), retry_operation, 25)
+            .await
+            .unwrap();
+        destination
+            .fork_acquisition_exact(acquisition, fork_request)
+            .unwrap();
+        let stranded = access
+            .artifact_authority(descriptor.id.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            access
+                .incomplete_artifact_authorities(25, 16)
+                .await
+                .unwrap(),
+            vec![stranded.clone()],
+        );
+        coordinator
+            .recover_incomplete_personal_fork(stranded, 26)
+            .await
+            .unwrap();
+        assert_eq!(
+            access
+                .artifact_authority(descriptor.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ArtifactAuthorityStatus::Active,
+        );
     }
 
     #[tokio::test]

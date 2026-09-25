@@ -3907,6 +3907,54 @@
   },
   {
     "service": "dev_containers",
+    "action": "dev_containers.approved_templates.list",
+    "description": "List approved immutable templates available for authorized container creation",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "dev_container",
+    "params": [
+      {
+        "name": "owner_kind",
+        "ty": "installation|team|project|personal",
+        "required": true,
+        "description": "Single durable owner scope"
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": true,
+        "description": "Owner identifier resolved against caller authority"
+      },
+      {
+        "name": "cursor",
+        "ty": "string",
+        "required": false,
+        "description": "Exclusive instance identifier cursor"
+      },
+      {
+        "name": "limit",
+        "ty": "string",
+        "required": false,
+        "description": "Page size from 1 through 100"
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "dev_containers",
     "action": "dev_containers.build",
     "description": "Build and publish a new immutable image revision",
     "destructive": false,

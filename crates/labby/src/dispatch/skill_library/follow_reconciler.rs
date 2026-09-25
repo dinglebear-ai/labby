@@ -37,6 +37,7 @@ use super::params::SourceSelector;
 
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
 const RECONCILE_BATCH_LIMIT: usize = 16;
+const PERSONAL_FORK_RECOVERY_GRACE: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Error)]
 enum FollowReconcileError {
@@ -96,6 +97,30 @@ async fn tick(
             .map_err(|_| FollowReconcileError::State("follow_interval_out_of_range"))?,
     );
     let store = access_runtime.store().await?;
+
+    let coordinator =
+        ManagedArtifactCoordinator::new(store.clone(), Arc::clone(&runtime.service.store));
+    let fork_cutoff = now.saturating_sub(
+        i64::try_from(PERSONAL_FORK_RECOVERY_GRACE.as_secs())
+            .map_err(|_| FollowReconcileError::State("fork_recovery_grace_out_of_range"))?,
+    );
+    for authority in store
+        .incomplete_artifact_authorities(fork_cutoff, RECONCILE_BATCH_LIMIT)
+        .await?
+    {
+        let artifact_id = authority.artifact_id.clone();
+        if let Err(error) = coordinator
+            .recover_incomplete_personal_fork(authority, now)
+            .await
+        {
+            let error: FollowReconcileError = error.into();
+            tracing::warn!(
+                artifact_id,
+                kind = reconcile_error_kind(&error),
+                "personal Artifact fork recovery failed"
+            );
+        }
+    }
 
     for mirror in store
         .managed_artifact_mirrors_for_reconciliation(checked_before, 64)

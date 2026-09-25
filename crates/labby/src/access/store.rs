@@ -674,6 +674,18 @@ impl AccessStore {
         }).await
     }
 
+    pub(crate) async fn list_approved_dev_container_templates(
+        &self,
+        after: String,
+        limit: usize,
+    ) -> AccessStoreResult<Vec<String>> {
+        self.with_connection(move |connection| {
+            super::dev_container::approved_template_ids(connection, &after, limit)
+                .map_err(map_sqlite_error)
+        })
+        .await
+    }
+
     pub(crate) async fn set_agent_definition_state(
         &self,
         id: String,

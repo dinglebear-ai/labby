@@ -17,6 +17,7 @@ type EventView = {
 }
 
 type EventCluster = EventView & { entries: EventView[] }
+type TimelineEntry = { kind: 'single'; cluster: EventCluster } | { kind: 'tools'; clusters: EventCluster[] }
 
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
@@ -100,13 +101,13 @@ export function phoenixContextWindow(events: PhoenixEvent[]): number | undefined
   return numberAt(usage, ['modelContextWindow', 'model_context_window', 'contextWindow', 'context_window'])
 }
 
-function summarize(event: PhoenixEvent): EventView | undefined {
+function summarize(event: PhoenixEvent, index: number): EventView | undefined {
   const params = record(event.params)
   const eventItem = item(event)
   const method = event.method.toLowerCase()
   const itemType = firstText(eventItem, ['type'])?.toLowerCase() ?? ''
   const text = nestedText(eventItem) ?? nestedText(params)
-  const id = firstText(eventItem, ['id', 'callId', 'call_id']) ?? method
+  const id = firstText(eventItem, ['id', 'callId', 'call_id']) ?? `${method}:${index}`
 
   if (method.includes('agentmessage') || method.includes('agent_message') || itemType.includes('agentmessage')) return undefined
   if (method.includes('reasoning') || itemType.includes('reasoning')) return { kind: 'reasoning', key: 'reasoning:' + id, label: 'Reasoning', detail: text }
@@ -121,19 +122,19 @@ function summarize(event: PhoenixEvent): EventView | undefined {
   }
   if (itemType === 'collabtoolcall' || method.includes('collab')) {
     const name = firstText(eventItem, ['receiverThreadId', 'agentName', 'tool', 'name']) ?? 'Subagent'
-    return { kind: 'subagent', key: 'subagent:' + name, label: name, detail: text, status: firstText(eventItem, ['status']) }
+    return { kind: 'subagent', key: 'subagent:' + id, label: name, detail: text, status: firstText(eventItem, ['status']) }
   }
   if (itemType === 'mcptoolcall' || method.includes('mcptoolcall')) {
     const server = firstText(eventItem, ['server', 'serverName']) ?? firstText(params, ['server', 'serverName'])
     const tool = firstText(eventItem, ['tool', 'toolName', 'name']) ?? firstText(params, ['tool', 'toolName', 'name'])
     const name = [server, tool].filter(Boolean).join(' · ') || 'MCP tool'
-    return { kind: 'mcp', key: 'mcp:' + name, label: name, detail: text, status: firstText(eventItem, ['status']) }
+    return { kind: 'mcp', key: 'mcp:' + id, label: name, detail: text, status: firstText(eventItem, ['status']) }
   }
   if (itemType === 'dynamictoolcall' || method.includes('dynamictool')) {
     const name = firstText(eventItem, ['tool', 'name']) ?? 'Tool'
-    return { kind: 'other', key: 'tool:' + name, label: name, detail: text, status: firstText(eventItem, ['status']) }
+    return { kind: 'other', key: 'tool:' + id, label: name, detail: text, status: firstText(eventItem, ['status']) }
   }
-  if (itemType === 'commandexecution' || method.includes('commandexecution')) return { kind: 'command', key: 'command:shell', label: 'Command', detail: text, status: firstText(eventItem, ['status']) }
+  if (itemType === 'commandexecution' || method.includes('commandexecution')) return { kind: 'command', key: 'command:' + id, label: 'Command', detail: text, status: firstText(eventItem, ['status']) }
   if (itemType === 'filechange' || method.includes('diff')) return { kind: 'file', key: 'file:change', label: 'File change', detail: text, status: firstText(eventItem, ['status']) }
   if (itemType === 'websearch' || method.includes('websearch')) return { kind: 'web', key: 'web:search', label: 'Web search', detail: text, status: firstText(eventItem, ['status']) }
   if (method.includes('plan') || itemType.includes('plan')) return { kind: 'plan', key: 'plan', label: 'Plan', detail: text }
@@ -194,6 +195,55 @@ function clusterEvents(events: PhoenixEvent[]): EventCluster[] {
   return result
 }
 
+const TOOL_KINDS = new Set<EventKind>(['mcp', 'command', 'web', 'subagent'])
+
+function groupConsecutiveTools(clusters: EventCluster[]): TimelineEntry[] {
+  const result: TimelineEntry[] = []
+  for (const cluster of clusters) {
+    const previous = result.at(-1)
+    if (TOOL_KINDS.has(cluster.kind)) {
+      if (previous?.kind === 'tools') previous.clusters.push(cluster)
+      else result.push({ kind: 'tools', clusters: [cluster] })
+    } else {
+      result.push({ kind: 'single', cluster })
+    }
+  }
+  return result.flatMap((entry) => entry.kind === 'tools' && entry.clusters.length === 1
+    ? [{ kind: 'single' as const, cluster: entry.clusters[0] }]
+    : [entry])
+}
+
+function ToolGroupNode({ clusters }: { clusters: EventCluster[] }) {
+  const [expanded, setExpanded] = useState(false)
+  const count = clusters.length
+  const tools = clusters.reduce<{ kind: EventKind; label: string; count: number }[]>((items, cluster) => {
+    const existing = items.find((item) => item.kind === cluster.kind && item.label === cluster.label)
+    if (existing) existing.count += 1
+    else items.push({ kind: cluster.kind, label: cluster.label, count: 1 })
+    return items
+  }, [])
+  const description = tools.map((tool) => `${tool.label}${tool.count > 1 ? `, ${tool.count} calls` : ''}`).join('; ')
+  return <div data-phoenix-tool-group={count} className="min-w-0 max-w-full rounded-[11px] border border-aurora-border-default bg-aurora-control-surface">
+    <button type="button" aria-expanded={expanded} aria-label={`${count} tool calls: ${description}`} title={description} onClick={() => setExpanded((value) => !value)} className="flex max-w-full flex-wrap items-center gap-2 rounded-[11px] px-2 py-2 text-left hover:bg-aurora-hover-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary">
+      {tools.map((tool) => {
+        const token = STYLE[tool.kind]
+        const Icon = token.icon
+        return <span key={`${tool.kind}:${tool.label}`} data-phoenix-tool={tool.label} title={tool.label} className={cn('relative grid size-[31px] shrink-0 place-items-center rounded-[9px] border', token.tone, token.ring, token.glow)}>
+          <Icon size={14} strokeWidth={1.8}/>
+          {tool.count > 1 && <span data-phoenix-tool-count={tool.count} aria-hidden="true" className="absolute -right-1.5 -top-1.5 grid min-w-4 h-4 place-items-center rounded-full border border-aurora-border-strong bg-aurora-panel-strong px-0.5 text-[9px] font-bold leading-none tabular-nums text-aurora-text-primary">{tool.count}</span>}
+        </span>
+      })}
+      <ChevronDown size={13} aria-hidden="true" className={cn('ml-0.5 shrink-0 text-aurora-text-muted transition-transform', expanded && 'rotate-180')}/>
+    </button>
+    {expanded && <ol className="border-t border-aurora-border-default px-3 py-1.5">
+      {clusters.map((cluster, index) => <li key={cluster.key + '-' + index} className="min-w-0 border-b border-aurora-border-default py-2 last:border-b-0">
+        <div className="flex min-w-0 items-center gap-2"><span className="min-w-0 flex-1 truncate text-[11.5px] font-semibold text-aurora-text-primary">{cluster.label}</span>{cluster.status && <span className="shrink-0 text-[10px] text-aurora-text-muted">{cluster.status}</span>}</div>
+        {cluster.detail && <pre className="aurora-scrollbar mt-1 max-h-36 overflow-auto whitespace-pre-wrap break-words font-mono text-[10.5px] leading-[1.5] text-aurora-text-muted">{cluster.detail}</pre>}
+      </li>)}
+    </ol>}
+  </div>
+}
+
 function EventNode({ cluster, last }: { cluster: EventCluster; last: boolean }) {
   const [expanded, setExpanded] = useState(false)
   const token = STYLE[cluster.kind]
@@ -214,10 +264,12 @@ function EventNode({ cluster, last }: { cluster: EventCluster; last: boolean }) 
 
 /** Icon-only, graph-like activity rail. Details are collapsed until a node is opened. */
 export function PhoenixEventTimeline({ events, className }: { events: PhoenixEvent[]; className?: string }) {
-  const grouped = useMemo(() => clusterEvents(events), [events])
+  const grouped = useMemo(() => groupConsecutiveTools(clusterEvents(events)), [events])
   if (grouped.length === 0) return null
   return <section aria-label="Phoenix activity" className={cn('inline-flex w-fit max-w-full flex-col gap-0.5 pl-[2px]', className)}>
-    {grouped.map((cluster, index) => <EventNode key={cluster.key + '-' + String(index)} cluster={cluster} last={index === grouped.length - 1}/>) }
+    {grouped.map((entry, index) => entry.kind === 'tools'
+      ? <ToolGroupNode key={'tools-' + index} clusters={entry.clusters}/>
+      : <EventNode key={entry.cluster.key + '-' + index} cluster={entry.cluster} last={index === grouped.length - 1}/>) }
   </section>
 }
 

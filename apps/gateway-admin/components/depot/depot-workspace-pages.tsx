@@ -126,9 +126,15 @@ export function AgentsPage() {
   useEffect(() => {
     const controller = new AbortController()
     void listAgents(controller.signal).then(items => {
+      if (controller.signal.aborted) return
       setAgents(items)
       setLoadError(null)
       setSelected(current => current ? items.find(item => item.agent_id === current.agent_id) ?? null : null)
+      if (items[0]) {
+        const kind = toOwnerKind(items[0].owner_kind)
+        if (kind) setOwnerKind(kind)
+        setOwnerId(current => current || items[0].owner_id)
+      }
     }).catch(error => {
       if (!controller.signal.aborted) setLoadError(errorMessage(error, 'Agent service unavailable'))
     })

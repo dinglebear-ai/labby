@@ -20,7 +20,7 @@ async function action<T>(name: string, params: Record<string, unknown> = {}, mut
     if (token) headers.set('x-csrf-token', token)
   }
   try {
-    const response = await fetch('/v1/projects/', { method: 'POST', credentials: 'include', cache: 'no-store', headers, body: JSON.stringify({ action: name, params }), signal: authority.signal })
+    const response = await fetch('/v1/projects', { method: 'POST', credentials: 'include', cache: 'no-store', headers, body: JSON.stringify({ action: name, params }), signal: authority.signal })
     if (!response.ok) throw new Error(`Project request failed (${response.status})`)
     const value = await response.json() as T
     assertGatewayAuthorityCurrent(authority.generation)

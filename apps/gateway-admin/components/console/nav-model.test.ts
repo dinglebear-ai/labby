@@ -64,6 +64,7 @@ test('Depot and Workspace navigation match the unified product information archi
   assert.deepEqual(workspace?.items.map((item) => item.label), [
     'Agents',
     'Tasks',
+    'Projects',
     'Dev Containers',
     'Stash',
   ])

@@ -10,7 +10,7 @@ import { Switch } from '@/components/ui/switch'
 import { ActionConfirmationDialog } from '@/components/action-confirmation-dialog'
 import { authorityIdentity, useBrowserSession, type AuthorityOwner } from '@/lib/auth/session'
 import { isAbortError } from '@/lib/api/service-action-client'
-import type { AgentView, TaskView } from '@/lib/agent-tasks/client'
+import type { AgentView, TaskResult, TaskView } from '@/lib/agent-tasks/client'
 import { armTaskSchedule, createTaskSchedule, deleteTaskSchedule, editTaskSchedule, getScheduledTask, getScheduledTaskResult, getTaskSchedule, listScheduleAgents, listTaskSchedules, pauseTaskSchedule, runTaskSchedule, scheduleLabel, scheduleTimezone, type ScheduleSpec, type TaskSchedule, type TaskScheduleDetail } from '@/lib/agent-tasks/schedules'
 import { TaskScheduleForm, validateRetryPolicy, type ScheduleDraft } from './task-schedule-form'
 
@@ -61,7 +61,7 @@ export function TaskScheduleRows({ rows, agents, states, busy, canOperate, canDe
   </section>
 }
 function TaskRunDetails({ taskId, known }: { taskId: string; known?: TaskView }) {
-  const [record, setRecord] = useState(known)
+  const [record, setRecord] = useState<TaskResult | undefined>(known)
   const [error, setError] = useState<string>()
   useEffect(() => {
     const controller = new AbortController()
@@ -71,7 +71,7 @@ function TaskRunDetails({ taskId, known }: { taskId: string; known?: TaskView })
     }).catch(reason => { if (!isAbortError(reason)) setError(message(reason)) })
     return () => controller.abort()
   }, [taskId, known?.state])
-  return <div className="space-y-2"><Definition fields={[[ 'Task', taskId ], ['State', record?.state], ['Attempt', record?.attempt], ['Output digest', record?.output_digest], ['Error', record?.error_code]]} />{error ? <p role="alert" className="text-xs text-aurora-error">{error}</p> : null}</div>
+  return <div className="space-y-2"><Definition fields={[[ 'Task', taskId ], ['State', record?.state], ['Attempt', record?.attempt], ['Output digest', record?.output_digest], ['Error', record?.error_code]]} />{record?.output != null ? <section aria-label="Task output"><h4 className={`${LABEL} mb-1`}>Output</h4><pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-aurora-border-subtle bg-aurora-control-surface p-3 text-xs text-aurora-text-primary">{record.output}</pre>{record.output_truncated ? <p className="mt-1 text-xs text-aurora-text-muted">Output truncated. The digest identifies the complete result.</p> : null}</section> : null}{error ? <p role="alert" className="text-xs text-aurora-error">{error}</p> : null}</div>
 }
 
 export function TaskWorkspace({ owner, capabilities }: { owner: AuthorityOwner; capabilities: readonly string[] }) {

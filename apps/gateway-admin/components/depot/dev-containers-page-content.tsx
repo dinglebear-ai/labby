@@ -6,6 +6,7 @@ import { ActionConfirmationDialog } from '@/components/action-confirmation-dialo
 import { ConsoleHero } from '@/components/console/console-hero'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { isAbortError } from '@/lib/api/service-action-client'
 import { authorityIdentity, useBrowserSession } from '@/lib/auth/session'
@@ -51,6 +52,9 @@ export function DevContainersPageContent() {
   const [creating, setCreating] = useState(false)
   const [instanceId, setInstanceId] = useState('')
   const [templateId, setTemplateId] = useState('')
+  const [templates, setTemplates] = useState<string[]>([])
+  const [templatesLoading, setTemplatesLoading] = useState(false)
+  const [templateError, setTemplateError] = useState<string>()
   const [busy, setBusy] = useState<string>()
   const [destroyTarget, setDestroyTarget] = useState<DevContainer>()
   const load = useCallback(async (signal?: AbortSignal) => {
@@ -60,6 +64,16 @@ export function DevContainersPageContent() {
     finally { if (!signal?.aborted) setLoading(false) }
   }, [])
   useEffect(() => { const controller = new AbortController(); void load(controller.signal); return () => controller.abort() }, [load, workspaceIdentity])
+  useEffect(() => {
+    if (!creating) return
+    const controller = new AbortController()
+    setTemplates([]); setTemplateId(''); setTemplateError(undefined); setTemplatesLoading(true)
+    void api.listApprovedDevContainerTemplates(controller.signal)
+      .then(items => { if (!controller.signal.aborted) setTemplates(items) })
+      .catch(reason => { if (!isAbortError(reason)) setTemplateError(reason instanceof Error ? reason.message : 'Approved templates are unavailable.') })
+      .finally(() => { if (!controller.signal.aborted) setTemplatesLoading(false) })
+    return () => controller.abort()
+  }, [creating, workspaceIdentity])
   const operate = async (item: DevContainer, operation: 'start' | 'stop' | 'destroy' | 'reconcile') => {
     setBusy(item.instance_id); setError(undefined)
     try { await api.operateDevContainer(item.instance_id, operation); setDestroyTarget(undefined); await load() }
@@ -78,7 +92,7 @@ export function DevContainersPageContent() {
     <ConsoleHero variant="authoring" iconTone="success" icon={<Container className="size-[22px] text-aurora-success" />} eyebrow={`Workspace · ${authority?.activeOwner.kind ?? 'unavailable'}`} title="Dev Containers" description="Containers created from administrator-approved templates. Manage their desired state and inspect the runtime state reported by this workspace." pulse={{ color: error ? 'var(--aurora-warn)' : loading ? 'var(--aurora-text-muted)' : 'var(--aurora-success)', label: loading ? 'loading' : error ? 'inventory unavailable' : `${count('running')} running` }} actions={<><Button size="icon-sm" variant="ghost" title="Refresh containers" aria-label="Refresh containers" onClick={() => void load()} disabled={loading}><RefreshCw /></Button><span title={capabilities.has('scope.create') ? undefined : 'This workspace does not grant container creation'}><Button size="icon" variant="outline" aria-label="New container" title="New container" disabled={!capabilities.has('scope.create')} onClick={() => setCreating(true)}><CirclePlus className="size-[15px]" /></Button></span></>} stats={[{ label: 'Containers', value: loading || error ? '—' : instances.length, suffix: 'visible' }, { label: 'Running', value: loading || error ? '—' : count('running'), tone: 'var(--aurora-success)' }, { label: 'Stopped', value: loading || error ? '—' : count('stopped') }, { label: 'Pending', value: loading || error ? '—' : count('pending'), tone: 'var(--aurora-accent-strong)' }]} />
     {error ? <div role="alert" className="rounded-aurora-2 border border-aurora-error/35 bg-aurora-error/5 p-3 text-xs text-aurora-error">{error}</div> : null}
     {loading ? <p role="status" className="py-10 text-center text-xs text-aurora-text-muted">Loading container inventory…</p> : !instances.length ? <div className="rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-strong px-5 py-10 text-center"><p className="font-display text-[15px] font-bold text-aurora-text-primary">{error ? 'Container inventory unavailable.' : 'No containers in this workspace.'}</p><p className="mt-1 text-xs text-aurora-text-muted">Create a container from an approved template to get started.</p></div> : <div className="grid items-start gap-3 [grid-template-columns:repeat(auto-fill,minmax(min(100%,310px),1fr))]">{instances.map(item => <ContainerCard key={item.instance_id} item={item} busy={busy === item.instance_id} canOperate={capabilities.has('scope.operate')} canDelete={capabilities.has('scope.delete')} onOperate={operation => void operate(item, operation)} onDestroy={() => setDestroyTarget(item)} />)}</div>}
-    <Dialog open={creating} onOpenChange={setCreating}><DialogContent><DialogHeader><DialogTitle>New Container</DialogTitle><DialogDescription>Create from an administrator-approved template. Template discovery is not available on this server; enter its exact identifier.</DialogDescription></DialogHeader><label className="text-xs text-aurora-text-muted">Container ID<Input className="mt-1.5" value={instanceId} onChange={event => setInstanceId(event.target.value)} /></label><label className="text-xs text-aurora-text-muted">Approved template ID<Input className="mt-1.5" value={templateId} onChange={event => setTemplateId(event.target.value)} /></label>{error ? <p role="alert" className="text-xs text-aurora-error">{error}</p> : null}<Button onClick={() => void create()} disabled={busy === 'create' || !instanceId.trim() || !templateId.trim()}>Create container</Button></DialogContent></Dialog>
+    <Dialog open={creating} onOpenChange={setCreating}><DialogContent><DialogHeader><DialogTitle>New Container</DialogTitle><DialogDescription>Create from an approved immutable template available to this workspace.</DialogDescription></DialogHeader><label className="text-xs text-aurora-text-muted">Container ID<Input className="mt-1.5" value={instanceId} onChange={event => setInstanceId(event.target.value)} /></label><div className="space-y-1.5"><label htmlFor="approved-container-template" className="text-xs text-aurora-text-muted">Approved template</label><Select value={templateId} onValueChange={setTemplateId} disabled={templatesLoading || !!templateError || templates.length === 0}><SelectTrigger id="approved-container-template" className="w-full"><SelectValue placeholder={templatesLoading ? 'Loading approved templates…' : 'Choose a template'} /></SelectTrigger><SelectContent>{templates.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>{!templatesLoading && !templateError && templates.length === 0 ? <p className="text-xs text-aurora-text-muted">No approved templates are available in this workspace.</p> : null}{templateError ? <p role="alert" className="text-xs text-aurora-error">{templateError}</p> : null}</div>{error ? <p role="alert" className="text-xs text-aurora-error">{error}</p> : null}<Button onClick={() => void create()} disabled={busy === 'create' || templatesLoading || !!templateError || !instanceId.trim() || !templates.includes(templateId)}>Create container</Button></DialogContent></Dialog>
     <ActionConfirmationDialog open={Boolean(destroyTarget)} onOpenChange={open => { if (!open) setDestroyTarget(undefined) }} title="Destroy this container?" description={`This permanently destroys ${destroyTarget?.instance_id ?? 'the selected container'} and cannot be undone.`} confirmLabel="Destroy container" busy={busy === destroyTarget?.instance_id} onConfirm={() => destroyTarget ? void operate(destroyTarget, 'destroy') : undefined} />
   </>
 }

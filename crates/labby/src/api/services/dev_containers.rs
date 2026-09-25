@@ -40,6 +40,7 @@ fn csrf_exempt(action: &str) -> bool {
         "help"
             | "schema"
             | "dev_containers.list"
+            | "dev_containers.approved_templates.list"
             | "dev_containers.templates.list"
             | "dev_containers.templates.get"
             | "dev_containers.build.get"

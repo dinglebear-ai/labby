@@ -313,6 +313,9 @@ pub struct UpstreamPool {
     /// `resources/list` calls that find the same cold upstreams issue one
     /// fan-out instead of one per caller.
     resource_snapshot_warmup: Arc<Mutex<()>>,
+    /// Per-upstream claims prevent a caller from spawning a second warm-up
+    /// while the first one is still waiting for or performing its fan-out.
+    resource_snapshot_claims: Arc<DashMap<String, Arc<Mutex<()>>>>,
     /// Upstreams already queued for a background subscription reconcile.
     subscription_refresh_pending: Arc<Mutex<BTreeSet<String>>>,
     /// Cancels queued/in-flight subscription reconcile batches during pool drain.
@@ -441,6 +444,10 @@ pub struct UpstreamPool {
     pub(super) merged_prompt_measurements: Arc<AtomicUsize>,
     #[cfg(test)]
     pub(super) merged_resource_measurements: Arc<AtomicUsize>,
+    #[cfg(test)]
+    pub(super) resource_snapshot_task_spawns: Arc<AtomicUsize>,
+    #[cfg(test)]
+    pub(super) resource_snapshot_claim_attempts: Arc<AtomicUsize>,
 }
 
 /// Type-erased-over-lifecycle running client service.
@@ -620,6 +627,7 @@ impl UpstreamPool {
             notification_tx,
             subscription_tasks: Arc::new(RwLock::new(HashMap::new())),
             resource_snapshot_warmup: Arc::new(Mutex::new(())),
+            resource_snapshot_claims: Arc::new(DashMap::new()),
             subscription_refresh_pending: Arc::new(Mutex::new(BTreeSet::new())),
             subscription_reconcile_cancel: CancellationToken::new(),
             subscription_resources: Arc::new(RwLock::new(HashMap::new())),
@@ -662,6 +670,10 @@ impl UpstreamPool {
             merged_prompt_measurements: Arc::new(AtomicUsize::new(0)),
             #[cfg(test)]
             merged_resource_measurements: Arc::new(AtomicUsize::new(0)),
+            #[cfg(test)]
+            resource_snapshot_task_spawns: Arc::new(AtomicUsize::new(0)),
+            #[cfg(test)]
+            resource_snapshot_claim_attempts: Arc::new(AtomicUsize::new(0)),
         }
     }
 

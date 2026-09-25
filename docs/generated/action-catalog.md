@@ -103,6 +103,7 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `bundles` | `bundles.set_visibility` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `connection_id: string`<br>`slug*: string`<br>`visibility*: public\|bearer\|oauth` | `Bundle` | mcp, api, web |
 | `bundles` | `help` | true | false | false |  | `transport` | `-` | `-` |  | `HelpPayload` | mcp, api |
 | `bundles` | `schema` | true | false | false |  | `transport` | `-` | `-` | `action*: string` | `ActionSpec` | mcp, api |
+| `dev_containers` | `dev_containers.approved_templates.list` | false | false | false |  | `resource_capability` | `scope.read` | `dev_container` | `owner_kind*: installation\|team\|project\|personal`<br>`owner_id*: string`<br>`cursor: string`<br>`limit: string` | `object` | mcp, api |
 | `dev_containers` | `dev_containers.build` | false | false | false |  | `resource_capability` | `scope.operate` | `dev_container` | `template_id*: string`<br>`expected_revision*: integer`<br>`request_id*: string` | `object` | mcp, api |
 | `dev_containers` | `dev_containers.build.get` | false | false | false |  | `resource_capability` | `scope.read` | `dev_container` | `build_id*: string` | `object` | mcp, api |
 | `dev_containers` | `dev_containers.create` | false | false | false |  | `resource_capability` | `scope.create` | `dev_container` | `instance_id*: string`<br>`template_id*: string`<br>`owner_kind*: installation\|team\|project\|personal`<br>`owner_id*: string`<br>`secret_references: string[]` | `object` | mcp, api |

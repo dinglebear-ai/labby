@@ -1,6 +1,6 @@
 import { normalizeGatewayApiBase } from '@/lib/api/gateway-config'
 import { performServiceAction, type ServiceActionError } from '@/lib/api/service-action-client'
-import type { AgentView, TaskView } from './client'
+import type { AgentView, TaskResult, TaskView } from './client'
 
 export type ScheduleSpec =
   | { kind: 'once'; at: number }
@@ -48,7 +48,7 @@ export const pauseTaskSchedule = (id: string, signal?: AbortSignal) => taskActio
 export const deleteTaskSchedule = (id: string, signal?: AbortSignal) => taskAction<{ deleted: boolean }>('tasks.schedule_delete', { schedule_id: id }, signal)
 export const runTaskSchedule = (id: string, idempotencyKey: string, signal?: AbortSignal) => taskAction<{ state: string }>('tasks.schedule_run_now', { schedule_id: id, idempotency_key: idempotencyKey }, signal)
 export const getScheduledTask = (id: string, signal?: AbortSignal) => taskAction<TaskView>('tasks.get', { task_id: id }, signal)
-export const getScheduledTaskResult = (id: string, signal?: AbortSignal) => taskAction<TaskView>('tasks.result', { task_id: id }, signal)
+export const getScheduledTaskResult = (id: string, signal?: AbortSignal) => taskAction<TaskResult>('tasks.result', { task_id: id }, signal)
 
 const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 export function scheduleLabel(spec: ScheduleSpec): string {

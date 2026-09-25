@@ -13,6 +13,7 @@ import {
   MonitorSmartphone,
   SearchCode,
   GitBranch,
+  FolderKanban,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -156,6 +157,7 @@ const CONSOLE_NAV_SOURCE: ConsoleNavSectionSource[] = [
     items: [
       { id: 'Agents', label: 'Agents', href: '/agents', icon: Bot, capability: 'scope.operate' },
       { id: 'Tasks', label: 'Tasks', href: '/tasks', icon: Clock3, capability: 'scope.operate' },
+      { id: 'Projects', label: 'Projects', href: '/projects', icon: FolderKanban, capability: 'scope.read' },
       { id: 'Dev Containers', label: 'Dev Containers', href: '/dev-containers', icon: Container, capability: 'scope.operate' },
       { id: 'Stash', label: 'Stash', href: '/stash', icon: Archive, capability: 'scope.read' },
     ],

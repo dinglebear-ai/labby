@@ -18,11 +18,11 @@ test('agent and task lists use authenticated authoritative action endpoints', as
   globalThis.fetch = async (input, init) => {
     const request = new Request(new URL(String(input), 'http://labby.test'), init)
     requests.push(request)
-    return Response.json(request.url.includes('/agents/') ? { agents: [{ agent_id: 'a-1' }] } : { tasks: [{ task_id: 't-1' }] })
+    return Response.json(new URL(request.url).pathname === '/v1/agents' ? { agents: [{ agent_id: 'a-1' }] } : { tasks: [{ task_id: 't-1' }] })
   }
   assert.equal((await listAgents())[0]?.agent_id, 'a-1')
   assert.equal((await listTasks())[0]?.task_id, 't-1')
-  assert.deepEqual(requests.map(request => new URL(request.url).pathname), ['/v1/agents/', '/v1/tasks/'])
+  assert.deepEqual(requests.map(request => new URL(request.url).pathname), ['/v1/agents', '/v1/tasks'])
   assert.ok(requests.every(request => request.method === 'POST' && request.credentials === 'include'))
   assert.deepEqual(JSON.parse(await requests[0]!.text()), { action: 'agents.list', params: {} })
   assert.deepEqual(JSON.parse(await requests[1]!.text()), { action: 'tasks.list', params: {} })
@@ -58,7 +58,7 @@ test('agent session cancel posts the shared cancel action with the session bindi
   assert.equal(result.status, 'cancelling')
   assert.equal(result.cancel_requested, true)
   assert.equal(requests.length, 1)
-  assert.equal(new URL(requests[0]!.url).pathname, '/v1/agents/')
+  assert.equal(new URL(requests[0]!.url).pathname, '/v1/agents')
   assert.equal(requests[0]!.method, 'POST')
   assert.equal(requests[0]!.headers.get('x-csrf-token'), 'csrf')
   assert.deepEqual(JSON.parse(await requests[0]!.text()), { action: 'agents.session.cancel', params: { agent_id: 'a-1', session_id: 's-1' } })

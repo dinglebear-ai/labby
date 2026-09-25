@@ -24,6 +24,8 @@ export function ProjectsPageContent() {
   // Subscribed through the session store so a workspace switch re-renders the
   // form and the create gate instead of reading a one-shot snapshot.
   const team = authority?.activeTeamId
+  const teamRole = authority?.teams.find(item => item.id === team)?.role
+  const canManageTeam = authority?.capabilities.includes('scope.create') && (teamRole === 'owner' || teamRole === 'admin')
   const [rows, setRows] = useState<ProjectView[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>()
@@ -50,7 +52,7 @@ export function ProjectsPageContent() {
   }, [load, workspaceIdentity])
 
   const create = async () => {
-    if (!team) {
+    if (!team || !canManageTeam) {
       setError('Select a Team before creating a Project.')
       return
     }
@@ -82,7 +84,7 @@ export function ProjectsPageContent() {
     }
   }
 
-  const canCreate = Boolean(team) && id.trim().length > 0 && name.trim().length > 0 && busy !== 'create'
+  const canCreate = Boolean(team && canManageTeam) && id.trim().length > 0 && name.trim().length > 0 && busy !== 'create'
 
   return (
     <>
@@ -99,14 +101,14 @@ export function ProjectsPageContent() {
           />
           {error ? <div role="alert" className="rounded-aurora-2 border border-aurora-error/35 bg-aurora-error/5 p-4 text-sm text-aurora-error">{error}</div> : null}
           <DashboardPanel title="Create a Project">
-            {team ? (
+            {team && canManageTeam ? (
               <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto]">
                 <Input aria-label="Project ID" placeholder="project-id" value={id} onChange={(event) => setId(event.target.value)} />
                 <Input aria-label="Project name" placeholder="Project name" value={name} onChange={(event) => setName(event.target.value)} />
                 <Button onClick={() => void create()} disabled={!canCreate}><CirclePlus />Create Project</Button>
               </div>
             ) : (
-              <p className="text-sm text-aurora-text-muted">Select a Team workspace to create a Project.</p>
+              <p className="text-sm text-aurora-text-muted">{team ? 'Project creation requires Team management access.' : 'Select a Team workspace to create a Project.'}</p>
             )}
           </DashboardPanel>
           <DashboardPanel title="Projects">

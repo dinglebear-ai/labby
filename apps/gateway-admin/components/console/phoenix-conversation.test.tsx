@@ -94,3 +94,25 @@ test('Phoenix falls back safely when MCP App hydration fails', () => {
   assert.match(html, /upstream_error/)
   assert.match(html, /underlying tool result is still preserved/)
 })
+
+test('Phoenix keeps each MCP App result when tool calls reuse a resource URI', () => {
+  const resourceUri = 'ui://connexin/echo.html'
+  const event = (sequence: number, app: { resourceUri: string; errorKind?: string; resource?: { contents: { uri: string; mimeType: string; text: string }[] } }) => ({
+    method: 'item/completed', received_at_ms: sequence * 10, sequence,
+    params: { item: { type: 'mcpToolCall', server: 'connexin', tool: 'echo', status: 'completed' } },
+    mcp_apps: [app],
+  })
+  const html = renderToStaticMarkup(<PhoenixConversation
+    messages={[]}
+    events={[
+      event(1, { resourceUri, errorKind: 'upstream_error' }),
+      event(2, { resourceUri, resource: { contents: [{ uri: resourceUri, mimeType: 'text/html', text: '<main>First success</main>' }] } }),
+      event(3, { resourceUri, resource: { contents: [{ uri: resourceUri, mimeType: 'text/html', text: '<main>Updated app</main>' }] } }),
+    ]}
+    mark={<span>PX</span>} copiedIndex={undefined} onRetry={noop} onCopy={noop} onEdit={noop}
+  />)
+  assert.equal((html.match(/data-phoenix-mcp-app="fallback"/g) ?? []).length, 1)
+  assert.equal((html.match(/data-phoenix-mcp-app="ready"/g) ?? []).length, 2)
+  assert.match(html, /First success/)
+  assert.match(html, /Updated app/)
+})

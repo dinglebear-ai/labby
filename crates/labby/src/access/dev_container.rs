@@ -1016,6 +1016,20 @@ pub(super) fn authorized_recovery_inventory_page(
         .map_err(storage)
 }
 
+pub(super) fn approved_template_ids(
+    connection: &Connection,
+    after: &str,
+    limit: usize,
+) -> rusqlite::Result<Vec<String>> {
+    let mut statement = connection.prepare(
+        "SELECT template_id FROM dev_container_templates WHERE status='approved' AND launch_manifest_digest IS NOT NULL AND template_id>?1 ORDER BY template_id LIMIT ?2",
+    )?;
+    let limit = i64::try_from(limit).map_err(|_| rusqlite::Error::InvalidQuery)?;
+    statement
+        .query_map(params![after, limit], |row| row.get(0))?
+        .collect()
+}
+
 pub(crate) async fn recovery_inventory_for_store(
     store: &super::AccessStore,
 ) -> Result<Vec<RecoveryRecord>, DevContainerLedgerError> {
@@ -1262,6 +1276,20 @@ mod tests {
     use labby_runtime::dev_container_image_runtime::{
         ApprovedEnvironmentSecret, ApprovedProvisionCatalog,
     };
+
+    #[test]
+    fn approved_template_page_excludes_drafts_revoked_and_unbuilt_templates() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE dev_container_templates(template_id TEXT, status TEXT, launch_manifest_digest TEXT); CREATE TABLE dev_container_template_drafts(template_id TEXT); INSERT INTO dev_container_templates VALUES ('approved-a','approved','manifest'),('revoked-b','revoked','manifest'),('unbuilt-c','approved',NULL),('approved-d','approved','manifest'); INSERT INTO dev_container_template_drafts VALUES ('draft-only');").unwrap();
+        assert_eq!(
+            approved_template_ids(&connection, "", 1).unwrap(),
+            vec!["approved-a"]
+        );
+        assert_eq!(
+            approved_template_ids(&connection, "approved-a", 10).unwrap(),
+            vec!["approved-d"]
+        );
+    }
 
     fn fixture() -> (ApprovedTemplate, OwnedDevContainer) {
         let template = ApprovedTemplate::new(

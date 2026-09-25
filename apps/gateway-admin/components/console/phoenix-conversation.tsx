@@ -90,11 +90,10 @@ function PhoenixMcpAppSurface({ app }: { app: PhoenixMcpApp }) {
   const [renderFailed, setRenderFailed] = useState(false)
   const html = mcpAppHtml(app)
   const ready = Boolean(html) && !renderFailed
-  return <section data-phoenix-mcp-app={ready ? 'ready' : 'fallback'} className="mt-2 overflow-hidden rounded-[10px] border border-aurora-border-default bg-aurora-panel-strong">
-    <div className="flex min-w-0 items-center gap-2 border-b border-aurora-border-default px-3 py-2">
-      <span className="grid size-7 shrink-0 place-items-center rounded-md border border-aurora-accent-primary/40 bg-aurora-accent-primary/10 text-aurora-accent-strong"><Terminal size={14}/></span>
-      <strong className="shrink-0 text-[12px] text-aurora-text-primary">MCP App</strong>
-      <span className="min-w-0 truncate text-[10.5px] text-aurora-text-muted" title={app.resourceUri}>{app.resourceUri}</span>
+  return <section data-phoenix-mcp-app={ready ? 'ready' : 'fallback'} className="mt-3 overflow-hidden rounded-[14px] border border-aurora-border-strong bg-aurora-control-surface shadow-sm">
+    <div className="flex min-w-0 items-center gap-2 border-b border-aurora-border-default bg-aurora-panel-medium px-3 py-2.5">
+      <span className="grid size-7 shrink-0 place-items-center rounded-lg border border-aurora-accent-primary/40 bg-aurora-accent-primary/10 text-aurora-accent-strong"><Terminal size={14}/></span>
+      <div className="min-w-0 flex-1"><strong className="block text-[12px] text-aurora-text-primary">MCP App</strong><span className="block truncate text-[10.5px] text-aurora-text-muted" title={app.resourceUri}>{app.resourceUri}</span></div>
       {!ready ? <span className="ml-auto inline-flex shrink-0 items-center gap-1 text-[10px] text-aurora-warn"><AlertTriangle size={11}/>fallback</span> : null}
     </div>
     {ready ? <iframe
@@ -111,22 +110,21 @@ function PhoenixMcpAppSurface({ app }: { app: PhoenixMcpApp }) {
 }
 
 function PhoenixMcpApps({ events }: { events: PhoenixEvent[] }) {
-  const seen = new Set<string>()
-  const apps = events.flatMap((event) => event.mcp_apps ?? []).filter((app) => {
-    if (!app.resourceUri || seen.has(app.resourceUri)) return false
-    seen.add(app.resourceUri)
-    return true
-  })
+  const apps = events.flatMap((event, eventIndex) =>
+    (event.mcp_apps ?? [])
+      .filter((app) => Boolean(app.resourceUri))
+      .map((app, appIndex) => ({ app, key: `${eventIndex}:${appIndex}:${app.resourceUri}` })),
+  )
   if (apps.length === 0) return null
-  return <div className="mt-1 w-full max-w-4xl">{apps.map((app) => <PhoenixMcpAppSurface key={app.resourceUri} app={app}/>)}</div>
+  return <div className="mt-1 w-full max-w-4xl">{apps.map(({ app, key }) => <PhoenixMcpAppSurface key={key} app={app}/>)}</div>
 }
 
 function Reactions({ message, index, copiedIndex, onRetry, onCopy, onEdit }: { message: PhoenixMessage; index: number; copiedIndex?: number; onRetry: (index: number) => void; onCopy: (text: string, index: number) => void; onEdit?: (index: number, text: string) => void }) {
-  return <div data-phoenix-reactions className="flex min-h-8 items-center gap-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
+  return <div data-phoenix-reactions className="flex min-h-8 items-center gap-1 sm:opacity-0 sm:transition-opacity sm:duration-150 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
     {message.created_at_ms ? <time dateTime={new Date(message.created_at_ms).toISOString()} className="mr-1 text-[10.5px] tabular-nums text-aurora-text-muted">{new Date(message.created_at_ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time> : null}
-    {onEdit && <button type="button" onClick={() => onEdit(index, message.text)} aria-label="Edit message" title="Edit in a new thread" className="grid size-7 place-items-center rounded-lg text-aurora-text-muted transition-colors hover:bg-aurora-hover-bg hover:text-aurora-text-primary"><Pencil size={13}/></button>}
-    <button type="button" onClick={() => onRetry(index)} aria-label={message.role === 'assistant' ? 'Regenerate' : 'Retry from here'} title={message.role === 'assistant' ? 'Regenerate' : 'Retry from here'} className="grid size-7 place-items-center rounded-lg text-aurora-text-muted transition-colors hover:bg-aurora-hover-bg hover:text-aurora-accent-pink"><RefreshCw size={13}/></button>
-    <button type="button" onClick={() => onCopy(message.text, index)} aria-label={message.role === 'assistant' ? 'Copy answer' : 'Copy message'} title="Copy" className="grid size-7 place-items-center rounded-lg text-aurora-text-muted transition-colors hover:bg-aurora-hover-bg hover:text-aurora-text-primary">{copiedIndex === index ? <span aria-hidden>✓</span> : <Clipboard size={13}/>}</button>
+    {onEdit && <button type="button" onClick={() => onEdit(index, message.text)} aria-label="Edit message" title="Edit in a new thread" className="grid size-7 place-items-center rounded-lg text-aurora-text-muted transition-colors hover:bg-aurora-hover-bg hover:text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary"><Pencil size={13}/></button>}
+    <button type="button" onClick={() => onRetry(index)} aria-label={message.role === 'assistant' ? 'Regenerate' : 'Retry from here'} title={message.role === 'assistant' ? 'Regenerate' : 'Retry from here'} className="grid size-7 place-items-center rounded-lg text-aurora-text-muted transition-colors hover:bg-aurora-hover-bg hover:text-aurora-accent-pink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary"><RefreshCw size={13}/></button>
+    <button type="button" onClick={() => onCopy(message.text, index)} aria-label={message.role === 'assistant' ? 'Copy answer' : 'Copy message'} title="Copy" className="grid size-7 place-items-center rounded-lg text-aurora-text-muted transition-colors hover:bg-aurora-hover-bg hover:text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary">{copiedIndex === index ? <span aria-hidden>✓</span> : <Clipboard size={13}/>}</button>
   </div>
 }
 
@@ -135,19 +133,19 @@ export function PhoenixConversation({ messages, events, mark, copiedIndex, onRet
   const streamedTurns = new Set<string>()
   return <>
     {chunks.map((chunk) => {
-      if (chunk.kind === 'events') return <div key={chunk.id} className="pl-[35px]"><PhoenixEventTimeline events={chunk.events}/><PhoenixMcpApps events={chunk.events}/></div>
+      if (chunk.kind === 'events') return <div key={chunk.id} className="ml-[17px] border-l border-aurora-border-default pb-1 pl-[22px]"><PhoenixEventTimeline events={chunk.events}/><PhoenixMcpApps events={chunk.events}/></div>
       if (chunk.kind === 'assistant-stream') {
         const firstForTurn = !streamedTurns.has(chunk.turnKey)
         streamedTurns.add(chunk.turnKey)
         const finalMessage = chunk.messageIndex === undefined ? undefined : messages[chunk.messageIndex]
-        return <div data-phoenix-message="assistant-stream" key={chunk.id} className="group flex min-w-0 shrink-0 gap-[9px]">
-          {firstForTurn ? <span className="grid size-[26px] shrink-0 place-items-center rounded-[9px] border border-aurora-accent-pink/40 bg-aurora-accent-pink/10 text-aurora-accent-pink">{mark}</span> : <span aria-hidden className="w-[26px] shrink-0"/>}
-          <div className="min-w-0 flex-1"><div className="whitespace-pre-wrap text-[12.5px] font-semibold leading-[1.68] text-aurora-text-primary">{chunk.text}</div>{finalMessage && chunk.messageIndex !== undefined ? <Reactions message={finalMessage} index={chunk.messageIndex} copiedIndex={copiedIndex} onRetry={onRetry} onCopy={onCopy}/> : null}</div>
+        return <div data-phoenix-message="assistant-stream" key={chunk.id} className="group flex min-w-0 shrink-0 gap-3">
+          {firstForTurn ? <span className="grid size-[35px] shrink-0 place-items-center rounded-[12px] border border-aurora-accent-pink/40 bg-aurora-accent-pink/10 text-aurora-accent-pink shadow-sm">{mark}</span> : <span aria-hidden className="w-[35px] shrink-0"/>}
+          <div className="min-w-0 flex-1 pb-1">{firstForTurn && <span className="mb-1 block font-display text-[12px] font-bold text-aurora-accent-pink">Phoenix</span>}<div className="max-w-[72ch] whitespace-pre-wrap break-words text-[13px] leading-[1.65] text-aurora-text-primary">{chunk.text}</div>{finalMessage && chunk.messageIndex !== undefined ? <Reactions message={finalMessage} index={chunk.messageIndex} copiedIndex={copiedIndex} onRetry={onRetry} onCopy={onCopy}/> : null}</div>
         </div>
       }
       const message = chunk.message
-      if (message.role === 'user') return <div data-phoenix-message="user" key={chunk.id} className="group flex shrink-0 flex-col items-end gap-[3px]"><div className="max-w-[84%] whitespace-pre-wrap rounded-[12px_12px_3px_12px] border border-aurora-accent-pink/30 bg-[color-mix(in_srgb,var(--aurora-accent-pink)_12%,var(--aurora-control-surface))] px-3 py-[9px] text-[12.5px] leading-[1.6] text-aurora-text-primary">{message.text}</div><Reactions message={message} index={chunk.index} copiedIndex={copiedIndex} onRetry={onRetry} onCopy={onCopy} onEdit={onEdit}/></div>
-      return <div data-phoenix-message="assistant" key={chunk.id} className="group flex min-w-0 shrink-0 gap-[9px]"><span className="grid size-[26px] shrink-0 place-items-center rounded-[9px] border border-aurora-accent-pink/40 bg-aurora-accent-pink/10 text-aurora-accent-pink">{mark}</span><div className="min-w-0 flex-1"><div className="whitespace-pre-wrap text-[12.5px] font-semibold leading-[1.68] text-aurora-text-primary">{message.text}</div><Reactions message={message} index={chunk.index} copiedIndex={copiedIndex} onRetry={onRetry} onCopy={onCopy}/></div></div>
+      if (message.role === 'user') return <div data-phoenix-message="user" key={chunk.id} className="group flex shrink-0 flex-col items-end gap-1 py-1"><div className="w-fit max-w-[min(88%,72ch)] rounded-[16px] rounded-br-[5px] border border-aurora-border-strong bg-aurora-control-surface px-3.5 py-3 shadow-sm"><span className="mb-1.5 block text-[11px] font-semibold text-aurora-text-muted">You</span><div className="whitespace-pre-wrap break-words text-[13px] leading-[1.6] text-aurora-text-primary">{message.text}</div></div><Reactions message={message} index={chunk.index} copiedIndex={copiedIndex} onRetry={onRetry} onCopy={onCopy} onEdit={onEdit}/></div>
+      return <div data-phoenix-message="assistant" key={chunk.id} className="group flex min-w-0 shrink-0 gap-3"><span className="grid size-[35px] shrink-0 place-items-center rounded-[12px] border border-aurora-accent-pink/40 bg-aurora-accent-pink/10 text-aurora-accent-pink shadow-sm">{mark}</span><div className="min-w-0 flex-1 pb-1"><span className="mb-1 block font-display text-[12px] font-bold text-aurora-accent-pink">Phoenix</span><div className="max-w-[72ch] whitespace-pre-wrap break-words text-[13px] leading-[1.65] text-aurora-text-primary">{message.text}</div><Reactions message={message} index={chunk.index} copiedIndex={copiedIndex} onRetry={onRetry} onCopy={onCopy}/></div></div>
     })}
   </>
 }

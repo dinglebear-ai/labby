@@ -204,6 +204,25 @@ impl ArtifactStore {
         Ok(true)
     }
 
+    /// Remove files left by a stopped acquisition before its record commit.
+    /// A committed record must use `purge_artifact_exact` with an exact head.
+    pub fn purge_uncommitted_artifact(&self, artifact_id: &str) -> Result<bool, ArtifactError> {
+        validate_id(artifact_id, "artifact_id")?;
+        let _lock = self.lock(artifact_id)?;
+        if self.read_record_optional(artifact_id)?.is_some() {
+            return Err(ArtifactError::Conflict("record_exists"));
+        }
+        let artifact_dir = self.artifact_dir(artifact_id)?;
+        reject_existing_symlinks_in_path(&artifact_dir)
+            .map_err(|_| ArtifactError::UnsafePath("stored_symlink"))?;
+        if !artifact_dir.exists() {
+            return Ok(false);
+        }
+        std::fs::remove_dir_all(&artifact_dir)?;
+        sync_directory(&self.root.join("artifacts"))?;
+        Ok(true)
+    }
+
     /// Fork the source head into a new stable Artifact identity and pin lineage.
     pub fn fork(&self, request: ArtifactForkRequest) -> Result<ArtifactRecord, ArtifactError> {
         let source = self.get(&request.source_artifact_id)?;

@@ -998,6 +998,63 @@ impl AccessStore {
             .await
     }
 
+    /// Incomplete personal forks are the only current writers of non-active
+    /// Artifact authorities. A grace period keeps recovery away from a live
+    /// coordinator that is still committing bytes.
+    pub(crate) async fn incomplete_artifact_authorities(
+        &self,
+        updated_before: i64,
+        limit: usize,
+    ) -> AccessStoreResult<Vec<ArtifactAuthorityRecord>> {
+        let limit =
+            i64::try_from(limit).map_err(|_| AccessStoreError::InvalidArtifactDistributionInput)?;
+        self.with_connection(move |connection| {
+            let mut statement = connection
+                .prepare("SELECT artifact_id FROM artifact_authorities WHERE status IN ('pending','committing','failed') AND updated_at<=?1 ORDER BY updated_at,artifact_id LIMIT ?2")
+                .map_err(map_sqlite_error)?;
+            let ids = statement
+                .query_map(params![updated_before, limit], |row| row.get::<_, String>(0))
+                .map_err(map_sqlite_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(map_sqlite_error)?;
+            ids.into_iter()
+                .map(|id| query_artifact_authority(connection, &id)?.ok_or(AccessStoreError::ArtifactDistributionConflict))
+                .collect()
+        })
+        .await
+    }
+
+    pub(crate) async fn remove_incomplete_artifact_authority(
+        &self,
+        artifact_id: String,
+        operation_id: String,
+    ) -> AccessStoreResult<()> {
+        validate_text(&artifact_id, 2048)?;
+        validate_text(&operation_id, 256)?;
+        self.with_connection(move |connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(map_sqlite_error)?;
+            let authority = query_artifact_authority(&transaction, &artifact_id)?;
+            if let Some(authority) = authority {
+                if authority.operation_id != operation_id
+                    || authority.status == ArtifactAuthorityStatus::Active
+                {
+                    return Err(AccessStoreError::ArtifactDistributionConflict);
+                }
+                transaction
+                    .execute(
+                        "DELETE FROM artifact_authorities WHERE artifact_id=?1",
+                        [&artifact_id],
+                    )
+                    .map_err(map_sqlite_error)?;
+            }
+            transaction.commit().map_err(map_sqlite_error)?;
+            Ok(())
+        })
+        .await
+    }
+
     pub(crate) async fn mark_artifact_authority_committing(
         &self,
         artifact_id: String,

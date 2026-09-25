@@ -137,6 +137,12 @@ const fn action(
 
 pub(crate) const ACTIONS: &[ActionSpec] = &[
     action(
+        "dev_containers.approved_templates.list",
+        "List approved immutable templates available for authorized container creation",
+        &[OWNER_KIND, OWNER_ID, CURSOR, LIMIT],
+        false,
+    ),
+    action(
         "dev_containers.templates.list",
         "List image drafts in one authorized owner scope",
         &[OWNER_KIND, OWNER_ID, CURSOR, LIMIT],
@@ -238,6 +244,7 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
 pub(crate) fn required_capability(action: &str, _owner: OwnerKind) -> Option<Capability> {
     match action {
         "dev_containers.list"
+        | "dev_containers.approved_templates.list"
         | "dev_containers.templates.list"
         | "dev_containers.templates.get"
         | "dev_containers.build.get"
@@ -307,6 +314,9 @@ pub(crate) async fn dispatch(
         .await
         .map_err(|error| map_runtime_error(SERVICE, error))?;
     match action {
+        "dev_containers.approved_templates.list" => {
+            list_approved_templates(&context, &store, action, &params).await
+        }
         "dev_containers.list" => list(&context, &store, action, &params).await,
         "dev_containers.create" => create_instance(&context, &store, action, &params).await,
         action if images::is_image_action(action) => {
@@ -314,6 +324,39 @@ pub(crate) async fn dispatch(
         }
         _ => lifecycle(&context, &store, action, &params).await,
     }
+}
+
+async fn list_approved_templates(
+    context: &DevContainerDispatchContext,
+    store: &crate::access::AccessStore,
+    action: &str,
+    params: &Value,
+) -> Result<Value, ToolError> {
+    let kind = parse_owner_kind(params.get("owner_kind"))?;
+    let owner_id = required_str(params, "owner_id")?;
+    let owner = owner_scope(kind, owner_id).ok_or_else(|| invalid("owner_id"))?;
+    authorize(context, store, action, owner, "approved-template-list")
+        .await
+        .map_err(store_error)?;
+    let limit = match params.get("limit") {
+        None | Some(Value::Null) => Some(100),
+        Some(Value::String(value)) => value.parse::<usize>().ok(),
+        Some(Value::Number(value)) => value.as_u64().and_then(|value| usize::try_from(value).ok()),
+        Some(_) => None,
+    }
+    .filter(|value| (1..=100).contains(value))
+    .ok_or_else(|| invalid("limit"))?;
+    let cursor = match params.get("cursor") {
+        None | Some(Value::Null) => "",
+        Some(Value::String(value)) => value.as_str(),
+        Some(_) => return Err(invalid("cursor")),
+    };
+    let templates = store
+        .list_approved_dev_container_templates(cursor.to_owned(), limit)
+        .await
+        .map_err(store_error)?;
+    let next_cursor = templates.last().cloned();
+    Ok(serde_json::json!({"templates": templates, "next_cursor": next_cursor}))
 }
 
 async fn list(

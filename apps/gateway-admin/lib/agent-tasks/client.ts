@@ -96,7 +96,7 @@ async function action<T>(
   const csrf = getSessionCsrfToken()
   if (csrf) headers.set('x-csrf-token', csrf)
   try {
-    const response = await fetch('/v1/' + service + '/', {
+    const response = await fetch('/v1/' + service, {
       method: 'POST',
       credentials: 'include',
       cache: 'no-store',

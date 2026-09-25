@@ -23,6 +23,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
+use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use rmcp::model::{Resource, ResourceTemplate};
 use serde_json::Value;
@@ -67,9 +68,9 @@ const CATALOG_LISTING_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct ResourceSnapshotWarmup {
     /// What the warm-up covers.
     pub cold: ResourceSnapshotColdSet,
-    /// The running fan-out, `None` when nothing was cold. Dropping the handle
-    /// detaches the task; it keeps running to completion.
-    pub task: Option<tokio::task::JoinHandle<()>>,
+    /// Waits for the claimed fan-out and any already-running warm-ups.
+    /// Dropping this future does not cancel the claimed fan-out.
+    pub task: Option<BoxFuture<'static, ()>>,
 }
 
 /// One regular upstream Resource with its exact pre-rewrite provenance.
@@ -445,13 +446,49 @@ impl UpstreamPool {
         if cold.is_empty() {
             return ResourceSnapshotWarmup { cold, task: None };
         }
-        let pool = Arc::clone(self);
-        let names = cold.names();
-        let task = tokio::spawn(async move {
-            drop(
-                pool.warm_cold_resource_snapshots_allowed(Some(&names))
-                    .await,
+        #[cfg(test)]
+        self.resource_snapshot_claim_attempts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut claimed = Vec::new();
+        let mut waiting = Vec::new();
+        let mut claimed_names = BTreeSet::new();
+        for name in cold.names() {
+            let gate = Arc::clone(
+                self.resource_snapshot_claims
+                    .entry(name.clone())
+                    .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                    .value(),
             );
+            match Arc::clone(&gate).try_lock_owned() {
+                Ok(guard) => {
+                    claimed.push(guard);
+                    claimed_names.insert(name);
+                }
+                Err(_) => waiting.push(gate),
+            }
+        }
+        let refresh = if claimed_names.is_empty() {
+            None
+        } else {
+            let pool = Arc::clone(self);
+            #[cfg(test)]
+            self.resource_snapshot_task_spawns
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Some(tokio::spawn(async move {
+                let _claims = claimed;
+                drop(
+                    pool.warm_cold_resource_snapshots_allowed(Some(&claimed_names))
+                        .await,
+                );
+            }))
+        };
+        let task: BoxFuture<'static, ()> = Box::pin(async move {
+            if let Some(refresh) = refresh {
+                drop(refresh.await);
+            }
+            for gate in waiting {
+                drop(gate.lock_owned().await);
+            }
         });
         ResourceSnapshotWarmup {
             cold,
@@ -469,7 +506,7 @@ impl UpstreamPool {
         if let Some(task) = warmup.task
             && !warmup.cold.missing.is_empty()
         {
-            drop(task.await);
+            task.await;
         }
     }
 
@@ -1671,6 +1708,7 @@ mod tests {
     struct DelayedResourceServer {
         started: Arc<tokio::sync::Notify>,
         release: Arc<tokio::sync::Notify>,
+        calls: Arc<AtomicUsize>,
     }
 
     impl ServerHandler for DelayedResourceServer {
@@ -1683,6 +1721,7 @@ mod tests {
             _request: Option<PaginatedRequestParams>,
             _context: RequestContext<RoleServer>,
         ) -> Result<ListResourcesResult, ErrorData> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
             self.started.notify_one();
             self.release.notified().await;
             Ok(ListResourcesResult::with_all_items(vec![Resource::new(
@@ -1701,6 +1740,7 @@ mod tests {
             DelayedResourceServer {
                 started: Arc::clone(&started),
                 release: Arc::clone(&release),
+                calls: Arc::new(AtomicUsize::new(0)),
             },
         )
         .await;
@@ -2151,6 +2191,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_discovery_claims_one_task_before_spawning() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let pool = catalog_pool_with_server(
+            "cold",
+            DelayedResourceServer {
+                started: Arc::clone(&started),
+                release: Arc::clone(&release),
+                calls: Arc::clone(&calls),
+            },
+        )
+        .await;
+        let first = pool.spawn_resource_snapshot_warmup(None).await;
+        started.notified().await;
+
+        let callers = (0..32)
+            .map(|_| {
+                let pool = Arc::clone(&pool);
+                tokio::spawn(async move { pool.ensure_resource_snapshots_allowed(None).await })
+            })
+            .collect::<Vec<_>>();
+        // Every caller must reach the claim before the upstream is released.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while pool.resource_snapshot_claim_attempts.load(Ordering::SeqCst) < 33 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("all discovery callers reached the cold snapshot claim");
+        assert_eq!(
+            pool.resource_snapshot_task_spawns.load(Ordering::SeqCst),
+            1,
+            "concurrent callers must share the in-flight warm-up",
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        release.notify_one();
+        first.task.expect("first warm-up").await;
+        for caller in callers {
+            caller.await.expect("discovery caller");
+        }
+        assert!(pool.cold_resource_snapshots(None).await.is_empty());
+        assert_eq!(pool.resource_snapshot_task_spawns.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn stale_snapshot_without_push_channel_is_relisted_in_the_background() {
         let server = StaticCatalogServer::default();
         let resource_calls = Arc::clone(&server.list_resources_count);
@@ -2174,8 +2262,7 @@ mod tests {
         warmup
             .task
             .expect("a stale snapshot starts a warm-up")
-            .await
-            .expect("warm-up task");
+            .await;
         assert_eq!(resource_calls.load(Ordering::SeqCst), 2);
         assert!(pool.cold_resource_snapshots(None).await.is_empty());
 

@@ -7427,6 +7427,7 @@
           "action": {
             "type": "string",
             "enum": [
+              "dev_containers.approved_templates.list",
               "dev_containers.templates.list",
               "dev_containers.templates.get",
               "dev_containers.draft.create",
@@ -7446,6 +7447,33 @@
           },
           "params": {
             "type": "object"
+          }
+        }
+      },
+      "Dev_containersDev_containersApproved_templatesListParams": {
+        "type": "object",
+        "required": [
+          "owner_kind",
+          "owner_id"
+        ],
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "string"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "owner_kind": {
+            "type": "string",
+            "enum": [
+              "installation",
+              "team",
+              "project",
+              "personal"
+            ]
           }
         }
       },

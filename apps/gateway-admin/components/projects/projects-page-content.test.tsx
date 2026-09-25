@@ -17,7 +17,7 @@ const authority: AuthoritySnapshot = {
     { id: 'team-owner', role: 'owner', membershipEpoch: 1, policyEpoch: 1 },
     { id: 'team-member', role: 'member', membershipEpoch: 1, policyEpoch: 1 },
   ],
-  projects: [], capabilities: ['scope.read'], generation: 7,
+  projects: [], capabilities: ['scope.read', 'scope.create'], generation: 7,
 }
 
 function authenticate(selection: Partial<AuthoritySnapshot> = {}) {
@@ -59,6 +59,17 @@ test('archive controls follow the server-derived lifecycle authority, never the 
   assert.equal(archive('Read-only project')?.disabled, true)
   assert.equal(archive('Locked project')?.disabled, true, 'a local owner role must not unlock a row the server marked unmanageable')
   await view.unmount()
+})
+
+test('Team members cannot open the Project create form', async () => {
+  document.body.replaceChildren()
+  authenticate({ activeOwner: { kind: 'team', id: 'team-member' }, activeTeamId: 'team-member', capabilities: ['scope.read', 'scope.create'] })
+  globalThis.fetch = async () => Response.json([])
+  const view = await renderClient(<ProjectsPageContent />)
+  try {
+    await waitFor(() => assert.match(view.container.textContent || '', /Project creation requires Team management access/))
+    assert.equal(view.container.querySelector('input[aria-label="Project ID"]'), null)
+  } finally { await view.unmount() }
 })
 
 test('the create form follows the active team through the session subscription and reloads on workspace change', async () => {
