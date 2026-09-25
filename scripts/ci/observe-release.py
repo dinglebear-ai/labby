@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Observe every published Labby distribution and emit reconciliation input.
 
-Remote probes intentionally cover gh release, npm, the Incus release asset,
-and registry.modelcontextprotocol.io/v0.1.
+Remote probes cover gh release, npm, and the distributions named by the immutable manifest.
+Legacy manifests include an Incus asset; current Labby releases do not.
 """
 from __future__ import annotations
 import argparse, hashlib, json, os, subprocess, urllib.parse
@@ -29,10 +29,9 @@ for name in names:
         subjects.append({"name": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
 known_assets = set(names) | {
     "release-manifest.json",
-    dist["incus"]["asset"],
-    "generation.json",
-    "SHA256SUMS",
 }
+if "incus" in dist:
+    known_assets.update({dist["incus"]["asset"], "generation.json", "SHA256SUMS"})
 unexpected_assets = sorted(path.name for path in args.assets.iterdir() if path.is_file() and path.name not in known_assets)
 
 attestations = []
@@ -63,11 +62,12 @@ try:
     version = run(npm, "view", f'{dist["npm"]["package"]}@{npm_tag}', "version", "--json").strip('"')
     observed["npm"] = dist["npm"] if version == dist["npm"]["version"] else {"version": version, "tag": npm_tag}
 except Exception as error: observed["npm"] = {"error": str(error)}
-incus_path = args.assets / dist["incus"]["asset"]
-if incus_path.is_file():
-    found = hashlib.sha256(incus_path.read_bytes()).hexdigest()
-    observed["incus"] = dist["incus"] if found == dist["incus"]["sha256"] else {"asset": incus_path.name, "sha256": found}
-else: observed["incus"] = {"error": "asset missing"}
+if "incus" in dist:
+    incus_path = args.assets / dist["incus"]["asset"]
+    if incus_path.is_file():
+        found = hashlib.sha256(incus_path.read_bytes()).hexdigest()
+        observed["incus"] = dist["incus"] if found == dist["incus"]["sha256"] else {"asset": incus_path.name, "sha256": found}
+    else: observed["incus"] = {"error": "asset missing"}
 try:
     name = urllib.parse.quote(dist["mcp"]["name"], safe="")
     url = f'https://registry.modelcontextprotocol.io/v0.1/servers/{name}/versions/{dist["mcp"]["version"]}'

@@ -52,7 +52,7 @@ jobs:
               { owner: context.repo.owner, repo: context.repo.repo, per_page: 100 },
             );
             const drafts = releases
-              .filter((release) => release.draft)
+              .filter((release) => release.draft && /^v\d+\.\d+\.\d+$/.test(release.tag_name))
               .sort((a, b) => a.created_at.localeCompare(b.created_at));
 
             const openIssues = await github.paginate(github.rest.issues.listForRepo, {
@@ -153,6 +153,7 @@ jobs:
           mkdir -p release-observations
           observed_count=0
           while IFS=$'\t' read -r tag is_draft; do
+            [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
             directory="release-observations/$tag"
             mkdir -p "$directory/assets"
             # Published releases predating the versioned manifest contract are

@@ -338,15 +338,6 @@ jobs:
           DEPLOYMENT: ${{ matrix.deployment }}
         run: scripts/ci/n-minus-one-diagnostics.sh "$DEPLOYMENT"
 
-  incus-candidate:
-    needs: upgrade-qualification
-    permissions:
-      contents: write
-    uses: ./.github/workflows/build-incus-image.yml
-    with:
-      release_tag: ${{ github.ref_name }}
-    secrets: inherit
-
   desktop-candidate:
     # Advisory: build-desktop.yml marks its build job continue-on-error, so a
     # missing Apple signing identity or a failed bundle never blocks stable
@@ -365,10 +356,10 @@ jobs:
   npm-candidate:
     # The MCP Registry only accepts a manifest whose npm version is already
     # published with a matching mcpName, so the candidate-tagged npm version
-    # must exist before mcp-candidate runs. Waiting for incus-candidate keeps
-    # this irreversible publication behind every non-publishing gate.
+    # must exist before mcp-candidate runs. Keep irreversible publication
+    # behind the binary and deployment qualification gates.
     name: Publish npm candidate
-    needs: [build, upgrade-qualification, incus-candidate, desktop-candidate]
+    needs: [build, upgrade-qualification, desktop-candidate]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -420,7 +411,7 @@ jobs:
     concurrency:
       group: labby-stable-release-promotion
       cancel-in-progress: false
-    needs: [build, upgrade-qualification, incus-candidate, desktop-candidate, npm-candidate, mcp-candidate]
+    needs: [build, upgrade-qualification, desktop-candidate, npm-candidate, mcp-candidate]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -463,7 +454,6 @@ jobs:
           gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft' | grep -Fx true
       - name: Create immutable release manifest
         env:
-          INCUS_SHA256: ${{ needs.incus-candidate.outputs.asset_sha256 }}
           MCP_MANIFEST_SHA256: ${{ needs.mcp-candidate.outputs.manifest_sha256 }}
         run: |
           set -euo pipefail
@@ -474,7 +464,6 @@ jobs:
           python3 scripts/ci/create-release-manifest.py \
             --tag "$GITHUB_REF_NAME" \
             --repository "$GITHUB_REPOSITORY" \
-            --incus-sha256 "$INCUS_SHA256" \
             --mcp-manifest-sha256 "$MCP_MANIFEST_SHA256" \
             lab-*.tar.gz lab-*.sha256 lab-*.spdx.json \
             labby-desktop-*.tar.gz labby-desktop-*.AppImage labby-desktop-*.sha256 labby-desktop-*.spdx.json \
@@ -522,12 +511,6 @@ jobs:
             --package "$(node -p "require('./packages/labby-mcp/package.json').name")" \
             --version "$(node -p "require('./packages/labby-mcp/package.json').version")" \
             --receipt /tmp/labby-npm-pointer.json
-      - name: Transactionally promote Incus rolling pointer
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
-          INCUS_POINTER_RECEIPT: /tmp/labby-incus-pointer-receipt
-        run: scripts/ci/promote-incus-pointer.sh promote
       - name: Check whether npm version already exists
         id: npm-version
         run: |
@@ -568,11 +551,6 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -u
-          pointer_rc=0
-          if [[ -f /tmp/labby-incus-pointer-receipt/state ]]; then
-            INCUS_POINTER_RECEIPT=/tmp/labby-incus-pointer-receipt \
-              scripts/ci/promote-incus-pointer.sh rollback || pointer_rc=$?
-          fi
           npm_rc=0
           if [[ -f /tmp/labby-npm-pointer.json ]]; then
             python3 scripts/ci/promote-npm-pointer.py rollback \
@@ -584,7 +562,7 @@ jobs:
           # Keep assets public if a stable consumer pointer cannot be restored.
           # Promotion may have succeeded remotely even when its visibility
           # verification timed out. Restore and verify the safe draft state.
-          if [[ "$npm_rc" != 0 || "$pointer_rc" != 0 ]]; then
+          if [[ "$npm_rc" != 0 ]]; then
             github_rc=1
           elif [[ -f /tmp/labby-release-was-draft ]]; then
             if ! gh release edit "$RELEASE_TAG" --draft=true ||
@@ -594,7 +572,7 @@ jobs:
           fi
           # Successful candidate dependencies prove immutable publication, even if this job fails early.
           python3 scripts/ci/compound-release-rollback.py \
-            --pointer-rc "$pointer_rc" --github-rc "$github_rc" --npm-pointer-rc "$npm_rc" \
+            --pointer-rc 0 --github-rc "$github_rc" --npm-pointer-rc "$npm_rc" \
             --npm-candidate-published true \
             --mcp-version-published true \
             --output "$ROLLBACK_STATUS_FILE"

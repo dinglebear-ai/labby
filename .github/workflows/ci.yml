@@ -55,7 +55,7 @@ jobs:
       - name: Enforce hosted workflow policy
         run: >-
           python scripts/ci/check_workflow_policy.py
-          --release-file-regex '(^|/)(release|build-incus-image)\.ya?ml$'
+          --release-file-regex '(^|/)(release|build-incus-image|incus-image)\.ya?ml$'
           --allow-arm64
       - name: Verify workflow policy tests and Node toolchain sync
         run: |

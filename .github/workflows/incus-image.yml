@@ -1,0 +1,49 @@
+name: Incus image
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/incus-image.yml'
+      - '.github/workflows/build-incus-image.yml'
+      - 'config/incus/**'
+      - 'scripts/incus-bootstrap.sh'
+      - 'scripts/ci/build-incus-image.sh'
+      - 'scripts/ci/smoke-incus-image.sh'
+      - 'scripts/ci/create-incus-image-manifest.py'
+      - 'scripts/ci/verify-incus-image-manifest.py'
+      - 'scripts/ci/promote-incus-pointer.sh'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/incus-image.yml'
+      - '.github/workflows/build-incus-image.yml'
+      - 'config/incus/**'
+      - 'scripts/incus-bootstrap.sh'
+      - 'scripts/ci/build-incus-image.sh'
+      - 'scripts/ci/smoke-incus-image.sh'
+      - 'scripts/ci/create-incus-image-manifest.py'
+      - 'scripts/ci/verify-incus-image-manifest.py'
+      - 'scripts/ci/promote-incus-pointer.sh'
+  workflow_dispatch:
+
+concurrency:
+  group: incus-image-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    name: Build and smoke Incus substrate
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/build-incus-image.yml
+    with:
+      source_ref: ${{ github.sha }}
+      release_tag: ${{ format('incus-{0}', github.sha) }}
+      publish: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+
