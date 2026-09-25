@@ -226,6 +226,7 @@ struct GatewayOperatorSkillRejectionSchema {
 pub const AUTHORITATIVE_RESULT_ACTIONS: &[&str] = &[
     "gateway.oauth.wait",
     "gateway.code_mode.set",
+    "gateway.server_instructions.set",
     "gateway.enrich.apply",
     "gateway.protected_route.add",
     "gateway.protected_route.update",
@@ -330,6 +331,29 @@ pub const ACTIONS: &[ActionSpec] = &[
             ty: "string",
             required: false,
             description: "Limit the listing to one upstream",
+        }],
+    },
+    ActionSpec {
+        name: "gateway.server_instructions.get",
+        description: "Read Labby's root MCP server-instruction override",
+        destructive: false,
+        requires_admin: true,
+        returns: "string | null",
+        output_schema: None,
+        params: &[],
+    },
+    ActionSpec {
+        name: "gateway.server_instructions.set",
+        description: "Set or clear Labby's root MCP server-instruction override without restarting the gateway",
+        destructive: false,
+        requires_admin: true,
+        returns: "string | null",
+        output_schema: None,
+        params: &[ParamSpec {
+            name: "instructions",
+            ty: "string | null",
+            required: true,
+            description: "Instruction text, or null/blank to restore the built-in default",
         }],
     },
     ActionSpec {

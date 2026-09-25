@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import useSWR from 'swr'
 import { Wrench } from 'lucide-react'
 import { OverviewChartMenu } from '@/components/dashboard/chart-menu'
 import { ToolVolumeLegend } from '@/components/dashboard/tool-volume-chart'
@@ -19,6 +20,7 @@ import { DashboardPanel } from '@/components/dashboard/panel'
 import { ErrorNotice } from '@/components/dashboard/error-notice'
 import { actorDrillTarget, type DrillTarget } from '@/components/dashboard/drill'
 import { useGateways } from '@/lib/hooks/use-gateways'
+import { gatewayApi } from '@/lib/api/gateway-client'
 import { useDashboardMetrics } from '@/lib/hooks/use-dashboard-metrics'
 import {
   WINDOW_LABELS,
@@ -59,6 +61,10 @@ export default function OverviewPage() {
   const runtime = useOverviewRuntime()
   const [chartMode, setChartMode] = useState<'servers' | 'volume' | 'outcomes' | 'errors'>('servers')
   const { data: gateways, isLoading: gatewaysLoading, error: gatewaysError, mutate: reloadGateways } = useGateways()
+  const { data: serverInstructions, mutate: mutateServerInstructions } = useSWR(
+    'gateway-server-instructions',
+    () => gatewayApi.serverInstructions(),
+  )
   const [activeWindow, setActiveWindow] = useState<MetricsWindow>('24h')
   const [drill, setDrill] = useState<DrillTarget | null>(null)
   const {
@@ -93,6 +99,11 @@ export default function OverviewPage() {
           activeWindow={activeWindow}
           onWindowChange={setActiveWindow}
           onRefresh={() => { reloadGateways(); reloadMetrics(); runtime.clients.mutate(); runtime.health.mutate(); runtime.host.mutate(); serverVolume.mutate() }}
+          serverInstructions={serverInstructions}
+          onSaveServerInstructions={async (instructions) => {
+            const saved = await gatewayApi.setServerInstructions(instructions)
+            await mutateServerInstructions(saved, false)
+          }}
           loadedAt={metricsLoadedAt}
         />
 

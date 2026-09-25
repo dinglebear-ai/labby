@@ -235,6 +235,7 @@ impl GatewayManager {
             store,
             runtime,
             config: Arc::new(RwLock::new(GatewayConfig::default())),
+            server_instructions: Arc::new(arc_swap::ArcSwapOption::empty()),
             publication_barrier: Arc::new(RwLock::new(())),
             runtime_config_generation: Arc::new(AtomicU64::new(
                 super::publication::next_runtime_config_generation(),
@@ -563,6 +564,7 @@ impl GatewayManager {
             .set_enabled(config.code_mode.mcp_ui_enabled);
         *self.protected_route_index.write().await =
             ProtectedRouteIndex::from_routes(&config.protected_mcp_routes);
+        self.publish_server_instructions(&config);
         *self.config.write().await = config;
         self.advance_runtime_config_generation();
         // Startup may already have published a lazy pool before committing its

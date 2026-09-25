@@ -399,6 +399,7 @@ impl GatewayManager {
                 .set_enabled(runtime_cfg.code_mode.mcp_ui_enabled);
             *self.protected_route_index.write().await =
                 ProtectedRouteIndex::from_routes(&runtime_cfg.protected_mcp_routes);
+            self.publish_server_instructions(&runtime_cfg);
             *self.config.write().await = runtime_cfg;
             self.advance_runtime_config_generation();
             let diff = GatewayCatalogDiff {
@@ -449,6 +450,7 @@ impl GatewayManager {
                     .set_enabled(cfg.code_mode.mcp_ui_enabled);
                 *self.protected_route_index.write().await =
                     ProtectedRouteIndex::from_routes(&cfg.protected_mcp_routes);
+                self.publish_server_instructions(&cfg);
                 *self.config.write().await = cfg.clone();
                 self.advance_runtime_config_generation();
                 pool.apply_lazy_upstream_reconcile(
@@ -512,6 +514,7 @@ impl GatewayManager {
                         .set_enabled(previous_cfg.code_mode.mcp_ui_enabled);
                     *self.protected_route_index.write().await =
                         ProtectedRouteIndex::from_routes(&previous_cfg.protected_mcp_routes);
+                    self.publish_server_instructions(&previous_cfg);
                     *self.config.write().await = previous_cfg.clone();
                     self.advance_runtime_config_generation();
                     pool.apply_lazy_upstream_reconcile(
@@ -871,7 +874,11 @@ fn pool_settings_fingerprint(cfg: &GatewayConfig) -> String {
     use sha2::{Digest, Sha256};
 
     let mut hasher = Sha256::new();
-    hasher.update(serde_json::to_vec(&cfg.gateway).unwrap_or_default());
+    let mut pool_gateway = cfg.gateway.clone();
+    // Root server instructions are presentation metadata. Editing them must not
+    // rebuild or reconnect the upstream pool.
+    pool_gateway.server_instructions = None;
+    hasher.update(serde_json::to_vec(&pool_gateway).unwrap_or_default());
     hasher.update([0u8]);
     hasher.update(serde_json::to_vec(&cfg.code_mode).unwrap_or_default());
     hasher.update([0u8]);
@@ -900,9 +907,13 @@ fn upstream_fingerprint_map(cfg: &GatewayConfig) -> BTreeMap<String, String> {
     cfg.upstream
         .iter()
         .map(|upstream| {
+            let mut runtime_upstream = upstream.clone();
+            // Instructions are model-visible metadata, not transport/runtime
+            // configuration. Keep an instruction-only edit on the live peer.
+            runtime_upstream.instructions = None;
             (
                 upstream.name.clone(),
-                crate::gateway::code_mode::catalog_cache::fingerprint(upstream),
+                crate::gateway::code_mode::catalog_cache::fingerprint(&runtime_upstream),
             )
         })
         .collect()

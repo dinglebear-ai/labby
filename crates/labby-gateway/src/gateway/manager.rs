@@ -25,7 +25,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicU64;
 
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::Instant;
 
@@ -145,6 +145,9 @@ pub struct GatewayManager {
     pub(super) store: Arc<dyn GatewayConfigStore>,
     pub(super) runtime: GatewayRuntimeHandle,
     pub(super) config: Arc<RwLock<GatewayConfig>>,
+    /// Synchronous mirror of the root MCP instruction override for initialize/discover.
+    /// ServerHandler::get_info is synchronous, so it cannot await the config lock.
+    pub(super) server_instructions: Arc<ArcSwapOption<String>>,
     /// Serializes the short publication window spanning the live pool,
     /// config snapshot, protected-route index, and Code Mode flags. Readers
     /// that combine those components take a read lease and clone a coherent
@@ -321,6 +324,20 @@ impl Drop for ConfigMutationGuard {
 }
 
 impl GatewayManager {
+    /// Return the currently published root MCP server-instruction override.
+    /// This is synchronous so MCP initialize/discover can read it directly.
+    #[must_use]
+    pub fn server_instructions_now(&self) -> Option<String> {
+        self.server_instructions
+            .load_full()
+            .map(|value| value.as_ref().clone())
+    }
+
+    pub(super) fn publish_server_instructions(&self, cfg: &GatewayConfig) {
+        self.server_instructions
+            .store(cfg.gateway.server_instructions.clone().map(Arc::new));
+    }
+
     /// Persist a gateway config without replacing the live in-memory snapshot.
     ///
     /// Reconcile paths use this when they need the current snapshot to remain the
@@ -366,6 +383,7 @@ impl GatewayManager {
             .set_enabled(runtime_cfg.code_mode.mcp_ui_enabled);
         *self.protected_route_index.write().await =
             ProtectedRouteIndex::from_routes(&runtime_cfg.protected_mcp_routes);
+        self.publish_server_instructions(&runtime_cfg);
         *self.config.write().await = runtime_cfg;
         self.advance_runtime_config_generation();
         Ok(())

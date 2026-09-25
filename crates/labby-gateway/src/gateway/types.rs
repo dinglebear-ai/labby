@@ -67,6 +67,8 @@ pub struct GatewayConfigView {
     pub name: String,
     #[serde(default)]
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
     #[serde(default)]
     pub url: Option<String>,
     #[serde(default)]
@@ -268,6 +270,9 @@ pub struct GatewayRuntimeView {
     pub exposed_skill_count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_skills: Option<bool>,
+    /// Instructions advertised by the live upstream MCP server during initialization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advertised_instructions: Option<String>,
     #[serde(default)]
     pub last_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -327,6 +327,8 @@ pub(crate) struct GatewayUpdatePatch {
     #[serde(default)]
     pub enabled: Option<bool>,
     #[serde(default, deserialize_with = "deserialize_nullable")]
+    pub instructions: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_nullable")]
     pub url: Option<Option<String>>,
     #[serde(default, deserialize_with = "deserialize_nullable")]
     pub command: Option<Option<String>>,
@@ -470,6 +472,12 @@ pub(crate) struct ResourceLeaseRenewParams {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ResourceLeaseReleaseParams {
     pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct ServerInstructionsSetParams {
+    #[serde(default)]
+    pub instructions: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

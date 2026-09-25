@@ -437,6 +437,18 @@ function normalizeLoadoutStageResult(
 }
 
 export const gatewayApi = {
+  async serverInstructions(signal?: AbortSignal): Promise<string | null> {
+    return gatewayAction<string | null>('gateway.server_instructions.get', {}, signal)
+  },
+
+  async setServerInstructions(instructions: string | null, signal?: AbortSignal): Promise<string | null> {
+    return gatewayAction<string | null>(
+      'gateway.server_instructions.set',
+      confirmGatewayParams({ instructions }),
+      signal,
+    )
+  },
+
   async refreshStatus(name?: string, signal?: AbortSignal): Promise<void> {
     await gatewayAction('gateway.status', name ? { name } : {}, signal)
   },

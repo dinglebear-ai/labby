@@ -35,6 +35,7 @@ pub(super) fn config_view(
     GatewayConfigView {
         name: upstream.name.clone(),
         enabled: upstream.enabled,
+        instructions: upstream.instructions.clone(),
         url: upstream.url.as_deref().map(redact_url),
         command: upstream.command.as_deref().map(redact_stdio_value),
         args: redact_stdio_args(&upstream.args),
@@ -889,6 +890,7 @@ pub(super) async fn runtime_view(
         exposed_prompt_count: summary.exposed_prompt_count,
         exposed_skill_count: summary.exposed_skill_count,
         supports_skills: summary.supports_skills,
+        advertised_instructions: pool.upstream_server_instructions(name).await,
         last_error,
         dependency_hint,
         header_recovery: GatewayHeaderRecoveryMetricsView {

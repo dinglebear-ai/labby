@@ -71,6 +71,7 @@ export interface BackendGatewayConfigView {
   name: string
   display_name?: string | null
   enabled?: boolean
+  instructions?: string | null
   url?: string | null
   command?: string | null
   args?: string[]
@@ -100,6 +101,7 @@ export interface BackendGatewayRuntimeView {
   exposed_prompt_count?: number
   exposed_skill_count?: number
   supports_skills?: boolean
+  advertised_instructions?: string | null
   last_error?: string | null
 }
 
@@ -563,6 +565,7 @@ export function normalizeGateway(
       webui: { enabled: false, connected: false },
     },
     config: {
+      instructions: config.instructions ?? undefined,
       url: config.url ?? undefined,
       command: config.command ?? undefined,
       args: normalizeArgs(config.args),
@@ -591,6 +594,7 @@ export function normalizeGateway(
       discovered_skill_count: view.runtime.skill_count ?? 0,
       exposed_skill_count: view.runtime.exposed_skill_count ?? 0,
       supports_skills: view.runtime.supports_skills,
+      advertised_instructions: view.runtime.advertised_instructions ?? undefined,
       likely_stale_count: runtime?.likely_stale_count,
       pid: runtime?.pid ?? undefined,
       pgid: runtime?.pgid ?? undefined,
@@ -681,6 +685,7 @@ export function gatewayInputToSpec(input: CreateGatewayInput) {
     command: input.transport === 'stdio' ? input.config.command ?? null : null,
     args: input.transport === 'stdio' ? normalizeArgs(input.config.args) : [],
     ...(env ? { env } : {}),
+    instructions: input.config.instructions?.trim() || null,
     bearer_token_env: input.config.bearer_token_env ?? null,
     proxy_resources: input.config.proxy_resources ?? true,
     proxy_prompts: input.config.proxy_prompts ?? true,
@@ -749,6 +754,10 @@ export function buildGatewayPatch(input: UpdateGatewayInput & { name?: string; t
     if (config.command !== undefined) patch.command = config.command
     if (config.args !== undefined) patch.args = normalizeArgs(config.args)
     if (config.env !== undefined) patch.env = normalizeEnv(config.env) ?? {}
+  }
+
+  if (config.instructions !== undefined) {
+    patch.instructions = config.instructions?.trim() || null
   }
 
   if (config.bearer_token_env !== undefined) {

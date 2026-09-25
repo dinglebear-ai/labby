@@ -582,11 +582,21 @@ impl ServerHandler for LabMcpServer {
         let capabilities = builder.build();
         let mut info = ServerInfo::new(capabilities);
         info.server_info = rmcp::model::Implementation::new("labby", env!("CARGO_PKG_VERSION"));
+        // Operator instructions come from the live gateway publication, so the
+        // next initialize/discover sees an edit without restarting Labby.
+        #[cfg(feature = "gateway")]
+        if let Some(instructions) = self
+            .gateway_manager
+            .as_ref()
+            .and_then(|manager| manager.server_instructions_now())
+        {
+            info.instructions = Some(instructions);
+        }
         // A pointer, not skill content. It reaches clients that never parse the
         // capability map, which is the population most likely to miss an
         // extension entirely.
         #[cfg(feature = "skills")]
-        {
+        if info.instructions.is_none() {
             info.instructions = Some(
                 "This server implements the MCP Skills extension                  (io.modelcontextprotocol/skills). Call `skills/list` to enumerate its Agent                  Skills, or `skills/get` with a `skill://` URI to fetch one entry. The contract                  this server implements is readable at `lab://contracts/skills-extension`."
                     .to_string(),

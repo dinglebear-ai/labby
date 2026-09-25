@@ -22,9 +22,9 @@ use super::params::{
     GatewayUpdatePatch, GatewayUsageCallsParams, GatewayUsageMetricsParams, LoadoutNameParams,
     LoadoutPatchParams, LoadoutSpecParams, LoadoutUpdateParams, ProtectedRouteNameParams,
     ProtectedRouteSpecParams, ProtectedRouteUpdateParams, ResourceLeaseCreateParams,
-    ResourceLeaseReleaseParams, ResourceLeaseRenewParams, ServiceConfigGetParams,
-    ServiceConfigSetParams, VirtualServerMcpPolicyParams, VirtualServerNameParams,
-    VirtualServerSurfaceParams,
+    ResourceLeaseReleaseParams, ResourceLeaseRenewParams, ServerInstructionsSetParams,
+    ServiceConfigGetParams, ServiceConfigSetParams, VirtualServerMcpPolicyParams,
+    VirtualServerNameParams, VirtualServerSurfaceParams,
 };
 use super::types::{
     DiscoveredServerView, DiscoveryExplanationView, ExplainedDiscoveryView, ImportErrorView,
@@ -84,7 +84,10 @@ pub async fn dispatch_with_manager_scoped(
             .await,
         ),
         "gateway.skills.list" => handle_skills_list(manager, params_value, enrichment_scope).await,
-        "gateway.code_mode.get" | "gateway.code_mode.set" => {
+        "gateway.code_mode.get"
+        | "gateway.code_mode.set"
+        | "gateway.server_instructions.get"
+        | "gateway.server_instructions.set" => {
             handle_tool_actions(manager, action, params_value).await
         }
         "gateway.discover" => handle_discover(manager, params_value).await,
@@ -494,6 +497,11 @@ async fn handle_tool_actions(
     params_value: Value,
 ) -> Result<Value, ToolError> {
     match action {
+        "gateway.server_instructions.get" => to_json(manager.server_instructions_now()),
+        "gateway.server_instructions.set" => {
+            let params: ServerInstructionsSetParams = parse_params(params_value)?;
+            to_json(manager.set_server_instructions(params.instructions).await?)
+        }
         "gateway.code_mode.get" => to_json(manager.code_mode_config().await),
         "gateway.code_mode.set" => {
             let params: CodeModeSetParams = parse_params(params_value)?;

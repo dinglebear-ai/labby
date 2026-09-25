@@ -98,6 +98,28 @@ impl GatewayManager {
         self.config.read().await.clone()
     }
 
+    /// Persist a new root MCP server-instruction override and publish it live.
+    pub async fn set_server_instructions(
+        &self,
+        instructions: Option<String>,
+    ) -> Result<Option<String>, ToolError> {
+        let instructions = instructions
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let mutation_guard = self.acquire_config_mutation().await?;
+        let previous = self.load_config_for_mutation().await?;
+        if previous.gateway.server_instructions == instructions
+            && self.server_instructions_now() == instructions
+        {
+            return Ok(instructions);
+        }
+        let mut candidate = previous.clone();
+        candidate.gateway.server_instructions = instructions;
+        self.commit_config_and_reload(mutation_guard, previous, candidate, None, None)
+            .await?;
+        Ok(self.server_instructions_now())
+    }
+
     /// Return the configured upstream names without cloning the full gateway config.
     pub async fn upstream_names(&self) -> BTreeSet<String> {
         self.config

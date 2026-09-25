@@ -18,6 +18,7 @@ import {
   Wrench,
 } from 'lucide-react'
 
+import { ServerInstructionsEditor } from '@/components/server-instructions-editor'
 import { formatCompactNumber } from '@/lib/dashboard/dashboard-metrics'
 import type { LiveFleetStats } from '@/lib/dashboard/dashboard-metrics'
 import {
@@ -178,6 +179,8 @@ export function OverviewHero({
   activeWindow,
   onWindowChange,
   onRefresh,
+  serverInstructions,
+  onSaveServerInstructions,
   loadedAt,
 }: {
   gateways: Gateway[]
@@ -186,6 +189,8 @@ export function OverviewHero({
   activeWindow: MetricsWindow
   onWindowChange: (window: MetricsWindow) => void
   onRefresh: () => void
+  serverInstructions?: string | null
+  onSaveServerInstructions: (instructions: string | null) => Promise<void>
   /** Epoch ms of the last successful metrics load, for the "updated Ns ago" ticker. */
   loadedAt: number
 }) {
@@ -377,6 +382,16 @@ export function OverviewHero({
               </svg>
             ) : null}
           </div>
+
+          <ServerInstructionsEditor
+            value={serverInstructions}
+            fallback="This server implements the MCP Skills extension (io.modelcontextprotocol/skills). Call skills/list to enumerate its Agent Skills, or skills/get with a skill:// URI to fetch one entry. The contract is readable at lab://contracts/skills-extension."
+            fallbackLabel="Built-in default"
+            title="Labby server instructions"
+            description="Control the instructions Labby advertises to MCP clients during initialization."
+            onSave={onSaveServerInstructions}
+            className="mt-3 max-w-2xl"
+          />
 
           {troubled.length > 0 ? (
             <div

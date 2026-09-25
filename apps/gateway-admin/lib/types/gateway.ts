@@ -3,6 +3,8 @@
 export type TransportType = 'http' | 'stdio' | 'in_process'
 
 export interface GatewayConfig {
+  /** Operator override for MCP server instructions; null/absent uses the upstream default. */
+  instructions?: string | null
   url?: string
   command?: string
   args?: string[]
@@ -53,6 +55,8 @@ export interface GatewayStatus {
   discovered_skill_count?: number
   exposed_skill_count?: number
   supports_skills?: boolean
+  /** Instructions advertised by the live upstream during MCP initialization. */
+  advertised_instructions?: string
   likely_stale_count?: number
   pid?: number
   pgid?: number

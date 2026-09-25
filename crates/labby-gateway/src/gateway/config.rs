@@ -248,6 +248,11 @@ pub(crate) fn update_upstream(
     if let Some(enabled) = patch.enabled {
         cfg.upstream[index].enabled = enabled;
     }
+    if let Some(instructions) = patch.instructions {
+        cfg.upstream[index].instructions = instructions
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+    }
     if let Some(url) = patch.url {
         cfg.upstream[index].url = url;
     }

@@ -496,6 +496,10 @@ pub struct UpstreamConfig {
     /// Handshake override. Omitted means [`UpstreamLifecycle::Auto`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle: Option<UpstreamLifecycle>,
+    /// Optional operator override for the MCP server instructions exposed by Labby.
+    /// When absent, the upstream's own initialize-time instructions remain authoritative.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
     /// Whether this upstream is enabled for discovery and proxying. Defaults to true.
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -1810,6 +1814,10 @@ pub struct WebPreferences {
 /// Controls the stdio spawn-guard that validates upstream MCP server commands.
 #[derive(Debug, Clone, Default, Serialize, JsonSchema, Deserialize)]
 pub struct GatewayPreferences {
+    /// Optional operator override for Labby's root MCP server instructions.
+    /// When absent, the product's built-in instructions remain authoritative.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_instructions: Option<String>,
     /// Periodically probe disconnected upstream MCP servers and replace stale
     /// connections when they become reachable again. Disabled by default
     /// because recovery may restart configured stdio child processes.

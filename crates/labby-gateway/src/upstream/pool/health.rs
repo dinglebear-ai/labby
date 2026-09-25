@@ -112,6 +112,17 @@ impl UpstreamPool {
         }
     }
 
+    /// Return the instructions advertised by the upstream's live MCP handshake.
+    pub async fn upstream_server_instructions(&self, upstream_name: &str) -> Option<String> {
+        let connections = self.connections.read().await;
+        connections
+            .get(upstream_name)?
+            .peer
+            .peer_info()?
+            .instructions
+            .clone()
+    }
+
     /// Return the most relevant last error for an upstream, if any capability has one.
     pub async fn upstream_last_error(&self, upstream_name: &str) -> Option<String> {
         let catalog = self.catalog.read().await;

@@ -42,6 +42,7 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { ActionConfirmationDialog } from '@/components/action-confirmation-dialog'
+import { ServerInstructionsEditor } from '@/components/server-instructions-editor'
 import {
   REMOVE_GATEWAY_CONFIRM_LABEL,
   REMOVE_GATEWAY_TITLE,
@@ -1115,6 +1116,21 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                 </div>
               </div>
             </div>
+
+            {!isLabGateway ? (
+              <ServerInstructionsEditor
+                value={gateway.config.instructions}
+                fallback={gateway.status.advertised_instructions}
+                fallbackLabel="Upstream default"
+                title={displayName + ' server instructions'}
+                description="Override the instructions this upstream exposes through Labby. Clear the override to return to the upstream-advertised value."
+                className="mt-3 mb-4"
+                onSave={async (instructions) => {
+                  await updateGateway(gateway.id, { config: { instructions } })
+                  toast.success(instructions ? 'Server instructions updated' : 'Using upstream server instructions')
+                }}
+              />
+            ) : null}
 
             {/*
               Stat strip — attached to the bottom of the header card, above the
