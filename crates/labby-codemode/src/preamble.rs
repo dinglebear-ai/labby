@@ -705,6 +705,7 @@ mod tests {
         let path = format!("{namespace}.{name}");
         CodeModeDiscoveryEntry {
             tools: None,
+            skills: None,
             kind: CodeModeCatalogKind::Tool,
             id: format!("{namespace}::{name}"),
             path: path.clone(),

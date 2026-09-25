@@ -8,6 +8,7 @@ use std::sync::{Mutex, OnceLock};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use super::skill_declarations::{self, SnippetSkillPolicy};
 use super::tool_declarations::{self, SnippetToolDeclarations};
 use crate::error::ToolError;
 
@@ -54,6 +55,9 @@ pub struct SnippetInfo {
     /// Named input specifications.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub inputs: BTreeMap<String, SnippetInputSpec>,
+    /// Optional bounded Skill-resolution policy. This is instruction metadata, not authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<SnippetSkillPolicy>,
     /// Snippet origin.
     pub source: SnippetSource,
     /// Source file path.
@@ -78,6 +82,9 @@ pub struct ResolvedSnippet {
     /// Named input specifications.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub inputs: BTreeMap<String, SnippetInputSpec>,
+    /// Optional bounded Skill-resolution policy. This is instruction metadata, not authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<SnippetSkillPolicy>,
     /// Snippet origin.
     pub source: SnippetSource,
     /// Source file path.
@@ -99,6 +106,8 @@ pub struct SnippetFrontmatter {
     pub tags: Vec<String>,
     /// Declared named inputs.
     pub inputs: BTreeMap<String, SnippetInputSpec>,
+    /// Optional bounded Skill-resolution policy.
+    pub skills: Option<SnippetSkillPolicy>,
 }
 
 /// Validation/default specification for one snippet input.
@@ -269,7 +278,7 @@ pub fn create_user_snippet(
     }
     let body = render_user_snippet_body(name, body, description)?;
     atomic_write_snippet(&path, &body, force)?;
-    let (description, tags, inputs, tools) =
+    let (description, tags, inputs, tools, skills) =
         snippet_metadata_fields(frontmatter(&body).ok().flatten());
     Ok(SnippetInfo {
         tools,
@@ -277,6 +286,7 @@ pub fn create_user_snippet(
         description,
         tags,
         inputs,
+        skills,
         source: SnippetSource::User,
         path,
         shadowed: false,
@@ -416,7 +426,7 @@ fn collect_snippets(
         if validate_snippet_body(stem, &body).is_err() {
             continue;
         }
-        let (description, tags, inputs, tools) =
+        let (description, tags, inputs, tools, skills) =
             snippet_metadata_fields(frontmatter(&body).ok().flatten());
         out.push(SnippetInfo {
             tools,
@@ -424,6 +434,7 @@ fn collect_snippets(
             description,
             tags,
             inputs,
+            skills,
             source,
             path,
             shadowed: false,
@@ -475,7 +486,7 @@ fn read_resolved(
     // explicit existing-snippet validation). This avoids compiling the same
     // saved program twice per invocation.
     validate_snippet_body_structure(name, &body)?;
-    let (description, tags, inputs, tools) =
+    let (description, tags, inputs, tools, skills) =
         snippet_metadata_fields(frontmatter(&body)?.filter(|m| m.name == name));
     Ok(ResolvedSnippet {
         tools,
@@ -483,6 +494,7 @@ fn read_resolved(
         description,
         tags,
         inputs,
+        skills,
         source,
         path,
         body,
@@ -510,6 +522,7 @@ fn snippet_metadata_fields(
     Vec<String>,
     BTreeMap<String, SnippetInputSpec>,
     Option<SnippetToolDeclarations>,
+    Option<SnippetSkillPolicy>,
 ) {
     metadata
         .map(|metadata| {
@@ -518,6 +531,7 @@ fn snippet_metadata_fields(
                 metadata.tags,
                 metadata.inputs,
                 metadata.tools,
+                metadata.skills,
             )
         })
         .unwrap_or_default()
@@ -643,6 +657,7 @@ pub fn frontmatter(body: &str) -> Result<Option<SnippetFrontmatter>, ToolError> 
     let mut description = None;
     let mut tags = Vec::new();
     let mut tools = None;
+    let mut skills = None;
     let lines: Vec<&str> = raw.lines().collect();
     let mut inputs = BTreeMap::new();
     let mut i = 0;
@@ -672,6 +687,17 @@ pub fn frontmatter(body: &str) -> Result<Option<SnippetFrontmatter>, ToolError> 
             i = next;
             continue;
         }
+        if line == "skills:" {
+            if skills.is_some() {
+                return Err(skill_declarations::invalid(
+                    "frontmatter skills must not be repeated",
+                ));
+            }
+            let (parsed, next) = skill_declarations::parse(&lines, i + 1)?;
+            skills = Some(parsed);
+            i = next;
+            continue;
+        }
         let line = line.trim();
         if line.is_empty() {
             i += 1;
@@ -694,12 +720,16 @@ pub fn frontmatter(body: &str) -> Result<Option<SnippetFrontmatter>, ToolError> 
     }
     let name = required_frontmatter_field(name, "name")?;
     let description = required_frontmatter_field(description, "description")?;
+    if let Some(policy) = &skills {
+        policy.validate_tool_authority(tools.as_ref())?;
+    }
     Ok(Some(SnippetFrontmatter {
         tools,
         name,
         description,
         tags,
         inputs,
+        skills,
     }))
 }
 
@@ -1459,6 +1489,7 @@ mod tests {
             description: Some(metadata.description),
             tags: metadata.tags,
             inputs: metadata.inputs,
+            skills: metadata.skills,
             source: SnippetSource::User,
             path: PathBuf::from("demo.md"),
             body: body.to_string(),

@@ -514,6 +514,7 @@ mod tests {
             description: None,
             tags: Vec::new(),
             inputs: BTreeMap::new(),
+            skills: None,
             source: SnippetSource::User,
             path: PathBuf::from("scoped.md"),
             body: "async () => ({ ok: true })".to_string(),
