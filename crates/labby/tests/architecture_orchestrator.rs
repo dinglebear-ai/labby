@@ -148,6 +148,11 @@ const ALLOWED_EDGES: &[(&str, &str)] = &[
     // the process-scoped provider-neutral relay used by remote Artifact
     // discovery and acquisition.
     ("skill_library", "artifact_control"),
+    // skill_library → artifact_distribution: the authenticated Skill Library
+    // surface and its follow reconciler invoke the shared managed-mirror
+    // coordinator, which owns the AccessStore + ArtifactStore saga for pin,
+    // follow, fork, and revocation purge.
+    ("skill_library", "artifact_distribution"),
     // skill_library → remote_control: the authenticated Skill Library surface
     // delegates provider-neutral remote Artifact actions to their canonical
     // transport dispatcher after resolving authority through artifact_control.

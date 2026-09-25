@@ -233,8 +233,7 @@ fn sorted(mut names: Vec<String>) -> Vec<String> {
 async fn subject_catalogs_are_isolated_from_each_other_and_the_global_catalog() {
     let pool = super::UpstreamPool::new();
     let config = oauth_upstream_config("private", &["*"]);
-    pool.seed_lazy_upstreams(std::slice::from_ref(&config))
-        .await;
+    pool.register_upstream_config_for_tests(&config);
 
     for (subject, tool_name) in [("alice", "alice_private"), ("bob", "bob_private")] {
         let connection = take_fixture_connection("private").await;
@@ -314,6 +313,7 @@ async fn exact_subject_scoped_lookup_projects_only_the_requested_tool() {
 async fn expose_tools_is_enforced_symmetrically_across_oauth_and_non_oauth_upstreams() {
     let pool = pool_with_both_exposure_paths("github", "alice").await;
     let config = oauth_upstream_config("github", &EXPOSE_TOOLS);
+    pool.register_upstream_config_for_tests(&config);
 
     let non_oauth: Vec<String> = pool
         .healthy_tools()
@@ -352,6 +352,7 @@ async fn expose_tools_is_enforced_symmetrically_across_oauth_and_non_oauth_upstr
 async fn invalid_expose_tools_hides_every_subject_scoped_tool() {
     let pool = pool_with_both_exposure_paths("github", "alice").await;
     let config = oauth_upstream_config("github", &["   "]);
+    pool.register_upstream_config_for_tests(&config);
 
     let subject_scoped: Vec<(String, Vec<rmcp::model::Tool>)> = pool
         .subject_scoped_tools(std::slice::from_ref(&config), "alice")
@@ -379,6 +380,7 @@ async fn absent_expose_tools_leaves_subject_scoped_tools_untouched() {
         expose_tools: None,
         ..oauth_upstream_config("github", &EXPOSE_TOOLS)
     };
+    pool.register_upstream_config_for_tests(&config);
 
     let subject_scoped: Vec<String> = pool
         .subject_scoped_tools(std::slice::from_ref(&config), "alice")
@@ -405,6 +407,7 @@ async fn absent_expose_tools_leaves_subject_scoped_tools_untouched() {
 async fn empty_expose_tools_hides_every_subject_scoped_tool() {
     let pool = pool_with_both_exposure_paths("github", "alice").await;
     let config = oauth_upstream_config("github", &[]);
+    pool.register_upstream_config_for_tests(&config);
 
     let subject_scoped = pool
         .subject_scoped_tools(std::slice::from_ref(&config), "alice")
@@ -454,6 +457,9 @@ async fn each_upstream_is_filtered_by_its_own_expose_tools() {
         // No `oauth` block — must be skipped, not listed.
         named_test_upstream_config("plain"),
     ];
+    for config in configs.iter().filter(|config| config.oauth.is_some()) {
+        pool.register_upstream_config_for_tests(config);
+    }
 
     let by_upstream: std::collections::BTreeMap<String, Vec<String>> = pool
         .subject_scoped_tools(&configs, "alice")
@@ -505,6 +511,9 @@ async fn subject_scoped_tools_have_stable_upstream_and_tool_order() {
         oauth_upstream_config("zeta", &["*"]),
         oauth_upstream_config("alpha", &["*"]),
     ];
+    for config in &configs {
+        pool.register_upstream_config_for_tests(config);
+    }
 
     let listed = pool.subject_scoped_tools(&configs, "alice").await;
     let upstreams = listed
@@ -559,6 +568,8 @@ async fn bounded_subject_scoped_tools_select_stably_across_over_cap_upstreams() 
         expose_tools: None,
         ..oauth_upstream_config("zeta", &["*"])
     };
+    pool.register_upstream_config_for_tests(&alpha);
+    pool.register_upstream_config_for_tests(&zeta);
     let first = pool
         .subject_scoped_tools_bounded(&[zeta.clone(), alpha.clone()], "alice", 1_000)
         .await;
@@ -619,6 +630,7 @@ async fn bounded_subject_scoped_tools_select_stably_across_over_cap_upstreams() 
 async fn hidden_subject_scoped_tools_cannot_be_called() {
     let pool = pool_with_both_exposure_paths("github", "alice").await;
     let config = oauth_upstream_config("github", &EXPOSE_TOOLS);
+    pool.register_upstream_config_for_tests(&config);
 
     // 1. Routing: mirrors the owner-resolution loop in call_tool_upstream.rs.
     let owner_of = |tool_name: &'static str| {

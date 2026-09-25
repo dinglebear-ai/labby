@@ -101,7 +101,7 @@ mod tests {
             .pragma_update(None, "application_id", migrations::APPLICATION_ID)
             .unwrap();
         connection
-            .pragma_update(None, "user_version", migrations::SCHEMA_VERSION)
+            .pragma_update(None, "user_version", migrations::V8_SCHEMA_VERSION)
             .unwrap();
         connection
             .execute("VACUUM INTO ?1", [paths.access_db().to_str().unwrap()])
@@ -179,10 +179,10 @@ mod tests {
         let evidence = approve(&paths);
         let checkpoint = std::fs::read(paths.root().join("checkpoint.db")).unwrap();
         let outcome = migrate(&paths, evidence.clone()).await.unwrap();
-        assert_eq!(outcome.schema_version, 8);
+        assert_eq!(outcome.schema_version, migrations::SCHEMA_VERSION);
         assert_eq!(outcome.verified_reopens, 2);
         migrate(&paths, evidence).await.unwrap();
-        assert_eq!(version(&paths), 8);
+        assert_eq!(version(&paths), migrations::SCHEMA_VERSION);
         assert_eq!(
             checkpoint,
             std::fs::read(paths.root().join("checkpoint.db")).unwrap()
@@ -210,9 +210,10 @@ mod tests {
     #[tokio::test]
     async fn offline_migration_repairs_exact_superseded_v8_with_verified_reopens() {
         let (_directory, paths) = legacy_v8_fixture();
-        let historical_marker = paths
-            .access_db()
-            .with_extension(format!("migration-v{}.state", migrations::SCHEMA_VERSION));
+        let historical_marker = paths.access_db().with_extension(format!(
+            "migration-v{}.state",
+            migrations::V8_SCHEMA_VERSION
+        ));
         let historical_receipt = "complete
 operation_id=historical-v7-to-v8
 checkpoint_sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -227,20 +228,21 @@ checkpoint_sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         assert_eq!(
             std::fs::read_to_string(&historical_marker).unwrap(),
             historical_receipt,
-            "same-version repair must preserve the historical v8 migration receipt"
+            "legacy repair must preserve the historical v8 migration receipt"
         );
-        let compatibility_marker = paths
-            .access_db()
-            .with_extension("migration-v8-from-20260913.state");
+        let compatibility_marker = paths.access_db().with_extension(format!(
+            "migration-v{}-from-20260913.state",
+            migrations::SCHEMA_VERSION
+        ));
         assert!(
             std::fs::read_to_string(compatibility_marker)
                 .unwrap()
                 .starts_with(
                     "complete
-operation_id=restore-8-to-8
+operation_id=restore-8-to-9
 "
                 ),
-            "same-version repair must publish its own completion receipt"
+            "legacy repair must publish its own completion receipt"
         );
 
         let connection = rusqlite::Connection::open(paths.access_db()).unwrap();

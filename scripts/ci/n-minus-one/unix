@@ -133,12 +133,16 @@ case "${1:-}" in
         LABBY_INSTALL_NO_SETUP=1 LABBY_INSTALL_DIR="$install_dir" LABBY_INSTALL_VERSION="$LABBY_PREVIOUS_VERSION" \
             LABBY_ALLOW_SOURCE_FALLBACK=0 sh "$repo_root/scripts/install.sh"
         ;;
-    seed-state) start_service; seed_persisted_state; stop_service ;;
+    seed-state) start_service; stop_service; seed_persisted_state ;;
     verify-previous) verify_version "$LABBY_PREVIOUS_VERSION"; verify_persisted_state ;;
     verify-provenance) verify_provenance ;;
     upgrade)
         : "${LABBY_N_MINUS_ONE_CANDIDATE_BINARY:?exact candidate binary is required}"
         : "${LABBY_N_MINUS_ONE_CANDIDATE_SHA256:?exact candidate SHA-256 is required}"
+        verify_provenance
+        stop_service
+        HOME="$user_home" bash "$repo_root/scripts/ci/n-minus-one-recovery.sh" capture \
+            "$LABBY_N_MINUS_ONE_CANDIDATE_BINARY" "$labby_home" "$work_root/recovery"
         "$repo_root/scripts/ci/verify-and-activate-release.sh" \
             --repo "$GITHUB_REPOSITORY" --workflow release.yml --ref "$GITHUB_REF" \
             --artifact "${LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE:?exact candidate archive is required}" -- \
@@ -151,7 +155,12 @@ case "${1:-}" in
     authenticated-action) authenticated_action ;;
     restart) stop_service; start_service ;;
     verify-restart) verify_version "$LABBY_CANDIDATE_VERSION"; verify_persisted_state; authenticated_action ;;
-    rollback) stop_service; LABBY_INSTALL_DIR="$install_dir" LABBY_INSTALL_ROLLBACK=1 sh "$repo_root/scripts/install.sh" ;;
+    rollback)
+        stop_service
+        HOME="$user_home" bash "$repo_root/scripts/ci/n-minus-one-recovery.sh" restore \
+            "${LABBY_N_MINUS_ONE_CANDIDATE_BINARY:?exact candidate binary is required}" "$labby_home" "$work_root/recovery"
+        LABBY_INSTALL_DIR="$install_dir" LABBY_INSTALL_ROLLBACK=1 sh "$repo_root/scripts/install.sh"
+        ;;
     verify-rollback) verify_version "$LABBY_PREVIOUS_VERSION"; verify_persisted_state ;;
     *) echo "unknown stage: ${1:-}" >&2; exit 64 ;;
 esac

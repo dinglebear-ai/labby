@@ -53,6 +53,8 @@ class BootstrapFakeTest(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn(expected, result.stdout)
+                self.assertLess(result.stdout.index("then install Tailscale"),
+                                result.stdout.index("'setup' '--provision'"))
                 self.assertEqual(after, before)
 
     def test_fault_matrix_restores_new_and_customized_targets_and_reruns(self):

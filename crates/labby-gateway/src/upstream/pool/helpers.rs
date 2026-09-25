@@ -85,6 +85,9 @@ pub(super) const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// overrides it from `upstream_relay_timeout_ms`. See `pool/relay.rs`.
 pub(super) const DEFAULT_RELAY_TIMEOUT: Duration = Duration::from_mins(5);
 pub(super) const STDIO_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+/// Maximum number of cached connections shut down concurrently during sweep,
+/// reconcile, or pool drain. Bounds cleanup fan-out without restoring N×timeout latency.
+pub(super) const CONNECTION_SHUTDOWN_CONCURRENCY: usize = 16;
 /// Idle TTL for per-`(upstream, subject)` cached connections.
 ///
 /// A connection that has not been used for this long will be evicted from

@@ -103,6 +103,25 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [2.2.1](https://github.com/dinglebear-ai/labby/compare/v2.2.0...v2.2.1) (2026-09-23)
+
+
+### Fixed
+
+* **ci:** recover release state as the service owner ([#760](https://github.com/dinglebear-ai/labby/issues/760)) ([28ee7b7](https://github.com/dinglebear-ai/labby/commit/28ee7b740311ac6c859e7bfb5871feb771e76db3))
+
+## [2.2.0](https://github.com/dinglebear-ai/labby/compare/v2.1.2...v2.2.0) (2026-09-23)
+
+
+### Added
+
+* **artifacts:** pin, follow and fork Depot Artifacts into a Personal Labby ([#746](https://github.com/dinglebear-ai/labby/issues/746)) ([3222073](https://github.com/dinglebear-ai/labby/commit/3222073d34f9cc701423923ce3803b53142987ee))
+
+
+### Fixed
+
+* **release:** restore baseline state before rollback qualification ([#757](https://github.com/dinglebear-ai/labby/issues/757)) ([1151b03](https://github.com/dinglebear-ai/labby/commit/1151b03de24ca2c1ef3f647b58e7e632b9f4a2bd))
+
 ## [2.1.2](https://github.com/dinglebear-ai/labby/compare/v2.1.1...v2.1.2) (2026-09-23)
 
 

@@ -4300,6 +4300,162 @@
     "scenario_owner": "optional_external_runner"
   },
 {
+    "service": "artifacts",
+    "action": "artifacts.transfer_options",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "default",
+      "gateway-host",
+      "skills"
+    ],
+    "scenario_kind": "external_optional",
+    "scenario_id": "external_optional::artifacts::transfer_options",
+    "minimum_evidence": "live_error_path",
+    "setup_ref": "disposable-home+synthetic-external",
+    "fixture_params": {
+      "fixture": "synthetic_external",
+      "parameters": {
+        "source": "$fixture.source",
+        "assignment_id": "$fixture.assignment_id"
+      }
+    },
+    "required": false,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "optional_external_runner"
+  },
+{
+    "service": "artifacts",
+    "action": "artifacts.pin",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "default",
+      "gateway-host",
+      "skills"
+    ],
+    "scenario_kind": "external_optional",
+    "scenario_id": "external_optional::artifacts::pin",
+    "minimum_evidence": "live_error_path",
+    "setup_ref": "disposable-home+synthetic-external",
+    "fixture_params": {
+      "fixture": "synthetic_external",
+      "parameters": {
+        "source": "$fixture.source",
+        "assignment_id": "$fixture.assignment_id",
+        "idempotency_key": "$fixture.idempotency_key"
+      }
+    },
+    "required": false,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "optional_external_runner"
+  },
+{
+    "service": "artifacts",
+    "action": "artifacts.follow_managed",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "default",
+      "gateway-host",
+      "skills"
+    ],
+    "scenario_kind": "external_optional",
+    "scenario_id": "external_optional::artifacts::follow_managed",
+    "minimum_evidence": "live_error_path",
+    "setup_ref": "disposable-home+synthetic-external",
+    "fixture_params": {
+      "fixture": "synthetic_external",
+      "parameters": {
+        "source": "$fixture.source",
+        "assignment_id": "$fixture.assignment_id",
+        "idempotency_key": "$fixture.idempotency_key",
+        "update_policy": "$fixture.update_policy"
+      }
+    },
+    "required": false,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "optional_external_runner"
+  },
+{
+    "service": "artifacts",
+    "action": "artifacts.follow_update",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "default",
+      "gateway-host",
+      "skills"
+    ],
+    "scenario_kind": "external_optional",
+    "scenario_id": "external_optional::artifacts::follow_update",
+    "minimum_evidence": "live_error_path",
+    "setup_ref": "disposable-home+synthetic-external",
+    "fixture_params": {
+      "fixture": "synthetic_external",
+      "parameters": {
+        "source": "$fixture.source",
+        "idempotency_key": "$fixture.idempotency_key"
+      }
+    },
+    "required": false,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "optional_external_runner"
+  },
+{
+    "service": "artifacts",
+    "action": "artifacts.fork_personal",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "default",
+      "gateway-host",
+      "skills"
+    ],
+    "scenario_kind": "external_optional",
+    "scenario_id": "external_optional::artifacts::fork_personal",
+    "minimum_evidence": "live_error_path",
+    "setup_ref": "disposable-home+synthetic-external",
+    "fixture_params": {
+      "fixture": "synthetic_external",
+      "parameters": {
+        "source": "$fixture.source",
+        "assignment_id": "$fixture.assignment_id",
+        "name": "$fixture.name",
+        "title": "$fixture.title",
+        "idempotency_key": "$fixture.idempotency_key"
+      }
+    },
+    "required": false,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "optional_external_runner"
+  },
+{
     "service": "snippets",
     "action": "help",
     "canonical_action": null,
