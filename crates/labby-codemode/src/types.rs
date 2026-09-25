@@ -547,6 +547,9 @@ pub struct CodeModeExecutionOutcome {
 pub struct CodeModeExecutedCall {
     /// Fully-qualified `<namespace>::<tool>` identifier.
     pub id: String,
+    /// Monotonic host-owned ordinal for an externally visible call. Pseudo
+    /// operations such as artifact writes leave this absent.
+    pub call_ordinal: Option<u64>,
     /// Whether the brokered call completed successfully.
     pub ok: bool,
     /// Tool-call duration in milliseconds.
@@ -569,8 +572,11 @@ pub struct CodeModeExecutedCall {
 impl Serialize for CodeModeExecutedCall {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let (namespace, tool) = split_code_mode_call_id(&self.id);
-        let mut state = serializer.serialize_struct("CodeModeExecutedCall", 9)?;
+        let mut state = serializer.serialize_struct("CodeModeExecutedCall", 10)?;
         state.serialize_field("id", &self.id)?;
+        if let Some(call_ordinal) = self.call_ordinal {
+            state.serialize_field("call_ordinal", &call_ordinal)?;
+        }
         state.serialize_field("namespace", namespace)?;
         state.serialize_field("tool", tool)?;
         state.serialize_field("ok", &self.ok)?;

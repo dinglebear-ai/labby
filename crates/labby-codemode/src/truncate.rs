@@ -385,6 +385,7 @@ mod tests {
     fn over_budget_result_becomes_object_marker_and_calls_survive() {
         let calls = vec![CodeModeExecutedCall {
             id: "demo::big_query".to_string(),
+            call_ordinal: Some(0),
             ok: true,
             elapsed_ms: 42,
             start_ms: Some(1),
@@ -448,6 +449,7 @@ mod tests {
         let calls = (0..76)
             .map(|i| CodeModeExecutedCall {
                 id: format!("ssh::{i}"),
+                call_ordinal: Some(i as u64),
                 ok: true,
                 elapsed_ms: 25,
                 start_ms: Some(i * 3),
@@ -487,6 +489,7 @@ mod tests {
         let calls = (0..24)
             .map(|i| CodeModeExecutedCall {
                 id: format!("ssh::{i}"),
+                call_ordinal: Some(i as u64),
                 ok: true,
                 elapsed_ms: 25,
                 start_ms: Some(i * 3),

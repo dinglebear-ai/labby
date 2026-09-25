@@ -275,6 +275,9 @@ impl GatewayManager {
             header_recovery_metrics_store: HeaderRecoveryMetricsStore::default(),
             step_journal: None,
             step_buffers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            code_mode_trace_roots: Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
             protected_route_index: Arc::new(RwLock::new(ProtectedRouteIndex::default())),
             code_mode_history: Arc::new(Mutex::new(CodeModeHistory::default())),
             code_mode_source_store: Arc::new(Mutex::new(CodeModeSourceStore::default())),

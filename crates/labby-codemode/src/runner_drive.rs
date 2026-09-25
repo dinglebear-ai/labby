@@ -162,6 +162,7 @@ type ToolCallFut<'a> = std::pin::Pin<
         dyn Future<
                 Output = (
                     u64,
+                    Option<u64>,
                     String,
                     Option<Value>,
                     Result<ToolCallOutcome, CodeModeCallError>,
@@ -617,12 +618,15 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                             // sandbox JS cannot loop them into unbounded
                             // host round trips.
                             let is_internal = id.starts_with("__lab_internal::");
-                            if is_internal {
+                            let call_ordinal = if is_internal {
                                 state.internal_calls_enqueued =
                                     state.internal_calls_enqueued.saturating_add(1);
+                                None
                             } else {
+                                let ordinal = state.calls_enqueued;
                                 state.calls_enqueued = state.calls_enqueued.saturating_add(1);
-                            }
+                                Some(ordinal)
+                            };
                             if is_internal
                                 && state.internal_calls_enqueued > MAX_INTERNAL_CALLS_PER_RUN
                             {
@@ -651,6 +655,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                             {
                                 if let Err(err) = reject_tool_call_over_budget(
                                     seq,
+                                    call_ordinal,
                                     id,
                                     state.max_calls_per_run,
                                     stdin,
@@ -669,6 +674,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                                         enqueue_local_provider_call(
                                             self,
                                             seq,
+                                            call_ordinal,
                                             id,
                                             local,
                                             params,
@@ -699,6 +705,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                                         enqueue_tool_call(
                                             self,
                                             seq,
+                                            call_ordinal,
                                             id,
                                             params,
                                             tool_deadline,
@@ -711,6 +718,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                                     Err(err) => {
                                         enqueue_rejected_tool_call(
                                             seq,
+                                            call_ordinal,
                                             id,
                                             params,
                                             err,
@@ -952,6 +960,7 @@ fn classify_line_result(
 fn enqueue_tool_call<'a, H: CodeModeHost>(
     broker: &'a CodeModeBroker<'a, H>,
     seq: u64,
+    call_ordinal: Option<u64>,
     id: String,
     params: Value,
     tool_deadline: tokio::time::Instant,
@@ -973,6 +982,7 @@ fn enqueue_tool_call<'a, H: CodeModeHost>(
         let ctx = ExecCtx {
             seq,
             execution_id,
+            call_ordinal,
             step_ordinal: None,
         };
         let result = broker
@@ -988,7 +998,15 @@ fn enqueue_tool_call<'a, H: CodeModeHost>(
             )
             .await;
         let elapsed_ms = call_start.elapsed().as_millis();
-        (seq, call_id, redacted_params, result, elapsed_ms, start_ms)
+        (
+            seq,
+            call_ordinal,
+            call_id,
+            redacted_params,
+            result,
+            elapsed_ms,
+            start_ms,
+        )
     }));
 }
 
@@ -1006,6 +1024,7 @@ fn enqueue_tool_call<'a, H: CodeModeHost>(
 fn enqueue_local_provider_call<'a, H: CodeModeHost>(
     broker: &'a CodeModeBroker<'a, H>,
     seq: u64,
+    call_ordinal: Option<u64>,
     id: String,
     local: LocalProviderCall,
     params: Value,
@@ -1035,6 +1054,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
             .with_tool(id.clone());
             return (
                 seq,
+                call_ordinal,
                 id,
                 redacted_params,
                 Err(error),
@@ -1045,6 +1065,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
         let ctx = ExecCtx {
             seq,
             execution_id,
+            call_ordinal,
             step_ordinal: None,
         };
         // Reserved decision hook runs BEFORE dispatch. The default
@@ -1056,6 +1077,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
                     // it defensively if a host ever returns one.
                     return (
                         seq,
+                        call_ordinal,
                         id,
                         redacted_params,
                         Ok(ToolCallOutcome { value, ui: None }),
@@ -1068,6 +1090,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
                     let error = CodeModeCallError::new(kind, message).with_tool(id.clone());
                     return (
                         seq,
+                        call_ordinal,
                         id,
                         redacted_params,
                         Err(error),
@@ -1106,6 +1129,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
             let error = CodeModeCallError::from(err).with_tool(id.clone());
             return (
                 seq,
+                call_ordinal,
                 id,
                 redacted_params,
                 Err(error),
@@ -1118,6 +1142,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
             .map_err(|error| CodeModeCallError::from(error).with_tool(id.clone()));
         (
             seq,
+            call_ordinal,
             id,
             redacted_params,
             result,
@@ -1184,6 +1209,7 @@ async fn dispatch_openapi_provider<H: CodeModeHost>(
 
 fn enqueue_rejected_tool_call(
     seq: u64,
+    call_ordinal: Option<u64>,
     id: String,
     params: Value,
     err: ToolError,
@@ -1193,7 +1219,15 @@ fn enqueue_rejected_tool_call(
     let redacted_params = super::trace::redact_trace_params(&params, cfg.trace_params);
     pending_tool_calls.push(Box::pin(async move {
         let error = CodeModeCallError::from(err).with_tool(id.clone());
-        (seq, id, redacted_params, Err(error), 0, 0)
+        (
+            seq,
+            call_ordinal,
+            id,
+            redacted_params,
+            Err(error),
+            0,
+            0,
+        )
     }));
 }
 
@@ -1231,6 +1265,7 @@ fn enqueue_internal_call_over_ceiling(
     pending_tool_calls.push(Box::pin(async move {
         (
             seq,
+            None,
             id,
             redacted_params,
             Ok(ToolCallOutcome {
@@ -1279,6 +1314,7 @@ async fn dispatch_local_provider_stub(
 #[allow(clippy::too_many_arguments)]
 async fn reject_tool_call_over_budget(
     seq: u64,
+    call_ordinal: Option<u64>,
     id: String,
     budget: u64,
     stdin: &mut ChildStdin,
@@ -1321,6 +1357,7 @@ async fn reject_tool_call_over_budget(
         seq,
         CodeModeExecutedCall {
             id,
+            call_ordinal,
             ok: false,
             elapsed_ms: 0,
             start_ms: None,
@@ -1369,6 +1406,7 @@ async fn write_runner_input_by_deadline(
 async fn handle_completed_tool_call(
     completed: Option<(
         u64,
+        Option<u64>,
         String,
         Option<Value>,
         Result<ToolCallOutcome, CodeModeCallError>,
@@ -1381,7 +1419,7 @@ async fn handle_completed_tool_call(
     deadline: tokio::time::Instant,
     state: &mut DriveState,
 ) -> Result<(), CodeModeExecutionError> {
-    let Some((seq, id, params, result, elapsed_ms, start_ms)) = completed else {
+    let Some((seq, call_ordinal, id, params, result, elapsed_ms, start_ms)) = completed else {
         return Ok(());
     };
     // Reserved host-internal pseudo-tool calls never appear in the call
@@ -1422,6 +1460,7 @@ async fn handle_completed_tool_call(
                         seq,
                         CodeModeExecutedCall {
                             id,
+                            call_ordinal,
                             ok: false,
                             elapsed_ms,
                             start_ms: Some(start_ms),
@@ -1438,6 +1477,7 @@ async fn handle_completed_tool_call(
                     seq,
                     CodeModeExecutedCall {
                         id,
+                        call_ordinal,
                         ok: true,
                         elapsed_ms,
                         start_ms: Some(start_ms),
@@ -1487,6 +1527,7 @@ async fn handle_completed_tool_call(
                     seq,
                     CodeModeExecutedCall {
                         id,
+                        call_ordinal,
                         ok: false,
                         elapsed_ms,
                         start_ms: Some(start_ms),
@@ -1772,6 +1813,15 @@ sleep 3600
             DriveOutcome::Completed(response) => {
                 assert_eq!(response.result, Some(json!({"acked": 512})));
                 assert_eq!(response.calls.len(), 512);
+                assert_eq!(
+                    response
+                        .calls
+                        .iter()
+                        .map(|call| call.call_ordinal)
+                        .collect::<Vec<_>>(),
+                    (0_u64..512).map(Some).collect::<Vec<_>>(),
+                    "fan-out call ordinals must match stable response.calls[] order"
+                );
                 assert!(response.calls.iter().all(|call| !call.ok));
                 assert!(
                     response
@@ -1879,6 +1929,15 @@ sleep 3600
             response.calls.len(),
             usize::try_from(budget).expect("budget fits usize"),
             "every ordinary call must be traced"
+        );
+        assert_eq!(
+            response
+                .calls
+                .iter()
+                .map(|call| call.call_ordinal)
+                .collect::<Vec<_>>(),
+            (0..budget).map(Some).collect::<Vec<_>>(),
+            "internal pseudo-calls must not consume externally visible call ordinals"
         );
         assert!(
             response

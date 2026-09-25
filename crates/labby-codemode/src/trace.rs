@@ -55,6 +55,9 @@ pub fn code_mode_execute_trace(response: &CodeModeExecutionResponse) -> Value {
                 ("ok".to_string(), json!(call.ok)),
                 ("elapsed_ms".to_string(), json!(call.elapsed_ms)),
             ]);
+            if let Some(call_ordinal) = call.call_ordinal {
+                entry.insert("call_ordinal".to_string(), json!(call_ordinal));
+            }
             if let Some(start_ms) = call.start_ms {
                 entry.insert("start_ms".to_string(), json!(start_ms));
             }
@@ -238,6 +241,7 @@ mod tests {
             ui: None,
             calls: vec![CodeModeExecutedCall {
                 id: "quick-shell::run_command".to_string(),
+                call_ordinal: Some(0),
                 ok: true,
                 elapsed_ms: 12,
                 start_ms: Some(4),
@@ -254,6 +258,7 @@ mod tests {
             artifacts: Vec::new(),
         });
 
+        assert_eq!(trace["calls"][0]["call_ordinal"], json!(0));
         assert_eq!(
             trace["calls"][0]["ui"]["resourceUri"],
             json!("ui://quick-shell/app.html")

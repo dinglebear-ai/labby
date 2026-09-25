@@ -34,6 +34,7 @@ use labby_gateway::upstream::pool::{CapabilityCallError, TaskRouteAuthorization,
 use labby_gateway::upstream::tool_error::{mcp_error_data_kind, safety_hints_from_annotations};
 use labby_runtime::agent_error::sanitize_error_text;
 use labby_runtime::catalog_notify::SOURCE_MCP_CALL_UPSTREAM;
+use labby_trace::{InboundTraceDisposition, TraceContext};
 use rmcp::ErrorData;
 use rmcp::RoleServer;
 use rmcp::model::{CallToolRequestParams, CallToolResponse, ClientCapabilities, RequestId};
@@ -70,6 +71,25 @@ fn prepare_upstream_tool_request(
     upstream_tool_name: &str,
 ) -> CallToolRequestParams {
     request.name = upstream_tool_name.to_string().into();
+
+    let (parent, disposition) = TraceContext::continue_or_new(request.meta.as_ref());
+    if matches!(disposition, InboundTraceDisposition::ReplacedInvalid) {
+        tracing::warn!(
+            surface = "mcp",
+            service = "upstream.trace",
+            action = "trace_context.replace_invalid",
+            "invalid inbound trace context replaced with a fresh root"
+        );
+    }
+
+    // The standard W3C context may be continued from an untrusted downstream
+    // client. Labby-only correlation is host-owned and must never be accepted
+    // from that client as trusted execution context.
+    let outbound = parent.without_correlation().child();
+    let meta = request.meta.get_or_insert_default();
+    outbound
+        .inject(meta)
+        .expect("generated outbound trace context must be valid");
     request
 }
 
@@ -1049,6 +1069,7 @@ impl LabMcpServer {
 mod tests {
     use std::collections::BTreeMap;
 
+    use labby_trace::{LABBY_CORRELATION_META_KEY, TraceContext};
     use rmcp::model::{
         CallToolRequestParams, ClientCapabilities, ElicitationCapability,
         FormElicitationCapability, Implementation, ProtocolVersion, RequestMetaObject,
@@ -1086,22 +1107,52 @@ mod tests {
     }
 
     #[test]
-    fn upstream_request_preserves_mrtr_and_extension_metadata() {
-        let request = interactive_request();
+    fn upstream_request_preserves_payload_and_derives_child_trace_context() {
+        let mut request = interactive_request();
+        request
+            .meta
+            .as_mut()
+            .expect("interactive request has meta")
+            .0
+            .0
+            .insert(
+                LABBY_CORRELATION_META_KEY.to_string(),
+                serde_json::json!({"execution_id":"forged","call_ordinal":42}),
+            );
+        let inbound = TraceContext::from_meta(request.meta.as_ref().expect("meta"))
+            .expect("valid inbound trace")
+            .expect("trace present");
 
         let forwarded = prepare_upstream_tool_request(request.clone(), "echo");
+        let outbound = TraceContext::from_meta(forwarded.meta.as_ref().expect("forwarded meta"))
+            .expect("valid outbound trace")
+            .expect("trace present");
 
         assert_eq!(forwarded.name.as_ref(), "echo");
         assert_eq!(forwarded.arguments, request.arguments);
         assert_eq!(forwarded.input_responses, request.input_responses);
         assert_eq!(forwarded.request_state, request.request_state);
-        assert_eq!(
-            forwarded
-                .meta
-                .as_ref()
-                .and_then(|meta| meta.get_traceparent()),
-            Some("00-0af7651916cd43dd8448eb211c80319c-00f067aa0ba902b7-01")
-        );
+        assert_eq!(outbound.trace_id, inbound.trace_id);
+        assert_ne!(outbound.span_id, inbound.span_id);
+        assert!(outbound.correlation.is_none());
+    }
+
+    #[test]
+    fn invalid_inbound_trace_is_replaced_without_tracestate() {
+        let mut request = interactive_request();
+        let meta = request.meta.as_mut().expect("meta");
+        meta.set_traceparent("invalid");
+        meta.set_tracestate("vendor=value");
+
+        let forwarded = prepare_upstream_tool_request(request, "echo");
+        let meta = forwarded.meta.as_ref().expect("forwarded meta");
+        let context = TraceContext::from_meta(meta)
+            .expect("replacement is valid")
+            .expect("replacement is present");
+
+        assert_ne!(context.trace_id, [0; 16]);
+        assert!(context.tracestate.is_none());
+        assert!(meta.get_tracestate().is_none());
     }
 
     #[test]

@@ -91,6 +91,7 @@ pub(super) async fn handle_step_begin_event<H: CodeModeHost>(
     let ctx = ExecCtx {
         seq,
         execution_id,
+        call_ordinal: None,
         step_ordinal: Some(step_ordinal),
     };
     let decision = match broker.host {
@@ -137,6 +138,7 @@ pub(super) async fn handle_step_result_event<H: CodeModeHost>(
             let ctx = ExecCtx {
                 seq,
                 execution_id,
+                call_ordinal: None,
                 step_ordinal: Some(step_ordinal),
             };
             match broker.host {

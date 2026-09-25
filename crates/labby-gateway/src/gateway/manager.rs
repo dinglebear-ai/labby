@@ -192,6 +192,11 @@ pub struct GatewayManager {
             std::collections::HashMap<String, Vec<crate::codemode_journal::StepJournalRow>>,
         >,
     >,
+    /// Per-execution inbound W3C trace roots for Code Mode. The lock is held
+    /// only long enough to clone/insert/remove a small context; no upstream I/O
+    /// runs while it is held, so concurrent fan-out stays concurrent.
+    pub(super) code_mode_trace_roots:
+        Arc<std::sync::Mutex<std::collections::HashMap<String, labby_trace::TraceContext>>>,
     protected_route_index: Arc<RwLock<ProtectedRouteIndex>>,
     code_mode_history: Arc<Mutex<CodeModeHistory>>,
     code_mode_source_store: Arc<Mutex<CodeModeSourceStore>>,

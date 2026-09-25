@@ -35,6 +35,7 @@ labby-auth = { path = "../labby-auth", features = ["http-axum", "upstream-oauth-
 labby-browser = { path = "../labby-browser" }
 labby-primitives = { path = "../labby-primitives" }
 labby-runtime = { path = "../labby-runtime" }
+labby-trace = { path = "../labby-trace" }
 labby-codemode = { path = "../labby-codemode", optional = true }
 labby-gateway = { path = "../labby-gateway", optional = true }
 labby-openapi = { path = "../labby-openapi", optional = true }

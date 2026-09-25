@@ -254,6 +254,7 @@ fn artifact_call(
         seq,
         CodeModeExecutedCall {
             id: ARTIFACT_WRITE_CALL_ID.to_string(),
+            call_ordinal: None,
             ok,
             elapsed_ms,
             start_ms: None,

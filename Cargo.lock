@@ -2112,6 +2112,7 @@ dependencies = [
  "labby-openapi",
  "labby-primitives",
  "labby-runtime",
+ "labby-trace",
  "labby-web",
  "labby-winjob",
  "landlock",
@@ -2292,6 +2293,7 @@ dependencies = [
  "labby-openapi",
  "labby-primitives",
  "labby-runtime",
+ "labby-trace",
  "labby-winjob",
  "nix",
  "process-wrap 9.1.0",
@@ -2388,6 +2390,17 @@ dependencies = [
  "tracing-subscriber",
  "unicode-normalization",
  "url",
+]
+
+[[package]]
+name = "labby-trace"
+version = "1.21.0"
+dependencies = [
+ "rand 0.10.2",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
