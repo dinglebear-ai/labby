@@ -342,6 +342,37 @@ url = "https://old.example.com/mcp"
 }
 
 #[test]
+fn write_gateway_config_replaces_persisted_mcp_app_visibility() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+[mcp_apps]
+manager = true
+skill_library = true
+add_server = true
+server_logs = true
+gateway_status = true
+settings = true
+"#,
+    )
+    .expect("write config");
+
+    let cfg = GatewayConfig::default();
+    write_gateway_config(&path, &cfg).expect("write gateway config");
+
+    let persisted = load_gateway_config(&path).expect("reload gateway config");
+    assert_eq!(persisted.mcp_apps, cfg.mcp_apps);
+    assert!(!persisted.mcp_apps.manager);
+    assert!(!persisted.mcp_apps.skill_library);
+    assert!(!persisted.mcp_apps.add_server);
+    assert!(!persisted.mcp_apps.server_logs);
+    assert!(!persisted.mcp_apps.gateway_status);
+    assert!(!persisted.mcp_apps.settings);
+}
+
+#[test]
 fn insert_upstream_adds_new_gateway_entry() {
     let mut cfg = sample_config();
     insert_upstream(

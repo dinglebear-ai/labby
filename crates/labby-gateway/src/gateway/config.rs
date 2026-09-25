@@ -46,6 +46,7 @@ pub fn load_gateway_config(path: &Path) -> Result<GatewayConfig, ToolError> {
 // host preserves the exact foreign-key + non-gateway-section behavior.
 const KNOWN_LAB_CONFIG_KEYS: &[&str] = &[
     "code_mode",
+    "mcp_apps",
     "upstream_request_timeout_ms",
     "upstream_relay_timeout_ms",
     "upstream",
