@@ -460,11 +460,10 @@ impl LabMcpServer {
             if self.code_mode_app_enabled_on_mcp().await {
                 tools.insert(CODE_MODE_UI_TOOL_NAME.to_string());
             }
-        } else {
-            for svc in self.registry.services() {
-                if !visibility.hides_raw_tools() && self.service_visible_on_mcp(svc.name).await {
-                    tools.insert(svc.name.to_string());
-                }
+        }
+        for svc in self.registry.services() {
+            if self.service_visible_on_mcp(svc.name).await {
+                tools.insert(svc.name.to_string());
             }
         }
 

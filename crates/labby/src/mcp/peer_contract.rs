@@ -11,9 +11,7 @@ use std::time::SystemTime;
 
 use rmcp::model::Tool;
 
-use crate::mcp::catalog::{
-    CodeModeAppState, CodeModeVisibility, SERVER_LOGS_TOOL_NAME, ToolCatalogSnapshot,
-};
+use crate::mcp::catalog::{CodeModeAppState, CodeModeVisibility, ToolCatalogSnapshot};
 use crate::mcp::permanent_tools::SkillLibraryDescriptorMode;
 use crate::mcp::route_scope::McpRouteScope;
 use crate::registry::ToolRegistry;
@@ -579,9 +577,6 @@ impl PeerContract {
                     continue;
                 }
                 builtin_names.insert(service.name.to_string());
-                if hide_raw_tools && service.name != SERVER_LOGS_TOOL_NAME {
-                    continue;
-                }
                 advertised_names.insert(service.name.to_string());
                 descriptors.push(self.registry.permanent_tools().builtin_service_tool(
                     service,

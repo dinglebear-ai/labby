@@ -333,6 +333,39 @@ async fn code_mode_manager(
     manager
 }
 
+async fn code_mode_manager_with_gateway(
+    allowed_actions: Option<&[&str]>,
+) -> Arc<crate::dispatch::gateway::manager::GatewayManager> {
+    let runtime = crate::dispatch::gateway::manager::GatewayRuntimeHandle::default();
+    let manager = Arc::new(
+        crate::dispatch::gateway::config_store::test_gateway_manager(
+            std::path::PathBuf::from("config.toml"),
+            runtime,
+        )
+        .with_builtin_service_registry(Arc::new(crate::registry::build_default_registry())),
+    );
+    let mut config = crate::config::LabConfig::default();
+    config.code_mode.enabled = true;
+    config.virtual_servers = vec![crate::config::VirtualServerConfig {
+        id: "gateway-native".to_string(),
+        service: "gateway".to_string(),
+        enabled: true,
+        surfaces: crate::config::VirtualServerSurfacesConfig {
+            cli: false,
+            api: false,
+            mcp: true,
+            webui: false,
+        },
+        mcp_policy: allowed_actions.map(|actions| crate::config::VirtualServerMcpPolicyConfig {
+            allowed_actions: actions.iter().map(|action| (*action).to_string()).collect(),
+        }),
+    }];
+    manager
+        .seed_config_unchecked_for_tests(config.to_gateway_config())
+        .await;
+    manager
+}
+
 fn test_labby_runner_spawn() -> crate::dispatch::gateway::code_mode::RunnerSpawn {
     let current = std::env::current_exe().expect("current test executable");
     let debug_dir = current
@@ -5545,7 +5578,7 @@ async fn call_tool_allows_direct_mcp_app_ui_tool_in_code_mode() {
 }
 
 #[tokio::test]
-async fn snapshot_catalog_hides_builtin_tools_when_code_mode_is_enabled() {
+async fn snapshot_catalog_keeps_builtin_tools_when_code_mode_is_enabled() {
     let server = test_server(
         completion_test_registry(),
         Some(code_mode_manager(true).await),
@@ -5555,11 +5588,12 @@ async fn snapshot_catalog_hides_builtin_tools_when_code_mode_is_enabled() {
 
     let snapshot = server.snapshot_catalog().await;
 
-    // Code Mode mode exposes the read-only and full text entry points, explicit
-    // UI entry point, and text-only recovery control. No legacy aliases are permitted.
+    // Native services remain available alongside the Code Mode entry points.
     assert_eq!(
         snapshot.tools,
         [
+            "hidden-upstream".to_string(),
+            "gateway-alpha".to_string(),
             CODE_MODE_READ_TOOL_NAME.to_string(),
             CODE_MODE_TOOL_NAME.to_string(),
             CODE_MODE_UI_TOOL_NAME.to_string(),
@@ -5572,6 +5606,159 @@ async fn snapshot_catalog_hides_builtin_tools_when_code_mode_is_enabled() {
         !snapshot.tools.contains("code"),
         "code must not appear in Code Mode mode"
     );
+}
+
+#[tokio::test]
+async fn code_mode_lists_and_dispatches_native_services_on_allowed_route() {
+    let server = test_server(
+        completion_test_registry(),
+        Some(code_mode_manager(true).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let context = scoped_context(running.peer().clone(), &["lab"]);
+    let contract = running
+        .service()
+        .peer_contract_for_request(&context)
+        .visible_tool_descriptors()
+        .await;
+    let listed = running
+        .service()
+        .list_tools_impl(None, context.clone())
+        .await
+        .expect("tools/list")
+        .tools;
+    assert_eq!(listed, contract);
+    assert!(
+        listed
+            .iter()
+            .any(|tool| tool.name.as_ref() == "gateway-alpha")
+    );
+    assert!(
+        listed
+            .iter()
+            .any(|tool| tool.name.as_ref() == CODE_MODE_TOOL_NAME)
+    );
+
+    let response = Box::pin(running.service().call_tool_impl(
+        CallToolRequestParams::new("gateway-alpha").with_arguments(serde_json::Map::from_iter([
+            (
+                "action".to_string(),
+                Value::String("status.list".to_string()),
+            ),
+            ("params".to_string(), serde_json::json!({})),
+        ])),
+        context,
+    ))
+    .await
+    .expect("native call");
+    assert!(!response.is_error.unwrap_or(false), "{response:?}");
+}
+
+#[tokio::test]
+async fn code_mode_native_calls_keep_route_and_scope_gates() {
+    let server = test_server(
+        crate::registry::build_default_registry(),
+        Some(code_mode_manager_with_gateway(None).await),
+        crate::mcp::route_scope::McpRouteScope::protected_subset(
+            "native-gates",
+            Vec::<String>::new(),
+            ["gateway"],
+            true,
+        ),
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let names = running.service().snapshot_catalog().await.tools;
+    assert!(names.contains("gateway"));
+    assert!(!names.contains("setup"));
+
+    let request = |name: &str, action: &str| {
+        CallToolRequestParams::new(name.to_string()).with_arguments(serde_json::Map::from_iter([
+            ("action".to_string(), Value::String(action.to_string())),
+            ("params".to_string(), serde_json::json!({})),
+        ]))
+    };
+    let denied_route = Box::pin(running.service().call_tool_impl(
+        request("setup", "settings.state"),
+        scoped_context(running.peer().clone(), &["lab:admin"]),
+    ))
+    .await
+    .expect("route denial");
+    let denied_route_text = denied_route.content[0]
+        .as_text()
+        .expect("text")
+        .text
+        .as_str();
+    assert!(
+        denied_route_text.contains("route_scope_denied"),
+        "{denied_route_text}"
+    );
+
+    let denied_scope = Box::pin(running.service().call_tool_impl(
+        request("gateway", "gateway.add"),
+        scoped_context(running.peer().clone(), &["lab:read"]),
+    ))
+    .await
+    .expect("scope denial");
+    let denied_scope_text = denied_scope.content[0]
+        .as_text()
+        .expect("text")
+        .text
+        .as_str();
+    assert!(
+        denied_scope_text.contains("forbidden"),
+        "{denied_scope_text}"
+    );
+    assert!(
+        denied_scope_text.contains("lab:admin"),
+        "{denied_scope_text}"
+    );
+}
+
+#[tokio::test]
+async fn code_mode_native_calls_keep_action_policy() {
+    let server = test_server(
+        crate::registry::build_default_registry(),
+        Some(code_mode_manager_with_gateway(Some(&["gateway.list"])).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let context = scoped_context(running.peer().clone(), &["lab:admin"]);
+    let listed = running
+        .service()
+        .list_tools_impl(None, context.clone())
+        .await
+        .expect("tools/list")
+        .tools;
+    assert!(listed.iter().any(|tool| tool.name.as_ref() == "gateway"));
+
+    let denied = Box::pin(running.service().call_tool_impl(
+        CallToolRequestParams::new("gateway").with_arguments(serde_json::Map::from_iter([
+            (
+                "action".to_string(),
+                Value::String("gateway.add".to_string()),
+            ),
+            ("params".to_string(), serde_json::json!({})),
+        ])),
+        context,
+    ))
+    .await
+    .expect("policy denial");
+    let text = denied.content[0].as_text().expect("text").text.as_str();
+    assert!(text.contains("unknown_action"), "{text}");
+    assert!(text.contains("gateway.list"), "{text}");
 }
 
 #[tokio::test]
@@ -6113,9 +6300,8 @@ async fn peer_contract_removes_all_codemode_tools_when_read_and_execute_are_revo
 
 // ── Issue #210: builtin outputSchema + descriptor drift (Raw mode) ──────────
 
-/// AC-2 + AC-2a. The existing drift test above runs only under Code Mode,
-/// where `hide_raw_tools` suppresses every builtin except `server_logs`, so it
-/// never exercises the builtin descriptor loop. This sibling forces Raw mode.
+/// AC-2 + AC-2a. This sibling forces Raw mode to check descriptor parity
+/// independently of Code Mode's synthetic tools and upstream filtering.
 #[tokio::test]
 async fn raw_mode_builtin_descriptors_match_across_builders() {
     // HERMETIC: force Raw unconditionally. `Root` + `gateway_manager: None` is

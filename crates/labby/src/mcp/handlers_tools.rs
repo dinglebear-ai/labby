@@ -28,12 +28,12 @@ use crate::mcp::bound_access::{
 };
 #[cfg(feature = "gateway")]
 use crate::mcp::call_tool_codemode::CodeModeUpstreamDescription;
+use crate::mcp::catalog::ToolCatalogSnapshot;
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog::{
     ADD_SERVER_TOOL_NAME, CODE_MODE_READ_TOOL_NAME, CODE_MODE_TOOL_NAME, CODE_MODE_UI_TOOL_NAME,
     GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME, SETTINGS_TOOL_NAME,
 };
-use crate::mcp::catalog::{SERVER_LOGS_TOOL_NAME, ToolCatalogSnapshot};
 #[cfg(feature = "gateway")]
 use crate::mcp::context::oauth_upstream_subject_for_request;
 #[cfg(feature = "gateway")]
@@ -181,7 +181,7 @@ impl LabMcpServer {
         let mut subject_scoped_tool_count = 0usize;
         let mut gateway_tool_count = 0usize;
         let upstream_ui_tool_count = 0usize;
-        let mut suppressed_builtin_tool_count = 0usize;
+        let suppressed_builtin_tool_count = 0usize;
         #[cfg(feature = "gateway")]
         let mut project_shadow_checked_tool_count = 0usize;
         #[cfg(not(feature = "gateway"))]
@@ -278,17 +278,13 @@ impl LabMcpServer {
                     }
                 }
                 builtin_names.insert(svc.name.to_string());
-                if hide_raw_tools && svc.name != SERVER_LOGS_TOOL_NAME {
-                    suppressed_builtin_tool_count += 1;
-                } else {
-                    advertised_names.insert(svc.name.to_string());
-                    descriptors.push(self.registry.permanent_tools().builtin_service_tool(
-                        svc,
-                        server_logs_app_visible,
-                        skill_library_mode,
-                    ));
-                    builtin_tool_count += 1;
-                }
+                advertised_names.insert(svc.name.to_string());
+                descriptors.push(self.registry.permanent_tools().builtin_service_tool(
+                    svc,
+                    server_logs_app_visible,
+                    skill_library_mode,
+                ));
+                builtin_tool_count += 1;
             }
         }
         // Assemble and deduplicate the complete visible contract before pagination. Offset

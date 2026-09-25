@@ -1510,17 +1510,14 @@ impl LabMcpServer {
         #[cfg(feature = "gateway")]
         let mut resolved_upstream_tool = None;
         #[cfg(feature = "gateway")]
-        if self.code_mode_visibility().await.hides_raw_tools() && service != SERVER_LOGS_TOOL_NAME {
-            let widget_callback = if svc.is_none() {
-                match self.resolve_widget_callback_gate(&service, &context).await {
-                    Ok(gate) => gate,
-                    Err(err) => {
-                        let envelope = tool_error_envelope(&service, "call_tool", &err);
-                        return Ok(error_result_from_envelope(envelope).into());
-                    }
+        if self.code_mode_visibility().await.hides_raw_tools() && svc.is_none() {
+            let widget_callback = match self.resolve_widget_callback_gate(&service, &context).await
+            {
+                Ok(gate) => gate,
+                Err(err) => {
+                    let envelope = tool_error_envelope(&service, "call_tool", &err);
+                    return Ok(error_result_from_envelope(envelope).into());
                 }
-            } else {
-                None
             };
             match widget_callback {
                 Some(WidgetCallbackGate::Destructive { resolved }) => {
