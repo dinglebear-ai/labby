@@ -815,9 +815,17 @@ impl StreamableHttpClient for BodyCappedHttpClient {
         if !status.is_success() {
             let _permit = self.acquire_response_budget().await?;
             let body_bytes = read_body_capped(response, self.max_bytes).await?;
-            if content_type
-                .as_deref()
-                .is_some_and(|ct| ct.as_bytes().starts_with(JSON_MIME_TYPE.as_bytes()))
+            let lifecycle_status_must_not_downgrade = is_discover_request
+                && (matches!(
+                    status,
+                    reqwest::StatusCode::UNAUTHORIZED
+                        | reqwest::StatusCode::FORBIDDEN
+                        | reqwest::StatusCode::TOO_MANY_REQUESTS
+                ) || status.is_server_error());
+            if !lifecycle_status_must_not_downgrade
+                && content_type
+                    .as_deref()
+                    .is_some_and(|ct| ct.as_bytes().starts_with(JSON_MIME_TYPE.as_bytes()))
                 && let Some(message) = parse_json_rpc_error(
                     &body_bytes,
                     expected_response_id.as_ref(),
@@ -1459,6 +1467,45 @@ mod tests {
                 rmcp::model::ErrorCode::UNSUPPORTED_PROTOCOL_VERSION.0
             ))
         );
+    }
+
+    #[tokio::test]
+    async fn discover_operational_http_errors_preserve_status_for_fail_closed_classification() {
+        for status in [429, 500, 503] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/mcp"))
+                .respond_with(
+                    ResponseTemplate::new(status).set_body_json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "error": {
+                            "code": rmcp::model::ErrorCode::METHOD_NOT_FOUND.0,
+                            "message": "method not found"
+                        }
+                    })),
+                )
+                .mount(&server)
+                .await;
+
+            let error = build(1024)
+                .post_message(
+                    format!("{}/mcp", server.uri()).into(),
+                    jsonrpc_request_with_method("server/discover"),
+                    None,
+                    None,
+                    HashMap::new(),
+                )
+                .await
+                .expect_err("operational discover failures must retain HTTP status");
+
+            let text = error.to_string();
+            assert!(
+                matches!(error, StreamableHttpError::UnexpectedServerResponse(_)),
+                "HTTP {status}: {text}"
+            );
+            assert!(text.contains(&format!("HTTP {status}")), "got: {text}");
+        }
     }
 
     #[tokio::test]
