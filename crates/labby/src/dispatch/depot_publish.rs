@@ -1,7 +1,12 @@
 //! Route-owned MCP shim for publishing one skill archive to Team Depot.
 
 use labby_primitives::action::{ActionSpec, ParamSpec};
+use schemars::JsonSchema;
 use serde_json::Value;
+
+#[allow(dead_code, non_snake_case)]
+#[derive(JsonSchema)]
+struct IngestJobReceiptSchema { jobId: String, status: String }
 
 /// Package a single composer Skill without allowing caller-controlled paths.
 pub fn skill_archive(name: &str, source: &str) -> Result<Vec<u8>, super::error::ToolError> {
@@ -64,7 +69,7 @@ pub const ACTIONS: &[ActionSpec] = &[ActionSpec {
     destructive: false,
     requires_admin: false,
     returns: "IngestJobReceipt",
-    output_schema: None,
+    output_schema: Some(labby_primitives::action::schema_for::<IngestJobReceiptSchema>),
     params: PARAMS,
 }];
 

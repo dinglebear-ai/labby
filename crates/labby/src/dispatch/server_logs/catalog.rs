@@ -1,4 +1,43 @@
 use labby_primitives::action::{ActionSpec, ParamSpec};
+use schemars::JsonSchema;
+use serde_json::Value;
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct ServerLogsQueryResultSchema {
+    kind: String,
+    log_dir: String,
+    filters: ServerLogsAppliedFiltersSchema,
+    files: Vec<ServerLogsFileSummarySchema>,
+    entries: Vec<ServerLogsEntrySchema>,
+    available_sources: Vec<String>,
+    available_sources_complete: bool,
+    matched: usize,
+    scanned_lines: usize,
+    malformed_lines: usize,
+    scanned_bytes: u64,
+    max_scan_bytes: u64,
+    truncated: bool,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct ServerLogsAppliedFiltersSchema {
+    limit: usize, level: Option<String>, levels: Vec<String>, target: Option<String>,
+    service: Option<String>, action: Option<String>, kind: Option<String>, query: Option<String>,
+    file: Option<String>, stop_after_limit: bool, correlated_only: bool,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct ServerLogsFileSummarySchema { name: String, path: String, bytes: u64, scanned_bytes: u64, modified_unix_ms: Option<u128> }
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct ServerLogsEntrySchema {
+    timestamp: Option<String>, level: Option<String>, target: Option<String>, message: Option<String>,
+    service: Option<String>, action: Option<String>, kind: Option<String>, file: String, fields: Value,
+}
 
 /// Action catalog for the Labby server process log viewer.
 pub const ACTIONS: &[ActionSpec] = &[
@@ -105,6 +144,6 @@ pub const ACTIONS: &[ActionSpec] = &[
             },
         ],
         returns: "ServerLogsQueryResult",
-        output_schema: None,
+        output_schema: Some(labby_primitives::action::schema_for::<ServerLogsQueryResultSchema>),
     },
 ];

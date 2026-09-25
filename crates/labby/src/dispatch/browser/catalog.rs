@@ -54,7 +54,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "BrowserBridgeStatus",
-        output_schema: Some(crate::dispatch::schema::for_type::<BrowserStatusSchema>),
+        output_schema: Some(labby_primitives::action::schema_for::<BrowserStatusSchema>),
         params: &[],
     },
     ActionSpec {
@@ -63,7 +63,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "BrowserList",
-        output_schema: Some(crate::dispatch::schema::for_type::<BrowserListSchema>),
+        output_schema: Some(labby_primitives::action::schema_for::<BrowserListSchema>),
         params: &[],
     },
     ActionSpec {
@@ -72,7 +72,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "Browser",
-        output_schema: Some(crate::dispatch::schema::for_type::<BrowserRecord>),
+        output_schema: Some(labby_primitives::action::schema_for::<BrowserRecord>),
         params: &[ParamSpec {
             name: "browser_id",
             ty: "string",
@@ -86,7 +86,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "BrowserPairingList",
-        output_schema: Some(crate::dispatch::schema::for_type::<BrowserPairingListSchema>),
+        output_schema: Some(labby_primitives::action::schema_for::<BrowserPairingListSchema>),
         params: &[],
     },
     ActionSpec {
@@ -95,7 +95,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "Browser",
-        output_schema: Some(crate::dispatch::schema::for_type::<BrowserRecord>),
+        output_schema: Some(labby_primitives::action::schema_for::<BrowserRecord>),
         params: &[
             ParamSpec {
                 name: "pairing_id",
@@ -117,7 +117,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "BrowserSessionList",
-        output_schema: Some(crate::dispatch::schema::for_type::<SessionPage>),
+        output_schema: Some(labby_primitives::action::schema_for::<SessionPage>),
         params: &[
             ParamSpec {
                 name: "cursor",
@@ -139,7 +139,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "BrowserSession",
-        output_schema: Some(crate::dispatch::schema::for_type::<DocumentSession>),
+        output_schema: Some(labby_primitives::action::schema_for::<DocumentSession>),
         params: &[ParamSpec {
             name: "session_id",
             ty: "string",
@@ -153,7 +153,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "BrowserSession",
-        output_schema: Some(crate::dispatch::schema::for_type::<DocumentSession>),
+        output_schema: Some(labby_primitives::action::schema_for::<DocumentSession>),
         params: &[
             ParamSpec {
                 name: "session_id",

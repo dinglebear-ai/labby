@@ -364,6 +364,8 @@ fn settings_annotations() -> ToolAnnotations {
         .open_world(false)
 }
 
+pub(crate) const TOOL_PROJECTION_ENV: &str = "LABBY_MCP_TOOL_PROJECTION";
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum ToolProjectionMode {
     #[default]
@@ -373,6 +375,34 @@ pub(crate) enum ToolProjectionMode {
 }
 
 impl ToolProjectionMode {
+    #[must_use]
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "router" => Some(Self::Router),
+            "atomic" => Some(Self::Atomic),
+            "both" => Some(Self::Both),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn from_env() -> Self {
+        let Ok(value) = std::env::var(TOOL_PROJECTION_ENV) else {
+            return Self::Router;
+        };
+        if value.trim().is_empty() {
+            return Self::Router;
+        }
+        Self::parse(&value).unwrap_or_else(|| {
+            tracing::warn!(
+                env = TOOL_PROJECTION_ENV,
+                value = %value,
+                "invalid first-party MCP tool projection; falling back to router mode"
+            );
+            Self::Router
+        })
+    }
+
     #[must_use]
     pub(crate) const fn includes_router(self) -> bool {
         matches!(self, Self::Router | Self::Both)
@@ -1263,6 +1293,10 @@ mod tests {
         assert!(ToolProjectionMode::Atomic.includes_atomic());
         assert!(ToolProjectionMode::Both.includes_router());
         assert!(ToolProjectionMode::Both.includes_atomic());
+        assert_eq!(ToolProjectionMode::parse("router"), Some(ToolProjectionMode::Router));
+        assert_eq!(ToolProjectionMode::parse("ATOMIC"), Some(ToolProjectionMode::Atomic));
+        assert_eq!(ToolProjectionMode::parse(" both "), Some(ToolProjectionMode::Both));
+        assert_eq!(ToolProjectionMode::parse("nope"), None);
     }
 
     #[test]

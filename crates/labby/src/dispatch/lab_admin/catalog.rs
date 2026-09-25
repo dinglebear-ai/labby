@@ -1,4 +1,18 @@
 use labby_primitives::action::{ActionSpec, ParamSpec};
+use schemars::JsonSchema;
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct AuditReportSchema { ok: bool, summary: AuditSummarySchema, services: Vec<AuditServiceSchema> }
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct AuditSummarySchema { requested: usize, passed: usize, failed: usize }
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct AuditServiceSchema { service: String, registered: bool, status: String, actions: Vec<String>, checks: AuditChecksSchema, passed: bool }
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct AuditChecksSchema { registered: bool, available: bool, action_catalog_nonempty: bool }
 
 /// Action catalog for the internal `lab_admin` tool.
 ///
@@ -40,6 +54,6 @@ pub const ACTIONS: &[ActionSpec] = &[
             description: "Services to audit",
         }],
         returns: "AuditReport",
-        output_schema: None,
+        output_schema: Some(labby_primitives::action::schema_for::<AuditReportSchema>),
     },
 ];

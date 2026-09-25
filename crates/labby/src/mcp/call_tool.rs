@@ -425,6 +425,50 @@ mod gateway_origin_tests {
     }
 }
 
+fn normalize_first_party_dispatch(
+    registry: &crate::registry::ToolRegistry,
+    wire_name: &str,
+    args: &serde_json::Map<String, Value>,
+) -> (String, String, Value) {
+    if let Some((service, action)) = registry.resolve_atomic_action(wire_name) {
+        return (
+            service.name.to_string(),
+            action.name.to_string(),
+            Value::Object(args.clone()),
+        );
+    }
+    (
+        wire_name.to_string(),
+        args.get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        args.get("params").cloned().unwrap_or(Value::Null),
+    )
+}
+
+fn registered_action_for_request<'a>(
+    registry: &'a crate::registry::ToolRegistry,
+    request: &CallToolRequestParams,
+) -> Option<&'a labby_primitives::action::ActionSpec> {
+    let wire_name = request.name.as_ref();
+    if let Some((_, action)) = registry.resolve_atomic_action(wire_name) {
+        return Some(action);
+    }
+    let action_name = request
+        .arguments
+        .as_ref()
+        .and_then(|arguments| arguments.get("action"))
+        .and_then(Value::as_str)?;
+    registry
+        .services()
+        .iter()
+        .find(|service| service.name == wire_name)?
+        .actions
+        .iter()
+        .find(|action| action.name == action_name)
+}
+
 impl LabMcpServer {
     /// Whether this request may receive the HTTP-only Skill Library management
     /// projection. This is an advertisement/admission gate, not authorization:
@@ -854,22 +898,8 @@ impl LabMcpServer {
         // serde value off this already broad dispatch future's stack frame.
         let upstream_request = Box::new(request.clone());
         let args = request.arguments.unwrap_or_default();
-        let atomic_target = self.registry.resolve_atomic_action(&wire_name);
-        let (service, action, params) = match atomic_target {
-            Some((service, action)) => (
-                service.name.to_string(),
-                action.name.to_string(),
-                Value::Object(args.clone()),
-            ),
-            None => (
-                wire_name,
-                args.get("action")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                args.get("params").cloned().unwrap_or(Value::Null),
-            ),
-        };
+        let (service, action, params) =
+            normalize_first_party_dispatch(&self.registry, &wire_name, &args);
         let instance = params
             .get("instance")
             .and_then(Value::as_str)
@@ -2365,27 +2395,8 @@ impl LabMcpServer {
         request: &CallToolRequestParams,
         _context: &RequestContext<RoleServer>,
     ) -> bool {
-        let service = request.name.as_ref();
-        if let Some((_, action)) = self.registry.resolve_atomic_action(service) {
-            return action.destructive;
-        }
-        let action = request
-            .arguments
-            .as_ref()
-            .and_then(|arguments| arguments.get("action"))
-            .and_then(Value::as_str)
-            .unwrap_or("");
-
-        self.registry
-            .services()
-            .iter()
-            .find(|entry| entry.name == service)
-            .is_some_and(|entry| {
-                entry
-                    .actions
-                    .iter()
-                    .any(|candidate| candidate.name == action && candidate.destructive)
-            })
+        registered_action_for_request(&self.registry, request)
+            .is_some_and(|action| action.destructive)
     }
 }
 
@@ -2402,7 +2413,7 @@ impl LabMcpServer {
         context: &RequestContext<RoleServer>,
     ) -> bool {
         let service = request.name.as_ref();
-        if let Some((_, action)) = self.registry.resolve_atomic_action(service) {
+        if let Some(action) = registered_action_for_request(&self.registry, request) {
             return action.destructive;
         }
         let action = request
@@ -2411,18 +2422,6 @@ impl LabMcpServer {
             .and_then(|arguments| arguments.get("action"))
             .and_then(Value::as_str)
             .unwrap_or("");
-
-        if let Some(entry) = self
-            .registry
-            .services()
-            .iter()
-            .find(|entry| entry.name == service)
-        {
-            return entry
-                .actions
-                .iter()
-                .any(|candidate| candidate.name == action && candidate.destructive);
-        }
 
         #[cfg(feature = "gateway")]
         {

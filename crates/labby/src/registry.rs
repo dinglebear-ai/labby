@@ -528,7 +528,9 @@ pub fn filter_built_in_upstream_apis(registry: ToolRegistry, enabled: bool) -> T
 #[must_use]
 #[allow(clippy::too_many_lines)]
 pub fn build_default_registry() -> ToolRegistry {
-    build_registry(true)
+    let mut registry = build_registry(true);
+    registry.set_tool_projection_mode(crate::mcp::permanent_tools::ToolProjectionMode::from_env());
+    registry
 }
 
 /// Build a registry for static metadata projections.
@@ -885,6 +887,27 @@ mod tests {
                 registry.in_process_services()[0].service_name(),
                 "ordinary-name"
             );
+        }
+    }
+
+    #[test]
+    fn context_free_atomic_actions_have_complete_output_schemas() {
+        let registry = build_default_registry();
+        for service in registry.services() {
+            if !registry.supports_context_free_dispatch(service.name) {
+                continue;
+            }
+            for action in service.actions {
+                if matches!(action.name, "help" | "schema" | "browser.call") {
+                    continue;
+                }
+                assert!(
+                    action.output_schema.is_some(),
+                    "context-free atomic action {}.{} must define a complete output schema",
+                    service.name,
+                    action.name
+                );
+            }
         }
     }
 

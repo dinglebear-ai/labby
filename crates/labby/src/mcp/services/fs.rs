@@ -27,7 +27,18 @@
 //!    name, the dispatcher refuses.
 
 use labby_primitives::action::ActionSpec;
+use schemars::JsonSchema;
 use serde_json::Value;
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct FsListResponseSchema { entries: Vec<FsEntrySchema>, truncated: bool }
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct FsEntrySchema {
+    name: String, path: String, kind: String, size: Option<u64>, modified: Option<String>, accessible: bool,
+}
 
 use crate::dispatch::error::ToolError;
 use crate::dispatch::helpers::{action_schema, help_payload, require_str};
@@ -66,7 +77,7 @@ static MCP_ACTIONS: &[ActionSpec] = &[
             description: "Workspace-relative path to list; empty or omitted means the workspace root",
         }],
         returns: "{entries: [{name, path, kind, size, modified, accessible}], truncated: bool}",
-        output_schema: None,
+        output_schema: Some(labby_primitives::action::schema_for::<FsListResponseSchema>),
     },
 ];
 
