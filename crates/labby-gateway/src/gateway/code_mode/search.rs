@@ -144,6 +144,7 @@ pub(crate) async fn build_tools_render(
     caller: &CodeModeCaller,
     surface: CodeModeSurface,
 ) -> Result<ToolsRender, ToolError> {
+    let enumerate_started = std::time::Instant::now();
     let (raw_tools, catalog_generation) = if use_cache {
         let tools = manager
             .code_mode_catalog_tools_cached_allowed(Some(owner), oauth_subject, allowed_upstreams)
@@ -159,6 +160,16 @@ pub(crate) async fn build_tools_render(
             )
             .await?
     };
+    tracing::debug!(
+        surface = "dispatch",
+        service = labby_codemode::SERVICE,
+        action = "catalog.enumerate",
+        source = if use_cache { "cached" } else { "live" },
+        elapsed_ms = enumerate_started.elapsed().as_millis(),
+        tool_count = raw_tools.len(),
+        upstream_scope_restricted = allowed_upstreams.is_some(),
+        "enumerated Code Mode upstream tool catalog"
+    );
     let metadata_entries = manager
         .code_mode_metadata_entries(caller, surface, scope)
         .await;
@@ -349,9 +360,17 @@ async fn catalog_from_tools_with_generation(
         )
     };
 
-    if let Some((entries, catalog_json, serialized_size)) =
-        manager.cached_catalog_render(&fingerprint).await
-    {
+    let cache_lookup_started = std::time::Instant::now();
+    let cached_render = manager.cached_catalog_render(&fingerprint).await;
+    tracing::debug!(
+        surface = "dispatch",
+        service = labby_codemode::SERVICE,
+        action = "catalog.cache_lookup",
+        cache_hit = cached_render.is_some(),
+        elapsed_ms = cache_lookup_started.elapsed().as_millis(),
+        "checked Code Mode catalog render cache"
+    );
+    if let Some((entries, catalog_json, serialized_size)) = cached_render {
         tracing::debug!(
             surface = "dispatch",
             service = labby_codemode::SERVICE,
@@ -392,6 +411,7 @@ async fn catalog_from_tools_with_generation(
     }
 
     // Cache miss — build entries (includes `generate_tool_types` per entry).
+    let typescript_started = std::time::Instant::now();
     let mut entries = raw_tools
         .into_iter()
         .map(|tool| {
@@ -414,6 +434,14 @@ async fn catalog_from_tools_with_generation(
             )
         })
         .collect::<Vec<_>>();
+    tracing::debug!(
+        surface = "dispatch",
+        service = labby_codemode::SERVICE,
+        action = "catalog.typescript_render",
+        elapsed_ms = typescript_started.elapsed().as_millis(),
+        entry_count = entries.len(),
+        "rendered Code Mode TypeScript tool declarations"
+    );
 
     if include_snippets {
         let snippets = snippet_metadata_for_catalog(manager, &snippet_fingerprint).await?;
@@ -438,10 +466,9 @@ async fn catalog_from_tools_with_generation(
         message: format!("failed to serialize Code Mode discovery catalog: {err}"),
     })?;
     let serialized_size = catalog_json.len();
-    // Wrap ONCE here — every consumer below (the stored cache entry, the
-    // returned render, and any later `describe_types` re-fetch of this same
-    // fingerprint) shares this allocation via a cheap Arc clone instead of a
-    // deep copy of the whole catalog.
+    // Wrap ONCE here — the stored cache entry, returned render, and the
+    // execution-scoped snapshot retained for `describe_types` all share this
+    // allocation via cheap Arc clones instead of deep-copying the catalog.
     let entries: std::sync::Arc<[CatalogDescriptor]> = std::sync::Arc::from(entries);
     let catalog_json: std::sync::Arc<str> = std::sync::Arc::from(catalog_json);
 

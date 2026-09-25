@@ -26,11 +26,11 @@ use labby_runtime::CodeModeConfig;
 /// their tool set; the kernel does not require caching and treats this purely
 /// as a projection.
 ///
-/// `entries`/`catalog_json` are `Arc`-wrapped so a cache hit is a refcount
-/// bump, not a deep clone — `codemode.describe()` calls `list_tools()` again
-/// per invocation (see `execute.rs`'s `describe_types` dispatch), so a host
-/// whose cache stores owned `Vec`/`String` would re-pay a full catalog clone
-/// on every `describe()` call within one execution, not just once at start.
+/// `entries`/`catalog_json` are `Arc`-wrapped so the execution can retain the
+/// exact discovery render cheaply. `codemode.describe()` resolves `.dts` from
+/// that run-scoped snapshot rather than re-listing the live catalog, so a host
+/// cache hit and the broker's retained snapshot are both refcount bumps instead
+/// of full catalog clones.
 #[derive(Debug, Clone)]
 pub struct ToolsRender {
     /// Fingerprint of the live tool set this render was built from (sorted

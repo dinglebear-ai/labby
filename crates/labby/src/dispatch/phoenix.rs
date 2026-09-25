@@ -30,6 +30,26 @@ const MAX_SESSION_PREVIEW_CHARS: usize = 240;
 const APP_SERVER_PROTOCOL_SCHEMA: &str = "v2";
 const LOCAL_MCP_URL: &str = "http://127.0.0.1:8765/mcp";
 const LOCAL_MCP_TOKEN_ENV: &str = "LABBY_MCP_HTTP_TOKEN";
+const PHOENIX_DEVELOPER_INSTRUCTIONS: &str = "You are Phoenix, Labby's concise operator assistant. You run only inside the Labby container. Treat the workspace as read-only, never request access to another machine or device, and explain any action that requires an operator.";
+
+#[cfg(feature = "skills")]
+async fn phoenix_developer_instructions() -> Result<String, ToolError> {
+    const BOOTSTRAP_URI: &str = "skill://labby/using-labby/SKILL.md";
+    let context = crate::skills::facade::SkillRegistryContext::first_party_only();
+    let file = crate::skills::facade::read_visible_skill_file(&context, BOOTSTRAP_URI).await?;
+    let body = file
+        .content
+        .text()
+        .ok_or_else(|| unavailable("Phoenix bootstrap skill is not text"))?;
+    Ok(format!(
+        "{PHOENIX_DEVELOPER_INSTRUCTIONS}\n\nThe bundled Agent Skill at {BOOTSTRAP_URI} is loaded for this session. Follow its instructions when operating Labby:\n\n{body}"
+    ))
+}
+
+#[cfg(not(feature = "skills"))]
+async fn phoenix_developer_instructions() -> Result<String, ToolError> {
+    Ok(PHOENIX_DEVELOPER_INSTRUCTIONS.to_owned())
+}
 
 /// Resolve the local MCP destination from the HTTP listener's address.
 pub(crate) fn listener_mcp_url(mut address: std::net::SocketAddr) -> String {
@@ -527,13 +547,14 @@ impl PhoenixRuntime {
             .as_ref()
             .ok_or_else(|| unavailable("Phoenix workspace is not configured"))?;
         let selected_model = model.or_else(|| self.config.model.clone());
+        let developer_instructions = phoenix_developer_instructions().await?;
         let mut params = json!({
             "cwd": workspace_root,
             "approvalPolicy": "never",
             "sandbox": "read-only",
             "serviceName": "labby-phoenix",
             "threadSource": "appServer",
-            "developerInstructions": "You are Phoenix, Labby's concise operator assistant. You run only inside the Labby container. Treat the workspace as read-only, never request access to another machine or device, and explain any action that requires an operator.",
+            "developerInstructions": developer_instructions,
         });
         if let Some(model) = selected_model.as_ref() {
             params["model"] = Value::String(model.clone());
@@ -1836,6 +1857,17 @@ mod tests {
         matchers::{method, path},
     };
 
+    #[cfg(feature = "skills")]
+    #[tokio::test]
+    async fn codex_bootstrap_loads_the_bundled_skill_from_the_registry() {
+        let instructions = phoenix_developer_instructions().await.unwrap();
+        assert!(instructions.starts_with(PHOENIX_DEVELOPER_INSTRUCTIONS));
+        assert!(instructions.contains("skill://labby/using-labby/SKILL.md"));
+        assert!(instructions.contains("codemode.listSkills()"));
+        assert!(instructions.contains("codemode.getSkill(uri)"));
+        assert!(instructions.contains("codemode.readSkill(uri)"));
+    }
+
     #[tokio::test]
     async fn unavailable_by_default_and_sessions_are_owner_scoped() {
         let runtime = PhoenixRuntime::default();
@@ -2038,7 +2070,7 @@ printf '%s\n' "$initialize" >> '{}'
 printf '%s\n' '{{"id":1,"result":{{"userAgent":"fixture"}}}}'
 read initialized
 printf '%s\n' "$initialized" >> '{}'
-read thread
+IFS= read -r thread
 printf '%s\n' "$thread" >> '{}'
 printf '%s\n' '{{"id":2,"result":{{"thread":{{"id":"thread-container"}}}}}}'
 while read turn; do
@@ -2073,6 +2105,17 @@ done
             .dispatch("principal-a", "phoenix.session.start", json!({}))
             .await
             .unwrap();
+        #[cfg(feature = "skills")]
+        {
+            let requests = fs::read_to_string(&capture).unwrap();
+            let thread_start: Value =
+                serde_json::from_str(requests.lines().nth(2).unwrap()).unwrap();
+            let instructions = thread_start["params"]["developerInstructions"]
+                .as_str()
+                .unwrap();
+            assert!(instructions.contains("name: using-labby"));
+            assert!(instructions.contains("codemode.listSkills()"));
+        }
         let session_id = started["session_id"].as_str().unwrap();
         let initial_list = runtime
             .dispatch("principal-a", "phoenix.session.list", json!({}))

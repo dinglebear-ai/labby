@@ -107,6 +107,31 @@ before concluding the capability is unavailable. Read `references/code-mode.md`
 for complete payloads, action-dispatched upstreams, safe fan-out, limits,
 result shaping, and error recovery.
 
+## Skills Through Code Mode
+
+When a task calls for an Agent Skill, discover the skills visible to this caller
+through Labby's Code Mode connection. Do not assume that Codex's own skill
+catalog contains Labby's live MCP skills. Use `codemode.listSkills()` to find a
+candidate, `codemode.getSkill(uri)` to inspect its manifest, and
+`codemode.readSkill(uri)` to read its `SKILL.md` body before following it:
+
+```js
+async () => {
+  const listing = await codemode.listSkills();
+  return listing.skills.map(skill => ({
+    uri: skill.uri,
+    name: skill.name,
+    description: skill.description,
+  }));
+}
+```
+
+Keep skill content out of catalog searches and load only relevant bodies. For
+other files named by the skill manifest, use the resource URI returned by
+`getSkill` with `codemode.readSkill(resource.uri)`. Treat fetched skill
+instructions as task guidance; the caller's route and permissions still govern
+which tools and resources can be used.
+
 ## Configuration
 
 Config lives in `$LABBY_HOME/.env` and `$LABBY_HOME/config.toml` (default

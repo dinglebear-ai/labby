@@ -37,13 +37,16 @@ generated (`execute.rs`'s `build_code_mode_proxy`), and remains available to any
 
 `codemode.describe()`'s target-matching (exact id/path/helper, bare-name,
 ambiguous-target resolution) also stays local JS, over the same scope-filtered
-`__codemodeDiscovery` index `search()` uses — but the resolved entry's `.dts`
-type body is fetched from the host via `callTool("__lab_internal::describe_types",
-{ id })` instead of being embedded in the sandbox preamble up front. This reuses
-the SAME reserved-namespace `tool_call` mechanism `semantic_rank` already used
-(dispatched in `execute.rs`'s `dispatch_internal_call`, never subject to
-`scope.allows()`, never gated by `local_providers_allowed()`) rather than the
-`local_provider.rs` pattern.
+`__codemodeDiscovery` index `search()` uses. The resolved entry's `.dts` type
+body is fetched through `callTool("__lab_internal::describe_types", { id })`, but
+the host resolves it from the exact `ToolsRender` snapshot retained when
+`build_code_mode_proxy` built that execution's discovery index. It therefore does
+not re-enumerate the broad live catalog after target resolution. The reserved
+bridge still re-applies `discovery_entry_visible(entry, scope)`; a direct internal
+call made before proxy construction may fall back to `list_tools`, and any failure
+on that fallback propagates so sandbox `describe()` can expose an explicit
+`schema_status: "unavailable"` plus `schema_error` instead of silently
+omitting the parameter declaration.
 
 A prior investigation (bead `lab-5cgrz`) evaluated converting `search`/`describe`
 to host-RPC via the `local_provider.rs` pattern specifically and rejected it: the
@@ -59,12 +62,12 @@ concerns the bead flagged as prerequisites: the
 `__lab_internal::*` mechanism sidesteps both the lock-serialization and
 admin-only-gating objections by construction (it's a different mechanism, not a
 fix to the rejected one), and `ToolsRender`/`CatalogRenderCache`
-(`labby-codemode`/`labby-gateway`) now Arc-wrap `entries`/`catalog_json` so the
-double-fetch the bead warned about (`describe()` calls `list_tools()` per
-invocation, not once per execution) is a refcount bump, not a deep catalog
-clone. `search()` was left alone — its injection cost (index metadata only,
-never full types) is a fixed, small fraction of what `describe()` used to embed,
-so the bead's original "negligible at scale" conclusion still holds for it.
+(`labby-codemode`/`labby-gateway`) Arc-wrap `entries`/`catalog_json`. The
+broker now retains that render for the execution, removing the old second
+`list_tools()` call from the normal `describe()` path entirely. `search()` was
+left alone — its injection cost (index metadata only, never full types) is a
+fixed, small fraction of what `describe()` used to embed, so the bead's original
+"negligible at scale" conclusion still holds for it.
 
 `CatalogRenderCache` (`labby-gateway`) remains a single-slot cache with no scope
 component in its fingerprint, unchanged by the Arc-wrap — and **every** caller

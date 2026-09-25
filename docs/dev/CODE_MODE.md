@@ -89,7 +89,13 @@ Inside the sandbox:
 - `await codemode.search({ query: "review", kinds: ["tool", "snippet"] })`
   restricts lexical and semantic search to the requested catalog kinds.
 - `await codemode.describe("github.list_pull_requests")` returns compact docs
-  for an exact catalog target.
+  for an exact catalog target. Tool descriptions include `schema_status`:
+  `complete` means the TypeScript parameter declaration is present; `unavailable`
+  includes a structured `schema_error` and recovery guidance instead of silently
+  omitting parameters. Type lookup uses the same run-scoped catalog snapshot that
+  resolved the target. When recovery suggests a narrower top-level `upstreams`
+  scope, pass the canonical namespace returned by discovery (for example
+  `linear-notification-worker`), not the underscored JavaScript helper namespace.
 - `await codemode.run("gateway-summary", input)` resolves and runs a snippet
   inside the same sandbox runtime.
 - `await codemode.github.list_pull_requests(params)` calls the generated helper.
