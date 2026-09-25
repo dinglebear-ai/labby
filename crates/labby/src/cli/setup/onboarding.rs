@@ -913,7 +913,7 @@ async fn apply_incus_server(_plan: &SetupPlan, _format: OutputFormat) -> Result<
 fn ensure_release_incus_image() -> Result<String> {
     const IMAGE_ASSET: &str = "labby-incus-x86_64-unknown-linux-gnu.tar.xz";
     const REPO: &str = "dinglebear-ai/labby";
-    const SIGNER_WORKFLOW: &str = "dinglebear-ai/labby/.github/workflows/incus-image.yml";
+    const SIGNER_WORKFLOW: &str = "dinglebear-ai/labby/.github/workflows/build-incus-image.yml";
 
     if !cfg!(target_arch = "x86_64") {
         bail!("the prebuilt Labby Incus image is currently published only for x86_64 Linux hosts");
@@ -985,6 +985,8 @@ fn ensure_release_incus_image() -> Result<String> {
             SIGNER_WORKFLOW,
             "--source-ref",
             "refs/heads/main",
+            "--source-digest",
+            &commit,
             "--deny-self-hosted-runners",
         ],
         "verify Incus image manifest provenance",
@@ -1001,6 +1003,8 @@ fn ensure_release_incus_image() -> Result<String> {
             SIGNER_WORKFLOW,
             "--source-ref",
             "refs/heads/main",
+            "--source-digest",
+            &commit,
             "--deny-self-hosted-runners",
         ],
         "verify Incus image provenance",
