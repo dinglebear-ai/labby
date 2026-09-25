@@ -29,7 +29,8 @@ on:
 
 concurrency:
   group: incus-image-${{ github.ref }}
-  cancel-in-progress: false
+  # Superseded PR builds are wasteful; main publication must complete or roll back.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -46,4 +47,3 @@ jobs:
       source_ref: ${{ github.sha }}
       release_tag: ${{ format('incus-{0}', github.sha) }}
       publish: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
-
