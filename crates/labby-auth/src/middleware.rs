@@ -1709,7 +1709,7 @@ mod tests {
                 iat: crate::util::now_unix() as usize,
                 jti: "missing-identity-provenance".to_string(),
                 scope: "lab:read".to_string(),
-                azp: String::new(),
+                azp: "oauth-client-123".to_string(),
                 identity_issuer: None,
                 identity_credential_id: None,
             })
@@ -1827,7 +1827,7 @@ mod tests {
                 iat: crate::util::now_unix() as usize,
                 jti: "identity-link-test".to_string(),
                 scope: "lab:read".to_string(),
-                azp: String::new(),
+                azp: "oauth-client-123".to_string(),
                 identity_issuer: Some(crate::google::GOOGLE_ISSUER.to_string()),
                 identity_credential_id: None,
             })
@@ -1908,7 +1908,7 @@ mod tests {
                     iat: crate::util::now_unix() as usize,
                     jti: jti.to_string(),
                     scope: "lab:read".to_string(),
-                    azp: String::new(),
+                    azp: "oauth-client-123".to_string(),
                     identity_issuer: Some(identity_issuer.to_string()),
                     identity_credential_id: None,
                 })
@@ -2132,7 +2132,7 @@ mod tests {
                 iat: crate::util::now_unix() as usize,
                 jti: "exact-resource".to_string(),
                 scope: "mcp:read".to_string(),
-                azp: String::new(),
+                azp: "oauth-client-123".to_string(),
                 identity_issuer: Some(crate::google::GOOGLE_ISSUER.to_string()),
                 identity_credential_id: None,
             })
@@ -2239,7 +2239,7 @@ mod tests {
                 iat: crate::util::now_unix() as usize,
                 jti: "insufficient-scope".to_string(),
                 scope: "mcp:read".to_string(),
-                azp: String::new(),
+                azp: "oauth-client-123".to_string(),
                 identity_issuer: Some(crate::google::GOOGLE_ISSUER.to_string()),
                 identity_credential_id: None,
             })
