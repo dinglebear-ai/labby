@@ -296,3 +296,51 @@ for (const transition of ['dock', 'close', 'identity', 'unmount'] as const) {
     }
   })
 }
+
+test('Phoenix rejects a stale streaming poll that resolves after the final turn response', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
+  const originalFetch = globalThis.fetch
+  let finishSend: ((response: Response) => void) | undefined
+  let finishRead: ((response: Response) => void) | undefined
+  const response = (body: unknown) => new Response(JSON.stringify(body), { status: 200 })
+  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const { action } = JSON.parse(String(init?.body)) as { action: string }
+    if (action === 'phoenix.status') return response({ enabled: true, available: true })
+    if (action === 'phoenix.models.list') return response({ models: [] })
+    if (action === 'phoenix.session.list') return response({ sessions: [] })
+    if (action === 'phoenix.session.start') return response({ session_id: 'race', status: 'ready', messages: [] })
+    if (action === 'phoenix.turn.send') return new Promise<Response>((resolve) => { finishSend = resolve })
+    if (action === 'phoenix.session.read') return new Promise<Response>((resolve) => { finishRead = resolve })
+    return response({})
+  }) as typeof fetch
+  const { PhoenixAvailability } = await import('./console-global-tools.tsx')
+  const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+  const view = await renderClient(<PhoenixAvailability />)
+  try {
+    await act(async () => view.container.querySelector<HTMLButtonElement>('button[aria-label="Ask Phoenix"]')!.click())
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+    const input = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message Phoenix"]'); assert.ok(input)
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set?.call(input, 'race')
+      input.dispatchEvent(new window.InputEvent('input', { bubbles: true, data: 'race' }) as unknown as Event)
+      input.form!.requestSubmit()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    assert.ok(finishSend, 'turn POST must be pending')
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 450)) })
+    assert.ok(finishRead, 'streaming poll must be pending')
+    await act(async () => {
+      finishSend?.(response({ session_id: 'race', status: 'ready', messages: [{ role: 'assistant', text: 'FINAL RESPONSE', created_at_ms: 300 }], events: [{ method: 'item/completed', params: { item: { type: 'mcpToolCall', status: 'completed' } }, sequence: 9, received_at_ms: 300 }] }))
+      await Promise.resolve()
+      finishRead?.(response({ session_id: 'race', status: 'ready', messages: [{ role: 'assistant', text: 'STALE RESPONSE', created_at_ms: 200 }], events: [{ method: 'item/started', params: { item: { type: 'mcpToolCall' } }, sequence: 8, received_at_ms: 200 }] }))
+      await Promise.resolve()
+    })
+    const panel = document.querySelector('[aria-label="Phoenix session"]'); assert.ok(panel)
+    assert.match(panel.textContent ?? '', /FINAL RESPONSE/)
+    assert.doesNotMatch(panel.textContent ?? '', /STALE RESPONSE/)
+  } finally {
+    globalThis.fetch = originalFetch
+    await view.unmount()
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  }
+})

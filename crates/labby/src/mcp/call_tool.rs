@@ -2842,26 +2842,7 @@ fn classify_widget_callback_candidates(
 /// Tools that also list `model` keep the gate: those are reachable by the
 /// model and the confirmation is meaningful there.
 fn upstream_tool_is_app_only(tool: &rmcp::model::Tool) -> bool {
-    let Some(meta) = tool.meta.as_ref() else {
-        return false;
-    };
-    let Some(visibility) = meta
-        .0
-        .get("ui")
-        .and_then(|ui| ui.get("visibility"))
-        .and_then(Value::as_array)
-    else {
-        return false;
-    };
-    let mut app = false;
-    for entry in visibility {
-        match entry.as_str() {
-            Some("app") => app = true,
-            Some("model") => return false,
-            _ => {}
-        }
-    }
-    app
+    labby_gateway::upstream::pool::tool_is_mcp_app_only(tool)
 }
 
 #[cfg(all(test, feature = "gateway"))]

@@ -1527,6 +1527,29 @@ pub(super) fn tool_has_mcp_app_ui_resource(tool: &UpstreamTool) -> bool {
         .any(|uri| uri.is_some())
 }
 
+pub fn tool_is_mcp_app_only(tool: &rmcp::model::Tool) -> bool {
+    let Some(meta) = tool.meta.as_ref() else {
+        return false;
+    };
+    let Some(visibility) = meta
+        .0
+        .get("ui")
+        .and_then(|ui| ui.get("visibility"))
+        .and_then(Value::as_array)
+    else {
+        return false;
+    };
+    let mut app = false;
+    for entry in visibility {
+        match entry.as_str() {
+            Some("app") => app = true,
+            Some("model") => return false,
+            _ => {}
+        }
+    }
+    app
+}
+
 fn mcp_tool_is_mcp_app_callback(tool: &rmcp::model::Tool) -> bool {
     let Some(meta) = tool.meta.as_ref() else {
         return false;

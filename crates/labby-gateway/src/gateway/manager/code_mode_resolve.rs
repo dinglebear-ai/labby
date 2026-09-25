@@ -5,10 +5,14 @@ use std::collections::{BTreeSet, HashMap};
 
 use crate::gateway::code_mode::split_namespaced_id;
 use crate::upstream::pool::{
-    tool_is_mcp_app_host_visible_for_config, upstream_has_mcp_app_ui_owner_for_config,
+    tool_is_mcp_app_host_visible_for_config, tool_is_mcp_app_only,
+    upstream_has_mcp_app_ui_owner_for_config,
 };
 use crate::upstream::types::{UpstreamRuntimeOwner, UpstreamTool};
 use labby_runtime::error::ToolError;
+use rmcp::model::{
+    CallToolRequestParams, CallToolResponse, ReadResourceRequestParams, ReadResourceResult,
+};
 
 use super::GatewayManager;
 
@@ -36,6 +40,188 @@ pub enum CallbackToolLookup {
 }
 
 impl GatewayManager {
+    pub async fn execute_widget_callback_tool_scoped(
+        &self,
+        tool: &str,
+        allowed_upstreams: &BTreeSet<String>,
+        oauth_subject: Option<&str>,
+        mut params: CallToolRequestParams,
+    ) -> Result<CallToolResponse, ToolError> {
+        for upstream in allowed_upstreams {
+            self.ensure_upstream_tool_runtime_ready(upstream, None, oauth_subject)
+                .await?;
+        }
+
+        let (cfg, pool_generation, pool) = {
+            let _publication = self.publication_barrier.read().await;
+            let cfg = self.config.read().await.clone();
+            let snapshot = self.runtime.published_pool_snapshot();
+            let generation = snapshot.generation();
+            let pool = snapshot.into_pool().ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "upstream_unavailable".to_string(),
+                message: "MCP App callback upstream pool is unavailable".to_string(),
+            })?;
+            (cfg, generation, pool)
+        };
+
+        let mut direct = Vec::new();
+        let mut siblings = Vec::new();
+        for upstream in cfg.upstream.iter().filter(|upstream| {
+            upstream.enabled
+                && is_routable(upstream.priority)
+                && allowed_upstreams.contains(&upstream.name)
+        }) {
+            if upstream.oauth.is_some() && oauth_subject.is_none() {
+                continue;
+            }
+            let upstream_tools = routed_tools_for_upstream(&pool, upstream, oauth_subject).await;
+            let Some(candidate) = upstream_tools
+                .iter()
+                .find(|candidate| candidate.tool.name.as_ref() == tool)
+                .cloned()
+            else {
+                continue;
+            };
+            if tool_is_mcp_app_host_visible_for_config(&candidate, &upstream_tools, upstream) {
+                direct.push((upstream, candidate));
+            } else if upstream_has_mcp_app_ui_owner_for_config(&upstream_tools, upstream) {
+                siblings.push((upstream, candidate));
+            }
+        }
+        let mut candidates = if direct.is_empty() { siblings } else { direct };
+        if candidates.len() != 1 {
+            let kind = if candidates.is_empty() {
+                "unknown_tool"
+            } else {
+                "ambiguous_tool"
+            };
+            return Err(ToolError::Sdk {
+                sdk_kind: kind.to_string(),
+                message: format!("MCP App callback tool {tool} is not uniquely available"),
+            });
+        }
+
+        let (upstream_config, resolved) = candidates.pop().expect("length checked");
+        if resolved.destructive && !tool_is_mcp_app_only(&resolved.tool) {
+            return Err(ToolError::Sdk {
+                sdk_kind: "destructive_confirmation_required".to_string(),
+                message: format!(
+                    "destructive MCP App callback tool {tool} is model-visible and requires confirmation"
+                ),
+            });
+        }
+
+        params.name = resolved.tool.name.clone();
+        let result = if upstream_config.oauth.is_some() {
+            let subject = oauth_subject.ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "unknown_tool".to_string(),
+                message: format!("MCP App callback tool {tool} is not available to this caller"),
+            })?;
+            pool.subject_scoped_call_tool_once_classified(upstream_config, subject, params, None)
+                .await
+        } else {
+            match pool
+                .call_tool_once_classified(&upstream_config.name, params, None)
+                .await
+            {
+                Some(result) => result,
+                None => Err(crate::upstream::pool::CapabilityCallError::Transport {
+                    message: format!(
+                        "MCP App callback upstream {} is unavailable",
+                        upstream_config.name
+                    ),
+                }),
+            }
+        };
+
+        if self.runtime.published_pool_snapshot().generation() != pool_generation {
+            return Err(ToolError::Sdk {
+                sdk_kind: "upstream_unavailable".to_string(),
+                message: "MCP App callback gateway publication changed during execution"
+                    .to_string(),
+            });
+        }
+
+        result.map_err(|error| ToolError::Sdk {
+            sdk_kind: "upstream_error".to_string(),
+            message: error.to_string(),
+        })
+    }
+
+    pub async fn read_widget_resource_scoped(
+        &self,
+        uri: &str,
+        allowed_upstreams: &BTreeSet<String>,
+        oauth_subject: Option<&str>,
+    ) -> Result<ReadResourceResult, ToolError> {
+        let authority = url::Url::parse(uri)
+            .ok()
+            .filter(|parsed| parsed.scheme() == "ui")
+            .and_then(|parsed| parsed.host_str().map(str::to_owned))
+            .filter(|authority| allowed_upstreams.contains(authority))
+            .ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "resource_not_found".to_string(),
+                message: "MCP App resource is outside the app upstream scope".to_string(),
+            })?;
+
+        self.ensure_upstream_tool_runtime_ready(&authority, None, oauth_subject)
+            .await?;
+
+        let (cfg, pool_generation, pool) = {
+            let _publication = self.publication_barrier.read().await;
+            let cfg = self.config.read().await.clone();
+            let snapshot = self.runtime.published_pool_snapshot();
+            let generation = snapshot.generation();
+            let pool = snapshot.into_pool().ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "upstream_unavailable".to_string(),
+                message: "MCP App resource upstream pool is unavailable".to_string(),
+            })?;
+            (cfg, generation, pool)
+        };
+
+        let upstream = cfg
+            .upstream
+            .iter()
+            .find(|upstream| {
+                upstream.name == authority && upstream.enabled && is_routable(upstream.priority)
+            })
+            .ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "resource_not_found".to_string(),
+                message: "MCP App resource upstream is unavailable".to_string(),
+            })?;
+
+        let result = if upstream.oauth.is_some() {
+            let subject = oauth_subject.ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "resource_not_found".to_string(),
+                message: "MCP App resource is not available to this caller".to_string(),
+            })?;
+            pool.subject_scoped_read_resource_request_typed(
+                upstream,
+                subject,
+                ReadResourceRequestParams::new(uri),
+            )
+            .await
+        } else {
+            pool.read_upstream_ui_resource_allowed_typed(uri, Some(allowed_upstreams))
+                .await
+                .ok_or_else(|| crate::upstream::pool::CapabilityCallError::Other {
+                    message: "MCP App resource was not found".to_string(),
+                })?
+        };
+
+        if self.runtime.published_pool_snapshot().generation() != pool_generation {
+            return Err(ToolError::Sdk {
+                sdk_kind: "upstream_unavailable".to_string(),
+                message: "MCP App resource gateway publication changed during read".to_string(),
+            });
+        }
+
+        result.map_err(|error| ToolError::Sdk {
+            sdk_kind: "upstream_error".to_string(),
+            message: error.to_string(),
+        })
+    }
+
     pub async fn resolve_widget_callback_tool_candidates_scoped(
         &self,
         tool: &str,

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
+import { installTestDom, renderClient } from '@/lib/testing/dom-test-utils'
 import { PhoenixConversation } from './phoenix-conversation.tsx'
 
 const noop = () => undefined
@@ -49,7 +50,8 @@ test('Phoenix renders a hydrated direct MCP App inline while preserving tool act
       method: 'item/completed', received_at_ms: 50, sequence: 1,
       params: { item: { type: 'mcpToolCall', server: 'connexin', tool: 'echo', status: 'completed' } },
       mcp_apps: [{
-        resourceUri: 'ui://connexin/echo.html',
+        id: '00000000000000000001:echo-1:ui://connexin/echo.html', sequence: 1, callId: 'echo-1',
+        resourceUri: 'ui://connexin/echo.html', toolResult: { ok: true },
         resource: { contents: [{ uri: 'ui://connexin/echo.html', mimeType: 'text/html;profile=mcp-app', text: '<main>Connexin Echo</main>' }] },
       }],
     }]}
@@ -68,7 +70,8 @@ test('Phoenix renders nested Code Mode MCP Apps from hydrated events', () => {
       method: 'item/completed', received_at_ms: 60, sequence: 1,
       params: { item: { type: 'mcpToolCall', server: 'labby', tool: 'codemode', status: 'completed' } },
       mcp_apps: [{
-        resourceUri: 'ui://connexin/countdown.html',
+        id: '00000000000000000001:countdown-1:ui://connexin/countdown.html', sequence: 1, callId: 'countdown-1',
+        resourceUri: 'ui://connexin/countdown.html', toolResult: { seconds: 5 },
         resource: { contents: [{ uri: 'ui://connexin/countdown.html', mime_type: 'text/html;profile=mcp-app', text: '<main>Countdown</main>' }] },
       }],
     }]}
@@ -85,12 +88,68 @@ test('Phoenix falls back safely when MCP App hydration fails', () => {
     events={[{
       method: 'item/completed', received_at_ms: 70, sequence: 1,
       params: { item: { type: 'mcpToolCall', server: 'connexin', tool: 'shutdown', status: 'completed' } },
-      mcp_apps: [{ resourceUri: 'ui://connexin/shutdown.html', errorKind: 'upstream_error' }],
+      mcp_apps: [{ id: '00000000000000000001:shutdown-1:ui://connexin/shutdown.html', sequence: 1, callId: 'shutdown-1', resourceUri: 'ui://connexin/shutdown.html', toolResult: { safe: true }, errorKind: 'upstream_error' }],
     }]}
     mark={<span>PX</span>} copiedIndex={undefined} onRetry={noop} onCopy={noop} onEdit={noop}
   />)
   assert.match(html, /connexin · shutdown/)
   assert.match(html, /data-phoenix-mcp-app="fallback"/)
   assert.match(html, /upstream_error/)
-  assert.match(html, /underlying tool result is still preserved/)
+  assert.match(html, /Underlying tool result/)
+  assert.match(html, /&quot;safe&quot;: true/)
+})
+
+test('Phoenix keeps two MCP App calls distinct when they share one resource URI', () => {
+  const uri = 'ui://connexin/echo.html'
+  const html = renderToStaticMarkup(<PhoenixConversation
+    messages={[]}
+    events={[{
+      method: 'item/completed', received_at_ms: 80, sequence: 8,
+      params: { item: { type: 'mcpToolCall', server: 'connexin', tool: 'echo', status: 'completed' } },
+      mcp_apps: [
+        { id: '00000000000000000008:echo-a:' + uri, sequence: 8, callId: 'echo-a', resourceUri: uri, resource: { contents: [{ uri, mimeType: 'text/html', text: '<main>A</main>' }] } },
+        { id: '00000000000000000008:echo-b:' + uri, sequence: 8, callId: 'echo-b', resourceUri: uri, resource: { contents: [{ uri, mimeType: 'text/html', text: '<main>B</main>' }] } },
+      ],
+    }]}
+    mark={<span>PX</span>} copiedIndex={undefined} onRetry={noop} onCopy={noop} onEdit={noop}
+  />)
+  assert.equal((html.match(/data-phoenix-mcp-app="ready"/g) ?? []).length, 2)
+  assert.match(html, /echo-a/)
+  assert.match(html, /echo-b/)
+})
+
+test('Phoenix preserves the exact MCP App iframe node across repeated rerenders and session reload data', async () => {
+  installTestDom()
+  const uri = 'ui://connexin/echo.html'
+  const app = { id: '00000000000000000009:echo:' + uri, sequence: 9, callId: 'echo', resourceUri: uri, resource: { contents: [{ uri, mimeType: 'text/html', text: '<main>stateful</main>' }] } }
+  const baseEvents = [{ method: 'item/completed', received_at_ms: 90, sequence: 9, params: { item: { type: 'mcpToolCall', server: 'connexin', tool: 'echo', status: 'completed' } }, mcp_apps: [app] }]
+  const view = await renderClient(<PhoenixConversation messages={[]} events={baseEvents} mark={<span>PX</span>} copiedIndex={undefined} onRetry={noop} onCopy={noop} onEdit={noop} />)
+  try {
+    const first = view.container.querySelector('iframe'); assert.ok(first)
+    await view.rerender(<PhoenixConversation messages={[]} events={[...baseEvents, { method: 'thread/tokenUsage/updated', received_at_ms: 100, sequence: 10, params: { tokenUsage: { total: { totalTokens: 10 } } } }]} mark={<span>PX</span>} copiedIndex={undefined} onRetry={noop} onCopy={noop} onEdit={noop} />)
+    const afterStream = view.container.querySelector('iframe'); assert.strictEqual(afterStream, first)
+    const reloadedEvents = JSON.parse(JSON.stringify(baseEvents))
+    await view.rerender(<PhoenixConversation messages={[]} events={reloadedEvents} mark={<span>PX</span>} copiedIndex={undefined} onRetry={noop} onCopy={noop} onEdit={noop} />)
+    const afterReload = view.container.querySelector('iframe'); assert.strictEqual(afterReload, first)
+  } finally {
+    await view.unmount()
+  }
+})
+
+test('Phoenix MCP App fallback recovers in place when hydration later succeeds', async () => {
+  installTestDom()
+  const uri = 'ui://connexin/countdown.html'
+  const id = '00000000000000000011:countdown:' + uri
+  const failed = [{ method: 'item/completed', received_at_ms: 110, sequence: 11, params: { item: { type: 'mcpToolCall', server: 'connexin', tool: 'countdown', status: 'completed' } }, mcp_apps: [{ id, sequence: 11, callId: 'countdown', resourceUri: uri, toolResult: { seconds: 5 }, errorKind: 'timeout' }] }]
+  const view = await renderClient(<PhoenixConversation messages={[]} events={failed} mark={<span>PX</span>} copiedIndex={undefined} onRetry={noop} onCopy={noop} onEdit={noop} />)
+  try {
+    assert.equal(view.container.querySelector('iframe'), null)
+    assert.match(view.container.textContent ?? '', /Underlying tool result/)
+    const recovered = [{ ...failed[0], mcp_apps: [{ id, sequence: 11, callId: 'countdown', resourceUri: uri, toolResult: { seconds: 5 }, resource: { contents: [{ uri, mimeType: 'text/html', text: '<main>recovered</main>' }] } }] }]
+    await view.rerender(<PhoenixConversation messages={[]} events={recovered} mark={<span>PX</span>} copiedIndex={undefined} onRetry={noop} onCopy={noop} onEdit={noop} />)
+    assert.ok(view.container.querySelector('iframe'))
+    assert.equal(view.container.querySelector('[data-phoenix-mcp-app]')?.getAttribute('data-phoenix-mcp-app'), 'ready')
+  } finally {
+    await view.unmount()
+  }
 })

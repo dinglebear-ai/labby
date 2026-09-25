@@ -41,6 +41,7 @@ export interface PhoenixSession {
   status: 'ready'
   messages: PhoenixMessage[]
   events?: PhoenixEvent[]
+  turn_status?: 'ready' | 'in_progress' | 'closing'
 }
 
 export interface PhoenixSessionSummary {
@@ -83,7 +84,11 @@ export interface PhoenixMcpAppResourceContent {
 }
 
 export interface PhoenixMcpApp {
+  id: string
+  sequence: number
+  callId: string
   resourceUri: string
+  toolResult?: unknown
   resource?: { contents?: PhoenixMcpAppResourceContent[] }
   errorKind?: string
 }
@@ -94,6 +99,39 @@ export interface PhoenixEvent {
   sequence?: number
   received_at_ms?: number
   mcp_apps?: PhoenixMcpApp[]
+}
+
+export type PhoenixSnapshotVersion = readonly [maxEventSequence: number, messageCount: number, lastMessageTime: number]
+
+export function phoenixSnapshotVersion(session: Pick<PhoenixSession, 'messages' | 'events'>): PhoenixSnapshotVersion {
+  const maxEventSequence = (session.events ?? []).reduce((max, event) => Math.max(max, event.sequence ?? 0), 0)
+  const lastMessageTime = session.messages.reduce((max, message) => Math.max(max, message.created_at_ms ?? 0), 0)
+  return [maxEventSequence, session.messages.length, lastMessageTime]
+}
+
+export function comparePhoenixSnapshotVersions(left: PhoenixSnapshotVersion, right: PhoenixSnapshotVersion): number {
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return left[index] > right[index] ? 1 : -1
+  }
+  return 0
+}
+
+export function mergePhoenixSnapshot(previous: PhoenixSession | undefined, next: PhoenixSession): PhoenixSession {
+  if (!previous?.events?.length || !next.events?.length) return next
+  const successfulApps = new Map<string, PhoenixMcpApp>()
+  for (const event of previous.events) {
+    for (const app of event.mcp_apps ?? []) {
+      if (app.resource) successfulApps.set(app.id, app)
+    }
+  }
+  if (successfulApps.size === 0) return next
+  return {
+    ...next,
+    events: next.events.map((event) => ({
+      ...event,
+      mcp_apps: event.mcp_apps?.map((app) => app.resource ? app : successfulApps.get(app.id) ?? app),
+    })),
+  }
 }
 
 export interface PhoenixDiagnostics {

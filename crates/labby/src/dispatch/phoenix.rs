@@ -1,6 +1,11 @@
 //! Provider adapter for the Phoenix assistant.
 
-use std::{collections::HashMap, ffi::OsString, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    ffi::OsString,
+    sync::Arc,
+    time::Duration,
+};
 
 use base64::Engine as _;
 use labby_primitives::action::{ActionSpec, ParamSpec};
@@ -24,6 +29,7 @@ const MAX_TEXT_ATTACHMENT_BYTES: usize = 512 * 1024;
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 const MAX_MESSAGES: usize = 100;
 const MAX_EVENTS: usize = 500;
+const MAX_CACHED_MCP_APPS_PER_SESSION: usize = 128;
 const MAX_SESSIONS: usize = 32;
 const MAX_SESSION_TITLE_CHARS: usize = 120;
 const MAX_SESSION_PREVIEW_CHARS: usize = 240;
@@ -207,6 +213,7 @@ struct Session {
     active_turn_id: Option<String>,
     messages: Vec<Message>,
     events: Vec<Value>,
+    mcp_app_cache: BTreeMap<String, Value>,
     next_event_sequence: u64,
     model: Option<String>,
     effort: Option<String>,
@@ -255,6 +262,37 @@ impl PhoenixRuntime {
     pub(crate) fn local_mcp_host(&self) -> Option<String> {
         let url = url::Url::parse(&self.local_mcp_url).ok()?;
         Some(url.host_str()?.to_owned())
+    }
+
+    pub(crate) async fn cached_mcp_app(
+        &self,
+        owner: &str,
+        session_id: &str,
+        app_id: &str,
+    ) -> Option<Value> {
+        let session = self.session(owner, session_id).await.ok()?;
+        session.lock().await.mcp_app_cache.get(app_id).cloned()
+    }
+
+    pub(crate) async fn cache_mcp_app(
+        &self,
+        owner: &str,
+        session_id: &str,
+        app_id: String,
+        app: Value,
+    ) -> Result<(), ToolError> {
+        let session = self.session(owner, session_id).await?;
+        let mut state = session.lock().await;
+        if state.mcp_app_cache.contains_key(&app_id) {
+            return Ok(());
+        }
+        if state.mcp_app_cache.len() >= MAX_CACHED_MCP_APPS_PER_SESSION
+            && let Some(oldest) = state.mcp_app_cache.keys().next().cloned()
+        {
+            state.mcp_app_cache.remove(&oldest);
+        }
+        state.mcp_app_cache.insert(app_id, app);
+        Ok(())
     }
 
     pub(crate) async fn dispatch(
@@ -554,6 +592,7 @@ impl PhoenixRuntime {
                 active_turn_id: None,
                 messages: Vec::new(),
                 events: Vec::new(),
+                mcp_app_cache: BTreeMap::new(),
                 next_event_sequence: 0,
                 model: selected_model,
                 effort,
@@ -594,6 +633,7 @@ impl PhoenixRuntime {
                 active_turn_id: None,
                 messages: Vec::new(),
                 events: Vec::new(),
+                mcp_app_cache: BTreeMap::new(),
                 next_event_sequence: 0,
                 model: Some(selected_model),
                 effort,

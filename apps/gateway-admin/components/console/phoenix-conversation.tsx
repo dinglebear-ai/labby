@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { AlertTriangle, Clipboard, Pencil, RefreshCw, Terminal } from 'lucide-react'
 import type { PhoenixEvent, PhoenixMcpApp, PhoenixMessage } from '@/lib/api/phoenix-client'
 import { PhoenixEventTimeline, isPhoenixAgentDelta, phoenixAgentDelta, phoenixEventTime } from './phoenix-event-timeline'
@@ -18,6 +18,12 @@ function eventTurnKey(event: PhoenixEvent): string {
   const params = event.params && typeof event.params === 'object' ? event.params as Record<string, unknown> : {}
   const turn = params.turn && typeof params.turn === 'object' ? params.turn as Record<string, unknown> : {}
   return String(params.turnId ?? params.turn_id ?? turn.id ?? 'active')
+}
+
+function eventStableId(event: PhoenixEvent, fallback: number): string {
+  if (typeof event.sequence === 'number') return 'sequence-' + String(event.sequence)
+  if (typeof event.received_at_ms === 'number') return 'time-' + String(event.received_at_ms) + '-' + event.method
+  return event.method + '-' + String(fallback)
 }
 
 function buildChunks(messages: PhoenixMessage[], events: PhoenixEvent[]): Chunk[] {
@@ -44,7 +50,7 @@ function buildChunks(messages: PhoenixMessage[], events: PhoenixEvent[]): Chunk[
   const flushEvent = (event: PhoenixEvent) => {
     const previous = chunks.at(-1)
     if (previous?.kind === 'events') previous.events.push(event)
-    else chunks.push({ kind: 'events', id: 'events-' + String(chunks.length), events: [event] })
+    else chunks.push({ kind: 'events', id: 'events-' + eventStableId(event, chunks.length), events: [event] })
   }
   for (const entry of entries) {
     if (entry.kind === 'message') {
@@ -62,7 +68,7 @@ function buildChunks(messages: PhoenixMessage[], events: PhoenixEvent[]): Chunk[
     }
     flushEvent(entry.event)
   }
-  if (legacyEvents.length) chunks.push({ kind: 'events', id: 'legacy-events', events: legacyEvents })
+  if (legacyEvents.length) chunks.push({ kind: 'events', id: 'legacy-events-' + eventStableId(legacyEvents[0], 0), events: legacyEvents })
 
   for (const index of suppressAssistant) {
     const message = messages[index]
@@ -89,12 +95,14 @@ function mcpAppHtml(app: PhoenixMcpApp): string | undefined {
 function PhoenixMcpAppSurface({ app }: { app: PhoenixMcpApp }) {
   const [renderFailed, setRenderFailed] = useState(false)
   const html = mcpAppHtml(app)
+  useEffect(() => setRenderFailed(false), [html])
   const ready = Boolean(html) && !renderFailed
-  return <section data-phoenix-mcp-app={ready ? 'ready' : 'fallback'} className="mt-2 overflow-hidden rounded-[10px] border border-aurora-border-default bg-aurora-panel-strong">
+  const rawResult = app.toolResult === undefined ? undefined : JSON.stringify(app.toolResult, null, 2)
+  return <section data-phoenix-mcp-app={ready ? 'ready' : 'fallback'} data-phoenix-mcp-app-id={app.id} className="mt-2 overflow-hidden rounded-[10px] border border-aurora-border-default bg-aurora-panel-strong">
     <div className="flex min-w-0 items-center gap-2 border-b border-aurora-border-default px-3 py-2">
       <span className="grid size-7 shrink-0 place-items-center rounded-md border border-aurora-accent-primary/40 bg-aurora-accent-primary/10 text-aurora-accent-strong"><Terminal size={14}/></span>
       <strong className="shrink-0 text-[12px] text-aurora-text-primary">MCP App</strong>
-      <span className="min-w-0 truncate text-[10.5px] text-aurora-text-muted" title={app.resourceUri}>{app.resourceUri}</span>
+      <span className="min-w-0 truncate text-[10.5px] text-aurora-text-muted" title={app.resourceUri}>{app.callId} · {app.resourceUri}</span>
       {!ready ? <span className="ml-auto inline-flex shrink-0 items-center gap-1 text-[10px] text-aurora-warn"><AlertTriangle size={11}/>fallback</span> : null}
     </div>
     {ready ? <iframe
@@ -105,20 +113,16 @@ function PhoenixMcpAppSurface({ app }: { app: PhoenixMcpApp }) {
       srcDoc={html}
       onError={() => setRenderFailed(true)}
     /> : <div className="px-4 py-3 text-[11.5px] leading-relaxed text-aurora-text-muted">
-      The MCP App surface is unavailable{app.errorKind ? ' (' + app.errorKind + ')' : ''}. The underlying tool result is still preserved in the activity above.
+      <p>The MCP App surface is unavailable{app.errorKind ? ' (' + app.errorKind + ')' : ''}. The underlying tool result remains available below.</p>
+      {rawResult ? <details className="mt-2 rounded-md border border-aurora-border-default bg-aurora-control-surface p-2"><summary className="cursor-pointer font-semibold text-aurora-text-primary">Underlying tool result</summary><pre className="aurora-scrollbar mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[10.5px]">{rawResult}</pre></details> : null}
     </div>}
   </section>
 }
 
 function PhoenixMcpApps({ events }: { events: PhoenixEvent[] }) {
-  const seen = new Set<string>()
-  const apps = events.flatMap((event) => event.mcp_apps ?? []).filter((app) => {
-    if (!app.resourceUri || seen.has(app.resourceUri)) return false
-    seen.add(app.resourceUri)
-    return true
-  })
+  const apps = events.flatMap((event) => event.mcp_apps ?? [])
   if (apps.length === 0) return null
-  return <div className="mt-1 w-full max-w-4xl">{apps.map((app) => <PhoenixMcpAppSurface key={app.resourceUri} app={app}/>)}</div>
+  return <div className="mt-1 w-full max-w-4xl">{apps.map((app) => <PhoenixMcpAppSurface key={app.id} app={app}/>)}</div>
 }
 
 function Reactions({ message, index, copiedIndex, onRetry, onCopy, onEdit }: { message: PhoenixMessage; index: number; copiedIndex?: number; onRetry: (index: number) => void; onCopy: (text: string, index: number) => void; onEdit?: (index: number, text: string) => void }) {

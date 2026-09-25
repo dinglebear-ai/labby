@@ -1,6 +1,6 @@
 'use client'
 
-import { FormEvent, useEffect, useRef, useState } from 'react'
+import { FormEvent, useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { Activity, ArrowUpRight, Bot, Brain, File, Folder, MessagesSquare, Paperclip, PanelRight, Send, Settings, Square, Terminal, X } from 'lucide-react'
@@ -11,7 +11,7 @@ import { authorityIdentity } from '@/lib/auth/authority'
 import { skillLibrary } from '@/lib/api/skill-library-client'
 import { gatewayApi, gatewayAction } from '@/lib/api/gateway-client'
 import { snippetsApi } from '@/lib/api/snippets-client'
-import { phoenixApi, phoenixSupports, type PhoenixAttachment, type PhoenixEvent, type PhoenixMessage, type PhoenixModel, type PhoenixSessionSummary, type PhoenixStatus } from '@/lib/api/phoenix-client'
+import { comparePhoenixSnapshotVersions, mergePhoenixSnapshot, phoenixApi, phoenixSnapshotVersion, phoenixSupports, type PhoenixAttachment, type PhoenixEvent, type PhoenixMessage, type PhoenixModel, type PhoenixSession, type PhoenixSessionSummary, type PhoenixSnapshotVersion, type PhoenixStatus } from '@/lib/api/phoenix-client'
 import { Textarea } from '@/components/ui/textarea'
 import type { BackendGatewayMcpRuntimeView } from '@/lib/server/gateway-adapter'
 import { deriveConsoleStatus } from './console-status-strip'
@@ -109,6 +109,20 @@ export function PhoenixAvailability() {
   const scrollRef = useRef<HTMLDivElement>(null)
   const closeAfterTurnRef = useRef<string | undefined>(undefined)
   const requestGenerationRef = useRef(0)
+  const snapshotVersionRef = useRef<PhoenixSnapshotVersion | undefined>(undefined)
+  const snapshotRef = useRef<PhoenixSession | undefined>(undefined)
+
+  const applySnapshot = useCallback((snapshot: PhoenixSession, force = false) => {
+    const next = phoenixSnapshotVersion(snapshot)
+    const current = snapshotVersionRef.current
+    if (!force && current && comparePhoenixSnapshotVersions(next, current) < 0) return false
+    const merged = mergePhoenixSnapshot(snapshotRef.current, snapshot)
+    snapshotVersionRef.current = phoenixSnapshotVersion(merged)
+    snapshotRef.current = merged
+    setMessages(merged.messages)
+    setEvents(merged.events ?? [])
+    return true
+  }, [])
 
   useEffect(() => {
     setPhoenixDocked?.(open && dock === 'right')
@@ -117,6 +131,8 @@ export function PhoenixAvailability() {
 
   useEffect(() => {
     requestGenerationRef.current += 1
+    snapshotVersionRef.current = undefined
+    snapshotRef.current = undefined
     setStatus(undefined)
     setSessionId(undefined)
     setMessages([])
@@ -172,10 +188,7 @@ export function PhoenixAvailability() {
       reading = true
       try {
         const current = await phoenixApi.read(sessionId, controller.signal)
-        if (!controller.signal.aborted) {
-          setMessages(current.messages)
-          setEvents(current.events ?? [])
-        }
+        if (!controller.signal.aborted) applySnapshot(current)
       } catch {
         // The pending turn request owns terminal errors; polling only streams progress.
       } finally {
@@ -184,7 +197,7 @@ export function PhoenixAvailability() {
     }
     const timer = window.setInterval(() => { void refresh() }, 400)
     return () => { controller.abort(); window.clearInterval(timer) }
-  }, [sending, sessionId])
+  }, [applySnapshot, sending, sessionId])
 
   useEffect(() => {
     if (!open || dock !== 'float' || floatRect) return
@@ -270,14 +283,15 @@ export function PhoenixAvailability() {
         const started = await phoenixApi.start(model || undefined, effort || undefined)
         if (requestGeneration !== requestGenerationRef.current) return
         activeSessionId = started.session_id
+        snapshotVersionRef.current = undefined
+        snapshotRef.current = undefined
         setSessionId(activeSessionId)
         setThreadHistory((current) => current.some((thread) => thread.session_id === started.session_id) ? current : [{ session_id: started.session_id, title: displayText.slice(0, 54), preview: displayText, model: model || null, effort: effort || null, message_count: 1, turn_status: 'in_progress' }, ...current])
       }
       const updated = await phoenixApi.send(activeSessionId, text, outgoingAttachments)
       if (requestGeneration !== requestGenerationRef.current) return
       setNewThreadOnSend(false)
-      setMessages(updated.messages)
-      setEvents(updated.events ?? [])
+      applySnapshot(updated)
     } catch (reason) {
       if (requestGeneration !== requestGenerationRef.current) return
       setInput((current) => current ? [text, current].filter(Boolean).join('\n') : text)
@@ -291,6 +305,8 @@ export function PhoenixAvailability() {
         if (closing) {
           closeAfterTurnRef.current = undefined
           await phoenixApi.close(closing).catch(() => undefined)
+          snapshotVersionRef.current = undefined
+          snapshotRef.current = undefined
           setSessionId(undefined)
         }
       }
@@ -316,7 +332,7 @@ export function PhoenixAvailability() {
     try {
       const updated = await phoenixApi.steer(sessionId, text, outgoingAttachments)
       const refreshed = await phoenixApi.read(sessionId).catch(() => undefined)
-      if (refreshed) { setMessages(refreshed.messages); setEvents(refreshed.events ?? []) }
+      if (refreshed) applySnapshot(refreshed)
       setWorkflowNotice(updated.status === 'steered' ? 'Guidance added to the active turn' : undefined)
     } catch (reason) {
       setInput((current) => current ? [text, current].filter(Boolean).join('\n') : text)
@@ -415,8 +431,7 @@ export function PhoenixAvailability() {
       if (requestGeneration !== requestGenerationRef.current) return
       setSessionId(id)
       setTitle(threadHistory.find((item) => item.session_id === id)?.title || 'Phoenix')
-      setMessages(thread.messages)
-      setEvents(thread.events ?? [])
+      applySnapshot(thread, true)
       setThreadMenuOpen(false)
     } catch (reason) {
       if (requestGeneration !== requestGenerationRef.current) return
@@ -426,6 +441,8 @@ export function PhoenixAvailability() {
 
   const startNewThread = () => {
     requestGenerationRef.current += 1
+    snapshotVersionRef.current = undefined
+    snapshotRef.current = undefined
     setSending(false)
     setSessionId(undefined)
     setMessages([])
