@@ -17,6 +17,7 @@ use labby_codemode::{
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use serde_json::{Map, Value};
@@ -37,6 +38,11 @@ use labby_runtime::lab_home;
 use super::search;
 use super::tool_error::{completed_tool_error, upstream_tool_safety};
 use super::validate_code_mode_params_against_schema;
+
+#[cfg(not(test))]
+const CODE_MODE_SKILL_CATALOG_TIMEOUT: Duration = Duration::from_secs(3);
+#[cfg(test)]
+const CODE_MODE_SKILL_CATALOG_TIMEOUT: Duration = Duration::from_millis(50);
 
 pub(crate) struct CheckedToolCallOutcome {
     pub(crate) outcome: ToolCallOutcome,
@@ -150,8 +156,13 @@ impl GatewayManager {
                 | CodeModeCaller::ScopedHostProviderSkills { .. }
         ) && let Some(provider) = self.code_mode_skill_provider.as_ref()
         {
-            match provider.list(caller, scope).await {
-                Ok(skills) => {
+            match tokio::time::timeout(
+                CODE_MODE_SKILL_CATALOG_TIMEOUT,
+                provider.list(caller, scope),
+            )
+            .await
+            {
+                Ok(Ok(skills)) => {
                     for skill in skills {
                         let namespace = skill
                             .uri
@@ -172,12 +183,19 @@ impl GatewayManager {
                         entries.insert(descriptor.id.clone(), descriptor);
                     }
                 }
-                Err(error) => tracing::warn!(
+                Ok(Err(error)) => tracing::warn!(
                     surface = "dispatch",
                     service = "code_mode",
                     action = "catalog.skills",
                     error = %error,
                     "Code Mode Skill catalog projection failed open"
+                ),
+                Err(_elapsed) => tracing::warn!(
+                    surface = "dispatch",
+                    service = "code_mode",
+                    action = "catalog.skills",
+                    timeout_ms = CODE_MODE_SKILL_CATALOG_TIMEOUT.as_millis(),
+                    "Code Mode Skill catalog projection timed out and failed open"
                 ),
             }
         }
@@ -2194,6 +2212,71 @@ mod tests {
         }
     }
 
+    struct StallingSkillProvider;
+
+    impl crate::gateway::code_mode::skills::CodeModeSkillProvider for StallingSkillProvider {
+        fn list<'a>(
+            &'a self,
+            _caller: &'a CodeModeCaller,
+            _scope: &'a ToolScope,
+        ) -> std::pin::Pin<
+            Box<
+                dyn Future<
+                        Output = Result<
+                            Vec<crate::gateway::code_mode::skills::CodeModeSkillSummary>,
+                            ToolError,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(std::future::pending())
+        }
+
+        fn get<'a>(
+            &'a self,
+            _uri: &'a str,
+            _caller: &'a CodeModeCaller,
+            _scope: &'a ToolScope,
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'a>> {
+            Box::pin(std::future::pending())
+        }
+
+        fn read<'a>(
+            &'a self,
+            _uri: &'a str,
+            _caller: &'a CodeModeCaller,
+            _scope: &'a ToolScope,
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'a>> {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    #[tokio::test]
+    async fn slow_skill_metadata_projection_fails_open_before_code_mode_deadline() {
+        let cfg_dir = tempfile::tempdir().unwrap();
+        let manager = GatewayManager::new(
+            cfg_dir.path().join("config.toml"),
+            GatewayRuntimeHandle::default(),
+        )
+        .with_code_mode_skill_provider(Arc::new(StallingSkillProvider));
+
+        let started = std::time::Instant::now();
+        let entries = tokio::time::timeout(
+            Duration::from_secs(1),
+            manager.code_mode_metadata_entries(
+                &CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Mcp,
+                &ToolScope::new(Vec::new(), Vec::new()),
+            ),
+        )
+        .await
+        .expect("Skill metadata timeout must not consume the Code Mode request deadline");
+
+        assert!(entries.is_empty());
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
     #[tokio::test]
     async fn canonical_skill_provider_projects_into_source_neutral_catalog() {
         let cfg_dir = tempfile::tempdir().unwrap();
@@ -2292,7 +2375,7 @@ mod tests {
         );
         drop(guard);
 
-        let request = tokio::time::timeout(std::time::Duration::from_secs(2), server)
+        let request = tokio::time::timeout(Duration::from_secs(2), server)
             .await
             .expect("cancel request was sent")
             .unwrap();
