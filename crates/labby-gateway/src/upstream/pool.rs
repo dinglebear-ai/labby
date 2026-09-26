@@ -107,6 +107,8 @@ pub(crate) use skills::OperatorSkills;
 pub(crate) use skills_exposure::{SkillExposureDecision, SkillExposureReason};
 mod scoped_summary;
 mod skills_cache;
+#[cfg(feature = "skills")]
+mod skills_discovery;
 mod skills_list;
 #[cfg(feature = "skills")]
 mod skills_provider;
