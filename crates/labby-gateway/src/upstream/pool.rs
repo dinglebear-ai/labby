@@ -557,8 +557,15 @@ where
         client_service: UpstreamClientService<H>,
         server_task: Option<tokio::task::JoinHandle<()>>,
         peer: rmcp::service::Peer<RoleClient>,
-        runtime: UpstreamRuntimeMetadata,
+        mut runtime: UpstreamRuntimeMetadata,
     ) -> Self {
+        if let Some(info) = peer.peer_info() {
+            if let Some(server_info) = info.server_info.as_ref() {
+                runtime.server_name = Some(server_info.name.clone());
+                runtime.server_version = Some(server_info.version.clone());
+            }
+            runtime.protocol_version = Some(info.protocol_version.to_string());
+        }
         Self {
             _client_service: client_service,
             _server_task: server_task,

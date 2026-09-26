@@ -25,7 +25,7 @@ use url::Url;
 /// the first place.
 static SECRET_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?:sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82}|glpat-[A-Za-z0-9_-]{20}|xox[bp]-[A-Za-z0-9-]+|tskey-[A-Za-z0-9-]+|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|(?i:bearer)[ \t]+[A-Za-z0-9._~+/-]{8,}=*|-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END[A-Z ]*PRIVATE KEY-----|$)|[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@)",
+        r"(?:sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82}|glpat-[A-Za-z0-9_-]{20}|xox[bp]-[A-Za-z0-9-]+|tskey-[A-Za-z0-9-]+|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|(?i:bearer)[ \t]+[A-Za-z0-9._~+/-]{8,}=*|(?i:basic)[ \t]+[A-Za-z0-9+/]{8,}={0,2}|-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END[A-Z ]*PRIVATE KEY-----|$)|[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@)",
     )
     .expect("secret regex is valid")
 });
@@ -140,7 +140,7 @@ pub fn redact_secret_like_segments(input: &str) -> String {
                 || segment.starts_with("xoxb-")
                 || segment.starts_with("xoxp-")
                 || segment.starts_with("tskey-")
-                || segment.starts_with("eyJ");
+                || looks_like_jwt(segment);
             if looks_secret {
                 "[REDACTED]".to_string()
             } else {
@@ -154,40 +154,23 @@ pub fn redact_secret_like_segments(input: &str) -> String {
         .into_owned()
 }
 
-/// Returns `true` for keys whose values must be masked in logs/observability.
+/// Returns `true` only for fields whose values are credentials or directly
+/// secret-bearing authentication material.
 ///
-/// The exact-match list also carries three ACP-origin keys that are NOT
-/// credentials in the usual sense but are masked deliberately:
+/// Operational metadata such as hostnames, IPs, filesystem paths, tool names,
+/// runtime/session/terminal identifiers, idempotency keys, and arbitrary
+/// `*_key` fields is intentionally preserved. Redaction is field-aware first;
+/// free-form pattern matching is only a defense-in-depth backstop for
+/// high-confidence credential formats.
 ///
-/// - `code` — ACP OAuth authorization codes flow through stdio args under this
-///   key; an unmasked auth code is exchangeable for tokens.
-/// - `cwd` — ACP session working directories leak the OS username and local
-///   filesystem layout into shared logs.
-/// - `terminal_id` — ACP terminal handles correlate a log line to a live
-///   session; treated as sensitive session state.
-///
-/// Do not remove these without re-checking the ACP stdio redaction path — they
-/// look innocuous but are intentional.
-///
-/// The broad `_key` suffix is kept (fail-safe: under-redaction is a security
-/// risk, so any unknown `*_key` is masked) but a small allowlist of
-/// known non-secret `_key` keys is carved out to stop the false positives the
-/// review flagged: `sort_key`, `cache_key`, `idempotency_key`, `partition_key`,
-/// `primary_key`. These are ordering/lookup/identity keys, never credentials.
-/// The genuine credential cases remain covered by the
-/// `_secret` / `_token` / `_password` / `api_key` arms regardless.
+/// Generic `code` is deliberately NOT sensitive: it commonly means error code
+/// or source code and hiding it destroys diagnostics. OAuth/authentication paths
+/// must name their exchangeable value explicitly (`authorization_code`,
+/// `oauth_code`, etc.) or redact it at that domain boundary. Credential-key
+/// suffixes stay narrow and explicit rather than treating every field ending in
+/// `_key` as secret.
 pub fn is_sensitive_key(key: &str) -> bool {
     let normalized = key.to_ascii_lowercase().replace('-', "_");
-
-    // Known non-secret keys that happen to end in `_key`. Kept narrow and
-    // conservative — only add a key here when it is unambiguously NOT a
-    // credential, since masking a real secret is the safer failure mode.
-    if matches!(
-        normalized.as_str(),
-        "sort_key" | "cache_key" | "idempotency_key" | "partition_key" | "primary_key"
-    ) {
-        return false;
-    }
 
     matches!(
         normalized.as_str(),
@@ -203,16 +186,30 @@ pub fn is_sensitive_key(key: &str) -> bool {
             | "client_secret"
             | "authorization"
             | "bearer"
-            | "session"
-            | "session_id"
             | "cookie"
-            | "code"
-            | "cwd"
-            | "terminal_id"
+            | "authorization_code"
+            | "oauth_code"
+            | "private_key"
+            | "secret_key"
+            | "auth_key"
+            | "authkey"
+            | "auth_header"
+            | "credential"
+            | "session_cookie"
+            | "browser_session_cookie"
+            | "secret_access_key"
     ) || normalized.ends_with("_token")
         || normalized.ends_with("_secret")
         || normalized.ends_with("_password")
-        || normalized.ends_with("_key")
+        || normalized.ends_with("_api_key")
+        || normalized.ends_with("_private_key")
+        || normalized.ends_with("_secret_key")
+        || normalized.ends_with("_auth_key")
+        || normalized.ends_with("_authkey")
+        || normalized.ends_with("_auth_header")
+        || normalized.ends_with("_secret_access_key")
+        || normalized.ends_with("_encryption_key")
+        || normalized.ends_with("_signing_key")
 }
 
 /// Redact credentials and sensitive query values from a URL for logging.
@@ -320,7 +317,10 @@ fn redact_query_pairs(query: &str) -> String {
         .filter(|pair| !pair.is_empty())
         .map(|pair| {
             let (key, value) = pair.split_once('=').map_or((pair, ""), |(k, v)| (k, v));
-            if is_sensitive_key(key) {
+            // URL query `code` is commonly an OAuth authorization code and is
+            // exchangeable for tokens. Keep generic JSON/log fields named
+            // `code` visible, but treat this URL-specific shape as secret.
+            if is_sensitive_key(key) || key.eq_ignore_ascii_case("code") {
                 format!("{key}=[redacted]")
             } else if value.is_empty() {
                 key.to_string()
@@ -455,7 +455,6 @@ fn looks_sensitive_value(value: &str) -> bool {
         || lower.contains("cookie:")
         || looks_like_jwt(trimmed)
         || looks_like_sensitive_assignment(trimmed)
-        || looks_like_base64_blob(trimmed)
 }
 
 fn looks_like_sensitive_assignment(value: &str) -> bool {
@@ -476,16 +475,8 @@ fn looks_like_jwt(value: &str) -> bool {
             .all(|part| part.len() >= 10 && part.chars().all(is_base64url_char))
 }
 
-fn looks_like_base64_blob(value: &str) -> bool {
-    value.len() >= 160 && value.chars().all(is_base64ish_char)
-}
-
 fn is_base64url_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_')
-}
-
-fn is_base64ish_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '=' | '-' | '_')
 }
 
 #[cfg(test)]
@@ -502,9 +493,17 @@ mod tests {
             "service_api_key",
             "signing_secret_key",
             "tls_private_key",
-            "code",
-            "cwd",
-            "terminal_id",
+            "ssh_private_key",
+            "auth_key",
+            "authorization_code",
+            "oauth_code",
+            "oauth_encryption_key",
+            "jwt_signing_key",
+            "AWS_SECRET_ACCESS_KEY",
+            "LAB_GW_1PASSWORD_AUTH_HEADER",
+            "INCUS_TS_AUTHKEY",
+            "credential",
+            "browser_session_cookie",
         ] {
             assert!(is_sensitive_key(key), "expected `{key}` to be sensitive");
         }
@@ -518,12 +517,66 @@ mod tests {
             "idempotency_key",
             "partition_key",
             "primary_key",
+            "routing_key",
+            "public_key",
+            "session_id",
+            "terminal_id",
+            "runtime_id",
+            "cwd",
+            "hostname",
+            "ip_address",
+            "tool_name",
+            "ssh_key_path",
+            "known_hosts_path",
+            "code",
+            "error_code",
+            "source_code",
+            "AWS_ACCESS_KEY_ID",
+            "AUTH_KEY_PATH",
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "allow_session_cookie",
         ] {
             assert!(
                 !is_sensitive_key(key),
                 "expected `{key}` to NOT be sensitive"
             );
         }
+    }
+
+    #[test]
+    fn redaction_preserves_operational_metadata_and_opaque_non_secret_blobs() {
+        let metadata = serde_json::json!({
+            "hostname": "macpoo.local",
+            "ip_address": "100.67.245.62",
+            "upstream": "claude-macpoo",
+            "tool_name": "zsh_health",
+            "cwd": "/Users/jmagar/workspace/labby",
+            "session_id": "runtime-session-018f",
+            "terminal_id": "terminal-42",
+            "routing_key": "gateway:macpoo",
+            "ssh_key_path": "/home/labby/.ssh/labby-claude-macpoo",
+            "known_hosts_path": "/home/labby/.ssh/known_hosts.claude-macpoo",
+            "opaque_blob": "a".repeat(200),
+        });
+        assert_eq!(redact_trace_value(&metadata, 16 * 1024), metadata);
+
+        let text =
+            "host=macpoo.local ip=100.67.245.62 tool=zsh_health path=/Users/jmagar/workspace/labby";
+        assert_eq!(redact_secret_like_segments(text), text);
+    }
+
+    #[test]
+    fn redact_stdio_args_preserves_ssh_operational_arguments() {
+        let args = vec![
+            "-i".to_string(),
+            "/home/labby/.ssh/labby-claude-macpoo".to_string(),
+            "-o".to_string(),
+            "UserKnownHostsFile=/home/labby/.ssh/known_hosts.claude-macpoo".to_string(),
+            "jmagar@100.67.245.62".to_string(),
+            "/Users/jmagar/.local/bin/zsh-tool-exec".to_string(),
+            "serve".to_string(),
+        ];
+        assert_eq!(redact_stdio_args(&args), args);
     }
 
     #[test]
@@ -549,8 +602,12 @@ mod tests {
     #[test]
     fn redact_url_masks_credentials_and_sensitive_query_values() {
         assert_eq!(
-            redact_url("http://user:pass@example.com/callback?token=secret&mode=1"),
-            "http://example.com/callback?token=[redacted]&mode=1"
+            redact_url("http://user:pass@example.com/callback?token=secret&code=oauth-code&mode=1"),
+            "http://example.com/callback?token=[redacted]&code=[redacted]&mode=1"
+        );
+        assert!(
+            !is_sensitive_key("code"),
+            "generic error/source-code fields stay observable outside URL query context"
         );
     }
 
@@ -625,6 +682,16 @@ mod tests {
         let input = "y".repeat(4096);
         let output = sanitize_error_text(&input, 4096);
         assert_eq!(output, input);
+    }
+
+    #[test]
+    fn redacts_basic_authorization_without_hiding_operational_text() {
+        let basic = redact_secret_like_segments(
+            "Authorization: Basic dXNlcjpwYXNzd29yZA== host=macpoo.local",
+        );
+        assert!(!basic.contains("dXNlcjpwYXNzd29yZA=="), "{basic}");
+        assert!(basic.contains("[REDACTED]"));
+        assert!(basic.contains("host=macpoo.local"));
     }
 
     #[test]
@@ -703,7 +770,7 @@ mod tests {
             "password": "d",
             "apikey": "e",
             "api_key": "f",
-            "service-key": "g",
+            "service-api-key": "g",
             "cookie": "h"
         });
 
@@ -715,7 +782,7 @@ mod tests {
             "password",
             "apikey",
             "api_key",
-            "service-key",
+            "service-api-key",
             "cookie",
         ] {
             assert_eq!(

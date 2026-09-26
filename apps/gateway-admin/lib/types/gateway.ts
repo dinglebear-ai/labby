@@ -53,6 +53,10 @@ export interface GatewayStatus {
   discovered_skill_count?: number
   exposed_skill_count?: number
   supports_skills?: boolean
+  /** Negotiated upstream MCP identity/version for the current live connection. */
+  server_name?: string
+  server_version?: string
+  protocol_version?: string
   likely_stale_count?: number
   pid?: number
   pgid?: number

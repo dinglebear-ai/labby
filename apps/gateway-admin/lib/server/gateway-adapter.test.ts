@@ -28,6 +28,9 @@ test('normalizeGateway maps backend views into UI gateway shape', () => {
         tool_count: 3,
         resource_count: 1,
         prompt_count: 1,
+        server_name: 'fixture-server',
+        server_version: '1.2.3',
+        protocol_version: '2026-07-28',
       },
     },
     {
@@ -49,6 +52,9 @@ test('normalizeGateway maps backend views into UI gateway shape', () => {
   assert.equal(gateway.surfaces?.mcp.enabled, true)
   assert.equal(gateway.status.discovered_tool_count, 3)
   assert.equal(gateway.status.exposed_tool_count, 3)
+  assert.equal(gateway.status.server_name, 'fixture-server')
+  assert.equal(gateway.status.server_version, '1.2.3')
+  assert.equal(gateway.status.protocol_version, '2026-07-28')
   assert.deepEqual(
     gateway.discovery.tools.map((tool) => ({ name: tool.name, exposed: tool.exposed, matched_by: tool.matched_by })),
     [
