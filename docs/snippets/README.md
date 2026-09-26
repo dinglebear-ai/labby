@@ -208,10 +208,14 @@ executing it, or pass `--file` / `--code` to validate an unsaved body:
 labby snippet validate draft --file draft-snippet.md
 ```
 
-Use `labby snippet test <name>` to execute one snippet as a smoke test, or
-`labby snippet test --all` to run every listed snippet with its declared
-defaults. MCP/API callers use `snippets.test` with `{ "all": true }` for the
-same all-snippet check.
+Use `labby snippet test <name>` for an offline fixture test. The fixture is
+`<name>.test.json` beside the resolved snippet, or an explicit `--fixture` file.
+Missing fixtures fail instead of contacting upstreams. `--all` checks every
+listed snippet and reports missing fixtures. Add `--live` explicitly for a
+real upstream smoke test. MCP/API callers use `snippets.test` with a fixture
+object, or explicitly `{ "name": "example", "live": true }`.
+See [Snippet testing](../dev/SNIPPET_TESTING.md) for fixture assertions,
+snapshots, resource budgets, and the live-mode migration.
 
 When Code Mode final-result shaping is enabled, `snippets.exec` returns the
 same shaped display response as Code Mode. `snippets.test` evaluates pass/fail

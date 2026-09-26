@@ -1,0 +1,724 @@
+{
+  "calls": [
+    {
+      "tool": "linear-notification-worker::list_issues",
+      "match": {
+        "team": "U8",
+        "assignee": "me",
+        "state": "started",
+        "limit": 250
+      },
+      "result": {
+        "issues": [
+          {
+            "id": "U8-1193",
+            "title": "U8-1193 fixture",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-1188",
+            "title": "U8-1188 fixture",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-1194",
+            "title": "U8-1194 fixture",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-1201",
+            "title": "U8-1201 fixture",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-1191",
+            "title": "U8-1191 fixture",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-1189",
+            "title": "U8-1189 fixture",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-937",
+            "title": "U8-937 fixture",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-1146",
+            "title": "U8-1146 fixture",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-1159",
+            "title": "U8-1159 fixture",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-1151",
+            "title": "U8-1151 fixture",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-1000",
+            "title": "U8-1000 fixture",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-1089",
+            "title": "U8-1089 fixture",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-1052",
+            "title": "U8-1052 fixture",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-1190",
+            "title": "U8-1190 fixture",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-1001",
+            "title": "U8-1001 fixture",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-16",
+            "title": "U8-16 fixture",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-1155",
+            "title": "U8-1155 fixture",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-959",
+            "title": "U8-959 fixture",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-449",
+            "title": "U8-449 fixture",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-1150",
+            "title": "U8-1150 fixture",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-794",
+            "title": "U8-794 fixture",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-350",
+            "title": "U8-350 fixture",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-1113",
+            "title": "U8-1113 fixture",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-925",
+            "title": "U8-925 fixture",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-1012",
+            "title": "U8-1012 fixture",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-767",
+            "title": "U8-767 fixture",
+            "status": "In Progress"
+          }
+        ],
+        "hasNextPage": false
+      }
+    },
+    {
+      "tool": "github::get_me",
+      "match": {},
+      "result": {
+        "login": "fixture-user"
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {
+        "query": "\"U8-1193\" org:unraid is:open OR \"U8-1188\" org:unraid is:open OR \"U8-1194\" org:unraid is:open OR \"U8-1201\" org:unraid is:open",
+        "perPage": 100
+      },
+      "result": {
+        "items": [
+          {
+            "number": 1000,
+            "title": "U8-1193 fixture",
+            "body": "Implements U8-1193",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/cloudflare/pull/1000",
+            "repository_url": "https://api.github.com/repos/unraid/cloudflare",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 1001,
+            "title": "U8-1188 fixture",
+            "body": "Implements U8-1188",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1001",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 1002,
+            "title": "U8-1194 fixture",
+            "body": "Implements U8-1194",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1002",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 1003,
+            "title": "U8-1201 fixture",
+            "body": "Implements U8-1201",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1003",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 1900,
+            "title": "chore(main): release 1.0.0",
+            "body": "U8-1193 U8-1188 U8-1194 U8-1201",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1900",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          }
+        ],
+        "total_count": 5,
+        "incomplete_results": false
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {
+        "query": "\"U8-1191\" org:unraid is:open OR \"U8-1189\" org:unraid is:open OR \"U8-937\" org:unraid is:open OR \"U8-1146\" org:unraid is:open",
+        "perPage": 100
+      },
+      "result": {
+        "items": [
+          {
+            "number": 1004,
+            "title": "U8-1191 fixture",
+            "body": "Implements U8-1191",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1004",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 1005,
+            "title": "U8-1189 fixture",
+            "body": "Implements U8-1189",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1005",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 1006,
+            "title": "U8-937 fixture",
+            "body": "Implements U8-937",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1006",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 1007,
+            "title": "U8-1146 fixture",
+            "body": "Implements U8-1146",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1007",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 1900,
+            "title": "chore(main): release 1.0.0",
+            "body": "U8-1191 U8-1189 U8-937 U8-1146",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1900",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          }
+        ],
+        "total_count": 5,
+        "incomplete_results": false
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {
+        "query": "\"U8-1159\" org:unraid is:open OR \"U8-1151\" org:unraid is:open OR \"U8-1000\" org:unraid is:open OR \"U8-1089\" org:unraid is:open",
+        "perPage": 100
+      },
+      "result": {
+        "items": [
+          {
+            "number": 1008,
+            "title": "U8-1159 fixture",
+            "body": "Implements U8-1159",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1008",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 1009,
+            "title": "U8-1151 fixture",
+            "body": "Implements U8-1151",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1009",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 1010,
+            "title": "U8-1000 fixture",
+            "body": "Implements U8-1000",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1010",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 1011,
+            "title": "U8-1089 fixture",
+            "body": "Implements U8-1089",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1011",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 1900,
+            "title": "chore(main): release 1.0.0",
+            "body": "U8-1159 U8-1151 U8-1000 U8-1089",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1900",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          }
+        ],
+        "total_count": 5,
+        "incomplete_results": false
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {
+        "query": "\"U8-1052\" org:unraid is:open OR \"U8-1190\" org:unraid is:open OR \"U8-1001\" org:unraid is:open OR \"U8-16\" org:unraid is:open",
+        "perPage": 100
+      },
+      "result": {
+        "items": [
+          {
+            "number": 1012,
+            "title": "U8-1052 fixture",
+            "body": "Implements U8-1052",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1012",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 1013,
+            "title": "U8-1190 fixture",
+            "body": "Implements U8-1190",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1013",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 1014,
+            "title": "U8-1001 fixture",
+            "body": "Implements U8-1001",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1014",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 1015,
+            "title": "U8-16 fixture",
+            "body": "Implements U8-16",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1015",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 1900,
+            "title": "chore(main): release 1.0.0",
+            "body": "U8-1052 U8-1190 U8-1001 U8-16",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1900",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 1901,
+            "title": "U8-160 fixture",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1901",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          }
+        ],
+        "total_count": 6,
+        "incomplete_results": false
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {
+        "query": "\"U8-1155\" org:unraid is:open OR \"U8-959\" org:unraid is:open OR \"U8-449\" org:unraid is:open OR \"U8-1150\" org:unraid is:open",
+        "perPage": 100
+      },
+      "result": {
+        "items": [
+          {
+            "number": 1016,
+            "title": "U8-1155 fixture",
+            "body": "Implements U8-1155",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1016",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 1017,
+            "title": "U8-959 fixture",
+            "body": "Implements U8-959",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1017",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 1018,
+            "title": "U8-449 fixture",
+            "body": "Implements U8-449",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1018",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 1019,
+            "title": "U8-1150 fixture",
+            "body": "Implements U8-1150",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1019",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 1900,
+            "title": "chore(main): release 1.0.0",
+            "body": "U8-1155 U8-959 U8-449 U8-1150",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1900",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          }
+        ],
+        "total_count": 5,
+        "incomplete_results": false
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {
+        "query": "\"U8-794\" org:unraid is:open OR \"U8-350\" org:unraid is:open OR \"U8-1113\" org:unraid is:open OR \"U8-925\" org:unraid is:open",
+        "perPage": 100
+      },
+      "result": {
+        "items": [
+          {
+            "number": 1020,
+            "title": "U8-794 fixture",
+            "body": "Implements U8-794",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1020",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 1021,
+            "title": "U8-350 fixture",
+            "body": "Implements U8-350",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1021",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 1022,
+            "title": "U8-1113 fixture",
+            "body": "Implements U8-1113",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1022",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 1023,
+            "title": "U8-925 fixture",
+            "body": "Implements U8-925",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1023",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 1900,
+            "title": "chore(main): release 1.0.0",
+            "body": "U8-794 U8-350 U8-1113 U8-925",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1900",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          }
+        ],
+        "total_count": 5,
+        "incomplete_results": false
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {
+        "query": "\"U8-1012\" org:unraid is:open OR \"U8-767\" org:unraid is:open",
+        "perPage": 100
+      },
+      "result": {
+        "items": [
+          {
+            "number": 1024,
+            "title": "U8-1012 fixture",
+            "body": "Implements U8-1012",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1024",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 1900,
+            "title": "chore(main): release 1.0.0",
+            "body": "U8-1012 U8-767",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1900",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          }
+        ],
+        "total_count": 2,
+        "incomplete_results": false
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {
+        "query": "author:fixture-user is:open org:unraid"
+      },
+      "result": {
+        "items": [
+          {
+            "number": 1512,
+            "title": "Synthetic implementation CLD-1149",
+            "body": "Implements CLD-1149",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/cloudflare/pull/1512",
+            "repository_url": "https://api.github.com/repos/unraid/cloudflare",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          }
+        ],
+        "total_count": 1,
+        "incomplete_results": false
+      }
+    }
+  ],
+  "expect": {
+    "/ok": true,
+    "/complete": true,
+    "/summary/issueCount": 26,
+    "/summary/issuesWithOpenPRs": 25,
+    "/summary/issuesWithoutObservedPRs": 1,
+    "/summary/relatedPRSearchCalls": 7,
+    "/summary/relatedPRSearchFailures": 0,
+    "/summary/handoffCalls": 0,
+    "/summary/toolCalls": 10,
+    "/summary/outputOmitted": 0,
+    "/mode/includeHistory": false,
+    "/mode/includeHandoffs": false,
+    "/schemaVersion": 2,
+    "/myOpenPRs/0": "unraid/cloudflare#1512",
+    "/issues/0/openPRs/0": "unraid/cloudflare#1000",
+    "/pullRequests/unraid~1cloudflare#1512/repo": "unraid/cloudflare",
+    "/pullRequests/unraid~1cloudflare#1512/number": 1512
+  },
+  "budgets": {
+    "wall_clock_ms": 20000,
+    "tool_calls": 10,
+    "output_bytes": 16000
+  }
+}

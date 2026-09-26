@@ -91,6 +91,7 @@ HTTP route, not a registered multi-surface service.
 - [Errors](./dev/ERRORS.md) — stable error taxonomy and surface mapping.
 - [Observability](./dev/OBSERVABILITY.md) — required fields, correlation, redaction, and verification.
 - [Testing](./dev/TESTING.md) — local and CI verification expectations.
+- [Snippet testing](./dev/SNIPPET_TESTING.md): fixture-first development, explicit live checks, snapshots, and budgets.
 - [Verification and compliance](./dev/VERIFICATION.md) — qualification denominator, evidence classes, formal methods, and release verification ownership.
 - [Rustdoc](./dev/RUSTDOC.md) — comprehensive Rust API documentation, doctest, and CI artifact contract.
 - [Serialization](./design/SERIALIZATION.md) — output and wire-shape ownership.
