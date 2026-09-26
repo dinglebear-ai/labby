@@ -468,6 +468,10 @@ pub fn build_route_descriptors() -> Vec<RouteDescriptor> {
         crate::api::services::server_logs::descriptors(),
     ));
     routes.extend(prefixed(
+        "/v1/notifications",
+        crate::api::services::notifications::descriptors(),
+    ));
+    routes.extend(prefixed(
         crate::app_manifest::SERVER_LOGS_DATA_API_PREFIX,
         crate::api::services::server_logs::data_descriptors(),
     ));
