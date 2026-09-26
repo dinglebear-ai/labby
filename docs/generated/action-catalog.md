@@ -200,6 +200,7 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `gateway` | `gateway.service_config.get` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `service*: string` | `ServiceConfigView` | mcp, api, web |
 | `gateway` | `gateway.service_config.set` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `service*: string`<br>`values*: json` | `ServiceConfigView` | mcp, api, web |
 | `gateway` | `gateway.skills.list` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `upstream: string` | `UpstreamSkillsView[]` | cli, mcp, api |
+| `gateway` | `gateway.ssh_hosts.list` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` |  | `string[]` | mcp, api |
 | `gateway` | `gateway.status` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name: string` | `GatewayRuntimeView[]` | mcp, api, web |
 | `gateway` | `gateway.supported_services` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` |  | `SupportedServiceView[]` | mcp, api, web |
 | `gateway` | `gateway.test` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name: string`<br>`spec: json` | `GatewayTestResult` | cli, mcp, api, web |

@@ -1212,6 +1212,7 @@ export function GatewayFormDialog({
 
           <TabsContent value="custom" className="flex flex-col gap-4">
             <GatewayCustomConnectionForm
+              key={`${gateway?.id ?? 'new'}-${open}`}
               transport={transport}
               onTransportChange={setTransport}
               name={name}
