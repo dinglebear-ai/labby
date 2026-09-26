@@ -235,6 +235,25 @@ than repeating upstream discovery. Snapshots are bounded and process-local; an
 expired, evicted, or pre-restart cursor fails with `invalid_cursor` and callers
 must restart from the first page.
 
+## Prompt discovery and required arguments
+
+A first `prompts/list` or direct `prompts/get` discovers lazy, enabled
+upstreams with `proxy_prompts = true`. It does not require a preceding
+`tools/list` or `resources/list`, and a prompt-only upstream may disable
+resource proxying entirely. Cold connection work obeys the route allowlist,
+`gateway.mcp_list_warm_timeout_ms`, and the configured discovery concurrency.
+OAuth providers remain on the caller-subject discovery path rather than being
+connected through the global pool. An expired warm-up budget starts no new
+connection attempts.
+
+The built-in prompt definitions are also their required-argument contract:
+`service-discover` requires `service`; `run-action` requires `service` and
+`action`. Missing arguments return JSON-RPC `-32602` with
+`kind = "missing_param"` and the parameter name. Required values that are
+null, non-string, empty, or whitespace-only return `kind = "invalid_param"`.
+They are rejected before string coercion or rendering, not substituted with
+`unknown` or a default action. Optional `params` behavior is unchanged.
+
 ## Resource Subscriptions
 
 Labby serves resource subscriptions through `subscriptions/listen` only. The
@@ -278,6 +297,39 @@ bounded metadata operations and exposes authorized file reads as
 The URI is a stable object identity, not a filesystem path or filename. See
 [STASH.md](../services/STASH.md) for the authorization, size, and error contract.
 Unsupported platforms omit the service and its resources from MCP discovery.
+
+A fresh Linux install without completed owner setup has an explicit
+`access_setup_required` gate. Authenticated Stash listing and reading preserve
+that kind, the operator-facing setup message, and the standard recovery
+metadata instead of collapsing the condition to `service_unavailable` or a
+permission denial. Discovery never bootstraps an owner or converts that error
+into an empty successful catalog. Corrupt, insecure, locked, read-only, or
+otherwise unavailable stores remain outages; denied and nonexistent resource
+reads remain indistinguishable. The managed Artifact follow loop waits for
+owner setup without emitting a failed-reconciliation warning every tick.
+
+### External client regression check
+
+With explicit executable paths, run the isolated Coco smoke matrix:
+
+```bash
+python3 scripts/ci/coco_interop_smoke.py \
+  --labby-bin /absolute/path/to/labby \
+  --coco-bin /absolute/path/to/coco-mcp \
+  --output-dir /tmp/coco-interop-results
+```
+
+The output directory must not already exist. The runner uses disposable homes,
+a prompt-only stdio fixture and a loopback HTTP listener, then stops only its
+own processes. It exercises legacy, modern and automatic negotiation, cold
+prompts, argument validation, Code Mode, resource reads and unauthenticated
+HTTP rejection. On Linux it also requires actionable Stash setup errors from
+the deliberately unprovisioned home. It does not complete owner setup, contact
+production upstreams, or test browser OAuth, keyrings or desktop UI.
+
+Coco can return exit zero for a partial snapshot. Inspect `listFailures` in
+addition to the process exit code. A pre-setup Stash error must stay visible;
+this is not a complete resource catalog or evidence of successful onboarding.
 
 ## Agent Skills (SEP-2640)
 

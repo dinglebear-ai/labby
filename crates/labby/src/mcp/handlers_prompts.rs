@@ -106,6 +106,23 @@ fn classify_prompt_fetch_failure(error: &CapabilityCallError) -> (&'static str, 
 }
 
 impl LabMcpServer {
+    #[cfg(feature = "gateway")]
+    async fn ensure_prompt_upstreams_ready_until(
+        &self,
+        pool: &Arc<crate::dispatch::upstream::pool::UpstreamPool>,
+        deadline: tokio::time::Instant,
+    ) {
+        if let Some(manager) = &self.gateway_manager {
+            manager
+                .ensure_prompt_upstreams_ready_until(
+                    pool,
+                    self.route_scope.allowed_upstreams(),
+                    deadline,
+                )
+                .await;
+        }
+    }
+
     pub(crate) async fn list_prompts_impl(
         &self,
         request: Option<PaginatedRequestParams>,
@@ -267,6 +284,8 @@ impl LabMcpServer {
         #[cfg(feature = "gateway")]
         if let Some(pool) = self.current_upstream_pool().await {
             let catalog_deadline = tokio::time::Instant::now() + pool.request_timeout();
+            self.ensure_prompt_upstreams_ready_until(&pool, catalog_deadline)
+                .await;
             let builtin_name_refs: Vec<&str> = builtin_names.iter().map(String::as_str).collect();
             let upstream_prompts = pool
                 .list_upstream_prompts_with_provenance_allowed_until(
@@ -554,10 +573,35 @@ impl LabMcpServer {
                 None,
             ));
         }
-        let args = request
-            .arguments
-            .clone()
-            .unwrap_or_default()
+        let raw_args = request.arguments.clone().unwrap_or_default();
+        if let Err(error) = crate::mcp::prompts::validate_arguments(&request.name, &raw_args) {
+            let elapsed_ms = start.elapsed().as_millis();
+            tracing::warn!(
+                surface = "mcp", service = "labby", action = "get_prompt",
+                subject, prompt = %request.name, elapsed_ms, kind = error.kind(),
+                "built-in prompt arguments rejected"
+            );
+            self.emit_dispatch_notification(
+                &context,
+                "lab",
+                "get_prompt",
+                elapsed_ms,
+                DispatchLogOutcome::Failure {
+                    level: LoggingLevel::Warning,
+                    kind: error.kind().to_owned().into(),
+                },
+            )
+            .await;
+            return Err(ErrorData::invalid_params(
+                error.user_message().to_owned(),
+                Some(error.to_agent_value_with_context(&prompt_error_context(
+                    &request.name,
+                    None,
+                    None,
+                ))),
+            ));
+        }
+        let args = raw_args
             .into_iter()
             .map(|(key, value)| {
                 let string = match value {
@@ -631,7 +675,17 @@ impl LabMcpServer {
         }
 
         #[cfg(feature = "gateway")]
-        if let Some(pool) = self.current_upstream_pool().await
+        let prompt_pool = self.current_upstream_pool().await;
+        #[cfg(feature = "gateway")]
+        if let Some(pool) = &prompt_pool {
+            self.ensure_prompt_upstreams_ready_until(
+                pool,
+                tokio::time::Instant::now() + pool.request_timeout(),
+            )
+            .await;
+        }
+        #[cfg(feature = "gateway")]
+        if let Some(pool) = prompt_pool
             && let Some(upstream_name) = pool
                 .find_prompt_owner_allowed(&request.name, self.route_scope.allowed_upstreams())
                 .await
@@ -1067,6 +1121,262 @@ mod tests {
             }),
             (3, 2)
         );
+    }
+
+    #[tokio::test]
+    async fn coco_builtin_prompts_reject_missing_required_arguments() {
+        let server = prompt_test_server(McpRouteScope::Root);
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        for prompt in crate::mcp::prompts::list_all().prompts {
+            for argument in prompt.arguments.unwrap_or_default() {
+                if argument.required != Some(true) {
+                    continue;
+                }
+                let mut arguments =
+                    serde_json::json!({"service": "gateway", "action": "status.get"})
+                        .as_object()
+                        .unwrap()
+                        .clone();
+                arguments.remove(argument.name.as_str());
+                let mut request = GetPromptRequestParams::new(prompt.name.clone());
+                request.arguments = Some(arguments);
+                let error = running
+                    .service()
+                    .get_prompt_impl(request, request_context(running.peer().clone()))
+                    .await
+                    .expect_err("advertised required prompt argument must be enforced");
+                assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+                let data = error.data.expect("structured validation error");
+                assert_eq!(data["kind"], "missing_param");
+                assert_eq!(data["param"], argument.name.as_str());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn coco_builtin_prompts_reject_invalid_required_arguments() {
+        let server = prompt_test_server(McpRouteScope::Root);
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        for value in [
+            Value::Null,
+            serde_json::json!(42),
+            serde_json::json!(false),
+            serde_json::json!(""),
+            serde_json::json!(" \t "),
+        ] {
+            let mut request = GetPromptRequestParams::new("service-discover");
+            request.arguments = Some(std::iter::once(("service".to_string(), value)).collect());
+            let error = running
+                .service()
+                .get_prompt_impl(request, request_context(running.peer().clone()))
+                .await
+                .expect_err("required service must be a nonempty string");
+            assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+            let data = error.data.expect("structured validation error");
+            assert_eq!(data["kind"], "invalid_param");
+            assert_eq!(data["param"], "service");
+        }
+    }
+
+    #[cfg(feature = "gateway")]
+    #[derive(Clone)]
+    struct CocoPromptOnlyServer;
+
+    #[cfg(feature = "gateway")]
+    impl rmcp::ServerHandler for CocoPromptOnlyServer {
+        fn get_info(&self) -> rmcp::model::ServerInfo {
+            rmcp::model::ServerInfo::new(
+                rmcp::model::ServerCapabilities::builder()
+                    .enable_prompts()
+                    .build(),
+            )
+        }
+
+        async fn list_prompts(
+            &self,
+            _: Option<PaginatedRequestParams>,
+            _: RequestContext<RoleServer>,
+        ) -> Result<ListPromptsResult, ErrorData> {
+            Ok(ListPromptsResult::with_all_items(vec![
+                rmcp::model::Prompt::new("greet", None::<String>, None),
+            ]))
+        }
+
+        async fn get_prompt(
+            &self,
+            _: GetPromptRequestParams,
+            _: RequestContext<RoleServer>,
+        ) -> Result<GetPromptResponse, ErrorData> {
+            Ok(
+                rmcp::model::GetPromptResult::new(vec![rmcp::model::PromptMessage::new_text(
+                    rmcp::model::Role::User,
+                    "Hello Ada",
+                )])
+                .into(),
+            )
+        }
+    }
+
+    #[cfg(feature = "gateway")]
+    async fn coco_cold_prompt_fixture() -> (
+        LabMcpServer,
+        tokio::task::JoinHandle<()>,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        use crate::dispatch::upstream::pool::UpstreamPool;
+        use rmcp::transport::streamable_http_server::{
+            StreamableHttpServerConfig, StreamableHttpService, session::never::NeverSessionManager,
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = Arc::clone(&requests);
+        let service = StreamableHttpService::new(
+            move || {
+                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(CocoPromptOnlyServer)
+            },
+            Arc::new(NeverSessionManager::default()),
+            StreamableHttpServerConfig::default()
+                .with_allowed_hosts(vec![address.to_string()])
+                .with_json_response(true),
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(listener, axum::Router::new().nest_service("/mcp", service))
+                .await
+                .unwrap();
+        });
+        let upstream = serde_json::from_value::<crate::config::UpstreamConfig>(serde_json::json!({
+            "name": "audit-fixture", "url": format!("http://{address}/mcp"),
+            "proxy_prompts": true, "proxy_resources": false
+        }))
+        .unwrap();
+        let pool = Arc::new(UpstreamPool::new());
+        pool.seed_lazy_upstreams(std::slice::from_ref(&upstream))
+            .await;
+        let runtime = crate::dispatch::gateway::manager::GatewayRuntimeHandle::default();
+        runtime.swap(Some(pool)).await;
+        let manager = Arc::new(
+            crate::dispatch::gateway::config_store::test_gateway_manager(
+                std::path::PathBuf::from("config.toml"),
+                runtime,
+            ),
+        );
+        let mut config = crate::config::LabConfig::default();
+        config.gateway.mcp_list_warm_timeout_ms = Some(5000);
+        config.upstream = vec![upstream];
+        manager
+            .seed_config_unchecked_for_tests(config.to_gateway_config())
+            .await;
+        let mut server = prompt_test_server(McpRouteScope::Root);
+        server.gateway_manager = Some(manager);
+        (server, task, requests)
+    }
+
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn coco_cold_prompt_list_needs_no_tool_or_resource_warmup() {
+        let (server, task, _requests) = coco_cold_prompt_fixture().await;
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let result = running
+            .service()
+            .list_prompts_impl(None, request_context(running.peer().clone()))
+            .await;
+        task.abort();
+        let prompts = result.expect("cold prompt listing").prompts;
+        assert!(
+            prompts.iter().any(|p| p.name == "audit-fixture/greet"),
+            "{prompts:?}"
+        );
+    }
+
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn coco_cold_prompt_get_needs_no_prior_listing() {
+        let (server, task, _requests) = coco_cold_prompt_fixture().await;
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let result = running
+            .service()
+            .get_prompt_impl(
+                GetPromptRequestParams::new("audit-fixture/greet"),
+                request_context(running.peer().clone()),
+            )
+            .await;
+        task.abort();
+        let result = complete_prompt(result.expect("cold prompt get"));
+        assert!(
+            serde_json::to_string(&result)
+                .unwrap()
+                .contains("Hello Ada")
+        );
+    }
+
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn coco_prompt_discovery_never_connects_disabled_or_out_of_route_providers() {
+        for mode in ["disabled", "proxy_disabled", "route_excluded"] {
+            let (mut server, task, requests) = coco_cold_prompt_fixture().await;
+            let manager = server.gateway_manager.as_ref().unwrap();
+            let mut config = manager.current_config().await;
+            match mode {
+                "disabled" => config.upstream[0].enabled = false,
+                "proxy_disabled" => config.upstream[0].proxy_prompts = false,
+                _ => {
+                    server.route_scope = McpRouteScope::protected_subset(
+                        "coco",
+                        ["other-upstream"],
+                        ["gateway"],
+                        false,
+                    )
+                }
+            }
+            manager.seed_config_unchecked_for_tests(config).await;
+            let (transport, _client_transport) = tokio::io::duplex(64);
+            let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+                server, transport, None,
+            );
+            let result = running
+                .service()
+                .list_prompts_impl(None, request_context(running.peer().clone()))
+                .await;
+            task.abort();
+            assert!(
+                result
+                    .unwrap()
+                    .prompts
+                    .iter()
+                    .all(|p| p.name != "audit-fixture/greet")
+            );
+            assert_eq!(
+                requests.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "{mode}"
+            );
+        }
+    }
+
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn coco_expired_prompt_discovery_budget_never_dispatches() {
+        let (server, task, requests) = coco_cold_prompt_fixture().await;
+        let pool = server.current_upstream_pool().await.unwrap();
+        server
+            .ensure_prompt_upstreams_ready_until(&pool, tokio::time::Instant::now())
+            .await;
+        task.abort();
+        assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
