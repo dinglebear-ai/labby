@@ -106,6 +106,11 @@ pub struct UpstreamRuntimeMetadata {
     pub started_at: Option<SystemTime>,
     pub origin: Option<String>,
     pub owner: Option<UpstreamRuntimeOwner>,
+    /// Upstream identity reported by the negotiated MCP peer.
+    pub server_name: Option<String>,
+    pub server_version: Option<String>,
+    /// Negotiated MCP protocol version for this exact connection.
+    pub protocol_version: Option<String>,
 }
 
 impl Clone for UpstreamRuntimeMetadata {
@@ -119,6 +124,9 @@ impl Clone for UpstreamRuntimeMetadata {
             started_at: self.started_at,
             origin: self.origin.clone(),
             owner: self.owner.clone(),
+            server_name: self.server_name.clone(),
+            server_version: self.server_version.clone(),
+            protocol_version: self.protocol_version.clone(),
         }
     }
 }

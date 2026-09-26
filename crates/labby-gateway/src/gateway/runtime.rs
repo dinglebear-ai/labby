@@ -1,7 +1,6 @@
 #[cfg(target_os = "linux")]
 use std::collections::BTreeMap;
-use std::collections::BTreeSet;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::{
@@ -19,7 +18,8 @@ use tempfile::NamedTempFile;
 
 use crate::gateway::manager::GatewayManager;
 use crate::gateway::projection::{
-    operator_visible_upstream_error, redacted_gateway_target, upstream_summary_with_health,
+    operator_visible_upstream_error, redacted_gateway_target, redacted_stdio_command,
+    upstream_summary_with_health,
 };
 #[cfg(all(unix, target_os = "linux"))]
 use crate::process::unix::terminate_process_group_sigkill;
@@ -28,9 +28,10 @@ use crate::process::unix::{pid_is_alive, terminate_sigkill};
 #[cfg(target_os = "linux")]
 use crate::process::unix::{process_group_id, process_has_ancestor, read_cmdline};
 use crate::upstream::pool::{UpstreamPool, UpstreamRestart};
-use crate::upstream::types::{UpstreamCapability, UpstreamRuntimeOwner};
+use crate::upstream::types::{UpstreamCapability, UpstreamRuntimeMetadata, UpstreamRuntimeOwner};
 use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::{GatewayConfig, UpstreamConfig};
+use labby_runtime::redact::redact_secret_like_segments;
 
 static NEXT_POOL_PUBLICATION_GENERATION: AtomicU64 = AtomicU64::new(1);
 
@@ -179,6 +180,10 @@ pub(super) struct PersistedGatewayRuntimeEntry {
     pgid: Option<u32>,
     #[serde(default)]
     started_at_epoch_secs: Option<u64>,
+    /// Linux /proc start ticks for PID-reuse fencing. Older state files omit it
+    /// and fall back to the existing PID/PGID check until rewritten.
+    #[serde(default)]
+    process_start_ticks: Option<u64>,
     #[serde(default)]
     observed_at_epoch_secs: u64,
     #[serde(default)]
@@ -321,6 +326,7 @@ impl GatewayManager {
                         started_at_epoch_secs: runtime
                             .started_at
                             .and_then(system_time_to_epoch_secs),
+                        process_start_ticks: runtime_process_start_ticks(pid),
                         observed_at_epoch_secs: epoch_now_secs(),
                         origin: runtime.origin.clone(),
                         owner: runtime.owner.as_ref().map(runtime_owner_view),
@@ -515,6 +521,11 @@ impl GatewayManager {
         // Runtime inspection reports the current snapshot. It must not start or
         // connect upstreams; refresh/test/reload own active discovery.
         let persisted = self.reconcile_runtime_state(&cfg, pool.as_deref()).await?;
+        let live_runtimes = match pool.as_deref() {
+            Some(pool) => pool.upstream_runtime_metadata_snapshot().await,
+            None => Default::default(),
+        };
+        let registered_live_runtimes = registered_runtime_identities(live_runtimes.values());
         let patterns: Vec<String> = cfg
             .upstream
             .iter()
@@ -563,10 +574,7 @@ impl GatewayManager {
             if let Some(scoped) = &scoped {
                 summary = scoped.summary;
             }
-            let runtime = match pool.as_deref() {
-                Some(pool) => pool.upstream_runtime_metadata(&upstream.name).await,
-                None => None,
-            };
+            let runtime = live_runtimes.get(&upstream.name).cloned();
             let live_pid = runtime.as_ref().and_then(|meta| meta.pid);
             let persisted_rows: Vec<&PersistedGatewayRuntimeEntry> = persisted
                 .entries
@@ -579,7 +587,12 @@ impl GatewayManager {
                 .count();
             let live_stale_groups = if upstream.command.is_some() {
                 let live_runtime = live_pid.zip(runtime.as_ref().and_then(|meta| meta.pgid));
-                likely_stale_process_groups(upstream, live_runtime, &process_matches)
+                likely_stale_process_groups(
+                    upstream,
+                    live_runtime,
+                    &registered_live_runtimes,
+                    &process_matches,
+                )
             } else {
                 BTreeSet::new()
             };
@@ -594,7 +607,10 @@ impl GatewayManager {
                     stale_identities.insert(format!(
                         "journal:{}:{}",
                         entry.pid,
-                        entry.started_at_epoch_secs.unwrap_or(0)
+                        entry
+                            .process_start_ticks
+                            .or(entry.started_at_epoch_secs)
+                            .unwrap_or(0)
                     ));
                 }
             }
@@ -640,6 +656,13 @@ impl GatewayManager {
                 discovered_skill_count: summary.discovered_skill_count,
                 exposed_skill_count: summary.exposed_skill_count,
                 supports_skills: summary.supports_skills,
+                server_name: runtime.as_ref().and_then(|meta| meta.server_name.clone()),
+                server_version: runtime
+                    .as_ref()
+                    .and_then(|meta| meta.server_version.clone()),
+                protocol_version: runtime
+                    .as_ref()
+                    .and_then(|meta| meta.protocol_version.clone()),
                 likely_stale_count: stale_count,
                 pid: live_pid.or_else(|| fallback.map(|entry| entry.pid)),
                 pgid: runtime
@@ -742,6 +765,16 @@ impl GatewayManager {
         let mut stream = futures::stream::iter(upstreams)
             .map(|upstream| async move {
                 let name = upstream.name.clone();
+                tracing::info!(
+                    surface = "dispatch",
+                    service = "gateway",
+                    action = "gateway.catalog.refresh.started",
+                    upstream = %name,
+                    oauth_scoped = upstream.oauth.is_some(),
+                    proxy_resources = upstream.proxy_resources,
+                    proxy_prompts = upstream.proxy_prompts,
+                    "gateway catalog refresh started"
+                );
                 let result = pool
                     .reprobe_tools_for_upstream_as(&upstream, oauth_subject, None)
                     .await;
@@ -762,20 +795,53 @@ impl GatewayManager {
                     };
                     tokio::join!(resources, prompts);
                 }
-                (name, result)
+                let summary = if result.is_ok() {
+                    pool.cached_upstream_summary(&name).await
+                } else {
+                    None
+                };
+                (name, result, summary)
             })
             .buffer_unordered(concurrency);
 
-        while let Some((upstream, result)) = stream.next().await {
-            if let Err(error) = result {
-                tracing::warn!(
-                    surface = "dispatch",
-                    service = "gateway",
-                    action = "gateway.status.refresh",
-                    upstream = upstream.as_str(),
-                    error = %error,
-                    "gateway status tool catalog refresh failed"
-                );
+        while let Some((upstream, result, summary)) = stream.next().await {
+            match result {
+                Ok(changed) => {
+                    tracing::info!(
+                        surface = "dispatch",
+                        service = "gateway",
+                        action = "gateway.catalog.refresh.completed",
+                        upstream = upstream.as_str(),
+                        changed,
+                        discovered_tool_count = summary
+                            .as_ref()
+                            .map_or(0, |summary| summary.discovered_tool_count),
+                        exposed_tool_count = summary
+                            .as_ref()
+                            .map_or(0, |summary| summary.exposed_tool_count),
+                        discovered_resource_count = summary
+                            .as_ref()
+                            .map_or(0, |summary| summary.discovered_resource_count),
+                        discovered_prompt_count = summary
+                            .as_ref()
+                            .map_or(0, |summary| summary.discovered_prompt_count),
+                        discovered_skill_count = summary
+                            .as_ref()
+                            .map_or(0, |summary| summary.discovered_skill_count),
+                        "gateway catalog refresh completed"
+                    );
+                }
+                Err(error) => {
+                    let error = redact_secret_like_segments(&error.to_string());
+                    tracing::warn!(
+                        surface = "dispatch",
+                        service = "gateway",
+                        action = "gateway.catalog.refresh.failed",
+                        upstream = upstream.as_str(),
+                        error = %error,
+                        "gateway catalog refresh failed"
+                    );
+                }
             }
         }
     }
@@ -803,10 +869,8 @@ impl GatewayManager {
         aggressive: bool,
         dry_run: bool,
     ) -> Result<super::types::GatewayCleanupView, ToolError> {
-        let upstream = self
-            .config
-            .read()
-            .await
+        let config = self.config.read().await.clone();
+        let upstream = config
             .upstream
             .iter()
             .find(|existing| existing.name == name)
@@ -815,6 +879,12 @@ impl GatewayManager {
                 sdk_kind: "not_found".to_string(),
                 message: format!("gateway `{name}` not found"),
             })?;
+
+        // Retain the pool handle across the process scan, then snapshot
+        // ownership *after* scanning and immediately before filtering/killing.
+        // A process spawned after the scan cannot be in the match set; a process
+        // that became registered during the scan is therefore protected.
+        let pool = self.runtime.current_pool().await;
 
         let gateway_patterns = upstream_cleanup_patterns(&upstream, false);
         let local_patterns = local_cleanup_patterns();
@@ -846,6 +916,56 @@ impl GatewayManager {
                 ToolError::internal_message(format!("process scan task panicked: {error}"))
             })?
         };
+
+        // A cleanup for one upstream must never signal another upstream's
+        // currently registered runtime, even when their argv share SSH keys,
+        // known_hosts files, hostnames, wrapper prefixes, or other fragments.
+        let protected_runtime_snapshot = match pool.as_deref() {
+            Some(pool) => pool.upstream_runtime_metadata_snapshot().await,
+            None => Default::default(),
+        };
+        let protected_live_runtimes = registered_runtime_identities(
+            protected_runtime_snapshot
+                .iter()
+                .filter(|(candidate, _)| candidate.as_str() != name)
+                .map(|(_, runtime)| runtime),
+        );
+
+        let (gateway_matches, mut protected_pids) =
+            exclude_registered_runtime_processes(gateway_matches, &protected_live_runtimes);
+        let (local_matches, local_protected_pids) =
+            exclude_registered_runtime_processes(local_matches, &protected_live_runtimes);
+        let (aggressive_matches, aggressive_protected_pids) =
+            exclude_registered_runtime_processes(aggressive_matches, &protected_live_runtimes);
+        protected_pids.extend(local_protected_pids);
+        protected_pids.extend(aggressive_protected_pids);
+
+        let (command, args) = redacted_stdio_command(&upstream);
+        tracing::info!(
+            surface = "dispatch",
+            service = "gateway",
+            action = "gateway.cleanup.requested",
+            upstream = %upstream.name,
+            aggressive,
+            dry_run,
+            command = ?command,
+            args = ?args,
+            gateway_matched = count_matched_processes(&gateway_matches),
+            local_matched = count_matched_processes(&local_matches),
+            aggressive_matched = count_matched_processes(&aggressive_matches),
+            protected_runtime_count = protected_live_runtimes.len(),
+            "gateway cleanup evaluated process ownership"
+        );
+        if !protected_pids.is_empty() {
+            tracing::warn!(
+                surface = "dispatch",
+                service = "gateway",
+                action = "gateway.cleanup.ownership_refused",
+                upstream = %upstream.name,
+                protected_pids = ?protected_pids,
+                "cleanup refused processes owned by other live upstream runtimes"
+            );
+        }
 
         let view = super::types::GatewayCleanupView {
             upstream: upstream.name,
@@ -935,10 +1055,19 @@ fn local_cleanup_patterns() -> Vec<String> {
     ]
 }
 
+fn registered_runtime_identities<'a>(
+    runtimes: impl Iterator<Item = &'a UpstreamRuntimeMetadata>,
+) -> Vec<(u32, u32)> {
+    runtimes
+        .filter_map(|runtime| runtime.pid.map(|pid| (pid, runtime.pgid.unwrap_or(pid))))
+        .collect()
+}
+
 #[cfg(target_os = "linux")]
 fn likely_stale_process_groups(
     upstream: &UpstreamConfig,
     live_runtime: Option<(u32, u32)>,
+    registered_live_runtimes: &[(u32, u32)],
     matches: &[GatewayCleanupMatch],
 ) -> BTreeSet<String> {
     let patterns = upstream_cleanup_patterns(upstream, false);
@@ -951,7 +1080,12 @@ fn likely_stale_process_groups(
             let group = process_group_id(pid).unwrap_or(pid);
             if live_runtime.is_some_and(|(live_pid, live_pgid)| {
                 group == live_pgid || process_has_ancestor(pid, live_pid)
-            }) {
+            }) || registered_live_runtimes
+                .iter()
+                .any(|&(registered_pid, registered_pgid)| {
+                    group == registered_pgid || process_has_ancestor(pid, registered_pid)
+                })
+            {
                 continue;
             }
             groups.insert(group);
@@ -981,6 +1115,18 @@ fn process_start_ticks(stat: &str) -> Option<u64> {
         .ok()
 }
 
+#[cfg(target_os = "linux")]
+fn runtime_process_start_ticks(pid: u32) -> Option<u64> {
+    std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|stat| process_start_ticks(&stat))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn runtime_process_start_ticks(_pid: u32) -> Option<u64> {
+    None
+}
+
 fn stale_incident_identity(identities: &BTreeSet<String>) -> Option<String> {
     if identities.is_empty() {
         return None;
@@ -997,6 +1143,7 @@ fn stale_incident_identity(identities: &BTreeSet<String>) -> Option<String> {
 fn likely_stale_process_groups(
     _upstream: &UpstreamConfig,
     _live_runtime: Option<(u32, u32)>,
+    _registered_live_runtimes: &[(u32, u32)],
     _matches: &[GatewayCleanupMatch],
 ) -> BTreeSet<String> {
     BTreeSet::new()
@@ -1022,12 +1169,13 @@ pub(super) fn upstream_cleanup_patterns(
             joined.push(' ');
             joined.push_str(arg);
         }
+        // The full argv-derived command is the generic ownership signature.
+        // Never promote a single argument merely because it contains the
+        // upstream name: SSH keys, known_hosts paths, hostnames, and wrapper
+        // paths are routinely shared by independent upstreams and substring
+        // matching them creates cross-upstream false positives. Known wrapper
+        // families that require looser matching are added explicitly below.
         patterns.push(joined);
-        for arg in &upstream.args {
-            if arg.contains(&upstream.name) {
-                patterns.push(arg.clone());
-            }
-        }
     }
     if joined.contains("chrome-devtools-mcp") || upstream.name.contains("chrome-devtools") {
         patterns.push("chrome-devtools-mcp".to_string());
@@ -1113,6 +1261,11 @@ fn persisted_runtime_process_still_matches(entry: &PersistedGatewayRuntimeEntry)
     if !process_is_alive(entry.pid) {
         return false;
     }
+    if let Some(stored_start_ticks) = entry.process_start_ticks {
+        if runtime_process_start_ticks(entry.pid) != Some(stored_start_ticks) {
+            return false;
+        }
+    }
     entry
         .pgid
         .is_none_or(|stored_pgid| process_group_id(entry.pid) == Some(stored_pgid))
@@ -1127,6 +1280,44 @@ fn persisted_runtime_process_still_matches(entry: &PersistedGatewayRuntimeEntry)
 struct GatewayCleanupMatch {
     pattern: String,
     pids: Vec<u32>,
+}
+
+#[cfg(target_os = "linux")]
+fn exclude_registered_runtime_processes(
+    matches: Vec<GatewayCleanupMatch>,
+    registered_live_runtimes: &[(u32, u32)],
+) -> (Vec<GatewayCleanupMatch>, BTreeSet<u32>) {
+    let mut protected_pids = BTreeSet::new();
+    let mut filtered = Vec::with_capacity(matches.len());
+
+    for mut matched in matches {
+        matched.pids.retain(|&pid| {
+            let group = process_group_id(pid).unwrap_or(pid);
+            let protected =
+                registered_live_runtimes
+                    .iter()
+                    .any(|&(registered_pid, registered_pgid)| {
+                        group == registered_pgid || process_has_ancestor(pid, registered_pid)
+                    });
+            if protected {
+                protected_pids.insert(pid);
+            }
+            !protected
+        });
+        if !matched.pids.is_empty() {
+            filtered.push(matched);
+        }
+    }
+
+    (filtered, protected_pids)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn exclude_registered_runtime_processes(
+    matches: Vec<GatewayCleanupMatch>,
+    _registered_live_runtimes: &[(u32, u32)],
+) -> (Vec<GatewayCleanupMatch>, BTreeSet<u32>) {
+    (matches, BTreeSet::new())
 }
 
 fn cleanup_match_view(matched: &GatewayCleanupMatch) -> super::types::GatewayCleanupMatchView {
@@ -1307,6 +1498,93 @@ mod tests {
             Some(12345)
         );
         assert_eq!(process_start_ticks("incomplete"), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn registered_live_runtime_is_never_classified_or_returned_as_stale() {
+        let pid = std::process::id();
+        let pgid = process_group_id(pid).expect("test process group");
+        let registered = vec![(pid, pgid)];
+        let matches = vec![GatewayCleanupMatch {
+            pattern: "/usr/bin/example --shared".to_string(),
+            pids: vec![pid],
+        }];
+
+        let (filtered, protected) =
+            exclude_registered_runtime_processes(matches.clone(), &registered);
+        assert!(filtered.is_empty());
+        assert_eq!(protected, BTreeSet::from([pid]));
+
+        let upstream = UpstreamConfig {
+            name: "target".to_string(),
+            display_name: None,
+            lifecycle: None,
+            enabled: true,
+            priority: 1.0,
+            url: None,
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
+            bearer_token_env: None,
+            command: Some("/usr/bin/example".to_string()),
+            args: vec!["--shared".to_string()],
+            env: Default::default(),
+            proxy_resources: false,
+            proxy_prompts: false,
+            expose_tools: None,
+            expose_resources: None,
+            expose_prompts: None,
+            proxy_skills: false,
+            expose_skills: None,
+            code_mode_hint: None,
+            oauth: None,
+            imported_from: None,
+        };
+        assert!(
+            likely_stale_process_groups(&upstream, None, &registered, &matches).is_empty(),
+            "a runtime registered to another upstream is owned, not stale"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn persisted_runtime_rejects_pid_reuse_by_process_start_identity() {
+        let pid = std::process::id();
+        let pgid = process_group_id(pid).expect("test process group");
+        let start_ticks = runtime_process_start_ticks(pid).expect("test process start ticks");
+        let base = PersistedGatewayRuntimeEntry {
+            upstream: "fixture".to_string(),
+            pid,
+            pgid: Some(pgid),
+            started_at_epoch_secs: None,
+            process_start_ticks: Some(start_ticks),
+            observed_at_epoch_secs: 0,
+            origin: None,
+            owner: None,
+            transport: Some("stdio".to_string()),
+            target: None,
+        };
+
+        assert!(persisted_runtime_process_still_matches(&base));
+
+        let reused = PersistedGatewayRuntimeEntry {
+            process_start_ticks: Some(start_ticks.saturating_add(1)),
+            ..base.clone()
+        };
+        assert!(
+            !persisted_runtime_process_still_matches(&reused),
+            "a recycled PID must not inherit an older runtime's ownership"
+        );
+
+        let legacy = PersistedGatewayRuntimeEntry {
+            process_start_ticks: None,
+            ..base
+        };
+        assert!(
+            persisted_runtime_process_still_matches(&legacy),
+            "legacy runtime journals remain backward compatible until rewritten"
+        );
     }
 
     use super::*;

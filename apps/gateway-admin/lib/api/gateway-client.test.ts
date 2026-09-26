@@ -1242,6 +1242,9 @@ test('gatewayApi.get preserves side-effect-free runtime diagnostics without test
         pgid: 4240,
         age_seconds: 90,
         origin: 'gateway_pool',
+        server_name: 'asana-mcp',
+        server_version: '4.5.6',
+        protocol_version: '2026-07-28',
         runtime_state_path: '/tmp/gateway.runtime.json',
         reconciled_at: '2026-08-22T05:00:00Z',
         likely_stale_count: 1,
@@ -1254,6 +1257,9 @@ test('gatewayApi.get preserves side-effect-free runtime diagnostics without test
       assert.equal(gateway.status.connected, false)
       assert.equal(gateway.status.pid, 4242)
       assert.equal(gateway.status.pgid, 4240)
+      assert.equal(gateway.status.server_name, 'asana-mcp')
+      assert.equal(gateway.status.server_version, '4.5.6')
+      assert.equal(gateway.status.protocol_version, '2026-07-28')
       assert.equal(gateway.status.runtime_state_path, '/tmp/gateway.runtime.json')
       assert.equal(gateway.status.reconciled_at, '2026-08-22T05:00:00Z')
       assert.equal(gateway.status.likely_stale_count, 1)

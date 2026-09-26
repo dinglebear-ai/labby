@@ -1499,6 +1499,22 @@ impl UpstreamPool {
             .map(|conn| conn.runtime.clone())
     }
 
+    /// Snapshot every shared upstream runtime under one connection-map read.
+    ///
+    /// Cleanup/health reconciliation uses this to reason about cross-upstream
+    /// process ownership without constructing a torn view from one lock
+    /// acquisition per upstream.
+    pub async fn upstream_runtime_metadata_snapshot(
+        &self,
+    ) -> BTreeMap<String, UpstreamRuntimeMetadata> {
+        self.connections
+            .read()
+            .await
+            .iter()
+            .map(|(name, conn)| (name.clone(), conn.runtime.clone()))
+            .collect()
+    }
+
     /// Return the current tool health for one upstream.
     pub async fn upstream_tool_health(&self, upstream_name: &str) -> Option<UpstreamHealth> {
         let catalog = self.catalog.read().await;

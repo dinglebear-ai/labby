@@ -871,6 +871,7 @@ pub(super) async fn runtime_view(
     let last_error = operator_visible_upstream_error(pool.upstream_last_error(name).await);
     let dependency_hint = last_error.as_deref().and_then(dependency_hint_from_error);
     let header_recovery = pool.header_recovery_metrics(name);
+    let runtime_metadata = pool.upstream_runtime_metadata(name).await;
     let tool_health = pool.upstream_tool_health(name).await;
     let connected = last_error.is_none()
         && tool_health
@@ -889,6 +890,15 @@ pub(super) async fn runtime_view(
         exposed_prompt_count: summary.exposed_prompt_count,
         exposed_skill_count: summary.exposed_skill_count,
         supports_skills: summary.supports_skills,
+        server_name: runtime_metadata
+            .as_ref()
+            .and_then(|runtime| runtime.server_name.clone()),
+        server_version: runtime_metadata
+            .as_ref()
+            .and_then(|runtime| runtime.server_version.clone()),
+        protocol_version: runtime_metadata
+            .as_ref()
+            .and_then(|runtime| runtime.protocol_version.clone()),
         last_error,
         dependency_hint,
         header_recovery: GatewayHeaderRecoveryMetricsView {
