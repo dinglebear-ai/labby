@@ -799,10 +799,22 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         .map_err(anyhow::Error::msg)?;
     let depot_policy =
         crate::dispatch::depot::manager::host_policy(&config.depot).map_err(anyhow::Error::msg)?;
+    let notification_center = match crate::notifications::NotificationCenter::open().await {
+        Ok(center) => Arc::new(center),
+        Err(error) => {
+            tracing::warn!(
+                subsystem = "notifications",
+                error = %error,
+                "persistent notification inbox unavailable; using in-memory inbox"
+            );
+            Arc::new(crate::notifications::NotificationCenter::default())
+        }
+    };
 
     let mut state = AppState::from_registry(registry)
         .with_config(config.clone())
         .with_depot_snapshot(depot_secrets, depot_policy)
+        .with_notification_center(Arc::clone(&notification_center))
         .with_depot_storage(
             config_path.clone(),
             dotenv_path().unwrap_or_else(|_| ".env".into()),
@@ -1007,6 +1019,11 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
             .any(|upstream| upstream.oauth.is_some()),
         web_ui_auth_disabled = state.web_ui_auth_disabled,
         "startup plan resolved"
+    );
+
+    let _depot_notification_monitor = crate::notifications::spawn_depot_failure_monitor(
+        Arc::new(crate::dispatch::depot::DepotClient::from_env()),
+        Arc::clone(&notification_center),
     );
 
     let result = run_http(

@@ -53,6 +53,7 @@ pub mod log_fmt;
 #[allow(unreachable_pub)]
 pub mod mcp;
 pub mod net;
+pub(crate) mod notifications;
 #[allow(unreachable_pub)]
 pub mod oauth;
 #[allow(unreachable_pub)]

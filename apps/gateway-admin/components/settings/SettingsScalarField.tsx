@@ -35,7 +35,8 @@ export function SettingsScalarField({
 }): React.ReactElement {
   const id = `settings-${field.key.replaceAll('.', '-')}`
   const errorId = `${id}-error`
-  const inputValue = valueAsInputString(value)
+  const secretConfigured = field.secret && typeof value === 'object' && value !== null && (value as { configured?: unknown }).configured === true
+  const inputValue = field.secret ? (typeof value === 'string' ? value : '') : valueAsInputString(value)
   const source = state.sources[field.key]
   const envOverride = source?.overridden_by_env
   const isEnvShadowedConfig = field.backend === 'config_toml' && Boolean(envOverride)
@@ -121,8 +122,9 @@ export function SettingsScalarField({
         return (
           <Input
             {...controlProps}
-            type={field.control === 'number' ? 'number' : 'text'}
+            type={field.secret ? 'password' : field.control === 'number' ? 'number' : 'text'}
             value={inputValue}
+            placeholder={field.secret && secretConfigured ? 'Configured ••••••••' : field.example ?? undefined}
             className={stacked ? 'w-full' : undefined}
             style={
               stacked
@@ -142,6 +144,7 @@ export function SettingsScalarField({
       <SettingsMetaPill>source: {sourceLabel}</SettingsMetaPill>
       <SettingsMetaPill>risk: {field.risk}</SettingsMetaPill>
       <SettingsMetaPill>{field.apply_mode}</SettingsMetaPill>
+      {field.secret && secretConfigured ? <SettingsMetaPill>configured</SettingsMetaPill> : null}
       {field.write_policy !== 'editable' ? (
         <SettingsMetaPill tone="warn">{field.write_policy}</SettingsMetaPill>
       ) : null}

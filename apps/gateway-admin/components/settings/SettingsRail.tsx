@@ -12,6 +12,7 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import {
   Activity,
+  Bell,
   Cog,
   FileSearch,
   KeyRound,
@@ -51,10 +52,11 @@ export function settingsRailEntries(session: BrowserSessionState): RailEntry[] {
   if (session.status !== 'authenticated' || !session.isAdmin) return ENTRIES
   return [
     ...ENTRIES,
+    { href: '/settings/notifications/', label: 'Notifications', icon: Bell },
     ...(session.isConfiguredAdmin
       ? [{ href: '/settings/authentication/', label: 'Authentication', icon: KeyRound }]
       : []),
-    { href: '/settings/depot/', label: 'Labby', icon: Warehouse },
+    { href: '/settings/depot/', label: 'Depot', icon: Warehouse },
   ]
 }
 

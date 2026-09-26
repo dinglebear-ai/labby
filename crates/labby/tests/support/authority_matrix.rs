@@ -474,6 +474,7 @@ pub(crate) const DEPOT_OPERATIONS: &[DepotOperation] = &[
         USER_OWNED,
         true
     ),
+    depot!("depot.sources.add_repo", Library, Operate, USER_OWNED, true),
     depot!("depot.sources.delete", Library, Delete, USER_OWNED, true),
     depot!("depot.sources.list", Library, Read, USER_OWNED, true),
     depot!("depot.sources.refresh", Library, Operate, USER_OWNED, true),
