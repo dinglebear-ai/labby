@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::UpstreamConfig;
 
 /// Standard location for the `.env` file: `$LABBY_HOME/.env`, normally
@@ -50,21 +51,55 @@ pub fn configured_bearer_token(env_name: &str) -> Option<String> {
     configured_bearer_token_with_dotenv(env_name, dotenv_path.as_deref())
 }
 
-pub(crate) fn configured_bearer_token_from_path(
+/// Resolve an explicitly configured credential without allowing anonymous fallback.
+///
+/// Callers may omit `bearer_token_env` to select anonymous access. Once a
+/// reference is configured, a missing or empty value rejects the operation
+/// before opening a connection or spawning an upstream process.
+pub fn required_bearer_token(env_name: &str) -> Result<String, ToolError> {
+    require_bearer_token(env_name, configured_bearer_token(env_name))
+}
+
+pub(crate) fn required_bearer_token_from_path(
     env_name: &str,
     dotenv_path: Option<&Path>,
-) -> Option<String> {
-    configured_bearer_token_with_dotenv(env_name, dotenv_path)
+) -> Result<String, ToolError> {
+    require_bearer_token(
+        env_name,
+        configured_bearer_token_with_dotenv(env_name, dotenv_path),
+    )
+}
+
+fn require_bearer_token(env_name: &str, token: Option<String>) -> Result<String, ToolError> {
+    token.ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "upstream_credential_missing".to_string(),
+        message: format!(
+            "Required upstream credential `{env_name}` is missing or empty. Have the operator configure it in the selected installation and reload the upstream; anonymous fallback is disabled."
+        ),
+    })
 }
 
 fn configured_bearer_token_with_dotenv(
     env_name: &str,
     dotenv_path: Option<&Path>,
 ) -> Option<String> {
-    let token = std::env::var(env_name).ok().or_else(|| {
-        dotenv_path.and_then(|path| configured_bearer_token_from_dotenv_path(env_name, path))
-    })?;
-    normalize_bearer_token(&token)
+    configured_bearer_token_from_sources(env_name, dotenv_path, std::env::var(env_name))
+}
+
+fn configured_bearer_token_from_sources(
+    env_name: &str,
+    dotenv_path: Option<&Path>,
+    environment: Result<String, std::env::VarError>,
+) -> Option<String> {
+    match environment {
+        Ok(token) => normalize_bearer_token(&token),
+        Err(std::env::VarError::NotPresent) => {
+            dotenv_path.and_then(|path| configured_bearer_token_from_dotenv_path(env_name, path))
+        }
+        // An explicitly present but invalid value must not resurrect a stale
+        // credential from the lower-precedence installation file.
+        Err(std::env::VarError::NotUnicode(_)) => None,
+    }
 }
 
 fn configured_bearer_token_from_dotenv_path(env_name: &str, path: &Path) -> Option<String> {
@@ -94,15 +129,9 @@ fn normalize_bearer_token(token: &str) -> Option<String> {
     (!raw.is_empty()).then(|| raw.to_string())
 }
 
-fn configured_authorization_header_with_dotenv(
-    env_name: &str,
-    dotenv_path: Option<&Path>,
-) -> Option<String> {
-    configured_bearer_token_with_dotenv(env_name, dotenv_path)
-        .map(|token| format!("Bearer {token}"))
-}
-
-pub(super) fn websocket_authorization_header(config: &UpstreamConfig) -> Option<String> {
+pub(super) fn websocket_authorization_header(
+    config: &UpstreamConfig,
+) -> Result<Option<String>, ToolError> {
     let dotenv_path = dotenv_path();
     websocket_authorization_header_with_dotenv(config, dotenv_path.as_deref())
 }
@@ -110,11 +139,15 @@ pub(super) fn websocket_authorization_header(config: &UpstreamConfig) -> Option<
 fn websocket_authorization_header_with_dotenv(
     config: &UpstreamConfig,
     dotenv_path: Option<&Path>,
-) -> Option<String> {
+) -> Result<Option<String>, ToolError> {
     config
         .bearer_token_env
         .as_deref()
-        .and_then(|env_name| configured_authorization_header_with_dotenv(env_name, dotenv_path))
+        .map(|env_name| {
+            required_bearer_token_from_path(env_name, dotenv_path)
+                .map(|token| format!("Bearer {token}"))
+        })
+        .transpose()
 }
 
 #[cfg(test)]
@@ -173,7 +206,8 @@ mod tests {
         config.bearer_token_env = Some("WS_TOKEN".into());
 
         assert_eq!(
-            websocket_authorization_header_with_dotenv(&config, Some(&path)),
+            websocket_authorization_header_with_dotenv(&config, Some(&path))
+                .expect("configured credential"),
             Some("Bearer dotenv-secret".to_string())
         );
     }
@@ -208,6 +242,89 @@ mod tests {
             Some(PathBuf::from("/Users/operator/.labby/.env"))
         );
         assert_eq!(dotenv_path_from(None, None), None);
+    }
+
+    #[test]
+    fn required_bearer_rejects_missing_and_empty_dotenv_credentials_without_leaking_values() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".env");
+        let name = format!("LABBY_REQUIRED_BEARER_FIXTURE_{}", std::process::id());
+        assert!(std::env::var_os(&name).is_none());
+        for value in [
+            None,
+            Some(""),
+            Some("   "),
+            Some("Bearer"),
+            Some("Bearer   "),
+        ] {
+            let mut content = "UNRELATED=must-not-leak-sentinel\n".to_string();
+            if let Some(value) = value {
+                content.push_str(&format!("{name}=\"{value}\"\n"));
+            }
+            std::fs::write(&path, content).expect("write fixture");
+            let error = required_bearer_token_from_path(&name, Some(&path)).unwrap_err();
+            assert_eq!(error.kind(), "upstream_credential_missing");
+            let serialized = error.to_agent_value().to_string();
+            assert!(!serialized.contains("must-not-leak-sentinel"));
+            assert!(!serialized.contains(&dir.path().to_string_lossy().to_string()));
+        }
+    }
+
+    #[test]
+    fn required_bearer_accepts_a_configured_dotenv_credential() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".env");
+        let name = format!("LABBY_VALID_BEARER_FIXTURE_{}", std::process::id());
+        assert!(std::env::var_os(&name).is_none());
+        std::fs::write(&path, format!("{name}=\"Bearer valid-fixture-token\"\n"))
+            .expect("write fixture");
+        assert_eq!(
+            required_bearer_token_from_path(&name, Some(&path)).unwrap(),
+            "valid-fixture-token"
+        );
+    }
+
+    #[test]
+    fn invalid_environment_never_falls_back_to_a_stale_dotenv_credential() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".env");
+        std::fs::write(&path, "TOKEN=stale-fixture-token\n").expect("write fixture");
+        for environment in [
+            Ok(String::new()),
+            Ok("Bearer   ".to_string()),
+            Err(std::env::VarError::NotUnicode(std::ffi::OsString::from(
+                "invalid-fixture",
+            ))),
+        ] {
+            assert_eq!(
+                configured_bearer_token_from_sources("TOKEN", Some(&path), environment),
+                None
+            );
+        }
+        assert_eq!(
+            configured_bearer_token_from_sources(
+                "TOKEN",
+                Some(&path),
+                Err(std::env::VarError::NotPresent)
+            ),
+            Some("stale-fixture-token".to_string())
+        );
+        assert_eq!(
+            configured_bearer_token_from_sources(
+                "TOKEN",
+                Some(&path),
+                Ok("current-fixture-token".into())
+            ),
+            Some("current-fixture-token".to_string())
+        );
+    }
+
+    #[test]
+    fn websocket_without_credential_reference_remains_explicitly_anonymous() {
+        assert_eq!(
+            websocket_authorization_header_with_dotenv(&test_upstream_config(), None).unwrap(),
+            None
+        );
     }
 
     #[test]

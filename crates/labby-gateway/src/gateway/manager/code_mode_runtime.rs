@@ -352,6 +352,11 @@ impl GatewayManager {
         pool.ensure_tools_for_upstream(upstream, subject, owner)
             .await
             .map_err(|err| {
+                if let Some(error) = err.downcast_ref::<ToolError>()
+                    && error.kind() == "upstream_credential_missing"
+                {
+                    return error.clone();
+                }
                 let recovery = if subject.is_some_and(|subject| subject != SHARED_GATEWAY_OAUTH_SUBJECT)
                     && upstream.oauth.as_ref().is_some_and(|oauth| !oauth.credential.is_google_provider())
                 {
