@@ -103,6 +103,15 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [2.3.3](https://github.com/dinglebear-ai/labby/compare/v2.3.2...v2.3.3) (2026-09-26)
+
+
+### Fixed
+
+* **auth:** retain OAuth state until issuer validation ([fdfbd54](https://github.com/dinglebear-ai/labby/commit/fdfbd546919c85a80927d57ab5b0aa212f0e7aeb))
+* **codemode:** bound skill catalog enrichment ([#816](https://github.com/dinglebear-ai/labby/issues/816)) ([95983b2](https://github.com/dinglebear-ai/labby/commit/95983b29930da4c3bbd956cfa49414fef52cf64e))
+* **codemode:** preserve describe schema diagnostics ([9b1fdd2](https://github.com/dinglebear-ai/labby/commit/9b1fdd2e3b3753782409d2fdd2ccf202a6e68724))
+
 ## [2.3.2](https://github.com/dinglebear-ai/labby/compare/v2.3.1...v2.3.2) (2026-09-24)
 
 
