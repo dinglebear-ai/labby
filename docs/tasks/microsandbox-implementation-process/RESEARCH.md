@@ -1,3 +1,9 @@
+---
+title: "Research"
+created: "2026-09-26"
+updated: "2026-09-26"
+---
+
 # Research
 
 Recovered the original September 25 process-extraction task and verified its live state on September 26, 2026.

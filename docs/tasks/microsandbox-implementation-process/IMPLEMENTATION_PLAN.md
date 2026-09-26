@@ -1,3 +1,9 @@
+---
+title: "Implementation plan"
+created: "2026-09-26"
+updated: "2026-09-26"
+---
+
 # Implementation plan
 
 1. Recover and verify prior evidence; preserve host changes and existing staging.

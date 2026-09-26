@@ -1,3 +1,9 @@
+---
+title: "Issues"
+created: "2026-09-26"
+updated: "2026-09-26"
+---
+
 # Issues
 
 | Finding | Disposition |
@@ -12,3 +18,7 @@
 | Global artifact guidance points at retired Dendrite paths | Observed only; unrelated symlinks and other sessions’ work left untouched |
 
 A native runtime success must not be reported as a successful MCP start test.
+
+## Post-publication findings
+- Repository Contract rejected missing title/created/updated metadata on the seven task records. Added the required frontmatter rather than exempting the documents.
+- A real stop/start left the staging VM running with no fixture process. Recovery requires explicit service-command relaunch through sandbox_exec_start followed by an external identity check. Native VM start is not a service supervisor.

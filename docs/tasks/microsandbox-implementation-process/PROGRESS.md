@@ -1,3 +1,9 @@
+---
+title: "Progress"
+created: "2026-09-26"
+updated: "2026-09-26"
+---
+
 # Progress
 
 ## Source-controlled implementation state
@@ -16,3 +22,8 @@
 
 ## Release record
 Publication and deployment evidence must be recorded after the final source commit in the external handoff directory and PR. This file intentionally does not claim its own future commit, PR, CI outcome, or staging health. Read the attached handoff JSON and raw command receipts for those outcomes.
+
+## Follow-up validation
+The first source revision was published as [PR 818](https://github.com/dinglebear-ai/labby/pull/818). Fresh pinned-image bootstrap and external artifact/commit identity passed. A stop/start experiment exposed separate workload-resume semantics; the workflow now states the required explicit relaunch. The initial repository-contract failure came from missing task-doc frontmatter, which is corrected in this revision.
+
+The pinned fleet-contract checker now passes. Explicit workload relaunch after the VM restart restored external identity verification. The corrected revision is republished without merging.

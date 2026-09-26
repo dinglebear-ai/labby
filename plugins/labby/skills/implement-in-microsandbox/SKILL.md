@@ -166,6 +166,8 @@ the staging VM, run it with --probe. The health response must identify the exact
 sandbox, staging environment, commit, and artifact digest; it must not redirect.
 Also exercise actual application behavior, negative paths, logs, and configured
 real dependencies. Test restart/recovery when it is part of acceptance criteria.
+On the validated native msb 0.7.3 runtime, starting a stopped VM does not restart its saved workload command. Recovery therefore has two explicit steps: start the VM, then inspect whether the intended service is absent and relaunch its recorded command through the current sandbox_exec_start tool. Keep the returned exec-session identifier and verify external readiness again. Do not duplicate an existing process after a transient HTTP failure, and do not claim automatic service recovery from a successful VM start.
+
 Retain staging and verify it remains healthy at handoff. Do not delete it during
 cleanup, and do not modify production to make staging work.
 
