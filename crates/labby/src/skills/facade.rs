@@ -143,6 +143,7 @@ impl SkillCallerScope {
 /// A missing manager is intentionally first-party-only. The facade never falls
 /// back to process-global gateway state because doing so would erase protected
 /// route and OAuth-subject boundaries.
+#[derive(Clone)]
 pub(crate) struct SkillRegistryContext {
     first_party: Arc<FirstPartyGeneration>,
     #[cfg(feature = "gateway")]
@@ -247,6 +248,24 @@ impl SkillRegistryContext {
             scope,
             artifact_access: None,
         }
+    }
+
+    /// Restrict execution discovery before any federation. The intersection
+    /// can only narrow request authority; generation, subject and Artifact
+    /// access remain the same immutable request snapshot.
+    #[cfg(any(all(feature = "gateway", feature = "skills"), test))]
+    pub(crate) fn narrowed_to_upstreams(&self, allowed: Option<&BTreeSet<String>>) -> Self {
+        let mut narrowed = self.clone();
+        if let Some(allowed) = allowed {
+            narrowed.scope.allowed_upstreams = Some(
+                allowed
+                    .iter()
+                    .filter(|name| self.scope.allows_upstream(name))
+                    .cloned()
+                    .collect(),
+            );
+        }
+        narrowed
     }
 
     #[must_use]
@@ -1103,6 +1122,80 @@ mod tests {
     }
 
     use labby_runtime::skills::ResourceDigest;
+
+    #[test]
+    fn discovery_scope_intersects_without_broadening_request_authority() {
+        let mut context = SkillRegistryContext::first_party_only();
+        context.scope = SkillCallerScope::restricted(
+            ["allowed".to_string(), "other".to_string()],
+            Some("alice".to_string()),
+            ToolAccess::CodeModeOnly,
+        );
+        let allowed = BTreeSet::from(["allowed".to_string(), "forbidden".to_string()]);
+        let narrowed = context.narrowed_to_upstreams(Some(&allowed));
+        assert!(narrowed.scope.allows_upstream("allowed"));
+        assert!(!narrowed.scope.allows_upstream("other"));
+        assert!(!narrowed.scope.allows_upstream("forbidden"));
+        assert_eq!(narrowed.scope.subject(), Some("alice"));
+        assert_eq!(narrowed.scope.tool_access(), ToolAccess::CodeModeOnly);
+        assert!(Arc::ptr_eq(&context.first_party, &narrowed.first_party));
+        assert!(
+            context.scope.allows_upstream("other"),
+            "original context is unchanged"
+        );
+        assert_eq!(context.narrowed_to_upstreams(None).scope, context.scope);
+        assert!(
+            !context
+                .narrowed_to_upstreams(Some(&BTreeSet::new()))
+                .scope
+                .allows_upstream("allowed")
+        );
+    }
+
+    #[test]
+    fn discovery_scope_narrows_root_and_never_expands_first_party_only() {
+        let mut context = SkillRegistryContext::first_party_only();
+        let allowed = BTreeSet::from(["macpoo".to_string()]);
+        assert!(
+            !context
+                .narrowed_to_upstreams(Some(&allowed))
+                .scope
+                .allows_upstream("macpoo")
+        );
+        context.scope = SkillCallerScope::root(Some("alice".to_string()), ToolAccess::Direct);
+        let narrowed = context.narrowed_to_upstreams(Some(&allowed));
+        assert!(narrowed.scope.allows_upstream("macpoo"));
+        assert!(!narrowed.scope.allows_upstream("depot"));
+        assert_eq!(narrowed.scope.subject(), Some("alice"));
+    }
+
+    #[tokio::test]
+    async fn discovery_scope_preserves_private_artifact_authorization() {
+        let private = artifact_context(SkillVisibility::Private);
+        let allowed = BTreeSet::from(["macpoo".to_string()]);
+        let denied = private.narrowed_to_upstreams(Some(&allowed));
+        assert!(
+            get_visible_skill(&denied, "skill://labby/artifact/SKILL.md")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let owner = private.with_artifact_access(artifact_access("tenant-a", "owner", false));
+        let narrowed = owner.narrowed_to_upstreams(Some(&allowed));
+        assert!(
+            get_visible_skill(&narrowed, "skill://labby/artifact/SKILL.md")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            read_visible_skill_file(&narrowed, "skill://labby/artifact/notes.md")
+                .await
+                .unwrap()
+                .text(),
+            Some("owner notes")
+        );
+    }
 
     #[test]
     fn default_scope_is_first_party_only() {

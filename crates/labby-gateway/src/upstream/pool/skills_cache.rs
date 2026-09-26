@@ -150,6 +150,11 @@ impl CachedSkills {
         Instant::now() < self.expires_at
     }
 
+    #[cfg(test)]
+    pub(super) fn expire_now(&mut self) {
+        self.expires_at = Instant::now();
+    }
+
     /// Shallow snapshot for list/status readers. Direct-get manifests are a
     /// separate mutable side cache and must not be deep-cloned just to inspect
     /// the listed catalog.
@@ -326,6 +331,10 @@ impl SkillsFetchLocks {
     /// The guard for `key`, creating it if absent.
     pub(super) async fn guard_for(&self, key: &SkillsCacheKey) -> Arc<Mutex<()>> {
         let mut locks = self.locks.lock().await;
+        // Cold previews do not publish cache entries or schedule refreshes.
+        // Reclaim idle guards here as well, including cancelled requests, so
+        // short-lived subject identities cannot accumulate forever.
+        locks.retain(|_, guard| Arc::strong_count(guard) > 1);
         Arc::clone(locks.entry(key.clone()).or_default())
     }
 
@@ -458,6 +467,24 @@ mod tests {
         drop(other);
         locks.prune().await;
         assert!(locks.locks.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn discovery_scope_locks_reclaim_completed_subjects_on_acquisition() {
+        let locks = SkillsFetchLocks::default();
+        let active_key = ("up".to_string(), Some("active".to_string()));
+        let active = locks.guard_for(&active_key).await;
+        for i in 0..128 {
+            let key = ("up".to_string(), Some(format!("preview-{i}")));
+            drop(locks.guard_for(&key).await);
+            assert!(locks.locks.lock().await.len() <= 2);
+        }
+        let same = locks.guard_for(&active_key).await;
+        assert!(
+            Arc::ptr_eq(&active, &same),
+            "active waiters keep the same lock"
+        );
+        assert_eq!(locks.locks.lock().await.len(), 1);
     }
 
     #[tokio::test]

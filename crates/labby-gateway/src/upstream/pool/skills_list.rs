@@ -187,17 +187,22 @@ pub(super) fn skills_get_error(error: &ServiceError) -> String {
 ///
 /// Returns the cap that stopped accumulation, so the caller can stop walking
 /// rather than fetching pages whose contents would be discarded.
-fn ingest_page(entries: Vec<SkillEntry>, out: &mut UpstreamSkills) -> Option<SkillIngestCap> {
+fn ingest_page(
+    entries: Vec<SkillEntry>,
+    out: &mut UpstreamSkills,
+    max_items: usize,
+    max_candidates: usize,
+) -> Option<SkillIngestCap> {
     // Discovery is what the upstream advertised, not what the host later accepts.
     // Count the fetched page before validation so operator status can distinguish
     // discovered candidates from the validated/exposed subset.
     out.discovered_count = out.discovered_count.saturating_add(entries.len());
     for entry in entries {
         let processed_candidates = out.skills.len().saturating_add(out.excluded.len());
-        if processed_candidates >= limits::MAX_SKILL_CANDIDATES_PER_UPSTREAM {
+        if processed_candidates >= max_candidates {
             return Some(SkillIngestCap::Candidates);
         }
-        if out.skills.len() >= limits::MAX_SKILLS_PER_UPSTREAM {
+        if out.skills.len() >= max_items {
             return Some(SkillIngestCap::ValidatedSkills);
         }
         let uri = entry.uri.clone();
@@ -239,6 +244,23 @@ impl UpstreamPool {
         upstream_name: &str,
         peer: &Peer<RoleClient>,
     ) -> Result<UpstreamSkills, UpstreamSkillsError> {
+        self.fetch_upstream_skills_with_limit(upstream_name, peer, limits::MAX_SKILLS_PER_UPSTREAM)
+            .await
+    }
+
+    /// Tighten both retained-entry and validation-work budgets for a preview.
+    /// The full catalog path retains the existing hard safety ceilings.
+    pub(super) async fn fetch_upstream_skills_with_limit(
+        &self,
+        upstream_name: &str,
+        peer: &Peer<RoleClient>,
+        max_items: usize,
+    ) -> Result<UpstreamSkills, UpstreamSkillsError> {
+        let max_items = max_items.clamp(1, limits::MAX_SKILLS_PER_UPSTREAM);
+        let max_candidates = max_items
+            .saturating_mul(limits::MAX_SKILL_CANDIDATES_PER_UPSTREAM)
+            .div_ceil(limits::MAX_SKILLS_PER_UPSTREAM)
+            .min(limits::MAX_SKILL_CANDIDATES_PER_UPSTREAM);
         let mut out = UpstreamSkills::default();
         let mut cursor: Option<String> = None;
         let deadline = Instant::now() + limits::SKILLS_LIST_TIMEOUT;
@@ -301,19 +323,26 @@ impl UpstreamPool {
                 (current, next) => current.or(next),
             };
 
-            if let Some(cap) = ingest_page(result.skills, &mut out) {
+            if let Some(cap) = ingest_page(result.skills, &mut out, max_items, max_candidates) {
                 out.truncated = true;
-                match cap {
-                    SkillIngestCap::ValidatedSkills => tracing::warn!(
+                if max_items == limits::MAX_SKILLS_PER_UPSTREAM {
+                    tracing::warn!(
                         upstream = %upstream_name,
-                        cap = limits::MAX_SKILLS_PER_UPSTREAM,
-                        "upstream published more validated skills than the per-upstream cap — snapshot truncated"
-                    ),
-                    SkillIngestCap::Candidates => tracing::warn!(
+                        cap = ?cap,
+                        max_items,
+                        max_candidates,
+                        "skills/list reached the hard catalog safety cap — snapshot truncated"
+                    );
+                } else {
+                    tracing::debug!(
                         upstream = %upstream_name,
-                        cap = limits::MAX_SKILL_CANDIDATES_PER_UPSTREAM,
-                        "upstream published more skill candidates than the validation cap — snapshot truncated"
-                    ),
+                        cap = ?cap,
+                        max_items,
+                        max_candidates,
+                        returned = out.skills.len(),
+                        excluded = out.excluded_count(),
+                        "skills/list reached its requested discovery budget"
+                    );
                 }
                 break;
             }
@@ -321,6 +350,22 @@ impl UpstreamPool {
             let Some(next) = result.next_cursor else {
                 return Ok(out);
             };
+            // Stop at a page boundary before another RPC whose results cannot
+            // contribute to this request, not after receiving its first item.
+            if out.skills.len() >= max_items
+                || out.skills.len().saturating_add(out.excluded.len()) >= max_candidates
+            {
+                out.truncated = true;
+                if max_items == limits::MAX_SKILLS_PER_UPSTREAM {
+                    tracing::warn!(
+                        upstream = %upstream_name,
+                        max_items,
+                        max_candidates,
+                        "skills/list reached the hard catalog cap at a page boundary"
+                    );
+                }
+                break;
+            }
             // A cursor that never advances (or advances forever) is bounded by
             // the page cap below; an identical cursor is caught immediately.
             if cursor.as_deref() == Some(next.as_str()) {
