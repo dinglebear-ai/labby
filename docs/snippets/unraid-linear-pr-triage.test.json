@@ -1,0 +1,270 @@
+{
+  "calls": [
+    {
+      "tool": "linear-notification-worker::list_issues",
+      "match": {
+        "team": "U8",
+        "assignee": "me",
+        "state": "started",
+        "limit": 250
+      },
+      "result": {
+        "issues": [
+          {
+            "id": "U8-1",
+            "title": "Synthetic issue U8-1",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-2",
+            "title": "Synthetic issue U8-2",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-3",
+            "title": "Synthetic issue U8-3",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-4",
+            "title": "Synthetic issue U8-4",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-5",
+            "title": "Synthetic issue U8-5",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-6",
+            "title": "Synthetic issue U8-6",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-7",
+            "title": "Synthetic issue U8-7",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-8",
+            "title": "Synthetic issue U8-8",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-9",
+            "title": "Synthetic issue U8-9",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-10",
+            "title": "Synthetic issue U8-10",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-11",
+            "title": "Synthetic issue U8-11",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-12",
+            "title": "Synthetic issue U8-12",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-13",
+            "title": "Synthetic issue U8-13",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-14",
+            "title": "Synthetic issue U8-14",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-15",
+            "title": "Synthetic issue U8-15",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-16",
+            "title": "Synthetic issue U8-16",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-17",
+            "title": "Synthetic issue U8-17",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-18",
+            "title": "Synthetic issue U8-18",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-19",
+            "title": "Synthetic issue U8-19",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-20",
+            "title": "Synthetic issue U8-20",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-21",
+            "title": "Synthetic issue U8-21",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-22",
+            "title": "Synthetic issue U8-22",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-23",
+            "title": "Synthetic issue U8-23",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-24",
+            "title": "Synthetic issue U8-24",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-25",
+            "title": "Synthetic issue U8-25",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-26",
+            "title": "Synthetic issue U8-26",
+            "status": "In Progress"
+          }
+        ]
+      }
+    },
+    {
+      "tool": "github::get_me",
+      "result": {
+        "login": "fixture-user"
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {
+        "query": "\"U8-1\" org:unraid is:open OR \"U8-2\" org:unraid is:open OR \"U8-3\" org:unraid is:open OR \"U8-4\" org:unraid is:open",
+        "perPage": 100
+      },
+      "result": {
+        "total_count": 0,
+        "items": []
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {
+        "query": "\"U8-5\" org:unraid is:open OR \"U8-6\" org:unraid is:open OR \"U8-7\" org:unraid is:open OR \"U8-8\" org:unraid is:open",
+        "perPage": 100
+      },
+      "result": {
+        "total_count": 0,
+        "items": []
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {
+        "query": "\"U8-9\" org:unraid is:open OR \"U8-10\" org:unraid is:open OR \"U8-11\" org:unraid is:open OR \"U8-12\" org:unraid is:open",
+        "perPage": 100
+      },
+      "result": {
+        "total_count": 0,
+        "items": []
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {
+        "query": "\"U8-13\" org:unraid is:open OR \"U8-14\" org:unraid is:open OR \"U8-15\" org:unraid is:open OR \"U8-16\" org:unraid is:open",
+        "perPage": 100
+      },
+      "result": {
+        "total_count": 0,
+        "items": []
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {
+        "query": "\"U8-17\" org:unraid is:open OR \"U8-18\" org:unraid is:open OR \"U8-19\" org:unraid is:open OR \"U8-20\" org:unraid is:open",
+        "perPage": 100
+      },
+      "result": {
+        "total_count": 0,
+        "items": []
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {
+        "query": "\"U8-21\" org:unraid is:open OR \"U8-22\" org:unraid is:open OR \"U8-23\" org:unraid is:open OR \"U8-24\" org:unraid is:open",
+        "perPage": 100
+      },
+      "result": {
+        "total_count": 0,
+        "items": []
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {
+        "query": "\"U8-25\" org:unraid is:open OR \"U8-26\" org:unraid is:open",
+        "perPage": 100
+      },
+      "result": {
+        "total_count": 0,
+        "items": []
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {
+        "query": "author:fixture-user is:open org:unraid"
+      },
+      "result": {
+        "total_count": 1,
+        "items": [
+          {
+            "number": 424242,
+            "title": "Synthetic Cloudflare change",
+            "state": "open",
+            "html_url": "https://github.com/unraid/cloudflare/pull/424242",
+            "repository_url": "https://api.github.com/repos/unraid/cloudflare",
+            "user": {
+              "login": "fixture-user"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "/ok": true,
+    "/complete": true,
+    "/summary/issueCount": 26,
+    "/summary/relatedPRSearchCalls": 7,
+    "/summary/toolCalls": 10,
+    "/summary/handoffCalls": 0,
+    "/summary/myOpenPRCount": 1,
+    "/mode/includeHistory": false,
+    "/mode/includeHandoffs": false,
+    "/schemaVersion": 2,
+    "/myOpenPRs/0": "unraid/cloudflare#424242",
+    "/pullRequests/unraid~1cloudflare#424242/title": "Synthetic Cloudflare change"
+  },
+  "budgets": {
+    "wall_clock_ms": 20000,
+    "tool_calls": 10,
+    "output_bytes": 16000
+  }
+}

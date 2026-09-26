@@ -88,6 +88,7 @@ HTTP route, not a registered multi-surface service.
 - [Service model](./dev/SERVICES.md) — service inventory and registration rules.
 - [Service onboarding](./dev/SERVICE_ONBOARDING.md) — end-to-end checklist for a new first-class capability.
 - [Code Mode](./dev/CODE_MODE.md) — Code Mode runtime and host integration.
+- [Snippet testing](./dev/SNIPPET_TESTING.md): static validation, isolated fixtures, budgets, snapshots and explicit live tests.
 - [Errors](./dev/ERRORS.md) — stable error taxonomy and surface mapping.
 - [Observability](./dev/OBSERVABILITY.md) — required fields, correlation, redaction, and verification.
 - [Testing](./dev/TESTING.md) — local and CI verification expectations.

@@ -20,6 +20,7 @@ pub(crate) const ACCESS_UNAVAILABLE: &str = "access_unavailable";
 /// File Stash was selected but its persistence runtime could not become usable.
 pub(crate) const FILE_STASH_UNAVAILABLE: &str = "file_stash_unavailable";
 /// Workspace filesystem browsing is configured but its root is invalid.
+#[cfg(feature = "fs")]
 pub(crate) const WORKSPACE_UNAVAILABLE: &str = "workspace_unavailable";
 /// Configured public OAuth callback relay state failed to load.
 pub(crate) const OAUTH_RELAY_UNAVAILABLE: &str = "oauth_relay_unavailable";

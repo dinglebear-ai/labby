@@ -2,7 +2,7 @@
 
 Code Mode snippets are reusable JavaScript workflows for Labby's single `codemode` MCP tool. They let an agent run many upstream MCP calls from one controlled async function, combine the results, and return a structured answer that is easier to reuse than a one-off chat transcript.
 
-This document is only about snippets that run inside Code Mode.
+This document is only about snippets that run inside Code Mode. For static validation, deterministic fixtures, snapshot assertions, performance budgets and explicit live verification, see [Snippet testing](../dev/SNIPPET_TESTING.md). Tests default to fixtures; live tests require `--live`.
 
 ## What A Snippet Is
 

@@ -29,8 +29,6 @@ struct ExecParams {
     name: Option<String>,
     #[serde(default)]
     params: Value,
-    #[serde(default)]
-    all: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,9 +64,9 @@ pub struct SnippetDispatchContext {
     pub execution_surface: CodeModeSurface,
 }
 
-struct SnippetExecutionOutcome {
-    raw_response: CodeModeExecutionResponse,
-    display_response: CodeModeExecutionResponse,
+pub(super) struct SnippetExecutionOutcome {
+    pub(super) raw_response: CodeModeExecutionResponse,
+    pub(super) display_response: CodeModeExecutionResponse,
 }
 
 impl SnippetDispatchContext {
@@ -175,32 +173,14 @@ async fn dispatch_inner(
             to_json(outcome.display_response)
         }
         "snippets.test" => {
-            let params: ExecParams = parse_params(params)?;
-            if params.all {
-                return test_all_snippets(
-                    manager,
-                    &execution_scope,
-                    &execution_caller,
-                    execution_surface,
-                )
-                .await;
-            }
-            let Some(name) = params.name else {
-                return Err(missing_param(
-                    "missing required parameter `name` or set `all: true`",
-                    "name",
-                ));
-            };
-            let outcome = execute_snippet_outcome(
+            super::testing::test(
                 manager,
-                &name,
-                params.params,
+                params,
                 &execution_scope,
                 &execution_caller,
                 execution_surface,
             )
-            .await?;
-            snippet_test_result(name, outcome)
+            .await
         }
         unknown => Err(ToolError::UnknownAction {
             message: format!("unknown action `{unknown}` for service `snippets`"),
@@ -287,54 +267,6 @@ fn validate_snippet(name: Option<&str>, body: Option<&str>) -> Result<Value, Too
     }))
 }
 
-async fn test_all_snippets(
-    manager: Option<&crate::dispatch::gateway::manager::GatewayManager>,
-    caller_scope: &ToolScope,
-    caller: &CodeModeCaller,
-    surface: CodeModeSurface,
-) -> Result<Value, ToolError> {
-    let snippets = list_snippets(&lab_home(), &builtin_snippet_dir())?;
-    let mut results = Vec::with_capacity(snippets.len());
-    for snippet in snippets {
-        match execute_snippet_outcome(
-            manager,
-            &snippet.name,
-            Value::Object(Default::default()),
-            caller_scope,
-            caller,
-            surface,
-        )
-        .await
-        {
-            Ok(outcome) => {
-                let passed = snippet_response_passed(&outcome.raw_response);
-                results.push(json!({
-                    "name": snippet.name,
-                    "passed": passed,
-                    "response": outcome.display_response,
-                }));
-            }
-            Err(error) => {
-                results.push(json!({
-                    "name": snippet.name,
-                    "passed": false,
-                    "error": error,
-                }));
-            }
-        }
-    }
-    let passed = results.iter().all(|result| {
-        result
-            .get("passed")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-    });
-    to_json(json!({
-        "passed": passed,
-        "results": results,
-    }))
-}
-
 fn snippet_response_passed(response: &CodeModeExecutionResponse) -> bool {
     response
         .result
@@ -344,7 +276,10 @@ fn snippet_response_passed(response: &CodeModeExecutionResponse) -> bool {
         .unwrap_or(true)
 }
 
-fn snippet_test_result(name: String, outcome: SnippetExecutionOutcome) -> Result<Value, ToolError> {
+pub(super) fn snippet_test_result(
+    name: String,
+    outcome: SnippetExecutionOutcome,
+) -> Result<Value, ToolError> {
     let passed = snippet_response_passed(&outcome.raw_response);
     to_json(json!({
         "name": name,
@@ -364,7 +299,7 @@ fn snippet_execution_scope(
         .unwrap_or_else(|| caller_scope.clone())
 }
 
-async fn execute_snippet_outcome(
+pub(super) async fn execute_snippet_outcome(
     manager: Option<&crate::dispatch::gateway::manager::GatewayManager>,
     name: &str,
     input: Value,

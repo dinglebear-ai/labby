@@ -56,5 +56,10 @@ labby-winjob = { path = "../labby-winjob" }
 [dev-dependencies]
 tempfile.workspace = true
 
+[[test]]
+name = "snippet_fixture_runtime"
+path = "tests/snippet_fixture_runtime.rs"
+harness = false
+
 [lints]
 workspace = true

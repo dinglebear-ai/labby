@@ -22,7 +22,7 @@ preserve omission separately from an explicit empty array. Declarations are
 bounded to 128 unique identifiers of at most 1,024 bytes each; reserved local
 capabilities, malformed identifiers, and duplicate declaration keys are rejected.
 
-For native saved-snippet execution (`snippets.exec` / `snippets.test`), Labby
+For native saved-snippet execution (`snippets.exec` and explicit live `snippets.test`), Labby
 intersects a declaration with the caller's existing Code Mode policy before
 building the catalog. The declaration can narrow authority but never grant it:
 omission keeps the legacy caller scope, `[]` denies all upstream tools, and a
@@ -42,6 +42,15 @@ Built-in snippets are read-only through the user-snippet mutation surface. Expli
 ## Execution
 
 Snippet code must evaluate to an async arrow function and executes inside the same bounded Javy/QuickJS Code Mode runtime used by gateway Code Mode. Tool calls are resolved through the live gateway catalog rather than guessed or hard-coded at the host boundary.
+
+## Testing
+
+`labby snippet test` and `snippets.test` default to deterministic, offline fixtures.
+A fixture can be supplied explicitly or loaded from the adjacent `.test.json` file.
+Missing fixtures are errors, not permission to contact live upstreams. Explicit
+`--live` / `live: true` is required for live tests. Fixture rules, assertions,
+snapshots, budgets, isolation guarantees and migration guidance are documented
+in [Snippet testing](../dev/SNIPPET_TESTING.md). Failed tests return a nonzero CLI exit code.
 
 ## Related Docs
 

@@ -899,7 +899,9 @@ fn parse_inputs_block(
                 param: "body".to_string(),
             });
         };
-        validate_snippet_name(input_name)?;
+        // Input keys are JSON properties, not filenames. Preserve camelCase
+        // while retaining the existing safe-character and length restrictions.
+        validate_snippet_name(&input_name.to_ascii_lowercase())?;
         i += 1;
 
         let mut ty = None;
