@@ -613,6 +613,10 @@ fn build_v1_router(
         )
         .nest("/server_logs", services::server_logs::routes(state.clone()))
         .nest(
+            "/notifications",
+            services::notifications::routes(state.clone()),
+        )
+        .nest(
             SERVER_LOGS_DATA_API_PREFIX
                 .strip_prefix("/v1")
                 .expect("server logs data route must be under /v1"),
