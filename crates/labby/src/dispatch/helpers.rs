@@ -2,8 +2,6 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-#[cfg(test)]
-use std::sync::{Mutex, OnceLock};
 
 use labby_primitives::action::ActionSpec;
 use serde_json::Value;
@@ -19,41 +17,45 @@ use crate::dispatch::error::ToolError;
 pub use labby_runtime::path_safety::reject_path_traversal;
 
 #[cfg(test)]
-static TEST_LABBY_HOME: OnceLock<Mutex<Option<std::path::PathBuf>>> = OnceLock::new();
+thread_local! {
+    static TEST_LABBY_HOME: RefCell<Option<std::path::PathBuf>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn test_lab_home() -> Option<std::path::PathBuf> {
+    TEST_LABBY_HOME.with(|slot| slot.borrow().clone())
+}
 
 #[cfg(test)]
 pub(crate) fn set_test_lab_home(path: Option<std::path::PathBuf>) {
-    let slot = TEST_LABBY_HOME.get_or_init(|| Mutex::new(None));
-    *slot
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = path;
+    TEST_LABBY_HOME.with(|slot| *slot.borrow_mut() = path);
 }
 
-/// RAII pin for [`set_test_lab_home`].
+/// Thread-affine fixture override with nested, unwind-safe restoration.
 ///
-/// The override is process-global and tests in one binary run concurrently, so
-/// clearing it with a trailing call at the end of a test body leaks the pin to
-/// unrelated tests whenever the body panics or returns early.
+/// Concurrent test runtimes must never share a mutable home. Blocking setup
+/// work explicitly captures and reinstalls the caller's override on its worker.
 #[cfg(test)]
-pub(crate) struct TestLabHomeGuard(Option<std::path::PathBuf>);
+pub(crate) struct TestLabHomeGuard {
+    previous: Option<std::path::PathBuf>,
+    _thread_affinity: std::marker::PhantomData<std::rc::Rc<()>>,
+}
 
 #[cfg(test)]
 impl TestLabHomeGuard {
     pub(crate) fn set(path: std::path::PathBuf) -> Self {
-        let slot = TEST_LABBY_HOME.get_or_init(|| Mutex::new(None));
-        let previous = slot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        set_test_lab_home(Some(path));
-        Self(previous)
+        let previous = TEST_LABBY_HOME.with(|slot| slot.replace(Some(path)));
+        Self {
+            previous,
+            _thread_affinity: std::marker::PhantomData,
+        }
     }
 }
 
 #[cfg(test)]
 impl Drop for TestLabHomeGuard {
     fn drop(&mut self) {
-        set_test_lab_home(self.0.take());
+        set_test_lab_home(self.previous.take());
     }
 }
 
@@ -65,12 +67,7 @@ impl Drop for TestLabHomeGuard {
 #[must_use]
 pub fn lab_home() -> std::path::PathBuf {
     #[cfg(test)]
-    if let Some(path) = TEST_LABBY_HOME
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .expect("test lab home lock")
-        .clone()
-    {
+    if let Some(path) = test_lab_home() {
         return path;
     }
     if let Ok(home) = std::env::var("LABBY_HOME")
@@ -338,3 +335,6 @@ pub fn create_db_file_0600(path: &std::path::PathBuf) {
         }
     }
 }
+
+#[cfg(test)]
+mod test_home;
