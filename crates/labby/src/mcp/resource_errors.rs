@@ -6,7 +6,7 @@ use serde_json::json;
 
 use crate::mcp::agent_error::{
     internal as internal_agent_error, invalid_params as invalid_params_agent_error,
-    resource_not_found as resource_not_found_agent_error,
+    protocol_error_data, resource_not_found as resource_not_found_agent_error,
 };
 
 fn context(uri: &str) -> AgentErrorContext {
@@ -27,6 +27,30 @@ pub(crate) fn unknown(uri: &str, ui: bool) -> ErrorData {
         format!("{label}: {uri}. Call resources/list and retry with an advertised URI."),
         None,
         &context,
+    )
+}
+
+#[must_use]
+pub(crate) fn app_disabled(uri: &str, app: &str) -> ErrorData {
+    let mut context = context(uri);
+    context.origin = Some(AgentErrorOrigin::Policy);
+    context.side_effects = Some(AgentSideEffectRisk::NoneExpected);
+    let message = format!(
+        "MCP App `{app}` is disabled; resource `{uri}` is intentionally unavailable. Discard cached app metadata and refresh tools/list and resources/list before retrying."
+    );
+    let extra = json!({
+        "app": app,
+        "disabled": true,
+        "stale_client_binding": true
+    });
+    ErrorData::resource_not_found(
+        message.clone(),
+        Some(protocol_error_data(
+            "app_disabled",
+            &message,
+            Some(&extra),
+            &context,
+        )),
     )
 }
 
@@ -109,6 +133,22 @@ mod tests {
         let data = error.data.expect("agent error data");
         assert_eq!(data["resource"], "lab://missing");
         assert_eq!(data["recovery"]["action"], "rediscover");
+        assert!(error.message.contains("resources/list"));
+    }
+
+    #[test]
+    fn app_disabled_resource_rejects_stale_binding_with_rediscovery_guidance() {
+        let error = app_disabled("ui://lab/settings/editor", "settings");
+        let data = error.data.expect("agent error data");
+        assert_eq!(data["kind"], "app_disabled");
+        assert_eq!(data["origin"], "policy");
+        assert_eq!(data["side_effects"], "none_expected");
+        assert_eq!(data["app"], "settings");
+        assert_eq!(data["disabled"], true);
+        assert_eq!(data["stale_client_binding"], true);
+        assert_eq!(data["recovery"]["action"], "rediscover");
+        assert_eq!(data["recovery"]["same_arguments"], "never");
+        assert!(error.message.contains("tools/list"));
         assert!(error.message.contains("resources/list"));
     }
 

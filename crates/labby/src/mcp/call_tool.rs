@@ -132,8 +132,9 @@ use crate::mcp::catalog_coalesce::schedule_catalog_notification;
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog_notifications::CatalogNotificationChanges;
 use crate::mcp::context::{
-    auth_context_from_extensions, propagated_caller_auth, resolve_caller_authorization,
-    tool_execute_builtin_action_allowed, tool_execute_scope_allowed,
+    auth_context_from_extensions, code_mode_read_scope_allowed, openai_session_fingerprint,
+    propagated_caller_auth, resolve_caller_authorization, tool_execute_builtin_action_allowed,
+    tool_execute_scope_allowed,
 };
 use crate::mcp::envelope::{build_error, build_error_extra};
 use crate::mcp::error::DispatchError;
@@ -578,6 +579,7 @@ impl LabMcpServer {
         let service = request.name.to_string();
         let subject = self.request_subject_log_tag(context);
         let actor_key = self.request_actor_key(context);
+        let openai_session_key = openai_session_fingerprint(request.meta.as_ref());
         let param_key_count = request.arguments.as_ref().map_or(0, serde_json::Map::len);
         tracing::info!(
             surface = "mcp",
@@ -585,6 +587,7 @@ impl LabMcpServer {
             action = "call_tool",
             subject,
             actor_key,
+            openai_session_key = openai_session_key.as_deref().unwrap_or("<none>"),
             tool = %service,
             param_key_count,
             route = "project_exact_complete",
@@ -774,6 +777,7 @@ impl LabMcpServer {
         // harmless catalog movement from the flapping clients actually feel.
         let _in_flight = crate::mcp::catalog_churn::InFlightToolCall::enter();
         let wire_name = request.name.as_ref().to_string();
+        let openai_session_key = openai_session_fingerprint(request.meta.as_ref());
         // This request remains live until the upstream tail. Keep its large
         // serde value off this already broad dispatch future's stack frame.
         let upstream_request = Box::new(request.clone());
@@ -812,27 +816,10 @@ impl LabMcpServer {
 
         #[cfg(feature = "gateway")]
         {
-            // ── Always-available MCP App control tool. It is root-gateway scoped so a
-            // protected subset cannot mutate gateway-global UI visibility.
+            // ── MCP App control + telemetry tool. Runtime telemetry is safe on
+            // read-scoped protected routes; status and visibility mutations remain
+            // root-gateway-only so a subset cannot inspect or mutate global UI state.
             if service == MCP_APP_TOOL_NAME {
-                if !self.route_scope.is_root() {
-                    let elapsed_ms = start.elapsed().as_millis();
-                    self.log_route_scope_denial(
-                        &context,
-                        &service,
-                        "call_tool",
-                        "MCP App management is only available on the root gateway route",
-                        elapsed_ms,
-                    );
-                    return Ok(route_scope_denied_result(
-                        &service,
-                        "call_tool",
-                        "MCP App management is only available on the root gateway route"
-                            .to_string(),
-                    )
-                    .into());
-                }
-
                 let auth = auth_context_from_extensions(&context.extensions);
                 let synthetic_action = match args.get("action") {
                     None => "status",
@@ -863,6 +850,250 @@ impl LabMcpServer {
                         return Ok(error_result_from_envelope(envelope).into());
                     }
                 };
+                if synthetic_action == "event" {
+                    if !code_mode_read_scope_allowed(auth) && !tool_execute_scope_allowed(auth) {
+                        let envelope = build_error_extra(
+                            &service,
+                            synthetic_action,
+                            "forbidden",
+                            "MCP App runtime telemetry requires one of scopes: lab:read, lab, lab:admin",
+                            &serde_json::json!({
+                                "required_scopes": ["lab:read", "lab", "lab:admin"]
+                            }),
+                        );
+                        return Ok(error_result_from_envelope(envelope).into());
+                    }
+                    let Some(event_params) = params_object else {
+                        let envelope = build_error_extra(
+                            &service,
+                            synthetic_action,
+                            "invalid_param",
+                            "MCP App runtime telemetry requires params",
+                            &serde_json::json!({ "param": "params", "expected": "object" }),
+                        );
+                        return Ok(error_result_from_envelope(envelope).into());
+                    };
+                    for field in [
+                        "app",
+                        "event",
+                        "level",
+                        "message",
+                        "stack",
+                        "service",
+                        "operation",
+                        "mode",
+                        "widget_session",
+                    ] {
+                        if event_params
+                            .get(field)
+                            .is_some_and(|value| !value.is_string())
+                        {
+                            let envelope = build_error_extra(
+                                &service,
+                                synthetic_action,
+                                "invalid_param",
+                                &format!("MCP App telemetry field {field} must be a string"),
+                                &serde_json::json!({
+                                    "param": format!("params.{field}"),
+                                    "expected": "string"
+                                }),
+                            );
+                            return Ok(error_result_from_envelope(envelope).into());
+                        }
+                    }
+                    let app = event_params
+                        .get("app")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown");
+                    let event_name = event_params
+                        .get("event")
+                        .and_then(Value::as_str)
+                        .unwrap_or("runtime.event");
+                    let level = event_params
+                        .get("level")
+                        .and_then(Value::as_str)
+                        .unwrap_or("info");
+                    let message = event_params
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let stack = event_params
+                        .get("stack")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let app_service = event_params
+                        .get("service")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let operation = event_params
+                        .get("operation")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let mode = event_params
+                        .get("mode")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown");
+                    let widget_session = event_params
+                        .get("widget_session")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    for (field, value, max_len) in [
+                        ("app", app, 128usize),
+                        ("event", event_name, 96),
+                        ("message", message, 2048),
+                        ("stack", stack, 4096),
+                        ("service", app_service, 128),
+                        ("operation", operation, 128),
+                        ("mode", mode, 16),
+                        ("widget_session", widget_session, 256),
+                    ] {
+                        if value.len() > max_len {
+                            let envelope = build_error_extra(
+                                &service,
+                                synthetic_action,
+                                "invalid_param",
+                                &format!("MCP App telemetry field {field} exceeds {max_len} bytes"),
+                                &serde_json::json!({
+                                    "param": format!("params.{field}"),
+                                    "max_bytes": max_len
+                                }),
+                            );
+                            return Ok(error_result_from_envelope(envelope).into());
+                        }
+                    }
+                    if !matches!(level, "debug" | "info" | "warn" | "error") {
+                        let envelope = build_error_extra(
+                            &service,
+                            synthetic_action,
+                            "invalid_param",
+                            "MCP App telemetry level must be debug, info, warn, or error",
+                            &serde_json::json!({
+                                "param": "params.level",
+                                "valid": ["debug", "info", "warn", "error"]
+                            }),
+                        );
+                        return Ok(error_result_from_envelope(envelope).into());
+                    }
+                    if !matches!(mode, "chatgpt" | "mcp" | "browser" | "unknown") {
+                        let envelope = build_error_extra(
+                            &service,
+                            synthetic_action,
+                            "invalid_param",
+                            "MCP App telemetry mode must be chatgpt, mcp, browser, or unknown",
+                            &serde_json::json!({
+                                "param": "params.mode",
+                                "valid": ["chatgpt", "mcp", "browser", "unknown"]
+                            }),
+                        );
+                        return Ok(error_result_from_envelope(envelope).into());
+                    }
+
+                    let subject = self.request_subject_log_tag(&context);
+                    let widget_session_key = (!widget_session.is_empty())
+                        .then(|| labby_auth::util::fingerprint(widget_session));
+                    let telemetry_message = labby_runtime::redact::sanitize_log_text(message, 2048);
+                    let telemetry_stack = labby_runtime::redact::sanitize_log_text(stack, 4096);
+                    match level {
+                        "error" => tracing::error!(
+                            surface = "mcp_app",
+                            service = MCP_APP_TOOL_NAME,
+                            action = "event",
+                            subject,
+                            openai_session_key = openai_session_key.as_deref().unwrap_or("<none>"),
+                            widget_session_key = widget_session_key.as_deref().unwrap_or("<none>"),
+                            app,
+                            event = event_name,
+                            telemetry_level = level,
+                            telemetry_message = %telemetry_message,
+                            telemetry_stack = %telemetry_stack,
+                            app_service,
+                            operation,
+                            mode,
+                            "Labby MCP App runtime event"
+                        ),
+                        "warn" => tracing::warn!(
+                            surface = "mcp_app",
+                            service = MCP_APP_TOOL_NAME,
+                            action = "event",
+                            subject,
+                            openai_session_key = openai_session_key.as_deref().unwrap_or("<none>"),
+                            widget_session_key = widget_session_key.as_deref().unwrap_or("<none>"),
+                            app,
+                            event = event_name,
+                            telemetry_level = level,
+                            telemetry_message = %telemetry_message,
+                            telemetry_stack = %telemetry_stack,
+                            app_service,
+                            operation,
+                            mode,
+                            "Labby MCP App runtime event"
+                        ),
+                        "debug" => tracing::debug!(
+                            surface = "mcp_app",
+                            service = MCP_APP_TOOL_NAME,
+                            action = "event",
+                            subject,
+                            openai_session_key = openai_session_key.as_deref().unwrap_or("<none>"),
+                            widget_session_key = widget_session_key.as_deref().unwrap_or("<none>"),
+                            app,
+                            event = event_name,
+                            telemetry_level = level,
+                            telemetry_message = %telemetry_message,
+                            telemetry_stack = %telemetry_stack,
+                            app_service,
+                            operation,
+                            mode,
+                            "Labby MCP App runtime event"
+                        ),
+                        _ => tracing::info!(
+                            surface = "mcp_app",
+                            service = MCP_APP_TOOL_NAME,
+                            action = "event",
+                            subject,
+                            openai_session_key = openai_session_key.as_deref().unwrap_or("<none>"),
+                            widget_session_key = widget_session_key.as_deref().unwrap_or("<none>"),
+                            app,
+                            event = event_name,
+                            telemetry_level = level,
+                            telemetry_message = %telemetry_message,
+                            telemetry_stack = %telemetry_stack,
+                            app_service,
+                            operation,
+                            mode,
+                            "Labby MCP App runtime event"
+                        ),
+                    }
+
+                    let payload = serde_json::json!({
+                        "kind": "mcp_app_event",
+                        "accepted": true,
+                        "app": app,
+                        "event": event_name,
+                    });
+                    let mut result =
+                        CallToolResult::success(vec![ContentBlock::text(payload.to_string())]);
+                    result.structured_content = Some(payload);
+                    return Ok(result.into());
+                }
+
+                if !self.route_scope.is_root() {
+                    let elapsed_ms = start.elapsed().as_millis();
+                    self.log_route_scope_denial(
+                        &context,
+                        &service,
+                        "call_tool",
+                        "MCP App management is only available on the root gateway route",
+                        elapsed_ms,
+                    );
+                    return Ok(route_scope_denied_result(
+                        &service,
+                        "call_tool",
+                        "MCP App management is only available on the root gateway route"
+                            .to_string(),
+                    )
+                    .into());
+                }
+
                 if !tool_execute_scope_allowed(auth) {
                     let envelope = build_error_extra(
                         &service,
@@ -1675,6 +1906,7 @@ impl LabMcpServer {
             action = dispatch_action,
             subject,
             actor_key,
+            openai_session_key = openai_session_key.as_deref().unwrap_or("<none>"),
             tool = %service,
             instance = instance.as_deref(),
             param_key_count,
