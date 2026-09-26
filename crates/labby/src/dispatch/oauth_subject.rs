@@ -20,7 +20,9 @@ pub(crate) fn oauth_upstream_subject_for_request<'a>(
         Some(ctx) if ctx.scopes.iter().any(|scope| scope == "lab:admin") => Some(Cow::Borrowed(
             crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT,
         )),
-        Some(_) => request_subject.map(Cow::Borrowed),
+        Some(_) => request_subject
+            .filter(|subject| !subject.trim().is_empty())
+            .map(Cow::Borrowed),
     }
 }
 
@@ -62,6 +64,14 @@ mod tests {
             oauth_upstream_subject_for_request(Some(&reader), Some("reader")).as_deref(),
             Some("reader")
         );
-        assert!(oauth_upstream_subject_for_request(Some(&reader), None).is_none());
+        for subject in [None, Some(""), Some(" \t\n")] {
+            assert!(oauth_upstream_subject_for_request(Some(&reader), subject).is_none());
+        }
+        for subject in ["alice", "bob", "opaque subject with spaces"] {
+            assert_eq!(
+                oauth_upstream_subject_for_request(Some(&reader), Some(subject)).as_deref(),
+                Some(subject)
+            );
+        }
     }
 }

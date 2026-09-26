@@ -13,6 +13,8 @@ pub(crate) mod code_mode_host;
 pub(crate) mod embeddings;
 pub mod oauth;
 #[cfg(test)]
+mod oauth_subject_tests;
+#[cfg(test)]
 mod reconstruction_tests;
 mod resources;
 mod search;

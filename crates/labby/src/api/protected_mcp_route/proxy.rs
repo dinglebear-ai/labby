@@ -9,8 +9,7 @@ use super::policy::{
 use crate::api::{error::ApiError, state::AppState};
 use crate::config::ProtectedMcpRouteEffectiveTarget;
 use crate::dispatch::{
-    error::ToolError, gateway::SHARED_GATEWAY_OAUTH_SUBJECT,
-    upstream::auth::configured_bearer_token,
+    error::ToolError, gateway::SHARED_GATEWAY_OAUTH_SUBJECT, upstream::auth::required_bearer_token,
 };
 use axum::{
     body::Body,
@@ -449,7 +448,9 @@ pub(super) async fn protected_route_upstream_target(
         upstream_config
             .bearer_token_env
             .as_deref()
-            .and_then(configured_bearer_token)
+            .map(required_bearer_token)
+            .transpose()
+            .map_err(|error| ApiError::new(error).into_response())?
     };
 
     Ok((
