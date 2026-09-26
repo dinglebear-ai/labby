@@ -17,6 +17,8 @@ use rmcp::RoleServer;
 use rmcp::model::{CustomRequest, CustomResult, ErrorData};
 use rmcp::service::RequestContext;
 
+#[cfg(feature = "gateway")]
+use crate::mcp::context::oauth_upstream_subject_for_request;
 use crate::mcp::context::{auth_context_from_extensions, code_mode_read_scope_allowed};
 use crate::mcp::server::LabMcpServer;
 use crate::skills::aggregate::ToolAccess;
@@ -258,7 +260,12 @@ impl LabMcpServer {
             } else {
                 ToolAccess::Direct
             };
-            let subject = self.request_subject(context).map(str::to_string);
+            let auth = auth_context_from_extensions(&context.extensions);
+            let subject = auth
+                .and_then(|auth| {
+                    oauth_upstream_subject_for_request(Some(auth), self.request_subject(context))
+                })
+                .map(|subject| subject.into_owned());
             let scope = match self.route_scope.allowed_upstreams() {
                 None => SkillCallerScope::root(subject, access),
                 Some(allowed) => {
