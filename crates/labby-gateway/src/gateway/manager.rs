@@ -91,6 +91,7 @@ mod loadouts;
 mod oauth_resources;
 mod persist;
 mod pool_lifecycle;
+mod prompt_discovery;
 mod protected_routes;
 mod publication;
 mod resource_discovery;
