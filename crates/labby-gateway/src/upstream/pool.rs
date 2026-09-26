@@ -32,6 +32,9 @@ use super::types::{UpstreamRuntimeMetadata, UpstreamRuntimeOwner};
 // `panic!` is how tests assert; `panic = "warn"` targets production paths.
 #[allow(clippy::panic)]
 mod annotation_passthrough_tests;
+#[cfg(test)]
+#[allow(clippy::panic)] // Explicit negative-path assertions in security regressions.
+mod bearer_required_tests;
 mod cache_repair;
 mod capability;
 mod capability_call;

@@ -33,7 +33,7 @@ use rmcp::{ClientHandler, RoleClient};
 use labby_auth::upstream::cache::OauthClientCache;
 use labby_runtime::gateway_config::{UpstreamConfig, UpstreamLifecycle, UpstreamTransport};
 
-use super::super::auth::{configured_bearer_token, websocket_authorization_header};
+use super::super::auth::{required_bearer_token, websocket_authorization_header};
 use super::super::http_client;
 #[cfg(unix)]
 use super::super::transport::unix_socket::{LabbyUnixSocketHttpClient, request_uri};
@@ -616,17 +616,11 @@ async fn connect_unix_socket_upstream_once<H: ClientHandler>(
             ),
         }
     } else {
-        if let Some(ref env_name) = config.bearer_token_env {
-            if let Some(token) = configured_bearer_token(env_name) {
-                transport_config.auth_header = Some(token);
-            } else {
-                tracing::warn!(
-                    upstream = %config.name,
-                    env_var = %env_name,
-                    "bearer_token_env configured but env var not set"
-                );
-            }
-        }
+        transport_config.auth_header = config
+            .bearer_token_env
+            .as_deref()
+            .map(required_bearer_token)
+            .transpose()?;
         let transport = StreamableHttpClientTransport::with_client(socket_client, transport_config);
         let transport = OrderedRelayNotificationTransport::new(transport, notification_interceptor);
         match lifecycle {
@@ -745,7 +739,7 @@ async fn connect_websocket_upstream_once<H: ClientHandler>(
     }
 
     let parsed = parse_ws_url(url).map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    let authorization = websocket_authorization_header(config);
+    let authorization = websocket_authorization_header(config)?;
     let transport = connect_websocket_transport(
         WebSocketTransportConfig::new(parsed.to_string())
             .with_authorization(authorization)
@@ -1001,18 +995,12 @@ async fn connect_http_upstream_once<H: ClientHandler>(
         ));
     }
 
-    // Non-OAuth path: optionally inject a static bearer token from env.
-    if let Some(ref env_name) = config.bearer_token_env {
-        if let Some(token) = configured_bearer_token(env_name) {
-            transport_config.auth_header = Some(token);
-        } else {
-            tracing::warn!(
-                upstream = %config.name,
-                env_var = %env_name,
-                "bearer_token_env configured but env var not set"
-            );
-        }
-    }
+    // An omitted reference selects anonymous access; a configured one is required.
+    transport_config.auth_header = config
+        .bearer_token_env
+        .as_deref()
+        .map(required_bearer_token)
+        .transpose()?;
 
     // `capped` is already built above with the shared/fresh base client.
     let worker = StreamableHttpClientWorker::new(capped, transport_config);

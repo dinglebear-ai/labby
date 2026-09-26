@@ -4452,6 +4452,69 @@ mod tests {
 
     #[cfg(feature = "gateway")]
     #[tokio::test]
+    async fn named_protected_route_missing_bearer_never_forwards_anonymous_requests() {
+        let backend = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "result": {"tools": []}
+            })))
+            .mount(&backend)
+            .await;
+        let tempdir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(
+            crate::dispatch::gateway::config_store::test_gateway_manager(
+                tempdir.path().join("gateway.toml"),
+                crate::dispatch::gateway::manager::GatewayRuntimeHandle::default(),
+            ),
+        );
+        let mut config = protected_named_upstream_config(&backend.uri());
+        let credential = format!("LABBY_TEST_MISSING_ROUTE_BEARER_{}", std::process::id());
+        assert!(std::env::var_os(&credential).is_none());
+        config.upstream[0].bearer_token_env = Some(credential);
+        manager
+            .seed_config_unchecked_for_tests(config.to_gateway_config())
+            .await;
+        let state = AppState::new()
+            .with_config(config)
+            .with_gateway_manager(manager);
+        let auth_state = test_lab_auth_state().await;
+        let token = issue_test_route_token(&auth_state, "https://mcp.example.com/safe");
+        let app = build_router(
+            state,
+            Some("static-token".into()),
+            Some(auth_state),
+            None,
+            &[],
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/safe")
+                    .header(header::HOST, "mcp.example.com")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","method":"tools/list","id":1,"params":{}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 16 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["kind"], "upstream_credential_missing");
+        assert_eq!(body["recovery"]["same_arguments"], "never");
+        assert!(backend.received_requests().await.unwrap().is_empty());
+    }
+
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
     async fn named_protected_route_rejects_disabled_or_non_positive_priority_target() {
         for (enabled, priority) in [(false, 1.0), (true, 0.0), (true, f32::NAN)] {
             let backend = MockServer::start().await;

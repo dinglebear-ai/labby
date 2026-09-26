@@ -1,7 +1,7 @@
 ---
 title: "Upstream MCP Proxy"
 created: "2026-07-30"
-updated: "2026-09-16"
+updated: "2026-09-26"
 ---
 
 # Upstream MCP Proxy
@@ -236,7 +236,19 @@ Validation runs before discovery. Invalid entries are skipped with a warning dur
 
 The `bearer_token_env` field names an environment variable; it does not contain the token directly. At connection time, the pool reads the env var and sends the token as a bearer header for HTTP and Unix-socket upstreams. For stdio upstreams, the same named variable is injected into the child process after Labby clears the ambient environment and applies its allowlist.
 
-If the named env var is not set, HTTP and Unix-socket connections proceed without bearer auth and log a warning; stdio skips the optional injection. Stdio still rejects OAuth and custom HTTP headers because those require an HTTP transport.
+An explicitly configured `bearer_token_env` is required. A missing or empty
+credential returns `upstream_credential_missing` before HTTP, WebSocket, or
+Unix-socket connection I/O, and before a stdio child is spawned. The same rule
+applies to protected-route forwarding and the HTTP/Unix cancellation side
+channel. Labby never retries these paths anonymously. Omitting the reference
+continues to select anonymous access; OAuth-configured upstreams retain their
+separate OAuth credential flow. Stdio still rejects OAuth and custom HTTP headers.
+
+Credential lookup keeps process-environment precedence over the selected
+installation's `.env`. An explicitly empty or non-Unicode environment value
+does not fall back to an older file value. Errors contain the reference name,
+not credential bytes or file paths. Restore the credential and reload the
+upstream rather than removing the reference to bypass the failure.
 
 Changing a bearer-token env var does not hot-apply by itself. Use `gateway.reload` when you want the live pool to re-read `bearer_token_env`.
 

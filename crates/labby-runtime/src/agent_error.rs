@@ -412,6 +412,7 @@ pub fn origin_for_kind(kind: &str) -> AgentErrorOrigin {
         | "confirmation_required"
         | "auth_failed"
         | "auth_required"
+        | "upstream_credential_missing"
         | "oauth_state_invalid"
         | "oauth_resource_mismatch"
         | "oauth_issuer_mismatch"
@@ -577,6 +578,12 @@ pub fn recovery_for_kind(
                 retry_after_ms,
             }
         }
+        "upstream_credential_missing" => AgentRecoveryAdvice {
+            action: AgentRecoveryAction::InspectAndEscalate,
+            same_arguments: AgentSameArgumentsRetry::Never,
+            guidance: "Have the operator restore the configured upstream credential in the selected installation, reload the upstream, and verify its connection before retrying. Do not remove the credential reference, disable authentication, or retry anonymously to bypass this failure.".to_string(),
+            retry_after_ms: None,
+        },
         "auth_failed" | "auth_required" | "oauth_needs_reauth" => AgentRecoveryAdvice {
             action: AgentRecoveryAction::Reauthenticate,
             same_arguments: AgentSameArgumentsRetry::Never,
@@ -782,6 +789,23 @@ mod tests {
             authority.recovery.same_arguments,
             AgentSameArgumentsRetry::Conditional
         );
+    }
+
+    #[test]
+    fn missing_upstream_credential_requires_operator_repair_without_side_effects() {
+        let metadata = metadata_for_kind("upstream_credential_missing", None);
+        assert_eq!(metadata.origin, AgentErrorOrigin::Policy);
+        assert_eq!(metadata.side_effects, AgentSideEffectRisk::NoneExpected);
+        assert_eq!(
+            metadata.recovery.action,
+            AgentRecoveryAction::InspectAndEscalate
+        );
+        assert_eq!(
+            metadata.recovery.same_arguments,
+            AgentSameArgumentsRetry::Never
+        );
+        assert!(metadata.recovery.guidance.contains("operator"));
+        assert!(metadata.recovery.guidance.contains("anonymous"));
     }
 
     #[test]

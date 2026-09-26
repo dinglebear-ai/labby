@@ -1717,13 +1717,17 @@ pub(super) fn runtime_owner(
 ///
 /// Admin/operator callers share the single gateway-owned upstream credential
 /// (`SHARED_GATEWAY_OAUTH_SUBJECT`); non-admin callers keep their own `sub` so a
-/// personal upstream grant is used; a `sub`-less caller falls back to the shared
-/// subject. Mirrors `oauth_upstream_subject_for_request`.
+/// personal upstream grant is used. Missing or blank subjects fail closed for
+/// every non-admin caller, including callers wrapped in host authority.
+/// Trusted-local callers are explicitly administrative; an absent subject on
+/// a scoped caller is never evidence of local trust.
 pub(super) fn oauth_subject(caller: &CodeModeCaller) -> Option<&str> {
     if caller.is_admin() {
         return Some(SHARED_GATEWAY_OAUTH_SUBJECT);
     }
-    Some(caller.subject().unwrap_or(SHARED_GATEWAY_OAUTH_SUBJECT))
+    caller
+        .subject()
+        .filter(|subject| !subject.trim().is_empty())
 }
 
 fn extract_ui_link(result: &CallToolResult) -> Option<UiLink> {

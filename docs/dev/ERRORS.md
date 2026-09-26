@@ -1,7 +1,7 @@
 ---
 title: "Error Contract"
 created: "2026-07-30"
-updated: "2026-09-22"
+updated: "2026-09-26"
 ---
 
 # Error Contract
@@ -74,6 +74,10 @@ the same top-level envelope:
 Supported code may emit additional stable kinds, including:
 
 - auth/OAuth: `auth_failed`, `auth_required`, `permission_denied`,
+  `upstream_credential_missing` (an explicitly referenced upstream bearer
+  credential is absent or empty; `origin: policy`, `side_effects: none_expected`,
+  and `inspect_and_escalate` with `same_arguments: never`; the operator must
+  restore the secret and reload the upstream, not bypass authentication),
   `oauth_needs_reauth`, `oauth_state_invalid`, `oauth_resource_mismatch`,
   `oauth_issuer_mismatch`, `oauth_unsupported_method`,
   `oauth_scope_upgrade_required`, `oauth_account_ambiguous`,
@@ -209,7 +213,7 @@ so the `oauth_needs_reauth` refinement below is preserved.
 - payload limits: 413;
 - rate/queue limits: 429;
 - upstream gateway failure, including `protocol_error`: 502;
-- service unavailable, including `unavailable`: 503;
+- service unavailable, including `unavailable` and `upstream_credential_missing`: 503;
 - timeouts: 504;
 - unknown/internal kind: 500.
 

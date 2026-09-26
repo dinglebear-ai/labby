@@ -1,7 +1,7 @@
 ---
 title: "Code Mode"
 created: "2026-07-30"
-updated: "2026-09-19"
+updated: "2026-09-26"
 ---
 
 # Code Mode
@@ -870,8 +870,17 @@ enforced capability restriction, not a pause/confirm gate.
 - `lab` or `lab:admin` can use `codemode_ui` when the app surface is enabled.
 - `lab:read`, `lab`, or `lab:admin` can use `codemode_read`.
 
-OAuth callers retain their subject attribution when Code Mode calls upstream tools.
-Trusted local callers use the shared gateway subject.
+Non-admin callers retain their exact verified OAuth subject when Code Mode
+discovers or calls upstream capabilities. A missing, empty, or whitespace-only
+subject cannot inherit the shared gateway credential. This applies to every
+scoped caller variant and to host-authority wrappers. Explicit administrative
+and trusted-local callers retain the existing shared gateway subject policy;
+an absent subject alone never establishes local trust.
+
+An upstream's configured bearer credential is also mandatory at connection
+time. Direct lazy connection failures preserve `upstream_credential_missing`
+and its operator-repair guidance. An omitted credential reference remains
+explicit anonymous configuration. See [Upstream bearer tokens](../services/UPSTREAM.md#bearer-token).
 
 ## Runner Architecture
 
