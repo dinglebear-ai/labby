@@ -293,8 +293,7 @@ impl LabMcpServer {
                 "stash.resources.read",
             )
             .await
-            .map(AuthorizedStashPrincipal::sealed)
-            .map_err(|_| forbidden());
+            .map(AuthorizedStashPrincipal::sealed);
         }
         // Serialized principal IDs are trusted on only the private in-process
         // peer. Network and stdio routes must resolve a VerifiedIdentity.
@@ -306,7 +305,7 @@ impl LabMcpServer {
                 .lease_active_file_stash_principal(principal.clone())
                 .await
                 .map(|lease| AuthorizedStashPrincipal::trusted(principal, lease))
-                .map_err(|_| forbidden());
+                .map_err(crate::dispatch::file_stash::map_principal_resolution);
         }
         Err(forbidden())
     }
@@ -510,7 +509,19 @@ fn selected_stash_owner(
     Ok((Some(selection.kind), selection.id))
 }
 
+fn setup_required_error(error: &ToolError, action: &str) -> ErrorData {
+    let context =
+        labby_runtime::agent_error::AgentErrorContext::for_service_action("stash", action);
+    ErrorData::invalid_request(
+        error.user_message().to_owned(),
+        Some(error.to_agent_value_with_context(&context)),
+    )
+}
+
 fn list_error(error: &ToolError) -> ErrorData {
+    if error.kind() == "access_setup_required" {
+        return setup_required_error(error, "stash.resources.list");
+    }
     ErrorData::internal_error(
         "File Stash resources could not be listed",
         Some(serde_json::json!({"kind": error.kind()})),
@@ -519,6 +530,7 @@ fn list_error(error: &ToolError) -> ErrorData {
 
 fn map_resource_read_error(error: &ToolError, uri: &str) -> ErrorData {
     match error.kind() {
+        "access_setup_required" => setup_required_error(error, "stash.resources.read"),
         "invalid_param" | "forbidden" | "not_found" => unknown(uri),
         "quota_exceeded" => quota_exceeded(uri),
         "busy" => busy(uri),
@@ -622,6 +634,67 @@ fn quota_exceeded(uri: &str) -> ErrorData {
 mod tests {
     use super::*;
     use labby_runtime::caller_auth::PropagatedCallerAuth;
+
+    #[test]
+    fn coco_stash_setup_gate_keeps_actionable_error_on_list_and_read() {
+        use crate::access::{
+            AccessRuntimeError, AccessSetupReason, FileStashPrincipalResolutionError,
+        };
+        for reason in [
+            AccessSetupReason::Missing,
+            AccessSetupReason::Uninitialized,
+            AccessSetupReason::ProofPending,
+        ] {
+            let error = crate::dispatch::file_stash::map_principal_resolution(
+                FileStashPrincipalResolutionError::Runtime(AccessRuntimeError::SetupRequired(
+                    reason,
+                )),
+            );
+            assert_eq!(error.kind(), "access_setup_required");
+            for response in [
+                list_error(&error),
+                map_resource_read_error(&error, "stash://me/files/01ARZ3NDEKTSV4RRFFQ69G5FAV"),
+            ] {
+                let data = response.data.expect("actionable setup error");
+                assert_eq!(data["kind"], "access_setup_required");
+                assert_eq!(data["contract_version"], 1);
+                assert!(data["recovery"].is_object());
+                assert!(
+                    response.message.contains("setup") || response.message.contains("bootstrap")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn coco_stash_blocked_stores_remain_outages_not_setup_or_empty_catalogs() {
+        use crate::access::{
+            AccessBlockedReason, AccessRuntimeError, FileStashPrincipalResolutionError,
+        };
+        for reason in [
+            AccessBlockedReason::Corrupt,
+            AccessBlockedReason::Insecure,
+            AccessBlockedReason::NewerSchema,
+            AccessBlockedReason::Locked,
+            AccessBlockedReason::ReadOnly,
+            AccessBlockedReason::Unavailable,
+        ] {
+            let error = crate::dispatch::file_stash::map_principal_resolution(
+                FileStashPrincipalResolutionError::Runtime(AccessRuntimeError::Blocked(reason)),
+            );
+            assert_eq!(error.kind(), "service_unavailable");
+            assert_eq!(
+                list_error(&error).data.unwrap()["kind"],
+                "service_unavailable"
+            );
+            assert_eq!(
+                map_resource_read_error(&error, "stash://me/files/01ARZ3NDEKTSV4RRFFQ69G5FAV")
+                    .data
+                    .unwrap()["kind"],
+                "service_unavailable"
+            );
+        }
+    }
 
     #[test]
     fn propagated_principal_is_honored_only_on_private_in_process_transport() {
