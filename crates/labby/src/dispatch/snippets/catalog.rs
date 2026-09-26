@@ -39,16 +39,8 @@ struct SnippetValidationSchema {
 #[derive(JsonSchema)]
 #[serde(untagged)]
 enum SnippetTestResultSchema {
-    Single(Box<SnippetTestSingleSchema>),
+    Single(Box<labby_codemode::snippet::harness::SnippetTestReport>),
     All(SnippetTestAllSchema),
-}
-
-#[allow(dead_code)]
-#[derive(JsonSchema)]
-struct SnippetTestSingleSchema {
-    name: String,
-    passed: bool,
-    response: labby_codemode::CodeModeExecutionResponse,
 }
 
 #[allow(dead_code)]
@@ -62,11 +54,7 @@ struct SnippetTestAllSchema {
 #[derive(JsonSchema)]
 #[serde(untagged)]
 enum SnippetTestItemSchema {
-    Success {
-        name: String,
-        passed: bool,
-        response: labby_codemode::CodeModeExecutionResponse,
-    },
+    Report(Box<labby_codemode::snippet::harness::SnippetTestReport>),
     Error {
         name: String,
         passed: bool,
@@ -284,12 +272,30 @@ pub const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "snippets.test",
-        description: "Execute one snippet and report pass/fail",
+        description: "Test a snippet with offline fixtures or explicitly opted-in live calls",
         destructive: false,
         requires_admin: true,
         returns: "SnippetTestResult",
         output_schema: Some(labby_primitives::action::schema_for::<SnippetTestResultSchema>),
         params: &[
+            ParamSpec {
+                name: "fixture",
+                ty: "object",
+                required: false,
+                description: "Offline fixture with calls, expect or snapshot, and budgets; mutually exclusive with live",
+            },
+            ParamSpec {
+                name: "live",
+                ty: "boolean",
+                required: false,
+                description: "Explicitly execute real upstream calls instead of using fixtures",
+            },
+            ParamSpec {
+                name: "budgets",
+                ty: "object",
+                required: false,
+                description: "Live test limits: wall_clock_ms, tool_calls, output_bytes; fixture mode uses its own budgets",
+            },
             ParamSpec {
                 name: "name",
                 ty: "string",

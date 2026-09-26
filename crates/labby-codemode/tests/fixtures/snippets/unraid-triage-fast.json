@@ -1,0 +1,614 @@
+{
+  "calls": [
+    {
+      "tool": "linear-notification-worker::list_issues",
+      "params": {
+        "team": "U8",
+        "assignee": "me",
+        "state": "started"
+      },
+      "response": {
+        "returns": {
+          "issues": [
+            {
+              "id": "U8-1000",
+              "title": "Synthetic issue U8-1000",
+              "status": "In Progress"
+            },
+            {
+              "id": "U8-1001",
+              "title": "Synthetic issue U8-1001",
+              "status": "In Progress"
+            },
+            {
+              "id": "U8-1002",
+              "title": "Synthetic issue U8-1002",
+              "status": "In Progress"
+            },
+            {
+              "id": "U8-1003",
+              "title": "Synthetic issue U8-1003",
+              "status": "In Progress"
+            },
+            {
+              "id": "U8-1004",
+              "title": "Synthetic issue U8-1004",
+              "status": "In Progress"
+            },
+            {
+              "id": "U8-1005",
+              "title": "Synthetic issue U8-1005",
+              "status": "In Progress"
+            },
+            {
+              "id": "U8-1006",
+              "title": "Synthetic issue U8-1006",
+              "status": "In Progress"
+            },
+            {
+              "id": "U8-1007",
+              "title": "Synthetic issue U8-1007",
+              "status": "In Progress"
+            },
+            {
+              "id": "U8-1008",
+              "title": "Synthetic issue U8-1008",
+              "status": "In Progress"
+            },
+            {
+              "id": "U8-1009",
+              "title": "Synthetic issue U8-1009",
+              "status": "In Progress"
+            },
+            {
+              "id": "U8-1010",
+              "title": "Synthetic issue U8-1010",
+              "status": "In Progress"
+            },
+            {
+              "id": "U8-1011",
+              "title": "Synthetic issue U8-1011",
+              "status": "In Progress"
+            },
+            {
+              "id": "U8-1012",
+              "title": "Synthetic issue U8-1012",
+              "status": "In Progress"
+            },
+            {
+              "id": "U8-1013",
+              "title": "Synthetic issue U8-1013",
+              "status": "In Progress"
+            },
+            {
+              "id": "U8-1014",
+              "title": "Synthetic issue U8-1014",
+              "status": "In Progress"
+            },
+            {
+              "id": "U8-1015",
+              "title": "Synthetic issue U8-1015",
+              "status": "In Progress"
+            },
+            {
+              "id": "U8-1016",
+              "title": "Synthetic issue U8-1016",
+              "status": "In Progress"
+            },
+            {
+              "id": "U8-1017",
+              "title": "Synthetic issue U8-1017",
+              "status": "In Progress"
+            },
+            {
+              "id": "U8-1018",
+              "title": "Synthetic issue U8-1018",
+              "status": "In Progress"
+            },
+            {
+              "id": "U8-1019",
+              "title": "Synthetic issue U8-1019",
+              "status": "In Progress"
+            },
+            {
+              "id": "U8-1020",
+              "title": "Synthetic issue U8-1020",
+              "status": "In Progress"
+            },
+            {
+              "id": "U8-1021",
+              "title": "Synthetic issue U8-1021",
+              "status": "In Progress"
+            },
+            {
+              "id": "U8-1022",
+              "title": "Synthetic issue U8-1022",
+              "status": "In Progress"
+            },
+            {
+              "id": "U8-1023",
+              "title": "Synthetic issue U8-1023",
+              "status": "In Progress"
+            },
+            {
+              "id": "U8-1024",
+              "title": "Synthetic issue U8-1024",
+              "status": "In Progress"
+            },
+            {
+              "id": "U8-1025",
+              "title": "Synthetic issue U8-1025",
+              "status": "In Progress"
+            }
+          ],
+          "hasNextPage": false
+        }
+      }
+    },
+    {
+      "tool": "github::get_me",
+      "response": {
+        "returns": {
+          "login": "fixture-user"
+        }
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "params": {
+        "query": "\"U8-1000\" org:unraid is:open OR \"U8-1001\" org:unraid is:open OR \"U8-1002\" org:unraid is:open OR \"U8-1003\" org:unraid is:open",
+        "perPage": 100,
+        "page": 1
+      },
+      "response": {
+        "returns": {
+          "items": [
+            {
+              "number": 1,
+              "title": "Synthetic fixture U8-1000",
+              "body": "",
+              "state": "open",
+              "draft": false,
+              "html_url": "https://github.com/unraid/core/pull/1",
+              "repository_url": "https://api.github.com/repos/unraid/core",
+              "user": {
+                "login": "fixture-user"
+              },
+              "pull_request": {
+                "merged_at": null
+              }
+            },
+            {
+              "number": 3,
+              "title": "Synthetic fixture U8-1002",
+              "body": "",
+              "state": "open",
+              "draft": false,
+              "html_url": "https://github.com/unraid/core/pull/3",
+              "repository_url": "https://api.github.com/repos/unraid/core",
+              "user": {
+                "login": "fixture-user"
+              },
+              "pull_request": {
+                "merged_at": null
+              }
+            },
+            {
+              "number": 9001,
+              "title": "chore(main): release 99.0.0",
+              "body": "U8-1000 U8-1001 U8-1002 U8-1003 U8-1004 U8-1005 U8-1006 U8-1007 U8-1008 U8-1009 U8-1010 U8-1011 U8-1012 U8-1013 U8-1014 U8-1015 U8-1016 U8-1017 U8-1018 U8-1019 U8-1020 U8-1021 U8-1022 U8-1023 U8-1024 U8-1025",
+              "state": "open",
+              "draft": false,
+              "html_url": "https://github.com/unraid/core/pull/9001",
+              "repository_url": "https://api.github.com/repos/unraid/core",
+              "user": {
+                "login": "fixture-user"
+              },
+              "pull_request": {
+                "merged_at": null
+              }
+            }
+          ],
+          "total_count": 3,
+          "incomplete_results": false
+        }
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "params": {
+        "query": "\"U8-1004\" org:unraid is:open OR \"U8-1005\" org:unraid is:open OR \"U8-1006\" org:unraid is:open OR \"U8-1007\" org:unraid is:open",
+        "perPage": 100,
+        "page": 1
+      },
+      "response": {
+        "returns": {
+          "items": [
+            {
+              "number": 5,
+              "title": "Synthetic fixture U8-1004",
+              "body": "",
+              "state": "open",
+              "draft": false,
+              "html_url": "https://github.com/unraid/core/pull/5",
+              "repository_url": "https://api.github.com/repos/unraid/core",
+              "user": {
+                "login": "fixture-user"
+              },
+              "pull_request": {
+                "merged_at": null
+              }
+            },
+            {
+              "number": 7,
+              "title": "Synthetic fixture U8-1006",
+              "body": "",
+              "state": "open",
+              "draft": false,
+              "html_url": "https://github.com/unraid/core/pull/7",
+              "repository_url": "https://api.github.com/repos/unraid/core",
+              "user": {
+                "login": "fixture-user"
+              },
+              "pull_request": {
+                "merged_at": null
+              }
+            },
+            {
+              "number": 9001,
+              "title": "chore(main): release 99.0.0",
+              "body": "U8-1000 U8-1001 U8-1002 U8-1003 U8-1004 U8-1005 U8-1006 U8-1007 U8-1008 U8-1009 U8-1010 U8-1011 U8-1012 U8-1013 U8-1014 U8-1015 U8-1016 U8-1017 U8-1018 U8-1019 U8-1020 U8-1021 U8-1022 U8-1023 U8-1024 U8-1025",
+              "state": "open",
+              "draft": false,
+              "html_url": "https://github.com/unraid/core/pull/9001",
+              "repository_url": "https://api.github.com/repos/unraid/core",
+              "user": {
+                "login": "fixture-user"
+              },
+              "pull_request": {
+                "merged_at": null
+              }
+            }
+          ],
+          "total_count": 3,
+          "incomplete_results": false
+        }
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "params": {
+        "query": "\"U8-1008\" org:unraid is:open OR \"U8-1009\" org:unraid is:open OR \"U8-1010\" org:unraid is:open OR \"U8-1011\" org:unraid is:open",
+        "perPage": 100,
+        "page": 1
+      },
+      "response": {
+        "returns": {
+          "items": [
+            {
+              "number": 9,
+              "title": "Synthetic fixture U8-1008",
+              "body": "",
+              "state": "open",
+              "draft": false,
+              "html_url": "https://github.com/unraid/core/pull/9",
+              "repository_url": "https://api.github.com/repos/unraid/core",
+              "user": {
+                "login": "fixture-user"
+              },
+              "pull_request": {
+                "merged_at": null
+              }
+            },
+            {
+              "number": 11,
+              "title": "Synthetic fixture U8-1010",
+              "body": "",
+              "state": "open",
+              "draft": false,
+              "html_url": "https://github.com/unraid/core/pull/11",
+              "repository_url": "https://api.github.com/repos/unraid/core",
+              "user": {
+                "login": "fixture-user"
+              },
+              "pull_request": {
+                "merged_at": null
+              }
+            },
+            {
+              "number": 9001,
+              "title": "chore(main): release 99.0.0",
+              "body": "U8-1000 U8-1001 U8-1002 U8-1003 U8-1004 U8-1005 U8-1006 U8-1007 U8-1008 U8-1009 U8-1010 U8-1011 U8-1012 U8-1013 U8-1014 U8-1015 U8-1016 U8-1017 U8-1018 U8-1019 U8-1020 U8-1021 U8-1022 U8-1023 U8-1024 U8-1025",
+              "state": "open",
+              "draft": false,
+              "html_url": "https://github.com/unraid/core/pull/9001",
+              "repository_url": "https://api.github.com/repos/unraid/core",
+              "user": {
+                "login": "fixture-user"
+              },
+              "pull_request": {
+                "merged_at": null
+              }
+            }
+          ],
+          "total_count": 3,
+          "incomplete_results": false
+        }
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "params": {
+        "query": "\"U8-1012\" org:unraid is:open OR \"U8-1013\" org:unraid is:open OR \"U8-1014\" org:unraid is:open OR \"U8-1015\" org:unraid is:open",
+        "perPage": 100,
+        "page": 1
+      },
+      "response": {
+        "returns": {
+          "items": [
+            {
+              "number": 13,
+              "title": "Synthetic fixture U8-1012",
+              "body": "",
+              "state": "open",
+              "draft": false,
+              "html_url": "https://github.com/unraid/core/pull/13",
+              "repository_url": "https://api.github.com/repos/unraid/core",
+              "user": {
+                "login": "fixture-user"
+              },
+              "pull_request": {
+                "merged_at": null
+              }
+            },
+            {
+              "number": 15,
+              "title": "Synthetic fixture U8-1014",
+              "body": "",
+              "state": "open",
+              "draft": false,
+              "html_url": "https://github.com/unraid/core/pull/15",
+              "repository_url": "https://api.github.com/repos/unraid/core",
+              "user": {
+                "login": "fixture-user"
+              },
+              "pull_request": {
+                "merged_at": null
+              }
+            },
+            {
+              "number": 9001,
+              "title": "chore(main): release 99.0.0",
+              "body": "U8-1000 U8-1001 U8-1002 U8-1003 U8-1004 U8-1005 U8-1006 U8-1007 U8-1008 U8-1009 U8-1010 U8-1011 U8-1012 U8-1013 U8-1014 U8-1015 U8-1016 U8-1017 U8-1018 U8-1019 U8-1020 U8-1021 U8-1022 U8-1023 U8-1024 U8-1025",
+              "state": "open",
+              "draft": false,
+              "html_url": "https://github.com/unraid/core/pull/9001",
+              "repository_url": "https://api.github.com/repos/unraid/core",
+              "user": {
+                "login": "fixture-user"
+              },
+              "pull_request": {
+                "merged_at": null
+              }
+            }
+          ],
+          "total_count": 3,
+          "incomplete_results": false
+        }
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "params": {
+        "query": "\"U8-1016\" org:unraid is:open OR \"U8-1017\" org:unraid is:open OR \"U8-1018\" org:unraid is:open OR \"U8-1019\" org:unraid is:open",
+        "perPage": 100,
+        "page": 1
+      },
+      "response": {
+        "returns": {
+          "items": [
+            {
+              "number": 17,
+              "title": "Synthetic fixture U8-1016",
+              "body": "",
+              "state": "open",
+              "draft": false,
+              "html_url": "https://github.com/unraid/core/pull/17",
+              "repository_url": "https://api.github.com/repos/unraid/core",
+              "user": {
+                "login": "fixture-user"
+              },
+              "pull_request": {
+                "merged_at": null
+              }
+            },
+            {
+              "number": 19,
+              "title": "Synthetic fixture U8-1018",
+              "body": "",
+              "state": "open",
+              "draft": false,
+              "html_url": "https://github.com/unraid/core/pull/19",
+              "repository_url": "https://api.github.com/repos/unraid/core",
+              "user": {
+                "login": "fixture-user"
+              },
+              "pull_request": {
+                "merged_at": null
+              }
+            },
+            {
+              "number": 9001,
+              "title": "chore(main): release 99.0.0",
+              "body": "U8-1000 U8-1001 U8-1002 U8-1003 U8-1004 U8-1005 U8-1006 U8-1007 U8-1008 U8-1009 U8-1010 U8-1011 U8-1012 U8-1013 U8-1014 U8-1015 U8-1016 U8-1017 U8-1018 U8-1019 U8-1020 U8-1021 U8-1022 U8-1023 U8-1024 U8-1025",
+              "state": "open",
+              "draft": false,
+              "html_url": "https://github.com/unraid/core/pull/9001",
+              "repository_url": "https://api.github.com/repos/unraid/core",
+              "user": {
+                "login": "fixture-user"
+              },
+              "pull_request": {
+                "merged_at": null
+              }
+            }
+          ],
+          "total_count": 3,
+          "incomplete_results": false
+        }
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "params": {
+        "query": "\"U8-1020\" org:unraid is:open OR \"U8-1021\" org:unraid is:open OR \"U8-1022\" org:unraid is:open OR \"U8-1023\" org:unraid is:open",
+        "perPage": 100,
+        "page": 1
+      },
+      "response": {
+        "returns": {
+          "items": [
+            {
+              "number": 21,
+              "title": "Synthetic fixture U8-1020",
+              "body": "",
+              "state": "open",
+              "draft": false,
+              "html_url": "https://github.com/unraid/core/pull/21",
+              "repository_url": "https://api.github.com/repos/unraid/core",
+              "user": {
+                "login": "fixture-user"
+              },
+              "pull_request": {
+                "merged_at": null
+              }
+            },
+            {
+              "number": 23,
+              "title": "Synthetic fixture U8-1022",
+              "body": "",
+              "state": "open",
+              "draft": false,
+              "html_url": "https://github.com/unraid/core/pull/23",
+              "repository_url": "https://api.github.com/repos/unraid/core",
+              "user": {
+                "login": "fixture-user"
+              },
+              "pull_request": {
+                "merged_at": null
+              }
+            },
+            {
+              "number": 9001,
+              "title": "chore(main): release 99.0.0",
+              "body": "U8-1000 U8-1001 U8-1002 U8-1003 U8-1004 U8-1005 U8-1006 U8-1007 U8-1008 U8-1009 U8-1010 U8-1011 U8-1012 U8-1013 U8-1014 U8-1015 U8-1016 U8-1017 U8-1018 U8-1019 U8-1020 U8-1021 U8-1022 U8-1023 U8-1024 U8-1025",
+              "state": "open",
+              "draft": false,
+              "html_url": "https://github.com/unraid/core/pull/9001",
+              "repository_url": "https://api.github.com/repos/unraid/core",
+              "user": {
+                "login": "fixture-user"
+              },
+              "pull_request": {
+                "merged_at": null
+              }
+            }
+          ],
+          "total_count": 3,
+          "incomplete_results": false
+        }
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "params": {
+        "query": "\"U8-1024\" org:unraid is:open OR \"U8-1025\" org:unraid is:open",
+        "perPage": 100,
+        "page": 1
+      },
+      "response": {
+        "returns": {
+          "items": [
+            {
+              "number": 25,
+              "title": "Synthetic fixture U8-1024",
+              "body": "",
+              "state": "open",
+              "draft": false,
+              "html_url": "https://github.com/unraid/core/pull/25",
+              "repository_url": "https://api.github.com/repos/unraid/core",
+              "user": {
+                "login": "fixture-user"
+              },
+              "pull_request": {
+                "merged_at": null
+              }
+            },
+            {
+              "number": 9001,
+              "title": "chore(main): release 99.0.0",
+              "body": "U8-1000 U8-1001 U8-1002 U8-1003 U8-1004 U8-1005 U8-1006 U8-1007 U8-1008 U8-1009 U8-1010 U8-1011 U8-1012 U8-1013 U8-1014 U8-1015 U8-1016 U8-1017 U8-1018 U8-1019 U8-1020 U8-1021 U8-1022 U8-1023 U8-1024 U8-1025",
+              "state": "open",
+              "draft": false,
+              "html_url": "https://github.com/unraid/core/pull/9001",
+              "repository_url": "https://api.github.com/repos/unraid/core",
+              "user": {
+                "login": "fixture-user"
+              },
+              "pull_request": {
+                "merged_at": null
+              }
+            }
+          ],
+          "total_count": 2,
+          "incomplete_results": false
+        }
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "params": {
+        "query": "author:fixture-user is:open org:unraid"
+      },
+      "response": {
+        "returns": {
+          "items": [
+            {
+              "number": 9999,
+              "title": "Synthetic fixture CLD-9999",
+              "body": "",
+              "state": "open",
+              "draft": false,
+              "html_url": "https://github.com/unraid/cloudflare-scripts/pull/9999",
+              "repository_url": "https://api.github.com/repos/unraid/cloudflare-scripts",
+              "user": {
+                "login": "fixture-user"
+              },
+              "pull_request": {
+                "merged_at": null
+              }
+            }
+          ],
+          "total_count": 1
+        }
+      }
+    }
+  ],
+  "expect": {
+    "/ok": true,
+    "/summary/issueCount": 26,
+    "/summary/issuesWithOpenPRs": 13,
+    "/summary/historyOnlyIssues": 0,
+    "/summary/myOpenPRCount": 1,
+    "/summary/toolCalls": 10,
+    "/myOpenPRs": [
+      "unraid/cloudflare-scripts#9999"
+    ],
+    "/coverage/complete": true
+  },
+  "budgets": {
+    "wall_clock_ms": 20000,
+    "tool_calls": 10,
+    "output_bytes": 16000
+  }
+}

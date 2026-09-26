@@ -4625,7 +4625,7 @@ Commands:
   add       Add a user snippet. Existing snippets require explicit --force replacement
   validate  Validate a snippet without saving or executing it
   remove    Remove a user snippet
-  test      Execute a snippet and report pass/fail
+  test      Test with an offline fixture, or explicitly opt into live upstream calls
 
 Options:
       --json
@@ -4764,6 +4764,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --input <JSON>
+          Supply arbitrary JSON input instead of scalar key=value parameters
 
   -v, --verbose...
           Include diagnostic events on stderr. Repeat for trace-level detail
@@ -4946,7 +4949,7 @@ Options:
 ## `labby snippet test`
 
 ```text
-Execute a snippet and report pass/fail
+Test with an offline fixture, or explicitly opt into live upstream calls
 
 Usage: labby snippet test [OPTIONS] [NAME]
 
@@ -4956,7 +4959,7 @@ Arguments:
 
 Options:
       --all
-          Run every listed snippet with default params
+          Run every listed snippet against live upstreams with default params
 
       --json
           Emit machine-readable JSON. Diagnostics never enter stdout
@@ -4967,14 +4970,23 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
-      --param <KEY=VALUE>
-          Input values passed to the snippet as key=value pairs
+      --fixture <FIXTURE>
+          Read an offline JSON fixture. No gateway or upstreams are initialized
+
+      --live
+          Explicitly allow real upstream calls instead of fixture responses
 
   -v, --verbose...
           Include diagnostic events on stderr. Repeat for trace-level detail
 
+      --max-runtime-ms <MAX_RUNTIME_MS>
+          Elapsed-time assertion threshold in milliseconds, not a timeout override
+
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --max-calls <MAX_CALLS>
+          Attempted-call assertion threshold, not an execution cap; defaults to 40
 
       --no-input
           Never prompt for missing input or confirmation
@@ -4982,8 +4994,17 @@ Options:
       --context <CONTEXT>
           Select a saved destination for a daemon-backed command. Never falls back locally
 
+      --max-output-bytes <MAX_OUTPUT_BYTES>
+          Maximum serialized live-test result bytes; defaults to 16000
+
+      --param <KEY=VALUE>
+          Input values passed to the snippet as key=value pairs
+
       --server <SERVER>
           Explicit Labby server URL; uses credentials bound to that destination
+
+      --input <JSON>
+          Supply arbitrary JSON input instead of scalar key=value parameters
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)

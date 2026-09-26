@@ -6,6 +6,9 @@ use crate::dispatch::gateway::code_mode::{
     CodeModeBroker, CodeModeCaller, CodeModeSourceLookup, CodeModeSurface, ToolScope,
 };
 use crate::dispatch::helpers::{action_schema, help_payload, lab_home, require_str, to_json};
+use labby_codemode::snippet::harness::{
+    SnippetFixture, SnippetTestBudgets, assess_response, test_fixture,
+};
 use labby_codemode::{CodeModeExecutionResponse, MAX_SOURCE_BYTES};
 
 use super::catalog::ACTIONS;
@@ -31,6 +34,17 @@ struct ExecParams {
     params: Value,
     #[serde(default)]
     all: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct TestParams {
+    #[serde(flatten)]
+    exec: ExecParams,
+    #[serde(default)]
+    live: bool,
+    fixture: Option<Value>,
+    #[serde(default)]
+    budgets: SnippetTestBudgets,
 }
 
 #[derive(Debug, Deserialize)]
@@ -175,22 +189,48 @@ async fn dispatch_inner(
             to_json(outcome.display_response)
         }
         "snippets.test" => {
-            let params: ExecParams = parse_params(params)?;
+            let test: TestParams = parse_params(params)?;
+            test.budgets.validate()?;
+            let params = test.exec;
+            if test.live == test.fixture.is_some() {
+                return Err(ToolError::InvalidParam {
+                    message: "choose exactly one of fixture (offline) or live: true".to_owned(),
+                    param: "live".to_owned(),
+                });
+            }
+            if params.all && (params.name.is_some() || test.fixture.is_some()) {
+                return Err(ToolError::InvalidParam {
+                    message: "all is only supported for explicit live tests without a name"
+                        .to_owned(),
+                    param: "all".to_owned(),
+                });
+            }
+            if params.all && !params.params.is_null() && params.params != json!({}) {
+                return Err(ToolError::InvalidParam {
+                    message: "all uses each snippet's defaults; explicit params are not supported"
+                        .to_owned(),
+                    param: "params".to_owned(),
+                });
+            }
             if params.all {
                 return test_all_snippets(
                     manager,
                     &execution_scope,
                     &execution_caller,
                     execution_surface,
+                    &test.budgets,
                 )
                 .await;
             }
-            let Some(name) = params.name else {
-                return Err(missing_param(
-                    "missing required parameter `name` or set `all: true`",
-                    "name",
-                ));
-            };
+            let name = params
+                .name
+                .ok_or_else(|| missing_param("missing required parameter name", "name"))?;
+            if let Some(fixture) = test.fixture {
+                let fixture = SnippetFixture::from_value(fixture)?;
+                let snippet = resolve_snippet(&lab_home(), &builtin_snippet_dir(), &name)?;
+                return to_json(test_fixture(&snippet, params.params, fixture).await?);
+            }
+            let started = std::time::Instant::now();
             let outcome = execute_snippet_outcome(
                 manager,
                 &name,
@@ -200,7 +240,7 @@ async fn dispatch_inner(
                 execution_surface,
             )
             .await?;
-            snippet_test_result(name, outcome)
+            snippet_test_result(name, outcome, started.elapsed().as_millis(), &test.budgets)
         }
         unknown => Err(ToolError::UnknownAction {
             message: format!("unknown action `{unknown}` for service `snippets`"),
@@ -292,10 +332,12 @@ async fn test_all_snippets(
     caller_scope: &ToolScope,
     caller: &CodeModeCaller,
     surface: CodeModeSurface,
+    budgets: &SnippetTestBudgets,
 ) -> Result<Value, ToolError> {
     let snippets = list_snippets(&lab_home(), &builtin_snippet_dir())?;
     let mut results = Vec::with_capacity(snippets.len());
     for snippet in snippets {
+        let started = std::time::Instant::now();
         match execute_snippet_outcome(
             manager,
             &snippet.name,
@@ -307,12 +349,12 @@ async fn test_all_snippets(
         .await
         {
             Ok(outcome) => {
-                let passed = snippet_response_passed(&outcome.raw_response);
-                results.push(json!({
-                    "name": snippet.name,
-                    "passed": passed,
-                    "response": outcome.display_response,
-                }));
+                results.push(snippet_test_result(
+                    snippet.name,
+                    outcome,
+                    started.elapsed().as_millis(),
+                    budgets,
+                )?);
             }
             Err(error) => {
                 results.push(json!({
@@ -336,21 +378,38 @@ async fn test_all_snippets(
 }
 
 fn snippet_response_passed(response: &CodeModeExecutionResponse) -> bool {
-    response
-        .result
-        .as_ref()
-        .and_then(|result| result.get("ok"))
-        .and_then(Value::as_bool)
-        .unwrap_or(true)
+    response.result.is_some()
+        && response.calls.iter().all(|call| call.ok)
+        && response
+            .result
+            .as_ref()
+            .and_then(|result| result.get("ok"))
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
 }
 
-fn snippet_test_result(name: String, outcome: SnippetExecutionOutcome) -> Result<Value, ToolError> {
-    let passed = snippet_response_passed(&outcome.raw_response);
-    to_json(json!({
-        "name": name,
-        "passed": passed,
-        "response": outcome.display_response,
-    }))
+fn snippet_test_result(
+    name: String,
+    outcome: SnippetExecutionOutcome,
+    elapsed_ms: u128,
+    budgets: &SnippetTestBudgets,
+) -> Result<Value, ToolError> {
+    let mut report = assess_response(
+        &name,
+        "live",
+        &outcome.raw_response,
+        &outcome.display_response,
+        elapsed_ms,
+        budgets,
+        0,
+    );
+    if !snippet_response_passed(&outcome.raw_response) {
+        report
+            .violations
+            .push("snippet or one of its calls reported failure".to_owned());
+    }
+    report.passed = report.violations.is_empty();
+    to_json(report)
 }
 
 fn snippet_execution_scope(
@@ -426,8 +485,12 @@ fn wrap_snippet_with_input_bounded(
         message: format!("snippet params must be JSON-serializable: {e}"),
         param: "params".to_string(),
     })?;
+    let input_literal = serde_json::to_string(&input).map_err(|e| ToolError::InvalidParam {
+        message: format!("snippet params must be JSON-serializable: {e}"),
+        param: "params".to_string(),
+    })?;
     let wrapped = format!(
-        "async () => {{\n  const __labSnippetInput = {input};\n  return await ({code})(__labSnippetInput);\n}}"
+        "async () => {{\n  const __labSnippetInput = JSON.parse({input_literal});\n  return await ({code})(__labSnippetInput);\n}}"
     );
     if wrapped.len() > max_source_bytes {
         return Err(ToolError::InvalidParam {
@@ -456,156 +519,5 @@ fn missing_param(message: &str, param: &str) -> ToolError {
 }
 
 #[cfg(test)]
-mod tests {
-    use serde_json::{Value, json};
-
-    use super::*;
-    use crate::config::CodeModeResultShapePolicy;
-    use labby_codemode::CodeModeResultShapeMetadata;
-
-    fn response(result: Option<Value>) -> CodeModeExecutionResponse {
-        CodeModeExecutionResponse {
-            execution_id: None,
-            result,
-            result_shaping: None,
-            ui: None,
-            calls: vec![],
-            logs: vec![],
-            artifacts: vec![],
-        }
-    }
-
-    fn shaped_display_response() -> CodeModeExecutionResponse {
-        CodeModeExecutionResponse {
-            execution_id: None,
-            result: Some(json!("[code mode result truncated]\n{}")),
-            result_shaping: Some(CodeModeResultShapeMetadata {
-                policy: CodeModeResultShapePolicy::Truncate,
-                changed: true,
-                truncated: true,
-                original_size_bytes: 5000,
-                shaped_size_bytes: 256,
-                warning: None,
-            }),
-            ui: None,
-            calls: vec![],
-            logs: vec![],
-            artifacts: vec![],
-        }
-    }
-
-    fn resolved_snippet_with_tools(
-        tools: Option<Vec<&str>>,
-    ) -> crate::dispatch::snippets::store::ResolvedSnippet {
-        use std::collections::BTreeMap;
-        use std::path::PathBuf;
-
-        use crate::dispatch::snippets::store::{ResolvedSnippet, SnippetSource};
-        use labby_codemode::snippet::tool_declarations::SnippetToolDeclarations;
-
-        ResolvedSnippet {
-            tools: tools.map(|tools| {
-                SnippetToolDeclarations::try_from(
-                    tools.into_iter().map(ToOwned::to_owned).collect::<Vec<_>>(),
-                )
-                .expect("valid exact tool declarations")
-            }),
-            name: "scoped".to_string(),
-            description: None,
-            tags: Vec::new(),
-            inputs: BTreeMap::new(),
-            source: SnippetSource::User,
-            path: PathBuf::from("scoped.md"),
-            body: "async () => ({ ok: true })".to_string(),
-        }
-    }
-
-    #[test]
-    fn saved_snippet_tool_declarations_narrow_but_never_widen_route_authority() {
-        let snippet = resolved_snippet_with_tools(Some(vec!["alpha::tool1", "beta::tool2"]));
-        let caller_scope = ToolScope::scoped_namespaces(vec!["alpha".to_string()], Vec::new());
-
-        let scope = snippet_execution_scope(&snippet, &caller_scope);
-
-        assert!(scope.is_scoped());
-        assert!(scope.allows("alpha", "tool1"));
-        assert!(
-            !scope.allows("alpha", "other_tool"),
-            "an exact snippet declaration must deny undeclared siblings on an allowed upstream"
-        );
-        assert!(
-            !scope.allows("beta", "tool2"),
-            "a snippet declaration must never restore an upstream removed by the route"
-        );
-    }
-
-    #[test]
-    fn saved_snippet_without_declarations_inherits_route_scope_exactly() {
-        let snippet = resolved_snippet_with_tools(None);
-        let caller_scope = ToolScope::scoped_namespaces(vec!["alpha".to_string()], Vec::new());
-
-        let scope = snippet_execution_scope(&snippet, &caller_scope);
-
-        assert_eq!(scope, caller_scope);
-        assert!(scope.allows("alpha", "other_tool"));
-        assert!(!scope.allows("beta", "tool2"));
-    }
-
-    #[test]
-    fn trusted_local_saved_snippet_retains_declared_exact_tool_scope() {
-        let snippet =
-            resolved_snippet_with_tools(Some(vec!["claude-macpoo::Bash", "claude-macpoo::Read"]));
-
-        let scope = snippet_execution_scope(&snippet, &ToolScope::default());
-
-        assert!(scope.is_scoped());
-        assert!(scope.allows("claude-macpoo", "Bash"));
-        assert!(scope.allows("claude-macpoo", "Read"));
-        assert!(!scope.allows("github", "search_issues"));
-    }
-
-    #[test]
-    fn saved_snippet_invocation_checks_final_wrapped_source_size() {
-        let code = "async () => ({ ok: true })";
-        let input = json!({ "payload": "x".repeat(256) });
-
-        let error = wrap_snippet_with_input_bounded(code, &input, 128)
-            .expect_err("serialized params must count toward the runtime source limit");
-
-        assert_eq!(error.kind(), "invalid_param");
-        let message = format!("{error}");
-        assert!(message.contains("saved snippet invocation"));
-        assert!(message.contains("128"));
-    }
-
-    #[test]
-    fn snippets_test_uses_raw_result_for_pass_fail_and_returns_shaped_display() {
-        let pass = snippet_test_result(
-            "shape-pass".to_string(),
-            SnippetExecutionOutcome {
-                raw_response: response(Some(json!({"ok": true, "payload": "x".repeat(5000)}))),
-                display_response: shaped_display_response(),
-            },
-        )
-        .expect("passing snippet result");
-        assert_eq!(pass["passed"], json!(true));
-        assert_eq!(
-            pass["response"],
-            serde_json::to_value(shaped_display_response()).expect("display response serializes")
-        );
-
-        let fail = snippet_test_result(
-            "shape-fail".to_string(),
-            SnippetExecutionOutcome {
-                raw_response: response(Some(json!({"ok": false, "payload": "x".repeat(5000)}))),
-                display_response: shaped_display_response(),
-            },
-        )
-        .expect("failing snippet result");
-        assert_eq!(fail["passed"], json!(false));
-        assert_eq!(
-            fail["response"],
-            serde_json::to_value(shaped_display_response()).expect("display response serializes")
-        );
-    }
-}
+#[path = "tests.rs"]
+mod tests;

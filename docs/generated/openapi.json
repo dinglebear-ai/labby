@@ -9784,6 +9784,15 @@
           "all": {
             "type": "boolean"
           },
+          "budgets": {
+            "type": "object"
+          },
+          "fixture": {
+            "type": "object"
+          },
+          "live": {
+            "type": "boolean"
+          },
           "name": {
             "type": "string"
           },

@@ -31,7 +31,7 @@ pub enum SnippetsCommand {
     Validate(SnippetValidateArgs),
     /// Remove a user snippet.
     Remove(SnippetRemoveArgs),
-    /// Execute a snippet and report pass/fail.
+    /// Test with an offline fixture, or explicitly opt into live upstream calls.
     Test(SnippetTestArgs),
 }
 
@@ -46,17 +46,44 @@ pub struct SnippetExecArgs {
     /// Input values passed to the snippet as key=value pairs.
     #[arg(long = "param", value_name = "KEY=VALUE")]
     pub params: Vec<String>,
+    /// Supply arbitrary JSON input instead of scalar key=value parameters.
+    #[arg(long, value_name = "JSON", conflicts_with = "params")]
+    pub input: Option<String>,
 }
 
 #[derive(Debug, Args)]
 pub struct SnippetTestArgs {
+    #[arg(required_unless_present = "all")]
     pub name: Option<String>,
-    /// Run every listed snippet with default params.
-    #[arg(long, conflicts_with = "name", default_value_t = false)]
+    /// Run every listed snippet against live upstreams with default params.
+    #[arg(
+        long,
+        conflicts_with = "name",
+        requires = "live",
+        default_value_t = false
+    )]
     pub all: bool,
+    /// Read an offline JSON fixture. No gateway or upstreams are initialized.
+    #[arg(long, requires = "name", conflicts_with_all = ["all", "live"])]
+    pub fixture: Option<PathBuf>,
+    /// Explicitly allow real upstream calls instead of fixture responses.
+    #[arg(long, conflicts_with = "fixture", required_unless_present = "fixture")]
+    pub live: bool,
+    /// Elapsed-time assertion threshold in milliseconds, not a timeout override.
+    #[arg(long, requires = "live")]
+    pub max_runtime_ms: Option<u64>,
+    /// Attempted-call assertion threshold, not an execution cap; defaults to 40.
+    #[arg(long, requires = "live")]
+    pub max_calls: Option<u64>,
+    /// Maximum serialized live-test result bytes; defaults to 16000.
+    #[arg(long, requires = "live")]
+    pub max_output_bytes: Option<usize>,
     /// Input values passed to the snippet as key=value pairs.
-    #[arg(long = "param", value_name = "KEY=VALUE")]
+    #[arg(long = "param", value_name = "KEY=VALUE", conflicts_with = "all")]
     pub params: Vec<String>,
+    /// Supply arbitrary JSON input instead of scalar key=value parameters.
+    #[arg(long, value_name = "JSON", conflicts_with_all = ["params", "all"])]
+    pub input: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -104,8 +131,8 @@ pub struct SnippetRemoveArgs {
 
 pub async fn run(args: SnippetsArgs, format: OutputFormat, config: &LabConfig) -> Result<ExitCode> {
     let needs_upstreams = matches!(
-        args.command,
-        SnippetsCommand::Exec(_) | SnippetsCommand::Test(_)
+        &args.command,
+        SnippetsCommand::Exec(_) | SnippetsCommand::Test(SnippetTestArgs { live: true, .. })
     );
     if needs_upstreams {
         crate::cli::gateway::build_manager(config, true).await?;
@@ -123,7 +150,7 @@ pub async fn run(args: SnippetsArgs, format: OutputFormat, config: &LabConfig) -
             "snippets.exec".to_string(),
             json!({
                 "name": args.name,
-                "params": crate::cli::params::parse_kv_params(args.params)?,
+                "params": parse_snippet_input(args.input, args.params)?,
             }),
             true,
             false,
@@ -167,7 +194,14 @@ pub async fn run(args: SnippetsArgs, format: OutputFormat, config: &LabConfig) -
             json!({
                 "name": args.name,
                 "all": args.all,
-                "params": crate::cli::params::parse_kv_params(args.params)?,
+                "live": args.live,
+                "fixture": args.fixture.map(read_fixture).transpose()?,
+                "budgets": {
+                    "wall_clock_ms": args.max_runtime_ms.unwrap_or(20000),
+                    "tool_calls": args.max_calls.unwrap_or(40),
+                    "output_bytes": args.max_output_bytes.unwrap_or(16000),
+                },
+                "params": parse_snippet_input(args.input, args.params)?,
             }),
             true,
             false,
@@ -194,14 +228,29 @@ pub async fn run(args: SnippetsArgs, format: OutputFormat, config: &LabConfig) -
         .await;
     }
 
-    run_action_command(
+    let failed = std::sync::atomic::AtomicBool::new(false);
+    let failed_ref = &failed;
+    let exit = run_action_command(
         "snippets",
         action,
         params,
         format,
-        |action, params| async move { crate::dispatch::snippets::dispatch(&action, params).await },
+        move |action, params| async move {
+            let value = crate::dispatch::snippets::dispatch(&action, params).await?;
+            if action == "snippets.test"
+                && value.get("passed") == Some(&serde_json::Value::Bool(false))
+            {
+                failed_ref.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            Ok(value)
+        },
     )
-    .await
+    .await?;
+    Ok(if failed.load(std::sync::atomic::Ordering::Relaxed) {
+        ExitCode::FAILURE
+    } else {
+        exit
+    })
 }
 
 fn read_snippet_body(code: Option<String>, file: Option<PathBuf>) -> Result<String> {
@@ -209,5 +258,87 @@ fn read_snippet_body(code: Option<String>, file: Option<PathBuf>) -> Result<Stri
         (Some(code), None) => Ok(code),
         (None, Some(path)) => Ok(std::fs::read_to_string(path)?),
         _ => anyhow::bail!("provide exactly one of --code or --file"),
+    }
+}
+
+fn parse_snippet_input(input: Option<String>, params: Vec<String>) -> Result<serde_json::Value> {
+    match input {
+        Some(raw) => {
+            if !params.is_empty() {
+                anyhow::bail!("--input conflicts with --param");
+            }
+            if raw.len() > labby_codemode::snippet::harness::MAX_FIXTURE_BYTES {
+                anyhow::bail!("snippet input exceeds 1 MiB");
+            }
+            Ok(serde_json::from_str(&raw)?)
+        }
+        None => crate::cli::params::parse_kv_params(params),
+    }
+}
+
+fn read_fixture(path: PathBuf) -> Result<serde_json::Value> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take((labby_codemode::snippet::harness::MAX_FIXTURE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > labby_codemode::snippet::harness::MAX_FIXTURE_BYTES {
+        anyhow::bail!("fixture exceeds 1 MiB");
+    }
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct TestCli {
+        #[command(flatten)]
+        args: SnippetTestArgs,
+    }
+
+    #[test]
+    fn tests_require_explicit_offline_or_live_mode() {
+        assert!(TestCli::try_parse_from(["test", "demo"]).is_err());
+        assert!(TestCli::try_parse_from(["test", "--all"]).is_err());
+        assert!(TestCli::try_parse_from(["test", "demo", "--fixture", "case.json"]).is_ok());
+        assert!(TestCli::try_parse_from(["test", "demo", "--live"]).is_ok());
+        assert!(TestCli::try_parse_from(["test", "--all", "--live"]).is_ok());
+        assert!(
+            TestCli::try_parse_from(["test", "demo", "--fixture", "case.json", "--live"]).is_err()
+        );
+    }
+
+    #[test]
+    fn json_input_preserves_arrays_objects_and_nulls() {
+        let value = parse_snippet_input(
+            Some(r#"{"repos":["unraid/core"],"nested":{"value":null}}"#.to_owned()),
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(value["repos"], serde_json::json!(["unraid/core"]));
+        assert!(value["nested"]["value"].is_null());
+    }
+
+    #[test]
+    fn json_input_rejects_malformed_oversized_and_conflicting_values() {
+        assert!(parse_snippet_input(Some("not json".to_owned()), vec![]).is_err());
+        assert!(parse_snippet_input(Some("{}".to_owned()), vec!["a=b".to_owned()]).is_err());
+        assert!(parse_snippet_input(Some(" ".repeat(1024 * 1024 + 1)), vec![]).is_err());
+        assert!(
+            TestCli::try_parse_from([
+                "test",
+                "demo",
+                "--fixture",
+                "case.json",
+                "--input",
+                "{}",
+                "--param",
+                "x=1"
+            ])
+            .is_err()
+        );
     }
 }

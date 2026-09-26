@@ -739,10 +739,12 @@ mod tests {
         ]);
         assert!(matches!(cli.command.into_operation(), Command::Snippets(_)));
 
-        let cli = Cli::parse_from(["labby", "snippet", "test", "daily", "--param", "limit=3"]);
+        let cli = Cli::parse_from([
+            "labby", "snippet", "test", "daily", "--live", "--param", "limit=3",
+        ]);
         assert!(matches!(cli.command.into_operation(), Command::Snippets(_)));
 
-        let cli = Cli::parse_from(["labby", "snippet", "test", "--all"]);
+        let cli = Cli::parse_from(["labby", "snippet", "test", "--all", "--live"]);
         assert!(matches!(cli.command.into_operation(), Command::Snippets(_)));
     }
 }

@@ -1,7 +1,7 @@
 ---
 title: "Snippets Service"
 created: "2026-08-18"
-updated: "2026-08-18"
+updated: "2026-09-26"
 ---
 
 # Snippets Service
@@ -22,7 +22,7 @@ preserve omission separately from an explicit empty array. Declarations are
 bounded to 128 unique identifiers of at most 1,024 bytes each; reserved local
 capabilities, malformed identifiers, and duplicate declaration keys are rejected.
 
-For native saved-snippet execution (`snippets.exec` / `snippets.test`), Labby
+For native live execution (`snippets.exec` / live `snippets.test`), Labby
 intersects a declaration with the caller's existing Code Mode policy before
 building the catalog. The declaration can narrow authority but never grant it:
 omission keeps the legacy caller scope, `[]` denies all upstream tools, and a
@@ -41,7 +41,20 @@ Built-in snippets are read-only through the user-snippet mutation surface. Expli
 
 ## Execution
 
-Snippet code must evaluate to an async arrow function and executes inside the same bounded Javy/QuickJS Code Mode runtime used by gateway Code Mode. Tool calls are resolved through the live gateway catalog rather than guessed or hard-coded at the host boundary.
+Snippet code must evaluate to an async arrow function and executes inside the same bounded Javy/QuickJS Code Mode runtime used by gateway Code Mode. Live tool calls are resolved through the gateway catalog rather than guessed or hard-coded at the host boundary; offline tests instead use their explicit fixture catalog.
+
+## Testing
+
+`snippets.test` requires either an inline `fixture` object or `live: true`.
+Offline tests use the production runner with a fixture-only host, never a live
+gateway fallback. Reports include JSON-pointer assertions, optional snapshots,
+call traces without parameters, pre-shape output measurements, and threshold
+violations. Test failure produces a nonzero CLI exit code.
+
+The CLI reads fixtures with `labby snippet test <name> --fixture case.json`;
+`--live` explicitly opts into real upstream calls. `--all` is live-only and may
+execute mutating snippets. See [Testing Code Mode snippets](../snippet-testing.md)
+for the fixture contract, migration notes, and budget enforcement details.
 
 ## Related Docs
 

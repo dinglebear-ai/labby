@@ -4,6 +4,9 @@ Code Mode snippets are reusable JavaScript workflows for Labby's single `codemod
 
 This document is only about snippets that run inside Code Mode.
 
+For the native offline fixture harness, snapshots, performance thresholds, and
+explicit live tests, see [Testing Code Mode snippets](../snippet-testing.md).
+
 ## What A Snippet Is
 
 A snippet is a Markdown or JavaScript file that contains an async arrow function run by Code Mode.
@@ -208,15 +211,18 @@ executing it, or pass `--file` / `--code` to validate an unsaved body:
 labby snippet validate draft --file draft-snippet.md
 ```
 
-Use `labby snippet test <name>` to execute one snippet as a smoke test, or
-`labby snippet test --all` to run every listed snippet with its declared
-defaults. MCP/API callers use `snippets.test` with `{ "all": true }` for the
-same all-snippet check.
+Use `labby snippet test <name> --fixture case.json` for deterministic offline
+tests. Real upstream execution requires `labby snippet test <name> --live`.
+`labby snippet test --all --live` runs every listed snippet with its declared
+defaults and can perform upstream writes; it is not an offline CI suite. MCP/API
+callers choose an inline `fixture` object or `live: true` explicitly.
 
 When Code Mode final-result shaping is enabled, `snippets.exec` returns the
-same shaped display response as Code Mode. `snippets.test` evaluates pass/fail
-from the pre-shape result, so `{ "ok": true }` and `{ "ok": false }` remain
-reliable even when the displayed response is shaped into a bounded string.
+shaped display response. `snippets.test` checks the pre-shape result, actual
+call failures, and performance thresholds, and rejects display truncation.
+Its report exposes `passed`, `metrics`, `violations`, and a result only when it
+fits the requested output threshold. See [the testing guide](../snippet-testing.md)
+for snapshots, fixture rules, exit codes, and live-mode migration.
 
 `snippets.list`, `help`, and `schema` are read-only discovery actions. Actions
 that expose snippet bodies or execute/manage snippets require `lab:admin`.

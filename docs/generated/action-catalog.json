@@ -9525,7 +9525,7 @@
   {
     "service": "snippets",
     "action": "snippets.test",
-    "description": "Execute one snippet and report pass/fail",
+    "description": "Test a snippet with offline fixtures or explicitly opted-in live calls",
     "destructive": false,
     "requires_admin": true,
     "required_scopes": [
@@ -9535,6 +9535,24 @@
     "required_capability": null,
     "resource_family": null,
     "params": [
+      {
+        "name": "fixture",
+        "ty": "object",
+        "required": false,
+        "description": "Offline fixture with calls, expect or snapshot, and budgets; mutually exclusive with live"
+      },
+      {
+        "name": "live",
+        "ty": "boolean",
+        "required": false,
+        "description": "Explicitly execute real upstream calls instead of using fixtures"
+      },
+      {
+        "name": "budgets",
+        "ty": "object",
+        "required": false,
+        "description": "Live test limits: wall_clock_ms, tool_calls, output_bytes; fixture mode uses its own budgets"
+      },
       {
         "name": "name",
         "ty": "string",
