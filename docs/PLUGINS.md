@@ -42,10 +42,12 @@ install the plugin remotely never need a local binary at all. The plugin ships
 server-environment synchronization, and per-service Claude plugin lifecycle are
 retired. Plugin configuration is client-only and never mutates the Labby host.
 
+The [implementation workflow skill](../plugins/labby/skills/implement-in-microsandbox/SKILL.md) guides explicitly authorized tasks through persistent development and retained staging; it does not add a deployment service or mutate production.
+
 ## APM package (`apm.yml`)
 
 The repository root is also an [APM](https://microsoft.github.io/apm/) package.
-`apm install -g dinglebear-ai/labby` deploys the same three skills (the root
+`apm install -g dinglebear-ai/labby` deploys the same four skills (the root
 `skills/` entries are symlinks into `plugins/labby/skills`, so there is one
 source) and registers the `labby` stdio MCP server through the npm launcher.
 `apm.yml` carries a `# x-release-please-version` marker, so Release Please keeps

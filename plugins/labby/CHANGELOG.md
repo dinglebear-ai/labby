@@ -4,6 +4,8 @@
 
 ### Added
 
+- Added `implement-in-microsandbox`, with explicit publication and staging gates, receipt verification, real-HTTP tests, and a locked reference bootstrap.
+
 - Added the first-class `install-labby` Agent Skill with guided verified
   release installation, authentication selection, listener/deployment
   configuration, Incus guidance, Tailscale Funnel, approval-gated reverse-proxy

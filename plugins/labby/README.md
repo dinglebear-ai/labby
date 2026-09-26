@@ -8,6 +8,7 @@ The plugin contains:
 
 - the `using-labby` skill,
 - the `creating-snippets` skill for Labby Code Mode snippet authoring,
+- the [implement-in-microsandbox](skills/implement-in-microsandbox/SKILL.md) skill for persistent development and verified retained staging,
 - an HTTP MCP server entry targeting `${user_config.server_url}/mcp`,
 - client-only connection settings for `server_url` and an optional bearer
   `api_token`.
