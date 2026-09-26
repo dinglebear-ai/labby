@@ -268,6 +268,12 @@ pub struct GatewayRuntimeView {
     pub exposed_skill_count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_skills: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_version: Option<String>,
     #[serde(default)]
     pub last_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -668,6 +674,12 @@ pub struct GatewayMcpRuntimeView {
     pub exposed_skill_count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_skills: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_version: Option<String>,
     #[serde(default)]
     pub likely_stale_count: usize,
     #[serde(default)]

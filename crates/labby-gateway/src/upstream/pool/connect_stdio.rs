@@ -7,6 +7,7 @@
 
 use anyhow::Context as _;
 use labby_runtime::gateway_config::{UpstreamConfig, UpstreamLifecycle};
+use labby_runtime::redact::{redact_secret_like_segments, redact_stdio_args};
 use rmcp::ClientHandler;
 use rmcp::service::ClientServiceExt;
 use rmcp::transport::TransportAdapterIdentity;
@@ -590,6 +591,43 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     }
     cmd.envs(command.env.iter().cloned());
 
+    let program = command.program.to_string_lossy().into_owned();
+    let argv = command
+        .args
+        .iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    let log_args = redact_stdio_args(&argv)
+        .into_iter()
+        .map(|arg| redact_secret_like_segments(&arg))
+        .collect::<Vec<_>>();
+    let cwd = command.cwd.as_ref().map(|path| path.display().to_string());
+    let env_keys = command
+        .env
+        .iter()
+        .map(|(key, _)| key.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    let inherit_env = command
+        .inherit_env
+        .iter()
+        .map(|key| key.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    tracing::info!(
+        surface = "dispatch",
+        service = "upstream.pool",
+        action = "upstream.spawn.requested",
+        upstream = %command.name,
+        transport = "stdio",
+        program = %program,
+        args = ?log_args,
+        cwd = ?cwd,
+        env_keys = ?env_keys,
+        inherit_env = ?inherit_env,
+        runtime_origin = ?command.runtime_origin,
+        lifecycle = ?command.lifecycle,
+        "stdio upstream spawn requested"
+    );
+
     // A stdio MCP server logs to stderr (stdout is the JSON-RPC channel), so the
     // child's stderr is the ONLY place its server-side diagnostics go. Capture
     // it by default and forward into the gateway log at the level resolved from
@@ -620,9 +658,26 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     let generation = process.generation();
     let child_exit = process.exit_observer();
     tracing::info!(
-        surface = "dispatch", service = "upstream.pool",
-        upstream = %command.name, transport = "stdio",
-        action = "upstream.connect.start", command = %command.display, pid = ?pid,
+        surface = "dispatch",
+        service = "upstream.pool",
+        upstream = %command.name,
+        transport = "stdio",
+        action = "upstream.spawn.started",
+        program = %program,
+        args = ?log_args,
+        pid = ?pid,
+        generation,
+        "stdio upstream child started"
+    );
+    tracing::info!(
+        surface = "dispatch",
+        service = "upstream.pool",
+        upstream = %command.name,
+        transport = "stdio",
+        action = "upstream.connect.start",
+        program = %program,
+        args = ?log_args,
+        pid = ?pid,
         generation,
         "upstream connect start",
     );
@@ -654,6 +709,18 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
             {
                 Ok(service) => service,
                 Err(error) => {
+                    let log_error = redact_secret_like_segments(&error.to_string());
+                    tracing::warn!(
+                        surface = "dispatch",
+                        service = "upstream.pool",
+                        upstream = %command.name,
+                        transport = "stdio",
+                        action = "upstream.protocol.discovery_failed",
+                        pid = ?pid,
+                        generation,
+                        error = %log_error,
+                        "stdio upstream MCP lifecycle negotiation failed"
+                    );
                     return Err(StdioConnectError::with_diagnostics(
                         error,
                         &stderr_capture,
@@ -671,6 +738,18 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
             {
                 Ok(service) => service,
                 Err(error) => {
+                    let log_error = redact_secret_like_segments(&error.to_string());
+                    tracing::warn!(
+                        surface = "dispatch",
+                        service = "upstream.pool",
+                        upstream = %command.name,
+                        transport = "stdio",
+                        action = "upstream.protocol.discovery_failed",
+                        pid = ?pid,
+                        generation,
+                        error = %log_error,
+                        "stdio upstream MCP lifecycle negotiation failed"
+                    );
                     return Err(StdioConnectError::with_diagnostics(
                         error,
                         &stderr_capture,
@@ -684,6 +763,39 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     };
     let peer = service.peer().clone();
 
+    if let Some(info) = peer.peer_info() {
+        let server_name = info.server_info.as_ref().map(|server| server.name.as_str());
+        let server_version = info
+            .server_info
+            .as_ref()
+            .map(|server| server.version.as_str());
+        tracing::info!(
+            surface = "dispatch",
+            service = "upstream.pool",
+            upstream = %command.name,
+            transport = "stdio",
+            action = "upstream.protocol.discovered",
+            pid = ?pid,
+            generation,
+            protocol_version = %info.protocol_version,
+            server_name = ?server_name,
+            server_version = ?server_version,
+            "stdio upstream MCP protocol negotiated"
+        );
+    }
+
+    tracing::info!(
+        surface = "dispatch",
+        service = "upstream.pool",
+        upstream = %command.name,
+        transport = "stdio",
+        action = "upstream.catalog.refresh.started",
+        capability = "tools",
+        pid = ?pid,
+        generation,
+        "stdio upstream tool catalog discovery started"
+    );
+
     // Discover tools
     let tools =
         match catalog_pagination::list_tools(&peer, STDIO_DISCOVERY_TIMEOUT, MAX_UPSTREAM_TOOLS)
@@ -691,6 +803,19 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
         {
             Ok(tools) => tools,
             Err(error) => {
+                let log_error = redact_secret_like_segments(&error.to_string());
+                tracing::warn!(
+                    surface = "dispatch",
+                    service = "upstream.pool",
+                    upstream = %command.name,
+                    transport = "stdio",
+                    action = "upstream.catalog.refresh.failed",
+                    capability = "tools",
+                    pid = ?pid,
+                    generation,
+                    error = %log_error,
+                    "stdio upstream tool catalog discovery failed"
+                );
                 return Err(StdioConnectError::with_diagnostics(
                     error.into_service_error(&command.name),
                     &stderr_capture,
@@ -699,6 +824,18 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
                 .await);
             }
         };
+    tracing::info!(
+        surface = "dispatch",
+        service = "upstream.pool",
+        upstream = %command.name,
+        transport = "stdio",
+        action = "upstream.catalog.refresh.completed",
+        capability = "tools",
+        pid = ?pid,
+        generation,
+        tool_count = tools.len(),
+        "stdio upstream tool catalog discovery completed"
+    );
     tracing::info!(
         surface = "dispatch", service = "upstream.pool",
         upstream = %command.name, transport = "stdio",
@@ -741,6 +878,9 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
             started_at: Some(std::time::SystemTime::now()),
             origin: command.runtime_origin.clone(),
             owner: command.runtime_owner.clone(),
+            server_name: None,
+            server_version: None,
+            protocol_version: None,
         },
     );
 

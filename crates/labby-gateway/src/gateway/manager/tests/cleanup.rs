@@ -8,6 +8,98 @@ use crate::gateway::runtime::upstream_cleanup_patterns;
 
 use super::*;
 
+fn stdio_upstream(name: &str, command: &str, args: Vec<&str>) -> UpstreamConfig {
+    UpstreamConfig {
+        display_name: None,
+        lifecycle: None,
+        enabled: true,
+        name: name.to_string(),
+        url: None,
+        transport: None,
+        socket_path: None,
+        headers: Default::default(),
+        bearer_token_env: None,
+        command: Some(command.to_string()),
+        args: args.into_iter().map(str::to_string).collect(),
+        env: BTreeMap::new(),
+        proxy_resources: false,
+        proxy_prompts: false,
+        expose_tools: None,
+        expose_resources: None,
+        expose_prompts: None,
+        proxy_skills: false,
+        expose_skills: None,
+        code_mode_hint: None,
+        oauth: None,
+        imported_from: None,
+        priority: 1.0,
+    }
+}
+
+#[test]
+fn ssh_cleanup_patterns_use_full_runtime_argv_not_shared_identity_paths() {
+    let upstream = stdio_upstream(
+        "host-shell",
+        "/usr/bin/ssh",
+        vec![
+            "-i",
+            "/tmp/shared-host-key",
+            "-o",
+            "UserKnownHostsFile=/tmp/shared-known-hosts",
+            "tester@192.0.2.10",
+            "/opt/tools/shell-mcp",
+            "serve",
+        ],
+    );
+
+    let patterns = upstream_cleanup_patterns(&upstream, false);
+    assert_eq!(patterns.len(), 1, "{patterns:?}");
+    assert!(patterns[0].contains("/opt/tools/shell-mcp serve"));
+    assert!(
+        !patterns
+            .iter()
+            .any(|pattern| pattern == "/tmp/shared-host-key")
+    );
+    assert!(
+        !patterns
+            .iter()
+            .any(|pattern| pattern == "UserKnownHostsFile=/tmp/shared-known-hosts")
+    );
+
+    #[cfg(target_os = "linux")]
+    {
+        let sibling = "/usr/bin/ssh -i /tmp/shared-host-key -o UserKnownHostsFile=/tmp/shared-known-hosts tester@192.0.2.10 /opt/tools/other-mcp serve";
+        assert!(
+            !process_matches_patterns(sibling, &patterns),
+            "another live upstream on the same SSH identity must not match: {patterns:?}"
+        );
+    }
+}
+
+#[test]
+fn ssh_cleanup_patterns_do_not_prefix_match_sibling_upstream_names() {
+    let upstream = stdio_upstream(
+        "worker",
+        "/usr/bin/ssh",
+        vec![
+            "-i",
+            "/tmp/worker",
+            "tester@worker-host",
+            "/opt/tools/worker.exe",
+            "serve",
+        ],
+    );
+    let patterns = upstream_cleanup_patterns(&upstream, false);
+    assert_eq!(patterns.len(), 1, "{patterns:?}");
+
+    #[cfg(target_os = "linux")]
+    {
+        let sibling =
+            "/usr/bin/ssh -i /tmp/worker-wsl tester@worker-host /opt/tools/worker-wsl serve";
+        assert!(!process_matches_patterns(sibling, &patterns));
+    }
+}
+
 #[test]
 fn github_chat_cleanup_patterns_cover_uv_wrappers() {
     let upstream = UpstreamConfig {

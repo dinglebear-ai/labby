@@ -352,7 +352,7 @@ async fn http_upstream_accepts_discovery_result_with_server_info_metadata() {
     config.name = "metadata-fallback-http".to_string();
     config.url = Some(format!("{}/mcp", server.uri()));
 
-    let (_connection, tools) = connect_http_upstream(
+    let (connection, tools) = connect_http_upstream(
         config.url.as_deref().expect("url"),
         &config,
         None,
@@ -368,6 +368,15 @@ async fn http_upstream_accepts_discovery_result_with_server_info_metadata() {
     assert_eq!(responder.list_tools_requests.load(Ordering::SeqCst), 1);
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0].name, "metadata_discovery_echo");
+    assert_eq!(
+        connection.runtime.server_name.as_deref(),
+        Some("metadata-discovery-test")
+    );
+    assert_eq!(connection.runtime.server_version.as_deref(), Some("1.0.0"));
+    assert_eq!(
+        connection.runtime.protocol_version.as_deref(),
+        Some("2026-07-28")
+    );
 }
 
 #[derive(Clone, Default)]
