@@ -25,7 +25,7 @@ use url::Url;
 /// the first place.
 static SECRET_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?:sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82}|glpat-[A-Za-z0-9_-]{20}|xox[bp]-[A-Za-z0-9-]+|tskey-[A-Za-z0-9-]+|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|(?i:bearer)[ \t]+[A-Za-z0-9._~+/-]{8,}=*|-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END[A-Z ]*PRIVATE KEY-----|$)|[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@)",
+        r"(?:sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82}|glpat-[A-Za-z0-9_-]{20}|xox[bp]-[A-Za-z0-9-]+|tskey-[A-Za-z0-9-]+|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|(?i:bearer)[ \t]+[A-Za-z0-9._~+/-]{8,}=*|(?i:basic)[ \t]+[A-Za-z0-9+/]{8,}={0,2}|-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END[A-Z ]*PRIVATE KEY-----|$)|[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@)",
     )
     .expect("secret regex is valid")
 });
@@ -192,6 +192,12 @@ pub fn is_sensitive_key(key: &str) -> bool {
             | "private_key"
             | "secret_key"
             | "auth_key"
+            | "authkey"
+            | "auth_header"
+            | "credential"
+            | "session_cookie"
+            | "browser_session_cookie"
+            | "secret_access_key"
     ) || normalized.ends_with("_token")
         || normalized.ends_with("_secret")
         || normalized.ends_with("_password")
@@ -199,6 +205,9 @@ pub fn is_sensitive_key(key: &str) -> bool {
         || normalized.ends_with("_private_key")
         || normalized.ends_with("_secret_key")
         || normalized.ends_with("_auth_key")
+        || normalized.ends_with("_authkey")
+        || normalized.ends_with("_auth_header")
+        || normalized.ends_with("_secret_access_key")
         || normalized.ends_with("_encryption_key")
         || normalized.ends_with("_signing_key")
 }
@@ -490,6 +499,11 @@ mod tests {
             "oauth_code",
             "oauth_encryption_key",
             "jwt_signing_key",
+            "AWS_SECRET_ACCESS_KEY",
+            "LAB_GW_1PASSWORD_AUTH_HEADER",
+            "INCUS_TS_AUTHKEY",
+            "credential",
+            "browser_session_cookie",
         ] {
             assert!(is_sensitive_key(key), "expected `{key}` to be sensitive");
         }
@@ -517,6 +531,10 @@ mod tests {
             "code",
             "error_code",
             "source_code",
+            "AWS_ACCESS_KEY_ID",
+            "AUTH_KEY_PATH",
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "allow_session_cookie",
         ] {
             assert!(
                 !is_sensitive_key(key),
@@ -664,6 +682,16 @@ mod tests {
         let input = "y".repeat(4096);
         let output = sanitize_error_text(&input, 4096);
         assert_eq!(output, input);
+    }
+
+    #[test]
+    fn redacts_basic_authorization_without_hiding_operational_text() {
+        let basic = redact_secret_like_segments(
+            "Authorization: Basic dXNlcjpwYXNzd29yZA== host=macpoo.local",
+        );
+        assert!(!basic.contains("dXNlcjpwYXNzd29yZA=="), "{basic}");
+        assert!(basic.contains("[REDACTED]"));
+        assert!(basic.contains("host=macpoo.local"));
     }
 
     #[test]
