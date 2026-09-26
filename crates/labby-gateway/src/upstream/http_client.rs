@@ -220,16 +220,27 @@ fn jsonrpc_message_id(message: &impl serde::Serialize) -> Option<serde_json::Val
 fn parse_json_rpc_error(
     body: &[u8],
     expected_id: Option<&serde_json::Value>,
+    recorrelate_mismatched_id: bool,
 ) -> Option<ServerJsonRpcMessage> {
     let value = serde_json::from_slice::<serde_json::Value>(body).ok()?;
-    if value.get("id") != expected_id {
+    let id_matches = value.get("id") == expected_id;
+    let JsonRpcMessage::Error(error) =
+        serde_json::from_value::<ServerJsonRpcMessage>(value).ok()?
+    else {
+        return None;
+    };
+
+    if id_matches {
+        return Some(JsonRpcMessage::Error(error));
+    }
+    if !recorrelate_mismatched_id {
         return None;
     }
 
-    match serde_json::from_value::<ServerJsonRpcMessage>(value) {
-        Ok(message @ JsonRpcMessage::Error(_)) => Some(message),
-        _ => None,
-    }
+    let expected_id = expected_id
+        .cloned()
+        .and_then(|id| serde_json::from_value::<rmcp::model::RequestId>(id).ok())?;
+    Some(JsonRpcMessage::error(error.error, Some(expected_id)))
 }
 
 /// Return the method header required by SEP-2243 from the JSON-RPC body.
@@ -705,6 +716,11 @@ impl StreamableHttpClient for BodyCappedHttpClient {
         mut custom_headers: HashMap<HeaderName, HeaderValue>,
     ) -> Result<StreamableHttpPostResponse, StreamableHttpError<Self::Error>> {
         let expected_response_id = jsonrpc_message_id(&message);
+        let request_expects_response = matches!(&message, ClientJsonRpcMessage::Request(_));
+        let method_header = jsonrpc_method_header(&message);
+        let is_discover_request = method_header
+            .as_ref()
+            .is_some_and(|method| method.as_bytes() == b"server/discover");
         let mut request = self
             .inner
             .post(uri.as_ref())
@@ -721,7 +737,7 @@ impl StreamableHttpClient for BodyCappedHttpClient {
                 && !name.as_str().eq_ignore_ascii_case(HEADER_MCP_NAME)
         });
         request = apply_custom_headers(request, custom_headers)?;
-        if let Some(method) = jsonrpc_method_header(&message) {
+        if let Some(method) = method_header {
             request = request.header(HEADER_MCP_METHOD, method);
         }
         if let Some(name) = jsonrpc_name_header(&message) {
@@ -799,11 +815,22 @@ impl StreamableHttpClient for BodyCappedHttpClient {
         if !status.is_success() {
             let _permit = self.acquire_response_budget().await?;
             let body_bytes = read_body_capped(response, self.max_bytes).await?;
-            if content_type
-                .as_deref()
-                .is_some_and(|ct| ct.as_bytes().starts_with(JSON_MIME_TYPE.as_bytes()))
-                && let Some(message) =
-                    parse_json_rpc_error(&body_bytes, expected_response_id.as_ref())
+            let lifecycle_status_must_not_downgrade = is_discover_request
+                && (matches!(
+                    status,
+                    reqwest::StatusCode::UNAUTHORIZED
+                        | reqwest::StatusCode::FORBIDDEN
+                        | reqwest::StatusCode::TOO_MANY_REQUESTS
+                ) || status.is_server_error());
+            if !lifecycle_status_must_not_downgrade
+                && content_type
+                    .as_deref()
+                    .is_some_and(|ct| ct.as_bytes().starts_with(JSON_MIME_TYPE.as_bytes()))
+                && let Some(message) = parse_json_rpc_error(
+                    &body_bytes,
+                    expected_response_id.as_ref(),
+                    is_discover_request,
+                )
             {
                 return Ok(StreamableHttpPostResponse::Json(
                     message,
@@ -840,9 +867,16 @@ impl StreamableHttpClient for BodyCappedHttpClient {
                     )),
                     Err(e) => {
                         tracing::warn!(
-                            "could not parse JSON response as ServerJsonRpcMessage, treating as accepted: {e}"
+                            request_expects_response,
+                            "could not parse JSON response as ServerJsonRpcMessage: {e}"
                         );
-                        Ok(StreamableHttpPostResponse::Accepted)
+                        if request_expects_response {
+                            Err(StreamableHttpError::UnexpectedServerResponse(Cow::Owned(
+                                sanitized_transport_error(status, &body_bytes),
+                            )))
+                        } else {
+                            Ok(StreamableHttpPostResponse::Accepted)
+                        }
                     }
                 }
             }
@@ -1055,6 +1089,15 @@ mod tests {
             "params": {}
         }))
         .expect("valid jsonrpc")
+    }
+
+    fn jsonrpc_notification() -> ClientJsonRpcMessage {
+        serde_json::from_value(serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+            "params": {}
+        }))
+        .expect("valid notification")
     }
 
     #[tokio::test]
@@ -1323,6 +1366,146 @@ mod tests {
             .post_message(uri, jsonrpc_request(), None, None, HashMap::new())
             .await;
         assert!(result.is_ok(), "small response should succeed: {result:?}");
+    }
+
+    #[tokio::test]
+    async fn malformed_json_request_response_is_terminal_and_redacted() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/mcp"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_raw(b"{not-json Bearer top-secret".to_vec(), "application/json"),
+            )
+            .mount(&server)
+            .await;
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            build(1024).post_message(
+                format!("{}/mcp", server.uri()).into(),
+                jsonrpc_request(),
+                None,
+                None,
+                HashMap::new(),
+            ),
+        )
+        .await
+        .expect("malformed request response must terminate promptly");
+        let error = result.expect_err("malformed JSON for a request must be terminal");
+        let text = error.to_string();
+        assert!(
+            matches!(error, StreamableHttpError::UnexpectedServerResponse(_)),
+            "unexpected error: {text}"
+        );
+        assert!(
+            !text.contains("top-secret"),
+            "raw upstream body leaked: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_json_notification_response_remains_accepted() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/mcp"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(b"{not-json".to_vec(), "application/json"),
+            )
+            .mount(&server)
+            .await;
+
+        let response = build(1024)
+            .post_message(
+                format!("{}/mcp", server.uri()).into(),
+                jsonrpc_notification(),
+                None,
+                None,
+                HashMap::new(),
+            )
+            .await
+            .expect("malformed notification response remains accepted");
+
+        assert!(matches!(response, StreamableHttpPostResponse::Accepted));
+    }
+
+    #[tokio::test]
+    async fn discover_client_error_is_recorrelated_without_losing_error_code() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/mcp"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "server-error",
+                "error": {
+                    "code": rmcp::model::ErrorCode::UNSUPPORTED_PROTOCOL_VERSION.0,
+                    "message": "unsupported protocol version"
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let response = build(1024)
+            .post_message(
+                format!("{}/mcp", server.uri()).into(),
+                jsonrpc_request_with_method("server/discover"),
+                None,
+                None,
+                HashMap::new(),
+            )
+            .await
+            .expect("sessionless discover rejection must remain a JSON-RPC response");
+
+        let StreamableHttpPostResponse::Json(message, _) = response else {
+            panic!("discover rejection must be re-correlated as JSON-RPC: {response:?}");
+        };
+        let value = serde_json::to_value(message).expect("serialize response");
+        assert_eq!(value.get("id"), Some(&serde_json::json!(1)));
+        assert_eq!(
+            value.pointer("/error/code").and_then(Value::as_i64),
+            Some(i64::from(
+                rmcp::model::ErrorCode::UNSUPPORTED_PROTOCOL_VERSION.0
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn discover_operational_http_errors_preserve_status_for_fail_closed_classification() {
+        for status in [429, 500, 503] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/mcp"))
+                .respond_with(
+                    ResponseTemplate::new(status).set_body_json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "error": {
+                            "code": rmcp::model::ErrorCode::METHOD_NOT_FOUND.0,
+                            "message": "method not found"
+                        }
+                    })),
+                )
+                .mount(&server)
+                .await;
+
+            let error = build(1024)
+                .post_message(
+                    format!("{}/mcp", server.uri()).into(),
+                    jsonrpc_request_with_method("server/discover"),
+                    None,
+                    None,
+                    HashMap::new(),
+                )
+                .await
+                .expect_err("operational discover failures must retain HTTP status");
+
+            let text = error.to_string();
+            assert!(
+                matches!(error, StreamableHttpError::UnexpectedServerResponse(_)),
+                "HTTP {status}: {text}"
+            );
+            assert!(text.contains(&format!("HTTP {status}")), "got: {text}");
+        }
     }
 
     #[tokio::test]
