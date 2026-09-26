@@ -283,6 +283,11 @@ pub(super) async fn authenticate_protected_route_request(
     let granted_scopes = granted.iter().map(|scope| (*scope).to_string()).collect();
     request
         .extensions_mut()
+        .insert(labby_auth::auth_context::AuthorizedClientId(
+            std::sync::Arc::from(claims.azp.as_str()),
+        ));
+    request
+        .extensions_mut()
         .insert(crate::api::oauth::AuthContext {
             actor_key: derive_actor_key(actor_key_deriver, &claims.sub),
             sub: claims.sub.clone(),

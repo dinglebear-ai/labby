@@ -167,7 +167,7 @@ impl SigningKeys {
         validation.set_audience(&[expected_audience]);
         validation.set_issuer(&[expected_issuer]);
         validation.validate_nbf = true;
-        decode::<AccessClaims>(token, &self.decoding_key, &validation)
+        let claims = decode::<AccessClaims>(token, &self.decoding_key, &validation)
             .map(|data| data.claims)
             .map_err(|error| {
                 warn!(
@@ -176,7 +176,16 @@ impl SigningKeys {
                     "access token rejected"
                 );
                 AuthError::InvalidAccessToken
-            })
+            })?;
+        if claims.azp.trim().is_empty() || claims.azp != claims.azp.trim() {
+            warn!(
+                kind = "auth_failed",
+                reason = "invalid_azp",
+                "access token rejected"
+            );
+            return Err(AuthError::InvalidAccessToken);
+        }
+        Ok(claims)
     }
 
     pub const fn jwks(&self) -> &JwksDocument {
@@ -321,6 +330,24 @@ mod tests {
                     "https://lab.example.com",
                 )
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn empty_authorized_party_is_rejected() {
+        let signer = test_signer();
+        let mut claims = sample_claims();
+        claims.azp.clear();
+        let token = signer.issue_access_token(&claims).unwrap();
+        assert!(
+            signer
+                .validate_access_token_with_issuer(
+                    &token,
+                    "https://lab.example.com",
+                    "https://lab.example.com",
+                )
+                .is_err(),
+            "access token without a non-empty authorized party must be rejected"
         );
     }
 
