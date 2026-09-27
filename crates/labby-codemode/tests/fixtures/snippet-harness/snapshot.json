@@ -1,0 +1,10 @@
+{
+  "snapshot": {
+    "ok": true,
+    "value": 2,
+    "time": 0
+  },
+  "ignore_paths": [
+    "/time"
+  ]
+}

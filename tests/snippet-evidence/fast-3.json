@@ -1,0 +1,54 @@
+{
+  "run": "fast-3",
+  "at": "2026-09-26T05:12:00.806Z",
+  "ok": false,
+  "complete": false,
+  "summary": {
+    "issueCount": 26,
+    "issuesWithOpenPRs": 11,
+    "issuesWithoutObservedPRs": 15,
+    "myOpenPRCount": 13,
+    "prSearchCalls": 8,
+    "relatedPRSearchFailures": 2,
+    "handoffCalls": 0,
+    "handoffFailures": 0,
+    "toolCalls": 10,
+    "elapsedMs": 4748
+  },
+  "coverage": {
+    "incomplete": [],
+    "omittedPRs": 0,
+    "omittedIssues": 0
+  },
+  "failures": [
+    {
+      "phase": "open",
+      "scope": "org:unraid",
+      "ids": [
+        "U8-1150",
+        "U8-794",
+        "U8-350",
+        "U8-1113"
+      ],
+      "kind": "rate_limit",
+      "message": "Search quota exhausted",
+      "retryAfterSeconds": 2
+    },
+    {
+      "phase": "open",
+      "scope": "org:unraid",
+      "ids": [
+        "U8-925",
+        "U8-1012"
+      ],
+      "kind": "rate_limit",
+      "message": "Search quota exhausted",
+      "retryAfterSeconds": 2
+    }
+  ],
+  "bytes": 8666,
+  "myCloudflarePRs": [
+    "unraid/cloudflare#1512"
+  ],
+  "unexpectedHistory": false
+}

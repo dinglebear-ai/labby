@@ -1,0 +1,7 @@
+{
+  "expect": {
+    "/process": "undefined",
+    "/fetch": "undefined",
+    "/require": "undefined"
+  }
+}

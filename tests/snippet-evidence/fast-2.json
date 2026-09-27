@@ -1,0 +1,29 @@
+{
+  "run": "fast-2",
+  "at": "2026-09-26T05:11:12.572Z",
+  "ok": true,
+  "complete": true,
+  "summary": {
+    "issueCount": 26,
+    "issuesWithOpenPRs": 11,
+    "issuesWithoutObservedPRs": 15,
+    "myOpenPRCount": 13,
+    "prSearchCalls": 8,
+    "relatedPRSearchFailures": 0,
+    "handoffCalls": 0,
+    "handoffFailures": 0,
+    "toolCalls": 10,
+    "elapsedMs": 6812
+  },
+  "coverage": {
+    "incomplete": [],
+    "omittedPRs": 0,
+    "omittedIssues": 0
+  },
+  "failures": [],
+  "bytes": 8386,
+  "myCloudflarePRs": [
+    "unraid/cloudflare#1512"
+  ],
+  "unexpectedHistory": false
+}

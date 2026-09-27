@@ -1,0 +1,172 @@
+{
+  "run": "native-deep",
+  "at": "2026-09-26T05:15:02.140Z",
+  "sourceSha256": "871389e360fd53694003423303afe46f3b823b6ee3e6fbe118c3a2984e744908",
+  "ok": false,
+  "complete": false,
+  "summary": {
+    "issueCount": 26,
+    "issuesWithOpenPRs": 9,
+    "issuesWithoutObservedPRs": 15,
+    "myOpenPRCount": 13,
+    "prSearchCalls": 8,
+    "relatedPRSearchFailures": 11,
+    "handoffCalls": 26,
+    "handoffFailures": 0,
+    "toolCalls": 36,
+    "elapsedMs": 6097
+  },
+  "coverage": {
+    "incomplete": [],
+    "omittedPRs": 0,
+    "omittedIssues": 0
+  },
+  "failures": [
+    {
+      "phase": "history",
+      "scope": "org:unraid",
+      "ids": [
+        "U8-1201",
+        "U8-1191",
+        "U8-1189",
+        "U8-937"
+      ],
+      "kind": "rate_limit",
+      "message": "Search quota exhausted",
+      "retryAfterSeconds": 29
+    },
+    {
+      "phase": "open",
+      "scope": "org:unraid",
+      "ids": [
+        "U8-1146",
+        "U8-1159",
+        "U8-1151",
+        "U8-1000"
+      ],
+      "kind": "rate_limit",
+      "message": "Search quota exhausted",
+      "retryAfterSeconds": 29
+    },
+    {
+      "phase": "history",
+      "scope": "org:unraid",
+      "ids": [
+        "U8-1146",
+        "U8-1159",
+        "U8-1151",
+        "U8-1000"
+      ],
+      "kind": "rate_limit",
+      "message": "Search quota exhausted",
+      "retryAfterSeconds": 29
+    },
+    {
+      "phase": "open",
+      "scope": "org:unraid",
+      "ids": [
+        "U8-1089",
+        "U8-1052",
+        "U8-1190",
+        "U8-1001"
+      ],
+      "kind": "rate_limit",
+      "message": "Search quota exhausted",
+      "retryAfterSeconds": 29
+    },
+    {
+      "phase": "history",
+      "scope": "org:unraid",
+      "ids": [
+        "U8-1089",
+        "U8-1052",
+        "U8-1190",
+        "U8-1001"
+      ],
+      "kind": "rate_limit",
+      "message": "Search quota exhausted",
+      "retryAfterSeconds": null
+    },
+    {
+      "phase": "open",
+      "scope": "org:unraid",
+      "ids": [
+        "U8-16",
+        "U8-1155",
+        "U8-959",
+        "U8-449"
+      ],
+      "kind": "rate_limit",
+      "message": "Search quota exhausted",
+      "retryAfterSeconds": null
+    },
+    {
+      "phase": "history",
+      "scope": "org:unraid",
+      "ids": [
+        "U8-16",
+        "U8-1155",
+        "U8-959",
+        "U8-449"
+      ],
+      "kind": "rate_limit",
+      "message": "Search quota exhausted",
+      "retryAfterSeconds": null
+    },
+    {
+      "phase": "open",
+      "scope": "org:unraid",
+      "ids": [
+        "U8-1150",
+        "U8-794",
+        "U8-350",
+        "U8-1113"
+      ],
+      "kind": "rate_limit",
+      "message": "Search quota exhausted",
+      "retryAfterSeconds": null
+    },
+    {
+      "phase": "history",
+      "scope": "org:unraid",
+      "ids": [
+        "U8-1150",
+        "U8-794",
+        "U8-350",
+        "U8-1113"
+      ],
+      "kind": "rate_limit",
+      "message": "Search quota exhausted",
+      "retryAfterSeconds": null
+    },
+    {
+      "phase": "open",
+      "scope": "org:unraid",
+      "ids": [
+        "U8-925",
+        "U8-1012"
+      ],
+      "kind": "rate_limit",
+      "message": "Search quota exhausted",
+      "retryAfterSeconds": null
+    },
+    {
+      "phase": "history",
+      "scope": "org:unraid",
+      "ids": [
+        "U8-925",
+        "U8-1012"
+      ],
+      "kind": "rate_limit",
+      "message": "Search quota exhausted",
+      "retryAfterSeconds": null
+    }
+  ],
+  "bytes": 12323,
+  "traceCalls": 36,
+  "failedTraceCalls": 4,
+  "myCloudflarePRs": [
+    "unraid/cloudflare#1512"
+  ],
+  "deepFieldsPresent": true
+}

@@ -1,0 +1,46 @@
+{
+  "run": "deep-1",
+  "at": "2026-09-26T05:12:56.897Z",
+  "ok": false,
+  "complete": false,
+  "summary": {
+    "issueCount": 26,
+    "issuesWithOpenPRs": 11,
+    "issuesWithoutObservedPRs": 2,
+    "myOpenPRCount": 13,
+    "prSearchCalls": 15,
+    "relatedPRSearchFailures": 1,
+    "handoffCalls": 26,
+    "handoffFailures": 0,
+    "toolCalls": 43,
+    "elapsedMs": 17144
+  },
+  "coverage": {
+    "incomplete": [],
+    "omittedPRs": 0,
+    "omittedIssues": 0
+  },
+  "failures": [
+    {
+      "phase": "history",
+      "scope": "org:unraid",
+      "ids": [
+        "U8-925",
+        "U8-1012"
+      ],
+      "kind": "rate_limit",
+      "message": "Search quota exhausted",
+      "retryAfterSeconds": 14
+    }
+  ],
+  "bytes": 15524,
+  "myCloudflarePRs": [
+    "unraid/cloudflare#1512"
+  ],
+  "allHaveDeepFields": true,
+  "handoffKeys": [
+    "state",
+    "previousHandoffs",
+    "previousQaRuns"
+  ]
+}

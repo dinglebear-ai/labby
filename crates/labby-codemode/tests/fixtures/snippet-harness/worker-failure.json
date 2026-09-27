@@ -1,0 +1,32 @@
+{
+  "calls": [
+    {
+      "tool": "linear-notification-worker::list_issues",
+      "error": {
+        "kind": "test_error",
+        "message": "Synthetic upstream failure"
+      }
+    },
+    {
+      "tool": "github::get_me",
+      "result": {
+        "login": "jmagar"
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "result": {
+        "items": [],
+        "total_count": 0
+      }
+    }
+  ],
+  "expect": {
+    "/ok": false,
+    "/complete": false,
+    "/failures/0/phase": "issues"
+  },
+  "budgets": {
+    "tool_calls": 3
+  }
+}
