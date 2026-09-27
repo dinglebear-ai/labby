@@ -684,7 +684,7 @@ mod serve_tests {
 
     #[tokio::test]
     async fn first_party_get_rejects_a_supporting_file_uri() {
-        let uri = "skill://labby/creating-snippets/README.md";
+        let uri = "skill://labby/using-snippets/README.md";
         let registry = SkillRegistryContext::first_party_only();
         assert!(get_visible_skill(&registry, uri).await.unwrap().is_none());
     }
