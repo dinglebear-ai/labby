@@ -299,6 +299,12 @@ The pinned fleet policy and repository contract set `allow-arm64: true` for
 Labby. This removes the former fleet-wide ARM64 token rejection while keeping
 the shared workflows' default x86_64-only for callers that do not opt in. The
 release matrix builds Linux ARM64 natively on `ubuntu-24.04-arm`.
+The path-filtered `arm64-package-smoke.yml` pull-request workflow checks out
+the exact PR head on the same native runner, builds the frontend and release
+binary, verifies the archive checksum and contents, and executes the extracted
+binary's Code Mode and Skill CLI smoke. It retains the archive, checksum, and a
+source-head/digest receipt for seven days. This qualification has read-only
+repository permissions and never publishes a tag, release, or package.
 
 ## GitHub-hosted runners
 

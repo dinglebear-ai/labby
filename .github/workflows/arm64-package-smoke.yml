@@ -1,0 +1,97 @@
+name: Native Linux ARM64 package smoke
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/arm64-package-smoke.yml
+      - .github/workflows/release.yml
+      - install.sh
+      - scripts/install.sh
+      - packages/labby-mcp/lib/platform.js
+      - packages/labby-mcp/scripts/check-package.js
+      - packages/labby-mcp/test/platform.test.js
+
+concurrency:
+  group: arm64-package-smoke-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  LABBY_CODE_MODE_POOL_SIZE: "0"
+
+jobs:
+  package-smoke:
+    name: Build and smoke native ARM64 archive
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Verify exact PR head and native runner
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(uname -s)" = Linux
+          test "$(uname -m)" = aarch64
+      - uses: ./.github/actions/build-gateway-admin
+      - uses: ./.github/actions/setup-rust-kache
+        with:
+          targets: aarch64-unknown-linux-gnu
+      - name: Build natively and package archive
+        run: |
+          set -euo pipefail
+          cargo build --package labby --bin labby --all-features --locked --release \
+            --target aarch64-unknown-linux-gnu
+          mkdir -p dist
+          cp target/aarch64-unknown-linux-gnu/release/labby dist/labby
+          tar -C dist -czf dist/lab-aarch64-unknown-linux-gnu.tar.gz labby
+          (cd dist && sha256sum lab-aarch64-unknown-linux-gnu.tar.gz > lab-aarch64-unknown-linux-gnu.tar.gz.sha256)
+      - name: Verify and smoke extracted package
+        env:
+          SOURCE_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          archive=dist/lab-aarch64-unknown-linux-gnu.tar.gz
+          (cd dist && sha256sum --check --strict lab-aarch64-unknown-linux-gnu.tar.gz.sha256)
+          test "$(tar -tzf "$archive")" = labby
+          mkdir candidate
+          tar -C candidate -xzf "$archive"
+          cmp dist/labby candidate/labby
+          test -x candidate/labby
+          candidate/labby --version
+          candidate/labby --json code run \
+            --code 'async () => ({ ok: true, sum: 1 + 1 })' \
+            | grep -q '"sum":2'
+          candidate/labby skill --help | grep -q 'Read locally visible skills'
+          python3 - "$SOURCE_HEAD" "$archive" dist/qualification.json <<'PY'
+          import hashlib, json, pathlib, sys
+          head, archive, receipt = sys.argv[1:]
+          digest = hashlib.sha256(pathlib.Path(archive).read_bytes()).hexdigest()
+          pathlib.Path(receipt).write_text(json.dumps({
+              "source_head": head,
+              "runner_architecture": "aarch64",
+              "archive": pathlib.Path(archive).name,
+              "archive_sha256": digest,
+              "packaged_smoke": "passed",
+          }, sort_keys=True) + "\n")
+          PY
+      - name: Upload qualified archive and receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: arm64-package-${{ github.event.pull_request.head.sha }}
+          path: |
+            dist/lab-aarch64-unknown-linux-gnu.tar.gz
+            dist/lab-aarch64-unknown-linux-gnu.tar.gz.sha256
+            dist/qualification.json
+          if-no-files-found: error
+          retention-days: 7

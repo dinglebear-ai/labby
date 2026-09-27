@@ -55,6 +55,25 @@ def resolve_baseline(releases: list, merged: list[str], candidate: str = "v1.16.
 
 
 class ReleaseWorkflowContractTests(unittest.TestCase):
+    def test_pr_arm64_smoke_uses_exact_head_and_cannot_publish(self):
+        workflow = yaml.load((ROOT / '.github/workflows/arm64-package-smoke.yml').read_text(), Loader=yaml.BaseLoader)
+        self.assertEqual(['pull_request'], list(workflow['on']))
+        self.assertEqual({'contents': 'read'}, workflow['permissions'])
+        job = workflow['jobs']['package-smoke']
+        self.assertEqual('ubuntu-24.04-arm', job['runs-on'])
+        steps = job['steps']
+        checkout = steps[0]
+        self.assertEqual('${{ github.event.pull_request.head.repo.full_name }}', checkout['with']['repository'])
+        self.assertEqual('${{ github.event.pull_request.head.sha }}', checkout['with']['ref'])
+        self.assertEqual('false', checkout['with']['persist-credentials'])
+        run_steps = '\n'.join(step.get('run', '') for step in steps)
+        self.assertIn('test "$(uname -m)" = aarch64', run_steps)
+        self.assertIn('sha256sum --check --strict', run_steps)
+        self.assertIn('tar -C candidate -xzf', run_steps)
+        self.assertIn('candidate/labby --json code run', run_steps)
+        self.assertNotIn('gh release', run_steps)
+        self.assertNotIn('npm publish', run_steps)
+
     def test_native_release_and_installers_select_the_same_arm64_archive(self):
         release = yaml.load((ROOT / '.github/workflows/release.yml').read_text(), Loader=yaml.BaseLoader)
         rows = release['jobs']['build']['strategy']['matrix']['include']
