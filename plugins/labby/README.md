@@ -7,7 +7,8 @@ bootstrap, repair, or mutate the Labby server host.
 The plugin contains:
 
 - the `using-labby` skill,
-- the `creating-snippets` skill for Labby Code Mode snippet authoring,
+- the `using-codemode` skill for live upstream discovery and execution,
+- the `using-snippets` skill for running and authoring Labby Code Mode snippets,
 - an HTTP MCP server entry targeting `${user_config.server_url}/mcp`,
 - client-only connection settings for `server_url` and an optional bearer
   `api_token`.
