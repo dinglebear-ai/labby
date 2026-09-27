@@ -1379,13 +1379,14 @@ mod tests {
 
             async fn call_tool(
                 &self,
-                params: CallToolRequestParams,
-                _: rmcp::service::RequestContext<RoleServer>,
+                _: CallToolRequestParams,
+                context: rmcp::service::RequestContext<RoleServer>,
             ) -> Result<CallToolResponse, ErrorData> {
+                // rmcp moves wire metadata from params into RequestContext.
                 *self
                     .seen_meta
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = params.meta;
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(context.meta);
                 Ok(CallToolResult::success(vec![]).into())
             }
         }
@@ -1471,7 +1472,7 @@ mod tests {
             connection: UpstreamConnection,
             request_timeout: Option<Duration>,
         ) -> Arc<UpstreamPool> {
-            let slot = Arc::new(std::sync::Mutex::new(Some(connection)));
+            let slot = Arc::new(Mutex::new(Some(connection)));
             let connector: InProcessConnector = Arc::new(move |_service| {
                 let slot = Arc::clone(&slot);
                 let future: BoxFuture<'static, anyhow::Result<InProcessRegistration>> =

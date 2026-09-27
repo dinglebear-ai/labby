@@ -233,19 +233,22 @@ impl TraceState {
         if value.len() > TRACESTATE_MAX_BYTES {
             return Err(TraceContextError::TracestateTooLarge);
         }
-        if value.is_empty() {
-            return Err(TraceContextError::InvalidTracestateMember);
-        }
-
         let members: Vec<&str> = value.split(',').collect();
         if members.len() > TRACESTATE_MAX_MEMBERS {
             return Err(TraceContextError::TooManyTracestateMembers);
         }
-        if members
-            .iter()
-            .any(|member| !valid_tracestate_member(member.trim_matches([' ', '\t'])))
-        {
-            return Err(TraceContextError::InvalidTracestateMember);
+        let mut keys = std::collections::HashSet::new();
+        for member in members {
+            let member = member.trim_matches([' ', '\t']);
+            // W3C allows empty members when multiple headers are combined.
+            if member.is_empty() {
+                continue;
+            }
+            if !valid_tracestate_member(member)
+                || !keys.insert(member.split_once('=').expect("validated member").0)
+            {
+                return Err(TraceContextError::InvalidTracestateMember);
+            }
         }
 
         Ok(Self(value))
@@ -468,17 +471,30 @@ fn valid_tracestate_value_byte(byte: u8) -> bool {
 
 fn valid_baggage_member(member: &str) -> bool {
     let member = member.trim_matches([' ', '\t']);
-    if member.is_empty()
-        || member.len() > BAGGAGE_MEMBER_MAX_BYTES
-        || member.bytes().any(|byte| byte < 0x20 || byte == 0x7f)
-    {
+    if member.is_empty() || member.len() > BAGGAGE_MEMBER_MAX_BYTES {
         return false;
     }
-    let core = member.split_once(';').map_or(member, |(core, _)| core);
-    let Some((name, _value)) = core.split_once('=') else {
+    let mut parts = member.split(';');
+    let Some(core) = parts.next() else {
         return false;
     };
-    !name.is_empty() && name.bytes().all(valid_baggage_key_byte)
+    valid_baggage_pair(core, true) && parts.all(|property| valid_baggage_pair(property, false))
+}
+
+fn valid_baggage_pair(part: &str, require_value: bool) -> bool {
+    let (key, value) = match part.split_once('=') {
+        Some((key, value)) => (key, Some(value)),
+        None if !require_value => (part, None),
+        None => return false,
+    };
+    let key = key.trim_matches([' ', '\t']);
+    !key.is_empty()
+        && key.bytes().all(valid_baggage_key_byte)
+        && value.is_none_or(|value| {
+            value.trim_matches([' ', '\t']).bytes().all(
+                |byte| matches!(byte, 0x21 | 0x23..=0x2b | 0x2d..=0x3a | 0x3c..=0x5b | 0x5d..=0x7e),
+            )
+        })
 }
 
 fn valid_baggage_key_byte(byte: u8) -> bool {
@@ -593,14 +609,16 @@ mod tests {
             .unwrap_err(),
             TraceContextError::TooManyTracestateMembers
         );
-        for invalid in ["Upper=value", "vendor=", "=value", "a=v,", "a==v"] {
+        for invalid in ["Upper=value", "vendor=", "=value", "a=v,a=w", "a==v"] {
             assert_eq!(
                 TraceState::parse(invalid).unwrap_err(),
                 TraceContextError::InvalidTracestateMember,
                 "{invalid}"
             );
         }
-        assert!(TraceState::parse("a=v ").is_ok());
+        for valid in ["a=v ", "", " \t", ",a=v, "] {
+            assert!(TraceState::parse(valid).is_ok(), "{valid}");
+        }
     }
 
     #[test]
@@ -623,6 +641,34 @@ trusted=true"
             Baggage::parse(",").unwrap_err(),
             TraceContextError::InvalidBaggageMember
         );
+    }
+
+    #[test]
+    fn baggage_validates_values_properties_and_optional_whitespace() {
+        for valid in [
+            "key = value ; flag ; ttl = 60",
+            "key\t=\tvalue",
+            "a=",
+            "a=x=y",
+            "a=%C3%A9",
+        ] {
+            assert!(Baggage::parse(valid).is_ok(), "{valid}");
+        }
+        for invalid in [
+            "a=é",
+            "a=two words",
+            "a=\"quoted\"",
+            "a=back\\slash",
+            "a=v;",
+            "a=v;bad key",
+            "a=v;ttl=two words",
+        ] {
+            assert_eq!(
+                Baggage::parse(invalid).unwrap_err(),
+                TraceContextError::InvalidBaggageMember,
+                "{invalid}"
+            );
+        }
     }
 
     #[test]

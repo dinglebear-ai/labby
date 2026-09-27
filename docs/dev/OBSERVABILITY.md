@@ -259,7 +259,7 @@ This store intentionally does not capture CLI/HTTP/MCP dispatch-level events for
 The operator UI deliberately separates these two retention shapes:
 
 - **Usage** reads the 30-day SQLite store for durable upstream volume, latency, outcome, actor, capability, operation, OAuth-scope, and response-size analysis.
-- **Traces** reads a bounded admin-only `server_logs.query` window with `correlated_only` and `stop_after_limit` enabled, then groups emitted `trace_id`, `request_id`, or `execution_id` fields into request timelines. The log normalizer promotes only those correlation identifiers from tracing span context into the normalized event fields, so nested upstream events inherit the outer request identity without flattening arbitrary span metadata. Root request terminal events determine success/failure; child upstream finishes or warnings cannot complete or fail the parent request. When the retained query is truncated, the oldest correlation group is discarded because it may have been cut at the sample boundary.
+- **Traces** reads a bounded admin-only `server_logs.query` window with `correlated_only` and `stop_after_limit` enabled, then groups emitted `trace_id`, `request_id`, or `execution_id` fields into request timelines. The log normalizer promotes those correlation identifiers plus `span_id` and numeric `call_ordinal` from tracing span context into the normalized event fields, so nested upstream events inherit the outer request identity without flattening arbitrary span metadata. Root request terminal events determine success/failure; child upstream finishes or warnings cannot complete or fail the parent request. When the retained query is truncated, the oldest correlation group is discarded because it may have been cut at the sample boundary.
 - **Overview** combines the durable Usage totals with a bounded retained-log sample for dispatch-by-surface, estimated tokens-by-tool, and Code Mode fan-out. Its log query stops after the retained-entry limit and uses a small scan budget; the dashboard refreshes on a slower cadence than the live trace view so observability does not become a sustained log-scanning workload. Those panels must be labeled as retained samples; token values are the `chars / 4` estimates emitted at dispatch boundaries, not provider billing totals. A successful empty log query is a collected zero, while an unavailable log query leaves only those three dimensions uncollected.
 
 Raw source IP is not a Usage or Traces metric. Do not add it merely to populate an operator card; retain the privacy-safe `actor_key` contract above unless a separately reviewed security requirement calls for network-source retention.
@@ -754,3 +754,25 @@ this surface:
 | skill excluded at ingest | `WARN` | reason code + redacted URI |
 | snapshot truncated by a budget | `WARN` | which cap engaged |
 | `skills/list`, `skills/get`, skill `resources/read` | `INFO` | one dispatch event each |
+
+### MCP request trace propagation
+
+With the gateway feature enabled, MCP tool calls continue valid version-00
+`_meta.traceparent` values or mint a fresh unsampled trace when the parent is
+missing, invalid, or unsupported. Invalid optional `tracestate` and `baggage`
+values are dropped independently; neither affects authorization. Optional fields
+without a valid parent are discarded. Tracestate is bounded to 512 bytes and
+32 members; baggage to 8192 bytes, 64 members, and 4096 bytes per member.
+
+Direct upstream calls and MCP Code Mode calls carry a fresh child span in
+SEP-414 metadata. Code Mode additionally sends host-owned
+`ai.dinglebear.labby/trace` execution IDs and zero-based call ordinals. Request
+metadata unrelated to tracing is preserved. Retries of an already-prepared
+upstream operation reuse its child context. CLI and HTTP Code Mode entrypoints
+do not currently establish this MCP trace context.
+
+Structured logs inherit the active trace and child span. Server-log normalization
+prefers the nearest host span over event fields and omits event baggage. Baggage
+is opaque propagation data and must never be logged or used as identity,
+authorization, routing, or tenant context. This supplies correlation metadata;
+it does not configure an OpenTelemetry exporter.

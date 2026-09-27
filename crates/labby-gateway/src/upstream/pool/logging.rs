@@ -412,8 +412,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn upstream_logs_inherit_trace_span_and_code_mode_correlation() {
+    #[test]
+    fn upstream_logs_inherit_trace_span_and_code_mode_correlation() {
         let _tracing_lock = crate::test_support::TRACING_TEST_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -434,7 +434,7 @@ mod tests {
         let correlation = LabbyTraceCorrelation::new("exec_trace_log", 6).expect("correlation");
         let trace_id = trace.trace_id().to_hex();
         let span_id = trace.span_id().to_hex();
-        crate::trace_context::instrument_outbound_future(
+        futures::executor::block_on(crate::trace_context::instrument_outbound_future(
             async {
                 let event = UpstreamRequestLog::tool("github", "search_repos", false);
                 log_upstream_request_start(event);
@@ -442,8 +442,7 @@ mod tests {
             },
             Some(&trace),
             Some(&correlation),
-        )
-        .await;
+        ));
 
         drop(_guard);
         let logs = crate::test_support::captured_logs(&buf);

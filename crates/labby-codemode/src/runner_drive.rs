@@ -2374,13 +2374,7 @@ sleep 3600
                 _include_snippets: bool,
                 _use_cache: bool,
             ) -> Result<ToolsRender, ToolError> {
-                Ok(ToolsRender {
-                    fingerprint: "recording-call".to_string(),
-                    embedding_fingerprint: "recording-call".to_string(),
-                    entries: Arc::from([]),
-                    catalog_json: Arc::from("[]"),
-                    serialized_size: 2,
-                })
+                Ok(ToolsRender::empty())
             }
 
             async fn call_tool(

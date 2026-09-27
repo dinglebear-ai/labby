@@ -266,6 +266,9 @@ fn normalize_entry(value: &Value, file: &str) -> Option<LogEntry> {
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
+    // Baggage can carry arbitrary caller data, including sensitive values.
+    // It is propagated on the wire but never returned as log correlation.
+    fields.remove("baggage");
     promote_correlation_fields(object, &mut fields);
     let redacted_fields = redact_fields(Value::Object(fields));
     Some(LogEntry {
@@ -667,6 +670,25 @@ mod tests {
             entry.fields.get("baggage").is_none(),
             "untrusted baggage must not be promoted from tracing spans"
         );
+    }
+
+    #[test]
+    fn normalize_entry_uses_nearest_span_and_keeps_outer_execution_context() {
+        let entry = normalize_entry(
+            &json!({
+                "fields": {"trace_id": "event", "call_ordinal": 999},
+                "spans": [
+                    {"trace_id": "outer", "span_id": "parent", "execution_id": "exec_real"},
+                    {"trace_id": "inner", "span_id": "child", "call_ordinal": 0}
+                ]
+            }),
+            "lab.active.log",
+        )
+        .expect("normalized log entry");
+        assert_eq!(entry.fields["trace_id"], "inner");
+        assert_eq!(entry.fields["span_id"], "child");
+        assert_eq!(entry.fields["execution_id"], "exec_real");
+        assert_eq!(entry.fields["call_ordinal"], 0);
     }
 
     #[test]
