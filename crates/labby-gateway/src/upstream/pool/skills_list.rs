@@ -83,6 +83,8 @@ pub(crate) enum UpstreamSkillsError {
     Collision,
     #[error("upstream direct skill cache exceeded its bounded capacity")]
     LimitExceeded,
+    #[error("upstream Skill search did not complete within its traversal budget")]
+    SearchIncomplete,
 }
 
 impl UpstreamSkillsError {
@@ -286,8 +288,11 @@ impl UpstreamPool {
         let mut matches = Vec::new();
 
         for _page in 0..limits::MAX_LIST_PAGES {
-            if Instant::now() >= deadline || matches.len() >= max_items {
-                break;
+            if matches.len() >= max_items {
+                return Ok(matches);
+            }
+            if Instant::now() >= deadline {
+                return Err(UpstreamSkillsError::SearchIncomplete);
             }
             let params = cursor
                 .as_ref()
@@ -340,14 +345,18 @@ impl UpstreamPool {
             }
 
             let Some(next) = result.next_cursor else {
-                break;
+                return Ok(matches);
             };
             if cursor.as_deref() == Some(next.as_str()) {
-                break;
+                return Err(UpstreamSkillsError::SearchIncomplete);
             }
             cursor = Some(next);
         }
-        Ok(matches)
+        if matches.len() >= max_items {
+            Ok(matches)
+        } else {
+            Err(UpstreamSkillsError::SearchIncomplete)
+        }
     }
 
     /// Walk an upstream's `skills/list`, validating each page as it arrives.

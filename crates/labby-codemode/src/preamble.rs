@@ -307,6 +307,7 @@ codemode.search = async function(input) {{
   // only a bounded result page and merges it with this execution's authorized
   // local catalog.
   var searchEntries = __codemodeDiscovery.slice();
+  var artifactSearchIncomplete = false;
   try {{
     var artifactResponse = await callTool("__lab_internal::artifact_search", {{ query: query, limit: limit, kinds: requestedKinds }});
     var artifactEntries = artifactResponse && Array.isArray(artifactResponse.entries) ? artifactResponse.entries : [];
@@ -320,7 +321,9 @@ codemode.search = async function(input) {{
       }}
     }}
   }} catch (e) {{
-    // Provider degradation must not suppress local search results.
+    // Preserve local results, but never report a failed provider search as
+    // authoritative absence from the configured artifact sources.
+    artifactSearchIncomplete = true;
   }}
 
   // --- lexical scoring (unchanged algorithm) ---
@@ -455,6 +458,11 @@ codemode.search = async function(input) {{
   var withheldHits = __codemodeWithheldNamed(tokens, hasKindFilter, kindFilter);
   if (total === 0) {{
     var empty = {{ results: [], total: 0, truncated: false, hint: __codemodeNoMatchHint }};
+    if (artifactSearchIncomplete) {{
+      empty.incomplete = true;
+      empty.hint = "Artifact search was incomplete. Retry or inspect source availability.";
+      return empty;
+    }}
     if (withheldHits.length) {{
       empty.hint = __codemodeWithheldHint(withheldHits);
       empty.withheld = __codemodeWithheldSummary(withheldHits);
@@ -471,6 +479,10 @@ codemode.search = async function(input) {{
   if (withheldHits.length) {{
     found.hint = __codemodeWithheldHint(withheldHits);
     found.withheld = __codemodeWithheldSummary(withheldHits);
+  }}
+  if (artifactSearchIncomplete) {{
+    found.incomplete = true;
+    found.hint = "Artifact search was incomplete. Retry or inspect source availability." + (found.hint ? " " + found.hint : "");
   }}
   return found;
 }};
@@ -1222,6 +1234,8 @@ mod tests {
         let entries = vec![discovery_entry("arcane", "containers", "List containers")];
         let js = generate_discovery_js(&entries, 0.5, &[]).expect("js generation succeeds");
         assert!(js.contains("catch (e) {"));
+        assert!(js.contains("artifactSearchIncomplete = true"));
+        assert!(js.contains("empty.incomplete = true"));
     }
 
     #[test]

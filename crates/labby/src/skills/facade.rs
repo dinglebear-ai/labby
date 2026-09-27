@@ -466,6 +466,9 @@ pub(crate) async fn search_visible_skills_bounded(
             serde_json::Value::from(proxied.unreachable_upstreams),
         );
     }
+    if proxied.truncated {
+        listing.note_incomplete("truncated", serde_json::Value::Bool(true));
+    }
     listing
 }
 

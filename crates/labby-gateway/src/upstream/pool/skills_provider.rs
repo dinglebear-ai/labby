@@ -28,7 +28,8 @@ fn map_upstream_skills_error(error: UpstreamSkillsError) -> SkillProviderError {
         UpstreamSkillsError::Capability(CapabilityCallError::Transport { .. })
         | UpstreamSkillsError::Unavailable
         | UpstreamSkillsError::Invalidated
-        | UpstreamSkillsError::CacheMissing => SkillProviderError::Unavailable {
+        | UpstreamSkillsError::CacheMissing
+        | UpstreamSkillsError::SearchIncomplete => SkillProviderError::Unavailable {
             reason: "upstream_unavailable".to_owned(),
         },
         UpstreamSkillsError::Capability(CapabilityCallError::QueueSaturated { .. }) => {

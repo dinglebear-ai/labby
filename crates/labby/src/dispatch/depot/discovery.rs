@@ -27,6 +27,8 @@ pub const SUPPORTED_KINDS: &[&str] = &[
     "repository",
     "command",
     "hook",
+    "tool",
+    "snippet",
 ];
 const MAX_PAGE: u16 = 200;
 const MAX_RESPONSE: usize = 1024 * 1024;

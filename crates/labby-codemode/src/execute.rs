@@ -655,11 +655,18 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                     })
                     .unwrap_or_default();
                 let mut entries = host
-                    .search_artifacts(query, limit, &kinds, caller, surface, scope)
+                    .search_artifacts(
+                        query,
+                        limit.saturating_add(1),
+                        &kinds,
+                        caller,
+                        surface,
+                        scope,
+                    )
                     .await?
                     .into_iter()
                     .filter(|entry| discovery_entry_visible(entry, scope))
-                    .take(limit)
+                    .take(limit.saturating_add(1))
                     .map(|entry| CodeModeDiscoveryEntry::from_catalog(&entry))
                     .collect::<Vec<_>>();
                 while serde_json::to_vec(&entries)
@@ -1699,6 +1706,36 @@ mod tests {
             value["entries"][0]["path"],
             "skill.public_depot.fixture_skill"
         );
+    }
+
+    #[tokio::test]
+    async fn artifact_search_returns_one_extra_entry_to_signal_truncation() {
+        let entries = (0..3)
+            .map(|index| {
+                CatalogDescriptor::metadata(
+                    CodeModeCatalogKind::Skill,
+                    "public_depot",
+                    &format!("skill-{index}"),
+                    &format!("fixture-{index}"),
+                    "fixture",
+                    Vec::new(),
+                )
+            })
+            .collect();
+        let host = FixtureHost::new(Vec::new()).with_search_entries(entries);
+        let broker = CodeModeBroker::new(Some(&host));
+        let value = broker
+            .call_tool_id(
+                "__lab_internal::artifact_search",
+                json!({ "query": "fixture", "limit": 1, "kinds": ["skill"] }),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &ToolScope::default(),
+                ExecCtx::none(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(value["entries"].as_array().unwrap().len(), 2);
     }
 
     #[tokio::test]

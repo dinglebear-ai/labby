@@ -132,3 +132,32 @@ test('Code Mode search settings surface load failures and disable saving', async
     gatewayApi.getCodeModeConfig = originalGet
   }
 })
+
+test('Code Mode search settings preserve the draft after a failed save', async () => {
+  installTestDom()
+  const originalGet = gatewayApi.getCodeModeConfig
+  const originalSet = gatewayApi.setCodeModeConfig
+  gatewayApi.getCodeModeConfig = async () => initialConfig
+  gatewayApi.setCodeModeConfig = async () => {
+    throw new Error('save rejected')
+  }
+
+  try {
+    const view = await renderClient(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <CodeModeSearchSettings />
+      </SWRConfig>,
+    )
+    await waitFor(() => assert.equal(view.container.querySelectorAll('[role="switch"]').length, 9))
+    await click(view.container.querySelector('[aria-label="Search Public Depot"]'))
+    await click(findButton(view.container, 'Save'))
+    await waitFor(() => assert.match(view.container.querySelector('[role="alert"]')?.textContent ?? '', /save rejected/))
+    assert.equal(view.container.querySelector('[aria-label="Search Public Depot"]')?.getAttribute('aria-checked'), 'false')
+    assert.match(view.container.textContent ?? '', /Unsaved changes/)
+    assert.equal(findButton(view.container, 'Save')?.disabled, false)
+    await view.unmount()
+  } finally {
+    gatewayApi.getCodeModeConfig = originalGet
+    gatewayApi.setCodeModeConfig = originalSet
+  }
+})
