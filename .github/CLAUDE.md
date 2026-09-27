@@ -7,7 +7,8 @@ details there and keep this file focused on rules for editing `.github/`.
 ## Fleet invariants
 
 - All repository-defined CI jobs run on GitHub-hosted runners. Linux jobs use
-  the pinned `ubuntu-24.04` image, and Windows jobs use `windows-latest`.
+  the pinned `ubuntu-24.04` image, or `ubuntu-24.04-arm` for native ARM64
+  release builds. Windows jobs use `windows-latest`.
 - Rust compilation uses `.github/actions/setup-rust-kache` in credentialless
   GitHub-cache mode. Repository-level shared MinIO credentials are forbidden:
   same-repository pull requests can edit workflow content and must never be
@@ -60,7 +61,7 @@ details there and keep this file focused on rules for editing `.github/`.
 | Node, pnpm, browser, frontend | `ubuntu-24.04` |
 | policy, labels, drift, metadata, aggregate gates | `ubuntu-24.04` |
 | native Windows required tests and advisory Palette check | `windows-latest` |
-| release and publication jobs | pinned GitHub-hosted x86_64 image |
+| release and publication jobs | pinned GitHub-hosted native architecture image |
 
 `ci.yml` uses `scripts/ci/changed_paths.py` to route work. Scheduled and manual
 runs enable all categories. Required CI validates container and release source
@@ -95,7 +96,7 @@ ARM64 workflow, installer, and package contracts are explicitly enabled for
 Labby through the pinned fleet policy and repository contract. Keep that opt-in
 visible when adding ARM64 jobs or artifacts; QEMU and cross-platform emulation
 still require a deliberate implementation and verification plan.
-The supported release binary artifacts are Linux x86_64 and macOS arm64.
+The supported release binary artifacts are Linux x86_64, Linux arm64, and macOS arm64.
 Windows remains covered by required CI tests but is not a release target.
 Keep each release target native to its GitHub-hosted runner; do not add
 emulation, cross-platform image matrices, or QEMU setup.

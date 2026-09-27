@@ -543,7 +543,7 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
     def test_release_sboms_satisfy_the_manifest_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
-            for archive in ("lab-x86_64-unknown-linux-gnu.tar.gz", "lab-aarch64-apple-darwin.tar.gz"):
+            for archive in ("lab-x86_64-unknown-linux-gnu.tar.gz", "lab-aarch64-unknown-linux-gnu.tar.gz", "lab-aarch64-apple-darwin.tar.gz"):
                 payload = work / "labby"
                 payload.write_text("binary")
                 with tarfile.open(work / archive, "w:gz") as tar:
@@ -558,7 +558,7 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             syft.chmod(0o755)
             env = os.environ | {"SYFT_BIN": str(syft)}
             subprocess.run(["bash", str(ROOT / "scripts/ci/generate-release-sboms.sh")], cwd=work, env=env, check=True)
-            for sbom in ("lab-x86_64-unknown-linux-gnu.spdx.json", "lab-aarch64-apple-darwin.spdx.json",
+            for sbom in ("lab-x86_64-unknown-linux-gnu.spdx.json", "lab-aarch64-unknown-linux-gnu.spdx.json", "lab-aarch64-apple-darwin.spdx.json",
                          "labby-install.sh.spdx.json"):
                 self.assertTrue((work / sbom).is_file(), sbom)
             self.assertEqual([], sorted(path.name for path in work.glob("*.spdx.json.spdx.json")))
