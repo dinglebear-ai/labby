@@ -150,8 +150,15 @@ pub(super) fn migrate_with_evidence(
         // A current-version store is a no-op only when it is actually the
         // exact current schema. Unknown fingerprints or same-version drift
         // must fail here rather than relying on a later AccessStore open
-        // validation to catch them.
-        super::integrity::validate(connection)?;
+        // validation to catch them. Keep all validation reads on one snapshot:
+        // another connection may bootstrap the store while this one opens.
+        let validation = connection
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(super::store::map_sqlite_error)?;
+        super::integrity::validate(&validation)?;
+        validation
+            .commit()
+            .map_err(super::store::map_sqlite_error)?;
     }
     if let Some(operation) = &migration_operation {
         complete_migration_operation(operation);
