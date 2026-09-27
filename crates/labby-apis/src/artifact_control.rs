@@ -10,6 +10,10 @@ use serde_json::Value;
 use crate::core::{ApiError, HttpClient};
 
 const MAX_CONTROL_PLANE_RESPONSE_BYTES: usize = 1024 * 1024;
+// Depot's Tool/Snippet discovery expansion adds only two kind enum values to
+// depot.artifacts.list. Keep accepting the previous schema during rollout.
+const ARTIFACTS_LIST_EXPANDED_FINGERPRINT: &str =
+    "d41ad7ea98b56f7739e0a0b7e3dc44745753e9be502d1ee093551f84d692e895";
 
 /// Depot's frozen public operation catalog, captured from the paired Depot
 /// worktree. Tests pin every curated operation's schema and fingerprint to it.
@@ -250,6 +254,19 @@ impl Operation {
             }
         }
     }
+
+    fn contract_is_compatible(self, definition: &Value) -> bool {
+        operation_contract_is_compatible(
+            definition,
+            self.provider_name(),
+            self.expected_schema_fingerprint(),
+        ) || (self == Self::ArtifactsList
+            && operation_contract_is_compatible(
+                definition,
+                self.provider_name(),
+                ARTIFACTS_LIST_EXPANDED_FINGERPRINT,
+            ))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -298,13 +315,10 @@ impl ArtifactControlClient {
             .http
             .get_json_bounded("/api/operations", MAX_CONTROL_PLANE_RESPONSE_BYTES)
             .await?;
-        let compatible = catalog.operations.iter().any(|definition| {
-            operation_contract_is_compatible(
-                definition,
-                operation.provider_name(),
-                operation.expected_schema_fingerprint(),
-            )
-        });
+        let compatible = catalog
+            .operations
+            .iter()
+            .any(|definition| operation.contract_is_compatible(definition));
         if !compatible {
             return Err(ApiError::Internal(
                 "remote operation is unavailable or schema-incompatible".to_owned(),
@@ -636,6 +650,26 @@ mod tests {
             );
             assert_eq!(definition["contractVersion"], OPERATION_CONTRACT_VERSION);
         }
+    }
+
+    #[test]
+    fn artifact_list_accepts_only_the_original_and_tool_snippet_schemas() {
+        let mut definition = operation_definition(Operation::ArtifactsList);
+        assert!(Operation::ArtifactsList.contract_is_compatible(&definition));
+
+        let kinds = definition["inputSchema"]["properties"]["kind"]["enum"]
+            .as_array_mut()
+            .unwrap();
+        kinds.extend([json!("tool"), json!("snippet")]);
+        assert_eq!(
+            schema_fingerprint(&definition["inputSchema"]).as_deref(),
+            Some(ARTIFACTS_LIST_EXPANDED_FINGERPRINT)
+        );
+        definition["schemaFingerprint"] = json!(ARTIFACTS_LIST_EXPANDED_FINGERPRINT);
+        assert!(Operation::ArtifactsList.contract_is_compatible(&definition));
+
+        definition["inputSchema"]["properties"]["kind"]["enum"] = json!(["tool"]);
+        assert!(!Operation::ArtifactsList.contract_is_compatible(&definition));
     }
 
     #[test]
