@@ -231,6 +231,86 @@ async fn skills_http_server_list_get_and_read_through_production_client() {
 }
 
 #[tokio::test]
+async fn skills_http_list_cursor_reads_second_page_on_same_session() {
+    drop(rustls::crypto::ring::default_provider().install_default());
+    let parent = std::env::temp_dir().join("labby-live-e2e");
+    std::fs::create_dir_all(&parent).expect("test root parent");
+    let root = tempfile::Builder::new()
+        .prefix("skills-pagination-")
+        .tempdir_in(parent)
+        .expect("test root");
+    let skills = root.path().join("labby-home/skills");
+    for index in 0..129 {
+        let name = format!("page-{index:03}");
+        let directory = skills.join(&name);
+        std::fs::create_dir_all(&directory).expect("skill directory");
+        std::fs::write(
+            directory.join("SKILL.md"),
+            format!(
+                "---\nname: {name}\ndescription: Pagination fixture {index}\n---\n\nRead only.\n"
+            ),
+        )
+        .expect("skill manifest");
+    }
+
+    let server = live_labby::LiveLabbyBuilder::new()
+        .existing_root(root.path())
+        .env("LABBY_MCP_HTTP_TOKEN", "skills-e2e-disposable-token")
+        .start()
+        .await
+        .expect("isolated Labby starts");
+    let mut config = StreamableHttpClientTransportConfig::with_uri(format!(
+        "{}/mcp",
+        server.connection().base_url
+    ));
+    config.auth_header = Some("skills-e2e-disposable-token".into());
+    let worker = StreamableHttpClientWorker::new(
+        BodyCappedHttpClient::new(reqwest::Client::new(), 1024 * 1024),
+        config,
+    );
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let client =
+            ().serve_with_lifecycle(worker, ClientLifecycleMode::Initialize)
+                .await
+                .expect("MCP connection");
+        let first: SkillsListResult = client
+            .send_request_as(ClientRequest::CustomRequest(CustomRequest::new(
+                "skills/list",
+                Some(json!({})),
+            )))
+            .await
+            .expect("first page");
+        assert_eq!(first.skills.len(), 128);
+        let cursor = first.next_cursor.expect("second page cursor");
+        let second: SkillsListResult = client
+            .send_request_as(ClientRequest::CustomRequest(CustomRequest::new(
+                "skills/list",
+                Some(json!({ "cursor": cursor })),
+            )))
+            .await
+            .expect("second page on same session");
+        assert!(!second.skills.is_empty());
+        assert!(second.next_cursor.is_none());
+        let first_uris = first
+            .skills
+            .iter()
+            .map(|skill| skill.uri.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        assert!(
+            second
+                .skills
+                .iter()
+                .all(|skill| !first_uris.contains(skill.uri.as_str()))
+        );
+        client.cancel().await.expect("client shutdown");
+    })
+    .await
+    .expect("pagination deadline");
+    let cleanup = server.finish().await;
+    assert!(cleanup.is_clean(), "owned server cleanup: {cleanup:?}");
+}
+
+#[tokio::test]
 async fn skills_http_gateway_federates_a_real_labby_server() {
     let leaf = live_labby::LiveLabbyBuilder::new()
         .env("LABBY_MCP_HTTP_TOKEN", "skills-e2e-disposable-token")
