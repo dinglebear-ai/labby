@@ -870,7 +870,10 @@ mod tests {
         ))
         .visible_contract()
         .await;
+        #[cfg(feature = "gateway")]
         assert!(snapshot.tools.contains(super::MCP_APP_TOOL_NAME));
+        #[cfg(not(feature = "gateway"))]
+        assert!(snapshot.tools.is_empty());
         assert_ne!(snapshot.contract_hash, [0; 32]);
     }
 
