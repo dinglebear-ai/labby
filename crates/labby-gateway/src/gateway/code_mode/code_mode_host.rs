@@ -994,7 +994,7 @@ impl CodeModeHost for GatewayManager {
         provider
             .search(
                 &query,
-                limit.min(50),
+                limit.min(51),
                 &effective_kinds,
                 &search_config,
                 caller,
@@ -2058,7 +2058,7 @@ mod tests {
         assert!(!all.contains(&CodeModeCatalogKind::Resource));
 
         let skills_only = CodeModeSearchConfig {
-            kinds: [CodeModeSearchKind::Skill].into_iter().collect(),
+            kinds: std::iter::once(CodeModeSearchKind::Skill).collect(),
             ..CodeModeSearchConfig::default()
         };
         assert_eq!(

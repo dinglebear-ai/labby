@@ -613,6 +613,145 @@ mod tests {
     use super::*;
     use labby_codemode::CodeModeCallerCapabilities;
 
+    #[tokio::test]
+    async fn depot_skill_search_uses_each_provider_index_with_query_and_limit() {
+        use axum::{
+            Json, Router,
+            extract::State,
+            http::HeaderMap,
+            routing::{get, post},
+        };
+        use std::sync::Mutex;
+
+        let calls = Arc::new(Mutex::new(Vec::<(String, Value)>::new()));
+        let router = Router::new()
+            .route(
+                "/api/discovery",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "contractVersion": "depot.discovery/v1",
+                        "deploymentId": "catalog",
+                        "deploymentEpoch": "boot",
+                        "authorityEpoch": "read",
+                        "listingEpoch": "1",
+                        "snapshotContinuations": true,
+                        "maxPageSize": 200
+                    }))
+                }),
+            )
+            .route(
+                "/api/operations/depot.skills.search",
+                post(
+                    |State(calls): State<Arc<Mutex<Vec<(String, Value)>>>>,
+                     headers: HeaderMap,
+                     Json(request): Json<Value>| async move {
+                        let bearer = headers
+                            .get("authorization")
+                            .unwrap()
+                            .to_str()
+                            .unwrap()
+                            .to_owned();
+                        calls.lock().unwrap().push((bearer.clone(), request));
+                        let provider = if bearer == "Bearer public-token" {
+                            "public"
+                        } else {
+                            "team"
+                        };
+                        Json(serde_json::json!({"result": {
+                            "query": "deep skill",
+                            "results": [{
+                                "uri": format!("skill://depot/{provider}/skill-70001/SKILL.md"),
+                                "namespace": provider,
+                                "name": format!("{provider}-deep-skill"),
+                                "description": "result past the first catalog page"
+                            }]
+                        }}))
+                    },
+                ),
+            )
+            .with_state(Arc::clone(&calls));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+        let preferences = crate::config::depot::DepotPreferences {
+            read_project_id: Some("catalog-project".into()),
+            public_read_binding: Some(crate::config::depot::PublicReadBinding {
+                endpoint: endpoint.clone(),
+                bearer_token_env: "LABBY_DEPOT_TEST_PUBLIC_TOKEN".into(),
+                deployment_id: "catalog".to_owned().try_into().unwrap(),
+            }),
+            local_providers: vec![crate::config::depot::LocalProviderConfig {
+                id: "team".into(),
+                name: "Team".into(),
+                endpoint,
+                bearer_token_env: "LABBY_DEPOT_TEST_TEAM_TOKEN".into(),
+            }],
+            ..Default::default()
+        };
+        let secrets = crate::dispatch::depot::manager::SecretSnapshot::from_values(
+            [
+                (
+                    "LABBY_DEPOT_TEST_PUBLIC_TOKEN".into(),
+                    "public-token".into(),
+                ),
+                ("LABBY_DEPOT_TEST_TEAM_TOKEN".into(), "team-token".into()),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let temp = tempfile::tempdir().unwrap();
+        let provider = ProductCodeModeArtifactSearchProvider {
+            depot: Arc::new(Manager::new(&preferences, secrets, Default::default())),
+            artifacts: Arc::new(ArtifactStore::new(temp.path().join("artifacts")).unwrap()),
+        };
+        let results = provider
+            .depot_artifacts(
+                "deep skill",
+                51,
+                &[CodeModeCatalogKind::Skill],
+                &[
+                    CodeModeSearchSource::PublicDepot,
+                    CodeModeSearchSource::TeamDepot,
+                ]
+                .into_iter()
+                .collect(),
+                &CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert!(
+            results
+                .iter()
+                .any(|result| result.name == "public-deep-skill")
+        );
+        assert!(
+            results
+                .iter()
+                .any(|result| result.name == "team-deep-skill")
+        );
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 2, "search must not traverse catalog pages");
+        assert!(
+            calls
+                .iter()
+                .any(|(bearer, _)| bearer == "Bearer public-token")
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|(bearer, _)| bearer == "Bearer team-token")
+        );
+        assert!(calls.iter().all(|(_, request)| request
+            == &serde_json::json!({
+                "query": "deep skill", "limit": 51
+            })));
+        server.abort();
+    }
+
     #[test]
     fn user_kinds_map_to_exact_depot_indexes() {
         assert_eq!(
