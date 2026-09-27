@@ -29,8 +29,19 @@ struct ExecParams {
     name: Option<String>,
     #[serde(default)]
     params: Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TestParams {
+    name: Option<String>,
+    #[serde(default)]
+    params: Value,
     #[serde(default)]
     all: bool,
+    #[serde(default)]
+    live: bool,
+    fixture: Option<labby_codemode::snippet::testing::SnippetTestCase>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -175,7 +186,32 @@ async fn dispatch_inner(
             to_json(outcome.display_response)
         }
         "snippets.test" => {
-            let params: ExecParams = parse_params(params)?;
+            let params: TestParams = parse_params(params)?;
+            if let Some(fixture) = params.fixture {
+                if params.live
+                    || params.all
+                    || (!params.params.is_null()
+                        && params.params.as_object().is_none_or(|p| !p.is_empty()))
+                {
+                    return Err(missing_param(
+                        "fixture tests cannot combine live, all or params; use fixture.input",
+                        "fixture",
+                    ));
+                }
+                let name = params
+                    .name
+                    .ok_or_else(|| missing_param("fixture tests require a snippet name", "name"))?;
+                let snippet = resolve_snippet(&lab_home(), &builtin_snippet_dir(), &name)?;
+                return to_json(
+                    labby_codemode::snippet::testing::run_mock(&snippet, &fixture).await?,
+                );
+            }
+            if !params.live {
+                return Err(missing_param(
+                    "provide an offline fixture or explicitly set live: true",
+                    "live",
+                ));
+            }
             if params.all {
                 return test_all_snippets(
                     manager,

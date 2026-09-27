@@ -6,5 +6,7 @@
 
 /// Snippet storage, validation, resolution, and input-merging primitives.
 pub mod store;
+/// Offline fixture tests using the production sandbox.
+pub mod testing;
 /// Validated, presence-aware exact-tool declarations for saved snippets.
 pub mod tool_declarations;

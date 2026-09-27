@@ -1,0 +1,920 @@
+{
+  "input": {},
+  "calls": [
+    {
+      "tool": "linear-notification-worker::list_issues",
+      "params": {
+        "team": "U8",
+        "assignee": "me",
+        "state": "started",
+        "limit": 250,
+        "fields": [
+          "id",
+          "title",
+          "status"
+        ]
+      },
+      "response": {
+        "issues": [
+          {
+            "id": "U8-1",
+            "title": "Fixture U8-1",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-2",
+            "title": "Fixture U8-2",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-3",
+            "title": "Fixture U8-3",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-4",
+            "title": "Fixture U8-4",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-5",
+            "title": "Fixture U8-5",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-6",
+            "title": "Fixture U8-6",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-7",
+            "title": "Fixture U8-7",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-8",
+            "title": "Fixture U8-8",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-9",
+            "title": "Fixture U8-9",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-10",
+            "title": "Fixture U8-10",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-11",
+            "title": "Fixture U8-11",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-12",
+            "title": "Fixture U8-12",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-13",
+            "title": "Fixture U8-13",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-14",
+            "title": "Fixture U8-14",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-15",
+            "title": "Fixture U8-15",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-16",
+            "title": "Fixture U8-16",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-17",
+            "title": "Fixture U8-17",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-18",
+            "title": "Fixture U8-18",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-19",
+            "title": "Fixture U8-19",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-20",
+            "title": "Fixture U8-20",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-21",
+            "title": "Fixture U8-21",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-22",
+            "title": "Fixture U8-22",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-23",
+            "title": "Fixture U8-23",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-24",
+            "title": "Fixture U8-24",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-25",
+            "title": "Fixture U8-25",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-26",
+            "title": "Fixture U8-26",
+            "status": "In Progress"
+          }
+        ],
+        "hasNextPage": false
+      }
+    },
+    {
+      "tool": "github::get_me",
+      "params": {},
+      "response": {
+        "login": "fixture-user"
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "params": {
+        "query": "\"U8-1\" org:unraid is:open OR \"U8-2\" org:unraid is:open OR \"U8-3\" org:unraid is:open OR \"U8-4\" org:unraid is:open",
+        "perPage": 100,
+        "fields": [
+          "number",
+          "title",
+          "body",
+          "state",
+          "draft",
+          "html_url",
+          "repository_url",
+          "user",
+          "pull_request"
+        ]
+      },
+      "error": {
+        "kind": "timeout",
+        "message": "synthetic timeout"
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "params": {
+        "query": "\"U8-5\" org:unraid is:open OR \"U8-6\" org:unraid is:open OR \"U8-7\" org:unraid is:open OR \"U8-8\" org:unraid is:open",
+        "perPage": 100,
+        "fields": [
+          "number",
+          "title",
+          "body",
+          "state",
+          "draft",
+          "html_url",
+          "repository_url",
+          "user",
+          "pull_request"
+        ]
+      },
+      "response": {
+        "total_count": 6,
+        "incomplete_results": false,
+        "items": [
+          {
+            "number": 101,
+            "title": "U8-1 implementation",
+            "body": "Also U8-2",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/101",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 102,
+            "title": "U8-10 patch",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/102",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 103,
+            "title": "chore(main): release 8.0",
+            "body": "U8-1 U8-3 U8-4",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/103",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 104,
+            "title": "chore: release U8-4 fix",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/104",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 201,
+            "title": "U8-3 acceptance coverage",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/e2e/pull/201",
+            "repository_url": "https://api.github.com/repos/unraid/e2e",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 301,
+            "title": "U8-5 auth fix",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/cloudflare/pull/301",
+            "repository_url": "https://api.github.com/repos/unraid/cloudflare",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          }
+        ]
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "params": {
+        "query": "\"U8-9\" org:unraid is:open OR \"U8-10\" org:unraid is:open OR \"U8-11\" org:unraid is:open OR \"U8-12\" org:unraid is:open",
+        "perPage": 100,
+        "fields": [
+          "number",
+          "title",
+          "body",
+          "state",
+          "draft",
+          "html_url",
+          "repository_url",
+          "user",
+          "pull_request"
+        ]
+      },
+      "response": {
+        "total_count": 6,
+        "incomplete_results": false,
+        "items": [
+          {
+            "number": 101,
+            "title": "U8-1 implementation",
+            "body": "Also U8-2",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/101",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 102,
+            "title": "U8-10 patch",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/102",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 103,
+            "title": "chore(main): release 8.0",
+            "body": "U8-1 U8-3 U8-4",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/103",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 104,
+            "title": "chore: release U8-4 fix",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/104",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 201,
+            "title": "U8-3 acceptance coverage",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/e2e/pull/201",
+            "repository_url": "https://api.github.com/repos/unraid/e2e",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 301,
+            "title": "U8-5 auth fix",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/cloudflare/pull/301",
+            "repository_url": "https://api.github.com/repos/unraid/cloudflare",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          }
+        ]
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "params": {
+        "query": "\"U8-13\" org:unraid is:open OR \"U8-14\" org:unraid is:open OR \"U8-15\" org:unraid is:open OR \"U8-16\" org:unraid is:open",
+        "perPage": 100,
+        "fields": [
+          "number",
+          "title",
+          "body",
+          "state",
+          "draft",
+          "html_url",
+          "repository_url",
+          "user",
+          "pull_request"
+        ]
+      },
+      "response": {
+        "total_count": 6,
+        "incomplete_results": false,
+        "items": [
+          {
+            "number": 101,
+            "title": "U8-1 implementation",
+            "body": "Also U8-2",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/101",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 102,
+            "title": "U8-10 patch",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/102",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 103,
+            "title": "chore(main): release 8.0",
+            "body": "U8-1 U8-3 U8-4",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/103",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 104,
+            "title": "chore: release U8-4 fix",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/104",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 201,
+            "title": "U8-3 acceptance coverage",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/e2e/pull/201",
+            "repository_url": "https://api.github.com/repos/unraid/e2e",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 301,
+            "title": "U8-5 auth fix",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/cloudflare/pull/301",
+            "repository_url": "https://api.github.com/repos/unraid/cloudflare",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          }
+        ]
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "params": {
+        "query": "\"U8-17\" org:unraid is:open OR \"U8-18\" org:unraid is:open OR \"U8-19\" org:unraid is:open OR \"U8-20\" org:unraid is:open",
+        "perPage": 100,
+        "fields": [
+          "number",
+          "title",
+          "body",
+          "state",
+          "draft",
+          "html_url",
+          "repository_url",
+          "user",
+          "pull_request"
+        ]
+      },
+      "response": {
+        "total_count": 6,
+        "incomplete_results": false,
+        "items": [
+          {
+            "number": 101,
+            "title": "U8-1 implementation",
+            "body": "Also U8-2",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/101",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 102,
+            "title": "U8-10 patch",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/102",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 103,
+            "title": "chore(main): release 8.0",
+            "body": "U8-1 U8-3 U8-4",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/103",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 104,
+            "title": "chore: release U8-4 fix",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/104",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 201,
+            "title": "U8-3 acceptance coverage",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/e2e/pull/201",
+            "repository_url": "https://api.github.com/repos/unraid/e2e",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 301,
+            "title": "U8-5 auth fix",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/cloudflare/pull/301",
+            "repository_url": "https://api.github.com/repos/unraid/cloudflare",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          }
+        ]
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "params": {
+        "query": "\"U8-21\" org:unraid is:open OR \"U8-22\" org:unraid is:open OR \"U8-23\" org:unraid is:open OR \"U8-24\" org:unraid is:open",
+        "perPage": 100,
+        "fields": [
+          "number",
+          "title",
+          "body",
+          "state",
+          "draft",
+          "html_url",
+          "repository_url",
+          "user",
+          "pull_request"
+        ]
+      },
+      "response": {
+        "total_count": 6,
+        "incomplete_results": false,
+        "items": [
+          {
+            "number": 101,
+            "title": "U8-1 implementation",
+            "body": "Also U8-2",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/101",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 102,
+            "title": "U8-10 patch",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/102",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 103,
+            "title": "chore(main): release 8.0",
+            "body": "U8-1 U8-3 U8-4",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/103",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 104,
+            "title": "chore: release U8-4 fix",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/104",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 201,
+            "title": "U8-3 acceptance coverage",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/e2e/pull/201",
+            "repository_url": "https://api.github.com/repos/unraid/e2e",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 301,
+            "title": "U8-5 auth fix",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/cloudflare/pull/301",
+            "repository_url": "https://api.github.com/repos/unraid/cloudflare",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          }
+        ]
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "params": {
+        "query": "\"U8-25\" org:unraid is:open OR \"U8-26\" org:unraid is:open",
+        "perPage": 100,
+        "fields": [
+          "number",
+          "title",
+          "body",
+          "state",
+          "draft",
+          "html_url",
+          "repository_url",
+          "user",
+          "pull_request"
+        ]
+      },
+      "response": {
+        "total_count": 6,
+        "incomplete_results": false,
+        "items": [
+          {
+            "number": 101,
+            "title": "U8-1 implementation",
+            "body": "Also U8-2",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/101",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 102,
+            "title": "U8-10 patch",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/102",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 103,
+            "title": "chore(main): release 8.0",
+            "body": "U8-1 U8-3 U8-4",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/103",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 104,
+            "title": "chore: release U8-4 fix",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/104",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 201,
+            "title": "U8-3 acceptance coverage",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/e2e/pull/201",
+            "repository_url": "https://api.github.com/repos/unraid/e2e",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 301,
+            "title": "U8-5 auth fix",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/cloudflare/pull/301",
+            "repository_url": "https://api.github.com/repos/unraid/cloudflare",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          }
+        ]
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "params": {
+        "query": "author:fixture-user is:open org:unraid",
+        "perPage": 100,
+        "sort": "updated",
+        "order": "desc",
+        "fields": [
+          "number",
+          "title",
+          "state",
+          "draft",
+          "html_url",
+          "repository_url",
+          "user"
+        ]
+      },
+      "response": {
+        "total_count": 2,
+        "incomplete_results": false,
+        "items": [
+          {
+            "number": 999,
+            "title": "Independent worker improvement",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/cloudflare/pull/999",
+            "repository_url": "https://api.github.com/repos/unraid/cloudflare",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          },
+          {
+            "number": 999,
+            "title": "chore: release owned by me",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/999",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {}
+          }
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "/ok": false,
+    "/complete": false,
+    "/summary/issueCount": 26,
+    "/summary/issuesWithOpenPRs": 6,
+    "/summary/myOpenPRCount": 2,
+    "/summary/relatedPRSearchCalls": 7,
+    "/summary/toolCalls": 10,
+    "/summary/handoffCalls": 0,
+    "/issues/0/openPRs/0/number": 101,
+    "/issues/2/openPRs/0/number": 201,
+    "/issues/3/openPRs/0/number": 104,
+    "/myOpenPRs/0/repo": "unraid/cloudflare",
+    "/summary/relatedPRSearchFailures": 1,
+    "/issues/0/matchStatus": "incomplete"
+  },
+  "absent": [
+    "/issues/0/handoff",
+    "/issues/0/historicalPRs",
+    "/issues/1/handoff",
+    "/issues/1/historicalPRs",
+    "/issues/2/handoff",
+    "/issues/2/historicalPRs",
+    "/issues/3/handoff",
+    "/issues/3/historicalPRs",
+    "/issues/4/handoff",
+    "/issues/4/historicalPRs",
+    "/issues/5/handoff",
+    "/issues/5/historicalPRs",
+    "/issues/6/handoff",
+    "/issues/6/historicalPRs",
+    "/issues/7/handoff",
+    "/issues/7/historicalPRs",
+    "/issues/8/handoff",
+    "/issues/8/historicalPRs",
+    "/issues/9/handoff",
+    "/issues/9/historicalPRs",
+    "/issues/10/handoff",
+    "/issues/10/historicalPRs",
+    "/issues/11/handoff",
+    "/issues/11/historicalPRs",
+    "/issues/12/handoff",
+    "/issues/12/historicalPRs",
+    "/issues/13/handoff",
+    "/issues/13/historicalPRs",
+    "/issues/14/handoff",
+    "/issues/14/historicalPRs",
+    "/issues/15/handoff",
+    "/issues/15/historicalPRs",
+    "/issues/16/handoff",
+    "/issues/16/historicalPRs",
+    "/issues/17/handoff",
+    "/issues/17/historicalPRs",
+    "/issues/18/handoff",
+    "/issues/18/historicalPRs",
+    "/issues/19/handoff",
+    "/issues/19/historicalPRs",
+    "/issues/20/handoff",
+    "/issues/20/historicalPRs",
+    "/issues/21/handoff",
+    "/issues/21/historicalPRs",
+    "/issues/22/handoff",
+    "/issues/22/historicalPRs",
+    "/issues/23/handoff",
+    "/issues/23/historicalPRs",
+    "/issues/24/handoff",
+    "/issues/24/historicalPRs",
+    "/issues/25/handoff",
+    "/issues/25/historicalPRs"
+  ],
+  "budgets": {
+    "wall_clock_ms": 20000,
+    "tool_calls": 10,
+    "output_bytes": 16000
+  }
+}

@@ -646,7 +646,7 @@ fn cli_action_cases() -> std::collections::BTreeSet<CliActionCase> {
         ),
         (
             "snippets:snippets.test",
-            &["snippet", "test", MISSING, "--json"],
+            &["snippet", "test", MISSING, "--live", "--json"],
         ),
         (
             "snippets:snippets.validate",

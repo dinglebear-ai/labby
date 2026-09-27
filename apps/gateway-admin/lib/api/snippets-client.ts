@@ -59,11 +59,11 @@ export const snippetsApi = {
   },
 
   test(name: string, params: Record<string, unknown> = {}, signal?: AbortSignal): Promise<SnippetTestResult> {
-    return snippetsAction<SnippetTestResult>('snippets.test', { name, params }, signal)
+    return snippetsAction<SnippetTestResult>('snippets.test', { name, params, live: true }, signal)
   },
 
   testAll(signal?: AbortSignal): Promise<SnippetTestResult> {
-    return snippetsAction<SnippetTestResult>('snippets.test', { all: true }, signal)
+    return snippetsAction<SnippetTestResult>('snippets.test', { all: true, live: true }, signal)
   },
 
   exec(

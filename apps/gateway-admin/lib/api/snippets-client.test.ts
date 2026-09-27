@@ -77,3 +77,25 @@ test('snippets client sends create body and metadata', async () => {
     },
   })
 })
+
+
+test('live snippet test requests explicitly opt in', async () => {
+  const requests: unknown[] = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (_input, init) => {
+    requests.push(JSON.parse(String(init?.body ?? '{}')))
+    return new Response(JSON.stringify({ passed: true }), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    })
+  }) as typeof fetch
+  try {
+    await snippetsApi.test('fixture-case', { n: 1 })
+    await snippetsApi.testAll()
+    assert.deepEqual(requests, [
+      { action: 'snippets.test', params: { name: 'fixture-case', params: { n: 1 }, live: true } },
+      { action: 'snippets.test', params: { all: true, live: true } },
+    ])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})

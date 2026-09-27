@@ -39,6 +39,7 @@ struct SnippetValidationSchema {
 #[derive(JsonSchema)]
 #[serde(untagged)]
 enum SnippetTestResultSchema {
+    Mock(Box<labby_codemode::snippet::testing::SnippetTestReport>),
     Single(Box<SnippetTestSingleSchema>),
     All(SnippetTestAllSchema),
 }
@@ -284,12 +285,24 @@ pub const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "snippets.test",
-        description: "Execute one snippet and report pass/fail",
+        description: "Test a snippet with offline fixtures, or explicitly opt into live upstreams",
         destructive: false,
         requires_admin: true,
         returns: "SnippetTestResult",
         output_schema: Some(labby_primitives::action::schema_for::<SnippetTestResultSchema>),
         params: &[
+            ParamSpec {
+                name: "fixture",
+                ty: "object",
+                required: false,
+                description: "Offline JSON fixture: input, finite calls, expect JSON pointers, absent pointers, snapshot, normalize, budgets",
+            },
+            ParamSpec {
+                name: "live",
+                ty: "boolean",
+                required: false,
+                description: "Explicitly opt into live upstream execution instead of offline fixtures",
+            },
             ParamSpec {
                 name: "name",
                 ty: "string",

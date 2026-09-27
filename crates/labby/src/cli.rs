@@ -739,10 +739,37 @@ mod tests {
         ]);
         assert!(matches!(cli.command.into_operation(), Command::Snippets(_)));
 
-        let cli = Cli::parse_from(["labby", "snippet", "test", "daily", "--param", "limit=3"]);
+        let cli = Cli::try_parse_from([
+            "labby", "snippet", "test", "daily", "--live", "--param", "limit=3",
+        ])
+        .unwrap();
         assert!(matches!(cli.command.into_operation(), Command::Snippets(_)));
 
-        let cli = Cli::parse_from(["labby", "snippet", "test", "--all"]);
+        let cli = Cli::try_parse_from(["labby", "snippet", "test", "--all", "--live"]).unwrap();
         assert!(matches!(cli.command.into_operation(), Command::Snippets(_)));
+
+        let cli = Cli::try_parse_from([
+            "labby",
+            "snippet",
+            "test",
+            "daily",
+            "--fixture",
+            "fixture.json",
+        ])
+        .unwrap();
+        assert!(matches!(cli.command.into_operation(), Command::Snippets(_)));
+        assert!(Cli::try_parse_from(["labby", "snippet", "test", "daily"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "labby",
+                "snippet",
+                "test",
+                "daily",
+                "--fixture",
+                "fixture.json",
+                "--live"
+            ])
+            .is_err()
+        );
     }
 }

@@ -31,7 +31,7 @@ pub enum SnippetsCommand {
     Validate(SnippetValidateArgs),
     /// Remove a user snippet.
     Remove(SnippetRemoveArgs),
-    /// Execute a snippet and report pass/fail.
+    /// Test with offline fixtures, or explicitly opt into live upstreams.
     Test(SnippetTestArgs),
 }
 
@@ -51,6 +51,12 @@ pub struct SnippetExecArgs {
 #[derive(Debug, Args)]
 pub struct SnippetTestArgs {
     pub name: Option<String>,
+    /// Offline JSON fixture. Never contacts configured upstreams.
+    #[arg(long, conflicts_with_all = ["live", "all", "params"], required_unless_present = "live")]
+    pub fixture: Option<PathBuf>,
+    /// Explicitly allow the snippet to call real configured upstreams.
+    #[arg(long, required_unless_present = "fixture")]
+    pub live: bool,
     /// Run every listed snippet with default params.
     #[arg(long, conflicts_with = "name", default_value_t = false)]
     pub all: bool,
@@ -103,10 +109,8 @@ pub struct SnippetRemoveArgs {
 }
 
 pub async fn run(args: SnippetsArgs, format: OutputFormat, config: &LabConfig) -> Result<ExitCode> {
-    let needs_upstreams = matches!(
-        args.command,
-        SnippetsCommand::Exec(_) | SnippetsCommand::Test(_)
-    );
+    let needs_upstreams = matches!(&args.command, SnippetsCommand::Exec(_))
+        || matches!(&args.command, SnippetsCommand::Test(test) if test.live);
     if needs_upstreams {
         crate::cli::gateway::build_manager(config, true).await?;
     }
@@ -167,6 +171,8 @@ pub async fn run(args: SnippetsArgs, format: OutputFormat, config: &LabConfig) -
             json!({
                 "name": args.name,
                 "all": args.all,
+                "live": args.live,
+                "fixture": args.fixture.map(read_fixture).transpose()?,
                 "params": crate::cli::params::parse_kv_params(args.params)?,
             }),
             true,
@@ -194,14 +200,37 @@ pub async fn run(args: SnippetsArgs, format: OutputFormat, config: &LabConfig) -
         .await;
     }
 
-    run_action_command(
-        "snippets",
-        action,
-        params,
-        format,
-        |action, params| async move { crate::dispatch::snippets::dispatch(&action, params).await },
-    )
-    .await
+    let test_failed = std::sync::atomic::AtomicBool::new(false);
+    let exit = run_action_command("snippets", action, params, format, |action, params| {
+        let test_failed = &test_failed;
+        async move {
+            let value = crate::dispatch::snippets::dispatch(&action, params).await?;
+            if action == "snippets.test"
+                && value.get("passed").and_then(serde_json::Value::as_bool) == Some(false)
+            {
+                test_failed.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            Ok(value)
+        }
+    })
+    .await?;
+    Ok(if test_failed.load(std::sync::atomic::Ordering::Relaxed) {
+        ExitCode::FAILURE
+    } else {
+        exit
+    })
+}
+
+fn read_fixture(path: PathBuf) -> Result<serde_json::Value> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(1_048_577)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > 1_048_576 {
+        anyhow::bail!("fixture exceeds 1 MiB");
+    }
+    Ok(serde_json::from_slice(&bytes)?)
 }
 
 fn read_snippet_body(code: Option<String>, file: Option<PathBuf>) -> Result<String> {

@@ -49,6 +49,13 @@ await callTool("Axon::axon", { action: "search", query: "mcp-ui rust" })
 
 Before writing or running a snippet, use `codemode.search()` and `codemode.describe()` to inspect the live catalog. Search returns compact tool and snippet metadata; describe returns focused docs for the exact target. A snippet should be written against returned ids and schemas, not against guessed tool names.
 
+## Offline Tests
+
+Use `labby snippet test NAME --fixture FILE --json` to run deterministic tests
+against the production sandbox without contacting upstreams. Real upstream tests
+require `--live`. See [Snippet fixture testing](../dev/snippet-testing.md) for the
+fixture contract, assertions, snapshots, budgets, and current limitations.
+
 ## How Users Should Build Snippets
 
 The snippet builder should make authoring feel like assembling a small checklist, not writing JavaScript.
@@ -208,13 +215,15 @@ executing it, or pass `--file` / `--code` to validate an unsaved body:
 labby snippet validate draft --file draft-snippet.md
 ```
 
-Use `labby snippet test <name>` to execute one snippet as a smoke test, or
-`labby snippet test --all` to run every listed snippet with its declared
-defaults. MCP/API callers use `snippets.test` with `{ "all": true }` for the
-same all-snippet check.
+Use `labby snippet test <name> --fixture FILE` for an offline deterministic test.
+Use `labby snippet test <name> --live` to execute one snippet as a live smoke test,
+or `labby snippet test --all --live` to run every listed snippet with its declared
+defaults. MCP/API callers use `snippets.test` with `{ "all": true, "live": true }`
+for the same all-snippet live check. Fixture tests use `{ "name": "example",
+"fixture": { ... } }` instead and do not contact configured upstreams.
 
 When Code Mode final-result shaping is enabled, `snippets.exec` returns the
-same shaped display response as Code Mode. `snippets.test` evaluates pass/fail
+same shaped display response as Code Mode. Live `snippets.test` evaluates pass/fail
 from the pre-shape result, so `{ "ok": true }` and `{ "ok": false }` remain
 reliable even when the displayed response is shaped into a bounded string.
 

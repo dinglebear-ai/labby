@@ -6171,13 +6171,25 @@
         },
         {
           "name": "snippets.test",
-          "description": "Execute one snippet and report pass/fail",
+          "description": "Test a snippet with offline fixtures, or explicitly opt into live upstreams",
           "destructive": false,
           "requires_admin": true,
           "required_scopes": [
             "lab:admin"
           ],
           "params": [
+            {
+              "name": "fixture",
+              "ty": "object",
+              "required": false,
+              "description": "Offline JSON fixture: input, finite calls, expect JSON pointers, absent pointers, snapshot, normalize, budgets"
+            },
+            {
+              "name": "live",
+              "ty": "boolean",
+              "required": false,
+              "description": "Explicitly opt into live upstream execution instead of offline fixtures"
+            },
             {
               "name": "name",
               "ty": "string",
