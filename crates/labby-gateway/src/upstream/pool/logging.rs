@@ -299,6 +299,7 @@ pub(super) fn log_upstream_request_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use labby_primitives::trace::{LabbyTraceCorrelation, TraceContext};
     use rmcp::transport::DynamicTransportError;
     use tracing_subscriber::layer::SubscriberExt;
 
@@ -408,6 +409,59 @@ mod tests {
         assert!(
             logs.contains("\"kind\":\"timeout\""),
             "timeout kind not found in logs:\n{logs}"
+        );
+    }
+
+    #[tokio::test]
+    async fn upstream_logs_inherit_trace_span_and_code_mode_correlation() {
+        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let buf = crate::test_support::SharedBuf::default();
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing_subscriber::EnvFilter::new("labby_gateway=info"))
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .json()
+                    .with_current_span(true)
+                    .with_writer(buf.clone())
+                    .with_ansi(false)
+                    .without_time(),
+            );
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let trace = TraceContext::fresh(1).expect("trace context");
+        let correlation = LabbyTraceCorrelation::new("exec_trace_log", 6).expect("correlation");
+        let trace_id = trace.trace_id().to_hex();
+        let span_id = trace.span_id().to_hex();
+        crate::trace_context::instrument_outbound_future(
+            async {
+                let event = UpstreamRequestLog::tool("github", "search_repos", false);
+                log_upstream_request_start(event);
+                log_upstream_request_finish(event, 2, Some(64));
+            },
+            Some(&trace),
+            Some(&correlation),
+        )
+        .await;
+
+        drop(_guard);
+        let logs = crate::test_support::captured_logs(&buf);
+        for expected in [
+            format!(r#""trace_id":"{trace_id}""#),
+            format!(r#""span_id":"{span_id}""#),
+            r#""execution_id":"exec_trace_log""#.to_string(),
+            r#""call_ordinal":6"#.to_string(),
+        ] {
+            assert!(
+                logs.contains(&expected),
+                "missing trace correlation field `{expected}` in:
+{logs}"
+            );
+        }
+        assert!(
+            !logs.contains("baggage"),
+            "opaque baggage must never be flattened into upstream structured logs"
         );
     }
 

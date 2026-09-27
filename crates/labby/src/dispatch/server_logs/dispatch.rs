@@ -282,28 +282,38 @@ fn normalize_entry(value: &Value, file: &str) -> Option<LogEntry> {
 }
 
 const CORRELATION_KEYS: [&str; 3] = ["trace_id", "request_id", "execution_id"];
+const PROMOTED_STRING_CORRELATION_KEYS: [&str; 4] =
+    ["trace_id", "request_id", "execution_id", "span_id"];
+const PROMOTED_U64_CORRELATION_KEYS: [&str; 1] = ["call_ordinal"];
 
 fn promote_correlation_fields(
     object: &serde_json::Map<String, Value>,
     fields: &mut serde_json::Map<String, Value>,
 ) {
-    promote_correlation_from_map(object, fields);
-    if let Some(span) = object.get("span").and_then(Value::as_object) {
-        promote_correlation_from_map(span, fields);
-    }
+    // Top-level serializer fields are a fallback. Active tracing spans are
+    // host-owned correlation context and therefore override same-named event
+    // fields when present. This prevents a tool/upstream-controlled payload
+    // from winning over the gateway's trace identity.
+    promote_correlation_from_map(object, fields, false);
     if let Some(spans) = object.get("spans").and_then(Value::as_array) {
-        for span in spans.iter().rev().filter_map(Value::as_object) {
-            promote_correlation_from_map(span, fields);
+        // tracing-subscriber emits the active span stack outer -> inner. Walk
+        // that order with overwrite enabled so the nearest span wins.
+        for span in spans.iter().filter_map(Value::as_object) {
+            promote_correlation_from_map(span, fields, true);
         }
+    }
+    if let Some(span) = object.get("span").and_then(Value::as_object) {
+        promote_correlation_from_map(span, fields, true);
     }
 }
 
 fn promote_correlation_from_map(
     source: &serde_json::Map<String, Value>,
     fields: &mut serde_json::Map<String, Value>,
+    overwrite: bool,
 ) {
-    for key in CORRELATION_KEYS {
-        if fields.get(key).and_then(Value::as_str).is_some() {
+    for key in PROMOTED_STRING_CORRELATION_KEYS {
+        if !overwrite && fields.get(key).and_then(Value::as_str).is_some() {
             continue;
         }
         if let Some(value) = source
@@ -312,6 +322,14 @@ fn promote_correlation_from_map(
             .filter(|value| !value.is_empty())
         {
             fields.insert(key.to_string(), Value::String(value.to_string()));
+        }
+    }
+    for key in PROMOTED_U64_CORRELATION_KEYS {
+        if !overwrite && fields.get(key).and_then(Value::as_u64).is_some() {
+            continue;
+        }
+        if let Some(value) = source.get(key).and_then(Value::as_u64) {
+            fields.insert(key.to_string(), Value::from(value));
         }
     }
 }
@@ -609,6 +627,46 @@ mod tests {
             ["gateway", "upstream.pool", "worker"]
         );
         assert!(result.available_sources_complete);
+    }
+
+    #[test]
+    fn normalize_entry_prefers_host_span_correlation_and_does_not_promote_baggage() {
+        let entry = normalize_entry(
+            &json!({
+                "timestamp": "2026-09-20T00:00:00Z",
+                "level": "INFO",
+                "fields": {
+                    "message": "upstream.request.finish",
+                    "service": "upstream.pool",
+                    "trace_id": "forged-event-trace",
+                    "span_id": "forged-event-span",
+                    "call_ordinal": 999,
+                    "baggage": "client-secret=do-not-promote"
+                },
+                "span": {
+                    "name": "gateway.upstream",
+                    "trace_id": "0123456789abcdef0123456789abcdef",
+                    "span_id": "0123456789abcdef",
+                    "execution_id": "exec_trusted",
+                    "call_ordinal": 4,
+                    "baggage": "span-secret=still-do-not-promote"
+                }
+            }),
+            "lab.active.log",
+        )
+        .expect("normalized log entry");
+
+        assert_eq!(
+            entry.fields["trace_id"],
+            json!("0123456789abcdef0123456789abcdef")
+        );
+        assert_eq!(entry.fields["span_id"], json!("0123456789abcdef"));
+        assert_eq!(entry.fields["execution_id"], json!("exec_trusted"));
+        assert_eq!(entry.fields["call_ordinal"], json!(4));
+        assert!(
+            entry.fields.get("baggage").is_none(),
+            "untrusted baggage must not be promoted from tracing spans"
+        );
     }
 
     #[test]
