@@ -2334,6 +2334,32 @@
   },
 {
     "service": "gateway",
+    "action": "gateway.ssh_hosts.list",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "default",
+      "gateway-host"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::gateway::gateway_ssh_hosts_list",
+    "minimum_evidence": "live_success",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_gateway_readonly",
+      "parameters": {}
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+  },
+{
+    "service": "gateway",
     "action": "gateway.servers",
     "canonical_action": null,
     "applicable_surfaces": [

@@ -4362,7 +4362,7 @@ async fn read_scope_lists_and_routes_only_codemode_read() {
     assert!(names.contains(&CODE_MODE_READ_TOOL_NAME));
     assert!(!names.contains(&CODE_MODE_TOOL_NAME));
     assert!(!names.contains(&CODE_MODE_UI_TOOL_NAME));
-    assert!(!names.contains(&MCP_APP_TOOL_NAME));
+    assert!(names.contains(&MCP_APP_TOOL_NAME));
 
     let result = running
         .service()
@@ -6294,7 +6294,7 @@ async fn peer_contracts_diverge_by_route_scope_under_global_code_mode() {
     );
     assert!(!raw_contract.tools.contains(CODE_MODE_TOOL_NAME));
     assert!(!raw_contract.tools.contains(CODE_MODE_UI_TOOL_NAME));
-    assert!(!raw_contract.tools.contains(MCP_APP_TOOL_NAME));
+    assert!(raw_contract.tools.contains(MCP_APP_TOOL_NAME));
 
     // The whole point: one global projection cannot stand in for both.
     assert_ne!(

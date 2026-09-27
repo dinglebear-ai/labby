@@ -870,7 +870,7 @@ mod tests {
         ))
         .visible_contract()
         .await;
-        assert_eq!(snapshot.tools.len(), 0);
+        assert!(snapshot.tools.contains(super::MCP_APP_TOOL_NAME));
         assert_ne!(snapshot.contract_hash, [0; 32]);
     }
 
