@@ -24,6 +24,16 @@ use crate::mcp::server::LabMcpServer;
 #[cfg(feature = "gateway")]
 pub(crate) use crate::dispatch::oauth_subject::oauth_upstream_subject_for_request;
 
+pub(crate) fn authorized_client_id_from_extensions(
+    extensions: &rmcp::model::Extensions,
+) -> Option<&str> {
+    let parts = extensions.get::<Parts>()?;
+    parts
+        .extensions
+        .get::<labby_auth::auth_context::AuthorizedClientId>()
+        .map(|client| client.0.as_ref())
+}
+
 pub(crate) fn redact_actor_key_for_logging(actor_key: &str) -> String {
     let suffix = actor_key
         .chars()
@@ -51,13 +61,14 @@ impl LabMcpServer {
             .request_actor_key(context)
             .map(redact_actor_key_for_logging)
             .filter(|value| !value.is_empty());
-        let peer = context.peer.peer_info();
-        let client = peer.as_ref().map(|info| {
-            (
-                info.client_info.name.as_str(),
-                info.client_info.version.as_str(),
-            )
-        });
+        // Use the request-scoped MCP client metadata for both modern
+        // server/discover and legacy initialize lifecycles. The peer cache is
+        // initialize-specific and can be absent or stale for stateless modern
+        // requests. This metadata remains self-declared and descriptive only.
+        let client_info = context.client_info();
+        let client = client_info
+            .as_ref()
+            .map(|info| (info.name.as_str(), info.version.as_str()));
         labby_runtime::usage_actor::UsageAttribution::inbound(actor, "mcp", client)
     }
 
