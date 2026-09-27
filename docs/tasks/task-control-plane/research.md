@@ -1,4 +1,12 @@
+---
+title: "Research: Labby Tasks Control Plane"
+created: "2026-09-25"
+updated: "2026-09-27"
+---
+
 # Research: Labby Tasks Control Plane
+
+> Historical proposal from September 25. PR [#828](https://github.com/dinglebear-ai/labby/pull/828) implements only persisted task timestamps in existing authorized summaries. Scheduling, activity history, UI, and production automation work described below remain unimplemented by this PR.
 
 ## Scope
 

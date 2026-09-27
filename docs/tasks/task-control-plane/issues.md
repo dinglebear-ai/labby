@@ -1,4 +1,12 @@
+---
+title: "Issues Encountered"
+created: "2026-09-25"
+updated: "2026-09-27"
+---
+
 # Issues Encountered
+
+> Historical proposal from September 25. PR [#828](https://github.com/dinglebear-ai/labby/pull/828) implements only persisted task timestamps in existing authorized summaries. Scheduling, activity history, UI, and production automation work described below remain unimplemented by this PR.
 
 ## 1. Worktree ignore bootstrap used a relative Git path
 
@@ -19,7 +27,7 @@ After the initial task brief commit was pushed, gh pr create failed exactly with
     HTTP 401: Requires authentication (https://api.github.com/graphql)
     Try authenticating with:  gh auth login -h github.com
 
-Branch feat/labby-tasks-control-plane-20260925 and commit 626237587 were already pushed successfully. Retry through the connected GitHub integration failed with 403 Resource not accessible by integration. A Labby GitHub mutation attempt was blocked by the external safety layer before reaching GitHub. PR creation remains an external authorization blocker.
+Branch feat/labby-tasks-control-plane-20260925 and commit 626237587 were already pushed successfully. Retry through the connected GitHub integration failed with 403 Resource not accessible by integration. A Labby GitHub mutation attempt was blocked by the external safety layer before reaching GitHub. That historical blocker was resolved when [PR #828](https://github.com/dinglebear-ai/labby/pull/828) was opened on September 27.
 
 ## 3. Claude connector Agent surface had no configured agent type
 

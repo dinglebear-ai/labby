@@ -1,4 +1,12 @@
+---
+title: "Progress"
+created: "2026-09-25"
+updated: "2026-09-27"
+---
+
 # Progress
+
+> Historical proposal from September 25. PR [#828](https://github.com/dinglebear-ai/labby/pull/828) implements only persisted task timestamps in existing authorized summaries. Scheduling, activity history, UI, and production automation work described below remain unimplemented by this PR.
 
 ## Preparation
 - [x] Isolated the dirty parent Labby checkout.
@@ -7,11 +15,11 @@
 - [x] Added /worktrees/ to tracked .gitignore and to the parent checkout local Git exclude.
 - [x] Created and committed task.md.
 - [x] Pushed initial branch.
-- [ ] Create PR. Externally blocked by local gh 401 and connected GitHub integration 403; tracked in issues.md.
+- [x] Created [PR #828](https://github.com/dinglebear-ai/labby/pull/828) on September 27.
 - [x] Mapped relevant task/scheduler/MCP Tasks/Snippet/artifact/UI/reliability/observability surfaces.
 - [x] Reviewed current official MCP Tasks/RMCP/Gotify contracts.
 - [x] Created research.md, issues.md, plan.md, progress.md and changelog.md.
-- [ ] Commit and push preparation checkpoint.
+- [x] Committed and pushed preparation checkpoint.
 
 ## Implementation waves
 - [ ] Wave 1: task activity contract.

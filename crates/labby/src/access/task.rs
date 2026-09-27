@@ -21,16 +21,6 @@ pub(crate) struct TaskRecord {
     pub updated_at: i64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct TaskAuditEvent {
-    pub event_id: String,
-    pub actor_principal_id: String,
-    pub from_state: Option<TaskState>,
-    pub to_state: TaskState,
-    pub attempt: u32,
-    pub occurred_at: i64,
-}
-
 /// A lost race on the `task_id` primary key is a typed integrity outcome
 /// (`task_id`), never a stringly `Unavailable` cause, so dispatch can turn
 /// it into the same non-enumerating denial as a taken identifier without
@@ -131,47 +121,6 @@ impl TaskStore {
                     i64::try_from(limit).map_err(|_| AccessStoreError::MalformedVocabulary)?
                 ],
                 decode,
-            )
-            .map_err(super::store::map_sqlite_error)?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(super::store::map_sqlite_error)
-    }
-
-    pub(crate) fn activity(
-        &self,
-        id: &str,
-        limit: usize,
-    ) -> AccessStoreResult<Vec<TaskAuditEvent>> {
-        if limit == 0 || limit > 100 {
-            return Err(AccessStoreError::MalformedVocabulary);
-        }
-        let mut statement = self
-            .connection
-            .prepare(
-                "SELECT event_id,actor_principal_id,from_state,to_state,attempt,occurred_at FROM agent_task_audit WHERE task_id=?1 ORDER BY occurred_at DESC,event_id DESC LIMIT ?2",
-            )
-            .map_err(super::store::map_sqlite_error)?;
-        statement
-            .query_map(
-                params![
-                    id,
-                    i64::try_from(limit).map_err(|_| AccessStoreError::MalformedVocabulary)?
-                ],
-                |row| {
-                    let from_state = row
-                        .get::<_, Option<String>>(2)?
-                        .map(|state| decode_state(&state))
-                        .transpose()?;
-                    Ok(TaskAuditEvent {
-                        event_id: row.get(0)?,
-                        actor_principal_id: row.get(1)?,
-                        from_state,
-                        to_state: decode_state(&row.get::<_, String>(3)?)?,
-                        attempt: u32::try_from(row.get::<_, i64>(4)?)
-                            .map_err(|_| rusqlite::Error::InvalidQuery)?,
-                        occurred_at: row.get(5)?,
-                    })
-                },
             )
             .map_err(super::store::map_sqlite_error)?
             .collect::<rusqlite::Result<Vec<_>>>()
@@ -447,14 +396,13 @@ mod tests {
             .query_row("SELECT count(*) FROM agent_task_audit", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 4);
-        let current = s.get("task-1").unwrap().unwrap();
+        drop(s);
+        let reopened = TaskStore::open(&path).unwrap();
+        let current = reopened.get("task-1").unwrap().unwrap();
         assert_eq!(current.created_at, 1);
         assert_eq!(current.updated_at, 5);
-        let activity = s.activity("task-1", 10).unwrap();
-        assert_eq!(activity.len(), 4);
-        assert_eq!(activity[0].to_state, TaskState::Succeeded);
-        assert_eq!(activity[0].occurred_at, 5);
-        assert_eq!(activity[3].from_state, None);
-        assert_eq!(activity[3].to_state, TaskState::Created);
+        let page = reopened.list_page("", 100).unwrap();
+        assert_eq!(page[0].created_at, current.created_at);
+        assert_eq!(page[0].updated_at, current.updated_at);
     }
 }

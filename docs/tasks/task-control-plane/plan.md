@@ -1,4 +1,12 @@
+---
+title: "Implementation Plan"
+created: "2026-09-25"
+updated: "2026-09-27"
+---
+
 # Implementation Plan
+
+> Historical proposal from September 25. PR [#828](https://github.com/dinglebear-ai/labby/pull/828) implements only persisted task timestamps in existing authorized summaries. Scheduling, activity history, UI, and production automation work described below remain unimplemented by this PR.
 
 Each wave is sized for an implementation agent to complete, review, and test in roughly 10-15 minutes. Execute all waves in this session unless genuinely blocked or unsafe. TDD is mandatory: add/adjust the failing contract test before product code in each behavior wave.
 
