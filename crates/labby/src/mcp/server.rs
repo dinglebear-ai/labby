@@ -1093,6 +1093,36 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn usage_attribution_uses_current_client_metadata_without_changing_authority() {
+        let server = stateless_test_server(Default::default());
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        running.peer().set_peer_info(rmcp::model::ClientInfo::new(
+            rmcp::model::ClientCapabilities::default(),
+            rmcp::model::Implementation::new("legacy-client", "1"),
+        ));
+        let mut context =
+            rmcp::service::RequestContext::new(NumberOrString::Number(1), running.peer().clone());
+        let legacy = running.service().request_usage_attribution(&context);
+        assert_eq!(legacy.client_name.as_deref(), Some("legacy-client"));
+        for name in ["request-one", "request-two"] {
+            context.meta = rmcp::model::RequestMetaObject::with_client_context(
+                ProtocolVersion::V_2026_07_28,
+                rmcp::model::Implementation::new(name, "2\n3"),
+                rmcp::model::ClientCapabilities::default(),
+            );
+            let attribution = running.service().request_usage_attribution(&context);
+            assert_eq!(attribution.client_name.as_deref(), Some(name));
+            assert_eq!(attribution.client_version.as_deref(), Some("23"));
+            assert_eq!(attribution.inbound_actor, None);
+            assert_eq!(running.service().request_subject(&context), None);
+        }
+        running.cancel().await.unwrap();
+    }
+
     #[test]
     fn initialize_support_declares_every_adapted_protocol() {
         let server = stateless_test_server(Default::default());

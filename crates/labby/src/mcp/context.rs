@@ -24,16 +24,6 @@ use crate::mcp::server::LabMcpServer;
 #[cfg(feature = "gateway")]
 pub(crate) use crate::dispatch::oauth_subject::oauth_upstream_subject_for_request;
 
-pub(crate) fn authorized_client_id_from_extensions(
-    extensions: &rmcp::model::Extensions,
-) -> Option<&str> {
-    let parts = extensions.get::<Parts>()?;
-    parts
-        .extensions
-        .get::<labby_auth::auth_context::AuthorizedClientId>()
-        .map(|client| client.0.as_ref())
-}
-
 pub(crate) fn redact_actor_key_for_logging(actor_key: &str) -> String {
     let suffix = actor_key
         .chars()
