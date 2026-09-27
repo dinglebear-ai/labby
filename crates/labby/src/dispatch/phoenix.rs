@@ -1871,8 +1871,8 @@ mod tests {
         assert!(instructions.contains("skill://labby/using-labby/SKILL.md"));
         assert!(instructions.contains("skill://labby/using-codemode/SKILL.md"));
         assert!(instructions.contains("codemode.listSkills()"));
-        assert!(instructions.contains("getSkill(uri)"));
-        assert!(instructions.contains("readSkill(uri)"));
+        assert!(instructions.contains("codemode.getSkill(uri)"));
+        assert!(instructions.contains("codemode.readSkill(uri)"));
     }
 
     #[tokio::test]

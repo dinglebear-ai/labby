@@ -26,6 +26,6 @@ Call a confirmed target through `callTool("<upstream>::<tool>", params)` or its 
 
 When a call reports `confirmation_required`, follow its structured recovery guidance. Supply a confirmation field only if the live upstream schema declares one and the user has authorized that action. Before retrying a timed-out or failed mutation, inspect whether it took effect.
 
-Use `codemode.listSkills()`, `getSkill(uri)`, and `readSkill(uri)` to inspect skills visible through this gateway. Those skills are separate from the client's installed skill catalog.
+Use `codemode.listSkills()`, `codemode.getSkill(uri)`, and `codemode.readSkill(uri)` to inspect skills visible through this gateway. Those skills are separate from the client's installed skill catalog.
 
 Read [references/code-mode.md](references/code-mode.md) for payload examples, action-dispatched upstreams, catalog fields, limits, result shaping, and error recovery.
