@@ -149,7 +149,7 @@ async fn run_snippet_workflow(root: &Path) {
         ),
         (
             "snippets:snippets.test",
-            vec!["snippet", "test", name, "--json"],
+            vec!["snippet", "test", name, "--live", "--json"],
         ),
     ] {
         let output = execute(&snippet_home, &argv, &[]).await;
