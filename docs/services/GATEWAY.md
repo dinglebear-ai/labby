@@ -105,6 +105,13 @@ is intentionally allowed so a local `claude mcp serve` endpoint works without
 disabling the spawn guard. SSH can be used directly as a stdio transport for
 MCP services that speak MCP over a remote command. `[gateway]` knobs in `config.toml` control this:
 
+The Add Server form lists concrete `Host` aliases from the SSH config of the
+account running the Labby gateway (`~/.ssh/config`). Select a device and enter
+the command that starts its MCP stdio server. The form builds the SSH launch
+command, while the command-line field remains available for custom stdio
+setups. This list reflects the gateway host or container, not the operator
+browser's filesystem. Missing SSH config yields an empty device list.
+
 ```toml
 [[upstream]]
 name = "remote-mcp"
