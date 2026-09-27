@@ -1,7 +1,7 @@
 ---
 title: "Technology and Rust Build"
 created: "2026-07-30"
-updated: "2026-08-18"
+updated: "2026-09-27"
 ---
 
 # Technology and Rust Build
@@ -18,7 +18,8 @@ The workspace metadata in the root `Cargo.toml` is authoritative:
 - Cargo resolver 3
 - workspace version shared by the Rust crates
 - AGPL-3.0-only license
-- release targets: Linux x86_64 GNU, macOS arm64, and Windows x86_64 MSVC
+- release targets: Linux x86_64 GNU, Linux arm64 GNU, and macOS arm64
+- Windows x86_64 MSVC: required CI target, not a release artifact
 
 `rust-toolchain.toml` pins the toolchain used locally and in CI. The matching
 `rust-version` in `Cargo.toml` is the minimum version Cargo will accept.
