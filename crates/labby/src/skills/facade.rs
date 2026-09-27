@@ -143,6 +143,7 @@ impl SkillCallerScope {
 /// A missing manager is intentionally first-party-only. The facade never falls
 /// back to process-global gateway state because doing so would erase protected
 /// route and OAuth-subject boundaries.
+#[derive(Clone)]
 pub(crate) struct SkillRegistryContext {
     first_party: Arc<FirstPartyGeneration>,
     #[cfg(feature = "gateway")]
@@ -247,6 +248,24 @@ impl SkillRegistryContext {
             scope,
             artifact_access: None,
         }
+    }
+
+    /// Restrict execution discovery before any federation. The intersection
+    /// can only narrow request authority; generation, subject and Artifact
+    /// access remain the same immutable request snapshot.
+    #[cfg(any(all(feature = "gateway", feature = "skills"), test))]
+    pub(crate) fn narrowed_to_upstreams(&self, allowed: Option<&BTreeSet<String>>) -> Self {
+        let mut narrowed = self.clone();
+        if let Some(allowed) = allowed {
+            narrowed.scope.allowed_upstreams = Some(
+                allowed
+                    .iter()
+                    .filter(|name| self.scope.allows_upstream(name))
+                    .cloned()
+                    .collect(),
+            );
+        }
+        narrowed
     }
 
     #[must_use]
@@ -393,10 +412,24 @@ pub(crate) async fn list_visible_skills_page(
     context: &SkillRegistryContext,
     cursor: Option<&str>,
 ) -> Result<SkillsListResult, ToolError> {
-    let mut listing = list_visible_skills(context).await;
+    paginate_visible_skills(context, list_visible_skills(context).await, cursor)
+}
+
+fn paginate_visible_skills(
+    context: &SkillRegistryContext,
+    mut listing: SkillsListResult,
+    cursor: Option<&str>,
+) -> Result<SkillsListResult, ToolError> {
+    let digest =
+        labby_runtime::artifacts::canonical_json::digest(&listing.skills).map_err(|_| {
+            ToolError::Sdk {
+                sdk_kind: "serialization_error".to_owned(),
+                message: "Skill catalog could not be serialized".to_owned(),
+            }
+        })?;
     let offset = match cursor {
         None => 0,
-        Some(cursor) => decode_list_cursor(context, cursor)?,
+        Some(cursor) => decode_list_cursor(context, &digest, cursor)?,
     };
     if offset > listing.skills.len() {
         return Err(ToolError::InvalidParam {
@@ -409,28 +442,31 @@ pub(crate) async fn list_visible_skills_page(
         .min(listing.skills.len());
     let total = listing.skills.len();
     listing.skills = listing.skills[offset..end].to_vec();
-    listing.next_cursor = (end < total).then(|| encode_list_cursor(context, end));
+    listing.next_cursor = (end < total).then(|| encode_list_cursor(context, &digest, end));
     Ok(listing)
 }
 
-fn encode_list_cursor(context: &SkillRegistryContext, offset: usize) -> String {
-    format!("v1:{}:{offset}", context.generation_id())
+fn encode_list_cursor(context: &SkillRegistryContext, digest: &str, offset: usize) -> String {
+    format!("v2:{}:{digest}:{offset}", context.generation_id())
 }
 
-fn decode_list_cursor(context: &SkillRegistryContext, cursor: &str) -> Result<usize, ToolError> {
-    let mut parts = cursor.split(':');
-    let valid_version = parts.next() == Some("v1");
-    let generation = parts.next().and_then(|value| value.parse::<u64>().ok());
-    let offset = parts.next().and_then(|value| value.parse::<usize>().ok());
-    match (valid_version, generation, offset, parts.next()) {
-        (true, Some(generation), Some(offset), None) if generation == context.generation_id() => {
-            Ok(offset)
+fn decode_list_cursor(
+    context: &SkillRegistryContext,
+    digest: &str,
+    cursor: &str,
+) -> Result<usize, ToolError> {
+    let expected_prefix = format!("v2:{}:{digest}", context.generation_id());
+    if let Some((prefix, offset)) = cursor.rsplit_once(':') {
+        if prefix == expected_prefix {
+            if let Ok(offset) = offset.parse() {
+                return Ok(offset);
+            }
         }
-        _ => Err(ToolError::InvalidParam {
-            message: "skills/list cursor is invalid or belongs to an older generation".to_owned(),
-            param: "cursor".to_owned(),
-        }),
     }
+    Err(ToolError::InvalidParam {
+        message: "skills/list cursor is invalid or stale".to_owned(),
+        param: "cursor".to_owned(),
+    })
 }
 
 pub(crate) async fn get_visible_skill(
@@ -969,6 +1005,44 @@ mod tests {
     use labby_runtime::skills::wire::SkillResource;
 
     #[test]
+    fn native_cursor_rejects_changed_upstream_catalog_with_same_local_generation() {
+        use crate::skills::registry::{FirstPartyGenerationManager, GenerationLimits};
+
+        let root = tempfile::tempdir().unwrap();
+        let manager = FirstPartyGenerationManager::new(
+            root.path().to_path_buf(),
+            GenerationLimits::default(),
+        );
+        let context = SkillRegistryContext::from_generation(manager.generation());
+        let entry = |index: usize| SkillEntry {
+            uri: format!("skill://upstream/page-{index:03}/SKILL.md"),
+            frontmatter: Default::default(),
+            resources: Some(Vec::new()),
+            meta: None,
+        };
+        let listing = SkillsListResult {
+            skills: (0..129).map(entry).collect(),
+            ..SkillsListResult::default()
+        };
+        let first = paginate_visible_skills(&context, listing.clone(), None).unwrap();
+        let cursor = first.next_cursor.unwrap();
+        assert_eq!(
+            paginate_visible_skills(&context, listing.clone(), Some(&cursor))
+                .unwrap()
+                .skills
+                .len(),
+            1
+        );
+
+        let mut changed = listing;
+        changed.skills.insert(0, entry(999));
+        assert!(matches!(
+            paginate_visible_skills(&context, changed, Some(&cursor)),
+            Err(ToolError::InvalidParam { param, .. }) if param == "cursor"
+        ));
+    }
+
+    #[test]
     fn code_mode_skill_context_guard_is_unique_and_removes_context_on_drop() {
         let guard = register_code_mode_skill_context(SkillRegistryContext::first_party_only());
         let token = guard.token().to_string();
@@ -1103,6 +1177,80 @@ mod tests {
     }
 
     use labby_runtime::skills::ResourceDigest;
+
+    #[test]
+    fn discovery_scope_intersects_without_broadening_request_authority() {
+        let mut context = SkillRegistryContext::first_party_only();
+        context.scope = SkillCallerScope::restricted(
+            ["allowed".to_string(), "other".to_string()],
+            Some("alice".to_string()),
+            ToolAccess::CodeModeOnly,
+        );
+        let allowed = BTreeSet::from(["allowed".to_string(), "forbidden".to_string()]);
+        let narrowed = context.narrowed_to_upstreams(Some(&allowed));
+        assert!(narrowed.scope.allows_upstream("allowed"));
+        assert!(!narrowed.scope.allows_upstream("other"));
+        assert!(!narrowed.scope.allows_upstream("forbidden"));
+        assert_eq!(narrowed.scope.subject(), Some("alice"));
+        assert_eq!(narrowed.scope.tool_access(), ToolAccess::CodeModeOnly);
+        assert!(Arc::ptr_eq(&context.first_party, &narrowed.first_party));
+        assert!(
+            context.scope.allows_upstream("other"),
+            "original context is unchanged"
+        );
+        assert_eq!(context.narrowed_to_upstreams(None).scope, context.scope);
+        assert!(
+            !context
+                .narrowed_to_upstreams(Some(&BTreeSet::new()))
+                .scope
+                .allows_upstream("allowed")
+        );
+    }
+
+    #[test]
+    fn discovery_scope_narrows_root_and_never_expands_first_party_only() {
+        let mut context = SkillRegistryContext::first_party_only();
+        let allowed = BTreeSet::from(["macpoo".to_string()]);
+        assert!(
+            !context
+                .narrowed_to_upstreams(Some(&allowed))
+                .scope
+                .allows_upstream("macpoo")
+        );
+        context.scope = SkillCallerScope::root(Some("alice".to_string()), ToolAccess::Direct);
+        let narrowed = context.narrowed_to_upstreams(Some(&allowed));
+        assert!(narrowed.scope.allows_upstream("macpoo"));
+        assert!(!narrowed.scope.allows_upstream("depot"));
+        assert_eq!(narrowed.scope.subject(), Some("alice"));
+    }
+
+    #[tokio::test]
+    async fn discovery_scope_preserves_private_artifact_authorization() {
+        let private = artifact_context(SkillVisibility::Private);
+        let allowed = BTreeSet::from(["macpoo".to_string()]);
+        let denied = private.narrowed_to_upstreams(Some(&allowed));
+        assert!(
+            get_visible_skill(&denied, "skill://labby/artifact/SKILL.md")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let owner = private.with_artifact_access(artifact_access("tenant-a", "owner", false));
+        let narrowed = owner.narrowed_to_upstreams(Some(&allowed));
+        assert!(
+            get_visible_skill(&narrowed, "skill://labby/artifact/SKILL.md")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            read_visible_skill_file(&narrowed, "skill://labby/artifact/notes.md")
+                .await
+                .unwrap()
+                .text(),
+            Some("owner notes")
+        );
+    }
 
     #[test]
     fn default_scope_is_first_party_only() {

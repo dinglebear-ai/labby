@@ -136,10 +136,14 @@ impl SkillProvider for SepSkillProvider {
     ) -> SkillProviderFuture<'a, SkillDiscoverResult> {
         Box::pin(async move {
             request.validate()?;
+            let started = std::time::Instant::now();
             let exposed = tokio::time::timeout(
                 self.operation_timeout(request.deadline.timeout),
-                self.pool
-                    .upstream_skills(&self.config, self.subject.as_deref()),
+                self.pool.discover_upstream_skills(
+                    &self.config,
+                    self.subject.as_deref(),
+                    request.max_items,
+                ),
             )
             .await
             .map_err(|_| SkillProviderError::DeadlineExceeded)?
@@ -161,6 +165,19 @@ impl SkillProvider for SepSkillProvider {
                 truncated: exposed.truncated || available > request.max_items,
             };
             result.validate_for(&self.id, request)?;
+            tracing::debug!(
+                surface = "dispatch",
+                service = "skills",
+                action = "discover",
+                upstream = %self.config.name,
+                requested_items = request.max_items,
+                returned_items = result.skills.len(),
+                excluded_count = result.excluded_count,
+                truncated = result.truncated,
+                source = ?result.source,
+                elapsed_ms = started.elapsed().as_millis(),
+                "completed bounded Skill discovery"
+            );
             Ok(result)
         })
     }

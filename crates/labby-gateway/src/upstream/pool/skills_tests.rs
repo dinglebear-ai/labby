@@ -13,6 +13,9 @@
 
 #![cfg(test)]
 
+#[cfg(feature = "skills")]
+mod bounded_discovery;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(feature = "skills")]

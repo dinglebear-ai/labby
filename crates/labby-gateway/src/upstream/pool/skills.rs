@@ -251,7 +251,10 @@ impl UpstreamPool {
     /// Read a cached catalog without taking the pool-wide write lock or deep
     /// cloning the direct-get map. Recency maintenance is best-effort and never
     /// blocks the hot read path.
-    async fn cached_skills(&self, key: &(String, Option<String>)) -> Option<CachedSkills> {
+    pub(super) async fn cached_skills(
+        &self,
+        key: &(String, Option<String>),
+    ) -> Option<CachedSkills> {
         let snapshot = {
             let cache = self.skills_cache.read().await;
             cache.get(key)?.read_snapshot()
@@ -269,6 +272,28 @@ impl UpstreamPool {
         *epochs.entry(name.to_owned()).or_insert(0)
     }
 
+    /// Share lazy connection, capability and health gates between full
+    /// catalog refreshes and bounded previews. Neither path invents another
+    /// transport or bypasses caller-scoped connection acquisition.
+    pub(super) async fn skills_discovery_peer(
+        &self,
+        config: &UpstreamConfig,
+        subject: Option<&str>,
+    ) -> Result<Option<rmcp::service::Peer<rmcp::RoleClient>>, UpstreamSkillsError> {
+        self.ensure_connection_for_upstream(config, subject, None)
+            .await
+            .map_err(|_| UpstreamSkillsError::Unavailable)?;
+        let peer = self
+            .acquire_peer(
+                &config.name,
+                super::super::types::UpstreamCapability::Skills,
+                "skills.list",
+            )
+            .await
+            .ok_or(UpstreamSkillsError::Unavailable)?;
+        Ok(peer_declares_skills(&peer).then_some(peer))
+    }
+
     /// Fetch one upstream's catalog and store it.
     pub(super) async fn fetch_and_cache_skills(
         &self,
@@ -280,32 +305,8 @@ impl UpstreamPool {
         // configuration can never repopulate the cache afterward.
         let expected_epoch = self.skills_cache_epoch(&config.name).await;
 
-        // Upstreams connect lazily: a cold gateway has a seeded catalog entry but
-        // no live connection until something asks for one, so acquiring the peer
-        // directly reports "not connected" on every first read — the normal
-        // state for `labby mcp`, not an error.
-        //
-        // The pool checks connection presence under its lazy-connect lock;
-        // skills-only peers do not need an exposed tool to remain reusable.
-        if self
-            .ensure_connection_for_upstream(config, subject, None)
-            .await
-            .is_err()
-        {
-            return Err(UpstreamSkillsError::Unavailable);
-        }
-        let peer = self
-            .acquire_peer(
-                &config.name,
-                super::super::types::UpstreamCapability::Skills,
-                "skills.list",
-            )
-            .await
-            .ok_or(UpstreamSkillsError::Unavailable)?;
-
-        // An upstream that never declared the extension is not a failure — it
-        // simply has no skills, and caching that avoids re-asking every read.
-        if !peer_declares_skills(&peer) {
+        // No declared Skills capability is an empty catalog, not a failure.
+        let Some(peer) = self.skills_discovery_peer(config, subject).await? else {
             let empty = CachedSkills::new(UpstreamSkills::default());
             if !self
                 .store_skills(&config.name, subject, expected_epoch, empty.clone())
@@ -320,7 +321,7 @@ impl UpstreamPool {
                 catalog_entry.skill_names.clear();
             }
             return Ok(empty);
-        }
+        };
         match self.fetch_upstream_skills(&config.name, &peer).await {
             Ok(skills) => {
                 let discovered_count = skills.discovered_count;
@@ -444,6 +445,25 @@ impl UpstreamPool {
         subject: Option<&str>,
         source: SkillDiscoverySource,
     ) -> ExposedSkills {
+        self.apply_skill_exposure_with_limit(
+            config,
+            cached,
+            subject,
+            source,
+            limits::MAX_SKILLS_PER_UPSTREAM,
+        )
+    }
+
+    /// Retain the authorization/index snapshot while cloning only requested
+    /// visible descriptors. Budget omission is distinct from exposure denial.
+    pub(super) fn apply_skill_exposure_with_limit(
+        &self,
+        config: &UpstreamConfig,
+        cached: &CachedSkills,
+        subject: Option<&str>,
+        source: SkillDiscoverySource,
+        max_items: usize,
+    ) -> ExposedSkills {
         let policy =
             resolve_request_skill_exposure_policy(&config.name, config.expose_skills.clone());
         let total = cached.skills.skills.len();
@@ -454,21 +474,23 @@ impl UpstreamPool {
             .enumerate()
             .filter_map(|(index, skill)| policy.matches(&skill.name).then_some(index))
             .collect();
+        let visible_count = exposed_indices.len();
         let skills = exposed_indices
             .iter()
+            .take(max_items)
             .map(|index| cached.skills.skills[*index].clone())
             .collect::<Vec<_>>();
         log_exposure_filter(
             &config.name,
             "skills",
-            total - skills.len(),
-            skills.len(),
+            total - visible_count,
+            visible_count,
             subject.is_some(),
         );
         ExposedSkills {
             skills,
             excluded_count: cached.skills.excluded_count(),
-            truncated: cached.skills.truncated,
+            truncated: cached.skills.truncated || visible_count > max_items,
             age_secs: cached.age().as_secs(),
             ttl_ms: Some(cached.remaining_ttl().as_millis() as u64),
             source,
