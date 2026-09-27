@@ -815,7 +815,10 @@ async fn project_bound_non_admin_identity_narrows_discovery_and_denies_execution
     let tools = runner.list_tool_names().await.expect("scoped tools/list");
     // This Loadout has no upstreams. The protected gateway-subset route must
     // therefore reveal no raw operator service tools at all.
-    assert_eq!(tools, BTreeSet::from(["gateway".to_string()]));
+    assert_eq!(
+        tools,
+        BTreeSet::from(["gateway".to_string(), "mcp_app".to_string()])
+    );
     assert!(!tools.contains("setup"));
     assert!(!tools.contains("lab_admin"));
 

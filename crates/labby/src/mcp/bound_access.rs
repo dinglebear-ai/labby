@@ -2640,7 +2640,7 @@ mod tests {
             )
             .await
             .expect("same credential snapshot resumes");
-        assert_eq!(second.tools.len(), 5);
+        assert_eq!(second.tools.len(), 6);
         assert!(second.next_cursor.is_none());
 
         let replay = running
