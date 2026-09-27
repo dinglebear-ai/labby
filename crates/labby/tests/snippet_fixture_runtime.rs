@@ -28,13 +28,15 @@ fn invoke(home: &Path, args: &[&str]) -> Output {
 }
 
 fn report(output: &Output) -> Value {
-    serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
-        panic!(
-            "invalid JSON report: {error}; stdout={}; stderr={}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        )
-    })
+    serde_json::from_slice(&output.stdout)
+        .map_err(|error| {
+            format!(
+                "invalid JSON report: {error}; stdout={}; stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        })
+        .expect("valid JSON report")
 }
 
 fn install(home: &Path, name: &str, code: &str, fixture: Option<Value>) {

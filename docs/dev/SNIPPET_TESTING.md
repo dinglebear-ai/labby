@@ -87,13 +87,13 @@ Unexpected or over-budget calls fail the test even when the snippet catches
 their JavaScript errors. Unused rules also fail, preventing accidentally skipped
 work from appearing green.
 
-`expect` keys are JSON Pointers. Equality distinguishes missing properties from
-explicit null values. `snapshot` compares complete output; `ignore_paths`
+`expect` keys are RFC 6901 JSON Pointers; malformed `~` escapes are rejected. Equality distinguishes missing properties from
+explicit null values. `snapshot` compares complete output, including an explicitly supplied JSON null; `ignore_paths`
 normalizes selected volatile values on both sides to null. Use narrowly scoped
 paths, such as one timestamp, rather than suppressing meaningful output.
 
 Fixture JSON is bounded to 512 KiB. Rules and total expected calls are bounded to
-512. A fixture may set at most 64 assertions and 64 normalization paths. The
+512. A fixture may set at most 64 equality assertions, 64 absence assertions, and 64 normalization paths. The
 wall-clock budget is 1 to 30,000 milliseconds, call budget 0 to 512, and output
 budget 1 to 16,000 UTF-8 bytes. The combined wrapped source must also fit the
 production Code Mode source limit.
@@ -169,5 +169,7 @@ The offline example and command-contract cases exercise the same harness used by
 cargo build -p labby-codemode --example snippet_harness
 python3 crates/labby-codemode/tests/snippet_harness_acceptance.py target/debug/examples/snippet_harness
 ```
+
+The product integration suite runs the v2 triage fixture matrix in CI as well.
 
 Fixtures also support `absent`, a list of JSON Pointers that must not exist. A present field containing `null` fails this assertion.

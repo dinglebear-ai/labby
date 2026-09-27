@@ -184,3 +184,57 @@ fn absent_paths_distinguish_missing_from_null() {
             .passed
     );
 }
+
+#[test]
+fn invalid_pointer_escapes_cannot_pass_absence_assertions() {
+    for value in [
+        json!({"absent": ["/missing~2field"]}),
+        json!({"expect": {"/value~": 1}}),
+        json!({"ignore_paths": ["/time~3"]}),
+    ] {
+        assert!(fixture(value).validate().is_err());
+    }
+    let f = fixture(json!({"expect": {"/a~1b/~0key": 7}}));
+    f.validate().unwrap();
+    assert!(
+        evaluate("escaped", raw(json!({"a/b": {"~key": 7}})), &f, 1, false)
+            .unwrap()
+            .passed
+    );
+}
+
+#[test]
+fn explicit_null_snapshot_is_an_assertion_not_an_omission() {
+    let f = fixture(json!({"snapshot": null}));
+    assert_eq!(f.snapshot, Some(Value::Null));
+    assert!(
+        !evaluate("null", raw(json!({"unexpected": true})), &f, 1, false)
+            .unwrap()
+            .passed
+    );
+    assert!(
+        evaluate("null", raw(Value::Null), &f, 1, false)
+            .unwrap()
+            .passed
+    );
+    let omitted = fixture(json!({}));
+    assert_eq!(omitted.snapshot, None);
+    let encoded = serde_json::to_value(&omitted).unwrap();
+    assert!(encoded.get("snapshot").is_none());
+    assert_eq!(fixture(encoded).snapshot, None);
+    assert_eq!(
+        fixture(serde_json::to_value(&f).unwrap()).snapshot,
+        Some(Value::Null)
+    );
+    assert!(
+        evaluate(
+            "omitted",
+            raw(json!({"unexpected": true})),
+            &omitted,
+            1,
+            false
+        )
+        .unwrap()
+        .passed
+    );
+}

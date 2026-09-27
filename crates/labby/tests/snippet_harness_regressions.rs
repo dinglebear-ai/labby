@@ -24,13 +24,15 @@ fn run(source: &str, name: &str, fixture: Value, params: &[&str]) -> (bool, Valu
         command.args(["--param", param]);
     }
     let output = command.output().unwrap();
-    let report: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
-        panic!(
-            "invalid JSON report: {error}; stdout={}; stderr={}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        )
-    });
+    let report = serde_json::from_slice::<Value>(&output.stdout);
+    assert!(
+        report.is_ok(),
+        "invalid JSON report: {:?}; stdout={}; stderr={}",
+        report.as_ref().err(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = report.unwrap();
     (output.status.success(), report)
 }
 

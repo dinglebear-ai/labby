@@ -25,12 +25,14 @@ fn run(name: &str, source: &str, fixture: Value, input: &[&str]) -> (bool, Value
     }
     let output = command.output().expect("run fixture CLI");
     let stdout = String::from_utf8(output.stdout).unwrap();
-    let report = serde_json::from_str(&stdout).unwrap_or_else(|error| {
-        panic!(
-            "invalid CLI JSON: {error}; stdout={stdout}; stderr={}",
-            String::from_utf8_lossy(&output.stderr)
-        )
-    });
+    let report = serde_json::from_str(&stdout)
+        .map_err(|error| {
+            format!(
+                "invalid CLI JSON: {error}; stdout={stdout}; stderr={}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+        })
+        .expect("valid JSON report");
     (output.status.success(), report)
 }
 
@@ -125,4 +127,51 @@ fn global_tool_bridge_cannot_reach_a_live_upstream() {
         !success,
         "a real host bridge attempt must be recorded: {report}"
     );
+}
+
+#[test]
+fn triage_v2_acceptance_fixtures_run_through_product_dispatch() {
+    let source = include_str!("../../../docs/snippets/unraid-linear-pr-triage-v2.md");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../labby-codemode/tests/fixtures/snippet-harness");
+    for (case, fixture, input, expected) in [
+        ("fast", "fast", vec![], true),
+        ("diagnostics", "fast", vec!["diagnostics=true"], true),
+        ("deep", "deep", vec!["deep=true"], true),
+        ("pagination", "paginated", vec![], true),
+        ("page budget", "page-budget", vec!["maxPages=1"], true),
+        ("rate limit", "rate-limit", vec![], true),
+        ("worker failure", "worker-failure", vec![], true),
+        ("wrong assertion", "wrong-assertion", vec![], false),
+        ("invalid input", "empty", vec!["chunkSize=1.5"], false),
+    ] {
+        let fixture =
+            serde_json::from_slice(&fs::read(root.join(format!("{fixture}.json"))).unwrap())
+                .unwrap();
+        let (success, report) = run("unraid-linear-pr-triage-v2", source, fixture, &input);
+        assert_eq!(success, expected, "{case}: {report}");
+        assert_eq!(report["passed"], expected, "{case}: {report}");
+        if case == "diagnostics" {
+            assert!(report["result"]["diagnostics"]["calls"].is_array());
+        }
+    }
+}
+
+#[test]
+fn null_snapshot_mismatch_fails_the_cli_exit_status() {
+    let (success, report) = run(
+        "null-snapshot",
+        r#"async () => ({"unexpected":true})"#,
+        json!({"snapshot":null}),
+        &[],
+    );
+    assert!(!success, "{report}");
+    assert_eq!(report["passed"], false);
+    let (success, report) = run(
+        "null-snapshot",
+        "async () => null",
+        json!({"snapshot":null}),
+        &[],
+    );
+    assert!(success, "{report}");
 }

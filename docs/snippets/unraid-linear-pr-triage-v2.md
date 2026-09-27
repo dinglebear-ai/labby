@@ -27,9 +27,8 @@ Inputs: team, assignee, state, org, repos (up to six owner/repo names), chunkSiz
 default 16000), maxPRsPerIssue (1-25, default 12), staleDays (1-3650, default 14),
 issueCursor, pageStarts, deep, includeHistory, includeHandoffs, includeReleasePRs,
 and diagnostics. Repo filters narrow issue matches, not the organization-wide
-list of personal PRs. Inputs are validated in JavaScript to preserve the existing
-camel-case interface; the current frontmatter parser only permits lower-case
-declared input names.
+list of personal PRs. Inputs are validated in JavaScript, including bounded strings and the existing
+camel-case interface. Frontmatter declarations also support camel-case names.
 
 Each issue records correlation evidence (title, exact Linear branch text, or body)
 with a confidence level. Mechanical attention signals call out stale drafts,
@@ -45,11 +44,16 @@ Tests and authoring instructions are in [SNIPPET_TESTING.md](../dev/SNIPPET_TEST
 ```js
 async (input = {}) => {
   const started = Date.now();
-  const org = input.org || "unraid", team = input.team || "U8";
-  const assignee = input.assignee || "me", state = input.state || "started";
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("input must be an object");
+  const org = input.org ?? "unraid", team = input.team ?? "U8";
+  const assignee = input.assignee ?? "me", state = input.state ?? "started";
+  for (const [name, value] of Object.entries({org, team, assignee, state})) {
+    if (typeof value !== "string" || !value.length || value.length > 128) throw new Error(name + " must be a bounded string");
+  }
+  if (input.issueCursor != null && (typeof input.issueCursor !== "string" || !input.issueCursor.length || input.issueCursor.length > 1024)) throw new Error("issueCursor must be a bounded string");
   if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/.test(org)) throw new Error("Invalid org");
   const repos = input.repos == null ? [] : input.repos;
-  if (!Array.isArray(repos) || repos.length > 6 || repos.some(r => typeof r !== "string" || !/^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+$/.test(r))) throw new Error("repos must contain at most six owner/repo names");
+  if (!Array.isArray(repos) || repos.length > 6 || repos.some(r => typeof r !== "string" || r.length > 140 || !/^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+$/.test(r))) throw new Error("repos must contain at most six owner/repo names");
   const pageStarts = input.pageStarts == null ? {} : input.pageStarts;
   if (!pageStarts || typeof pageStarts !== "object" || Array.isArray(pageStarts)) throw new Error("pageStarts must be an object");
   for (const key of ["deep", "includeHistory", "includeHandoffs", "includeReleasePRs", "diagnostics"]) {
@@ -108,8 +112,8 @@ async (input = {}) => {
   const identity = first.ok.find(x => x.i === 1)?.value;
   const login = identity?.login || identity?.user?.login || identity?.data?.login || null;
   const validLogin = typeof login === "string" && /^[A-Za-z0-9-]+$/.test(login) ? login : null;
-  if (identity && !validLogin) failures.push({phase: "identity", kind: "invalid_result", message: "Missing valid GitHub login"});
-  if (issueResponse && !Array.isArray(issueResponse.issues)) failures.push({phase: "issues", kind: "invalid_result", message: "Missing issues array"});
+  if (first.ok.some(x => x.i === 1) && !validLogin) failures.push({phase: "identity", kind: "invalid_result", message: "Missing valid GitHub login"});
+  if (first.ok.some(x => x.i === 0) && !Array.isArray(issueResponse?.issues)) failures.push({phase: "issues", kind: "invalid_result", message: "Missing issues array"});
   const rawIssues = Array.isArray(issueResponse?.issues) ? issueResponse.issues : [];
   const nextIssueCursor = issueResponse?.nextCursor || issueResponse?.cursor || issueResponse?.endCursor || issueResponse?.pageInfo?.endCursor || null;
   if (issueResponse?.hasNextPage || issueResponse?.pageInfo?.hasNextPage || rawIssues.length > 100) {
@@ -117,7 +121,7 @@ async (input = {}) => {
   }
   const seenIssues = new Set();
   const issues = rawIssues.slice(0, 100).filter(i => {
-    if (!/^[A-Za-z][A-Za-z0-9]*-\d+$/.test(i.id || "")) { gaps.push({phase: "issues", reason: "invalid_identifier"}); return false; }
+    if (!i || typeof i !== "object" || typeof i.id !== "string" || !/^[A-Za-z][A-Za-z0-9]*-\d+$/.test(i.id)) { gaps.push({phase: "issues", reason: "invalid_identifier"}); return false; }
     if (seenIssues.has(i.id)) return false;
     seenIssues.add(i.id); return true;
   });
@@ -194,8 +198,11 @@ async (input = {}) => {
     for (const x of batch.ok) {
       const {run, query, ...meta} = group[x.i], value = x.value;
       for (const pr of value) {
+        if (!pr || typeof pr !== "object" || Array.isArray(pr) || (pr.user?.login != null && typeof pr.user.login !== "string")) {
+          gaps.push({...meta, reason: "invalid_pr"}); (meta.ids || ids).forEach(id => unknownIds.add(id)); continue;
+        }
         const repo = String(pr.repository_url || "").replace(/^https:\/\/api.github.com\/repos\//, "") || /^https:\/\/github.com\/([^/]+\/[^/]+)\/pull\/\d+/.exec(pr.html_url || "")?.[1];
-        if (!repo || !/^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+$/.test(repo) || !Number.isInteger(pr.number) || !["open", "closed"].includes(pr.state)) {
+        if (!repo || !/^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+$/.test(repo) || !Number.isSafeInteger(pr.number) || pr.number < 1 || !["open", "closed"].includes(pr.state)) {
           gaps.push({...meta, reason: "invalid_pr"}); (meta.ids || ids).forEach(id => unknownIds.add(id)); continue;
         }
         const inScope = meta.scope.startsWith("repo:") ? repo.toLowerCase() === meta.scope.slice(5).toLowerCase() : repo.split("/")[0].toLowerCase() === org.toLowerCase();
@@ -317,8 +324,9 @@ async (input = {}) => {
   } : null;
   const output = {schemaVersion: 2, ok: !failures.length, complete: !failures.length && !gaps.length,
     team, assignee, state, org, mode: {includeHistory, includeHandoffs, diagnostics},
-    summary: {issueCount: rows.length, issuesWithOpenPRs: rows.filter(r => r.openPRs.length).length,
-      issuesWithoutObservedPRs: rows.filter(r => !r.openPRs.length && !r.historicalPRs?.length).length,
+    summary: {issueCount: Array.isArray(issueResponse?.issues) ? rows.length : null,
+      issuesWithOpenPRs: Array.isArray(issueResponse?.issues) ? rows.filter(r => r.openPRs.length).length : null,
+      issuesWithoutObservedPRs: Array.isArray(issueResponse?.issues) ? rows.filter(r => !r.openPRs.length && !r.historicalPRs?.length).length : null,
       myOpenPRCount: myOpenPRs.length, prSearchCalls, relatedPRSearchFailures: failures.filter(f => f.phase === "open" || f.phase === "history").length,
       handoffCalls: includeHandoffs ? ids.length : 0, handoffFailures: failures.filter(f => f.phase === "handoff").length,
       suppressedReleasePRs, branchCorrelationCount, attentionCount: attention.length, toolCalls, elapsedMs: 0},
@@ -346,14 +354,25 @@ async (input = {}) => {
       };
     }
   }
-  while (bytes(output) > maxBytes) {
+  let outputBudgetGap;
+  while (true) {
+    // Include final timing and omission metadata in every byte-budget check.
+    timings.shapingMs = Date.now() - shapingStarted;
+    timings.totalMs = Date.now() - started;
+    output.summary.elapsedMs = timings.totalMs;
+    if (bytes(output) <= maxBytes) break;
     output.complete = false;
+    if (!outputBudgetGap) {
+      outputBudgetGap = {phase: "output", reason: "output_budget", omittedPRs: 0, omittedMyOpenPRs: 0, omittedIssues: 0};
+      gaps.push(outputBudgetGap);
+    }
     const nonMine = Object.keys(pullRequests).filter(key => !myOpenPRs.includes(key));
     const key = nonMine.pop() || Object.keys(pullRequests).pop();
     if (key) {
       delete pullRequests[key]; output.coverage.omittedPRs++;
       const i = myOpenPRs.indexOf(key);
       if (i >= 0) { myOpenPRs.splice(i, 1); output.coverage.omittedMyOpenPRs++; }
+      for (const item of attention) if (item.prs) item.prs = item.prs.filter(k => k !== key);
       for (const row of rows) {
         if (row.openPRs.includes(key) || row.historicalPRs?.includes(key)) row.matchStatus = "output_incomplete";
         row.openPRs = row.openPRs.filter(k => k !== key);
@@ -363,15 +382,10 @@ async (input = {}) => {
     } else if (rows.length) { rows.pop(); output.coverage.omittedIssues++; }
     else return {schemaVersion: 2, ok: false, complete: false, summary: output.summary,
       coverage: {reason: "diagnostics_exceed_output_budget", failures: failures.length, gaps: gaps.length}};
+    outputBudgetGap.omittedPRs = output.coverage.omittedPRs;
+    outputBudgetGap.omittedMyOpenPRs = output.coverage.omittedMyOpenPRs;
+    outputBudgetGap.omittedIssues = output.coverage.omittedIssues;
   }
-  if (output.coverage.omittedPRs || output.coverage.omittedIssues) {
-    output.complete = false;
-    gaps.push({phase: "output", reason: "output_budget", omittedPRs: output.coverage.omittedPRs,
-      omittedMyOpenPRs: output.coverage.omittedMyOpenPRs, omittedIssues: output.coverage.omittedIssues});
-  }
-  timings.shapingMs = Date.now() - shapingStarted;
-  timings.totalMs = Date.now() - started;
-  output.summary.elapsedMs = timings.totalMs;
   return output;
 }
 ```

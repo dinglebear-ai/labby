@@ -82,8 +82,12 @@ pub struct SnippetFixture {
     /// JSON Pointers that must be absent, not merely null.
     #[serde(default)]
     pub absent: Vec<String>,
-    /// Optional complete normalized output snapshot.
-    #[serde(default)]
+    /// Optional complete normalized output snapshot, including explicit JSON null.
+    #[serde(
+        default,
+        deserialize_with = "present_snapshot",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub snapshot: Option<Value>,
     /// JSON Pointers replaced by null on both sides of snapshot comparison.
     #[serde(default)]
@@ -91,6 +95,13 @@ pub struct SnippetFixture {
     /// Resource limits.
     #[serde(default)]
     pub budgets: FixtureBudgets,
+}
+
+fn present_snapshot<'de, D>(deserializer: D) -> Result<Option<Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Value::deserialize(deserializer).map(Some)
 }
 
 /// Synthetic trace metadata; no parameters or response payloads.
@@ -138,7 +149,7 @@ pub struct SnippetFixtureReport {
     pub calls: Vec<FixtureTrace>,
     /// Whether trace entries were omitted from this report.
     pub trace_truncated: bool,
-    /// Output, omitted when it exceeds the output budget.
+    /// Output, serialized as null when it exceeds the output budget.
     pub result: Option<Value>,
 }
 
@@ -216,7 +227,7 @@ impl SnippetFixture {
             .chain(self.absent.iter())
             .chain(self.ignore_paths.iter())
         {
-            if pointer.len() > 256 || (!pointer.is_empty() && !pointer.starts_with('/')) {
+            if pointer.len() > 256 || !valid_json_pointer(pointer) {
                 return Err(invalid(
                     "assertions and ignore_paths must use JSON Pointers",
                 ));
@@ -224,6 +235,19 @@ impl SnippetFixture {
         }
         Ok(())
     }
+}
+
+fn valid_json_pointer(pointer: &str) -> bool {
+    if !pointer.is_empty() && !pointer.starts_with('/') {
+        return false;
+    }
+    let mut chars = pointer.chars();
+    while let Some(character) = chars.next() {
+        if character == '~' && !matches!(chars.next(), Some('0' | '1')) {
+            return false;
+        }
+    }
+    true
 }
 
 #[derive(Deserialize)]
