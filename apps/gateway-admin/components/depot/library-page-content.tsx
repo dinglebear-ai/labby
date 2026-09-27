@@ -7,6 +7,7 @@ import { toast } from 'sonner'
 
 import { AppHeader } from '@/components/app-header'
 import { AURORA_PAGE_FRAME, AURORA_PAGE_SHELL } from '@/components/aurora/tokens'
+import { CollectionViewToggle, type CollectionViewMode } from '@/components/console/collection-view-toggle'
 import { ConsoleHero } from '@/components/console/console-hero'
 import { DashboardPanel } from '@/components/dashboard/panel'
 import { Button } from '@/components/ui/button'
@@ -33,7 +34,7 @@ type LibraryState = {
   total?: number
 }
 
-type ViewMode = 'table' | 'list' | 'cards'
+type ViewMode = CollectionViewMode
 
 export function libraryFilterKinds(artifacts: DepotArtifact[]) {
   return [...new Set([...ARTIFACT_TYPES, ...collectArtifactKinds(artifacts)])]
@@ -148,29 +149,28 @@ function SessionLibraryPage() {
   const [detailLoading, setDetailLoading] = useState(false)
   const [copied, setCopied] = useState<string>()
   const [view, setViewState] = useState<ViewMode>('table')
-  const [narrowCollection, setNarrowCollection] = useState(false)
-  const collectionRef = useRef<HTMLElement | null>(null)
   const [filtersOpen, setFiltersOpen] = useState(false)
   const filtersId = useId()
   const listController = useRef<AbortController | null>(null)
 
   useEffect(() => {
-    const media = window.matchMedia('(max-width: 640px)')
-    const applyResponsiveDefault = () => {
-      setViewState(media.matches ? 'cards' : 'table')
+    try {
+      const saved = window.localStorage.getItem('labby.library.layout')
+      if (saved === 'table' || saved === 'list' || saved === 'cards') setViewState(saved)
+      else if (window.matchMedia('(max-width: 640px)').matches) setViewState('cards')
+    } catch {
+      if (window.matchMedia('(max-width: 640px)').matches) setViewState('cards')
     }
-    applyResponsiveDefault()
-    media.addEventListener('change', applyResponsiveDefault)
-    return () => media.removeEventListener('change', applyResponsiveDefault)
   }, [])
 
-  useEffect(() => {
-    const collection = collectionRef.current
-    if (!collection || typeof ResizeObserver === 'undefined') return
-    const observer = new ResizeObserver(([entry]) => setNarrowCollection((entry?.contentRect.width ?? 0) < 700))
-    observer.observe(collection)
-    return () => observer.disconnect()
-  }, [])
+  const selectView = (next: ViewMode) => {
+    setViewState(next)
+    try {
+      window.localStorage.setItem('labby.library.layout', next)
+    } catch {
+      // The selected layout remains active for this session when storage is unavailable.
+    }
+  }
 
   const load = useCallback(async (search: string, cursor?: string) => {
     listController.current?.abort()
@@ -266,8 +266,6 @@ function SessionLibraryPage() {
     return count ? [`${count} files`] : []
   }, [detail, previewDetail])
   const previewMetricLabels = useMemo(() => previewDetail && USE_MOCK_DATA ? mockDepotMetricLabels(previewDetail) : undefined, [previewDetail])
-  const effectiveView = narrowCollection ? 'cards' : view
-
   return <>
     <AppHeader breadcrumbs={[{ label: 'Library' }]} />
     <div data-library-page="1" className={`${AURORA_PAGE_SHELL} min-w-0 flex-1`}><div className={AURORA_PAGE_FRAME} style={{ gap: 16 }}>
@@ -282,8 +280,8 @@ function SessionLibraryPage() {
       <div data-lbgrid="1" className="grid min-w-0 items-start max-[900px]:grid-cols-1" style={{ gridTemplateColumns: '220px minmax(0,1fr)', gap: 16 }}>
       <LibraryFilterRail id={filtersId} mobileOpen={filtersOpen} libraryView={libraryView} onView={setLibraryView} artifacts={state.artifacts} kind={kind} onKind={next => { setKind(next); updateUrl({ kind: next }) }} tag={tag} onTag={next => setTagSelection({ query, tag: next })} />
       <div className="min-w-0">
-      <section ref={collectionRef} aria-label="Artifact collection" data-library-collection="1" className="overflow-hidden rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-strong shadow-[var(--aurora-shadow-medium)]"><div data-library-toolbar="1" className="flex flex-wrap items-center gap-[9px] border-b border-aurora-border-subtle bg-aurora-control-surface" style={{ padding: '9px 12px' }}><div data-library-search="1" className="flex h-9 min-w-32 max-w-[360px] flex-1 items-center rounded-aurora-1 border border-aurora-border-subtle bg-aurora-panel-low focus-within:border-aurora-border-strong"><Search aria-hidden="true" className="ml-3 size-4 shrink-0 text-aurora-text-muted"/><Input aria-label="Search library" className="h-full min-w-0 flex-1 border-0 bg-transparent px-2 text-[13px] shadow-none focus-visible:ring-0" placeholder={`Filter ${state.total ?? state.artifacts.length} artifacts…`} value={query} onChange={(event) => setQuery(event.target.value)}/>{query ? <button type="button" aria-label="Clear library search" className="grid size-7 shrink-0 place-items-center text-aurora-text-muted hover:text-aurora-text-primary" onClick={() => setQuery('')}><X className="size-3.5"/></button> : null}<button type="button" aria-label="Toggle library filters" aria-expanded={filtersOpen} aria-controls={filtersId} aria-pressed={filtersOpen} title="Filters" onClick={() => setFiltersOpen(open => !open)} className="mr-1 grid size-7 shrink-0 place-items-center rounded-aurora-1 text-aurora-text-muted transition-colors hover:bg-aurora-hover-bg hover:text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary aria-pressed:bg-aurora-selected-bg aria-pressed:text-aurora-accent-strong min-[901px]:hidden"><Filter className="size-3.5"/></button></div><span className="font-semibold tabular-nums text-aurora-text-muted" style={{ fontSize: 12, marginLeft: 6 }}>{visible.length} of {state.total ?? state.artifacts.length}</span><div className="flex-1"/><LibrarySortMenu sort={sort} onSort={setSort}/></div>
-        {effectiveView !== 'table' ? <div className={effectiveView === 'cards' ? 'grid gap-3 p-3' : 'divide-y divide-aurora-border-subtle'} style={effectiveView === 'cards' ? { gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))' } : undefined}>{visible.map((artifact) => { const id = artifactId(artifact); return <button key={id} type="button" onClick={() => updateUrl({ artifact: id })} className={effectiveView === 'cards' ? 'group rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-low p-4 text-left transition-[transform,border-color] hover:-translate-y-0.5 hover:border-aurora-border-strong' : 'group flex w-full items-start gap-3 px-3 py-3 text-left transition-colors hover:bg-aurora-surface-muted'}><ArtifactTypeMark artifact={artifact} compact/><span className="min-w-0 flex-1"><span className="block truncate font-semibold text-aurora-text-primary">{artifactLabel(artifact)}</span><span className="mt-1 line-clamp-2 block text-xs leading-5 text-aurora-text-muted">{artifactDescription(artifact)}</span><span className="mt-2 block truncate text-[11px] text-aurora-text-muted">{artifact.namespace ?? artifact.descriptor?.namespace ?? 'Unknown namespace'}</span></span><ChevronRight className="mt-1 size-4 shrink-0 text-aurora-text-muted group-hover:text-aurora-accent-primary"/></button> })}</div> : <LibraryArtifactTable artifacts={visible} onInspect={id => updateUrl({ artifact: id })}/>}
+      <section aria-label="Artifact collection" data-library-collection="1" className="overflow-hidden rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-strong shadow-[var(--aurora-shadow-medium)]"><div data-library-toolbar="1" className="flex flex-wrap items-center gap-[9px] border-b border-aurora-border-subtle bg-aurora-control-surface" style={{ padding: '9px 12px' }}><div data-library-search="1" className="flex h-9 min-w-32 max-w-[360px] flex-1 items-center rounded-aurora-1 border border-aurora-border-subtle bg-aurora-panel-low focus-within:border-aurora-border-strong"><Search aria-hidden="true" className="ml-3 size-4 shrink-0 text-aurora-text-muted"/><Input aria-label="Search library" className="h-full min-w-0 flex-1 border-0 bg-transparent px-2 text-[13px] shadow-none focus-visible:ring-0" placeholder={`Filter ${state.total ?? state.artifacts.length} artifacts…`} value={query} onChange={(event) => setQuery(event.target.value)}/>{query ? <button type="button" aria-label="Clear library search" className="grid size-7 shrink-0 place-items-center text-aurora-text-muted hover:text-aurora-text-primary" onClick={() => setQuery('')}><X className="size-3.5"/></button> : null}<button type="button" aria-label="Toggle library filters" aria-expanded={filtersOpen} aria-controls={filtersId} aria-pressed={filtersOpen} title="Filters" onClick={() => setFiltersOpen(open => !open)} className="mr-1 grid size-7 shrink-0 place-items-center rounded-aurora-1 text-aurora-text-muted transition-colors hover:bg-aurora-hover-bg hover:text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary aria-pressed:bg-aurora-selected-bg aria-pressed:text-aurora-accent-strong min-[901px]:hidden"><Filter className="size-3.5"/></button></div><span className="font-semibold tabular-nums text-aurora-text-muted" style={{ fontSize: 12, marginLeft: 6 }}>{visible.length} of {state.total ?? state.artifacts.length}</span><div className="flex-1"/><LibrarySortMenu sort={sort} onSort={setSort}/><CollectionViewToggle value={view} onChange={selectView} ariaLabel="Library view"/></div>
+        {view !== 'table' ? <div className={view === 'cards' ? 'grid gap-3 p-3' : 'divide-y divide-aurora-border-subtle'} style={view === 'cards' ? { gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))' } : undefined}>{visible.map((artifact) => { const id = artifactId(artifact); return <button key={id} type="button" onClick={() => updateUrl({ artifact: id })} className={view === 'cards' ? 'group rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-low p-4 text-left transition-[transform,border-color] hover:-translate-y-0.5 hover:border-aurora-border-strong' : 'group flex w-full items-start gap-3 px-3 py-3 text-left transition-colors hover:bg-aurora-surface-muted'}><ArtifactTypeMark artifact={artifact} compact/><span className="min-w-0 flex-1"><span className="block truncate font-semibold text-aurora-text-primary">{artifactLabel(artifact)}</span><span className="mt-1 line-clamp-2 block text-xs leading-5 text-aurora-text-muted">{artifactDescription(artifact)}</span><span className="mt-2 block truncate text-[11px] text-aurora-text-muted">{artifact.namespace ?? artifact.descriptor?.namespace ?? 'Unknown namespace'}</span></span><ChevronRight className="mt-1 size-4 shrink-0 text-aurora-text-muted group-hover:text-aurora-accent-primary"/></button> })}</div> : <LibraryArtifactTable artifacts={visible} onInspect={id => updateUrl({ artifact: id })}/>}
         {state.loading && state.artifacts.length === 0 ? <p className="flex items-center justify-center gap-2 py-10 text-sm text-aurora-text-muted"><Loader2 className="size-4 animate-spin"/>Loading the Labby catalog…</p> : null}
         {!state.loading && !state.error && visible.length === 0 ? <p className="py-10 text-center text-sm text-aurora-text-muted">{state.artifacts.length ? 'No artifacts match these filters.' : 'No artifacts in your library yet. Explore Discover to add one.'}</p> : null}
         {state.cursor ? <div className="border-t border-aurora-border-subtle p-3 text-center"><Button variant="outline" disabled={state.loading} onClick={() => void load(activeQuery, state.cursor)}>{state.loading ? <Loader2 className="size-4 animate-spin"/> : null}Load more</Button></div> : null}

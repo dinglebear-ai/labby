@@ -1,12 +1,13 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { BookOpen, Boxes, Cable, ChevronDown, Clipboard, Download, Grid2X2, List, Loader2, PackageOpen, Pencil, Plus, RefreshCw, Search, ShieldCheck, Table2, Trash2 } from 'lucide-react'
+import { BookOpen, Boxes, Cable, ChevronDown, Clipboard, Download, Loader2, PackageOpen, Pencil, Plus, RefreshCw, Search, ShieldCheck, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { ActionConfirmationDialog } from '@/components/action-confirmation-dialog'
 import { AppHeader } from '@/components/app-header'
 import { LibraryTabs } from '@/components/depot/depot-workspace-pages'
+import { CollectionViewToggle, type CollectionViewMode } from '@/components/console/collection-view-toggle'
 import { ConsoleHero, type ConsoleHeroStat } from '@/components/console/console-hero'
 import { DashboardPanel } from '@/components/dashboard/panel'
 import { Badge } from '@/components/ui/badge'
@@ -58,7 +59,7 @@ export function LoadoutsPageContent() {
   const [deleting, setDeleting] = useState<GatewayLoadout | null>(null)
   const [deleteBusy, setDeleteBusy] = useState(false)
   const [query, setQuery] = useState('')
-  const [view, setView] = useState<'table' | 'list' | 'cards'>('table')
+  const [view, setViewState] = useState<CollectionViewMode>('table')
   const { data: loadouts = [], isLoading, error, mutate: refreshLoadouts, isValidating } = useLoadouts()
   // Gateway configuration is only needed to populate the add/edit dialog. A full
   // gateway list can cold-connect many stdio upstreams, so do not hydrate the
@@ -75,6 +76,25 @@ export function LoadoutsPageContent() {
     error: protectedRoutesError,
   } = useProtectedMcpRoutes()
   const { addLoadout, patchLoadout, removeLoadout, stageLoadoutUpdate, stageLoadoutRemove } = useGatewayMutations()
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem('labby.loadouts.layout')
+      if (saved === 'table' || saved === 'list' || saved === 'cards') setViewState(saved)
+      else if (window.matchMedia('(max-width: 640px)').matches) setViewState('cards')
+    } catch {
+      if (window.matchMedia('(max-width: 640px)').matches) setViewState('cards')
+    }
+  }, [])
+
+  const selectView = (next: CollectionViewMode) => {
+    setViewState(next)
+    try {
+      window.localStorage.setItem('labby.loadouts.layout', next)
+    } catch {
+      // The selected layout remains active for this session when storage is unavailable.
+    }
+  }
 
   const gatewayOptions = useMemo(() => gateways.filter(g => g.source !== 'in_process' && g.transport !== 'in_process').map(g => ({ value: g.name, label: g.name, meta: g.config.url ?? g.config.command ?? g.transport })), [gateways])
   const serviceOptions = useMemo(() => services.map(s => ({ value: s.key, label: s.display_name, meta: s.description })), [services])
@@ -99,7 +119,7 @@ export function LoadoutsPageContent() {
     <AppHeader breadcrumbs={[{ label: 'Labby' }, { label: 'Library' }, { label: 'Loadouts' }]} />
     <div className={cn(AURORA_PAGE_SHELL, 'flex-1')}><div className={cn(AURORA_PAGE_FRAME, 'gap-3.5')}>
       <ConsoleHero eyebrow="Agent Profiles" pulse={loadouts.length ? { color: 'var(--aurora-success)', label: loadouts.length + ' configured' } : undefined} title="Loadouts" stats={stats} footer={<LibraryTabs active="loadouts" attached counts={isLoading || error ? {} : { loadouts: loadouts.length }} />} actions={<div className="flex gap-2"><Button variant="outline" size="icon" aria-label="Refresh loadouts" title="Refresh loadouts" className="size-9 rounded-[10px]" disabled={isValidating} onClick={() => void refreshLoadouts()}><RefreshCw className={cn('size-[15px]', isValidating && 'animate-spin')} /></Button>{canManage ? <Button size="icon" variant="outline" aria-label="New loadout" title="New loadout" className="size-9 rounded-aurora-1 border-[color-mix(in_srgb,var(--aurora-accent-primary)_55%,var(--aurora-border-strong))] bg-[color-mix(in_srgb,var(--aurora-accent-primary)_9%,var(--aurora-panel-strong))] text-aurora-accent-strong" onClick={() => { setEditing(null); setFormOpen(true) }}><Plus className="size-[15px]" /></Button> : null}</div>} />
-      <div className="flex items-center justify-between gap-3"><div className="relative w-full max-w-xl"><Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-aurora-text-muted" /><Input aria-label="Search Loadouts" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search Loadouts, upstreams, and services…" className="pl-9" /></div><div className="flex shrink-0 rounded-aurora-1 border border-aurora-border-subtle bg-aurora-control-surface p-0.5">{([[Table2,'Table','table'],[List,'List','list'],[Grid2X2,'Cards','cards']] as const).map(([Icon,label,mode])=><button key={mode} type="button" aria-label={`${label} view`} title={`${label} view`} aria-pressed={view===mode} onClick={()=>setView(mode)} className="rounded p-1.5 text-aurora-text-muted hover:text-aurora-text-primary aria-pressed:bg-aurora-selected-bg aria-pressed:text-aurora-accent-primary"><Icon className="size-3.5"/></button>)}</div></div>
+      <div className="flex flex-wrap items-center gap-3"><div className="relative min-w-0 flex-1 sm:max-w-xl"><Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-aurora-text-muted" /><Input aria-label="Search Loadouts" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search Loadouts, upstreams, and services…" className="pl-9" /></div><CollectionViewToggle value={view} onChange={selectView} ariaLabel="Loadout view" className="ml-auto" /></div>
       {protectedRoutesError && <div role="alert" className="rounded-lg border border-destructive/35 bg-destructive/10 px-3 py-2 text-sm text-aurora-text-primary">Could not verify protected route mounts. Editing and removal are disabled to prevent applying the wrong update mode. {getErrorMessage(protectedRoutesError, 'Protected routes failed to load')}</div>}
       {pendingRestartCount > 0 && <div className="rounded-lg border border-aurora-warn/35 bg-aurora-warn/10 px-3 py-2 text-sm text-aurora-text-primary">{pendingRestartCount} Loadout change{pendingRestartCount === 1 ? ' is' : 's are'} saved for restart. Running protected routes still use their startup projections.</div>}
       {isLoading ? <DashboardPanel title="Loadouts" icon={<Loader2 className="size-4 animate-spin" />}><span className={AURORA_MUTED_LABEL}>Loading Loadouts…</span></DashboardPanel>

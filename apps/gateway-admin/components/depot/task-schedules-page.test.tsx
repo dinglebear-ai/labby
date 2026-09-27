@@ -29,6 +29,10 @@ test('schedule rows expose real action callbacks without optimistic switch succe
   const operations: string[] = []
   const view = await renderClient(<TaskScheduleRows rows={[row]} agents={[agent]} states={{}} canOperate canDelete onToggle={() => operations.push('pause')} onRun={() => operations.push('run')} onEdit={() => operations.push('edit')} onDelete={() => operations.push('delete')} />)
   try {
+    assert.ok(view.container.querySelector('[aria-label="Task view"]'))
+    assert.ok(view.container.querySelector('[aria-label="Table view"]'))
+    assert.ok(view.container.querySelector('[aria-label="Card view"]'))
+    assert.ok(view.container.querySelector('[aria-label="List view"]'))
     await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Pause Daily review"]')!.click())
     assert.equal(document.querySelector('[aria-label="Pause Daily review"]')!.getAttribute('aria-checked'), 'true')
     await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Run Daily review now"]')!.click())

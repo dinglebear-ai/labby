@@ -5,6 +5,7 @@ import { Archive, CirclePlus, Clock3, FolderKanban, RefreshCw } from 'lucide-rea
 
 import { AppHeader } from '@/components/app-header'
 import { AURORA_PAGE_FRAME, AURORA_PAGE_SHELL } from '@/components/aurora/tokens'
+import { CollectionViewToggle, type CollectionViewMode } from '@/components/console/collection-view-toggle'
 import { ConsoleHero } from '@/components/console/console-hero'
 import { DashboardPanel } from '@/components/dashboard/panel'
 import { Button } from '@/components/ui/button'
@@ -30,6 +31,7 @@ export function ProjectsPageContent() {
   const [busy, setBusy] = useState<string>()
   const [id, setId] = useState('')
   const [name, setName] = useState('')
+  const [view, setViewState] = useState<CollectionViewMode>('table')
 
   const load = useCallback(async (signal?: AbortSignal) => {
     setLoading(true)
@@ -48,6 +50,25 @@ export function ProjectsPageContent() {
     void load(controller.signal)
     return () => controller.abort()
   }, [load, workspaceIdentity])
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem('labby.projects.layout')
+      if (saved === 'table' || saved === 'list' || saved === 'cards') setViewState(saved)
+      else if (window.matchMedia('(max-width: 640px)').matches) setViewState('cards')
+    } catch {
+      if (window.matchMedia('(max-width: 640px)').matches) setViewState('cards')
+    }
+  }, [])
+
+  const selectView = (next: CollectionViewMode) => {
+    setViewState(next)
+    try {
+      window.localStorage.setItem('labby.projects.layout', next)
+    } catch {
+      // The selected layout remains active for this session when storage is unavailable.
+    }
+  }
 
   const create = async () => {
     if (!team) {
@@ -109,17 +130,18 @@ export function ProjectsPageContent() {
               <p className="text-sm text-aurora-text-muted">Select a Team workspace to create a Project.</p>
             )}
           </DashboardPanel>
-          <DashboardPanel title="Projects">
+          <DashboardPanel title="Projects" action={<CollectionViewToggle value={view} onChange={selectView} ariaLabel="Project view" />}>
             {loading ? (
               <p role="status" className="py-8 text-center text-sm text-aurora-text-muted">Loading accessible Projects…</p>
             ) : rows.length === 0 ? (
               <p className="py-8 text-center text-sm text-aurora-text-muted">No accessible Projects.</p>
             ) : (
-              <div className="divide-y divide-aurora-border-subtle">
+              <div className={view === 'cards' ? 'grid gap-3 sm:grid-cols-2' : 'divide-y divide-aurora-border-subtle'}>
+                {view === 'table' ? <div className="hidden grid-cols-[minmax(0,1fr)_auto_auto] gap-3 border-b border-aurora-border-default px-1 py-2 text-[9px] font-bold uppercase tracking-[.12em] text-aurora-text-muted md:grid"><span>Project</span><span>Tasks</span><span>Manage</span></div> : null}
                 {rows.map((row) => {
                   const key = `${row.team_id}:${row.project_id}`
                   return (
-                    <article key={key} className="flex items-center justify-between gap-4 py-4">
+                    <article key={key} className={view === 'cards' ? 'flex min-w-0 flex-col gap-3 rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-low p-4' : view === 'table' ? 'grid min-w-0 gap-3 px-1 py-3 md:grid-cols-[minmax(0,1fr)_auto_auto] md:items-center' : 'flex min-w-0 flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between'}>
                       <div className="min-w-0">
                         <strong className="block truncate text-sm text-aurora-text-primary">{row.name}</strong>
                         <p className="text-xs text-aurora-text-muted">{row.project_id} · {row.team_id} · {row.role} · policy {row.policy_epoch}</p>
