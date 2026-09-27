@@ -312,14 +312,12 @@ mod tests {
     fn search_config_cli_accepts_repeatable_values_and_explicit_clears() {
         use clap::Parser as _;
 
-        assert!(
-            crate::cli::Cli::try_parse_from(["labby", "code", "search-config", "status",]).is_ok()
-        );
+        assert!(crate::cli::Cli::try_parse_from(["labby", "code", "catalog", "status",]).is_ok());
         assert!(
             crate::cli::Cli::try_parse_from([
                 "labby",
                 "code",
-                "search-config",
+                "catalog",
                 "set",
                 "--source",
                 "personal_labby,team_depot",
@@ -336,7 +334,7 @@ mod tests {
             crate::cli::Cli::try_parse_from([
                 "labby",
                 "code",
-                "search-config",
+                "catalog",
                 "set",
                 "--clear-sources",
                 "--clear-kinds",
@@ -347,7 +345,7 @@ mod tests {
             crate::cli::Cli::try_parse_from([
                 "labby",
                 "code",
-                "search-config",
+                "catalog",
                 "set",
                 "--source",
                 "public_depot",
@@ -357,12 +355,7 @@ mod tests {
         );
         assert!(
             crate::cli::Cli::try_parse_from([
-                "labby",
-                "code",
-                "search-config",
-                "set",
-                "--source",
-                "unknown",
+                "labby", "code", "catalog", "set", "--source", "unknown",
             ])
             .is_err()
         );

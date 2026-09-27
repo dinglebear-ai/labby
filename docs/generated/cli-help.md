@@ -4004,15 +4004,15 @@ Execute Code Mode and manage its settings, UI, and upstream hints
 Usage: labby code [OPTIONS] <COMMAND>
 
 Commands:
-  search         Search the Code Mode catalog without constructing a JavaScript payload
-  describe       Inspect a catalog entry's schema before using it
-  status         Read gateway-wide Code Mode settings
-  search-config  Configure the sources and artifact families included by Code Mode search
-  enable         Enable the gateway codemode MCP surface
-  disable        Disable the gateway codemode MCP surface
-  ui             Manage the explicit Code Mode MCP App UI while keeping text execution available
-  run            Execute a sandboxed JavaScript snippet that calls the typed `codemode.<upstream>.<tool>` helpers (or `callTool` directly)
-  hints          Preview and approve upstream metadata hints
+  search    Search the Code Mode catalog without constructing a JavaScript payload
+  describe  Inspect a catalog entry's schema before using it
+  status    Read gateway-wide Code Mode settings
+  catalog   Configure the sources and artifact families included by Code Mode search
+  enable    Enable the gateway codemode MCP surface
+  disable   Disable the gateway codemode MCP surface
+  ui        Manage the explicit Code Mode MCP App UI while keeping text execution available
+  run       Execute a sandboxed JavaScript snippet that calls the typed `codemode.<upstream>.<tool>` helpers (or `callTool` directly)
+  hints     Preview and approve upstream metadata hints
 
 Options:
       --json
@@ -4176,12 +4176,12 @@ Options:
           Print help
 ```
 
-## `labby code search-config`
+## `labby code catalog`
 
 ```text
 Configure the sources and artifact families included by Code Mode search
 
-Usage: labby code search-config [OPTIONS] <COMMAND>
+Usage: labby code catalog [OPTIONS] <COMMAND>
 
 Commands:
   status  Read the effective Code Mode search policy
@@ -4219,12 +4219,12 @@ Options:
           Print help
 ```
 
-## `labby code search-config status`
+## `labby code catalog status`
 
 ```text
 Read the effective Code Mode search policy
 
-Usage: labby code search-config status [OPTIONS]
+Usage: labby code catalog status [OPTIONS]
 
 Options:
       --json
@@ -4258,12 +4258,12 @@ Options:
           Print help
 ```
 
-## `labby code search-config set`
+## `labby code catalog set`
 
 ```text
 Patch the effective Code Mode search policy without restarting the server
 
-Usage: labby code search-config set [OPTIONS]
+Usage: labby code catalog set [OPTIONS]
 
 Options:
       --json

@@ -300,8 +300,8 @@ labby code status
 labby code enable
 labby code disable
 labby code run --code 'async () => (await codemode.search("GitHub issues")).total'
-labby code search-config status
-labby code search-config set --source personal_labby --source team_depot --kind skill --kind command
+labby code catalog status
+labby code catalog set --source personal_labby --source team_depot --kind skill --kind command
 ```
 
 HTTP/MCP gateway management actions:

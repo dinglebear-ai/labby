@@ -125,7 +125,7 @@ pub(super) struct UpstreamSkills {
     /// must not present an owner as unambiguous when a later entry on an
     /// already-received page claims the same resource.
     pub(super) ambiguous_resource_uris: BTreeSet<String>,
-    pub(super) observed_resource_owners: BTreeMap<String, String>,
+    pub(super) observed_resource_owners: BTreeMap<String, (String, Option<(String, u64)>)>,
 }
 
 #[derive(Debug, Clone)]
@@ -212,23 +212,33 @@ fn ingest_page(
     // validation remains constrained by `max_candidates` below.
     for entry in &entries {
         let owner = entry.uri.clone();
-        let claims = std::iter::once(&entry.uri).chain(
+        let manifest = entry
+            .resources
+            .as_ref()
+            .and_then(|resources| resources.iter().find(|resource| resource.uri == entry.uri));
+        let claims = std::iter::once((&entry.uri, manifest)).chain(
             entry
                 .resources
                 .iter()
                 .flatten()
-                .map(|resource| &resource.uri),
+                .map(|resource| (&resource.uri, Some(resource))),
         );
-        for claim in claims.filter_map(|uri| parse_skill_resource_uri(uri).ok()) {
-            let claim = claim.to_uri();
-            if out
-                .observed_resource_owners
-                .get(&claim)
-                .is_some_and(|existing| existing != &owner)
+        for (uri, resource) in claims {
+            let Some(claim) = parse_skill_resource_uri(uri).ok().map(|uri| uri.to_uri()) else {
+                continue;
+            };
+            let binding = resource.map(|resource| (resource.digest.clone(), resource.size));
+            if let Some((existing_owner, existing_binding)) =
+                out.observed_resource_owners.get(&claim)
             {
-                out.ambiguous_resource_uris.insert(claim.clone());
+                // Nested Skills may publish the same file. Its bytes remain
+                // unambiguous only when every owner's binding is identical.
+                if existing_owner != &owner && (binding.is_none() || *existing_binding != binding) {
+                    out.ambiguous_resource_uris.insert(claim);
+                }
             } else {
-                out.observed_resource_owners.insert(claim, owner.clone());
+                out.observed_resource_owners
+                    .insert(claim, (owner.clone(), binding));
             }
         }
     }

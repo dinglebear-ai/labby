@@ -96,14 +96,14 @@ Code Mode selects its target before executing. Once a remote execution is attemp
 
 ```bash
 labby code search "oauth" --limit 10
-labby code search-config status
-labby code search-config set --source public_depot --source team_depot --kind skill
+labby code catalog status
+labby code catalog set --source public_depot --source team_depot --kind skill
 labby code describe example.tool
 labby code run --file ./task.js
 labby code run --file - < ./task.js
 ```
 
-`code search-config set` patches only the lists supplied. Repeat `--source`
+`code catalog set` patches only the lists supplied. Repeat `--source`
 and `--kind` for multiple values; `--clear-sources` and `--clear-kinds` set the
 respective list to empty. A change applies to the next Code Mode search on the
 selected Labby server without restarting it. The same settings appear under

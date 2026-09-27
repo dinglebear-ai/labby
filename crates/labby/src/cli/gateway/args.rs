@@ -388,7 +388,7 @@ pub enum GatewayCodeCommand {
     /// Read gateway-wide Code Mode settings.
     Status,
     /// Configure the sources and artifact families included by Code Mode search.
-    #[command(name = "search-config")]
+    #[command(name = "catalog")]
     SearchConfig {
         #[command(subcommand)]
         command: GatewayCodeSearchConfigCommand,
