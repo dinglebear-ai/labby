@@ -1,3 +1,9 @@
+---
+title: "Documentation Maintenance"
+created: "2026-09-27"
+updated: "2026-09-27"
+---
+
 # Documentation Maintenance
 
 [AGENTS.md](../../AGENTS.md) is the canonical contributor instruction file.
@@ -140,6 +146,12 @@ Do not hand-edit generated catalogs. Review their diffs for accidental host,
 feature, or platform leakage before committing them.
 
 ## Automated gates
+
+The repository-contract job also requires `title`, `created`, and `updated`
+frontmatter on maintained topic documents. Its AGENTS-first adapter keeps all
+other checks from the immutable fleet implementation and replaces only the
+legacy reverse-direction symlink rule with strict Git-index validation. See
+[CI/CD](../runtime/CICD.md) for the adapter and required aggregate contract.
 
 `scripts/check-product-docs.py` inventories tracked and nonignored new paths
 through Git. It checks current product links, stale naming, duplicate prose,

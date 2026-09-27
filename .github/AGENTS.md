@@ -67,9 +67,12 @@ details there and keep this file focused on rules for editing `.github/`.
 runs enable all categories. Required CI validates container and release source
 contracts. A separate path-filtered workflow builds and smokes the Incus image
 when its inputs change.
-The reusable fleet policy and repository contract remain organization-managed
-workflow calls. Their execution environment is owned by the central workflows
-repository.
+Fleet policy and repository-contract jobs run on GitHub-hosted runners in
+this repository. The contract checks out an immutable central implementation
+and invokes the narrow AGENTS-first adapter in `scripts/ci/check_repository_contract.py`.
+Preserve its checker digest, complete fleet-driver invocation, Git-index
+validation, regression suite, and required aggregate. Do not suppress unrelated
+findings or convert a failed contract to success.
 
 ## Release flow
 

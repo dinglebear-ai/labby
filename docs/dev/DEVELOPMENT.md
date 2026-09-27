@@ -1,3 +1,9 @@
+---
+title: "Development Workflow"
+created: "2026-09-27"
+updated: "2026-09-27"
+---
+
 # Development Workflow
 
 This is the checkout-to-validation guide for contributors. Read the repository
