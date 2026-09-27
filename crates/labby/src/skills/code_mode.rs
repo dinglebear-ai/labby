@@ -80,6 +80,7 @@ impl CodeModeSkillProvider for CanonicalCodeModeSkillProvider {
     > {
         Box::pin(async move {
             let context = context_for(caller)?;
+            let context = context.narrowed_to_upstreams(scope.allowed_namespaces());
             let value = crate::dispatch::skills::dispatch_with_context(
                 &context,
                 "skills.list",
@@ -176,3 +177,6 @@ impl CodeModeSkillProvider for CanonicalCodeModeSkillProvider {
         })
     }
 }
+
+#[cfg(all(test, feature = "proxy-testkit"))]
+mod discovery_scope_tests;

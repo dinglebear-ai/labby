@@ -1,0 +1,284 @@
+{
+  "schema_version": 1,
+  "recorded_utc": "2026-09-26T16:28:05.807002+00:00",
+  "base_commit": "95983b29930da4c3bbd956cfa49414fef52cf64e",
+  "branch": "fix/codemode-skill-discovery-bounds-20260926",
+  "source_files_sha256": {
+    "crates/labby-gateway/src/upstream/pool.rs": "eedb010c54c0ca8822c06d56a1f7b834f1a63fb72d501439745e4fdda5325638",
+    "crates/labby-gateway/src/upstream/pool/skills.rs": "9966ba235b9c128893b2307056e5c32d4aba3ee955c715ce763e2e0a652909db",
+    "crates/labby-gateway/src/upstream/pool/skills_cache.rs": "39d8f25d4bcd2b70d88a9f2c717d2924e51c3a7ff53b74f096246f2ab28da757",
+    "crates/labby-gateway/src/upstream/pool/skills_discovery.rs": "c520061cd08b93074b92be9ab7cd7dd468d86e1097bd6e800b78a1278ceae8fc",
+    "crates/labby-gateway/src/upstream/pool/skills_list.rs": "bb9f7b30479b18d7ebe0d1ab39d7f2eab1487503d0b32b941dd4c9da5c134d38",
+    "crates/labby-gateway/src/upstream/pool/skills_provider.rs": "2f3492ef29bf7248adf6504b536d4c437b14fb3e06058ca912717af1f2dfae9b",
+    "crates/labby-gateway/src/upstream/pool/skills_tests.rs": "731bb260a3473c9622dab9b5b7b72a069f6fde4d64c7650e6f2918ebd34bd437",
+    "crates/labby-gateway/src/upstream/pool/skills_tests/bounded_discovery.rs": "e366ba6adbade87c440ad182a168bb16ff2149e25e7d9b2336cd2ec7f54d5bba",
+    "crates/labby/src/dispatch/helpers.rs": "2322f52e45d37c1f7175bc105099d97a3990bfee21567c036ba6ac530a66e531",
+    "crates/labby/src/dispatch/helpers/test_home.rs": "8581d62114e7514323da9f3d445062262a576aa6e488b69619a08a5cdcbc7354",
+    "crates/labby/src/dispatch/setup/dispatch.rs": "090e1155e9705b00ffd13c2ea1a0beade12b3c911b3fbb416426b9687843f444",
+    "crates/labby/src/skills/code_mode.rs": "65986ff9cdf69aed6d8fa646cea4a0df1b1937ed0d51bb42c32a6737c4d802e3",
+    "crates/labby/src/skills/code_mode/discovery_scope_tests.rs": "3ad8720a3cfe9096001c3609147f4cdb9f30c6f10d7ed1d4eaf7694889158754",
+    "crates/labby/src/skills/facade.rs": "33f13ce5d8fe8385544efc9f360d374b0d542805f32d4bf3ffb340e7031afec9"
+  },
+  "gates": [
+    {
+      "gate": "regression",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "labby-gateway",
+        "slow_skill_metadata_projection_fails_open_before_code_mode_deadline",
+        "--locked"
+      ],
+      "head": "b7637da59f6e0b6a90915d4e29704f120e37b11d",
+      "started_utc": "20260926T153319Z",
+      "finished_utc": "2026-09-26T15:33:20.949654+00:00",
+      "exit_code": 0,
+      "elapsed_seconds": 1.614,
+      "log": "/tmp/labby-codemode-scale-evidence-20260926/20260926T153319Z-regression.log",
+      "results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1425 filtered out; finished in 0.11s"
+      ]
+    },
+    {
+      "gate": "canonical",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "labby-gateway",
+        "canonical_skill_provider_projects_into_source_neutral_catalog",
+        "--locked"
+      ],
+      "head": "b7637da59f6e0b6a90915d4e29704f120e37b11d",
+      "started_utc": "20260926T153347Z",
+      "finished_utc": "2026-09-26T15:33:47.744652+00:00",
+      "exit_code": 0,
+      "elapsed_seconds": 0.698,
+      "log": "/tmp/labby-codemode-scale-evidence-20260926/20260926T153347Z-canonical.log",
+      "results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1425 filtered out; finished in 0.05s"
+      ]
+    },
+    {
+      "gate": "gateway-all",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "labby-gateway",
+        "--all-features",
+        "--locked"
+      ],
+      "head": "95983b29930da4c3bbd956cfa49414fef52cf64e",
+      "started_utc": "20260926T160441Z",
+      "finished_utc": "2026-09-26T16:07:59.725096+00:00",
+      "exit_code": 0,
+      "elapsed_seconds": 198.168,
+      "log": "/tmp/labby-codemode-scale-evidence-20260926/20260926T160441Z-gateway-all.log",
+      "results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1449 filtered out; finished in 0.02s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1449 filtered out; finished in 0.05s",
+        "test result: ok. 1445 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 121.85s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ]
+    },
+    {
+      "gate": "scope",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "labby",
+        "--all-features",
+        "--lib",
+        "discovery_scope",
+        "--locked"
+      ],
+      "head": "95983b29930da4c3bbd956cfa49414fef52cf64e",
+      "started_utc": "20260926T155427Z",
+      "finished_utc": "2026-09-26T15:57:07.654004+00:00",
+      "exit_code": 0,
+      "elapsed_seconds": 159.54,
+      "log": "/tmp/labby-codemode-scale-evidence-20260926/20260926T155427Z-scope.log",
+      "results": [
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 2799 filtered out; finished in 0.08s"
+      ]
+    },
+    {
+      "gate": "test-home",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "labby",
+        "--all-features",
+        "--lib",
+        "test_home",
+        "--locked"
+      ],
+      "head": "95983b29930da4c3bbd956cfa49414fef52cf64e",
+      "started_utc": "20260926T162041Z",
+      "finished_utc": "2026-09-26T16:22:10.803214+00:00",
+      "exit_code": 0,
+      "elapsed_seconds": 89.449,
+      "log": "/tmp/labby-codemode-scale-evidence-20260926/20260926T162041Z-test-home.log",
+      "results": [
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 2803 filtered out; finished in 0.06s"
+      ]
+    },
+    {
+      "gate": "product-all",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "labby",
+        "--all-features",
+        "--lib",
+        "--locked"
+      ],
+      "head": "95983b29930da4c3bbd956cfa49414fef52cf64e",
+      "started_utc": "20260926T162210Z",
+      "finished_utc": "2026-09-26T16:23:00.923720+00:00",
+      "exit_code": 0,
+      "elapsed_seconds": 49.992,
+      "log": "/tmp/labby-codemode-scale-evidence-20260926/20260926T162210Z-product-all.log",
+      "results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2805 filtered out; finished in 0.00s",
+        "test result: ok. 2802 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 49.08s"
+      ]
+    },
+    {
+      "gate": "gateway-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "-p",
+        "labby-gateway",
+        "--all-features",
+        "--all-targets",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "head": "95983b29930da4c3bbd956cfa49414fef52cf64e",
+      "started_utc": "20260926T160759Z",
+      "finished_utc": "2026-09-26T16:08:25.902194+00:00",
+      "exit_code": 0,
+      "elapsed_seconds": 26.074,
+      "log": "/tmp/labby-codemode-scale-evidence-20260926/20260926T160759Z-gateway-clippy.log",
+      "results": []
+    },
+    {
+      "gate": "product-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "-p",
+        "labby",
+        "--all-features",
+        "--all-targets",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "head": "95983b29930da4c3bbd956cfa49414fef52cf64e",
+      "started_utc": "20260926T162300Z",
+      "finished_utc": "2026-09-26T16:24:08.536404+00:00",
+      "exit_code": 0,
+      "elapsed_seconds": 67.503,
+      "log": "/tmp/labby-codemode-scale-evidence-20260926/20260926T162300Z-product-clippy.log",
+      "results": []
+    },
+    {
+      "gate": "skills-mcp-e2e",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "labby",
+        "--all-features",
+        "--test",
+        "skills_mcp_e2e",
+        "--locked"
+      ],
+      "head": "95983b29930da4c3bbd956cfa49414fef52cf64e",
+      "started_utc": "20260926T162437Z",
+      "finished_utc": "2026-09-26T16:26:15.070486+00:00",
+      "exit_code": 0,
+      "elapsed_seconds": 97.217,
+      "log": "/tmp/labby-codemode-scale-evidence-20260926/20260926T162437Z-skills-mcp-e2e.log",
+      "results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 77 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 77 filtered out; finished in 0.05s",
+        "test result: ok. 70 passed; 0 failed; 8 ignored; 0 measured; 0 filtered out; finished in 35.25s"
+      ]
+    },
+    {
+      "gate": "codemode-q3",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "labby",
+        "--all-features",
+        "--test",
+        "codemode_qualification",
+        "--locked"
+      ],
+      "head": "95983b29930da4c3bbd956cfa49414fef52cf64e",
+      "started_utc": "20260926T162537Z",
+      "finished_utc": "2026-09-26T16:26:15.107313+00:00",
+      "exit_code": 0,
+      "elapsed_seconds": 37.141,
+      "log": "/tmp/labby-codemode-scale-evidence-20260926/20260926T162537Z-codemode-q3.log",
+      "results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 80 filtered out; finished in 0.03s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 80 filtered out; finished in 0.13s",
+        "test result: ok. 73 passed; 0 failed; 8 ignored; 0 measured; 0 filtered out; finished in 31.15s"
+      ]
+    },
+    {
+      "gate": "module",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "xtask",
+        "module_reachability",
+        "--locked"
+      ],
+      "head": "95983b29930da4c3bbd956cfa49414fef52cf64e",
+      "started_utc": "20260926T162408Z",
+      "finished_utc": "2026-09-26T16:24:08.993634+00:00",
+      "exit_code": 0,
+      "elapsed_seconds": 0.353,
+      "log": "/tmp/labby-codemode-scale-evidence-20260926/20260926T162408Z-module.log",
+      "results": [
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.13s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s"
+      ]
+    },
+    {
+      "gate": "fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "head": "95983b29930da4c3bbd956cfa49414fef52cf64e",
+      "started_utc": "20260926T162408Z",
+      "finished_utc": "2026-09-26T16:24:13.658414+00:00",
+      "exit_code": 0,
+      "elapsed_seconds": 4.58,
+      "log": "/tmp/labby-codemode-scale-evidence-20260926/20260926T162408Z-fmt.log",
+      "results": []
+    }
+  ],
+  "qualification_boundary": "Local Rust and real-process HTTP/stdio tests only. No real-fleet staging, Linux promotion artifact or production deployment."
+}

@@ -178,8 +178,11 @@ pub enum CodeModeCatalogKind {
     Prompt,
     /// Agent Skill metadata.
     Skill,
-    /// Agent profile metadata.
-    Agent,
+    /// Command metadata.
+    Command,
+    /// Subagent profile metadata.
+    #[serde(alias = "agent")]
+    Subagent,
 }
 
 impl CodeModeCatalogKind {
@@ -192,7 +195,8 @@ impl CodeModeCatalogKind {
             Self::Resource => "resource",
             Self::Prompt => "prompt",
             Self::Skill => "skill",
-            Self::Agent => "agent",
+            Self::Command => "command",
+            Self::Subagent => "subagent",
         }
     }
 
@@ -205,7 +209,8 @@ impl CodeModeCatalogKind {
             "resource" => Some(Self::Resource),
             "prompt" => Some(Self::Prompt),
             "skill" => Some(Self::Skill),
-            "agent" => Some(Self::Agent),
+            "command" => Some(Self::Command),
+            "subagent" | "agent" => Some(Self::Subagent),
             _ => None,
         }
     }
@@ -354,7 +359,7 @@ impl CatalogDescriptor {
                 || format!("codemode.describe({:?})", self.discovery_path()),
                 |uri| format!("codemode.getSkill({uri:?})"),
             ),
-            CodeModeCatalogKind::Agent => {
+            CodeModeCatalogKind::Command | CodeModeCatalogKind::Subagent => {
                 format!("codemode.describe({:?})", self.discovery_path())
             }
         }
