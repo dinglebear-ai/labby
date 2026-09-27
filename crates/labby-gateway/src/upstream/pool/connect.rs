@@ -661,13 +661,12 @@ async fn connect_unix_socket_upstream_once<H: ClientHandler>(
     );
 
     Ok((
-        UpstreamConnection {
-            _client_service: service,
-            _server_task: None,
+        UpstreamConnection::new_with_client_service(
+            service,
+            None,
             peer,
-            runtime: UpstreamRuntimeMetadata::default(),
-            incarnation: None,
-        },
+            UpstreamRuntimeMetadata::default(),
+        ),
         tools,
     ))
 }
@@ -775,13 +774,12 @@ async fn connect_websocket_upstream_once<H: ClientHandler>(
         "upstream connect finish",
     );
     Ok((
-        UpstreamConnection {
-            _client_service: service,
-            _server_task: None,
+        UpstreamConnection::new_with_client_service(
+            service,
+            None,
             peer,
-            runtime: UpstreamRuntimeMetadata::default(),
-            incarnation: None,
-        },
+            UpstreamRuntimeMetadata::default(),
+        ),
         tools,
     ))
 }
@@ -990,13 +988,12 @@ async fn connect_http_upstream_once<H: ClientHandler>(
             .await
             .map_err(|error| anyhow::anyhow!(error.bounded_text()))?;
         return Ok((
-            UpstreamConnection {
-                _client_service: service,
-                _server_task: None,
+            UpstreamConnection::new_with_client_service(
+                service,
+                None,
                 peer,
-                runtime: UpstreamRuntimeMetadata::default(),
-                incarnation: None,
-            },
+                UpstreamRuntimeMetadata::default(),
+            ),
             tools,
         ));
     }
@@ -1042,13 +1039,12 @@ async fn connect_http_upstream_once<H: ClientHandler>(
     );
 
     Ok((
-        UpstreamConnection {
-            _client_service: service,
-            _server_task: None,
+        UpstreamConnection::new_with_client_service(
+            service,
+            None,
             peer,
-            runtime: UpstreamRuntimeMetadata::default(),
-            incarnation: None,
-        },
+            UpstreamRuntimeMetadata::default(),
+        ),
         tools,
     ))
 }

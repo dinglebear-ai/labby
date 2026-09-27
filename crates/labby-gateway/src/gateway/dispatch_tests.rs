@@ -3917,6 +3917,10 @@ async fn gateway_mcp_cleanup_dispatch_returns_cleanup_payload() {
     let manager = test_manager();
     let upstream_name = "cleanup-dispatch";
     let runtime_arg = "cleanup-dispatch-mcp";
+    let script_dir = tempfile::tempdir().expect("sleep script directory");
+    let script = script_dir.path().join("sleep.py");
+    std::fs::write(&script, "import time\ntime.sleep(60)\n").expect("write sleep script");
+    let script_path = script.to_string_lossy().into_owned();
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
             display_name: None,
@@ -3929,11 +3933,7 @@ async fn gateway_mcp_cleanup_dispatch_returns_cleanup_payload() {
             headers: Default::default(),
             bearer_token_env: None,
             command: Some("python3".to_string()),
-            args: vec![
-                "-c".to_string(),
-                "import time; time.sleep(60)".to_string(),
-                runtime_arg.to_string(),
-            ],
+            args: vec![script_path.clone(), runtime_arg.to_string()],
             env: std::collections::BTreeMap::new(),
             proxy_resources: false,
             proxy_prompts: false,
@@ -3952,7 +3952,7 @@ async fn gateway_mcp_cleanup_dispatch_returns_cleanup_payload() {
     use std::os::unix::process::CommandExt;
     let mut command = Command::new("python3");
     command
-        .args(["-c", "import time; time.sleep(60)", runtime_arg])
+        .args([script_path.as_str(), runtime_arg])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -4006,6 +4006,10 @@ async fn gateway_mcp_disable_with_cleanup_returns_gateway_and_cleanup_payload() 
     let manager = test_manager();
     let upstream_name = "disable-dispatch";
     let runtime_arg = "disable-dispatch-mcp";
+    let script_dir = tempfile::tempdir().expect("sleep script directory");
+    let script = script_dir.path().join("sleep.py");
+    std::fs::write(&script, "import time\ntime.sleep(60)\n").expect("write sleep script");
+    let script_path = script.to_string_lossy().into_owned();
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
             display_name: None,
@@ -4018,11 +4022,7 @@ async fn gateway_mcp_disable_with_cleanup_returns_gateway_and_cleanup_payload() 
             headers: Default::default(),
             bearer_token_env: None,
             command: Some("python3".to_string()),
-            args: vec![
-                "-c".to_string(),
-                "import time; time.sleep(60)".to_string(),
-                runtime_arg.to_string(),
-            ],
+            args: vec![script_path.clone(), runtime_arg.to_string()],
             env: std::collections::BTreeMap::new(),
             proxy_resources: false,
             proxy_prompts: false,
@@ -4040,7 +4040,7 @@ async fn gateway_mcp_disable_with_cleanup_returns_gateway_and_cleanup_payload() 
 
     let mut command = Command::new("python3");
     command
-        .args(["-c", "import time; time.sleep(60)", runtime_arg])
+        .args([script_path.as_str(), runtime_arg])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
