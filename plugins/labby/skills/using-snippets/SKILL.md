@@ -31,7 +31,7 @@ truth. Do not invent snippet actions, flags, tool ids, or schemas from memory.
 
 List visible snippets with `labby snippet list --json` or the `snippets.list` service action. Inspect the chosen snippet's name, description, inputs, and body with `labby snippet get <name> --json` before running it. Check declared inputs and current authority. Run with `labby snippet run <name> --param key=value` or `snippets.exec` with the same name and input object. Keep output bounded, and report the returned evidence or error without claiming an upstream mutation from a timeout alone.
 
-For an existing snippet's schema or exact command grammar, use `labby snippet --help` and the live `snippets.schema` action. MCP/API reads and execution require `lab:admin`; only list, help, and schema are non-admin.
+For an existing snippet's schema or exact command grammar, use `labby snippet --help` and the `schema` action on the `snippets` service with `action` set to the operation to describe (for example, `snippets.exec`). MCP/API reads and execution require `lab:admin`; only list, help, and schema are non-admin.
 
 ## Author and maintain
 
