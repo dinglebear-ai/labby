@@ -412,10 +412,24 @@ pub(crate) async fn list_visible_skills_page(
     context: &SkillRegistryContext,
     cursor: Option<&str>,
 ) -> Result<SkillsListResult, ToolError> {
-    let mut listing = list_visible_skills(context).await;
+    paginate_visible_skills(context, list_visible_skills(context).await, cursor)
+}
+
+fn paginate_visible_skills(
+    context: &SkillRegistryContext,
+    mut listing: SkillsListResult,
+    cursor: Option<&str>,
+) -> Result<SkillsListResult, ToolError> {
+    let digest =
+        labby_runtime::artifacts::canonical_json::digest(&listing.skills).map_err(|_| {
+            ToolError::Sdk {
+                sdk_kind: "serialization_error".to_owned(),
+                message: "Skill catalog could not be serialized".to_owned(),
+            }
+        })?;
     let offset = match cursor {
         None => 0,
-        Some(cursor) => decode_list_cursor(context, cursor)?,
+        Some(cursor) => decode_list_cursor(context, &digest, cursor)?,
     };
     if offset > listing.skills.len() {
         return Err(ToolError::InvalidParam {
@@ -428,28 +442,31 @@ pub(crate) async fn list_visible_skills_page(
         .min(listing.skills.len());
     let total = listing.skills.len();
     listing.skills = listing.skills[offset..end].to_vec();
-    listing.next_cursor = (end < total).then(|| encode_list_cursor(context, end));
+    listing.next_cursor = (end < total).then(|| encode_list_cursor(context, &digest, end));
     Ok(listing)
 }
 
-fn encode_list_cursor(context: &SkillRegistryContext, offset: usize) -> String {
-    format!("v1:{}:{offset}", context.generation_id())
+fn encode_list_cursor(context: &SkillRegistryContext, digest: &str, offset: usize) -> String {
+    format!("v2:{}:{digest}:{offset}", context.generation_id())
 }
 
-fn decode_list_cursor(context: &SkillRegistryContext, cursor: &str) -> Result<usize, ToolError> {
-    let mut parts = cursor.split(':');
-    let valid_version = parts.next() == Some("v1");
-    let generation = parts.next().and_then(|value| value.parse::<u64>().ok());
-    let offset = parts.next().and_then(|value| value.parse::<usize>().ok());
-    match (valid_version, generation, offset, parts.next()) {
-        (true, Some(generation), Some(offset), None) if generation == context.generation_id() => {
-            Ok(offset)
+fn decode_list_cursor(
+    context: &SkillRegistryContext,
+    digest: &str,
+    cursor: &str,
+) -> Result<usize, ToolError> {
+    let expected_prefix = format!("v2:{}:{digest}", context.generation_id());
+    if let Some((prefix, offset)) = cursor.rsplit_once(':') {
+        if prefix == expected_prefix {
+            if let Ok(offset) = offset.parse() {
+                return Ok(offset);
+            }
         }
-        _ => Err(ToolError::InvalidParam {
-            message: "skills/list cursor is invalid or belongs to an older generation".to_owned(),
-            param: "cursor".to_owned(),
-        }),
     }
+    Err(ToolError::InvalidParam {
+        message: "skills/list cursor is invalid or stale".to_owned(),
+        param: "cursor".to_owned(),
+    })
 }
 
 pub(crate) async fn get_visible_skill(
@@ -986,6 +1003,44 @@ mod tests {
     use crate::skills::providers::{ArtifactSkillAccess, FirstPartySkillProviders};
     use labby_runtime::artifacts::LibraryOwnership;
     use labby_runtime::skills::wire::SkillResource;
+
+    #[test]
+    fn native_cursor_rejects_changed_upstream_catalog_with_same_local_generation() {
+        use crate::skills::registry::{FirstPartyGenerationManager, GenerationLimits};
+
+        let root = tempfile::tempdir().unwrap();
+        let manager = FirstPartyGenerationManager::new(
+            root.path().to_path_buf(),
+            GenerationLimits::default(),
+        );
+        let context = SkillRegistryContext::from_generation(manager.generation());
+        let entry = |index: usize| SkillEntry {
+            uri: format!("skill://upstream/page-{index:03}/SKILL.md"),
+            frontmatter: Default::default(),
+            resources: Some(Vec::new()),
+            meta: None,
+        };
+        let listing = SkillsListResult {
+            skills: (0..129).map(entry).collect(),
+            ..SkillsListResult::default()
+        };
+        let first = paginate_visible_skills(&context, listing.clone(), None).unwrap();
+        let cursor = first.next_cursor.unwrap();
+        assert_eq!(
+            paginate_visible_skills(&context, listing.clone(), Some(&cursor))
+                .unwrap()
+                .skills
+                .len(),
+            1
+        );
+
+        let mut changed = listing;
+        changed.skills.insert(0, entry(999));
+        assert!(matches!(
+            paginate_visible_skills(&context, changed, Some(&cursor)),
+            Err(ToolError::InvalidParam { param, .. }) if param == "cursor"
+        ));
+    }
 
     #[test]
     fn code_mode_skill_context_guard_is_unique_and_removes_context_on_drop() {
