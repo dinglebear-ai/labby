@@ -1,0 +1,202 @@
+{
+  "calls": [
+    {
+      "tool": "linear-notification-worker::list_issues",
+      "match": {
+        "team": "U8",
+        "assignee": "me",
+        "state": "started",
+        "limit": 100
+      },
+      "result": {
+        "issues": [
+          {
+            "id": "U8-16",
+            "title": "Authorization",
+            "status": "In Progress",
+            "gitBranchName": "feature/u8-16-auth",
+            "updatedAt": "2026-09-01T00:00:00Z"
+          },
+          {
+            "id": "U8-767",
+            "title": "Design",
+            "status": "QA Ready",
+            "updatedAt": "2026-09-20T00:00:00Z"
+          }
+        ],
+        "hasNextPage": false
+      }
+    },
+    {
+      "tool": "github::get_me",
+      "result": {
+        "login": "jmagar"
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {
+        "query": "author:jmagar org:unraid is:open",
+        "page": 1
+      },
+      "result": {
+        "items": [
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 10,
+            "title": "Authorization fix",
+            "body": "Implements feature/u8-16-auth",
+            "state": "open",
+            "draft": false,
+            "updated_at": "2026-09-26T00:00:00Z",
+            "html_url": "https://github.com/unraid/core/pull/10",
+            "user": {
+              "login": "jmagar"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 11,
+            "title": "Fix U8-160",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/11",
+            "user": {
+              "login": "jmagar"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/cloudflare",
+            "number": 12,
+            "title": "Worker hardening",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/cloudflare/pull/12",
+            "user": {
+              "login": "jmagar"
+            },
+            "pull_request": {}
+          }
+        ],
+        "total_count": 3,
+        "incomplete_results": false
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {
+        "query": "\"U8-16\" org:unraid is:open OR \"U8-767\" org:unraid is:open",
+        "page": 1
+      },
+      "result": {
+        "items": [
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 10,
+            "title": "Authorization fix",
+            "body": "Implements feature/u8-16-auth",
+            "state": "open",
+            "draft": false,
+            "updated_at": "2026-09-26T00:00:00Z",
+            "html_url": "https://github.com/unraid/core/pull/10",
+            "user": {
+              "login": "jmagar"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 11,
+            "title": "Fix U8-160",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/11",
+            "user": {
+              "login": "jmagar"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/cloudflare",
+            "number": 12,
+            "title": "Worker hardening",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/cloudflare/pull/12",
+            "user": {
+              "login": "jmagar"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 13,
+            "title": "chore: release 8.0",
+            "body": "Includes U8-16",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/13",
+            "user": {
+              "login": "jmagar"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 14,
+            "title": "Unrelated",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/14",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          }
+        ],
+        "total_count": 5,
+        "incomplete_results": false
+      }
+    }
+  ],
+  "expect": {
+    "/ok": true,
+    "/complete": true,
+    "/schemaVersion": 2,
+    "/summary/toolCalls": 4,
+    "/summary/myOpenPRCount": 3,
+    "/summary/suppressedReleasePRs": 1,
+    "/issues/0/openPRs": [
+      "unraid/core#10"
+    ],
+    "/issues/0/matchEvidence/unraid~1core#10/via": "branch",
+    "/issues/0/matchEvidence/unraid~1core#10/confidence": "strong",
+    "/issues/0/updatedAt": "2026-09-01T00:00:00Z",
+    "/issues/1/openPRs": [],
+    "/issues/1/matchStatus": "no_observed_pr",
+    "/attention/0/issue": "U8-767",
+    "/attention/0/kind": "qa_ready_no_observed_pr",
+    "/pullRequests/unraid~1core#10/updatedAt": "2026-09-26T00:00:00Z",
+    "/myOpenPRs": [
+      "unraid/core#10",
+      "unraid/core#11",
+      "unraid/cloudflare#12"
+    ]
+  },
+  "absent": [
+    "/issues/0/historicalPRs",
+    "/issues/0/handoff",
+    "/pullRequests/unraid~1core#13"
+  ],
+  "budgets": {
+    "tool_calls": 4,
+    "output_bytes": 5000
+  }
+}

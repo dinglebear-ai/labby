@@ -164,3 +164,23 @@ fn trace_is_bounded_but_full_count_remains() {
     assert!(report.trace_truncated);
     assert_eq!(report.metrics.tool_calls, 40);
 }
+
+#[test]
+fn absent_paths_distinguish_missing_from_null() {
+    let f = fixture(json!({"absent": ["/optional"]}));
+    assert!(
+        evaluate("test", raw(json!({})), &f, 1, false)
+            .unwrap()
+            .passed
+    );
+    assert!(
+        !evaluate("test", raw(json!({"optional": null})), &f, 1, false)
+            .unwrap()
+            .passed
+    );
+    assert!(
+        !evaluate("test", raw(json!({"optional": false})), &f, 1, false)
+            .unwrap()
+            .passed
+    );
+}

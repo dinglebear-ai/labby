@@ -79,6 +79,9 @@ pub struct SnippetFixture {
     /// Equality assertions keyed by JSON Pointer.
     #[serde(default)]
     pub expect: BTreeMap<String, Value>,
+    /// JSON Pointers that must be absent, not merely null.
+    #[serde(default)]
+    pub absent: Vec<String>,
     /// Optional complete normalized output snapshot.
     #[serde(default)]
     pub snapshot: Option<Value>,
@@ -155,7 +158,11 @@ impl SnippetFixture {
         if size > MAX_FIXTURE_BYTES {
             return Err(invalid("fixture exceeds 512 KiB"));
         }
-        if self.calls.len() > 512 || self.expect.len() > 64 || self.ignore_paths.len() > 64 {
+        if self.calls.len() > 512
+            || self.expect.len() > 64
+            || self.absent.len() > 64
+            || self.ignore_paths.len() > 64
+        {
             return Err(invalid("fixture exceeds rule or assertion limit"));
         }
         if !(1..=30_000).contains(&self.budgets.wall_clock_ms)
@@ -203,7 +210,12 @@ impl SnippetFixture {
                 ));
             }
         }
-        for pointer in self.expect.keys().chain(self.ignore_paths.iter()) {
+        for pointer in self
+            .expect
+            .keys()
+            .chain(self.absent.iter())
+            .chain(self.ignore_paths.iter())
+        {
             if pointer.len() > 256 || (!pointer.is_empty() && !pointer.starts_with('/')) {
                 return Err(invalid(
                     "assertions and ignore_paths must use JSON Pointers",
@@ -331,6 +343,11 @@ fn evaluate(
     for (pointer, expected) in &fixture.expect {
         if raw.result.pointer(pointer) != Some(expected) {
             failures.push(format!("assertion failed at {pointer}"));
+        }
+    }
+    for pointer in &fixture.absent {
+        if raw.result.pointer(pointer).is_some() {
+            failures.push(format!("expected absent path at {pointer}"));
         }
     }
     if let Some(snapshot) = &fixture.snapshot {

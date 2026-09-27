@@ -1,3 +1,9 @@
+---
+title: Snippet development and testing
+created: 2026-09-27
+updated: 2026-09-27
+---
+
 # Snippet development and testing
 
 Saved snippets have three separate checks: source validation, deterministic
@@ -154,3 +160,14 @@ just docs-check
 Run from the intended worktree so its Cargo configuration applies. Keep local
 fixture results, live benchmark results, source publication, and deployed
 runtime verification separate in release evidence.
+
+## Acceptance suite
+
+The offline example and command-contract cases exercise the same harness used by product dispatch:
+
+```sh
+cargo build -p labby-codemode --example snippet_harness
+python3 crates/labby-codemode/tests/snippet_harness_acceptance.py target/debug/examples/snippet_harness
+```
+
+Fixtures also support `absent`, a list of JSON Pointers that must not exist. A present field containing `null` fails this assertion.

@@ -1,4 +1,7 @@
 ---
+title: Unraid Linear PR triage
+created: 2026-09-27
+updated: 2026-09-27
 name: unraid-linear-pr-triage
 description: Bounded, read-only Unraid PR triage with opt-in history and handoffs
 tags: [unraid, linear, github, readonly]
