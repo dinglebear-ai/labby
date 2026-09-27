@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::gateway::types::GatewayEnrichmentProvider;
 use crate::upstream::types::UpstreamRuntimeOwner;
 use labby_runtime::gateway_config::{
-    CodeModeConfig, CodeModeResultShapePolicy, GatewayLoadoutConfig, ProtectedMcpRouteConfig,
-    UpstreamConfig, UpstreamOauthConfig,
+    CodeModeConfig, CodeModeResultShapePolicy, CodeModeSearchKind, CodeModeSearchSource,
+    GatewayLoadoutConfig, ProtectedMcpRouteConfig, UpstreamConfig, UpstreamOauthConfig,
 };
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -496,6 +496,10 @@ pub(crate) struct CodeModeSetParams {
     pub max_log_entries: Option<usize>,
     #[serde(default)]
     pub max_log_bytes: Option<usize>,
+    #[serde(default)]
+    pub search_sources: Option<BTreeSet<CodeModeSearchSource>>,
+    #[serde(default)]
+    pub search_kinds: Option<BTreeSet<CodeModeSearchKind>>,
 }
 
 /// Parameters for `gateway.discover` — read-only scan of external MCP configs.

@@ -226,6 +226,7 @@ impl ProviderRuntime {
             Operation::List => Provenance::List,
             Operation::Get => Provenance::Get,
             Operation::Identity => Provenance::Qualification,
+            Operation::SkillsSearch => Provenance::List,
         };
         let result = self
             .request(operation, Some(body), admission)
@@ -245,6 +246,33 @@ impl ProviderRuntime {
         if matches!(result, Err(ProviderError::Failed(Failure::SnapshotChanged))) {
             *self.identity.lock().await = None;
         }
+        result
+    }
+
+    /// Execute Depot's bounded native Skill index search through this exact
+    /// provider runtime. Qualification first preserves deployment binding;
+    /// the configured anonymous/bearer credential remains server-held.
+    pub async fn search_skills(
+        &self,
+        query: &str,
+        limit: usize,
+        admission: &Admission,
+    ) -> Result<Value, ProviderError> {
+        let _identity = self.qualify(admission, false).await?;
+        let result = self
+            .request(
+                Operation::SkillsSearch,
+                Some(serde_json::json!({"query": query, "limit": limit})),
+                admission,
+            )
+            .await
+            .and_then(|mut value| {
+                value
+                    .get_mut("result")
+                    .map(Value::take)
+                    .ok_or(ProviderError::Failed(Failure::Incompatible))
+            });
+        self.observe(&result, Provenance::List)?;
         result
     }
 

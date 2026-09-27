@@ -8052,6 +8052,18 @@
           "result_shape_policy": {
             "type": "string"
           },
+          "search_kinds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "search_sources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "timeout_ms": {
             "type": "integer"
           },

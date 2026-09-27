@@ -9,6 +9,9 @@ use tokio_util::sync::CancellationToken;
 use crate::CodeModeCallError;
 use crate::error::ToolError;
 use crate::host::{CodeModeHost, ExecCtx, ToolCallOutcome};
+use labby_runtime::gateway_config::{
+    CodeModeSearchConfig, CodeModeSearchKind, CodeModeSearchSource,
+};
 use labby_runtime::{CodeModeConfig, CodeModeResultShapePolicy};
 
 use super::CodeModeBroker;
@@ -228,10 +231,11 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             sdk_kind: "internal_error".to_string(),
             message: "Code Mode discovery snapshot lock is poisoned".to_string(),
         })? = Some(render.clone());
+        let code_mode_config = host.config().await;
         let catalog = render
             .entries
             .iter()
-            .filter(|entry| discovery_entry_visible(entry, scope))
+            .filter(|entry| personal_catalog_entry_enabled(entry, scope, &code_mode_config.search))
             .cloned()
             .collect::<Vec<_>>();
 
@@ -239,7 +243,6 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             .iter()
             .map(CodeModeDiscoveryEntry::from_catalog)
             .collect::<Vec<_>>();
-        let code_mode_config = host.config().await;
         let blend_weight = code_mode_config.semantic_search.blend_weight;
         let discovery_js = super::preamble::generate_discovery_js(
             &discovery_entries,
@@ -627,6 +630,48 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                     .collect();
                 Ok(serde_json::json!({ "ranked": ranked_json }))
             }
+            "artifact_search" => {
+                let query = clamp_semantic_query(
+                    params
+                        .get("query")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                );
+                let limit = params
+                    .get("limit")
+                    .and_then(Value::as_u64)
+                    .map(|n| n.clamp(1, 50) as usize)
+                    .unwrap_or(50);
+                let kinds = params
+                    .get("kinds")
+                    .and_then(Value::as_array)
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .filter_map(CodeModeCatalogKind::parse_filter)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let mut entries = host
+                    .search_artifacts(query, limit, &kinds, caller, surface, scope)
+                    .await?
+                    .into_iter()
+                    .filter(|entry| discovery_entry_visible(entry, scope))
+                    .take(limit)
+                    .map(|entry| CodeModeDiscoveryEntry::from_catalog(&entry))
+                    .collect::<Vec<_>>();
+                while serde_json::to_vec(&entries)
+                    .map(|json| json.len() > crate::SEARCH_RESPONSE_MAX_BYTES)
+                    .unwrap_or(true)
+                {
+                    if entries.pop().is_none() {
+                        break;
+                    }
+                }
+                Ok(serde_json::json!({ "entries": entries }))
+            }
             "describe_types" => {
                 let id = params
                     .get("id")
@@ -846,6 +891,33 @@ pub fn discovery_entry_visible(entry: &CatalogDescriptor, scope: &ToolScope) -> 
         CodeModeCatalogKind::Tool => scope.allows(&entry.namespace, &entry.name),
         _ => true,
     }
+}
+
+fn catalog_kind_enabled(kind: CodeModeCatalogKind, search: &CodeModeSearchConfig) -> bool {
+    let configured = match kind {
+        CodeModeCatalogKind::Tool => Some(CodeModeSearchKind::Tool),
+        CodeModeCatalogKind::Snippet => Some(CodeModeSearchKind::Snippet),
+        CodeModeCatalogKind::Prompt => Some(CodeModeSearchKind::Prompt),
+        CodeModeCatalogKind::Skill => Some(CodeModeSearchKind::Skill),
+        CodeModeCatalogKind::Command => Some(CodeModeSearchKind::Command),
+        CodeModeCatalogKind::Subagent => Some(CodeModeSearchKind::Subagent),
+        // Resource remains a compatibility-only discovery family and is not
+        // part of the configurable six-kind policy.
+        CodeModeCatalogKind::Resource => None,
+    };
+    configured.is_none_or(|kind| search.kinds.contains(&kind))
+}
+
+fn personal_catalog_entry_enabled(
+    entry: &CatalogDescriptor,
+    scope: &ToolScope,
+    search: &CodeModeSearchConfig,
+) -> bool {
+    search
+        .sources
+        .contains(&CodeModeSearchSource::PersonalLabby)
+        && discovery_entry_visible(entry, scope)
+        && catalog_kind_enabled(entry.kind, search)
 }
 
 fn remove_soft_warning_if_it_breaks_budget(
@@ -1096,6 +1168,41 @@ mod tests {
         assert!(!read_caller.can_execute());
     }
 
+    #[test]
+    fn personal_catalog_filter_tracks_live_source_and_kind_policy() {
+        let tool = CatalogDescriptor::tool("github", "issues", "issues", None, None);
+        let skill = CatalogDescriptor::metadata(
+            CodeModeCatalogKind::Skill,
+            "personal",
+            "skill://personal/review",
+            "review",
+            "review skill",
+            Vec::new(),
+        );
+        let resource = CatalogDescriptor::metadata(
+            CodeModeCatalogKind::Resource,
+            "github",
+            "resource://github/readme",
+            "readme",
+            "compat resource",
+            Vec::new(),
+        );
+        let scope = ToolScope::default();
+        let mut search = CodeModeSearchConfig::default();
+        assert!(personal_catalog_entry_enabled(&tool, &scope, &search));
+        assert!(personal_catalog_entry_enabled(&skill, &scope, &search));
+        assert!(personal_catalog_entry_enabled(&resource, &scope, &search));
+
+        search.kinds.remove(&CodeModeSearchKind::Skill);
+        assert!(personal_catalog_entry_enabled(&tool, &scope, &search));
+        assert!(!personal_catalog_entry_enabled(&skill, &scope, &search));
+        assert!(personal_catalog_entry_enabled(&resource, &scope, &search));
+
+        search.sources.remove(&CodeModeSearchSource::PersonalLabby);
+        assert!(!personal_catalog_entry_enabled(&tool, &scope, &search));
+        assert!(!personal_catalog_entry_enabled(&resource, &scope, &search));
+    }
+
     #[tokio::test]
     async fn call_tool_id_routes_lab_internal_namespace_before_scope_check() {
         // A ToolScope that allows nothing should still let `__lab_internal::*`
@@ -1329,6 +1436,7 @@ mod tests {
     struct FixtureHost {
         pool: crate::pool::RunnerPool,
         entries: Arc<[CatalogDescriptor]>,
+        search_entries: Arc<[CatalogDescriptor]>,
         catalog_json: Arc<str>,
         fail_list_tools: bool,
         list_tools_calls: std::sync::atomic::AtomicUsize,
@@ -1341,6 +1449,7 @@ mod tests {
                 pool: crate::pool::RunnerPool::from_env()
                     .expect("test process must expose current executable"),
                 entries: Arc::from(entries),
+                search_entries: Arc::from([]),
                 catalog_json: Arc::from(catalog_json),
                 fail_list_tools: false,
                 list_tools_calls: std::sync::atomic::AtomicUsize::new(0),
@@ -1359,6 +1468,11 @@ mod tests {
         fn list_tools_call_count(&self) -> usize {
             self.list_tools_calls
                 .load(std::sync::atomic::Ordering::Relaxed)
+        }
+
+        fn with_search_entries(mut self, entries: Vec<CatalogDescriptor>) -> Self {
+            self.search_entries = Arc::from(entries);
+            self
         }
     }
 
@@ -1520,6 +1634,24 @@ mod tests {
             Ok(Vec::new())
         }
 
+        async fn search_artifacts(
+            &self,
+            _query: String,
+            limit: usize,
+            kinds: &[CodeModeCatalogKind],
+            _caller: &CodeModeCaller,
+            _surface: CodeModeSurface,
+            _scope: &ToolScope,
+        ) -> Result<Vec<CatalogDescriptor>, ToolError> {
+            Ok(self
+                .search_entries
+                .iter()
+                .filter(|entry| kinds.is_empty() || kinds.contains(&entry.kind))
+                .take(limit)
+                .cloned()
+                .collect())
+        }
+
         async fn config(&self) -> CodeModeConfig {
             CodeModeConfig::default()
         }
@@ -1535,6 +1667,38 @@ mod tests {
         fn openapi_http_client(&self) -> reqwest::Client {
             labby_openapi::http::build_dispatch_client().expect("test dispatch client")
         }
+    }
+
+    #[tokio::test]
+    async fn artifact_search_returns_query_backed_entries_outside_injected_catalog() {
+        let host =
+            FixtureHost::new(Vec::new()).with_search_entries(vec![CatalogDescriptor::metadata(
+                CodeModeCatalogKind::Skill,
+                "public_depot",
+                "depot:skill:fixture",
+                "fixture skill",
+                "query-backed result",
+                vec!["skill".to_string()],
+            )]);
+        let broker = CodeModeBroker::new(Some(&host));
+        let value = broker
+            .call_tool_id(
+                "__lab_internal::artifact_search",
+                json!({ "query": "fixture", "limit": 5, "kinds": ["skill"] }),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &ToolScope::default(),
+                ExecCtx::none(),
+            )
+            .await
+            .expect("query-backed search succeeds");
+
+        assert_eq!(value["entries"][0]["id"], "depot:skill:fixture");
+        assert_eq!(value["entries"][0]["kind"], "skill");
+        assert_eq!(
+            value["entries"][0]["path"],
+            "skill.public_depot.fixture_skill"
+        );
     }
 
     #[tokio::test]

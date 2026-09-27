@@ -80,6 +80,59 @@ pub async fn discover(
     discover_with_access_epoch(manager, authority, request, receipt, None).await
 }
 
+/// Run one bounded, cursor-free indexed search for a server-selected provider
+/// set under an admission shared by the caller's concurrent search fan-out.
+pub(crate) async fn discover_selected_admitted(
+    manager: &Manager,
+    provider_ids: &[String],
+    query: &str,
+    kind: &str,
+    limit: u16,
+    admission: &super::scheduler::Admission,
+) -> Result<DiscoveryResponse, DiscoveryError> {
+    validate_request(query, limit)?;
+    if !SUPPORTED_KINDS.contains(&kind) {
+        return Err(DiscoveryError::InvalidKind);
+    }
+    let topology = manager.snapshot();
+    let selected = provider_ids
+        .iter()
+        .filter_map(|id| topology.providers.get(id))
+        .filter(|provider| provider.view.enabled)
+        .cloned()
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        return Ok(merge_page(&mut [], 0, limit)?);
+    }
+    let mut federation = Federation {
+        start: 0,
+        providers: join_all(selected.iter().map(|provider| async {
+            provider_state(
+                provider,
+                require_kind(provider.runtime.qualify(admission, false).await, Some(kind)),
+            )
+        }))
+        .await,
+    };
+    federation
+        .providers
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    let request = DiscoveryRequest {
+        provider: None,
+        query: query.to_owned(),
+        kind: Some(kind.to_owned()),
+        limit,
+        cursor: None,
+    };
+    fetch_pages(&selected, &mut federation, &request, admission).await;
+    let mut pages = federation
+        .providers
+        .into_iter()
+        .map(|provider| provider.page)
+        .collect::<Vec<_>>();
+    merge_page(&mut pages, 0, limit)
+}
+
 /// The API supplies a freshly authorized project epoch, never a client parameter.
 pub(crate) async fn discover_with_access_epoch(
     manager: &Manager,

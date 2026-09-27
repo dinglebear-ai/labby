@@ -303,11 +303,31 @@ codemode.search = async function(input) {{
   var __codemodeNoMatchHint = "No matches. Broaden the query or try synonyms.";
   if (!tokens.length) return {{ results: [], total: 0, truncated: false, hint: __codemodeNoMatchHint }};
 
+  // Keep query-backed catalogs out of the injected preamble. A search pulls
+  // only a bounded result page and merges it with this execution's authorized
+  // local catalog.
+  var searchEntries = __codemodeDiscovery.slice();
+  try {{
+    var artifactResponse = await callTool("__lab_internal::artifact_search", {{ query: query, limit: limit, kinds: requestedKinds }});
+    var artifactEntries = artifactResponse && Array.isArray(artifactResponse.entries) ? artifactResponse.entries : [];
+    var knownIds = Object.create(null);
+    for (var localIndex = 0; localIndex < searchEntries.length; localIndex++) knownIds[searchEntries[localIndex].id] = true;
+    for (var remoteIndex = 0; remoteIndex < artifactEntries.length; remoteIndex++) {{
+      var remoteEntry = artifactEntries[remoteIndex];
+      if (remoteEntry && remoteEntry.id && !knownIds[remoteEntry.id]) {{
+        knownIds[remoteEntry.id] = true;
+        searchEntries.push(remoteEntry);
+      }}
+    }}
+  }} catch (e) {{
+    // Provider degradation must not suppress local search results.
+  }}
+
   // --- lexical scoring (unchanged algorithm) ---
   var lexicalById = {{}};
   var scored = [];
-  for (var i = 0; i < __codemodeDiscovery.length; i++) {{
-    var entry = __codemodeDiscovery[i];
+  for (var i = 0; i < searchEntries.length; i++) {{
+    var entry = searchEntries[i];
     if (hasKindFilter && !kindFilter[String(entry.kind)]) continue;
     var fields = [
       [__codemodeNormalize(entry.path), 12],
@@ -399,9 +419,9 @@ codemode.search = async function(input) {{
       // semantic_rank ranks exclusively within this execution's
       // already-scope-filtered catalog — a security invariant on the host
       // side), so this lookup is safe and will always find a match.
-      for (var d = 0; d < __codemodeDiscovery.length; d++) {{
-        if (__codemodeDiscovery[d].id === rid) {{
-          var de = __codemodeDiscovery[d];
+      for (var d = 0; d < searchEntries.length; d++) {{
+        if (searchEntries[d].id === rid) {{
+          var de = searchEntries[d];
           if (hasKindFilter && !kindFilter[String(de.kind)]) break;
           var record2 = {{
             path: de.path, id: de.id, helper: de.helper, kind: de.kind, namespace: de.namespace,
@@ -1182,6 +1202,8 @@ mod tests {
         assert!(js.contains("__lab_internal::semantic_rank"));
         assert!(js.contains("blendedScore"));
         assert!(js.contains("codemode.search = async function"));
+        assert!(js.contains("__lab_internal::artifact_search"));
+        assert!(js.contains("searchEntries.push(remoteEntry)"));
     }
 
     #[test]

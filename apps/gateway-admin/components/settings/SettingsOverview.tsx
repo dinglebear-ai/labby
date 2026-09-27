@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react'
 
 import { isAbortError } from '@/lib/api/service-action-client'
 import { setupApi } from '@/lib/api/setup-client'
+import { CodeModeSearchSettings } from '@/components/gateway/code-mode-search-settings'
 import {
   SettingsCard,
   SettingsRow,
@@ -61,9 +62,11 @@ function describeFailure(section: string, result: PromiseSettledResult<unknown>)
 export function SettingsOverviewCards({
   snapshot,
   console,
+  codeModeSearch,
 }: {
   snapshot: SettingsOverviewSnapshot
   console: ReactNode
+  codeModeSearch?: ReactNode
 }): React.ReactElement {
   return (
     <>
@@ -90,6 +93,8 @@ export function SettingsOverviewCards({
       </SettingsCard>
 
       {console}
+
+      {codeModeSearch}
 
       <SettingsCard title="Diagnostics">
         <SettingsRow
@@ -130,7 +135,11 @@ export function SettingsOverview({ console }: { console: ReactNode }): React.Rea
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <SettingsOverviewCards snapshot={snapshot} console={console} />
+      <SettingsOverviewCards
+        snapshot={snapshot}
+        console={console}
+        codeModeSearch={<CodeModeSearchSettings />}
+      />
     </div>
   )
 }

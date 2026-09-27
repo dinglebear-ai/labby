@@ -4,7 +4,8 @@ use anyhow::Result;
 use serde_json::json;
 
 use crate::cli::gateway::{
-    GatewayCodeArgs, GatewayCodeCommand, GatewayCodeUiCommand, LazyGatewayManager,
+    GatewayCodeArgs, GatewayCodeCommand, GatewayCodeSearchConfigCommand, GatewayCodeUiCommand,
+    LazyGatewayManager,
 };
 use crate::config::LabConfig;
 use crate::dispatch::gateway::code_mode::{CodeModeBroker, CodeModeCaller, CodeModeSurface};
@@ -48,6 +49,46 @@ pub(super) fn run_gateway_code(
                 )
                 .await?;
                 crate::output::print(&value, format)?;
+            }
+            GatewayCodeCommand::SearchConfig { command } => {
+                let (action, params) = match command {
+                    GatewayCodeSearchConfigCommand::Status => ("gateway.code_mode.get", json!({})),
+                    GatewayCodeSearchConfigCommand::Set {
+                        sources,
+                        clear_sources,
+                        kinds,
+                        clear_kinds,
+                    } => {
+                        if sources.is_empty() && !clear_sources && kinds.is_empty() && !clear_kinds
+                        {
+                            return Err(source_error(
+                                "Search configuration did not include a change. Pass --source, --kind, --clear-sources, or --clear-kinds."
+                                    .to_string(),
+                            ));
+                        }
+                        let mut params = serde_json::Map::new();
+                        if clear_sources || !sources.is_empty() {
+                            params.insert(
+                                "search_sources".into(),
+                                if clear_sources {
+                                    json!([])
+                                } else {
+                                    json!(sources)
+                                },
+                            );
+                        }
+                        if clear_kinds || !kinds.is_empty() {
+                            params.insert(
+                                "search_kinds".into(),
+                                if clear_kinds { json!([]) } else { json!(kinds) },
+                            );
+                        }
+                        ("gateway.code_mode.set", serde_json::Value::Object(params))
+                    }
+                };
+                let value =
+                    dispatch_gateway_action(manager, config, action.to_string(), params).await?;
+                crate::output::print(&value["search"], format)?;
             }
             GatewayCodeCommand::Enable => {
                 let value = dispatch_gateway_action(
@@ -265,6 +306,66 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn search_config_cli_accepts_repeatable_values_and_explicit_clears() {
+        use clap::Parser as _;
+
+        assert!(
+            crate::cli::Cli::try_parse_from(["labby", "code", "search-config", "status",]).is_ok()
+        );
+        assert!(
+            crate::cli::Cli::try_parse_from([
+                "labby",
+                "code",
+                "search-config",
+                "set",
+                "--source",
+                "personal_labby,team_depot",
+                "--source",
+                "public_depot",
+                "--kind",
+                "skill,command",
+                "--kind",
+                "subagent",
+            ])
+            .is_ok()
+        );
+        assert!(
+            crate::cli::Cli::try_parse_from([
+                "labby",
+                "code",
+                "search-config",
+                "set",
+                "--clear-sources",
+                "--clear-kinds",
+            ])
+            .is_ok()
+        );
+        assert!(
+            crate::cli::Cli::try_parse_from([
+                "labby",
+                "code",
+                "search-config",
+                "set",
+                "--source",
+                "public_depot",
+                "--clear-sources",
+            ])
+            .is_err()
+        );
+        assert!(
+            crate::cli::Cli::try_parse_from([
+                "labby",
+                "code",
+                "search-config",
+                "set",
+                "--source",
+                "unknown",
+            ])
+            .is_err()
+        );
     }
 
     #[test]

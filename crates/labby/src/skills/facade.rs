@@ -342,6 +342,17 @@ impl VisibleSkillContent {
 }
 
 pub(crate) async fn list_visible_skills(context: &SkillRegistryContext) -> SkillsListResult {
+    list_visible_skills_bounded(context, None).await
+}
+
+/// List caller-visible Skills while optionally bounding each proxied provider
+/// before federation. Product paths that already own a small result budget
+/// (notably query-driven Code Mode search) must pass it here rather than
+/// truncating the fully materialized federated catalog afterward.
+pub(crate) async fn list_visible_skills_bounded(
+    context: &SkillRegistryContext,
+    provider_max_items: Option<usize>,
+) -> SkillsListResult {
     let discovered = context.first_party.providers.discover();
     let mut artifact_entries_filtered = 0usize;
     let mut first_party_skills = Vec::with_capacity(discovered.len());
@@ -379,7 +390,7 @@ pub(crate) async fn list_visible_skills(context: &SkillRegistryContext) -> Skill
 
     #[cfg(feature = "gateway")]
     {
-        let proxied = proxied_skill_entries(context).await;
+        let proxied = proxied_skill_entries(context, provider_max_items).await;
         listing.absorb(
             proxied.entries,
             proxied.cache_scope.as_deref(),
@@ -402,6 +413,59 @@ pub(crate) async fn list_visible_skills(context: &SkillRegistryContext) -> Skill
         }
     }
 
+    listing
+}
+
+/// Query caller-visible Skills without letting non-matching entries from a
+/// paginated upstream consume the result budget.
+#[cfg(feature = "gateway")]
+pub(crate) async fn search_visible_skills_bounded(
+    context: &SkillRegistryContext,
+    query: &str,
+    limit: usize,
+) -> SkillsListResult {
+    let limit = limit.clamp(1, limits::MAX_SKILLS_PER_UPSTREAM);
+    let mut first_party = context.clone();
+    first_party.manager = None;
+    let mut listing = list_visible_skills_bounded(&first_party, None).await;
+    let normalized = query.trim().to_ascii_lowercase();
+    listing.skills.retain(|entry| {
+        entry.uri.to_ascii_lowercase().contains(&normalized)
+            || entry
+                .frontmatter
+                .values()
+                .filter_map(serde_json::Value::as_str)
+                .any(|value| value.to_ascii_lowercase().contains(&normalized))
+    });
+    listing.skills.truncate(limit);
+
+    let proxied = proxied_skill_search(context, query, limit).await;
+    let mut first_party = std::mem::take(&mut listing.skills).into_iter();
+    let mut upstream = proxied.entries.into_iter();
+    // Keep both halves of the personal library searchable when either one can
+    // fill the entire caller limit. Minted upstream URIs are distinct from
+    // first-party URIs, so deterministic round-robin is sufficient here.
+    while listing.skills.len() < limit {
+        let before = listing.skills.len();
+        if let Some(entry) = first_party.next() {
+            listing.skills.push(entry);
+        }
+        if listing.skills.len() < limit
+            && let Some(entry) = upstream.next()
+        {
+            listing.skills.push(entry);
+        }
+        if listing.skills.len() == before {
+            break;
+        }
+    }
+    listing.absorb(Vec::new(), proxied.cache_scope.as_deref(), proxied.ttl_ms);
+    if proxied.unreachable_upstreams > 0 {
+        listing.note_incomplete(
+            "unreachableUpstreams",
+            serde_json::Value::from(proxied.unreachable_upstreams),
+        );
+    }
     listing
 }
 
@@ -875,7 +939,10 @@ fn unavailable_proxied_skills(upstream_count: usize) -> ProxiedSkills {
 }
 
 #[cfg(feature = "gateway")]
-async fn proxied_skill_entries(context: &SkillRegistryContext) -> ProxiedSkills {
+async fn proxied_skill_entries(
+    context: &SkillRegistryContext,
+    provider_max_items: Option<usize>,
+) -> ProxiedSkills {
     let Some(manager) = context.manager.as_deref() else {
         return ProxiedSkills::default();
     };
@@ -906,7 +973,14 @@ async fn proxied_skill_entries(context: &SkillRegistryContext) -> ProxiedSkills 
             let subject = subject.clone();
             async move {
                 let provider = SepSkillProvider::new(Arc::clone(&pool), config.clone(), subject);
-                let result = provider.discover(&SkillDiscoverRequest::default()).await;
+                let request =
+                    provider_max_items.map_or_else(SkillDiscoverRequest::default, |max_items| {
+                        SkillDiscoverRequest {
+                            max_items: max_items.clamp(1, limits::MAX_SKILLS_PER_UPSTREAM),
+                            ..SkillDiscoverRequest::default()
+                        }
+                    });
+                let result = provider.discover(&request).await;
                 (config, result)
             }
         })
@@ -945,6 +1019,71 @@ async fn proxied_skill_entries(context: &SkillRegistryContext) -> ProxiedSkills 
                     upstream = %config.name,
                     error = %error,
                     "skipping an upstream while aggregating skills"
+                );
+            }
+        }
+    }
+    aggregated
+}
+
+#[cfg(feature = "gateway")]
+async fn proxied_skill_search(
+    context: &SkillRegistryContext,
+    query: &str,
+    limit: usize,
+) -> ProxiedSkills {
+    let Some(manager) = context.manager.as_deref() else {
+        return ProxiedSkills::default();
+    };
+    let configs = manager
+        .current_config()
+        .await
+        .upstream
+        .into_iter()
+        .filter(|config| config.enabled && config.proxy_skills)
+        .filter(|config| context.scope.allows_upstream(&config.name))
+        .collect::<Vec<_>>();
+    let Some(pool) = manager.current_pool().await else {
+        return unavailable_proxied_skills(configs.len());
+    };
+    let subject = context.scope.subject().map(str::to_string);
+    let mut results = stream::iter(configs)
+        .map(|config| {
+            let pool = Arc::clone(&pool);
+            let subject = subject.clone();
+            async move {
+                let provider = SepSkillProvider::new(Arc::clone(&pool), config.clone(), subject);
+                (config, provider.search(query, limit).await)
+            }
+        })
+        .buffer_unordered(8)
+        .collect::<Vec<_>>()
+        .await;
+    results.sort_by(|(left, _), (right, _)| left.name.cmp(&right.name));
+
+    let mut aggregated = ProxiedSkills::default();
+    if !results.is_empty() {
+        aggregated.cache_scope = Some(CACHE_SCOPE_PRIVATE.to_string());
+    }
+    for (config, result) in results {
+        match result {
+            Ok(entries) => {
+                let meta = origin_meta(&config.name, &pool, context.scope.tool_access()).await;
+                let validated = entries
+                    .into_iter()
+                    .map(SkillProviderEntry::into_validated)
+                    .collect::<Vec<_>>();
+                let minted = aggregate::mint_proxied_entries(&config, &validated, Some(&meta));
+                aggregated.excluded_count += minted.excluded_count;
+                aggregated.excluded_uris.extend(minted.excluded_uris);
+                aggregated.entries.extend(minted.entries);
+            }
+            Err(error) => {
+                aggregated.unreachable_upstreams += 1;
+                tracing::warn!(
+                    upstream = %config.name,
+                    error = %error,
+                    "skipping an upstream while searching skills"
                 );
             }
         }

@@ -548,6 +548,12 @@ async fn handle_tool_actions(
             if let Some(max_log_bytes) = params.max_log_bytes {
                 next.max_log_bytes = max_log_bytes;
             }
+            if let Some(search_sources) = params.search_sources {
+                next.search.sources = search_sources;
+            }
+            if let Some(search_kinds) = params.search_kinds {
+                next.search.kinds = search_kinds;
+            }
             to_json(manager.set_code_mode_config(next, None, None).await?)
         }
         unknown => unknown_action(unknown),
