@@ -671,7 +671,7 @@ test('every admin route stays overflow-free on narrow phone, phone, and tablet',
     await page.setViewportSize({ width: 1000, height: 800 })
     await page.waitForFunction(() => document.querySelector('aside[data-console-sidebar]')?.getAttribute('data-mobile-open') === '0')
     await page.setViewportSize({ width: viewport.width, height: viewport.height })
-    assert.equal(await page.locator('aside[data-console-sidebar]').getAttribute('aria-hidden'), 'true')
+    await page.locator('aside[data-console-sidebar][aria-hidden="true"]').waitFor({ state: 'attached' })
     await menu.click()
     await page.locator('[data-mobile-nav-backdrop]').click({ position: { x: viewport.width - 2, y: 2 } })
     await page.waitForFunction(() => document.querySelector('aside[data-console-sidebar]')?.getAttribute('data-mobile-open') === '0')
