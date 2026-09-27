@@ -10,6 +10,23 @@ fn preview(max_items: usize) -> SkillDiscoverRequest {
 }
 
 #[tokio::test]
+async fn query_search_follows_pages_until_a_match_contributes() {
+    let server = SkillsServer::new(vec![
+        json!({"skills": [entry("up", "unrelated")], "nextCursor": "second"}),
+        json!({"skills": [entry("up", "deep-match")]}),
+    ]);
+    let calls = Arc::clone(&server.list_calls);
+    let pool = catalog_pool_with_server("up", server).await;
+    let provider = super::super::SepSkillProvider::new(pool, skills_config("up", None), None);
+
+    let result = provider.search("deep-match", 1).await.unwrap();
+
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].descriptor().name, "deep-match");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
 async fn bounded_discovery_stops_before_following_another_page() {
     let server = SkillsServer::new(vec![
         json!({"skills": [entry("up", "alpha")], "nextCursor": "second"}),
@@ -57,6 +74,193 @@ async fn bounded_discovery_limits_invalid_candidate_work() {
         "invalid entries consume the proportional candidate budget"
     );
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn bounded_discovery_counts_visible_results_after_exposure_filtering() {
+    let server = SkillsServer::new(vec![json!({
+        "skills": [entry("up", "denied"), entry("up", "allowed")]
+    })]);
+    let calls = Arc::clone(&server.list_calls);
+    let pool = catalog_pool_with_server("up", server).await;
+    let provider =
+        super::super::SepSkillProvider::new(pool, skills_config("up", Some(vec!["allowed"])), None);
+
+    let result = provider.discover(&preview(1)).await.unwrap();
+
+    assert_eq!(result.skills.len(), 1);
+    assert_eq!(result.skills[0].descriptor().name, "allowed");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn bounded_discovery_does_not_expose_an_ambiguous_partial_owner() {
+    let shared = "skill://up/parent/child/shared.txt";
+    let mut parent = entry("up", "parent");
+    parent["resources"].as_array_mut().unwrap().push(json!({
+        "uri": shared,
+        "digest": ResourceDigest::of_bytes(b"parent notes").to_wire(),
+        "size": b"parent notes".len()
+    }));
+    let mut child = entry("up", "parent/child");
+    child["frontmatter"]["name"] = json!("child");
+    child["resources"].as_array_mut().unwrap().push(json!({
+        "uri": shared,
+        "digest": ResourceDigest::of_bytes(b"child notes").to_wire(),
+        "size": b"child notes".len()
+    }));
+    let server = SkillsServer::new(vec![json!({"skills": [parent, child]})]);
+    let pool = catalog_pool_with_server("up", server).await;
+    let provider = super::super::SepSkillProvider::new(pool, skills_config("up", None), None);
+
+    let result = provider.discover(&preview(1)).await.unwrap();
+
+    assert!(
+        result.skills.is_empty(),
+        "a partial preview must not present either ambiguous owner"
+    );
+}
+
+#[tokio::test]
+async fn concurrent_cold_previews_share_the_completed_traversal() {
+    #[derive(Clone)]
+    struct GatedServer {
+        inner: SkillsServer,
+        started: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+    impl ServerHandler for GatedServer {
+        fn get_info(&self) -> ServerInfo {
+            self.inner.get_info()
+        }
+
+        async fn on_custom_request(
+            &self,
+            request: CustomRequest,
+            context: RequestContext<RoleServer>,
+        ) -> Result<CustomResult, ErrorData> {
+            if request.method.as_str() == "skills/list" {
+                self.started.notify_one();
+                self.release.notified().await;
+            }
+            self.inner.on_custom_request(request, context).await
+        }
+    }
+
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let inner = SkillsServer::new(vec![json!({"skills": [entry("up", "alpha")]})]);
+    let calls = Arc::clone(&inner.list_calls);
+    let pool = catalog_pool_with_server(
+        "up",
+        GatedServer {
+            inner,
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+        },
+    )
+    .await;
+    let provider = super::super::SepSkillProvider::new(pool, skills_config("up", None), None);
+    let mut tasks = tokio::task::JoinSet::new();
+    for _ in 0..8 {
+        let provider = provider.clone();
+        tasks.spawn(async move { provider.discover(&preview(1)).await });
+    }
+    tokio::time::timeout(Duration::from_secs(1), started.notified())
+        .await
+        .unwrap();
+    tokio::task::yield_now().await;
+    release.notify_waiters();
+
+    while let Some(result) = tasks.join_next().await {
+        assert_eq!(result.unwrap().unwrap().skills.len(), 1);
+    }
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "all same-key, same-budget waiters reuse one preview"
+    );
+}
+
+#[tokio::test]
+async fn concurrent_expired_previews_share_the_completed_traversal() {
+    #[derive(Clone)]
+    struct GateSecondList {
+        inner: SkillsServer,
+        seen: Arc<AtomicUsize>,
+        started: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+    impl ServerHandler for GateSecondList {
+        fn get_info(&self) -> ServerInfo {
+            self.inner.get_info()
+        }
+
+        async fn on_custom_request(
+            &self,
+            request: CustomRequest,
+            context: RequestContext<RoleServer>,
+        ) -> Result<CustomResult, ErrorData> {
+            if request.method.as_str() == "skills/list"
+                && self.seen.fetch_add(1, Ordering::SeqCst) == 1
+            {
+                self.started.notify_one();
+                self.release.notified().await;
+            }
+            self.inner.on_custom_request(request, context).await
+        }
+    }
+
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let inner = SkillsServer::new(vec![
+        json!({"skills": [entry("up", "old-alpha"), entry("up", "old-beta")]}),
+        json!({"skills": [entry("up", "fresh-alpha")]}),
+    ]);
+    let calls = Arc::clone(&inner.list_calls);
+    let pool = catalog_pool_with_server(
+        "up",
+        GateSecondList {
+            inner,
+            seen: Arc::new(AtomicUsize::new(0)),
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+        },
+    )
+    .await;
+    let provider =
+        super::super::SepSkillProvider::new(Arc::clone(&pool), skills_config("up", None), None);
+    provider
+        .discover(&SkillDiscoverRequest::default())
+        .await
+        .unwrap();
+    pool.skills_cache
+        .write()
+        .await
+        .get_mut(&("up".to_string(), None))
+        .unwrap()
+        .expire_now();
+
+    let mut tasks = tokio::task::JoinSet::new();
+    for _ in 0..8 {
+        let provider = provider.clone();
+        tasks.spawn(async move { provider.discover(&preview(1)).await });
+    }
+    tokio::time::timeout(Duration::from_secs(1), started.notified())
+        .await
+        .unwrap();
+    tokio::task::yield_now().await;
+    release.notify_waiters();
+
+    while let Some(result) = tasks.join_next().await {
+        let result = result.unwrap().unwrap();
+        assert_eq!(result.skills[0].descriptor().name, "fresh-alpha");
+    }
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "the full seed and one shared bounded refresh are the only traversals"
+    );
 }
 
 #[tokio::test]

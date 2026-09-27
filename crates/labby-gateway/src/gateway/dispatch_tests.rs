@@ -1554,6 +1554,54 @@ async fn gateway_code_mode_set_accepts_all_public_config_fields() {
 }
 
 #[tokio::test]
+async fn gateway_code_mode_search_policy_updates_immediately_and_persists() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+
+    let value = dispatch_with_manager(
+        &manager,
+        "gateway.code_mode.set",
+        json!({
+            "search_sources": ["team_depot", "personal_labby"],
+            "search_kinds": ["skill", "command", "subagent"]
+        }),
+    )
+    .await
+    .expect("search policy should update");
+
+    assert_eq!(
+        value["search"]["sources"],
+        json!(["personal_labby", "team_depot"])
+    );
+    assert_eq!(
+        value["search"]["kinds"],
+        json!(["skill", "command", "subagent"])
+    );
+
+    let immediate = dispatch_with_manager(&manager, "gateway.code_mode.get", json!({}))
+        .await
+        .expect("same manager should expose the new policy");
+    assert_eq!(immediate["search"], value["search"]);
+
+    let persisted = crate::gateway::config::load_gateway_config(&path).expect("persisted config");
+    assert_eq!(
+        serde_json::to_value(&persisted.code_mode.search).expect("serialize search policy"),
+        value["search"]
+    );
+
+    let cleared = dispatch_with_manager(
+        &manager,
+        "gateway.code_mode.set",
+        json!({"search_sources": [], "search_kinds": []}),
+    )
+    .await
+    .expect("empty sets should disable discovery");
+    assert_eq!(cleared["search"]["sources"], json!([]));
+    assert_eq!(cleared["search"]["kinds"], json!([]));
+}
+
+#[tokio::test]
 async fn gateway_code_mode_set_rejects_invalid_result_shape_policy() {
     let dir = tempfile::tempdir().expect("tempdir");
     let manager = GatewayManager::new(

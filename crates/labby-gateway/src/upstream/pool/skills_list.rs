@@ -26,7 +26,7 @@
 //! TTL. Truncation by a *budget* is different — it is deterministic and is
 //! reported through `truncated`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use rmcp::RoleClient;
@@ -34,6 +34,7 @@ use rmcp::model::{ClientRequest, CustomRequest};
 use rmcp::service::{Peer, ServiceError};
 use serde_json::json;
 
+use super::super::types::SkillExposurePolicy;
 use labby_runtime::skills::wire::{
     SKILLS_EXTENSION_KEY, SKILLS_GET_METHOD, SKILLS_LIST_METHOD, SkillEntry, SkillsGetResult,
     SkillsListResult,
@@ -82,6 +83,8 @@ pub(crate) enum UpstreamSkillsError {
     Collision,
     #[error("upstream direct skill cache exceeded its bounded capacity")]
     LimitExceeded,
+    #[error("upstream Skill search did not complete within its traversal budget")]
+    SearchIncomplete,
 }
 
 impl UpstreamSkillsError {
@@ -117,6 +120,12 @@ pub(super) struct UpstreamSkills {
     /// Canonical native URI to every manifest owner. Multiple bindings are
     /// retained so reads can fail closed without rescanning the catalog.
     pub(super) resource_index: BTreeMap<String, Vec<SkillResourceBinding>>,
+    /// Canonical resource claims observed in the fetched prefix, including
+    /// candidates omitted by the validation-work budget. A partial preview
+    /// must not present an owner as unambiguous when a later entry on an
+    /// already-received page claims the same resource.
+    pub(super) ambiguous_resource_uris: BTreeSet<String>,
+    pub(super) observed_resource_owners: BTreeMap<String, (String, Option<(String, u64)>)>,
 }
 
 #[derive(Debug, Clone)]
@@ -197,6 +206,42 @@ fn ingest_page(
     // Count the fetched page before validation so operator status can distinguish
     // discovered candidates from the validated/exposed subset.
     out.discovered_count = out.discovered_count.saturating_add(entries.len());
+    // Inspect ownership claims across the complete received page before the
+    // validation-work prefix is applied. This is intentionally lightweight:
+    // the response byte ceiling already bounds the page, while full manifest
+    // validation remains constrained by `max_candidates` below.
+    for entry in &entries {
+        let owner = entry.uri.clone();
+        let manifest = entry
+            .resources
+            .as_ref()
+            .and_then(|resources| resources.iter().find(|resource| resource.uri == entry.uri));
+        let claims = std::iter::once((&entry.uri, manifest)).chain(
+            entry
+                .resources
+                .iter()
+                .flatten()
+                .map(|resource| (&resource.uri, Some(resource))),
+        );
+        for (uri, resource) in claims {
+            let Some(claim) = parse_skill_resource_uri(uri).ok().map(|uri| uri.to_uri()) else {
+                continue;
+            };
+            let binding = resource.map(|resource| (resource.digest.clone(), resource.size));
+            if let Some((existing_owner, existing_binding)) =
+                out.observed_resource_owners.get(&claim)
+            {
+                // Nested Skills may publish the same file. Its bytes remain
+                // unambiguous only when every owner's binding is identical.
+                if existing_owner != &owner && (binding.is_none() || *existing_binding != binding) {
+                    out.ambiguous_resource_uris.insert(claim);
+                }
+            } else {
+                out.observed_resource_owners
+                    .insert(claim, (owner.clone(), binding));
+            }
+        }
+    }
     for entry in entries {
         let processed_candidates = out.skills.len().saturating_add(out.excluded.len());
         if processed_candidates >= max_candidates {
@@ -234,6 +279,96 @@ fn ingest_page(
 }
 
 impl UpstreamPool {
+    /// Query-aware bounded traversal for discovery callers that retain only
+    /// matches. Unlike prefix previews, non-matching entries do not consume the
+    /// result budget; page count, response bytes, and wall time still enforce
+    /// the hostile-upstream safety envelope.
+    pub(super) async fn fetch_upstream_skills_matching(
+        &self,
+        upstream_name: &str,
+        peer: &Peer<RoleClient>,
+        query: &str,
+        max_items: usize,
+        exposure: &SkillExposurePolicy,
+    ) -> Result<Vec<ValidatedSkill>, UpstreamSkillsError> {
+        let query = query.trim().to_ascii_lowercase();
+        let max_items = max_items.clamp(1, limits::MAX_SKILLS_PER_UPSTREAM);
+        let deadline = Instant::now() + limits::SKILLS_LIST_TIMEOUT;
+        let mut cursor: Option<String> = None;
+        let mut matches = Vec::new();
+
+        for _page in 0..limits::MAX_LIST_PAGES {
+            if matches.len() >= max_items {
+                return Ok(matches);
+            }
+            if Instant::now() >= deadline {
+                return Err(UpstreamSkillsError::SearchIncomplete);
+            }
+            let params = cursor
+                .as_ref()
+                .map_or_else(|| json!({}), |cursor| json!({ "cursor": cursor }));
+            let request =
+                ClientRequest::CustomRequest(CustomRequest::new(SKILLS_LIST_METHOD, Some(params)));
+            let started = Instant::now();
+            let remaining = deadline.saturating_duration_since(started);
+            let event = UpstreamRequestLog::skills_list(upstream_name, false);
+            log_upstream_request_start(event);
+            let result: SkillsListResult = timed_capability_call_with_timeout(
+                self,
+                remaining,
+                upstream_name,
+                UpstreamCapability::Skills,
+                event,
+                started,
+                peer.send_request_as(request),
+                |_| 0,
+                None,
+                |error| format!("upstream `{upstream_name}` {}", skills_list_error(error)),
+                format!(
+                    "upstream `{upstream_name}` skills/list exceeded the {}ms traversal budget",
+                    limits::SKILLS_LIST_TIMEOUT.as_millis()
+                ),
+                None,
+            )
+            .await
+            .map_err(UpstreamSkillsError::Capability)?;
+
+            for entry in result.skills {
+                if matches.len() >= max_items {
+                    break;
+                }
+                let haystack = format!(
+                    "{} {} {}",
+                    entry.uri,
+                    entry.frontmatter_str("name").unwrap_or_default(),
+                    entry.frontmatter_str("description").unwrap_or_default()
+                )
+                .to_ascii_lowercase();
+                if !haystack.contains(&query) {
+                    continue;
+                }
+                if let Ok(validated) = validate_skill_entry_detailed(&entry)
+                    && exposure.matches(&validated.name)
+                {
+                    matches.push(validated);
+                }
+            }
+
+            let Some(next) = result.next_cursor else {
+                return Ok(matches);
+            };
+            if cursor.as_deref() == Some(next.as_str()) {
+                return Err(UpstreamSkillsError::SearchIncomplete);
+            }
+            cursor = Some(next);
+        }
+        if matches.len() >= max_items {
+            Ok(matches)
+        } else {
+            Err(UpstreamSkillsError::SearchIncomplete)
+        }
+    }
+
     /// Walk an upstream's `skills/list`, validating each page as it arrives.
     ///
     /// Bulkhead exception: a fan-out catalog pass, like the prompt and resource
@@ -244,8 +379,13 @@ impl UpstreamPool {
         upstream_name: &str,
         peer: &Peer<RoleClient>,
     ) -> Result<UpstreamSkills, UpstreamSkillsError> {
-        self.fetch_upstream_skills_with_limit(upstream_name, peer, limits::MAX_SKILLS_PER_UPSTREAM)
-            .await
+        self.fetch_upstream_skills_with_limit(
+            upstream_name,
+            peer,
+            limits::MAX_SKILLS_PER_UPSTREAM,
+            None,
+        )
+        .await
     }
 
     /// Tighten both retained-entry and validation-work budgets for a preview.
@@ -255,12 +395,18 @@ impl UpstreamPool {
         upstream_name: &str,
         peer: &Peer<RoleClient>,
         max_items: usize,
+        exposure: Option<&SkillExposurePolicy>,
     ) -> Result<UpstreamSkills, UpstreamSkillsError> {
         let max_items = max_items.clamp(1, limits::MAX_SKILLS_PER_UPSTREAM);
         let max_candidates = max_items
             .saturating_mul(limits::MAX_SKILL_CANDIDATES_PER_UPSTREAM)
             .div_ceil(limits::MAX_SKILLS_PER_UPSTREAM)
             .min(limits::MAX_SKILL_CANDIDATES_PER_UPSTREAM);
+        let max_validated_items = if max_items < limits::MAX_SKILLS_PER_UPSTREAM {
+            max_candidates
+        } else {
+            max_items
+        };
         let mut out = UpstreamSkills::default();
         let mut cursor: Option<String> = None;
         let deadline = Instant::now() + limits::SKILLS_LIST_TIMEOUT;
@@ -323,7 +469,9 @@ impl UpstreamPool {
                 (current, next) => current.or(next),
             };
 
-            if let Some(cap) = ingest_page(result.skills, &mut out, max_items, max_candidates) {
+            if let Some(cap) =
+                ingest_page(result.skills, &mut out, max_validated_items, max_candidates)
+            {
                 out.truncated = true;
                 if max_items == limits::MAX_SKILLS_PER_UPSTREAM {
                     tracing::warn!(
@@ -352,7 +500,12 @@ impl UpstreamPool {
             };
             // Stop at a page boundary before another RPC whose results cannot
             // contribute to this request, not after receiving its first item.
-            if out.skills.len() >= max_items
+            let visible = out
+                .skills
+                .iter()
+                .filter(|skill| exposure.is_none_or(|policy| policy.matches(&skill.name)))
+                .count();
+            if visible >= max_items
                 || out.skills.len().saturating_add(out.excluded.len()) >= max_candidates
             {
                 out.truncated = true;

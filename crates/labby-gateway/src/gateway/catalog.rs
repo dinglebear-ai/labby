@@ -428,6 +428,18 @@ pub const ACTIONS: &[ActionSpec] = &[
                 required: false,
                 description: "Maximum captured console log bytes per execution",
             },
+            ParamSpec {
+                name: "search_sources",
+                ty: "string[]",
+                required: false,
+                description: "Replace the Code Mode discovery sources: personal_labby, team_depot, and/or public_depot; an empty array disables all sources",
+            },
+            ParamSpec {
+                name: "search_kinds",
+                ty: "string[]",
+                required: false,
+                description: "Replace the Code Mode discovery artifact families: tool, skill, command, prompt, subagent, and/or snippet; an empty array disables all families",
+            },
         ],
     },
     ActionSpec {
@@ -2015,6 +2027,8 @@ mod tests {
             "token_estimate_divisor",
             "max_log_entries",
             "max_log_bytes",
+            "search_sources",
+            "search_kinds",
         ] {
             assert!(
                 params.contains(&param),

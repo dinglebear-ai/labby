@@ -28,7 +28,8 @@ fn map_upstream_skills_error(error: UpstreamSkillsError) -> SkillProviderError {
         UpstreamSkillsError::Capability(CapabilityCallError::Transport { .. })
         | UpstreamSkillsError::Unavailable
         | UpstreamSkillsError::Invalidated
-        | UpstreamSkillsError::CacheMissing => SkillProviderError::Unavailable {
+        | UpstreamSkillsError::CacheMissing
+        | UpstreamSkillsError::SearchIncomplete => SkillProviderError::Unavailable {
             reason: "upstream_unavailable".to_owned(),
         },
         UpstreamSkillsError::Capability(CapabilityCallError::QueueSaturated { .. }) => {
@@ -123,6 +124,31 @@ impl SepSkillProvider {
             .await
             .map(|skill| SkillProviderEntry::from_validated(self.id.clone(), skill))
     }
+
+    /// Search paginated Skill metadata without letting non-matching prefix
+    /// entries consume the caller's result budget.
+    pub async fn search(
+        &self,
+        query: &str,
+        max_items: usize,
+    ) -> Result<Vec<SkillProviderEntry>, SkillProviderError> {
+        let skills = tokio::time::timeout(
+            self.operation_timeout(labby_runtime::skills::limits::SKILLS_LIST_TIMEOUT),
+            self.pool.search_upstream_skills(
+                &self.config,
+                self.subject.as_deref(),
+                query,
+                max_items,
+            ),
+        )
+        .await
+        .map_err(|_| SkillProviderError::DeadlineExceeded)?
+        .map_err(map_upstream_skills_error)?;
+        Ok(skills
+            .into_iter()
+            .map(|skill| SkillProviderEntry::from_validated(self.id.clone(), skill))
+            .collect())
+    }
 }
 
 impl SkillProvider for SepSkillProvider {
@@ -148,11 +174,9 @@ impl SkillProvider for SepSkillProvider {
             .await
             .map_err(|_| SkillProviderError::DeadlineExceeded)?
             .map_err(map_upstream_skills_error)?;
-            let available = exposed.skills.len();
             let skills = exposed
                 .skills
                 .into_iter()
-                .take(request.max_items)
                 .map(|skill| SkillProviderEntry::from_validated(self.id.clone(), skill))
                 .collect();
             let result = SkillDiscoverResult {
@@ -162,7 +186,7 @@ impl SkillProvider for SepSkillProvider {
                     .then(|| Duration::from_secs(exposed.age_secs)),
                 ttl: exposed.ttl_ms.map(Duration::from_millis),
                 excluded_count: exposed.excluded_count,
-                truncated: exposed.truncated || available > request.max_items,
+                truncated: exposed.truncated,
             };
             result.validate_for(&self.id, request)?;
             tracing::debug!(

@@ -105,6 +105,59 @@ impl CachedDirectSkill {
 /// Cache key: one entry per upstream per authorization context.
 pub(super) type SkillsCacheKey = (String, Option<String>);
 
+/// Result-sharing state held by the per-catalog acquisition guard.
+///
+/// Bounded previews deliberately never enter the authoritative Skill cache,
+/// but waiters on the same single-flight still need to reuse the completed
+/// traversal. The epoch and item budget bind that reuse to the configuration
+/// generation and request shape that produced it.
+#[derive(Debug, Default)]
+pub(super) struct SkillsFetchState {
+    preview: Option<SharedSkillsPreview>,
+}
+
+#[derive(Debug)]
+struct SharedSkillsPreview {
+    epoch: u64,
+    max_items: usize,
+    exposure: Option<Vec<String>>,
+    snapshot: CachedSkills,
+}
+
+impl SkillsFetchState {
+    pub(super) fn preview(
+        &self,
+        epoch: u64,
+        max_items: usize,
+        exposure: &Option<Vec<String>>,
+    ) -> Option<CachedSkills> {
+        self.preview
+            .as_ref()
+            .filter(|preview| {
+                preview.epoch == epoch
+                    && preview.max_items == max_items
+                    && &preview.exposure == exposure
+                    && preview.snapshot.is_fresh()
+            })
+            .map(|preview| preview.snapshot.read_snapshot())
+    }
+
+    pub(super) fn share_preview(
+        &mut self,
+        epoch: u64,
+        max_items: usize,
+        exposure: Option<Vec<String>>,
+        snapshot: CachedSkills,
+    ) {
+        self.preview = Some(SharedSkillsPreview {
+            epoch,
+            max_items,
+            exposure,
+            snapshot,
+        });
+    }
+}
+
 /// A cached catalog snapshot plus the bookkeeping that governs its lifetime.
 #[derive(Debug, Clone)]
 pub(super) struct CachedSkills {
@@ -324,12 +377,12 @@ pub(super) fn evict(cache: &mut HashMap<SkillsCacheKey, CachedSkills>) -> usize 
 /// refresh guard's single global mutex would have had here.
 #[derive(Debug, Default)]
 pub(super) struct SkillsFetchLocks {
-    locks: Mutex<HashMap<SkillsCacheKey, Arc<Mutex<()>>>>,
+    locks: Mutex<HashMap<SkillsCacheKey, Arc<Mutex<SkillsFetchState>>>>,
 }
 
 impl SkillsFetchLocks {
     /// The guard for `key`, creating it if absent.
-    pub(super) async fn guard_for(&self, key: &SkillsCacheKey) -> Arc<Mutex<()>> {
+    pub(super) async fn guard_for(&self, key: &SkillsCacheKey) -> Arc<Mutex<SkillsFetchState>> {
         let mut locks = self.locks.lock().await;
         // Cold previews do not publish cache entries or schedule refreshes.
         // Reclaim idle guards here as well, including cancelled requests, so
