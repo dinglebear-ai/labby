@@ -317,6 +317,15 @@ pub const ACTIONS: &[ActionSpec] = &[
         params: &[],
     },
     ActionSpec {
+        name: "gateway.ssh_hosts.list",
+        description: "List concrete SSH host aliases from the gateway process account's OpenSSH config for remote stdio setup",
+        destructive: false,
+        requires_admin: true,
+        returns: "string[]",
+        output_schema: Some(labby_primitives::action::schema_for::<Vec<String>>),
+        params: &[],
+    },
+    ActionSpec {
         name: "gateway.skills.list",
         description: "Operator view of Agent Skills support, trust, validation, exposure, and cache state across gateway upstreams; optionally limit to one upstream",
         destructive: false,

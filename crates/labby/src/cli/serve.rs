@@ -1942,28 +1942,62 @@ async fn log_mcp_request(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
+    fn bounded_header(
+        headers: &axum::http::HeaderMap,
+        name: &str,
+        max_chars: usize,
+    ) -> Option<String> {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| {
+                value
+                    .chars()
+                    .filter(|character| !character.is_control())
+                    .take(max_chars)
+                    .collect()
+            })
+    }
+
     let method = req.method().to_string();
-    // Queries and session ids are opaque caller-controlled values. They can
-    // contain credentials, so request observability records only safe shape
-    // metadata rather than their raw contents.
+    // Query and credential values remain opaque. Transport observability keeps
+    // non-secret protocol/correlation evidence, fingerprints session ids, and
+    // records header names so client behavior is debuggable without logging
+    // bearer tokens, cookies, API keys, or arbitrary request bodies.
     let path = req.uri().path().to_string();
     let query_present = req.uri().query().is_some();
-    let mcp_session_present = req.headers().contains_key("mcp-session-id");
-    let authorization_present = req
-        .headers()
-        .contains_key(axum::http::header::AUTHORIZATION);
-    let user_agent = req
-        .headers()
-        .get(axum::http::header::USER_AGENT)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("<none>")
-        .to_string();
-    let origin = req
-        .headers()
-        .get(axum::http::header::ORIGIN)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("<none>")
-        .to_string();
+    let headers = req.headers();
+    let mcp_session = bounded_header(headers, "mcp-session-id", 512);
+    let mcp_session_present = mcp_session.is_some();
+    let mcp_session_key = mcp_session.as_deref().map(labby_auth::util::fingerprint);
+    let authorization_present = headers.contains_key(axum::http::header::AUTHORIZATION);
+    let user_agent = bounded_header(headers, axum::http::header::USER_AGENT.as_str(), 512)
+        .unwrap_or_else(|| "<none>".to_string());
+    let origin = bounded_header(headers, axum::http::header::ORIGIN.as_str(), 512)
+        .unwrap_or_else(|| "<none>".to_string());
+    let host = bounded_header(headers, axum::http::header::HOST.as_str(), 512)
+        .unwrap_or_else(|| "<none>".to_string());
+    let mcp_protocol_version = bounded_header(headers, "mcp-protocol-version", 128)
+        .unwrap_or_else(|| "<none>".to_string());
+    let x_request_id =
+        bounded_header(headers, "x-request-id", 256).unwrap_or_else(|| "<none>".to_string());
+    let traceparent =
+        bounded_header(headers, "traceparent", 256).unwrap_or_else(|| "<none>".to_string());
+    let content_type = bounded_header(headers, axum::http::header::CONTENT_TYPE.as_str(), 256)
+        .unwrap_or_else(|| "<none>".to_string());
+    let accept = bounded_header(headers, axum::http::header::ACCEPT.as_str(), 512)
+        .unwrap_or_else(|| "<none>".to_string());
+    let content_length = bounded_header(headers, axum::http::header::CONTENT_LENGTH.as_str(), 64)
+        .and_then(|value| value.parse::<u64>().ok());
+    let header_count = headers.len();
+    let mut header_names = headers
+        .keys()
+        .map(|name| name.as_str().to_string())
+        .collect::<Vec<_>>();
+    header_names.sort_unstable();
+    header_names.dedup();
+    let header_names_truncated = header_names.len() > 64;
+    header_names.truncate(64);
 
     tracing::info!(
         surface = "mcp",
@@ -1973,9 +2007,20 @@ async fn log_mcp_request(
         path = %path,
         query_present,
         mcp_session_present,
+        mcp_session_key = mcp_session_key.as_deref().unwrap_or("<none>"),
         authorization_present,
         user_agent = %user_agent,
         origin = %origin,
+        host = %host,
+        mcp_protocol_version = %mcp_protocol_version,
+        x_request_id = %x_request_id,
+        traceparent = %traceparent,
+        content_type = %content_type,
+        accept = %accept,
+        content_length,
+        header_count,
+        header_names_truncated,
+        header_names = ?header_names,
         "incoming MCP HTTP request"
     );
 

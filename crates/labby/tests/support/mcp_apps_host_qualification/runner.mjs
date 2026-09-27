@@ -236,9 +236,9 @@ try {
 	await o.goto(`http://127.0.0.1:${port}/openai`);
 	await exercise("openai-emulator", o, port);
 	const typeErrorProbe = await o.evaluate(async () => {
-		let calls = 0;
-		window.openai.callTool = () => {
-			calls += 1;
+		const calls = [];
+		window.openai.callTool = (name, args) => {
+			calls.push({ name, action: args.action });
 			throw new TypeError("injected OpenAI transport failure");
 		};
 		const message = await window.LabbyAppHost.callAction("mcp_app", "status", {
@@ -250,10 +250,13 @@ try {
 		return { calls, message };
 	});
 	assert.deepEqual(typeErrorProbe, {
-		calls: 1,
+		calls: [
+			{ name: "mcp_app", action: "status" },
+			{ name: "mcp_app", action: "event" },
+		],
 		message: "injected OpenAI transport failure",
 	});
-	events.find((event) => event.host === "openai-emulator").type_error_calls = 1;
+	events.find((event) => event.host === "openai-emulator").type_error_calls = 2;
 	await setManager(true);
 	const h = await ctx.newPage();
 	await h.goto(`http://127.0.0.1:${port}/anthropic`);

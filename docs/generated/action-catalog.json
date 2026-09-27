@@ -7210,6 +7210,31 @@
   },
   {
     "service": "gateway",
+    "action": "gateway.ssh_hosts.list",
+    "description": "List concrete SSH host aliases from the gateway process account's OpenSSH config for remote stdio setup",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
+    "params": [],
+    "returns": "string[]",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "gateway",
     "action": "gateway.status",
     "description": "Refresh and return runtime gateway status",
     "destructive": false,

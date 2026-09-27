@@ -16,6 +16,43 @@ use super::super::params::{GatewayDiscoverParams, GatewayEnrichmentScope};
 use super::super::types::McpClientTransportType;
 use super::*;
 
+#[test]
+fn ssh_host_picker_only_returns_concrete_safe_aliases() {
+    let aliases = ssh_host_aliases(
+        "Host tootie dookie\n  HostName 10.0.0.1\n  IdentityFile ~/.ssh/private_key\nHost *\nHost dev-*\nHost -unsafe\nHost good.example\n",
+    );
+    assert_eq!(aliases, vec!["tootie", "dookie", "good.example"]);
+}
+
+#[tokio::test]
+async fn ssh_host_picker_reads_gateway_account_config_without_exposing_details() {
+    let home = tempfile::tempdir().unwrap();
+    let ssh_dir = home.path().join(".ssh");
+    std::fs::create_dir(&ssh_dir).unwrap();
+    std::fs::write(
+        ssh_dir.join("config"),
+        "Host tootie\n  HostName 10.0.0.1\n  IdentityFile ~/.ssh/private_key\n",
+    )
+    .unwrap();
+    let _home_guard = crate::gateway::discovery::TestHomeDirGuard::set(home.path().to_path_buf());
+    let result = dispatch_with_manager(&test_manager(), "gateway.ssh_hosts.list", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(result, json!(["tootie"]));
+}
+
+#[test]
+fn ssh_host_picker_expands_included_config_files() {
+    let home = tempfile::tempdir().unwrap();
+    let ssh_dir = home.path().join(".ssh");
+    let config_dir = ssh_dir.join("config.d");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(ssh_dir.join("config"), "Include config.d/*\nHost tootie\n").unwrap();
+    std::fs::write(config_dir.join("devices"), "Host dookie\nHost media-*\n").unwrap();
+    let contents = read_ssh_config(home.path()).unwrap();
+    assert_eq!(ssh_host_aliases(&contents), vec!["dookie", "tootie"]);
+}
+
 #[cfg(feature = "skills")]
 #[test]
 fn skills_operator_projection_preserves_candidate_count_and_rejection_detail() {
@@ -166,6 +203,7 @@ impl Respond for DashboardCatalogResponder {
 fn gateway_actions_include_management_surface() {
     let names: Vec<&str> = ACTIONS.iter().map(|a| a.name).collect();
     assert!(names.contains(&"gateway.list"));
+    assert!(names.contains(&"gateway.ssh_hosts.list"));
     assert!(names.contains(&"gateway.server.get"));
     assert!(names.contains(&"gateway.supported_services"));
     assert!(names.contains(&"gateway.protected_route.list"));
