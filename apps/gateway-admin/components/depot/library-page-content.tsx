@@ -5,9 +5,10 @@ import { useSearchParams } from 'next/navigation'
 import { Box, Check, ChevronRight, Download, Filter, Globe, GitFork, Loader2, LockKeyhole, Pencil, RefreshCw, Search, Send, Users, X } from 'lucide-react'
 import { toast } from 'sonner'
 
+import { useCollectionView } from '@/hooks/use-collection-view'
 import { AppHeader } from '@/components/app-header'
 import { AURORA_PAGE_FRAME, AURORA_PAGE_SHELL } from '@/components/aurora/tokens'
-import { CollectionViewToggle, type CollectionViewMode } from '@/components/console/collection-view-toggle'
+import { CollectionViewToggle } from '@/components/console/collection-view-toggle'
 import { ConsoleHero } from '@/components/console/console-hero'
 import { DashboardPanel } from '@/components/dashboard/panel'
 import { Button } from '@/components/ui/button'
@@ -34,7 +35,6 @@ type LibraryState = {
   total?: number
 }
 
-type ViewMode = CollectionViewMode
 
 export function libraryFilterKinds(artifacts: DepotArtifact[]) {
   return [...new Set([...ARTIFACT_TYPES, ...collectArtifactKinds(artifacts)])]
@@ -148,29 +148,11 @@ function SessionLibraryPage() {
   const detail = detailResult?.selectedId === selectedId ? detailResult.artifact : null
   const [detailLoading, setDetailLoading] = useState(false)
   const [copied, setCopied] = useState<string>()
-  const [view, setViewState] = useState<ViewMode>('table')
+  const [view, selectView] = useCollectionView('labby.library.layout')
   const [filtersOpen, setFiltersOpen] = useState(false)
   const filtersId = useId()
   const listController = useRef<AbortController | null>(null)
 
-  useEffect(() => {
-    try {
-      const saved = window.localStorage.getItem('labby.library.layout')
-      if (saved === 'table' || saved === 'list' || saved === 'cards') setViewState(saved)
-      else if (window.matchMedia('(max-width: 640px)').matches) setViewState('cards')
-    } catch {
-      if (window.matchMedia('(max-width: 640px)').matches) setViewState('cards')
-    }
-  }, [])
-
-  const selectView = (next: ViewMode) => {
-    setViewState(next)
-    try {
-      window.localStorage.setItem('labby.library.layout', next)
-    } catch {
-      // The selected layout remains active for this session when storage is unavailable.
-    }
-  }
 
   const load = useCallback(async (search: string, cursor?: string) => {
     listController.current?.abort()

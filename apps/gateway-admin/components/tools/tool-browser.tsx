@@ -2,8 +2,9 @@
 
 import { FormEvent, useEffect, useRef, useState } from 'react'
 import { RefreshCw, Search, ShieldCheck, TriangleAlert, Wrench } from 'lucide-react'
+import { useCollectionView } from '@/hooks/use-collection-view'
 import { AppHeader } from '@/components/app-header'
-import { CollectionViewToggle, type CollectionViewMode } from '@/components/console/collection-view-toggle'
+import { CollectionViewToggle } from '@/components/console/collection-view-toggle'
 import { ConsoleHero } from '@/components/console/console-hero'
 import { LibraryTabs } from '@/components/depot/depot-workspace-pages'
 import { AURORA_PAGE_FRAME, AURORA_PAGE_SHELL, AURORA_STRONG_PANEL } from '@/components/aurora/tokens'
@@ -103,28 +104,10 @@ export function ToolBrowser({ initialQuery = '' }: { initialQuery?: string } = {
   // so branching the summary on `query` let a cleared input turn a stale
   // zero-result search into a confident claim about the whole gateway.
   const [executedQuery, setExecutedQuery] = useState<string | null>(null)
-  const [view, setViewState] = useState<CollectionViewMode>('table')
+  const [view, setView] = useCollectionView('labby.tools.layout')
   const activeRequest = useRef<AbortController | null>(null)
   const { data: codeModeConfig, error: codeModeConfigError } = useGatewayCodeModeConfig()
 
-  useEffect(() => {
-    try {
-      const saved = window.localStorage.getItem('labby.tools.layout')
-      if (saved === 'table' || saved === 'list' || saved === 'cards') setViewState(saved)
-      else if (window.matchMedia('(max-width: 640px)').matches) setViewState('cards')
-    } catch {
-      if (window.matchMedia('(max-width: 640px)').matches) setViewState('cards')
-    }
-  }, [])
-
-  const setView = (next: CollectionViewMode) => {
-    setViewState(next)
-    try {
-      window.localStorage.setItem('labby.tools.layout', next)
-    } catch {
-      // The layout still changes for this session when storage is unavailable.
-    }
-  }
 
   useEffect(() => {
     const clearForSessionChange = () => {

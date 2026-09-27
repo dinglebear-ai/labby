@@ -3,9 +3,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Archive, CirclePlus, Clock3, FolderKanban, RefreshCw } from 'lucide-react'
 
+import { useCollectionView } from '@/hooks/use-collection-view'
 import { AppHeader } from '@/components/app-header'
 import { AURORA_PAGE_FRAME, AURORA_PAGE_SHELL } from '@/components/aurora/tokens'
-import { CollectionViewToggle, type CollectionViewMode } from '@/components/console/collection-view-toggle'
+import { CollectionViewToggle } from '@/components/console/collection-view-toggle'
 import { ConsoleHero } from '@/components/console/console-hero'
 import { DashboardPanel } from '@/components/dashboard/panel'
 import { Button } from '@/components/ui/button'
@@ -31,7 +32,7 @@ export function ProjectsPageContent() {
   const [busy, setBusy] = useState<string>()
   const [id, setId] = useState('')
   const [name, setName] = useState('')
-  const [view, setViewState] = useState<CollectionViewMode>('table')
+  const [view, selectView] = useCollectionView('labby.projects.layout')
 
   const load = useCallback(async (signal?: AbortSignal) => {
     setLoading(true)
@@ -51,24 +52,6 @@ export function ProjectsPageContent() {
     return () => controller.abort()
   }, [load, workspaceIdentity])
 
-  useEffect(() => {
-    try {
-      const saved = window.localStorage.getItem('labby.projects.layout')
-      if (saved === 'table' || saved === 'list' || saved === 'cards') setViewState(saved)
-      else if (window.matchMedia('(max-width: 640px)').matches) setViewState('cards')
-    } catch {
-      if (window.matchMedia('(max-width: 640px)').matches) setViewState('cards')
-    }
-  }, [])
-
-  const selectView = (next: CollectionViewMode) => {
-    setViewState(next)
-    try {
-      window.localStorage.setItem('labby.projects.layout', next)
-    } catch {
-      // The selected layout remains active for this session when storage is unavailable.
-    }
-  }
 
   const create = async () => {
     if (!team) {

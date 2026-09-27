@@ -1,13 +1,14 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import Link from 'next/link'
 import { BookOpen, Boxes, Cable, ChevronDown, Clipboard, Download, Loader2, PackageOpen, Pencil, Plus, RefreshCw, Search, ShieldCheck, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
+import { useCollectionView } from '@/hooks/use-collection-view'
 import { ActionConfirmationDialog } from '@/components/action-confirmation-dialog'
 import { AppHeader } from '@/components/app-header'
 import { LibraryTabs } from '@/components/depot/depot-workspace-pages'
-import { CollectionViewToggle, type CollectionViewMode } from '@/components/console/collection-view-toggle'
+import { CollectionViewToggle } from '@/components/console/collection-view-toggle'
 import { ConsoleHero, type ConsoleHeroStat } from '@/components/console/console-hero'
 import { DashboardPanel } from '@/components/dashboard/panel'
 import { Badge } from '@/components/ui/badge'
@@ -59,7 +60,7 @@ export function LoadoutsPageContent() {
   const [deleting, setDeleting] = useState<GatewayLoadout | null>(null)
   const [deleteBusy, setDeleteBusy] = useState(false)
   const [query, setQuery] = useState('')
-  const [view, setViewState] = useState<CollectionViewMode>('table')
+  const [view, selectView] = useCollectionView('labby.loadouts.layout')
   const { data: loadouts = [], isLoading, error, mutate: refreshLoadouts, isValidating } = useLoadouts()
   // Gateway configuration is only needed to populate the add/edit dialog. A full
   // gateway list can cold-connect many stdio upstreams, so do not hydrate the
@@ -77,24 +78,6 @@ export function LoadoutsPageContent() {
   } = useProtectedMcpRoutes()
   const { addLoadout, patchLoadout, removeLoadout, stageLoadoutUpdate, stageLoadoutRemove } = useGatewayMutations()
 
-  useEffect(() => {
-    try {
-      const saved = window.localStorage.getItem('labby.loadouts.layout')
-      if (saved === 'table' || saved === 'list' || saved === 'cards') setViewState(saved)
-      else if (window.matchMedia('(max-width: 640px)').matches) setViewState('cards')
-    } catch {
-      if (window.matchMedia('(max-width: 640px)').matches) setViewState('cards')
-    }
-  }, [])
-
-  const selectView = (next: CollectionViewMode) => {
-    setViewState(next)
-    try {
-      window.localStorage.setItem('labby.loadouts.layout', next)
-    } catch {
-      // The selected layout remains active for this session when storage is unavailable.
-    }
-  }
 
   const gatewayOptions = useMemo(() => gateways.filter(g => g.source !== 'in_process' && g.transport !== 'in_process').map(g => ({ value: g.name, label: g.name, meta: g.config.url ?? g.config.command ?? g.transport })), [gateways])
   const serviceOptions = useMemo(() => services.map(s => ({ value: s.key, label: s.display_name, meta: s.description })), [services])

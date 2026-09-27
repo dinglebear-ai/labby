@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState, useMemo } from 'react'
 import { Copy, Download, File, FileArchive, FileCode2, FileJson, FileText, MoreHorizontal, Image, Inbox, Pencil, RefreshCw, Search, Trash2, Upload, X } from 'lucide-react'
 
+import { useCollectionView } from '@/hooks/use-collection-view'
 import { ActionConfirmationDialog } from '@/components/action-confirmation-dialog'
 import { CollectionViewToggle, type CollectionViewMode } from '@/components/console/collection-view-toggle'
 import { ConsoleHero } from '@/components/console/console-hero'
@@ -72,7 +73,7 @@ export function StashPageContent() {
   const [query, setQuery] = useState('')
   const [nextCursor, setNextCursor] = useState<string | null>(null)
   const [loadingMore, setLoadingMore] = useState(false)
-  const [view, setViewState] = useState<ViewMode>('table')
+  const [view, selectView] = useCollectionView('labby.stash.layout')
   const [kind, setKind] = useState<StashFileKind | 'All'>('All')
   const [sort, setSort] = useState<'name' | 'kind' | 'size' | 'added'>('added')
   const [ascending, setAscending] = useState(false)
@@ -98,24 +99,6 @@ export function StashPageContent() {
   const queryRef = useRef('')
   queryRef.current = query
 
-  useEffect(() => {
-    try {
-      const saved = window.localStorage.getItem('labby.stash.layout')
-      if (saved === 'table' || saved === 'list' || saved === 'cards') setViewState(saved)
-      else if (window.matchMedia('(max-width: 640px)').matches) setViewState('cards')
-    } catch {
-      if (window.matchMedia('(max-width: 640px)').matches) setViewState('cards')
-    }
-  }, [])
-
-  const selectView = (next: ViewMode) => {
-    setViewState(next)
-    try {
-      window.localStorage.setItem('labby.stash.layout', next)
-    } catch {
-      // The selected layout remains active for this session when storage is unavailable.
-    }
-  }
 
   const load = useCallback(async (search = '', cursor?: string, refreshStats = false) => {
     const current = ++generation.current

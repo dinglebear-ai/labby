@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ChevronRight, Clock3, Pencil, Play, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { useCollectionView } from '@/hooks/use-collection-view'
 import { AppHeader } from '@/components/app-header'
 import { AURORA_PAGE_FRAME, AURORA_PAGE_SHELL } from '@/components/aurora/tokens'
-import { CollectionViewToggle, type CollectionViewMode } from '@/components/console/collection-view-toggle'
+import { CollectionViewToggle } from '@/components/console/collection-view-toggle'
 import { ConsoleHero } from '@/components/console/console-hero'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
@@ -37,21 +38,8 @@ function Definition({ fields }: { fields: Array<[string, string | number | null 
 export function TaskScheduleRows({ rows, agents, states, busy, canOperate, canDelete, onToggle, onRun, onEdit, onDelete }: { rows: TaskSchedule[]; agents: AgentView[]; states: Record<string, TaskView>; busy?: string; canOperate: boolean; canDelete: boolean; onToggle: (row: TaskSchedule) => void; onRun: (row: TaskSchedule) => void; onEdit: (row: TaskSchedule) => void; onDelete: (row: TaskSchedule) => void }) {
   const [filter, setFilter] = useState('All')
   const [open, setOpen] = useState<string>()
-  const [view, setViewState] = useState<CollectionViewMode>('table')
+  const [view, selectView] = useCollectionView('labby.tasks.layout')
   const shown = rows.filter(row => filter === 'All' || (filter === 'Armed' ? row.armed : !row.armed))
-  useEffect(() => {
-    try {
-      const saved = window.localStorage.getItem('labby.tasks.layout')
-      if (saved === 'table' || saved === 'list' || saved === 'cards') setViewState(saved)
-      else if (window.matchMedia('(max-width: 640px)').matches) setViewState('cards')
-    } catch {
-      if (window.matchMedia('(max-width: 640px)').matches) setViewState('cards')
-    }
-  }, [])
-  const selectView = (next: CollectionViewMode) => {
-    setViewState(next)
-    try { window.localStorage.setItem('labby.tasks.layout', next) } catch {}
-  }
   return <section aria-label="Scheduled tasks" className={PANEL}>
     <header className="flex flex-wrap items-center gap-2 border-b border-aurora-border-subtle bg-aurora-control-surface px-[15px] py-2.5"><h2 className={`${LABEL} mr-auto`}>Scheduled</h2><div className="flex flex-wrap items-center justify-end gap-1.5">{['All', 'Armed', 'Paused'].map(item => <button type="button" key={item} className={FILTER} aria-pressed={filter === item} onClick={() => setFilter(item)}>{item}</button>)}<CollectionViewToggle value={view} onChange={selectView} ariaLabel="Task view" /></div></header>
     {view === 'table' ? <div className={`${ROW} border-b border-aurora-border-subtle !py-2 ${LABEL}`} aria-hidden="true"><span className="w-[42px] shrink-0">On</span><span className="min-w-[96px] flex-1">Task</span><span className="hidden w-[132px] shrink-0 sm:block">Schedule</span><span className="hidden w-[150px] shrink-0 min-[1180px]:block">Catalog</span><span className="hidden w-[96px] shrink-0 min-[1000px]:block">Last run</span><span className="w-[86px] shrink-0 text-right">Next</span><span className="w-[51px] shrink-0" /></div> : null}
@@ -61,7 +49,7 @@ export function TaskScheduleRows({ rows, agents, states, busy, canOperate, canDe
       return <article key={row.schedule_id} className={view === 'cards' ? "m-3 rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-low" : "border-t border-aurora-border-subtle first:border-t-0 even:bg-aurora-control-surface/40"}>
         <div className={view === 'cards' ? "flex min-w-0 flex-wrap items-center gap-2.5 p-4 hover:bg-aurora-hover-bg" : view === 'list' ? "flex min-w-0 items-center gap-2.5 px-4 py-3 hover:bg-aurora-hover-bg" : `${ROW} hover:bg-aurora-hover-bg`}>
           <span className="w-[42px] shrink-0"><Switch aria-label={`${row.armed ? 'Pause' : 'Arm'} ${row.name}`} checked={row.armed} disabled={!canOperate || Boolean(busy)} onCheckedChange={() => onToggle(row)} className="!h-[18px] !w-8 border-aurora-border-strong [&_[data-slot=switch-thumb]]:size-3 [&_[data-slot=switch-thumb]]:data-[state=checked]:translate-x-4 [&_[data-slot=switch-thumb]]:data-[state=unchecked]:translate-x-0.5" /></span>
-          <button type="button" aria-expanded={expanded} aria-label={`Inspect ${row.name}`} onClick={() => setOpen(expanded ? undefined : row.schedule_id)} className="min-w-[96px] flex-1 text-left focus-visible:outline-2 focus-visible:outline-aurora-accent-primary"><strong className={`block truncate text-[12.5px] font-semibold ${row.armed ? 'text-aurora-text-primary' : 'text-aurora-text-muted'}`}>{row.name}</strong><span className="block truncate text-[10.5px] text-aurora-text-muted">{row.agent_id}</span>{view !== 'table' ? <span className="mt-1 block truncate text-[10.5px] text-aurora-text-muted">{scheduleLabel(row.schedule)} · {nextLabel(row)} · {row.last_error_kind ? 'failed' : row.last_task_id ? states[row.last_task_id]?.state ?? 'pending' : 'not run'}</span> : null}</button>
+          <button type="button" aria-expanded={expanded} aria-label={`Inspect ${row.name}`} onClick={() => setOpen(expanded ? undefined : row.schedule_id)} className="min-w-[96px] flex-1 text-left focus-visible:outline-2 focus-visible:outline-aurora-accent-primary"><strong className={`block truncate text-[12.5px] font-semibold ${row.armed ? 'text-aurora-text-primary' : 'text-aurora-text-muted'}`}>{row.name}</strong><span className="block truncate text-[10.5px] text-aurora-text-muted">{row.agent_id}</span>{view !== 'table' ? <span className="mt-1 block truncate text-[10.5px] text-aurora-text-muted">{scheduleLabel(row.schedule)} · {nextLabel(row)} · {row.last_error_kind ? 'failed' : row.last_task_id ? states[row.last_task_id]?.state ?? 'not reported' : 'not run'}</span> : null}</button>
           {view === 'table' ? <span title={`${scheduleLabel(row.schedule)} · ${scheduleTimezone(row.schedule)}`} className="hidden w-[132px] shrink-0 items-center gap-1.5 text-[11px] font-semibold text-aurora-text-primary sm:inline-flex"><Clock3 className="size-[11px] shrink-0 text-aurora-text-muted" /><span className="truncate">{scheduleLabel(row.schedule)}</span></span> : null}
           {view === 'table' ? <span className="hidden w-[150px] shrink-0 min-[1180px]:block"><span title={agent ? `Agent v${agent.version} · catalog ${agent.catalog_generation}` : 'The server did not report the pinned Agent.'} className="block truncate rounded-full border border-aurora-accent-primary/20 bg-aurora-accent-primary/10 px-2 py-0.5 font-mono text-[9.5px] text-aurora-accent-strong">{agent?.catalog_generation ?? 'Not reported'}</span></span> : null}
           {view === 'table' ? <><span className="hidden w-[96px] shrink-0 min-[1000px]:block"><RunState state={row.last_error_kind ? 'failed' : row.last_task_id ? states[row.last_task_id]?.state : undefined} /></span><time dateTime={row.next_run_at ? new Date(row.next_run_at).toISOString() : undefined} title={row.next_run_at ? new Date(row.next_run_at).toLocaleString() : undefined} className="w-[86px] shrink-0 text-right text-[10.5px] tabular-nums text-aurora-text-muted">{nextLabel(row)}</time></> : null}

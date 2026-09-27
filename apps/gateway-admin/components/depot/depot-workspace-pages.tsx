@@ -6,9 +6,10 @@ import {
   FileCode2, Layers3, Pause, Play, Search, Wrench,
 } from 'lucide-react'
 
+import { useCollectionView } from '@/hooks/use-collection-view'
 import { AppHeader } from '@/components/app-header'
 import { AURORA_PAGE_FRAME, AURORA_PAGE_SHELL } from '@/components/aurora/tokens'
-import { CollectionViewToggle, type CollectionViewMode } from '@/components/console/collection-view-toggle'
+import { CollectionViewToggle } from '@/components/console/collection-view-toggle'
 import { ConsoleHero } from '@/components/console/console-hero'
 import { DashboardPanel } from '@/components/dashboard/panel'
 import { ActionConfirmationDialog } from '@/components/action-confirmation-dialog'
@@ -290,16 +291,8 @@ export { TaskSchedulesPage as TasksPage } from './task-schedules-page'
 
 function AgentsCollection({agents,onSelect}:{agents:AgentView[];onSelect:(agent:AgentView)=>void}) {
   const [filter,setFilter]=useState('All')
-  const [view,setViewState]=useState<CollectionViewMode>('table')
+  const [view,selectView]=useCollectionView('labby.agents.layout')
   const shown=agents.filter(agent=>filter==='All'||agent.state===filter)
-  useEffect(()=>{
-    try {
-      const saved=window.localStorage.getItem('labby.agents.layout')
-      if(saved==='table'||saved==='list'||saved==='cards') setViewState(saved)
-      else if(window.matchMedia('(max-width: 640px)').matches) setViewState('cards')
-    } catch { if(window.matchMedia('(max-width: 640px)').matches) setViewState('cards') }
-  },[])
-  const selectView=(next:CollectionViewMode)=>{setViewState(next);try{window.localStorage.setItem('labby.agents.layout',next)}catch{}}
   const filters=<div className="flex flex-wrap items-center justify-end gap-1">{['All','active','suspended'].map(item=><button key={item} type="button" onClick={()=>setFilter(item)} aria-pressed={filter===item} className="min-h-9 rounded-full border border-aurora-border-subtle px-3 py-1 text-[10px] font-semibold text-aurora-text-muted aria-pressed:border-aurora-accent-primary aria-pressed:bg-aurora-accent-primary aria-pressed:text-aurora-page-bg">{item}</button>)}<CollectionViewToggle value={view} onChange={selectView} ariaLabel="Agent view" /></div>
   return <DashboardPanel title="Definitions" action={filters}>
     {!shown.length?<p className="px-3 py-8 text-center text-sm text-aurora-text-muted">No Agent definitions match this filter.</p>:view==='table'?<div className="aurora-scrollbar overflow-x-auto"><table className="w-full min-w-[680px] text-sm"><thead><tr className="border-b border-aurora-border-subtle">{['Status','Agent','Owner','Revision','Runtime','Catalog'].map(head=><th key={head} className="px-3 py-2 text-left text-[9px] font-bold uppercase tracking-[.14em] text-aurora-text-muted">{head}</th>)}</tr></thead><tbody>{shown.map(agent=><tr key={agent.agent_id} onClick={()=>onSelect(agent)} className="cursor-pointer border-b border-aurora-border-subtle/70 last:border-0 hover:bg-aurora-hover-bg"><td className="px-3 py-3"><StatusDot status={agent.state}/></td><td className="px-3 py-3"><button type="button" onClick={event=>{event.stopPropagation();onSelect(agent)}} className="font-semibold text-aurora-text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary">{agent.agent_id}</button></td><td className="px-3 py-3"><Badge variant="outline" className="text-aurora-accent-primary">{agent.owner_kind}:{agent.owner_id}</Badge></td><td className="px-3 py-3 text-aurora-text-muted">v{agent.version}</td><td className="px-3 py-3 text-aurora-text-muted">Assistant LLM</td><td className="px-3 py-3 text-aurora-text-muted">{agent.catalog_generation}</td></tr>)}</tbody></table></div>:<div className={view==='cards'?'grid gap-3 sm:grid-cols-2 xl:grid-cols-3':'divide-y divide-aurora-border-subtle'}>{shown.map(agent=><button type="button" key={agent.agent_id} onClick={()=>onSelect(agent)} className={view==='cards'?'min-w-0 rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-low p-4 text-left hover:bg-aurora-hover-bg':'flex min-w-0 items-center gap-3 px-2 py-3 text-left hover:bg-aurora-hover-bg'}><StatusDot status={agent.state}/><span className="min-w-0 flex-1"><strong className="block truncate text-sm text-aurora-text-primary">{agent.agent_id}</strong><span className="mt-1 block truncate text-[11px] text-aurora-text-muted">{agent.owner_kind}:{agent.owner_id} · v{agent.version} · catalog {agent.catalog_generation}</span></span><Badge variant="outline" className="shrink-0 text-aurora-accent-primary">{agent.state}</Badge></button>)}</div>}
