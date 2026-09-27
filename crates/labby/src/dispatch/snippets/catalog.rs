@@ -40,7 +40,22 @@ struct SnippetValidationSchema {
 #[serde(untagged)]
 enum SnippetTestResultSchema {
     Single(Box<SnippetTestSingleSchema>),
+    Fixture(Box<SnippetFixtureReportSchema>),
     All(SnippetTestAllSchema),
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct SnippetFixtureReportSchema {
+    name: String,
+    passed: bool,
+    mode: String,
+    failures: Vec<String>,
+    metrics: serde_json::Value,
+    result: serde_json::Value,
+    exception: Option<String>,
+    calls: serde_json::Value,
+    unused: serde_json::Value,
 }
 
 #[allow(dead_code)]
@@ -284,7 +299,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "snippets.test",
-        description: "Execute one snippet and report pass/fail",
+        description: "Test with synthetic fixtures; real upstream calls require explicit live opt-in",
         destructive: false,
         requires_admin: true,
         returns: "SnippetTestResult",
@@ -306,7 +321,19 @@ pub const ACTIONS: &[ActionSpec] = &[
                 name: "all",
                 ty: "boolean",
                 required: false,
-                description: "Run every listed snippet with default params",
+                description: "Run every listed snippet with default params; requires live: true",
+            },
+            ParamSpec {
+                name: "fixture",
+                ty: "object",
+                required: false,
+                description: "Synthetic calls, input, JSON Pointer assertions, and execution budgets; no live gateway",
+            },
+            ParamSpec {
+                name: "live",
+                ty: "boolean",
+                required: false,
+                description: "Explicit opt-in to real upstream execution; conflicts with fixture",
             },
         ],
     },

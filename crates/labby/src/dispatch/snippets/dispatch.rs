@@ -29,8 +29,19 @@ struct ExecParams {
     name: Option<String>,
     #[serde(default)]
     params: Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TestParams {
+    name: Option<String>,
+    #[serde(default)]
+    params: Value,
     #[serde(default)]
     all: bool,
+    #[serde(default)]
+    live: bool,
+    fixture: Option<labby_codemode::snippet::harness::SnippetFixture>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -175,7 +186,32 @@ async fn dispatch_inner(
             to_json(outcome.display_response)
         }
         "snippets.test" => {
-            let params: ExecParams = parse_params(params)?;
+            let params: TestParams = parse_params(params)?;
+            if let Some(fixture) = params.fixture {
+                if params.live || params.all {
+                    return Err(ToolError::InvalidParam {
+                        message: "fixture mode conflicts with live and all".into(),
+                        param: "fixture".into(),
+                    });
+                }
+                let name = params
+                    .name
+                    .ok_or_else(|| missing_param("fixture tests require a snippet name", "name"))?;
+                return super::fixture::run(
+                    &name,
+                    &fixture,
+                    params.params,
+                    execution_caller,
+                    execution_surface,
+                )
+                .await;
+            }
+            if !params.live {
+                return Err(missing_param(
+                    "provide a fixture for offline tests or explicitly set live: true",
+                    "fixture",
+                ));
+            }
             if params.all {
                 return test_all_snippets(
                     manager,

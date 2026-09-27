@@ -6171,7 +6171,7 @@
         },
         {
           "name": "snippets.test",
-          "description": "Execute one snippet and report pass/fail",
+          "description": "Test with synthetic fixtures; real upstream calls require explicit live opt-in",
           "destructive": false,
           "requires_admin": true,
           "required_scopes": [
@@ -6194,7 +6194,19 @@
               "name": "all",
               "ty": "boolean",
               "required": false,
-              "description": "Run every listed snippet with default params"
+              "description": "Run every listed snippet with default params; requires live: true"
+            },
+            {
+              "name": "fixture",
+              "ty": "object",
+              "required": false,
+              "description": "Synthetic calls, input, JSON Pointer assertions, and execution budgets; no live gateway"
+            },
+            {
+              "name": "live",
+              "ty": "boolean",
+              "required": false,
+              "description": "Explicit opt-in to real upstream execution; conflicts with fixture"
             }
           ],
           "returns": "SnippetTestResult"

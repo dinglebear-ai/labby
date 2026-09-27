@@ -899,7 +899,12 @@ fn parse_inputs_block(
                 param: "body".to_string(),
             });
         };
-        validate_snippet_name(input_name)?;
+        // Input keys are object properties, not filesystem snippet identifiers.
+        // Preserve case while retaining separator and path restrictions.
+        validate_snippet_name(&input_name.to_ascii_lowercase()).map_err(|_| ToolError::InvalidParam {
+            message: format!("invalid snippet input name `{input_name}`; use ASCII letters, digits, hyphens, and underscores"),
+            param: "inputs".to_string(),
+        })?;
         i += 1;
 
         let mut ty = None;

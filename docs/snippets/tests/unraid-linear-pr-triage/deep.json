@@ -1,0 +1,1508 @@
+{
+  "input": {
+    "deep": true
+  },
+  "calls": [
+    {
+      "tool": "linear-notification-worker::list_issues",
+      "match": {
+        "team": "U8",
+        "assignee": "me",
+        "state": "started"
+      },
+      "result": {
+        "issues": [
+          {
+            "id": "U8-1",
+            "title": "Fixture U8-1",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-2",
+            "title": "Fixture U8-2",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-3",
+            "title": "Fixture U8-3",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-4",
+            "title": "Fixture U8-4",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-5",
+            "title": "Fixture U8-5",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-6",
+            "title": "Fixture U8-6",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-7",
+            "title": "Fixture U8-7",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-8",
+            "title": "Fixture U8-8",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-9",
+            "title": "Fixture U8-9",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-10",
+            "title": "Fixture U8-10",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-11",
+            "title": "Fixture U8-11",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-12",
+            "title": "Fixture U8-12",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-13",
+            "title": "Fixture U8-13",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-14",
+            "title": "Fixture U8-14",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-15",
+            "title": "Fixture U8-15",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-16",
+            "title": "Fixture U8-16",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-17",
+            "title": "Fixture U8-17",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-18",
+            "title": "Fixture U8-18",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-19",
+            "title": "Fixture U8-19",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-20",
+            "title": "Fixture U8-20",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-21",
+            "title": "Fixture U8-21",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-22",
+            "title": "Fixture U8-22",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-23",
+            "title": "Fixture U8-23",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-24",
+            "title": "Fixture U8-24",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-25",
+            "title": "Fixture U8-25",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-26",
+            "title": "Fixture U8-26",
+            "status": "In Progress"
+          }
+        ],
+        "hasNextPage": false
+      }
+    },
+    {
+      "tool": "github::get_me",
+      "result": {
+        "login": "fixture-user"
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {
+        "query": "\"U8-1\" org:unraid OR \"U8-2\" org:unraid OR \"U8-3\" org:unraid OR \"U8-4\" org:unraid",
+        "perPage": 100
+      },
+      "result": {
+        "items": [
+          {
+            "number": 1001,
+            "title": "Fix U8-1",
+            "body": "Implements U8-1.",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1001",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": null
+            }
+          },
+          {
+            "number": 1002,
+            "title": "Fix U8-2",
+            "body": "Implements U8-2.",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1002",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": null
+            }
+          },
+          {
+            "number": 1003,
+            "title": "Fix U8-3",
+            "body": "Implements U8-3.",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1003",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": null
+            }
+          },
+          {
+            "number": 1004,
+            "title": "Fix U8-4",
+            "body": "Implements U8-4.",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1004",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": null
+            }
+          },
+          {
+            "number": 1090,
+            "title": "chore(main): release 8.0.0",
+            "body": "U8-26 U8-1",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1090",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": null
+            }
+          },
+          {
+            "number": 1091,
+            "title": "Fix U8-260",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1091",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": null
+            }
+          },
+          {
+            "number": 2001,
+            "title": "Fix U8-1",
+            "body": "Implements U8-1.",
+            "state": "closed",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/2001",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": "2026-01-01T00:00:00Z"
+            }
+          },
+          {
+            "number": 2002,
+            "title": "Fix U8-2",
+            "body": "Implements U8-2.",
+            "state": "closed",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/2002",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": "2026-01-01T00:00:00Z"
+            }
+          },
+          {
+            "number": 2003,
+            "title": "Fix U8-3",
+            "body": "Implements U8-3.",
+            "state": "closed",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/2003",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": "2026-01-01T00:00:00Z"
+            }
+          },
+          {
+            "number": 2004,
+            "title": "Fix U8-4",
+            "body": "Implements U8-4.",
+            "state": "closed",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/2004",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": "2026-01-01T00:00:00Z"
+            }
+          }
+        ],
+        "total_count": 10,
+        "incomplete_results": false
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {
+        "query": "\"U8-5\" org:unraid OR \"U8-6\" org:unraid OR \"U8-7\" org:unraid OR \"U8-8\" org:unraid",
+        "perPage": 100
+      },
+      "result": {
+        "items": [
+          {
+            "number": 1005,
+            "title": "Fix U8-5",
+            "body": "Implements U8-5.",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1005",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": null
+            }
+          },
+          {
+            "number": 1006,
+            "title": "Fix U8-6",
+            "body": "Implements U8-6.",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1006",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": null
+            }
+          },
+          {
+            "number": 1007,
+            "title": "Fix U8-7",
+            "body": "Implements U8-7.",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1007",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": null
+            }
+          },
+          {
+            "number": 1008,
+            "title": "Fix U8-8",
+            "body": "Implements U8-8.",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1008",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": null
+            }
+          },
+          {
+            "number": 2005,
+            "title": "Fix U8-5",
+            "body": "Implements U8-5.",
+            "state": "closed",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/2005",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": "2026-01-01T00:00:00Z"
+            }
+          },
+          {
+            "number": 2006,
+            "title": "Fix U8-6",
+            "body": "Implements U8-6.",
+            "state": "closed",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/2006",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": "2026-01-01T00:00:00Z"
+            }
+          },
+          {
+            "number": 2007,
+            "title": "Fix U8-7",
+            "body": "Implements U8-7.",
+            "state": "closed",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/2007",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": "2026-01-01T00:00:00Z"
+            }
+          },
+          {
+            "number": 2008,
+            "title": "Fix U8-8",
+            "body": "Implements U8-8.",
+            "state": "closed",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/2008",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": "2026-01-01T00:00:00Z"
+            }
+          }
+        ],
+        "total_count": 8,
+        "incomplete_results": false
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {
+        "query": "\"U8-9\" org:unraid OR \"U8-10\" org:unraid OR \"U8-11\" org:unraid OR \"U8-12\" org:unraid",
+        "perPage": 100
+      },
+      "result": {
+        "items": [
+          {
+            "number": 1009,
+            "title": "Fix U8-9",
+            "body": "Implements U8-9.",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1009",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": null
+            }
+          },
+          {
+            "number": 1010,
+            "title": "Fix U8-10",
+            "body": "Implements U8-10.",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1010",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": null
+            }
+          },
+          {
+            "number": 1011,
+            "title": "Fix U8-11",
+            "body": "Implements U8-11.",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1011",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": null
+            }
+          },
+          {
+            "number": 1012,
+            "title": "Fix U8-12",
+            "body": "Implements U8-12.",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1012",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": null
+            }
+          },
+          {
+            "number": 2009,
+            "title": "Fix U8-9",
+            "body": "Implements U8-9.",
+            "state": "closed",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/2009",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": "2026-01-01T00:00:00Z"
+            }
+          },
+          {
+            "number": 2010,
+            "title": "Fix U8-10",
+            "body": "Implements U8-10.",
+            "state": "closed",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/2010",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": "2026-01-01T00:00:00Z"
+            }
+          },
+          {
+            "number": 2011,
+            "title": "Fix U8-11",
+            "body": "Implements U8-11.",
+            "state": "closed",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/2011",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": "2026-01-01T00:00:00Z"
+            }
+          },
+          {
+            "number": 2012,
+            "title": "Fix U8-12",
+            "body": "Implements U8-12.",
+            "state": "closed",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/2012",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": "2026-01-01T00:00:00Z"
+            }
+          }
+        ],
+        "total_count": 8,
+        "incomplete_results": false
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {
+        "query": "\"U8-13\" org:unraid OR \"U8-14\" org:unraid OR \"U8-15\" org:unraid OR \"U8-16\" org:unraid",
+        "perPage": 100
+      },
+      "result": {
+        "items": [
+          {
+            "number": 1013,
+            "title": "Fix U8-13",
+            "body": "Implements U8-13.",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1013",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": null
+            }
+          },
+          {
+            "number": 1014,
+            "title": "Fix U8-14",
+            "body": "Implements U8-14.",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1014",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": null
+            }
+          },
+          {
+            "number": 1015,
+            "title": "Fix U8-15",
+            "body": "Implements U8-15.",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1015",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": null
+            }
+          },
+          {
+            "number": 1016,
+            "title": "Fix U8-16",
+            "body": "Implements U8-16.",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1016",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": null
+            }
+          },
+          {
+            "number": 2013,
+            "title": "Fix U8-13",
+            "body": "Implements U8-13.",
+            "state": "closed",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/2013",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": "2026-01-01T00:00:00Z"
+            }
+          },
+          {
+            "number": 2014,
+            "title": "Fix U8-14",
+            "body": "Implements U8-14.",
+            "state": "closed",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/2014",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": "2026-01-01T00:00:00Z"
+            }
+          },
+          {
+            "number": 2015,
+            "title": "Fix U8-15",
+            "body": "Implements U8-15.",
+            "state": "closed",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/2015",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": "2026-01-01T00:00:00Z"
+            }
+          },
+          {
+            "number": 2016,
+            "title": "Fix U8-16",
+            "body": "Implements U8-16.",
+            "state": "closed",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/2016",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": "2026-01-01T00:00:00Z"
+            }
+          }
+        ],
+        "total_count": 8,
+        "incomplete_results": false
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {
+        "query": "\"U8-17\" org:unraid OR \"U8-18\" org:unraid OR \"U8-19\" org:unraid OR \"U8-20\" org:unraid",
+        "perPage": 100
+      },
+      "result": {
+        "items": [
+          {
+            "number": 1017,
+            "title": "Fix U8-17",
+            "body": "Implements U8-17.",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1017",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": null
+            }
+          },
+          {
+            "number": 1018,
+            "title": "Fix U8-18",
+            "body": "Implements U8-18.",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1018",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": null
+            }
+          },
+          {
+            "number": 1019,
+            "title": "Fix U8-19",
+            "body": "Implements U8-19.",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1019",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": null
+            }
+          },
+          {
+            "number": 1020,
+            "title": "Fix U8-20",
+            "body": "Implements U8-20.",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1020",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": null
+            }
+          },
+          {
+            "number": 2017,
+            "title": "Fix U8-17",
+            "body": "Implements U8-17.",
+            "state": "closed",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/2017",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": "2026-01-01T00:00:00Z"
+            }
+          },
+          {
+            "number": 2018,
+            "title": "Fix U8-18",
+            "body": "Implements U8-18.",
+            "state": "closed",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/2018",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": "2026-01-01T00:00:00Z"
+            }
+          },
+          {
+            "number": 2019,
+            "title": "Fix U8-19",
+            "body": "Implements U8-19.",
+            "state": "closed",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/2019",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": "2026-01-01T00:00:00Z"
+            }
+          },
+          {
+            "number": 2020,
+            "title": "Fix U8-20",
+            "body": "Implements U8-20.",
+            "state": "closed",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/2020",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": "2026-01-01T00:00:00Z"
+            }
+          }
+        ],
+        "total_count": 8,
+        "incomplete_results": false
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {
+        "query": "\"U8-21\" org:unraid OR \"U8-22\" org:unraid OR \"U8-23\" org:unraid OR \"U8-24\" org:unraid",
+        "perPage": 100
+      },
+      "result": {
+        "items": [
+          {
+            "number": 1021,
+            "title": "Fix U8-21",
+            "body": "Implements U8-21.",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1021",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": null
+            }
+          },
+          {
+            "number": 1022,
+            "title": "Fix U8-22",
+            "body": "Implements U8-22.",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1022",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": null
+            }
+          },
+          {
+            "number": 1023,
+            "title": "Fix U8-23",
+            "body": "Implements U8-23.",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1023",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": null
+            }
+          },
+          {
+            "number": 1024,
+            "title": "Fix U8-24",
+            "body": "Implements U8-24.",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1024",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": null
+            }
+          },
+          {
+            "number": 2021,
+            "title": "Fix U8-21",
+            "body": "Implements U8-21.",
+            "state": "closed",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/2021",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": "2026-01-01T00:00:00Z"
+            }
+          },
+          {
+            "number": 2022,
+            "title": "Fix U8-22",
+            "body": "Implements U8-22.",
+            "state": "closed",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/2022",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": "2026-01-01T00:00:00Z"
+            }
+          },
+          {
+            "number": 2023,
+            "title": "Fix U8-23",
+            "body": "Implements U8-23.",
+            "state": "closed",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/2023",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": "2026-01-01T00:00:00Z"
+            }
+          },
+          {
+            "number": 2024,
+            "title": "Fix U8-24",
+            "body": "Implements U8-24.",
+            "state": "closed",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/2024",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": "2026-01-01T00:00:00Z"
+            }
+          }
+        ],
+        "total_count": 8,
+        "incomplete_results": false
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {
+        "query": "\"U8-25\" org:unraid OR \"U8-26\" org:unraid",
+        "perPage": 100
+      },
+      "result": {
+        "items": [
+          {
+            "number": 1025,
+            "title": "Fix U8-25",
+            "body": "Implements U8-25.",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1025",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": null
+            }
+          },
+          {
+            "number": 2025,
+            "title": "Fix U8-25",
+            "body": "Implements U8-25.",
+            "state": "closed",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/2025",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": "2026-01-01T00:00:00Z"
+            }
+          },
+          {
+            "number": 2026,
+            "title": "Fix U8-26",
+            "body": "Implements U8-26.",
+            "state": "closed",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/2026",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": "2026-01-01T00:00:00Z"
+            }
+          }
+        ],
+        "total_count": 3,
+        "incomplete_results": false
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {
+        "query": "author:fixture-user is:open org:unraid"
+      },
+      "result": {
+        "items": [
+          {
+            "number": 1097,
+            "title": "Fix U8-97",
+            "body": "Implements U8-97.",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1097",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": null
+            }
+          },
+          {
+            "number": 1098,
+            "title": "Fix U8-98",
+            "body": "Implements U8-98.",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/cloudflare/pull/1098",
+            "repository_url": "https://api.github.com/repos/unraid/cloudflare",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": null
+            }
+          },
+          {
+            "number": 1099,
+            "title": "chore(main): release 8.0.0",
+            "body": "Implements U8-99.",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/1099",
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "user": {
+              "login": "fixture-user"
+            },
+            "pull_request": {
+              "merged_at": null
+            }
+          }
+        ],
+        "total_count": 3
+      }
+    },
+    {
+      "tool": "linear-notification-worker::get_handoff",
+      "match": {
+        "issue": "U8-1"
+      },
+      "result": {
+        "success": true,
+        "status": {
+          "stateName": "QA Ready",
+          "stateType": "started",
+          "previousHandoffs": [],
+          "previousQaRuns": []
+        }
+      }
+    },
+    {
+      "tool": "linear-notification-worker::get_handoff",
+      "match": {
+        "issue": "U8-2"
+      },
+      "result": {
+        "success": true,
+        "status": {
+          "stateName": "QA Ready",
+          "stateType": "started",
+          "previousHandoffs": [],
+          "previousQaRuns": []
+        }
+      }
+    },
+    {
+      "tool": "linear-notification-worker::get_handoff",
+      "match": {
+        "issue": "U8-3"
+      },
+      "result": {
+        "success": true,
+        "status": {
+          "stateName": "QA Ready",
+          "stateType": "started",
+          "previousHandoffs": [],
+          "previousQaRuns": []
+        }
+      }
+    },
+    {
+      "tool": "linear-notification-worker::get_handoff",
+      "match": {
+        "issue": "U8-4"
+      },
+      "result": {
+        "success": true,
+        "status": {
+          "stateName": "QA Ready",
+          "stateType": "started",
+          "previousHandoffs": [],
+          "previousQaRuns": []
+        }
+      }
+    },
+    {
+      "tool": "linear-notification-worker::get_handoff",
+      "match": {
+        "issue": "U8-5"
+      },
+      "result": {
+        "success": true,
+        "status": {
+          "stateName": "QA Ready",
+          "stateType": "started",
+          "previousHandoffs": [],
+          "previousQaRuns": []
+        }
+      }
+    },
+    {
+      "tool": "linear-notification-worker::get_handoff",
+      "match": {
+        "issue": "U8-6"
+      },
+      "result": {
+        "success": true,
+        "status": {
+          "stateName": "QA Ready",
+          "stateType": "started",
+          "previousHandoffs": [],
+          "previousQaRuns": []
+        }
+      }
+    },
+    {
+      "tool": "linear-notification-worker::get_handoff",
+      "match": {
+        "issue": "U8-7"
+      },
+      "result": {
+        "success": true,
+        "status": {
+          "stateName": "QA Ready",
+          "stateType": "started",
+          "previousHandoffs": [],
+          "previousQaRuns": []
+        }
+      }
+    },
+    {
+      "tool": "linear-notification-worker::get_handoff",
+      "match": {
+        "issue": "U8-8"
+      },
+      "result": {
+        "success": true,
+        "status": {
+          "stateName": "QA Ready",
+          "stateType": "started",
+          "previousHandoffs": [],
+          "previousQaRuns": []
+        }
+      }
+    },
+    {
+      "tool": "linear-notification-worker::get_handoff",
+      "match": {
+        "issue": "U8-9"
+      },
+      "result": {
+        "success": true,
+        "status": {
+          "stateName": "QA Ready",
+          "stateType": "started",
+          "previousHandoffs": [],
+          "previousQaRuns": []
+        }
+      }
+    },
+    {
+      "tool": "linear-notification-worker::get_handoff",
+      "match": {
+        "issue": "U8-10"
+      },
+      "result": {
+        "success": true,
+        "status": {
+          "stateName": "QA Ready",
+          "stateType": "started",
+          "previousHandoffs": [],
+          "previousQaRuns": []
+        }
+      }
+    },
+    {
+      "tool": "linear-notification-worker::get_handoff",
+      "match": {
+        "issue": "U8-11"
+      },
+      "result": {
+        "success": true,
+        "status": {
+          "stateName": "QA Ready",
+          "stateType": "started",
+          "previousHandoffs": [],
+          "previousQaRuns": []
+        }
+      }
+    },
+    {
+      "tool": "linear-notification-worker::get_handoff",
+      "match": {
+        "issue": "U8-12"
+      },
+      "result": {
+        "success": true,
+        "status": {
+          "stateName": "QA Ready",
+          "stateType": "started",
+          "previousHandoffs": [],
+          "previousQaRuns": []
+        }
+      }
+    },
+    {
+      "tool": "linear-notification-worker::get_handoff",
+      "match": {
+        "issue": "U8-13"
+      },
+      "result": {
+        "success": true,
+        "status": {
+          "stateName": "QA Ready",
+          "stateType": "started",
+          "previousHandoffs": [],
+          "previousQaRuns": []
+        }
+      }
+    },
+    {
+      "tool": "linear-notification-worker::get_handoff",
+      "match": {
+        "issue": "U8-14"
+      },
+      "result": {
+        "success": true,
+        "status": {
+          "stateName": "QA Ready",
+          "stateType": "started",
+          "previousHandoffs": [],
+          "previousQaRuns": []
+        }
+      }
+    },
+    {
+      "tool": "linear-notification-worker::get_handoff",
+      "match": {
+        "issue": "U8-15"
+      },
+      "result": {
+        "success": true,
+        "status": {
+          "stateName": "QA Ready",
+          "stateType": "started",
+          "previousHandoffs": [],
+          "previousQaRuns": []
+        }
+      }
+    },
+    {
+      "tool": "linear-notification-worker::get_handoff",
+      "match": {
+        "issue": "U8-16"
+      },
+      "result": {
+        "success": true,
+        "status": {
+          "stateName": "QA Ready",
+          "stateType": "started",
+          "previousHandoffs": [],
+          "previousQaRuns": []
+        }
+      }
+    },
+    {
+      "tool": "linear-notification-worker::get_handoff",
+      "match": {
+        "issue": "U8-17"
+      },
+      "result": {
+        "success": true,
+        "status": {
+          "stateName": "QA Ready",
+          "stateType": "started",
+          "previousHandoffs": [],
+          "previousQaRuns": []
+        }
+      }
+    },
+    {
+      "tool": "linear-notification-worker::get_handoff",
+      "match": {
+        "issue": "U8-18"
+      },
+      "result": {
+        "success": true,
+        "status": {
+          "stateName": "QA Ready",
+          "stateType": "started",
+          "previousHandoffs": [],
+          "previousQaRuns": []
+        }
+      }
+    },
+    {
+      "tool": "linear-notification-worker::get_handoff",
+      "match": {
+        "issue": "U8-19"
+      },
+      "result": {
+        "success": true,
+        "status": {
+          "stateName": "QA Ready",
+          "stateType": "started",
+          "previousHandoffs": [],
+          "previousQaRuns": []
+        }
+      }
+    },
+    {
+      "tool": "linear-notification-worker::get_handoff",
+      "match": {
+        "issue": "U8-20"
+      },
+      "result": {
+        "success": true,
+        "status": {
+          "stateName": "QA Ready",
+          "stateType": "started",
+          "previousHandoffs": [],
+          "previousQaRuns": []
+        }
+      }
+    },
+    {
+      "tool": "linear-notification-worker::get_handoff",
+      "match": {
+        "issue": "U8-21"
+      },
+      "result": {
+        "success": true,
+        "status": {
+          "stateName": "QA Ready",
+          "stateType": "started",
+          "previousHandoffs": [],
+          "previousQaRuns": []
+        }
+      }
+    },
+    {
+      "tool": "linear-notification-worker::get_handoff",
+      "match": {
+        "issue": "U8-22"
+      },
+      "result": {
+        "success": true,
+        "status": {
+          "stateName": "QA Ready",
+          "stateType": "started",
+          "previousHandoffs": [],
+          "previousQaRuns": []
+        }
+      }
+    },
+    {
+      "tool": "linear-notification-worker::get_handoff",
+      "match": {
+        "issue": "U8-23"
+      },
+      "result": {
+        "success": true,
+        "status": {
+          "stateName": "QA Ready",
+          "stateType": "started",
+          "previousHandoffs": [],
+          "previousQaRuns": []
+        }
+      }
+    },
+    {
+      "tool": "linear-notification-worker::get_handoff",
+      "match": {
+        "issue": "U8-24"
+      },
+      "result": {
+        "success": true,
+        "status": {
+          "stateName": "QA Ready",
+          "stateType": "started",
+          "previousHandoffs": [],
+          "previousQaRuns": []
+        }
+      }
+    },
+    {
+      "tool": "linear-notification-worker::get_handoff",
+      "match": {
+        "issue": "U8-25"
+      },
+      "result": {
+        "success": true,
+        "status": {
+          "stateName": "QA Ready",
+          "stateType": "started",
+          "previousHandoffs": [],
+          "previousQaRuns": []
+        }
+      }
+    },
+    {
+      "tool": "linear-notification-worker::get_handoff",
+      "match": {
+        "issue": "U8-26"
+      },
+      "result": {
+        "success": true,
+        "status": {
+          "stateName": "QA Ready",
+          "stateType": "started",
+          "previousHandoffs": [],
+          "previousQaRuns": []
+        }
+      }
+    }
+  ],
+  "expect": {
+    "/ok": true,
+    "/complete": true,
+    "/summary/issueCount": 26,
+    "/summary/issuesWithOpenPRs": 25,
+    "/summary/myOpenPRCount": 2,
+    "/summary/toolCalls": 36,
+    "/summary/handoffCalls": 26,
+    "/summary/relatedPRSearchCalls": 7,
+    "/issues/25/openPRs": [],
+    "/issues/25/historicalPRs/0/merged": true,
+    "/issues/0/handoff/state": "QA Ready"
+  },
+  "absent": [],
+  "min_parallel_calls": 8,
+  "budgets": {
+    "tool_calls": 40,
+    "wall_clock_ms": 20000,
+    "output_bytes": 16000
+  }
+}

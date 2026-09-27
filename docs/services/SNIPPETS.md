@@ -1,7 +1,7 @@
 ---
 title: "Snippets Service"
 created: "2026-08-18"
-updated: "2026-08-18"
+updated: "2026-09-26"
 ---
 
 # Snippets Service
@@ -22,7 +22,7 @@ preserve omission separately from an explicit empty array. Declarations are
 bounded to 128 unique identifiers of at most 1,024 bytes each; reserved local
 capabilities, malformed identifiers, and duplicate declaration keys are rejected.
 
-For native saved-snippet execution (`snippets.exec` / `snippets.test`), Labby
+For native saved-snippet execution (`snippets.exec` / live `snippets.test`), Labby
 intersects a declaration with the caller's existing Code Mode policy before
 building the catalog. The declaration can narrow authority but never grant it:
 omission keeps the legacy caller scope, `[]` denies all upstream tools, and a
@@ -42,6 +42,16 @@ Built-in snippets are read-only through the user-snippet mutation surface. Expli
 ## Execution
 
 Snippet code must evaluate to an async arrow function and executes inside the same bounded Javy/QuickJS Code Mode runtime used by gateway Code Mode. Tool calls are resolved through the live gateway catalog rather than guessed or hard-coded at the host boundary.
+
+## Testing
+
+`snippets.test` requires either a synthetic `fixture` object or explicit
+`live: true`. Offline fixtures run without a gateway and enforce assertions,
+call consumption, concurrency expectations, and execution budgets. The CLI
+returns a failing exit status when the test report does not pass.
+
+See [Snippet testing](../dev/SNIPPET_TESTING.md) for fixture schemas, supported
+mock APIs, migration notes, and the distinction between fixture and live tests.
 
 ## Related Docs
 

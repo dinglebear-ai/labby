@@ -4625,7 +4625,7 @@ Commands:
   add       Add a user snippet. Existing snippets require explicit --force replacement
   validate  Validate a snippet without saving or executing it
   remove    Remove a user snippet
-  test      Execute a snippet and report pass/fail
+  test      Test with offline fixtures, or explicitly opt in to live upstream calls
 
 Options:
       --json
@@ -4946,7 +4946,7 @@ Options:
 ## `labby snippet test`
 
 ```text
-Execute a snippet and report pass/fail
+Test with offline fixtures, or explicitly opt in to live upstream calls
 
 Usage: labby snippet test [OPTIONS] [NAME]
 
@@ -4955,8 +4955,8 @@ Arguments:
 
 
 Options:
-      --all
-          Run every listed snippet with default params
+      --fixture <FIXTURE>
+          Synthetic JSON fixture. No gateway or live upstream is initialized
 
       --json
           Emit machine-readable JSON. Diagnostics never enter stdout
@@ -4967,11 +4967,17 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
-      --param <KEY=VALUE>
-          Input values passed to the snippet as key=value pairs
+      --live
+          Execute real upstream calls, which may mutate state depending on the snippet
+
+      --all
+          Run every listed snippet with default params
 
   -v, --verbose...
           Include diagnostic events on stderr. Repeat for trace-level detail
+
+      --param <KEY=VALUE>
+          Input values passed to the snippet as key=value pairs
 
   -q, --quiet
           Suppress console logs, but always report command errors
