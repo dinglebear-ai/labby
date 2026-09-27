@@ -1919,9 +1919,9 @@ async fn mcp_app_disable_hides_ui_surface_and_enable_restores_it() {
         )
         .await
         .expect_err("cached app resource must stay hidden while disabled");
-    assert!(
-        stale_resource.message.contains("unknown UI resource"),
-        "cached resource should be hidden as unknown: {stale_resource:?}"
+    assert_eq!(
+        stale_resource.data.as_ref().unwrap()["kind"],
+        "app_disabled"
     );
 
     let enable = running
@@ -2320,7 +2320,7 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
             )
             .await
             .expect_err("disabled app resource must be unreadable");
-        assert!(stale.message.contains("unknown UI resource"), "{stale:?}");
+        assert_eq!(stale.data.as_ref().unwrap()["kind"], "app_disabled");
     }
     #[cfg(feature = "skills")]
     {
@@ -2332,7 +2332,7 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
             )
             .await
             .expect_err("disabled Skill Library resource must be unreadable");
-        assert!(stale.message.contains("unknown UI resource"), "{stale:?}");
+        assert_eq!(stale.data.as_ref().unwrap()["kind"], "app_disabled");
     }
 
     let enable = running
