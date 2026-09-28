@@ -328,8 +328,14 @@ mod tests {
 
         assert_eq!(
             registration.tools.len(),
-            2,
-            "the migration peer must expose its router and complete atomic tools"
+            3,
+            "the migration peer must expose its router, atomic tool, and MCP App callback"
+        );
+        assert!(
+            registration
+                .tools
+                .iter()
+                .any(|tool| tool.name.as_ref() == "mcp_app")
         );
         let router = registration
             .tools

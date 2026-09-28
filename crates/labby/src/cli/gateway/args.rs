@@ -387,6 +387,12 @@ pub enum GatewayCodeCommand {
     },
     /// Read gateway-wide Code Mode settings.
     Status,
+    /// Configure the sources and artifact families included by Code Mode search.
+    #[command(name = "catalog")]
+    SearchConfig {
+        #[command(subcommand)]
+        command: GatewayCodeSearchConfigCommand,
+    },
     /// Enable the gateway codemode MCP surface.
     Enable,
     /// Disable the gateway codemode MCP surface.
@@ -404,6 +410,37 @@ pub enum GatewayCodeCommand {
         code: Option<String>,
         #[arg(long)]
         file: Option<std::path::PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum GatewayCodeSearchConfigCommand {
+    /// Read the effective Code Mode search policy.
+    Status,
+    /// Patch the effective Code Mode search policy without restarting the server.
+    Set {
+        /// Include a search source. Repeat or pass a comma-separated list.
+        #[arg(
+            long = "source",
+            value_delimiter = ',',
+            value_parser = ["personal_labby", "team_depot", "public_depot"],
+            conflicts_with = "clear_sources"
+        )]
+        sources: Vec<String>,
+        /// Disable every search source.
+        #[arg(long, conflicts_with = "sources")]
+        clear_sources: bool,
+        /// Include an artifact family. Repeat or pass a comma-separated list.
+        #[arg(
+            long = "kind",
+            value_delimiter = ',',
+            value_parser = ["tool", "skill", "command", "prompt", "subagent", "snippet"],
+            conflicts_with = "clear_kinds"
+        )]
+        kinds: Vec<String>,
+        /// Disable every artifact family.
+        #[arg(long, conflicts_with = "kinds")]
+        clear_kinds: bool,
     },
 }
 

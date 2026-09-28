@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse, json
 from pathlib import Path
 
-SURFACES = ("github", "npm", "incus", "mcp")
+REQUIRED_SURFACES = ("github", "npm", "mcp")
 parser = argparse.ArgumentParser()
 parser.add_argument("--manifest", type=Path, required=True)
 parser.add_argument("--observed", type=Path, required=True)
@@ -25,13 +25,18 @@ mismatched = sorted(name for name in want.keys() & got.keys() if want[name] != g
 expected_dist = expected.get("distributions", {})
 observed_dist = observed.get("distributions", {})
 distribution_errors = {}
-for surface in SURFACES:
+for surface in REQUIRED_SURFACES:
     if surface not in expected_dist:
         distribution_errors[surface] = "missing expectation"
     elif surface not in observed_dist:
         distribution_errors[surface] = "not observed"
     elif observed_dist[surface] != expected_dist[surface]:
         distribution_errors[surface] = {"expected": expected_dist[surface], "observed": observed_dist[surface]}
+if "incus" in expected_dist:
+    if "incus" not in observed_dist:
+        distribution_errors["incus"] = "not observed"
+    elif observed_dist["incus"] != expected_dist["incus"]:
+        distribution_errors["incus"] = {"expected": expected_dist["incus"], "observed": observed_dist["incus"]}
 observed_attestations = {row.get("subject"): row.get("status") for row in observed.get("attestations", [])}
 attestation_errors = {
     row["subject"]: observed_attestations.get(row["subject"], "not observed")

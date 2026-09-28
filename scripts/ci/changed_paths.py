@@ -111,6 +111,8 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
         or p
         in {
             ".github/labeler.yml",
+            "Justfile",
+            "scripts/ci/test_default_web_build.py",
             "tools/verification/conformance/expected-failures-dated.yaml",
             "tools/verification/conformance/expected-failures-extensions.yaml",
             "scripts/ci/changed_paths.py",
@@ -170,7 +172,11 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             "Justfile",
         },
     )
-    web = any_match(paths, lambda p: starts(p, "apps/gateway-admin/"))
+    web = any_match(
+        paths,
+        lambda p: starts(p, "apps/gateway-admin/")
+        or p in {"Justfile", "scripts/build-web.sh", "scripts/ci/test_default_web_build.py"},
+    )
     browser_extension = any_match(
         paths,
         lambda p: starts(
@@ -246,6 +252,9 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             "scripts/check-incus-ssh",
             "scripts/ci/build-incus-image.sh",
             "scripts/ci/smoke-incus-image.sh",
+            "scripts/ci/create-incus-image-manifest.py",
+            "scripts/ci/verify-incus-image-manifest.py",
+            "scripts/ci/promote-incus-pointer.sh",
             "scripts/ci/test-incus-contract.py",
             "scripts/ci/validate-supply-manifest.py",
         },

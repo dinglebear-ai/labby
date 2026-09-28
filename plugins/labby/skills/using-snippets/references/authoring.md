@@ -1,31 +1,6 @@
----
-name: creating-snippets
-description: Use when creating, editing, promoting, validating, testing, running, explaining, or removing Labby Code Mode snippets; when turning a successful Code Mode execution into a reusable workflow; or when building schema-backed snippets from live upstream tool ids, JSON schemas, inputs, defaults, artifacts, and CLI/MCP/API snippet actions.
----
+# Authoring and Maintaining Labby Snippets
 
-# Creating Snippets
-
-## Overview
-
-Labby snippets are saved Code Mode workflows: pick gateway MCP tools, fill their schema-typed params, call them from one async JavaScript arrow function, and return structured JSON. Keep snippet business logic in the snippet body; use Labby's snippets dispatch/CLI/MCP actions to store, validate, test, and execute it.
-
-## First Checks
-
-Use `$using-labby` before authoring any snippet that calls upstream tools. Search
-the live catalog with `codemode.search()` and inspect the selected path with
-`codemode.describe()`, then copy the returned ID, path, signature, and generated
-parameter docs; use the upstream's help/schema action where applicable. Never
-guess tool IDs or parameters.
-
-When a Labby source checkout is available, resolve its Git root and read these
-paths relative to it:
-
-- `docs/snippets/README.md`
-- `docs/services/SNIPPETS.md`
-- `crates/labby/src/dispatch/snippets/`
-
-If those paths are unavailable, treat the live gateway and `labby snippet --help` as the source of
-truth. Do not invent snippet actions, flags, tool ids, or schemas from memory.
+Load when creating, editing, promoting, validating, testing, or removing a snippet. Return to `SKILL.md` for discovery and ordinary execution.
 
 ## Snippet Shape
 

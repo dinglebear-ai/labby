@@ -14,6 +14,8 @@ pub(crate) mod artifact_sources;
 pub mod artifacts;
 pub mod browser;
 pub mod clients;
+#[cfg(feature = "gateway")]
+pub(crate) mod code_mode_search;
 pub mod depot;
 pub mod depot_publish;
 pub(crate) mod dev_containers;

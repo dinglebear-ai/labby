@@ -13,6 +13,7 @@ profile_yaml="${SMOKE_PROFILE_YAML:-$repo_root/config/incus/labby-gateway-profil
 backup_yaml="${SMOKE_BACKUP_YAML:-$repo_root/config/incus/labby-backup.yaml}"
 image_tar="${IMAGE_TAR:-}"
 expect_android_sdk="${SMOKE_EXPECT_ANDROID_SDK:-${LABBY_ENABLE_ANDROID_SDK:-0}}"
+smoke_binary="${SMOKE_LABBY_BINARY:-}"
 
 log() {
     printf '[labby-incus] %s\n' "$*"
@@ -377,6 +378,7 @@ if [[ -z "$image_tar" ]]; then
     image_tar="$(find "$export_dir" -maxdepth 1 -type f -name 'labby-incus-*.tar.xz' -print -quit)"
 fi
 [[ -n "$image_tar" && -f "$image_tar" ]] || die "missing exported image tarball in $export_dir"
+[[ -n "$smoke_binary" && -x "$smoke_binary" ]] || die "SMOKE_LABBY_BINARY must be an executable Linux Labby binary"
 
 install_incus_if_needed
 ensure_incus_ready
@@ -403,7 +405,8 @@ for path in \
     /home/labby/.labby/.env \
     /root/.labby/.env \
     /run/labby-ts-authkey \
-    /var/lib/tailscale/tailscaled.state
+    /var/lib/tailscale/tailscaled.state \
+    /usr/local/bin/labby
 do
     if container_file_exists "$container_name" "$path"; then
         echo "forbidden baked runtime state exists: $path" >&2
@@ -449,8 +452,7 @@ rg --version | head -1
 lsof -v 2>&1 | head -1
 rsync --version | head -1
 tailscale version | head -1
-labby --version
-labby skill --help | grep -q "Read locally visible skills"'
+'
 
 log "checking image does not contain runtime secrets"
 # shellcheck disable=SC2016
@@ -470,6 +472,10 @@ if env | grep -E "^(TS_AUTHKEY|LABBY_MCP_HTTP_TOKEN|OPENAI_API_KEY|ANTHROPIC_API
 fi'
 
 log "checking provision convergence"
+incus_cmd file push "$smoke_binary" "$container_name/usr/local/bin/labby"
+incus_cmd exec "$container_name" -- chmod 0755 /usr/local/bin/labby
+incus_cmd exec "$container_name" -- labby --version
+incus_cmd exec "$container_name" -- sh -lc 'labby skill --help | grep -q "Read locally visible skills"'
 incus_cmd exec "$container_name" -- labby setup --provision --yes
 incus_cmd exec "$container_name" -- systemctl is-active labby
 incus_cmd exec "$container_name" -- curl -fsS --connect-timeout 2 --max-time 10 http://127.0.0.1:8765/ready
@@ -485,7 +491,7 @@ bootstrap_cmd \
     --backup-config "$backup_yaml" \
     --storage-driver "$storage_driver" \
     --storage-pool "$storage_pool" \
-    --skip-install
+    --local-binary "$smoke_binary"
 incus_cmd exec "$bootstrap_container_name" -- systemctl is-active labby
 incus_cmd exec "$bootstrap_container_name" -- curl -fsS --connect-timeout 2 --max-time 10 http://127.0.0.1:8765/ready
 assert_container_config "$bootstrap_container_name" snapshots.schedule "@daily"

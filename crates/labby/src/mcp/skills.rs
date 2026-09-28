@@ -42,16 +42,9 @@ fn optional_header_str<'a>(
 }
 
 fn validate_skills_list_params(request: &CustomRequest) -> Result<(), ErrorData> {
-    let params = request
+    request
         .params_as::<SkillsListParams>()
-        .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?
-        .unwrap_or_default();
-    if params.cursor.is_some() {
-        return Err(ErrorData::invalid_params(
-            "skills/list cursor is invalid or stale",
-            None,
-        ));
-    }
+        .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
     Ok(())
 }
 
@@ -684,7 +677,7 @@ mod serve_tests {
 
     #[tokio::test]
     async fn first_party_get_rejects_a_supporting_file_uri() {
-        let uri = "skill://labby/creating-snippets/README.md";
+        let uri = "skill://labby/using-snippets/README.md";
         let registry = SkillRegistryContext::first_party_only();
         assert!(get_visible_skill(&registry, uri).await.unwrap().is_none());
     }

@@ -105,6 +105,13 @@ is intentionally allowed so a local `claude mcp serve` endpoint works without
 disabling the spawn guard. SSH can be used directly as a stdio transport for
 MCP services that speak MCP over a remote command. `[gateway]` knobs in `config.toml` control this:
 
+The Add Server form lists concrete `Host` aliases from the SSH config of the
+account running the Labby gateway (`~/.ssh/config`). Select a device and enter
+the command that starts its MCP stdio server. The form builds the SSH launch
+command, while the command-line field remains available for custom stdio
+setups. This list reflects the gateway host or container, not the operator
+browser's filesystem. Missing SSH config yields an empty device list.
+
 ```toml
 [[upstream]]
 name = "remote-mcp"
@@ -270,7 +277,21 @@ max_response_tokens = 6000
 token_estimate_divisor = 4
 max_log_entries = 1000
 max_log_bytes = 65536
+
+[code_mode.search]
+sources = ["personal_labby", "team_depot", "public_depot"]
+kinds = ["tool", "skill", "command", "prompt", "subagent", "snippet"]
 ```
+
+Both lists default to all values shown above. An empty list disables that part
+of search. Public Depot Skills use its indexed search API, so Code Mode does not
+list the entire public catalog to answer a query. Depot artifact queries also
+include Tools and Snippets when a provider advertises those kinds; providers
+that do not support a selected kind simply contribute no matches for it.
+Search still enforces the caller's project, route, and tool scope.
+Changes through the actions below apply to the next search without restarting
+Labby. Host Depot endpoints and credentials have a separate configuration
+lifecycle; see [runtime configuration](../runtime/CONFIG.md).
 
 CLI:
 
@@ -279,6 +300,8 @@ labby code status
 labby code enable
 labby code disable
 labby code run --code 'async () => (await codemode.search("GitHub issues")).total'
+labby code catalog status
+labby code catalog set --source personal_labby --source team_depot --kind skill --kind command
 ```
 
 HTTP/MCP gateway management actions:
@@ -290,6 +313,12 @@ HTTP/MCP gateway management actions:
 ```json
 { "action": "gateway.code_mode.set", "params": { "enabled": true, "trace_params": true, "result_shape_policy": "truncate", "timeout_ms": 5000, "max_log_entries": 100 } }
 ```
+
+To change only search participation, send `search_sources` and/or
+`search_kinds` to `gateway.code_mode.set`; omitted fields keep their current
+values. The same action is available through the authenticated HTTP gateway
+API and the MCP `gateway` tool. The `gateway` control-plane tool remains
+available on the root MCP route when Code Mode hides other raw tools.
 
 MCP `codemode` call shape:
 

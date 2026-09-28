@@ -318,10 +318,6 @@ actions:
       rm -rf /home/labby/.npm/_cacache
 
 files:
-  - generator: copy
-    source: "@@LABBY_BINARY@@"
-    path: /usr/local/bin/labby
-    mode: "0755"
   - generator: dump
     path: /etc/labby-image-release
     mode: "0644"

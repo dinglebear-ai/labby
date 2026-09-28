@@ -7,6 +7,10 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 ## Unreleased
 
+### Skills
+
+- Consolidate snippet discovery, execution, and authoring into `using-snippets` and add `using-codemode` for live gateway discovery and calls. The plugin and APM package now expose four skills; references to `creating-snippets` should migrate to `using-snippets`.
+
 ### Added
 
 - **auth/gateway:** add a central Google credential broker that reuses one

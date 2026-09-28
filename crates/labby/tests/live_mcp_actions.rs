@@ -517,7 +517,7 @@ async fn code_mode_hides_raw_service_tools_without_testing_code_mode_primitives(
         .collect::<BTreeSet<_>>();
     assert_eq!(
         visible_services,
-        BTreeSet::from(["server_logs".to_string()])
+        BTreeSet::from(["gateway".to_string(), "server_logs".to_string()])
     );
     assert!(advertised.contains("codemode"));
     let hidden = runner
@@ -815,7 +815,10 @@ async fn project_bound_non_admin_identity_narrows_discovery_and_denies_execution
     let tools = runner.list_tool_names().await.expect("scoped tools/list");
     // This Loadout has no upstreams. The protected gateway-subset route must
     // therefore reveal no raw operator service tools at all.
-    assert_eq!(tools, BTreeSet::from(["gateway".to_string()]));
+    assert_eq!(
+        tools,
+        BTreeSet::from(["gateway".to_string(), "mcp_app".to_string()])
+    );
     assert!(!tools.contains("setup"));
     assert!(!tools.contains("lab_admin"));
 

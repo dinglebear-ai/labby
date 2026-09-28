@@ -21,6 +21,10 @@ push_with_lease() {
   [[ $(remote_target) == "$target" ]] || { echo "rolling tag remote verification failed" >&2; return 1; }
 }
 verify_generation() {
+  if [[ -f "$1/incus-image-manifest.json" ]]; then
+    python3 scripts/ci/verify-incus-image-manifest.py "$1"
+    return
+  fi
   python3 - "$1" <<'PY'
 import hashlib, json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
@@ -39,6 +43,10 @@ PY
 
 case "$mode" in
   promote)
+    if [[ "$release_tag" == incus-* && "$release_tag" != "incus-$GITHUB_SHA" ]]; then
+      echo "image release tag does not match source commit" >&2
+      exit 1
+    fi
     mkdir -p "$receipt/candidate"
     remote_target >"$receipt/previous-target"
     # Reject stale generations even when npm publication of a newer generation
@@ -51,8 +59,14 @@ case "$mode" in
       git fetch --no-tags origin "$previous:$rollback_ref"
       [[ $(git rev-parse "$rollback_ref") == "$previous" ]]
       printf '%s\n' "$rollback_ref" >"$receipt/previous-ref"
-      previous_version=$(git show "$previous:Cargo.toml" | python3 -c 'import sys,tomllib; print(tomllib.loads(sys.stdin.read())["workspace"]["package"]["version"])')
-      python3 - "$release_tag" "$previous_version" <<'PYVERSION'
+      if [[ "$release_tag" == incus-* ]]; then
+        git merge-base --is-ancestor "$previous^{commit}" "$GITHUB_SHA" || {
+          echo "refusing to replace a newer Incus stable generation" >&2
+          exit 1
+        }
+      else
+        previous_version=$(git show "$previous:Cargo.toml" | python3 -c 'import sys,tomllib; print(tomllib.loads(sys.stdin.read())["workspace"]["package"]["version"])')
+        python3 - "$release_tag" "$previous_version" <<'PYVERSION'
 import re, sys
 
 def version(value):
@@ -63,11 +77,16 @@ def version(value):
 if version(sys.argv[1]) < version(sys.argv[2]):
     raise SystemExit("refusing to replace a newer Incus stable generation")
 PYVERSION
+      fi
     fi
     write_state "prepared"
     "$gh_bin" release download "$release_tag" --dir "$receipt/candidate"
     verify_generation "$receipt/candidate"
-    manifest_digest=$(sha256sum "$receipt/candidate/release-manifest.json" | awk '{print $1}')
+    manifest_path="$receipt/candidate/incus-image-manifest.json"
+    if [[ ! -f "$manifest_path" ]]; then
+      manifest_path="$receipt/candidate/release-manifest.json"
+    fi
+    manifest_digest=$(sha256sum "$manifest_path" | awk '{print $1}')
     printf '{"release_tag":"%s","git_sha":"%s","release_manifest_sha256":"%s"}\n' "$release_tag" "$GITHUB_SHA" "$manifest_digest" >"$receipt/candidate/generation.json"
     # Assets remain in the immutable versioned release namespace. The rolling
     # Git ref is the only mutable pointer and is changed with one leased CAS.
