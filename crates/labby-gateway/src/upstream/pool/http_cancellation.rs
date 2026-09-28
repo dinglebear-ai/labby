@@ -18,7 +18,7 @@ use labby_runtime::gateway_config::{UpstreamConfig, UpstreamTransport};
 
 use crate::{MCP_RELAY_CANCELLATION_REQUEST_METHOD, MCP_RELAY_CANCELLATION_TOKEN_META_KEY};
 
-use super::super::auth::configured_bearer_token;
+use super::super::auth::required_bearer_token;
 use super::super::http_client;
 #[cfg(unix)]
 use super::super::transport::unix_socket::LabbyUnixSocketHttpClient;
@@ -231,7 +231,8 @@ pub(super) async fn build_http_cancellation_sender(
         config
             .bearer_token_env
             .as_deref()
-            .and_then(configured_bearer_token)
+            .map(required_bearer_token)
+            .transpose()?
     } else {
         None
     };

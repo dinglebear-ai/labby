@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{OnceLock, RwLock};
 
-use super::super::auth::configured_bearer_token;
+use super::super::auth::{required_bearer_token, required_bearer_token_from_path};
 use super::super::types::{UpstreamRuntimeMetadata, UpstreamRuntimeOwner};
 use super::catalog_pagination;
 use super::connect::{
@@ -134,7 +134,7 @@ pub(super) async fn connect_stdio_upstream<H: ClientHandler + Clone>(
     handler: H,
     notification_interceptor: Option<RelayNotificationInterceptor>,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
-    let env = stdio_environment(config, None);
+    let env = stdio_environment(config, None)?;
     let command_spec = StdioCommandSpec {
         program: OsString::from(command),
         args: args.iter().map(OsString::from).collect(),
@@ -153,21 +153,20 @@ pub(super) async fn connect_stdio_upstream<H: ClientHandler + Clone>(
 fn stdio_environment(
     config: &UpstreamConfig,
     dotenv_path: Option<&std::path::Path>,
-) -> Vec<(OsString, OsString)> {
+) -> Result<Vec<(OsString, OsString)>, labby_runtime::error::ToolError> {
     let mut env = config
         .env
         .iter()
         .map(|(key, value)| (OsString::from(key), OsString::from(value)))
         .collect::<Vec<_>>();
-    if let Some(ref env_name) = config.bearer_token_env
-        && let Some(token) = dotenv_path.map_or_else(
-            || configured_bearer_token(env_name),
-            |path| super::super::auth::configured_bearer_token_from_path(env_name, Some(path)),
-        )
-    {
+    if let Some(ref env_name) = config.bearer_token_env {
+        let token = dotenv_path.map_or_else(
+            || required_bearer_token(env_name),
+            |path| required_bearer_token_from_path(env_name, Some(path)),
+        )?;
         env.push((OsString::from(env_name), OsString::from(token)));
     }
-    env
+    Ok(env)
 }
 
 pub(crate) async fn connect_direct_stdio<H: ClientHandler + Clone>(
@@ -761,7 +760,8 @@ mod conformance_tests {
         config.command = Some("server".to_string());
         config.bearer_token_env = Some("UPSTREAM_TOKEN".to_string());
 
-        let child_env = stdio_environment(&config, Some(&dotenv));
+        let child_env =
+            stdio_environment(&config, Some(&dotenv)).expect("configured stdio credential");
 
         assert!(config.oauth.is_none());
         assert!(

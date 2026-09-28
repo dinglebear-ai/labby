@@ -87,6 +87,7 @@ impl IntoResponse for ApiError {
             "busy" => StatusCode::TOO_MANY_REQUESTS,
             "sync_in_progress"
             | "service_unavailable"
+            | "upstream_credential_missing"
             | "provider_unavailable"
             | "source_unavailable"
             | "unavailable"
@@ -173,6 +174,14 @@ mod tests {
         })
         .into_response()
         .status()
+    }
+
+    #[test]
+    fn missing_upstream_credential_is_service_unavailable_not_caller_unauthorized() {
+        assert_eq!(
+            status_for("upstream_credential_missing"),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
     }
 
     #[test]
