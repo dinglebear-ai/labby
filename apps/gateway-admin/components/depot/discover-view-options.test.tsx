@@ -19,7 +19,7 @@ test('view options expose sort, density and layout controls', async () => {
   }
   const view = await renderClient(<DiscoverViewOptions {...props} />)
   try {
-    const trigger = view.container.querySelector('button')
+    const trigger = view.container.querySelector<HTMLButtonElement>('button[aria-label="Sort and density"]')
     assert.ok(trigger)
     await act(async () => { trigger.click() })
     assert.match(document.body.textContent ?? '', /Relevance/)
@@ -30,7 +30,10 @@ test('view options expose sort, density and layout controls', async () => {
     assert.ok(list)
     await act(async () => { list.click() })
     assert.equal(layout, 'list')
-    assert.equal(document.querySelector('button[aria-label="Table"]'), null)
+    const table = view.container.querySelector<HTMLButtonElement>('button[aria-label="Table view"]')
+    assert.ok(table)
+    await act(async () => { table.click() })
+    assert.equal(layout, 'table')
     assert.match(document.body.textContent ?? '', /Density/)
     const sortGroup = document.querySelector('[aria-label="Sort retained results"]')
     assert.ok(sortGroup)

@@ -428,7 +428,7 @@ export function OverviewHero({
           ) : null}
         </div>
 
-        <div data-console-hero-actions="1" style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
+        <div data-console-hero-actions-mixed="1" style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
           <button
             type="button"
             data-icon-text-control="1"

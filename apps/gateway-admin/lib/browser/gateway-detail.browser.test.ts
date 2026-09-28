@@ -553,8 +553,12 @@ test('Library follows responsive view defaults', { concurrency: false }, async (
   await assert.doesNotReject(() => page.locator('table').waitFor({ state: 'detached' }))
   await page.setViewportSize({ width: 1500, height: 800 })
   await assert.doesNotReject(() => page.locator('table').waitFor())
-  // The Library layout is viewport-driven: the finished mock removed the
-  // operator view override, so widening the viewport restores the table.
+  await page.getByRole('button', { name: 'List view', exact: true }).click()
+  await page.reload({ waitUntil: 'networkidle' })
+  await assert.doesNotReject(() => page.locator('table').waitFor({ state: 'detached' }))
+  assert.equal(await page.getByRole('button', { name: 'List view', exact: true }).getAttribute('aria-pressed'), 'true')
+  await page.setViewportSize({ width: 390, height: 844 })
+  assert.equal(await page.getByRole('button', { name: 'List view', exact: true }).getAttribute('aria-pressed'), 'true')
 })
 
 test('Docs labels historical records and preserves current-document status', { concurrency: false }, async (t) => {
@@ -671,6 +675,7 @@ test('every admin route stays overflow-free on narrow phone, phone, and tablet',
     await page.setViewportSize({ width: 1000, height: 800 })
     await page.waitForFunction(() => document.querySelector('aside[data-console-sidebar]')?.getAttribute('data-mobile-open') === '0')
     await page.setViewportSize({ width: viewport.width, height: viewport.height })
+    await page.locator('aside[data-console-sidebar][aria-hidden="true"]').waitFor({ state: 'attached' })
     assert.equal(await page.locator('aside[data-console-sidebar]').getAttribute('aria-hidden'), 'true')
     await menu.click()
     await page.locator('[data-mobile-nav-backdrop]').click({ position: { x: viewport.width - 2, y: 2 } })
@@ -1195,4 +1200,29 @@ test('Overview pointer drag reorders both directions within lanes and persists a
   await page.mouse.up()
   assert.deepEqual(await order('telemetry'), beforeCancel)
   assert.equal(await page.locator('[data-overview-insertion]').count(), 0)
+})
+
+
+test('Discovery table labels align with rows and remain usable on phones', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+  const browser = await chromium.launch({ headless: true })
+  t.after(async () => { await browser.close() })
+  const page = await browser.newPage({ viewport: { width: 1500, height: 900 } })
+  await page.goto(`${baseUrl}/depot/`, { waitUntil: 'networkidle' })
+  await page.getByRole('group', { name: 'Discovery layout' }).getByRole('button', { name: 'Table view' }).click()
+  const row = page.locator('[data-discover-result]').first()
+  await row.waitFor()
+  const columns = await row.evaluate((element) => {
+    const header = element.parentElement!.previousElementSibling!
+    const headers = [...header.children].filter(child => child.textContent?.trim())
+    const cells = [...element.querySelector('a')!.children].filter(child => !child.classList.contains('sr-only')).slice(1)
+    return headers.map((head, index) => ({ label: head.textContent, head: head.getBoundingClientRect().x, cell: cells[index].getBoundingClientRect().x }))
+  })
+  for (const column of columns) assert.ok(Math.abs(column.head - column.cell) <= 1, JSON.stringify(column))
+  await page.setViewportSize({ width: 390, height: 844 })
+  assert.equal(await page.getByRole('button', { name: 'Table view', exact: true }).getAttribute('aria-pressed'), 'true')
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1))
+  await page.getByRole('button', { name: 'Card view', exact: true }).click()
+  await page.reload({ waitUntil: 'networkidle' })
+  assert.equal(await page.getByRole('button', { name: 'Card view', exact: true }).getAttribute('aria-pressed'), 'true')
 })

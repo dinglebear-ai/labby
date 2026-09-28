@@ -25,8 +25,14 @@ test('desktop refresh control keeps its recency label visible', () => {
     />,
   )
 
+  assert.match(html, /data-console-hero-actions-mixed="1"/)
+  assert.doesNotMatch(html, /data-console-hero-actions="1"/)
   assert.match(html, /data-icon-text-control="1" data-visible-label="1"/)
   assert.match(html, /updated 0s ago/)
+  assert.ok(html.includes('>24h<'))
+  assert.ok(html.includes('>7d<'))
+  assert.ok(html.includes('>30d<'))
+  assert.ok(html.includes('>Manage Servers<'))
 })
 
 function gatewayWithStatus(status: Partial<Gateway['status']>): Gateway {
