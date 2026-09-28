@@ -8,6 +8,7 @@ Historical material that still has durable value lives under `docs/archive/` and
 
 ## Start Here
 
+- [Upstream runtime maintenance notes](./dev/UPSTREAM_INTERNALS.md) — on-demand implementation rationale; the scoped AGENTS.md remains the concise contributor entrypoint.
 - [Contributor instructions](../AGENTS.md) — canonical root rules, with CLAUDE.md and GEMINI.md compatibility symlinks.
 - [Development workflow](./dev/DEVELOPMENT.md) — checkout safety, prerequisites, owning layers, validation, and publication.
 - [Documentation maintenance](./dev/DOCUMENTATION.md) — source ownership, instruction topology, protected history, regeneration, and regression gates.
