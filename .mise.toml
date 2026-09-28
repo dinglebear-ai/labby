@@ -1,8 +1,7 @@
-# Exact pnpm follows the packageManager contracts in apps/gateway-admin and
-# apps/palette-tauri. Keep this on 9.15.9 until gateway-admin migrates its
-# legacy package.json "pnpm.overrides" block into pnpm-workspace.yaml; pnpm 11
-# warns that package.json pnpm settings are no longer read. Palette is already
-# on pnpm-workspace.yaml, but this root config must keep gateway-admin safe too.
+# Exact pnpm matches Gateway Admin and Labby Desktop packageManager contracts.
+# Gateway Admin still uses package.json pnpm.overrides; do not select pnpm 11
+# without migrating that configuration. Node is selected separately according
+# to each package engine contract (Gateway Admin requires Node 22.x).
 [tools]
 just = "1.56.0"
 "cargo:cargo-nextest" = "0.9.140"

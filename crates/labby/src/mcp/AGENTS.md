@@ -2,10 +2,10 @@
 
 This directory adapts shared product dispatch and reusable gateway/runtime behavior to the MCP protocol. It owns protocol dispatch, envelopes, resources, elicitation, and catalog projection, not product operation semantics. The pure setup/doctor SDK is one dependency, not the universal backend for every MCP service.
 
-## Tool descriptors are built twice — keep the two sites identical
+## One descriptor builder, two consumers
 
-Every Labby-owned `Tool` is constructed at **two** places, and they must produce
-byte-identical descriptors:
+`PermanentToolRegistry` in `permanent_tools.rs` is the sole construction site
+for Labby-owned descriptors. These two consumers must expose identical metadata:
 
 - `handlers_tools.rs::list_tools_impl` — what goes on the wire.
 - `peer_contract.rs::visible_tool_descriptors` — what feeds
@@ -52,16 +52,15 @@ produce different service sets. A new service needs a reviewed hint row; a
 
 Current annotation and safety-hint behavior is documented in `docs/surfaces/MCP.md`.
 
-## One tool per service
+## Router and atomic projections
 
-Each enabled service registers exactly one MCP tool in `crates/labby/src/registry.rs` (not `mcp/registry.rs`, which is a thin re-export). The tool name matches the service name. Normal services register directly from the shared dispatch layer:
-
-```rust
-#[cfg(feature = "gateway")]
-register_service!(reg, "gateway", gateway);
-```
-
-The default macro path reads `crate::dispatch::<service>::ACTIONS` and calls `crate::dispatch::<service>::dispatch`.
+The registry defaults to router projection: a service tool uses `action` +
+`params`. `ToolProjectionMode` also models atomic and combined publication.
+Atomic names and flat per-action schemas come from the same `ActionSpec` via
+`PermanentToolRegistry`; do not maintain a second authorization or schema
+catalog. Keep listing, exact resolution, output schemas, and peer-contract
+hashing synchronized for every supported projection. Registration lives in
+`crates/labby/src/registry.rs`; the MCP registry module is a compatibility alias.
 
 ## Dispatch pattern
 
@@ -70,7 +69,6 @@ For normal services, `dispatch/<service>/dispatch.rs` owns action routing, catal
 `mcp/services/` is now an exception layer, not the default adapter surface. Keep a module there only when it owns MCP-specific behavior that cannot live in shared dispatch. Current examples:
 
 - `fs` filters `fs.preview` out of MCP discovery and execution.
-- `nodes` owns MCP-only enrollment actions.
 - Code Mode is registered directly in the MCP layer and bypasses both
   `dispatch/` and `mcp/services/`. The public surface is intentionally split:
   `codemode` has no static app descriptor but may return dynamic `_meta.ui`
@@ -85,14 +83,15 @@ For normal services, `dispatch/<service>/dispatch.rs` owns action routing, catal
   open tool turn drains. `server_logs` keeps its text/service capability when
   its UI is hidden; `codemode` likewise remains text-only and executable when
   only the inspector is disabled.
-  Code Mode business logic remains in `dispatch/gateway/code_mode.rs` so the
-  native CLI can call the same broker without routing through MCP.
+  Shared Code Mode execution belongs in the extracted gateway/Code Mode
+  runtimes and product dispatch wiring, so the CLI does not route through MCP.
+  Do not recreate the removed product-local `dispatch/gateway/code_mode.rs`.
 
-**No business logic anywhere in `mcp/`.** If you find yourself calling `reqwest`, parsing JSON beyond param extraction, or retrying, move it to `labby-apis/src/<service>/client.rs`.
+**No product business logic in `mcp/`.** Transport adaptation stays here; operation semantics, upstream HTTP, validation, and retry policy belong in shared dispatch or the owning extracted runtime. Do not create an arbitrary SDK service module merely to move code out of this adapter.
 
 ## Structured error envelopes
 
-`ToolError` in `envelope.rs` is the **single canonical error type** across all three surfaces — MCP, API, and CLI. Every failure returns the same JSON shape:
+`ToolError` is defined in `labby-runtime/src/error.rs` and re-exported through product dispatch and `envelope.rs`. Preserve its structured fields across MCP/API/CLI. The abbreviated core fields below are examples, not complete current wire payloads: real errors also carry the agent-error version, origin, recovery, and side-effect metadata, with the appropriate adapter envelope.
 
 ```jsonc
 { "kind": "missing_param", "message": "missing required parameter `query`", "param": "query" }
@@ -117,8 +116,8 @@ SDK-layer kinds pass through from `ApiError::kind()` via `From<SdkError> for Too
 `ToolError` uses a **custom `Serialize`** (not `#[derive(Serialize)]`) so that the `Sdk` variant promotes its `sdk_kind` field to the top-level `kind` field. The result is byte-identical across MCP and HTTP — never `{"kind":"sdk","sdk_kind":"auth_failed"}`.
 
 - `Display` delegates to `serde_json::to_string(&self)` — output is always valid JSON.
-- `IntoResponse` serializes `self` directly; HTTP status is derived from `kind()`.
-- Tests in `envelope.rs` lock in this contract — do not break them.
+- The HTTP adapter in `api/error.rs` derives status from the shared kind and preserves refined metadata; do not invent a transport-specific error taxonomy.
+- Envelope tests and `labby-runtime/src/error.rs` / `agent_error.rs` tests lock in serialization and metadata preservation.
 
 ### Wiring per service
 
@@ -155,14 +154,13 @@ downstream client.
 `mcp/resource_proxy.rs` route proxied `call_tool`, `get_prompt`, and
 `read_resource` requests through the corresponding `UpstreamPool::*_relayed`
 method. Those methods use a dedicated connection served with
-`RelayClientHandler` (see `dispatch/upstream/pool/relay.rs`) instead of the
+`RelayClientHandler` (see `crates/labby-gateway/src/upstream/pool/relay.rs`) instead of the
 ordinary pooled connection. Both proxy branches do this automatically: the raw
 branch passes `subject = None`, while the OAuth branch forwards
-`oauth_subject`. The relay forwards upstream elicitation, sampling, roots,
-progress, and cancellation to the downstream peer; it never fulfills an
-interactive request inside Labby.
+`oauth_subject`. The relay preserves request-scoped capabilities, MRTR input exchanges,
+progress, and cancellation; it never fulfills client input inside Labby.
 
-Relay connections are cached per `(upstream, session_id, subject)`. `session_id`
+Relay connections are cached per `(upstream, session_id, subject, capability_fingerprint)`; capability generations may coexist while requests remain in flight. `session_id`
 is minted once per `LabMcpServer` session (`next_relay_session_id()`) and passed
 into `call_tool_relayed`; because each session has exactly one downstream agent
 peer, it guarantees a cached relay connection is never reused across agents — so
@@ -170,7 +168,7 @@ the first relayed call in a session pays the connect cost and subsequent calls
 reuse it, without risking misrouted elicitation. `subject` (the OAuth identity,
 `None` on the raw branch) is part of the key so a connection authenticated as
 one identity is never reused for a call made as another within the same session.
-It stays opt-in (gated) so the default path is the untouched pooled `call_tool`.
+Use the current request capability snapshot, including an honest empty snapshot when metadata is absent; never borrow capability history from an earlier request.
 
 **Deadline and cancellation.** A relayed request can block on a *human*
 answering forwarded elicitation, so `call_tool`, `get_prompt`, and
@@ -180,7 +178,7 @@ answering forwarded elicitation, so `call_tool`, `get_prompt`, and
 dialog left open would abort the upstream request. Each path also passes the
 current request cancellation token and request ID into the relay. See
 `config.rs` (`upstream_relay_timeout`) and
-`dispatch/upstream/pool/relay.rs`.
+`crates/labby-gateway/src/upstream/pool/relay.rs`.
 
 **Scope and capability exposure.** Relay handling covers proxied `call_tool`,
 `get_prompt`, and `read_resource`; discovery operations such as `list_prompts`
@@ -195,15 +193,13 @@ request or another downstream session.
 
 Every tool automatically supports `help` and `schema` without the service declaring them. The dispatcher intercepts these before the action match.
 
-## Shared catalog — one builder, three surfaces
+## Catalog ownership
 
-`build_catalog()` (in `crates/labby/src/catalog.rs`) is the **single source** feeding:
-
-1. The `lab.help` global MCP tool.
-2. The `lab://catalog` MCP resource.
-3. The generated `labby --help` CLI surface.
-
-Never duplicate catalog logic. If you need richer data, extend the builder.
+`crates/labby/src/catalog.rs::build_catalog` owns shared product catalog data
+used by MCP discovery/resources and generated service/action inventories.
+Extend that builder rather than duplicating catalog semantics. Operator CLI
+help and completion come from the Clap command graph, not this MCP catalog;
+changes to that graph require their own generated-help and completion checks.
 
 ## Resources
 

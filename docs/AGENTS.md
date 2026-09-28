@@ -12,7 +12,7 @@ Use `docs/README.md` as the index. Current product behavior belongs in the servi
 
 `docs/sessions/` and `docs/superpowers/` are protected historical/work-product trees: do not edit, move, retire, or link-audit them during a general documentation review. Explicitly approved PR changes require the maintainer-applied `protected-docs-approved` label. `docs/archive/` is historical, not current product truth.
 
-`docs/references/`, `docs/sessions/`, `docs/superpowers/`, `docs/archive/`, and `docs/plans/` are not sources of truth for current product behavior. Do not use them to override live code or canonical product docs. The `docs/sessions/` and `docs/superpowers/` trees are protected: do not edit, move, retire, or link-audit them during a normal documentation sweep. Explicitly approved PR changes need the maintainer-applied `protected-docs-approved` label.
+`docs/references/` is an untracked research cache. `docs/plans/` contains engineering plans, not implemented guarantees. Neither overrides current code or canonical contracts; preserve historical evidence rather than silently rewriting it as present behavior.
 
 Follow [Documentation Maintenance](dev/DOCUMENTATION.md) for source ownership, instruction aliases, local overrides, regeneration, and validation. Keep this directory's `AGENTS.md` canonical; `CLAUDE.md` and `GEMINI.md` remain relative symlinks to it.
 
