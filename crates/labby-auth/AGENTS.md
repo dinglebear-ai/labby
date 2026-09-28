@@ -49,7 +49,7 @@ the full history) — the rules that keep it correct:
   user_version` / `SCHEMA_VERSION`.
 - `token.rs` — `/token` endpoint (authorization_code and refresh_token
   grants).
-- `jwt.rs` — `lab` access-token signing/validation (RS256).
+- `jwt.rs` — Labby access-token signing/validation with Ed25519 / EdDSA. Google ID-token verification in `google.rs` remains RS256; do not conflate provider verification with Labby token signing.
 - `state.rs` — `AuthState`: shared handle over config, store, signing keys,
   Google provider, and the in-memory allowed-resource-scope map.
 - `upstream/` — outbound OAuth for Labby's own upstream MCP connections

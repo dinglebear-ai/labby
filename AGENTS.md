@@ -1,59 +1,77 @@
 # Labby
 
-Labby is a Rust MCP gateway and operator control plane. CLI, MCP, HTTP API, and the web UI expose shared operations rather than separate implementations.
+Labby is a Rust MCP gateway and operator control plane. CLI, MCP, HTTP API, and UI adapt shared operations.
+
+## Read for the task
+
+Read applicable nested AGENTS.md files and the matching references below for the changed subsystem, not the entire tree. [Product docs](docs/README.md) indexes contracts.
+
+| Change | Start here |
+| --- | --- |
+| Architecture or service ownership | [Architecture](docs/ARCH.md), [Service onboarding](docs/dev/SERVICE_ONBOARDING.md) |
+| Upstream transport, catalog, or routing | [Upstream instructions](crates/labby-gateway/src/upstream/AGENTS.md), [Upstream contract](docs/services/UPSTREAM.md) |
+| Code Mode or snippets | [Runner instructions](crates/labby-codemode/AGENTS.md), [Code Mode](docs/dev/CODE_MODE.md), [Snippets](docs/services/SNIPPETS.md) |
+| MCP tools, schemas, or notifications | [MCP instructions](crates/labby/src/mcp/AGENTS.md), [Conformance](docs/surfaces/MCP_CONFORMANCE.md) |
+| Authentication, access, or configuration | [Auth instructions](crates/labby-auth/AGENTS.md), [Access](docs/services/ACCESS.md), [Configuration](docs/runtime/CONFIG.md) |
+| Errors, retries, or diagnostics | [Error mapping](docs/dev/ERRORS.md), [Observability](docs/dev/OBSERVABILITY.md) |
+| Operator UI, desktop, or extension | [Gateway Admin](apps/gateway-admin/AGENTS.md), [Desktop](apps/labby-desktop/AGENTS.md), [Browser bridge](docs/services/BROWSER.md) |
+| Skills, Artifacts, or packaging | [Plugin instructions](plugins/labby/AGENTS.md), [Artifacts/Skills](docs/services/SKILLS.md), [Plugin contract](docs/PLUGINS.md) |
+| Tests, documentation, or CI | [Testing](docs/dev/TESTING.md), [Documentation maintenance](docs/dev/DOCUMENTATION.md), [CI/CD](docs/runtime/CICD.md) |
 
 ## Implementation boundaries
 
-Product semantics belong in `crates/labby/src/dispatch/` or the owning surface-neutral crate. CLI/MCP/API handlers adapt inputs, caller context, and outputs; they must not duplicate validation, authorization, retry policy, destructive classification, or business rules.
+Put shared product operations in `crates/labby/src/dispatch/` or the owning extracted runtime, not duplicated CLI/MCP/API handlers. Adapters translate input, caller context, and output; validation, authorization, destructive classification, and retry policy stay below them.
 
-Use `labby-primitives` for leaf action/plugin/security vocabulary; `labby-gateway` for upstream transports, discovery, routing, and gateway lifecycle; `labby-codemode` for the host-neutral JavaScript runner; `labby-auth` for reusable authentication; and `labby-runtime` for shared runtime, Artifact, authority, and task contracts. Browser and OpenAPI runtime behavior belong in their extracted crates, not surface handlers. `labby-apis` remains a pure contract/SDK boundary without ambient configuration loading or product transports.
+`labby-gateway` owns upstream pools, discovery, routing, OAuth lifecycle, and the gateway Code Mode host. Product `dispatch/upstream.rs` is only a compatibility shim. `labby-codemode` owns the host-neutral execution kernel and runner protocol; gateway catalog wiring does not belong there.
 
-The old product `dispatch/upstream.rs` is a compatibility shim, not the upstream implementation owner. `labby-model` is development-only and must not become a product dependency. Windows FFI and verified handle operations stay behind the safe API of `labby-winjob`.
+`labby-apis` remains a pure SDK boundary without ambient configuration or product transports. `labby-model` is never a product dependency; Windows FFI stays behind `labby-winjob`'s safe API.
 
-External capabilities normally belong in configured upstream MCP servers. Add a built-in service only when Labby owns its state or lifecycle; follow [Service Onboarding](docs/dev/SERVICE_ONBOARDING.md).
+Prefer configured MCP upstreams for external capabilities. Add built-ins only for Labby-owned state/lifecycle through Service Onboarding; Architecture owns the complete crate map.
 
-## Protocol and runtime contracts
+## Contracts to preserve
 
-- Keep intentional compatibility identifiers: `lab://`, `ui://lab/`, the MCP server key `lab`, and scopes `lab:read`, `lab`, and `lab:admin`.
-- Registered product services use shared action metadata and MCP `action` + `params` requests. `requires_admin` and `destructive` are independent axes. Restartable mutations or stdio configuration are not automatically destructive.
-- Preserve caller/subject isolation, route exposure, bounded discovery, response budgets, cancellation, OAuth lifecycle fencing, spawn guards, and SSRF protections. Do not use rmcp's unbounded `Peer::list_all_*` helpers.
-- Preserve structured error kinds, causes, effects, and recovery metadata through dispatch. Apply envelope mapping at the surface boundary. Use the [error contract](docs/contracts/agent-error-contract.md), [Code Mode errors](docs/contracts/code-mode-tool-errors.md), and [observability contract](docs/dev/OBSERVABILITY.md), including canonical surface names `cli`, `mcp`, and `api`.
-- An explicit remote gateway target must never silently fall back to local state. Follow [configuration](docs/runtime/CONFIG.md), [OAuth](docs/runtime/OAUTH.md), and [remote authority](docs/design/REMOTE_GATEWAY_TARGET.md).
-
-Standalone ACP chat, Marketplace/Registry browsers, Fleet, Deploy, and the old Agent Artifact Manager are retired. Provider-backed Artifact discovery does not restore them. Current principal-scoped File Stash is Linux-only and does not revive the retired Stash product. The direct stdio proxy is a CLI runtime exposing its child's MCP surface, not another registered product service.
+- Keep compatibility identifiers `lab://`, `ui://lab/`, MCP server key `lab`, and scopes `lab:read`, `lab`, `lab:admin`. Router tools accept `action` plus `params`; atomic projections derive their schemas from shared action metadata. CLI commands derive from Clap, not the MCP catalog.
+- `ActionSpec.requires_admin` and `destructive` are independent axes. Restartable mutation and stdio configuration are not automatically destructive; use each surface's shared policy.
+- Build Labby-owned descriptors through `permanent_tools.rs`. Wire listing and `peer_contract.rs` hashing must agree for correct `tools/list_changed`. Upstream annotations and native `ui://` identities pass through without Labby normalization.
+- Enforce exposure on direct invocation/read/get, not only listing. Preserve caller, Team, route, loadout, OAuth-subject, and retained-result isolation.
+- Use bounded upstream listing, not `Peer::list_all_*`. Preserve pagination, byte/deadline limits, per-upstream concurrency, refresh coalescing, and partial-failure diagnostics. A slow upstream must not stall unrelated ones. Caller cancellation is not an upstream circuit-breaker failure.
+- Fence late connection/catalog publication with the OAuth lifecycle epoch and publication guard. Subject, relay, and task-peer invalidation must not permit stale results to republish.
+- Preserve typed error kinds, causes, `side_effects`, and recovery until surface mapping. Code Mode uses the [tool-error contract](docs/contracts/code-mode-tool-errors.md); traces use `cli`, `mcp`, and `api` surface names. Keep SSRF, redirect, spawn-guard, filesystem, and response-budget enforcement in the owning runtime.
+- Configuration loading owns env/.env/TOML precedence. An explicit remote target must not silently fall back to local state: see [Remote gateway authority](docs/design/REMOTE_GATEWAY_TARGET.md). Access-store changes require migration/integrity checks; current-schema validation must use one snapshot to avoid bootstrap races.
 
 ## Build and verification
 
-Use sibling `foo.rs` plus `foo/` modules, not `mod.rs`. Use native async traits; workspace Clippy policy forbids `#[async_trait]`.
-
-The pinned `msrv` (1.97.1) is shared by Cargo, `rust-toolchain.toml`, CI, and container contracts. Product feature slices must compile independently where the feature contract declares them standalone; `proxy-testkit` is test support, not a product slice.
-
-Run the relevant focused regression tests and owning package's gates. Root recipes:
+From the repository root, use [Justfile](Justfile) recipes, the [Rust pin](rust-toolchain.toml), and [product feature definitions](crates/labby/Cargo.toml). Package manifests specify Node/pnpm requirements.
 
 ```bash
-just check
-just test
-just lint
-just docs-check
-just rustdoc-check
+just check                         # all-feature workspace compilation
+just test                          # all-feature workspace nextest
+just lint                          # drift, toolchain, reachability, Clippy, fmt
+just docs-check                    # generated freshness and documentation gates
+just rustdoc-check                 # strict Rustdoc and workspace doctests
 ```
 
-Metadata, CLI, or discovery changes also require `just docs-generate`. Cross-surface changes need coverage for every affected adapter. Linux/Windows-specific behavior needs its platform lane.
+Focused gateway tests: `cargo nextest run -p labby-gateway --all-features`. Nextest does not run doctests. Feature changes also need `bash scripts/check-feature-slices.sh`; all-feature success can conceal a broken standalone slice. `proxy-testkit` is test support, not a product slice. `just module-reachability` catches orphan Rust files that rustc never visits.
 
-`tools/verification` is a separate Cargo workspace and lockfile; the desktop shell has a separate Rust manifest. Root workspace tests do not cover either automatically. See [Development](docs/dev/DEVELOPMENT.md) and [Testing](docs/dev/TESTING.md) for commands.
+`just build` builds web assets first, then the all-feature `release-fast` binary. Raw Cargo builds do not refresh the static export. `just build-release` and `just install` install a binary; `just host-sync` restarts a service. These are not interchangeable compile checks. `just chat-local` disables browser auth and binds all interfaces, so it is not the default isolated preview.
 
-## UI and distribution
+Run package checks in the named directory:
 
-`apps/gateway-admin` is a statically exported operator UI consumed by the Rust host. Use the [Aurora design contract](docs/DESIGN.md) and existing `@aurora` registry components. Validate relevant UI tests and `just web-build`; do not introduce a standalone Node-server requirement.
+| Package | Commands in that directory |
+| --- | --- |
+| `apps/gateway-admin` | `pnpm install --frozen-lockfile`; `pnpm lint`; `pnpm test`; `pnpm test:browser`; `pnpm build` |
+| `apps/browser-extension` | `npm ci`; `npm test`; `npm run typecheck` |
+| `apps/labby-desktop` | `pnpm verify`; `cargo test --manifest-path src-tauri/Cargo.toml --locked` |
+| `packages/labby-mcp` | `npm run check`; `npm test` |
 
-`apps/labby-desktop` is a thin Tauri shell around the same control plane, not a second renderer, credential store, or product surface.
+Desktop and `tools/verification` have separate Cargo workspaces. For verification, use root `just verify-check`, `just verify-test`, and `just verify-lint`; keep fixtures serial as the recipe requires. See Testing for live/ignored-suite prerequisites.
 
-`plugins/labby` ships metadata, MCP configuration, and skills, not the binary or host bootstrap. Setup and repair belong to the binary; do not restore automatic Claude install/repair hooks. The npm launcher README is generated from the root README, not independently authored.
+## UI, packaging, and documentation
 
-## Documentation boundaries
+Gateway Admin is a static export, not a production Node server. Reuse the [Aurora contract](docs/DESIGN.md), `@aurora` components, and typed API/auth helpers. Preserve export build IDs, generated assets, and bundle budgets. Desktop hosts that same control plane, not a second renderer or durable token store. The browser bridge requires explicit site permissions and approved pairing.
 
-[docs/README.md](docs/README.md) indexes product documentation. Exact service/action/CLI inventories live in `docs/generated/`; regenerate them rather than copying lists into instructions or hand-editing output.
+Plugin assets own skills and MCP metadata; the binary owns setup/repair and host lifecycle. Do not restore automatic plugin install hooks. After root README edits, run `node packages/labby-mcp/scripts/sync-readme.js`.
 
-`docs/sessions/` and `docs/superpowers/` are protected historical/work-product trees. Normal audits must not edit, relocate, retire, or link-audit them. Explicit changes require the maintainer-applied `protected-docs-approved` PR label. `docs/references/` is an untracked reference cache.
+Regenerate `docs/generated/` with `just docs-generate` after metadata/CLI/schema changes; do not hand-edit catalogs. Standalone ACP/Marketplace/Fleet/Deploy products remain retired; Artifact discovery and Linux File Stash are separate contracts.
 
-[Architecture](docs/ARCH.md), [CI/CD](docs/runtime/CICD.md), and [Documentation Maintenance](docs/dev/DOCUMENTATION.md) own their detailed contracts.
+`docs/sessions/` and `docs/superpowers/` are protected history: no edits, moves, or link audits without explicit scope and the `protected-docs-approved` label. `docs/references/` is an untracked cache, not product authority.

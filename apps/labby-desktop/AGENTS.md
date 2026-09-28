@@ -22,6 +22,7 @@ authoritative Labby Control Plane. Read `README.md` and the repository-root
 - `public/control-plane-loader.html` — bundled local loading/error shell.
 - `src-tauri/src/lib.rs` — window, navigation, load generation, menus, and
   platform lifecycle.
+- `src-tauri/src/desktop_auth.rs` — bounded browser sign-in handoff, PKCE, same-origin endpoints, and cancellation; not a durable native token store.
 - `src-tauri/src/persistence.rs` — credential-free Control Plane origin only,
   including legacy origin migration.
 - `src-tauri/tauri.conf.json` — desktop window and bundle identity.
@@ -32,13 +33,13 @@ across `package.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, and
 
 ## Verification
 
+Run from `apps/labby-desktop/`; `pnpm verify` installs locked dependencies and builds the local loader assets.
+
 ```bash
-pnpm install --frozen-lockfile
-pnpm vite:build
 pnpm verify
-cargo fmt --manifest-path apps/labby-desktop/src-tauri/Cargo.toml --check
-cargo clippy --manifest-path apps/labby-desktop/src-tauri/Cargo.toml --all-targets --locked -- -D warnings
-cargo test --manifest-path apps/labby-desktop/src-tauri/Cargo.toml --locked
+cargo fmt --manifest-path src-tauri/Cargo.toml --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings
+cargo test --manifest-path src-tauri/Cargo.toml --locked
 ```
 
 For desktop releases, additionally build the platform bundle and prove the
