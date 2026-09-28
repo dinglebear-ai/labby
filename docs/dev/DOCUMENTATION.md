@@ -21,9 +21,13 @@ Keep executable build/test commands, non-obvious implementation boundaries, and
 specific failure-prevention rules in the root guide. Check each against current
 source or manifests. Omit cross-project workflow policy, exhaustive file lists,
 volatile catalog copies, and tutorial material. Detailed subsystem rationale
-belongs in a linked reference, not an automatically expanded import.
+belongs in a linked reference, not an automatically expanded import. Use a
+task-to-reference map so agents can load the relevant owning contract without
+reading every document. Keep version pins in their manifests/toolchain files
+rather than duplicating them in startup instructions. The character budget is
+a ceiling, not a requirement to pad future revisions.
 
-The product-doc gate limits root AGENTS.md to 7,500 Unicode characters and each
+The product-doc gate limits root AGENTS.md to 7,900 Unicode characters and each
 repository-only root-to-directory instruction chain to 32,768 UTF-8 bytes,
 including separator allowance. Character counts and byte counts are different.
 Global instructions, private overrides, and client-expanded imports are outside

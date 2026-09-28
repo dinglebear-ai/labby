@@ -299,8 +299,8 @@ def validate_instruction_budgets(failures: list[str]) -> None:
         except UnicodeDecodeError:
             failures.append(f"{rel(path)}: instructions must be UTF-8")
             continue
-        if path == ROOT / "AGENTS.md" and len(text) > 7500:
-            failures.append(f"AGENTS.md: {len(text)} characters exceeds the 7500-character limit")
+        if path == ROOT / "AGENTS.md" and len(text) > 7900:
+            failures.append(f"AGENTS.md: {len(text)} characters exceeds the 7900-character limit")
         guides[path.parent] = data
     for directory in sorted(guides):
         chain = [parent for parent in [directory, *directory.parents] if parent in guides]

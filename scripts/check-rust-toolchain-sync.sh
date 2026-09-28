@@ -35,7 +35,7 @@ require_text() {
 
 require_text README.md "Rust $expected or newer."
 require_text packages/labby-mcp/README.md "Rust $expected or newer."
-require_text AGENTS.md "msrv\` ($expected)"
+# AGENTS.md links to rust-toolchain.toml instead of duplicating a version pin.
 require_text .github/AGENTS.md "cargo +$expected check --workspace --all-features --all-targets --locked"
 require_text docs/runtime/CICD.md "cargo +$expected check --workspace --all-features --all-targets --locked"
 require_text .github/actions/setup-rust-kache/action.yml "default: \"$expected\""

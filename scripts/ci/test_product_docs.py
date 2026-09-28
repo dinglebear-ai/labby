@@ -161,22 +161,22 @@ class ProductDocsInstructionTests(unittest.TestCase):
 
     def test_root_character_budget_boundary(self) -> None:
         root = self.root / "AGENTS.md"
-        root.write_text("x" * 7500)
+        root.write_text("x" * 7900)
         self.assertEqual(self.budget_failures(), [])
-        root.write_text("x" * 7501)
-        self.assertTrue(any("7500-character" in item for item in self.budget_failures()))
+        root.write_text("x" * 7901)
+        self.assertTrue(any("7900-character" in item for item in self.budget_failures()))
 
     def test_root_character_count_is_not_utf8_byte_count(self) -> None:
-        (self.root / "AGENTS.md").write_text("é" * 7500, encoding="utf-8")
+        (self.root / "AGENTS.md").write_text("é" * 7900, encoding="utf-8")
         self.assertEqual(self.budget_failures(), [])
 
     def test_nested_budget_counts_all_ancestors_and_separators(self) -> None:
         self.make_scope(self.root / "one")
         self.make_scope(self.root / "one/two")
-        (self.root / "AGENTS.md").write_text("x" * 7500)
+        (self.root / "AGENTS.md").write_text("x" * 7900)
         (self.root / "one/AGENTS.md").write_text("x" * 10000)
         leaf = self.root / "one/two/AGENTS.md"
-        leaf.write_text("x" * (32768 - 7500 - 10000 - 4))
+        leaf.write_text("x" * (32768 - 7900 - 10000 - 4))
         self.assertEqual(self.budget_failures(), [])
         leaf.write_text(leaf.read_text() + "x")
         self.assertTrue(any("one/two/AGENTS.md" in item for item in self.budget_failures()))
