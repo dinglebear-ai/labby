@@ -481,6 +481,47 @@ subject to the sanitization rule in **Redaction Rules** below. Code Mode
 namespace names and hints are not part of the host-facing descriptor snapshot
 and therefore do not appear in these catalog delta fields.
 
+### MCP App visibility and runtime diagnostics
+
+MCP App failures cross three boundaries that must remain distinguishable:
+catalog advertisement, resource loading, and iframe runtime execution. Treating
+all three as a generic resource error makes stale host caches indistinguishable
+from a Labby visibility leak.
+
+- Every successful tools/list logs owned_app_binding_count and
+  owned_app_bindings, the exact Labby-owned tool=ui://... bindings in the
+  descriptor set returned to that caller.
+- Every successful resources/list, including revision-bound continuation
+  pages, logs owned_app_resource_count and owned_app_resource_uris.
+- A read of a disabled Labby-owned UI resource logs kind=app_disabled, app,
+  and resource_uri, then returns an agent-error envelope with
+  recovery.action=rediscover and same_arguments=never. The caller must discard
+  the stale binding and refresh tools/list plus resources/list; a sessionless
+  client should reconnect or reinitialize discovery before retrying.
+- The shared Labby app host reports runtime.ready, uncaught runtime.error,
+  runtime.unhandled_rejection, and action.error events through the bounded
+  mcp_app event action. MCP-native hosts also receive notifications/message.
+- Runtime-event logs carry openai_session_key and widget_session_key
+  fingerprints when those host identifiers are available. Raw OpenAI/widget
+  session identifiers are never logged.
+
+Catalog fanout emits catalog.notify.peer_capabilities for each registered peer,
+recording whether that peer accepts tools/resources/prompts list-changed
+notifications. A successful send emits catalog.notify.peer with the stable
+registration_id and exact change families delivered. Failure/timeout logs use
+the same registration_id before pruning the peer.
+
+HTTP ingress logs record mcp_session_present plus a fingerprinted mcp_session_key,
+MCP protocol version, safe request/trace correlation headers, content/accept
+shape, and bounded header names. Authorization remains presence-only; bearer
+tokens, cookies, API-key values, query values, and raw session identifiers are
+never emitted.
+
+A client that makes only sessionless HTTP requests has no registered peer for
+server-initiated tools/list_changed or resources/list_changed delivery. In that
+case app_disabled responses and fresh list evidence are the authoritative
+signals for diagnosing a host that retained old widget metadata.
+
 ## Required Fields
 
 ### Dispatch Events

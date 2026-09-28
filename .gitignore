@@ -135,12 +135,14 @@ config.local.toml
 *.pem
 *.cert
 
-# Personal local instruction overlays (never commit)
-CLAUDE.md.local
+# Personal instructions: AGENTS.override.md is the local authored source;
+# CLAUDE.local.md is its relative symlink. Never publish either.
+AGENTS.override.md
 CLAUDE.local.md
+# Legacy local spellings stay ignored, not independent instruction sources.
+CLAUDE.md.local
 AGENTS.local.md
 AGENTS.md.local
-AGENTS.override.md
 
 # Local binary artifacts
 plugins/bitwarden/bin/

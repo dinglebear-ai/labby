@@ -36,8 +36,8 @@ use crate::mcp::handlers_tools::{
     add_server_tool_meta, add_server_tool_schema, code_mode_app_text_note,
     code_mode_execute_schema, code_mode_tool_meta, code_mode_trace_output_schema,
     code_mode_ui_description, gateway_status_tool_meta, gateway_status_tool_schema,
-    mcp_app_tool_description, mcp_app_tool_meta, mcp_app_tool_schema, settings_tool_meta,
-    settings_tool_schema,
+    mcp_app_callback_meta, mcp_app_tool_description, mcp_app_tool_meta, mcp_app_tool_schema,
+    settings_tool_meta, settings_tool_schema,
 };
 #[cfg(feature = "skills")]
 use crate::mcp::handlers_tools::{skill_library_tool_description, skill_library_tool_meta};
@@ -542,7 +542,7 @@ impl PermanentToolRegistry {
     /// client-side error in strict SDKs.
     #[cfg(feature = "gateway")]
     #[must_use]
-    pub(crate) fn mcp_app_tool(&self, app_visible: bool) -> Tool {
+    pub(crate) fn mcp_app_tool(&self, app_visible: bool, model_visible: bool) -> Tool {
         let tool = Tool::new(
             MCP_APP_TOOL_NAME,
             mcp_app_tool_description(),
@@ -552,7 +552,7 @@ impl PermanentToolRegistry {
         let tool = if app_visible {
             tool.with_meta(mcp_app_tool_meta(MCP_APP_TOOL_NAME))
         } else {
-            tool
+            tool.with_meta(mcp_app_callback_meta(model_visible))
         };
         with_labby_security(tool)
     }
@@ -1021,14 +1021,14 @@ mod tests {
         // mcp_app returns `{"kind": "mcp_app_control", …}`, not the dispatch
         // envelope — advertising the envelope schema would be a lie strict
         // clients enforce.
-        assert!(registry.mcp_app_tool(true).output_schema.is_none());
+        assert!(registry.mcp_app_tool(true, true).output_schema.is_none());
         // codemode_ui carries the trace schema, not the envelope schema.
         let ui_schema = registry.code_mode_ui_tool(&[]).output_schema;
         assert!(ui_schema.is_some());
         assert_ne!(ui_schema, registry.add_server_tool().output_schema);
 
         let cases = [
-            (registry.mcp_app_tool(true), false, false, true, false),
+            (registry.mcp_app_tool(true, true), false, false, true, false),
             (registry.add_server_tool(), false, true, false, true),
             (registry.gateway_status_tool(), true, false, true, false),
             (registry.code_mode_ui_tool(&[]), false, true, false, true),
@@ -1184,7 +1184,7 @@ mod tests {
             })
             .collect();
         descriptors.extend([
-            permanent.mcp_app_tool(true),
+            permanent.mcp_app_tool(true, true),
             permanent.add_server_tool(),
             permanent.gateway_status_tool(),
             permanent.code_mode_descriptor(&[]),

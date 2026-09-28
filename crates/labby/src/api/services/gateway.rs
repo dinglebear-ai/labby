@@ -1262,7 +1262,11 @@ mod tests {
             Arc::clone(&manager),
             json!({
                 "action": "gateway.code_mode.set",
-                "params": {"mcp_ui_enabled": false}
+                "params": {
+                    "mcp_ui_enabled": false,
+                    "search_sources": ["team_depot"],
+                    "search_kinds": ["skill", "prompt"]
+                }
             }),
         )
         .await;
@@ -1273,11 +1277,17 @@ mod tests {
             .expect("body");
         let payload: serde_json::Value = serde_json::from_slice(&body).expect("json");
         assert_eq!(payload["mcp_ui_enabled"], false);
+        assert_eq!(payload["search"]["sources"], json!(["team_depot"]));
+        assert_eq!(payload["search"]["kinds"], json!(["skill", "prompt"]));
         assert!(!manager.code_mode_app_state().is_enabled());
         assert!(!manager.code_mode_config().await.mcp_ui_enabled);
 
         let persisted = load_gateway_config(&path).expect("load persisted gateway config");
         assert!(!persisted.code_mode.mcp_ui_enabled);
+        assert_eq!(
+            serde_json::to_value(&persisted.code_mode.search).expect("search policy"),
+            payload["search"]
+        );
 
         let restarted = Arc::new(test_gateway_manager(path, GatewayRuntimeHandle::default()));
         restarted
@@ -1285,6 +1295,11 @@ mod tests {
             .await;
         assert!(!restarted.code_mode_app_state().is_enabled());
         assert!(!restarted.code_mode_config().await.mcp_ui_enabled);
+        assert_eq!(
+            serde_json::to_value(&restarted.code_mode_config().await.search)
+                .expect("restarted search policy"),
+            payload["search"]
+        );
     }
 
     #[tokio::test]

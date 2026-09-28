@@ -311,6 +311,7 @@ jobs:
         run: |
           python3 -m pip install --disable-pip-version-check PyYAML==6.0.2
           python3 -m unittest scripts/ci/test_check_rust_coverage.py scripts/ci/test_windows_ci_policy.py scripts/ci/test_protected_doc_guard.py scripts/ci/test_release_hardening.py scripts/ci/test_multi_user_migration_rehearsal.py
+          python3 -m unittest scripts/ci/test_default_web_build.py
 
   lifecycle-static-analysis:
     name: Lifecycle script static analysis

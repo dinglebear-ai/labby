@@ -160,6 +160,14 @@ where
     T: Send + 'static,
     F: FnOnce() -> Result<T, ToolError> + Send + 'static,
 {
+    #[cfg(test)]
+    let task = {
+        let home = crate::dispatch::helpers::test_lab_home();
+        move || {
+            let _home_guard = home.map(crate::dispatch::helpers::TestLabHomeGuard::set);
+            task()
+        }
+    };
     tokio::task::spawn_blocking(task)
         .await
         .map_err(|error| ToolError::Sdk {
@@ -919,6 +927,30 @@ mod tests {
     use std::sync::Mutex;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[tokio::test]
+    async fn blocking_setup_preserves_and_releases_test_home() {
+        let home = std::path::PathBuf::from("/blocking-setup-fixture");
+        {
+            let _guard = crate::dispatch::helpers::TestLabHomeGuard::set(home.clone());
+            let observed = run_blocking_setup("fixture.probe", || {
+                Ok(crate::dispatch::helpers::test_lab_home())
+            })
+            .await
+            .unwrap();
+            assert_eq!(observed, Some(home));
+        }
+        assert!(crate::dispatch::helpers::test_lab_home().is_none());
+        let observed = run_blocking_setup("fixture.probe", || {
+            Ok(crate::dispatch::helpers::test_lab_home())
+        })
+        .await
+        .unwrap();
+        assert!(
+            observed.is_none(),
+            "pooled workers must not retain a prior fixture"
+        );
+    }
 
     #[tokio::test]
     async fn unknown_action_returns_unknown_action() {
