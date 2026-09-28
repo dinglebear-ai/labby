@@ -36,6 +36,7 @@ use crate::mcp::catalog::{
 use crate::mcp::catalog::{SERVER_LOGS_TOOL_NAME, ToolCatalogSnapshot};
 #[cfg(feature = "gateway")]
 use crate::mcp::context::oauth_upstream_subject_for_request;
+use crate::mcp::context::request_openai_session_fingerprint;
 #[cfg(feature = "gateway")]
 use crate::mcp::context::tool_execute_scope_allowed;
 #[cfg(any(feature = "gateway", feature = "skills"))]
@@ -116,11 +117,13 @@ impl LabMcpServer {
     ) -> Result<ListToolsResult, ErrorData> {
         let start = Instant::now();
         let subject = self.request_subject_log_tag(&context);
+        let openai_session_key = request_openai_session_fingerprint(&context);
         tracing::info!(
             surface = "mcp",
             service = "labby",
             action = "list_tools",
             subject,
+            openai_session_key = openai_session_key.as_deref().unwrap_or("<none>"),
             "dispatch start"
         );
         #[cfg(feature = "gateway")]
@@ -280,7 +283,7 @@ impl LabMcpServer {
                 }
                 if tool_projection_mode.includes_router() {
                     builtin_names.insert(svc.name.to_string());
-                    if hide_raw_tools && svc.name != SERVER_LOGS_TOOL_NAME {
+                    if hide_raw_tools && !matches!(svc.name, SERVER_LOGS_TOOL_NAME | "gateway") {
                         suppressed_builtin_tool_count += 1;
                     } else {
                         advertised_names.insert(svc.name.to_string());
@@ -393,12 +396,15 @@ impl LabMcpServer {
         }
 
         #[cfg(feature = "gateway")]
-        if self.route_scope.is_root() && tool_execute_scope_allowed(auth) {
-            descriptors.push(
-                self.registry
-                    .permanent_tools()
-                    .mcp_app_tool(mcp_apps_config.manager),
-            );
+        let mcp_app_model_visible = self.route_scope.is_root() && tool_execute_scope_allowed(auth);
+        #[cfg(feature = "gateway")]
+        let mcp_app_callback_visible = code_mode_read_scope_allowed(auth);
+        #[cfg(feature = "gateway")]
+        if mcp_app_model_visible || mcp_app_callback_visible {
+            descriptors.push(self.registry.permanent_tools().mcp_app_tool(
+                mcp_apps_config.manager && mcp_app_model_visible,
+                mcp_app_model_visible,
+            ));
             advertised_names.insert(MCP_APP_TOOL_NAME.to_string());
             gateway_tool_count += 1;
         }
@@ -567,6 +573,20 @@ impl LabMcpServer {
             });
         }
         descriptors.sort_by(|left, right| left.name.cmp(&right.name));
+        let owned_app_bindings = descriptors
+            .iter()
+            .filter_map(|descriptor| {
+                let resource_uri = descriptor
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.0.get("ui"))
+                    .and_then(|ui| ui.get("resourceUri"))
+                    .and_then(Value::as_str)?;
+                resource_uri
+                    .starts_with("ui://lab/")
+                    .then(|| format!("{}={resource_uri}", descriptor.name))
+            })
+            .collect::<Vec<_>>();
         #[cfg(feature = "gateway")]
         if matches!(&project_shadow, ProjectDiscoveryShadow::Bound(_))
             && project_shadow.cursor_binding_fingerprint(SystemTime::now())
@@ -700,6 +720,8 @@ impl LabMcpServer {
             project_shadow_would_suppress_tool_count,
             page_tool_count,
             has_next_cursor,
+            owned_app_binding_count = owned_app_bindings.len(),
+            owned_app_bindings = ?owned_app_bindings,
             "tool list ok"
         );
         self.emit_dispatch_notification(
@@ -754,9 +776,9 @@ pub(crate) fn mcp_app_tool_schema() -> Arc<serde_json::Map<String, Value>> {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["status", "enable", "disable"],
+                    "enum": ["status", "enable", "disable", "event"],
                     "default": "status",
-                    "description": "Inspect or change whether one or more Labby-owned MCP Apps are advertised."
+                    "description": "Inspect or change whether one or more Labby-owned MCP Apps are advertised. The reserved event action accepts bounded runtime telemetry from Labby-owned app iframes."
                 },
                 "target": {
                     "type": "string",
@@ -772,6 +794,51 @@ pub(crate) fn mcp_app_tool_schema() -> Arc<serde_json::Map<String, Value>> {
                             "enum": ["manager", "codemode", "skill_library", "gateway_status", "server_logs", "add_server", "settings", "all"],
                             "default": "codemode",
                             "description": "Labby-owned MCP App target used by the shared app host."
+                        },
+                        "app": {
+                            "type": "string",
+                            "maxLength": 128,
+                            "description": "Labby-owned iframe app identity for runtime telemetry."
+                        },
+                        "event": {
+                            "type": "string",
+                            "maxLength": 96,
+                            "description": "Stable runtime event name such as runtime.ready, runtime.error, or action.error."
+                        },
+                        "level": {
+                            "type": "string",
+                            "enum": ["debug", "info", "warn", "error"],
+                            "description": "Runtime telemetry severity."
+                        },
+                        "message": {
+                            "type": "string",
+                            "maxLength": 2048,
+                            "description": "Bounded human-readable runtime diagnostic."
+                        },
+                        "stack": {
+                            "type": "string",
+                            "maxLength": 4096,
+                            "description": "Bounded JavaScript stack trace when available."
+                        },
+                        "service": {
+                            "type": "string",
+                            "maxLength": 128,
+                            "description": "Service involved in an app action failure."
+                        },
+                        "operation": {
+                            "type": "string",
+                            "maxLength": 128,
+                            "description": "Action or operation involved in an app failure."
+                        },
+                        "mode": {
+                            "type": "string",
+                            "enum": ["chatgpt", "mcp", "browser", "unknown"],
+                            "description": "Host bridge mode observed by the app."
+                        },
+                        "widget_session": {
+                            "type": "string",
+                            "maxLength": 256,
+                            "description": "Host-provided mounted-widget session identifier used only for fingerprinted correlation."
                         }
                     },
                     "additionalProperties": false
@@ -852,17 +919,42 @@ pub(crate) fn settings_tool_meta(tool_name: &str) -> MetaObject {
 
 /// Bind one tool to its MCP Apps and optional OpenAI skybridge resources.
 fn owned_app_tool_meta(resource_uri: String, skybridge_uri: Option<String>) -> MetaObject {
-    let mut meta = serde_json::Map::new();
-    meta.insert(
+    let mut meta = app_callable_tool_meta();
+    meta.0.insert(
         "ui".to_string(),
-        serde_json::json!({ "resourceUri": resource_uri }),
+        serde_json::json!({
+            "resourceUri": resource_uri,
+            "visibility": ["model", "app"]
+        }),
     );
     if let Some(skybridge_uri) = skybridge_uri {
-        meta.insert(
+        meta.0.insert(
             "openai/outputTemplate".to_string(),
             serde_json::json!(skybridge_uri),
         );
     }
+    meta
+}
+
+#[cfg(feature = "gateway")]
+pub(crate) fn mcp_app_callback_meta(model_visible: bool) -> MetaObject {
+    let mut meta = app_callable_tool_meta();
+    if !model_visible {
+        meta.0.insert(
+            "ui".to_string(),
+            serde_json::json!({ "visibility": ["app"] }),
+        );
+    }
+    meta
+}
+
+fn app_callable_tool_meta() -> MetaObject {
+    let mut meta = serde_json::Map::new();
+    meta.insert(
+        "ui".to_string(),
+        serde_json::json!({ "visibility": ["model", "app"] }),
+    );
+    meta.insert("openai/widgetAccessible".to_string(), Value::Bool(true));
     MetaObject(meta)
 }
 

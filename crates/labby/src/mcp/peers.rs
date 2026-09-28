@@ -304,7 +304,10 @@ impl RegisteredPeer {
                     false,
                 ),
                 code_mode_app_state: Default::default(),
-                audience: crate::mcp::peer_contract::PeerCatalogAudience::default(),
+                audience: crate::mcp::peer_contract::PeerCatalogAudience {
+                    code_mode_read_allowed: false,
+                    ..Default::default()
+                },
             },
             last_contract: Some(last_contract),
         }

@@ -33,9 +33,13 @@ jobs:
           ref: b2813662ca27ca8868752fb353d9dd568f2f97f9
           path: workflow-library
           persist-credentials: false
+      - name: Test repository contract adapter
+        working-directory: caller
+        run: python3 -m unittest discover -s scripts/ci -p test_repository_contract.py
       - name: Validate repository contract
         run: >-
-          python3 workflow-library/scripts/fleet_contract.py check
+          python3 caller/scripts/ci/check_repository_contract.py
+          --fleet-script workflow-library/scripts/fleet_contract.py
           --repo caller --profile rust --allow-arm64
 
   repository-contract:

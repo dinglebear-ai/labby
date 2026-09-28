@@ -415,6 +415,21 @@ pub trait CodeModeHost: Send + Sync {
         scope: &ToolScope,
     ) -> impl Future<Output = Result<Vec<(String, f32)>, ToolError>> + Send;
 
+    /// Query host-backed artifact providers without materializing their full
+    /// catalogs in the execution preamble. The host must enforce caller
+    /// authorization and return no more than `limit` descriptors.
+    fn search_artifacts(
+        &self,
+        _query: String,
+        _limit: usize,
+        _kinds: &[crate::CodeModeCatalogKind],
+        _caller: &CodeModeCaller,
+        _surface: CodeModeSurface,
+        _scope: &ToolScope,
+    ) -> impl Future<Output = Result<Vec<CatalogDescriptor>, ToolError>> + Send {
+        std::future::ready(Ok(Vec::new()))
+    }
+
     /// Code Mode configuration (timeouts, log/response caps).
     fn config(&self) -> impl Future<Output = CodeModeConfig> + Send;
 

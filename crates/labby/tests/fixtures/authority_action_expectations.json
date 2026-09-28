@@ -974,6 +974,15 @@
       "personal_no_membership": "deny",
       "platform_admin": "allow"
     },
+    "gateway:gateway.ssh_hosts.list": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
     "gateway:gateway.servers": {
       "required_capability": "platform.manage",
       "team_member": "deny",

@@ -1,7 +1,7 @@
 ---
 title: "Conventions"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-09-27"
 ---
 
 # Conventions
@@ -12,7 +12,7 @@ These are locked implementation rules. They are not optional style suggestions.
 
 - dependency versions live in the workspace root
 - lints live in the workspace root
-- both crates inherit from the workspace
+- all workspace members inherit the shared package, dependency, and lint contracts
 - the workspace version is the release version
 - release builds are optimized and stripped
 
@@ -36,29 +36,17 @@ The architecture is intentionally concrete and feature-gated rather than dyn-hea
 
 ## Cancellation
 
-Cancellation is handled at the top level by dropping futures, not by threading cancellation tokens through every service method.
+Preserve the owning runtime's bounded cancellation and cleanup contract. Dropping a future alone does not prove a remote call or child process stopped. Gateway requests and relays use explicit cancellation state where the transport requires it; preserve caller-token correlation, cancellation propagation, and owned-resource cleanup. Do not add a blanket ban on cancellation tokens or assume a timed-out write had no effects.
 
 ## HTTP Client Rules
 
-`HttpClient` is the single transport layer for services.
+`labby-apis::core::HttpClient` is the shared HTTP primitive for the pure SDK. It owns auth injection, request timeouts, transport error mapping, and request logging. It does **not** implement automatic retry/backoff; operation owners decide whether an attempt is safe to repeat.
 
-It owns:
+The upstream gateway and OpenAPI executor own their specialized hardened transports in `labby-gateway` and `labby-openapi`. Do not force every product operation through the setup/doctor SDK or duplicate a transport in a CLI/MCP/API adapter. Preserve SSRF, redirect, response-size, timeout, credential, and redaction contracts at the owning boundary.
 
-- auth injection
-- retry behavior
-- timeout behavior
-- error mapping
-- tracing
+Retry only retryable failures with bounded backoff, and never repeat an unsafe write merely because its transport timed out. Build queries with structured URL APIs rather than string concatenation.
 
-Service modules must not re-implement those concerns.
-
-The mandatory observability contract for dispatch logging, request logging, correlation, redaction, and verification lives in [OBSERVABILITY.md](./dev/OBSERVABILITY.md).
-
-Additional rules:
-
-- retry only retryable failures
-- do not retry unsafe writes by default
-- do not concatenate query strings manually in service code
+The mandatory request/dispatch logging contract is [OBSERVABILITY.md](./dev/OBSERVABILITY.md).
 
 ## Error Taxonomy
 
@@ -82,13 +70,11 @@ Do not maintain separate hand-written copies of action metadata.
 ## Action Naming & Deprecation
 
 Action names are dotted `<resource>.<verb>` (lowercase, dot-separated) — this is
-the **canonical** form (e.g. `deploy.plan`, `setup.bootstrap`,
-`marketplace.mcp.install`). The dotted form is enforced by a catalog lint:
+the **canonical** form (e.g. the current names in the generated action catalog). The dotted form is enforced by a catalog lint:
 `catalog_action_names_are_dotted` in `crates/labby/tests/architecture_orchestrator.rs`
 fails CI for any catalog action that does not match `^[a-z0-9_]+(\.[a-z0-9_]+)+$`.
 
-Some services historically shipped **bare/flat** action names (e.g. `deploy`'s
-bare `plan`/`run`/`rollback`, `setup`'s flat snake_case verbs). Those bare names
+Some services historically shipped **bare/flat** action names. Only names in the current test allowlist remain supported; retired product names are not compatibility APIs. Retained bare names
 are kept as **deprecated aliases** for back-compat: the canonical dotted form is
 added alongside the bare name, both dispatch to the same handler, and the bare
 name is exempted from the dotted-name lint via the `DEPRECATED_ACTION_ALIASES`
@@ -120,9 +106,7 @@ Rules:
 
 ## Progress Reporting
 
-Long-running CLI operations may use a sink-based progress abstraction.
-
-MCP calls must remain progress-free.
+Long-running CLI operations may use the shared progress abstraction. MCP relays may forward protocol progress when a caller supplies a progress token; preserve request correlation and transport cancellation. Never print human progress text into an MCP stdio stream or reinterpret progress as proof of successful completion.
 
 ## Public API Surface
 
@@ -171,7 +155,9 @@ The canonical serialization and output-boundary contract lives in [design/SERIAL
 
 ## Catalog Visibility
 
-`labby help`, `lab.help`, and `lab://catalog` hide services whose required `PluginMeta` env vars are not present. Bootstrap/operator services remain visible. Use `LABBY_SHOW_ALL=1` or `labby help --all` when you need the full compiled catalog.
+Compiled service inventory, runtime registration, feature/platform availability, caller authorization, route exposure, and MCP App opt-in are distinct filters. Preserve the shared discovery policy rather than inventing per-surface visibility rules.
+
+The [generated catalogs](./generated/README.md), [MCP contract](./surfaces/MCP.md), and [CLI contract](./surfaces/CLI.md) own current behavior. The operator CLI help comes from the Clap graph, not a second handwritten copy of the MCP action catalog.
 
 ## Security and Privacy
 
