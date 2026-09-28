@@ -34,6 +34,11 @@ class DefaultWebBuildContractTests(unittest.TestCase):
                 self.assertTrue(gates["workflow"])
                 self.assertTrue(gates["web"])
 
+    def test_builder_and_regressions_are_registered_for_lifecycle_checks(self) -> None:
+        inventory = json.loads((ROOT / "scripts/ci/lifecycle-scripts.json").read_text())
+        self.assertIn("scripts/build-web.sh", inventory["shell"])
+        self.assertIn("scripts/ci/test_default_web_build.py", inventory["tests"])
+
     def test_installers_inherit_the_asset_build(self) -> None:
         justfile = (ROOT / "Justfile").read_text()
         self.assertRegex(justfile, r"(?m)^install: build-release$")
