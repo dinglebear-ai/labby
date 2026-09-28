@@ -150,12 +150,12 @@ deny:
 # Build with all features using the release-fast profile (optimized, no LTO/codegen-units=1
 # slowdown). Use `cargo build --workspace --all-features` directly for a debug-assertions/
 # full-unwind dev build instead.
-build:
+build: web-build
     cargo build --workspace --all-features --profile {{local_release_profile}}
 
 # Build release binary with all features. The plugin does not ship a binary;
 # hosts install Labby via scripts/install.sh or Cargo.
-build-release:
+build-release: web-build
     cargo build --workspace --all-features --release
     mkdir -p bin
     install -m 755 target/release/labby bin/labby
@@ -198,7 +198,7 @@ _install-labby-bin profile:
 # Build release-fast binary, copy it to the system service path, and restart the
 # system Labby gateway service. The primary self-hosted runtime is the Incus
 # system-container path; this source checkout shortcut assumes sudo access.
-host-sync:
+host-sync: web-build
     #!/usr/bin/env bash
     set -euo pipefail
     profile="{{local_release_profile}}"
@@ -228,7 +228,7 @@ bench-slim clean="":
     fi
     scripts/bench-labby-slimming "${args[@]}"
 
-host-service-install:
+host-service-install: web-build
     #!/usr/bin/env bash
     set -euo pipefail
     profile="{{local_release_profile}}"
@@ -317,9 +317,10 @@ service-uninstall:
       *) echo "error: service-uninstall supports macOS (launchd) and Linux (systemd)" >&2; exit 1 ;;
     esac
 
-# Rebuild static Labby web assets served by labby serve
+# Install locked frontend dependencies and build the UI before product builds.
+# Also available explicitly for frontend-only development.
 web-build:
-    cd apps/gateway-admin && pnpm build
+    bash scripts/build-web.sh
 
 # Rebuild static Labby web assets when frontend files change
 web-watch:
@@ -346,11 +347,11 @@ web-watch:
       'cd apps/gateway-admin && pnpm build'
 
 # Run with args
-run *ARGS:
+run *ARGS: web-build
     cargo run --all-features -- {{ARGS}}
 
 # Run the binary-served static admin UI locally with browser auth disabled
-chat-local:
+chat-local: web-build
     #!/usr/bin/env bash
     set -euo pipefail
     export LABBY_WEB_UI_AUTH_DISABLED=true
