@@ -55,7 +55,7 @@ Labby is centered on the current gateway/operator surface:
 Use the generated service, action, and CLI catalogs below for the complete
 current product surface instead of copying inventories into hand-written
 documentation. Standalone ACP chat, Marketplace/MCP Registry browser, Fleet,
-Deploy, and Stash products remain retired; bounded provider-backed discovery
+Deploy, and the old Agent Artifact Manager (Stash) remain retired; current Linux principal-scoped File Stash is a separate contract. Bounded provider-backed discovery
 through the `artifacts` control-plane service does not restore those products.
 
 ## Quick Start
@@ -110,7 +110,7 @@ get the skills and the MCP registration in one step:
 apm install -g dinglebear-ai/labby
 ```
 
-That deploys `install-labby`, `using-labby`, and `creating-snippets` into
+That deploys `install-labby`, `using-labby`, `using-codemode`, and `using-snippets` into
 `~/.claude/skills` and `~/.agents/skills` and registers the `labby` stdio MCP
 server (`npx -y @dinglebear/labby mcp`) for Claude Code and Codex; `apm.yml` at
 the repository root is the manifest and `apm outdated -g` reports new
@@ -647,13 +647,19 @@ the extracted `labby-*` crates; product dispatch belongs in
 
 ## Development
 
+Read the canonical [AGENTS.md](./AGENTS.md), the [development workflow](./docs/dev/DEVELOPMENT.md), and the nearest nested instructions before changing code. `CLAUDE.md` and `GEMINI.md` are compatibility symlinks to AGENTS.md. See [documentation maintenance](./docs/dev/DOCUMENTATION.md) for documentation ownership and checks.
+
+Builds and tests do not update an installed gateway. The install, service, host-sync, and auth-disabled local-preview commands below are separate opt-in operations, not routine validation steps.
+
 Prefer the `just` aliases:
 
 ```bash
 just check            # cargo check --workspace --all-features
 just test             # cargo nextest run --workspace --all-features
 just test-integration # cargo nextest run --workspace --all-features --run-ignored ignored-only
-just lint             # skill drift + cargo wrapper smoke + clippy -D warnings + fmt check
+just lint             # skill drift + toolchain sync + module reachability + clippy + fmt
+just docs-check       # generated freshness + links + documentation policy and regressions
+just rustdoc-check    # strict Rustdoc + workspace doctests
 just deny             # cargo deny check
 just build            # cargo build --workspace --all-features
 just build-release    # release build, bin/labby install, ~/.local/bin symlink

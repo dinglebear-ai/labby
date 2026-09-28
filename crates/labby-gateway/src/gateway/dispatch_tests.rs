@@ -16,6 +16,43 @@ use super::super::params::{GatewayDiscoverParams, GatewayEnrichmentScope};
 use super::super::types::McpClientTransportType;
 use super::*;
 
+#[test]
+fn ssh_host_picker_only_returns_concrete_safe_aliases() {
+    let aliases = ssh_host_aliases(
+        "Host tootie dookie\n  HostName 10.0.0.1\n  IdentityFile ~/.ssh/private_key\nHost *\nHost dev-*\nHost -unsafe\nHost good.example\n",
+    );
+    assert_eq!(aliases, vec!["tootie", "dookie", "good.example"]);
+}
+
+#[tokio::test]
+async fn ssh_host_picker_reads_gateway_account_config_without_exposing_details() {
+    let home = tempfile::tempdir().unwrap();
+    let ssh_dir = home.path().join(".ssh");
+    std::fs::create_dir(&ssh_dir).unwrap();
+    std::fs::write(
+        ssh_dir.join("config"),
+        "Host tootie\n  HostName 10.0.0.1\n  IdentityFile ~/.ssh/private_key\n",
+    )
+    .unwrap();
+    let _home_guard = crate::gateway::discovery::TestHomeDirGuard::set(home.path().to_path_buf());
+    let result = dispatch_with_manager(&test_manager(), "gateway.ssh_hosts.list", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(result, json!(["tootie"]));
+}
+
+#[test]
+fn ssh_host_picker_expands_included_config_files() {
+    let home = tempfile::tempdir().unwrap();
+    let ssh_dir = home.path().join(".ssh");
+    let config_dir = ssh_dir.join("config.d");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(ssh_dir.join("config"), "Include config.d/*\nHost tootie\n").unwrap();
+    std::fs::write(config_dir.join("devices"), "Host dookie\nHost media-*\n").unwrap();
+    let contents = read_ssh_config(home.path()).unwrap();
+    assert_eq!(ssh_host_aliases(&contents), vec!["dookie", "tootie"]);
+}
+
 #[cfg(feature = "skills")]
 #[test]
 fn skills_operator_projection_preserves_candidate_count_and_rejection_detail() {
@@ -166,6 +203,7 @@ impl Respond for DashboardCatalogResponder {
 fn gateway_actions_include_management_surface() {
     let names: Vec<&str> = ACTIONS.iter().map(|a| a.name).collect();
     assert!(names.contains(&"gateway.list"));
+    assert!(names.contains(&"gateway.ssh_hosts.list"));
     assert!(names.contains(&"gateway.server.get"));
     assert!(names.contains(&"gateway.supported_services"));
     assert!(names.contains(&"gateway.protected_route.list"));
@@ -1513,6 +1551,54 @@ async fn gateway_code_mode_set_accepts_all_public_config_fields() {
     assert_eq!(value["token_estimate_divisor"], 2);
     assert_eq!(value["max_log_entries"], 10);
     assert_eq!(value["max_log_bytes"], 2048);
+}
+
+#[tokio::test]
+async fn gateway_code_mode_search_policy_updates_immediately_and_persists() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+
+    let value = dispatch_with_manager(
+        &manager,
+        "gateway.code_mode.set",
+        json!({
+            "search_sources": ["team_depot", "personal_labby"],
+            "search_kinds": ["skill", "command", "subagent"]
+        }),
+    )
+    .await
+    .expect("search policy should update");
+
+    assert_eq!(
+        value["search"]["sources"],
+        json!(["personal_labby", "team_depot"])
+    );
+    assert_eq!(
+        value["search"]["kinds"],
+        json!(["skill", "command", "subagent"])
+    );
+
+    let immediate = dispatch_with_manager(&manager, "gateway.code_mode.get", json!({}))
+        .await
+        .expect("same manager should expose the new policy");
+    assert_eq!(immediate["search"], value["search"]);
+
+    let persisted = crate::gateway::config::load_gateway_config(&path).expect("persisted config");
+    assert_eq!(
+        serde_json::to_value(&persisted.code_mode.search).expect("serialize search policy"),
+        value["search"]
+    );
+
+    let cleared = dispatch_with_manager(
+        &manager,
+        "gateway.code_mode.set",
+        json!({"search_sources": [], "search_kinds": []}),
+    )
+    .await
+    .expect("empty sets should disable discovery");
+    assert_eq!(cleared["search"]["sources"], json!([]));
+    assert_eq!(cleared["search"]["kinds"], json!([]));
 }
 
 #[tokio::test]

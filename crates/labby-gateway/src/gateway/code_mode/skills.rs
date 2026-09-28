@@ -8,8 +8,11 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use labby_codemode::{CodeModeCaller, ToolScope};
+use labby_codemode::{
+    CatalogDescriptor, CodeModeCaller, CodeModeCatalogKind, CodeModeSurface, ToolScope,
+};
 use labby_runtime::error::ToolError;
+use labby_runtime::gateway_config::CodeModeSearchConfig;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -53,4 +56,22 @@ pub trait CodeModeSkillProvider: Send + Sync {
         caller: &'a CodeModeCaller,
         scope: &'a ToolScope,
     ) -> Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'a>>;
+}
+
+/// Product-host seam for bounded, query-driven artifact discovery.
+///
+/// The gateway deliberately does not know which backing catalog serves a
+/// result. Implementations receive the full caller context and must apply the
+/// same authorization policy as their native artifact surfaces.
+pub trait CodeModeArtifactSearchProvider: Send + Sync {
+    fn search<'a>(
+        &'a self,
+        query: &'a str,
+        limit: usize,
+        kinds: &'a [CodeModeCatalogKind],
+        config: &'a CodeModeSearchConfig,
+        caller: &'a CodeModeCaller,
+        surface: CodeModeSurface,
+        scope: &'a ToolScope,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<CatalogDescriptor>, ToolError>> + Send + 'a>>;
 }

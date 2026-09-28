@@ -588,7 +588,7 @@ impl ServerHandler for LabMcpServer {
         #[cfg(feature = "skills")]
         {
             info.instructions = Some(
-                "This server implements the MCP Skills extension                  (io.modelcontextprotocol/skills). Call `skills/list` to enumerate its Agent                  Skills, or `skills/get` with a `skill://` URI to fetch one entry. The contract                  this server implements is readable at `lab://contracts/skills-extension`."
+                "Labby exposes caller-visible Agent Skills through the MCP Skills extension (io.modelcontextprotocol/skills). Call `skills/list` to discover skills, `skills/get` with a `skill://` URI to inspect a skill, and `resources/read` with a manifest resource URI to read its content. Start with `skill://labby/using-labby/SKILL.md` for Labby usage guidance. If your MCP client cannot call Skills extension methods but can use Labby's `codemode` tool, use `codemode.listSkills()`, `codemode.getSkill(uri)`, and `codemode.readSkill(uri)` instead. The extension contract is at `lab://contracts/skills-extension`."
                     .to_string(),
             );
         }
@@ -1391,6 +1391,17 @@ mod tests {
             Some(true),
             "get_info must return capabilities untouched by legacy withholding"
         );
+    }
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn server_instructions_advertise_skills_and_code_mode_paths() {
+        let server = stateless_test_server(Default::default());
+        let instructions = server.get_info().instructions.unwrap();
+        assert!(instructions.contains("skills/list"));
+        assert!(instructions.contains("resources/read"));
+        assert!(instructions.contains("codemode.listSkills()"));
+        assert!(instructions.contains("skill://labby/using-labby/SKILL.md"));
     }
 
     #[test]

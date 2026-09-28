@@ -288,7 +288,9 @@ function __codemodeTokens(value) {{
   var normalized = __codemodeNormalize(value);
   return normalized ? normalized.split(/\s+/g) : [];
 }}
+var __codemodeRecentSearch = [];
 codemode.search = async function(input) {{
+  __codemodeRecentSearch = [];
   var query = typeof input === "object" && input !== null ? String(input.query || "") : String(input || "");
   var limit = typeof input === "object" && input !== null && Number.isFinite(Number(input.limit))
     ? Math.max(1, Math.min(50, Number(input.limit)))
@@ -303,11 +305,36 @@ codemode.search = async function(input) {{
   var __codemodeNoMatchHint = "No matches. Broaden the query or try synonyms.";
   if (!tokens.length) return {{ results: [], total: 0, truncated: false, hint: __codemodeNoMatchHint }};
 
+  // Keep query-backed catalogs out of the injected preamble. A search pulls
+  // only a bounded result page and merges it with this execution's authorized
+  // local catalog.
+  var searchEntries = __codemodeDiscovery.slice();
+  var queryBackedById = Object.create(null);
+  var artifactSearchIncomplete = false;
+  try {{
+    var artifactResponse = await callTool("__lab_internal::artifact_search", {{ query: query, limit: limit, kinds: requestedKinds }});
+    var artifactEntries = artifactResponse && Array.isArray(artifactResponse.entries) ? artifactResponse.entries : [];
+    var knownIds = Object.create(null);
+    for (var localIndex = 0; localIndex < searchEntries.length; localIndex++) knownIds[searchEntries[localIndex].id] = true;
+    for (var remoteIndex = 0; remoteIndex < artifactEntries.length; remoteIndex++) {{
+      var remoteEntry = artifactEntries[remoteIndex];
+      if (remoteEntry && remoteEntry.id && !knownIds[remoteEntry.id]) {{
+        knownIds[remoteEntry.id] = true;
+        searchEntries.push(remoteEntry);
+        queryBackedById[remoteEntry.id] = remoteEntry;
+      }}
+    }}
+  }} catch (e) {{
+    // Preserve local results, but never report a failed provider search as
+    // authoritative absence from the configured artifact sources.
+    artifactSearchIncomplete = true;
+  }}
+
   // --- lexical scoring (unchanged algorithm) ---
   var lexicalById = {{}};
   var scored = [];
-  for (var i = 0; i < __codemodeDiscovery.length; i++) {{
-    var entry = __codemodeDiscovery[i];
+  for (var i = 0; i < searchEntries.length; i++) {{
+    var entry = searchEntries[i];
     if (hasKindFilter && !kindFilter[String(entry.kind)]) continue;
     var fields = [
       [__codemodeNormalize(entry.path), 12],
@@ -399,9 +426,9 @@ codemode.search = async function(input) {{
       // semantic_rank ranks exclusively within this execution's
       // already-scope-filtered catalog — a security invariant on the host
       // side), so this lookup is safe and will always find a match.
-      for (var d = 0; d < __codemodeDiscovery.length; d++) {{
-        if (__codemodeDiscovery[d].id === rid) {{
-          var de = __codemodeDiscovery[d];
+      for (var d = 0; d < searchEntries.length; d++) {{
+        if (searchEntries[d].id === rid) {{
+          var de = searchEntries[d];
           if (hasKindFilter && !kindFilter[String(de.kind)]) break;
           var record2 = {{
             path: de.path, id: de.id, helper: de.helper, kind: de.kind, namespace: de.namespace,
@@ -435,6 +462,11 @@ codemode.search = async function(input) {{
   var withheldHits = __codemodeWithheldNamed(tokens, hasKindFilter, kindFilter);
   if (total === 0) {{
     var empty = {{ results: [], total: 0, truncated: false, hint: __codemodeNoMatchHint }};
+    if (artifactSearchIncomplete) {{
+      empty.incomplete = true;
+      empty.hint = "Artifact search was incomplete. Retry or inspect source availability.";
+      return empty;
+    }}
     if (withheldHits.length) {{
       empty.hint = __codemodeWithheldHint(withheldHits);
       empty.withheld = __codemodeWithheldSummary(withheldHits);
@@ -447,10 +479,15 @@ codemode.search = async function(input) {{
   var results = scored.slice(0, limit).map(function(r) {{
     return {{ path: r.path, id: r.id, helper: r.helper, kind: r.kind, namespace: r.namespace, name: r.name, description: r.description, signature: r.signature, tags: r.tags, tools: r.tools, safety: r.safety, score: r.score }};
   }});
+  __codemodeRecentSearch = results.map(function(result) {{ return queryBackedById[result.id]; }}).filter(Boolean);
   var found = {{ results: results, total: total, truncated: total > limit }};
   if (withheldHits.length) {{
     found.hint = __codemodeWithheldHint(withheldHits);
     found.withheld = __codemodeWithheldSummary(withheldHits);
+  }}
+  if (artifactSearchIncomplete) {{
+    found.incomplete = true;
+    found.hint = "Artifact search was incomplete. Retry or inspect source availability." + (found.hint ? " " + found.hint : "");
   }}
   return found;
 }};
@@ -459,8 +496,9 @@ codemode.describe = async function(target) {{
   var exact = [];
   var bare = [];
   var ambiguous = [];
-  for (var i = 0; i < __codemodeDiscovery.length; i++) {{
-    var entry = __codemodeDiscovery[i];
+  var describableEntries = __codemodeDiscovery.concat(__codemodeRecentSearch);
+  for (var i = 0; i < describableEntries.length; i++) {{
+    var entry = describableEntries[i];
     if (raw === entry.id || raw === entry.path || raw === entry.helper) exact.push(entry);
     if (entry.kind === "snippet" && raw === "snippet::" + entry.name) exact.push(entry);
     if (raw === entry.name) bare.push(entry);
@@ -511,6 +549,8 @@ codemode.describe = async function(target) {{
   }}
   var entry = exact[0];
   var markdown;
+  var schemaStatus = null;
+  var schemaError = null;
   if (entry.kind === "snippet") {{
     var inputLines = (entry.inputs || []).map(function(input) {{
       var bits = ["- `" + input.name + "` (" + input.ty + ")"];
@@ -531,24 +571,49 @@ codemode.describe = async function(target) {{
     markdown += "\nDeclared upstream tools: " + toolDeclaration + "\nExecution policy: native snippets.exec/test intersects a nonempty declaration with caller authority and never grants authority. Nested codemode.run retains the enclosing run scope; it does not reapply the declaration.\n";
   }} else if (entry.kind === "tool") {{
     markdown = "# " + entry.path + "\n\n" + entry.description + "\n\n- kind: `tool`\n- id: `" + entry.id + "`\n- helper: `" + entry.helper + "`\n- signature: `" + entry.signature + "`\n";
-    // Fetched from the host on demand rather than embedded in the sandbox
-    // preamble up front — the host already has this cached from the same
-    // catalog render this execution's discovery index was built from, so
-    // this is usually a cheap round trip, not a fresh computation (see the
-    // Rust-side `describe_types` dispatch comment for when it isn't). Caught,
-    // not propagated: the target is already fully resolved above (path/id/
-    // helper/signature), so a transient failure fetching the type body alone
-    // must not fail the whole `describe()` call — degrade to no type section
-    // instead, matching the host's own fail-open behavior for this lookup.
+    // Fetch the declaration through the reserved host bridge. The host
+    // resolves this from the exact catalog snapshot used to build this
+    // execution's discovery index, so describe() does not re-enumerate the
+    // broad live catalog after it has already resolved a target.
     var typeBody = null;
     try {{
       var typeResponse = await callTool("__lab_internal::describe_types", {{ id: entry.id }});
       typeBody = typeResponse && typeResponse.dts;
+      if (typeBody) {{
+        schemaStatus = "complete";
+        markdown += "\nParameters (TypeScript):\n\n```typescript\n" + typeBody + "```\n";
+      }} else {{
+        schemaStatus = "unavailable";
+        schemaError = {{
+          kind: "schema_unavailable",
+          message: "The resolved tool has no available parameter declaration.",
+          recovery: {{
+            action: "revise_and_retry",
+            same_arguments: "conditional",
+            guidance: "Retry this Code Mode execution with top-level upstreams: [\"" + entry.namespace + "\"] using the canonical upstream id, or retry later."
+          }}
+        }};
+        markdown += "\nParameters (TypeScript): unavailable. Inspect `schema_error` for recovery guidance.\n";
+      }}
     }} catch (e) {{
-      typeBody = null;
-    }}
-    if (typeBody) {{
-      markdown += "\nParameters (TypeScript):\n\n```typescript\n" + typeBody + "```\n";
+      schemaStatus = "unavailable";
+      var typeErrorMessage = String(e && e.message ? e.message : e);
+      try {{
+        schemaError = JSON.parse(typeErrorMessage);
+      }} catch (_parseError) {{
+        schemaError = {{ kind: "schema_lookup_failed", message: typeErrorMessage }};
+      }}
+      if (!schemaError || typeof schemaError !== "object" || Array.isArray(schemaError)) {{
+        schemaError = {{ kind: "schema_lookup_failed", message: typeErrorMessage }};
+      }}
+      if (!schemaError.recovery) {{
+        schemaError.recovery = {{
+          action: "revise_and_retry",
+          same_arguments: "conditional",
+          guidance: "Retry this Code Mode execution with top-level upstreams: [\"" + entry.namespace + "\"] using the canonical upstream id, or retry later."
+        }};
+      }}
+      markdown += "\nParameters (TypeScript): unavailable. Inspect `schema_error` for the lookup failure and recovery guidance.\n";
     }}
   }} else {{
     markdown = "# " + entry.path + "\n\n" + entry.description
@@ -565,6 +630,8 @@ codemode.describe = async function(target) {{
     helper: entry.helper,
     tags: entry.tags || [],
     safety: entry.safety,
+    schema_status: schemaStatus,
+    schema_error: schemaError,
     markdown: markdown
   }};
 }};
@@ -965,8 +1032,13 @@ mod tests {
         assert!(js.contains("globalThis.codemode = globalThis.codemode || {}"));
         assert!(js.contains("codemode.search"));
         assert!(js.contains("codemode.describe"));
-        assert!(!js.contains("schema"));
-        assert!(!js.contains("output_schema"));
+        // #787 adds explicit schema lookup status/error fields to describe().
+        // Keep guarding the actual discovery payload instead of banning the
+        // word "schema" from the generated helper implementation.
+        assert!(!js.contains("\"schema\":"));
+        assert!(!js.contains("\"output_schema\":"));
+        assert!(js.contains("schema_status"));
+        assert!(js.contains("schema_error"));
         // No embedded type-declaration lookup table — `.dts` appears only as a
         // property name on the lazily-fetched `__lab_internal::describe_types`
         // response (see `discovery_describe_fetches_tool_types_lazily`), never
@@ -1033,11 +1105,9 @@ mod tests {
         assert!(js.contains("typeResponse.dts"));
         assert!(js.contains("```typescript"));
         // Regression guard: the describe_types round trip must stay inside a
-        // try block, and a rejection must be caught and degrade to no type
-        // body (`typeBody = null`), not propagate into a `describe()`
-        // rejection. String-matching, not behavioral, but it's the difference
-        // between "this test would catch someone deleting the try/catch" and
-        // "it wouldn't" — see the end-to-end test in
+        // try block, and a rejection must be caught and converted into the
+        // explicit #787 incomplete-schema contract instead of propagating into
+        // a `describe()` rejection. See the end-to-end test in
         // `crates/labby/tests/code_mode_runner.rs` for the behavioral proof.
         assert!(
             js.contains(
@@ -1046,8 +1116,12 @@ mod tests {
             "the describe_types call must be the first statement inside a try block: {js}"
         );
         assert!(
-            js.contains("} catch (e) {\n      typeBody = null;"),
-            "a rejected describe_types call must be caught, not left to propagate: {js}"
+            js.contains("} catch (e) {\n      schemaStatus = \"unavailable\";"),
+            "a rejected describe_types call must expose an unavailable schema status: {js}"
+        );
+        assert!(
+            js.contains("schemaError = JSON.parse(typeErrorMessage)"),
+            "a rejected describe_types call must preserve the structured lookup error: {js}"
         );
     }
 
@@ -1146,6 +1220,47 @@ mod tests {
         assert!(js.contains("__lab_internal::semantic_rank"));
         assert!(js.contains("blendedScore"));
         assert!(js.contains("codemode.search = async function"));
+        assert!(js.contains("__lab_internal::artifact_search"));
+        assert!(js.contains("searchEntries.push(remoteEntry)"));
+    }
+
+    #[test]
+    fn query_backed_skill_can_be_described_after_search() {
+        let js = generate_discovery_js(&[], 0.5, &[]).expect("js");
+        let remote = CodeModeDiscoveryEntry::from_catalog(&CatalogDescriptor::metadata(
+            CodeModeCatalogKind::Skill,
+            "public_depot",
+            "depot:skill:fixture",
+            "fixture skill",
+            "query-backed result",
+            vec!["skill".to_owned()],
+        ));
+        let remote = serde_json::to_string(&remote).expect("remote entry");
+        let script = format!(
+            "{js}\n\
+             globalThis.callTool = async (id) => id === '__lab_internal::artifact_search'\n\
+               ? {{entries: [{remote}]}} : {{ranked: []}};\n\
+             globalThis.result = null;\n\
+             (async () => {{\n\
+               const hit = (await codemode.search('fixture')).results[0];\n\
+               const described = await codemode.describe(hit.id);\n\
+               globalThis.result = JSON.stringify({{hit: hit.id, described: described.id}});\n\
+             }})().catch(error => {{ globalThis.result = JSON.stringify({{error: String(error)}}); }});"
+        );
+        let runtime = javy::Runtime::new(javy::Config::default()).expect("runtime");
+        runtime
+            .context()
+            .with(|cx| cx.eval::<(), _>(script))
+            .expect("script");
+        runtime.resolve_pending_jobs().expect("pending jobs");
+        let result: String = runtime
+            .context()
+            .with(|cx| cx.globals().get("result"))
+            .expect("result");
+        let value: serde_json::Value = serde_json::from_str(&result).expect("json");
+        assert!(value.get("error").is_none(), "{value}");
+        assert_eq!(value["hit"], "depot:skill:fixture");
+        assert_eq!(value["described"], value["hit"]);
     }
 
     #[test]
@@ -1164,6 +1279,8 @@ mod tests {
         let entries = vec![discovery_entry("arcane", "containers", "List containers")];
         let js = generate_discovery_js(&entries, 0.5, &[]).expect("js generation succeeds");
         assert!(js.contains("catch (e) {"));
+        assert!(js.contains("artifactSearchIncomplete = true"));
+        assert!(js.contains("empty.incomplete = true"));
     }
 
     #[test]

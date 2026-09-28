@@ -138,6 +138,78 @@ pub struct McpAppsConfig {
 
 // ─── Code Mode ───────────────────────────────────────────────────────────────
 
+/// Artifact providers queried by `codemode.search()`.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, JsonSchema, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum CodeModeSearchSource {
+    /// Capabilities owned by this Labby installation.
+    #[serde(alias = "personal")]
+    PersonalLabby,
+    /// The authenticated organization/team Depot catalog.
+    TeamDepot,
+    /// Depot's public catalog.
+    PublicDepot,
+}
+
+/// Artifact families queried by `codemode.search()`.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, JsonSchema, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum CodeModeSearchKind {
+    Tool,
+    Skill,
+    Command,
+    Prompt,
+    Subagent,
+    Snippet,
+}
+
+/// Source and artifact-family policy for query-driven Code Mode discovery.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
+pub struct CodeModeSearchConfig {
+    /// Providers included in subsequent searches. An empty set disables search providers.
+    #[serde(default = "default_code_mode_search_sources")]
+    pub sources: std::collections::BTreeSet<CodeModeSearchSource>,
+    /// Artifact families included in subsequent searches. An empty set disables all families.
+    #[serde(default = "default_code_mode_search_kinds")]
+    pub kinds: std::collections::BTreeSet<CodeModeSearchKind>,
+}
+
+impl Default for CodeModeSearchConfig {
+    fn default() -> Self {
+        Self {
+            sources: default_code_mode_search_sources(),
+            kinds: default_code_mode_search_kinds(),
+        }
+    }
+}
+
+fn default_code_mode_search_sources() -> std::collections::BTreeSet<CodeModeSearchSource> {
+    [
+        CodeModeSearchSource::PersonalLabby,
+        CodeModeSearchSource::TeamDepot,
+        CodeModeSearchSource::PublicDepot,
+    ]
+    .into_iter()
+    .collect()
+}
+
+fn default_code_mode_search_kinds() -> std::collections::BTreeSet<CodeModeSearchKind> {
+    [
+        CodeModeSearchKind::Tool,
+        CodeModeSearchKind::Skill,
+        CodeModeSearchKind::Command,
+        CodeModeSearchKind::Prompt,
+        CodeModeSearchKind::Subagent,
+        CodeModeSearchKind::Snippet,
+    ]
+    .into_iter()
+    .collect()
+}
+
 /// Model-facing policy applied to oversized final Code Mode results.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -246,6 +318,9 @@ pub struct CodeModeConfig {
     /// Optional embedding-based semantic search blend for `codemode.search()`.
     #[serde(default)]
     pub semantic_search: SemanticSearchConfig,
+    /// Providers and artifact families included by query-driven discovery.
+    #[serde(default)]
+    pub search: CodeModeSearchConfig,
     /// Legacy bypass: let a rendered mcp-ui widget's callback reach the
     /// upstream proxy by tool name even while the Code Mode synthetic
     /// surface hides raw tools from `list_tools`. Default: off.
@@ -290,6 +365,7 @@ impl Default for CodeModeConfig {
             max_log_entries: default_max_log_entries(),
             max_log_bytes: default_max_log_bytes(),
             semantic_search: SemanticSearchConfig::default(),
+            search: CodeModeSearchConfig::default(),
             widget_callbacks: None,
             artifact_retention_runs: None,
             artifact_max_mib: None,
@@ -2054,6 +2130,39 @@ fn normalize_string_list(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn code_mode_search_defaults_cover_all_sources_and_requested_kinds() {
+        let search = CodeModeSearchConfig::default();
+        assert_eq!(search.sources.len(), 3);
+        assert!(
+            search
+                .sources
+                .contains(&CodeModeSearchSource::PersonalLabby)
+        );
+        assert!(search.sources.contains(&CodeModeSearchSource::TeamDepot));
+        assert!(search.sources.contains(&CodeModeSearchSource::PublicDepot));
+        assert_eq!(search.kinds.len(), 6);
+        assert!(search.kinds.contains(&CodeModeSearchKind::Tool));
+        assert!(search.kinds.contains(&CodeModeSearchKind::Skill));
+        assert!(search.kinds.contains(&CodeModeSearchKind::Command));
+        assert!(search.kinds.contains(&CodeModeSearchKind::Prompt));
+        assert!(search.kinds.contains(&CodeModeSearchKind::Subagent));
+        assert!(search.kinds.contains(&CodeModeSearchKind::Snippet));
+    }
+
+    #[test]
+    fn code_mode_search_sources_use_unambiguous_wire_names() {
+        let encoded = serde_json::to_value(CodeModeSearchConfig::default()).expect("serialize");
+        let sources = encoded["sources"].as_array().expect("source array");
+        assert!(sources.iter().any(|source| source == "personal_labby"));
+        assert!(sources.iter().any(|source| source == "team_depot"));
+        assert!(sources.iter().any(|source| source == "public_depot"));
+
+        let legacy: CodeModeSearchSource =
+            serde_json::from_str("\"personal\"").expect("legacy alias parses");
+        assert_eq!(legacy, CodeModeSearchSource::PersonalLabby);
+    }
+
     #[test]
     fn gateway_subset_routes_may_share_a_path_on_different_hosts() {
         let mut config: GatewayConfig = toml::from_str(

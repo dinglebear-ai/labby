@@ -45,7 +45,7 @@ retired. Plugin configuration is client-only and never mutates the Labby host.
 ## APM package (`apm.yml`)
 
 The repository root is also an [APM](https://microsoft.github.io/apm/) package.
-`apm install -g dinglebear-ai/labby` deploys the same three skills (the root
+`apm install -g dinglebear-ai/labby` deploys the same four skills (the root
 `skills/` entries are symlinks into `plugins/labby/skills`, so there is one
 source) and registers the `labby` stdio MCP server through the npm launcher.
 `apm.yml` carries a `# x-release-please-version` marker, so Release Please keeps

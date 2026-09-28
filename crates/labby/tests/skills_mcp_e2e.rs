@@ -11,7 +11,9 @@ mod skills_oauth;
 
 use labby_gateway::upstream::http_client::BodyCappedHttpClient;
 use labby_runtime::skills::wire::{SkillsGetResult, SkillsListResult};
-use rmcp::model::{ClientRequest, CustomRequest, ProtocolVersion, ReadResourceRequestParams};
+use rmcp::model::{
+    CallToolRequestParams, ClientRequest, CustomRequest, ProtocolVersion, ReadResourceRequestParams,
+};
 use rmcp::service::{ClientLifecycleMode, ClientServiceExt};
 use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransportConfig, StreamableHttpClientWorker,
@@ -228,6 +230,240 @@ async fn skills_http_server_list_get_and_read_through_production_client() {
     .await;
     let cleanup = server.finish().await;
     assert!(cleanup.is_clean(), "owned server cleanup: {cleanup:?}");
+}
+
+#[tokio::test]
+async fn skills_http_list_cursor_reads_second_page_on_same_session() {
+    drop(rustls::crypto::ring::default_provider().install_default());
+    let parent = std::env::temp_dir().join("labby-live-e2e");
+    std::fs::create_dir_all(&parent).expect("test root parent");
+    let root = tempfile::Builder::new()
+        .prefix("skills-pagination-")
+        .tempdir_in(parent)
+        .expect("test root");
+    let skills = root.path().join("labby-home/skills");
+    for index in 0..129 {
+        let name = format!("page-{index:03}");
+        let directory = skills.join(&name);
+        std::fs::create_dir_all(&directory).expect("skill directory");
+        std::fs::write(
+            directory.join("SKILL.md"),
+            format!(
+                "---\nname: {name}\ndescription: Pagination fixture {index}\n---\n\nRead only.\n"
+            ),
+        )
+        .expect("skill manifest");
+    }
+
+    let server = live_labby::LiveLabbyBuilder::new()
+        .existing_root(root.path())
+        .env("LABBY_MCP_HTTP_TOKEN", "skills-e2e-disposable-token")
+        .start()
+        .await
+        .expect("isolated Labby starts");
+    let mut config = StreamableHttpClientTransportConfig::with_uri(format!(
+        "{}/mcp",
+        server.connection().base_url
+    ));
+    config.auth_header = Some("skills-e2e-disposable-token".into());
+    let worker = StreamableHttpClientWorker::new(
+        BodyCappedHttpClient::new(reqwest::Client::new(), 1024 * 1024),
+        config,
+    );
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let client =
+            ().serve_with_lifecycle(worker, ClientLifecycleMode::Initialize)
+                .await
+                .expect("MCP connection");
+        let first: SkillsListResult = client
+            .send_request_as(ClientRequest::CustomRequest(CustomRequest::new(
+                "skills/list",
+                Some(json!({})),
+            )))
+            .await
+            .expect("first page");
+        assert_eq!(first.skills.len(), 128);
+        let cursor = first.next_cursor.expect("second page cursor");
+        let second: SkillsListResult = client
+            .send_request_as(ClientRequest::CustomRequest(CustomRequest::new(
+                "skills/list",
+                Some(json!({ "cursor": cursor })),
+            )))
+            .await
+            .expect("second page on same session");
+        assert!(!second.skills.is_empty());
+        assert!(second.next_cursor.is_none());
+        let first_uris = first
+            .skills
+            .iter()
+            .map(|skill| skill.uri.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        assert!(
+            second
+                .skills
+                .iter()
+                .all(|skill| !first_uris.contains(skill.uri.as_str()))
+        );
+        client.cancel().await.expect("client shutdown");
+    })
+    .await
+    .expect("pagination deadline");
+    let cleanup = server.finish().await;
+    assert!(cleanup.is_clean(), "owned server cleanup: {cleanup:?}");
+}
+
+#[tokio::test]
+async fn skills_http_federated_cursor_rejects_changed_catalog_on_same_session() {
+    drop(rustls::crypto::ring::default_provider().install_default());
+    let parent = std::env::temp_dir().join("labby-live-e2e");
+    std::fs::create_dir_all(&parent).expect("test root parent");
+    let leaf_root = tempfile::Builder::new()
+        .prefix("skills-federated-pagination-")
+        .tempdir_in(parent)
+        .expect("leaf root");
+    let skills = leaf_root.path().join("labby-home/skills");
+    for index in 0..129 {
+        let name = format!("federated-{index:03}");
+        let directory = skills.join(&name);
+        std::fs::create_dir_all(&directory).expect("skill directory");
+        std::fs::write(
+            directory.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: Fixture {index}\n---\n\nRead only.\n"),
+        )
+        .expect("skill manifest");
+    }
+    let leaf = live_labby::LiveLabbyBuilder::new()
+        .existing_root(leaf_root.path())
+        .env("LABBY_MCP_HTTP_TOKEN", "skills-e2e-disposable-token")
+        .start()
+        .await
+        .expect("first leaf starts");
+    let second_root = tempfile::Builder::new()
+        .prefix("skills-federated-replacement-")
+        .tempdir_in(std::env::temp_dir().join("labby-live-e2e"))
+        .expect("second leaf root");
+    let second_skills = second_root.path().join("labby-home/skills");
+    for index in 0..129 {
+        let name = format!("replacement-{index:03}");
+        let directory = second_skills.join(&name);
+        std::fs::create_dir_all(&directory).expect("second skill directory");
+        std::fs::write(
+            directory.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: Replacement {index}\n---\n\nRead only.\n"),
+        )
+        .expect("second skill manifest");
+    }
+    let second_leaf = live_labby::LiveLabbyBuilder::new()
+        .existing_root(second_root.path())
+        .env("LABBY_MCP_HTTP_TOKEN", "skills-e2e-disposable-token")
+        .start()
+        .await
+        .expect("second leaf starts");
+    let config = |url: &str| {
+        format!(
+            "[code_mode]\nenabled = false\n[[upstream]]\nname = \"skills-leaf\"\nenabled = true\nurl = \"{url}/mcp\"\nbearer_token_env = \"SKILLS_E2E_LEAF_TOKEN\"\nproxy_skills = true\n"
+        )
+    };
+    let gateway = live_labby::LiveLabbyBuilder::new()
+        .env("LABBY_MCP_HTTP_TOKEN", "skills-e2e-disposable-token")
+        .env("LABBY_E2E_BOOTSTRAP_STATIC_OWNER", "1")
+        .env("SKILLS_E2E_LEAF_TOKEN", "skills-e2e-disposable-token")
+        .config(config(&leaf.connection().base_url))
+        .start()
+        .await
+        .expect("gateway starts");
+    let mut transport = StreamableHttpClientTransportConfig::with_uri(format!(
+        "{}/mcp",
+        gateway.connection().base_url
+    ));
+    transport.auth_header = Some("skills-e2e-disposable-token".into());
+    let worker = StreamableHttpClientWorker::new(
+        BodyCappedHttpClient::new(reqwest::Client::new(), 1024 * 1024),
+        transport,
+    );
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let client =
+            ().serve_with_lifecycle(worker, ClientLifecycleMode::Initialize)
+                .await
+                .expect("MCP connection");
+        let list = |cursor: Option<String>| {
+            ClientRequest::CustomRequest(CustomRequest::new(
+                "skills/list",
+                Some(match cursor {
+                    Some(cursor) => json!({ "cursor": cursor }),
+                    None => json!({}),
+                }),
+            ))
+        };
+        let first: SkillsListResult = client
+            .send_request_as(list(None))
+            .await
+            .expect("first page");
+        assert_eq!(first.skills.len(), 128);
+        let cursor = first.next_cursor.expect("federated second-page cursor");
+        let second: SkillsListResult = client
+            .send_request_as(list(Some(cursor.clone())))
+            .await
+            .expect("stable federated second page");
+        assert!(
+            second
+                .skills
+                .iter()
+                .any(|skill| skill.uri.starts_with("skill://skills-leaf/"))
+        );
+
+        std::fs::write(
+            gateway.root().join("labby-home/config.toml"),
+            config(&second_leaf.connection().base_url),
+        )
+        .expect("replace isolated gateway upstream");
+        let reload = client
+            .call_tool(
+                CallToolRequestParams::new("gateway").with_arguments(
+                    json!({ "action": "gateway.reload", "params": {} })
+                        .as_object()
+                        .expect("reload params")
+                        .clone(),
+                ),
+            )
+            .await
+            .expect("gateway reload");
+        assert_ne!(reload.is_error, Some(true), "gateway reload: {reload:?}");
+        let changed: SkillsListResult = client
+            .send_request_as(list(None))
+            .await
+            .expect("changed first page");
+        let changed_cursor = changed.next_cursor.expect("replacement second-page cursor");
+        assert_eq!(
+            cursor.split(':').nth(1),
+            changed_cursor.split(':').nth(1),
+            "first-party generation must stay fixed across upstream replacement"
+        );
+        assert_ne!(
+            cursor, changed_cursor,
+            "federated catalog must change the cursor"
+        );
+        let stale = client
+            .send_request_as::<SkillsListResult>(list(Some(cursor)))
+            .await
+            .expect_err("old federated cursor must be stale");
+        assert!(
+            matches!(stale, rmcp::service::ServiceError::McpError(ref error)
+                if error.code == rmcp::model::ErrorCode::INVALID_PARAMS),
+            "unexpected stale cursor error: {stale:?}"
+        );
+        client.cancel().await.expect("client shutdown");
+    })
+    .await
+    .expect("federated pagination deadline");
+    for (name, server) in [
+        ("gateway", gateway),
+        ("second leaf", second_leaf),
+        ("first leaf", leaf),
+    ] {
+        let cleanup = server.finish().await;
+        assert!(cleanup.is_clean(), "{name} cleanup: {cleanup:?}");
+    }
 }
 
 #[tokio::test]
