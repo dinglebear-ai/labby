@@ -240,7 +240,7 @@ Prerequisites:
 - Rust 1.97.1 or newer. CI/release verifies with Rust 1.97.1.
 - `just` for repo commands.
 - `cargo-nextest` for the main test suite.
-- `pnpm 9.15.9` for the Labby web UI. The repo pins this in
+- Node.js 22.x and `pnpm 9.15.9` to build the Labby web UI. The repo pins these in
   [.mise.toml](./.mise.toml) and
   [apps/gateway-admin/package.json](./apps/gateway-admin/package.json).
 - `openssl` if you want to generate a bearer token manually.
@@ -249,12 +249,14 @@ Prerequisites:
 git clone git@github.com:dinglebear-ai/labby.git
 cd labby
 just install
-just web-build
 labby serve --host 127.0.0.1 --port 8765
 ```
 
-`just install` builds the all-features release binary and symlinks it to
-`~/.local/bin/labby`.
+`just install` installs the locked frontend dependencies, builds and validates
+the static web UI, then embeds it in the all-features release binary and installs
+it at `~/.local/bin/labby`. The normal build, run, and service-install recipes
+also build the UI automatically before compiling Rust. Node.js and pnpm are
+build-time tools only; prebuilt release binaries already include the UI.
 
 On macOS, install the gateway as a persistent per-user service instead of
 running `labby serve` in a terminal:
@@ -297,9 +299,11 @@ Bootstrap writes these required `setup` keys if no env exists yet:
 - `LABBY_AUTH_MODE=bearer`
 
 It also enforces secure file creation via Labby's `env_merge` path (`0600` perms on
-Unix) and then skips creating anything else until the web wizard runs.
+Unix). This is a minimal loopback bootstrap, not the guided onboarding flow.
+Run `labby setup` for interactive server/client configuration; it does not require
+completing a web wizard.
 
-For explicit setup:
+For explicit setup with a manually generated bearer token:
 
 ```bash
 mkdir -p ~/.labby
@@ -309,9 +313,8 @@ labby setup
 labby serve --host 127.0.0.1 --port 8765
 ```
 
-Open `http://127.0.0.1:8765/`.
-Build static Labby assets with `just web-build` first when running from a source
-checkout.
+Open `http://127.0.0.1:8765/`. Release binaries and normal source builds already
+include the operator UI; no separate web-assets step is needed.
 
 ### Self-Host The Gateway
 
@@ -661,19 +664,19 @@ just lint             # skill drift + toolchain sync + module reachability + cli
 just docs-check       # generated freshness + links + documentation policy and regressions
 just rustdoc-check    # strict Rustdoc + workspace doctests
 just deny             # cargo deny check
-just build            # cargo build --workspace --all-features
-just build-release    # release build, bin/labby install, ~/.local/bin symlink
+just build            # web export + optimized all-features Rust build
+just build-release    # web export + release build and binary installation
 just service-install  # build and install the native persistent gateway service
 just service-status   # inspect the native service manager state
 labby host service install --install-self -y # install current binary + start system service
 labby host service restart --install-self -y # reinstall current binary + restart service
 labby host service status --json # inspect the host Labby gateway service
 just host-sync        # repo dev shortcut: rebuild + install binary + restart host service
-just web-build        # cd apps/gateway-admin && pnpm build
+just web-build        # locked dependency install + validated static UI export
 just web-watch        # rebuild web assets when frontend files change
-just run -- help      # cargo run --all-features -- <args>
+just run -- help      # web export + cargo run --all-features -- <args>
 just chat-local       # local Labby admin UI workflow with browser auth disabled
-just install          # build-release + symlink ~/.local/bin/labby
+just install          # web export + release build + install ~/.local/bin/labby
 just mcp-token        # rotate LABBY_MCP_HTTP_TOKEN in .env
 ```
 
@@ -685,6 +688,12 @@ cargo clippy --workspace --all-features -- -D warnings
 cargo nextest run --workspace --all-features
 cargo build --workspace --all-features
 ```
+
+Direct Cargo commands are low-level backend development paths: they do not build
+the frontend and may embed no UI in a clean checkout. Use `just build` or
+`just install` to produce a complete gateway binary. `just check`, `just test`,
+and `just lint` do not invoke the frontend build; `just web-build` is an optional
+frontend-only command, not a prerequisite users need to run separately.
 
 CI uses the same posture and runs nextest with its CI profile. Use `cargo test`
 only for narrow local slices or when a tool specifically requires it.
