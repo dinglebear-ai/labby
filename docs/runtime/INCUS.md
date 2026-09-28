@@ -140,7 +140,8 @@ The checkout-local `scripts/incus-bootstrap.sh` remains available for
 contributor debugging and CI image smoke tests, but the supported operator entry
 point is the binary-owned `labby setup` command. The explicit
 `labby host incus setup` subcommand owns advanced bootstrap flags such as
-`--local-binary`, `--skip-install`, and storage overrides. For day-to-day local
+`--local-binary` and storage overrides. `--skip-install` only applies to legacy
+images that contain a Labby binary. For day-to-day local
 binary deploys into an existing container, use `labby host incus sync`.
 
 `labby host incus sync` updates both runtime surfaces that affect the web UI:
@@ -187,21 +188,23 @@ Pass `--no-web-assets` only for a binary-only deploy where the existing
 filesystem web export should intentionally remain in place.
 
 The distrobuilder image definition lives at `config/incus/labby-image.yaml`.
-Release CI builds it as a prebuilt Incus container image:
+Image input changes trigger a separate build, smoke, and publication workflow.
+The artifact is a prebuilt Incus container image:
 `labby-incus-x86_64-unknown-linux-gnu.tar.xz` plus a `.sha256` file. Import it
 locally and launch it with the normal profile/provision converger:
 
 ```bash
 sha256sum -c labby-incus-x86_64-unknown-linux-gnu.tar.xz.sha256
 incus image import labby-incus-x86_64-unknown-linux-gnu.tar.xz \
-  --alias labby-gateway-vX.Y.Z
+  --alias labby-gateway-IMAGE_SHA
 scripts/incus-bootstrap.sh \
-  --image local:labby-gateway-vX.Y.Z \
-  --skip-install
+  --image local:labby-gateway-IMAGE_SHA \
+  --version vX.Y.Z
 ```
 
-The image bakes in the release `labby` binary, the bounded apt floor, and the
-agent runtime/toolchain floor: Node, uv-managed Python, Rust, Go, Claude Code,
+The image contains the bounded apt floor and agent runtime/toolchain floor;
+bootstrap installs the selected Labby release afterward. The image includes
+Node, uv-managed Python, Rust, Go, Claude Code,
 Codex, Gemini CLI, mise, chezmoi, ffmpeg, Android platform tooling (`adb`, Android
 SDK platform tools, and build tools), and the Tailscale client.
 `config/incus/labby-image.yaml`

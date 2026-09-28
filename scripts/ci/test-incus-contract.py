@@ -60,6 +60,18 @@ class IncusContract(unittest.TestCase):
         self.assertIn("https://snapshot.ubuntu.com/ubuntu/", text)
         self.assertNotIn('uv" python install', text)
 
+    def test_image_is_substrate_only_and_smoke_installs_candidate(self):
+        image = self.text("config/incus/labby-image.yaml")
+        builder = self.text("scripts/ci/build-incus-image.sh")
+        smoke = self.text("scripts/ci/smoke-incus-image.sh")
+        workflow = self.text(".github/workflows/release.yml")
+        self.assertNotIn("@@LABBY_BINARY@@", image)
+        self.assertNotIn("path: /usr/local/bin/labby", image)
+        self.assertNotIn("tar -xzf \"$linux_archive\"", builder)
+        self.assertIn('incus_cmd file push "$smoke_binary"', smoke)
+        self.assertIn('--local-binary "$smoke_binary"', smoke)
+        self.assertNotIn("incus-candidate:", workflow)
+
     def incus_apt_repository(self):
         image = self.text("config/incus/labby-image.yaml")
         repositories = image.split("  repositories:\n", 1)[1].split("  sets:\n", 1)[0]
@@ -333,6 +345,28 @@ class IncusContract(unittest.TestCase):
         self.assertIn("ls-remote", text)
         self.assertIn('write_state "prepared"', text)
         self.assertIn('write_state "promoted"', text)
+
+    def test_image_release_manifest_rejects_changed_or_extra_assets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            image = root / "labby-incus-x86_64-unknown-linux-gnu.tar.xz"
+            image.write_bytes(b"qualified image")
+            digest = hashlib.sha256(image.read_bytes()).hexdigest()
+            (root / f"{image.name}.sha256").write_text(f"{digest}  {image.name}\n")
+            (root / "SHA256SUMS").write_text(f"{digest}  ./{image.name}\n")
+            commit = "a" * 40
+            subprocess.run([
+                "python3", str(ROOT / "scripts/ci/create-incus-image-manifest.py"),
+                "--tag", f"incus-{commit}", "--commit", commit,
+                "--repository", "dinglebear-ai/labby", "--directory", str(root),
+            ], check=True)
+            verify = ["python3", str(ROOT / "scripts/ci/verify-incus-image-manifest.py"), str(root)]
+            self.assertEqual(0, subprocess.run(verify, check=False).returncode)
+            image.write_bytes(b"changed image")
+            self.assertNotEqual(0, subprocess.run(verify, check=False, capture_output=True).returncode)
+            image.write_bytes(b"qualified image")
+            (root / "extra").write_bytes(b"unlisted")
+            self.assertNotEqual(0, subprocess.run(verify, check=False, capture_output=True).returncode)
 
     def test_incus_pointer_receipt_drives_leased_rollback(self):
         with tempfile.TemporaryDirectory() as directory:

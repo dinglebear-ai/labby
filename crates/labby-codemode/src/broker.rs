@@ -3,7 +3,7 @@
 //! its run-scoped state (the captured mcp-ui widget link) is naturally scoped
 //! to one execution.
 
-use crate::host::CodeModeHost;
+use crate::host::{CodeModeHost, ToolsRender};
 use crate::types::UiLink;
 
 pub(crate) fn lab_action_unknown_tool_hint() -> String {
@@ -20,6 +20,10 @@ pub(crate) fn lab_action_unknown_tool_hint() -> String {
 /// source.
 pub struct CodeModeBroker<'a, H: CodeModeHost> {
     pub(crate) host: Option<&'a H>,
+    /// Exact catalog render used to build this execution's discovery proxy.
+    /// codemode.describe() reads parameter declarations from this snapshot so
+    /// it never re-enumerates the broad live catalog after resolving a target.
+    pub(crate) discovery_render: std::sync::Arc<std::sync::Mutex<Option<ToolsRender>>>,
     /// Run-scoped sink for the last MCP Apps (mcp-ui) widget link seen during
     /// this execution. Recorded by the host at the `call_tool` boundary
     /// (last-wins), then surfaced in the Code Mode result.
@@ -32,6 +36,7 @@ impl<'a, H: CodeModeHost> CodeModeBroker<'a, H> {
     pub fn new(host: Option<&'a H>) -> Self {
         Self {
             host,
+            discovery_render: std::sync::Arc::new(std::sync::Mutex::new(None)),
             ui_capture: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }

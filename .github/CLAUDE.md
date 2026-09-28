@@ -63,8 +63,9 @@ details there and keep this file focused on rules for editing `.github/`.
 | release and publication jobs | pinned GitHub-hosted x86_64 image |
 
 `ci.yml` uses `scripts/ci/changed_paths.py` to route work. Scheduled and manual
-runs enable all categories. Pull-request CI validates container and release
-source contracts only; it never builds release binaries or container images.
+runs enable all categories. Required CI validates container and release source
+contracts. A separate path-filtered workflow builds and smokes the Incus image
+when its inputs change.
 The reusable fleet policy and repository contract remain organization-managed
 workflow calls. Their execution environment is owned by the central workflows
 repository.
@@ -75,13 +76,14 @@ Release Please maintains the version and changelog PR, creates the immutable
 stable tag, and leaves the GitHub release as a draft. The tag triggers the
 heavy candidate workflow:
 
-- `release.yml` builds and smokes Linux and macOS archives, builds and
-  scans the container, runs N-1 stateful upgrade/rollback adapters, emits an
+- `release.yml` builds and smokes Linux and macOS archives, runs N-1 stateful
+  upgrade/rollback adapters (including Incus), emits an
   SBOM per subject and a digest manifest, verifies provenance as a consumer,
   publishes npm/GHCR, and only then promotes the draft GitHub release.
-- `build-incus-image.yml` exposes a callable, checksum-verified immutable image
-  candidate. Only the parent release transaction may advance the public Incus
-  rolling release/tag, and it must retain a rollback receipt.
+- `incus-image.yml` runs only when image inputs change or on manual dispatch.
+  Its reusable builder smokes a substrate image without a bundled Labby binary,
+  publishes an immutable commit-named release, verifies checksum and provenance,
+  and advances the rolling image tag with a rollback receipt.
 
 Releases are created as drafts (`"draft": true` in `release-please-config.json`).
 Do not publish one manually: `release.yml` is the sole promotion owner and may

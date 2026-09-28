@@ -1206,7 +1206,7 @@ fn mcp_app_schema_and_meta_cover_managed_apps() {
     let schema = mcp_app_tool_schema();
     assert_eq!(
         schema["properties"]["action"]["enum"],
-        serde_json::json!(["status", "enable", "disable"])
+        serde_json::json!(["status", "enable", "disable", "event"])
     );
     assert_eq!(
         schema["properties"]["target"]["enum"],
@@ -1230,6 +1230,18 @@ fn mcp_app_schema_and_meta_cover_managed_apps() {
         schema["properties"]["params"]["additionalProperties"],
         false
     );
+    assert_eq!(
+        schema["properties"]["params"]["properties"]["level"]["enum"],
+        serde_json::json!(["debug", "info", "warn", "error"])
+    );
+    assert_eq!(
+        schema["properties"]["params"]["properties"]["message"]["maxLength"],
+        2048
+    );
+    assert_eq!(
+        schema["properties"]["params"]["properties"]["widget_session"]["maxLength"],
+        256
+    );
     assert_eq!(schema["additionalProperties"], false);
 
     let meta = mcp_app_tool_meta(MCP_APP_TOOL_NAME);
@@ -1243,6 +1255,11 @@ fn mcp_app_schema_and_meta_cover_managed_apps() {
             .as_str()
             .is_some_and(|uri| uri.starts_with(MCP_APPS_APP_SKYBRIDGE_URI))
     );
+    assert_eq!(
+        meta.0["ui"]["visibility"],
+        serde_json::json!(["model", "app"])
+    );
+    assert_eq!(meta.0["openai/widgetAccessible"], true);
 }
 
 #[test]
@@ -1458,6 +1475,35 @@ async fn list_tools_advertises_code_mode_output_schemas() {
 }
 
 #[tokio::test]
+async fn mcp_app_telemetry_is_app_only_for_read_scoped_callers() {
+    let server = test_server(
+        crate::registry::build_default_registry(),
+        Some(code_mode_manager(true).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(128 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let tools = running
+        .service()
+        .list_tools_impl(None, scoped_context(running.peer().clone(), &["lab:read"]))
+        .await
+        .expect("read-scoped tools");
+    let control = tools
+        .tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == MCP_APP_TOOL_NAME)
+        .expect("app-only telemetry control descriptor");
+    let meta = control.meta.as_ref().expect("callback metadata");
+    assert_eq!(meta.0["ui"]["visibility"], serde_json::json!(["app"]));
+    assert!(meta.0["ui"]["resourceUri"].is_null());
+    assert!(!meta.0.contains_key("openai/outputTemplate"));
+    assert_eq!(meta.0["openai/widgetAccessible"], true);
+}
+
+#[tokio::test]
 async fn mcp_app_control_tool_survives_manager_ui_disable() {
     let manager = code_mode_manager(true).await;
     manager
@@ -1486,13 +1532,17 @@ async fn mcp_app_control_tool_survives_manager_ui_disable() {
         .iter()
         .find(|tool| tool.name.as_ref() == MCP_APP_TOOL_NAME)
         .expect("mcp_app control tool");
+    let control_meta = control.meta.as_ref().expect("mcp_app callback metadata");
     assert!(
-        control
-            .meta
-            .as_ref()
-            .is_some_and(|meta| !meta.0.contains_key("ui")),
-        "manager UI metadata must be opt-in"
+        control_meta.0["ui"]["resourceUri"].is_null(),
+        "manager UI resource metadata must be opt-in"
     );
+    assert!(!control_meta.0.contains_key("openai/outputTemplate"));
+    assert_eq!(
+        control_meta.0["ui"]["visibility"],
+        serde_json::json!(["model", "app"])
+    );
+    assert_eq!(control_meta.0["openai/widgetAccessible"], true);
 
     let resources = running
         .service()
@@ -1671,6 +1721,53 @@ async fn mcp_app_status_reports_runtime_state() {
 }
 
 #[tokio::test]
+async fn mcp_app_event_accepts_runtime_telemetry_for_read_scope() {
+    let server = test_server(
+        completion_test_registry(),
+        Some(code_mode_manager(true).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let result = running
+        .service()
+        .call_tool_impl(
+            CallToolRequestParams::new(MCP_APP_TOOL_NAME).with_arguments(
+                serde_json::json!({
+                    "action": "event",
+                    "params": {
+                        "app": "LabbySettings",
+                        "event": "runtime.error",
+                        "level": "error",
+                        "message": "boom",
+                        "stack": "stack",
+                        "service": "settings",
+                        "operation": "state",
+                        "mode": "mcp",
+                        "widget_session": "widget-session-123"
+                    }
+                })
+                .as_object()
+                .expect("object")
+                .clone(),
+            ),
+            scoped_context(running.peer().clone(), &["lab:read"]),
+        )
+        .await
+        .expect("mcp_app event result");
+
+    assert!(!result.is_error.unwrap_or(false));
+    let structured = result.structured_content.expect("structured event result");
+    assert_eq!(structured["kind"], "mcp_app_event");
+    assert_eq!(structured["accepted"], true);
+    assert_eq!(structured["app"], "LabbySettings");
+    assert_eq!(structured["event"], "runtime.error");
+}
+
+#[tokio::test]
 async fn mcp_app_enable_is_idempotent_for_admin_scope() {
     let server = test_server(
         completion_test_registry(),
@@ -1822,9 +1919,9 @@ async fn mcp_app_disable_hides_ui_surface_and_enable_restores_it() {
         )
         .await
         .expect_err("cached app resource must stay hidden while disabled");
-    assert!(
-        stale_resource.message.contains("unknown UI resource"),
-        "cached resource should be hidden as unknown: {stale_resource:?}"
+    assert_eq!(
+        stale_resource.data.as_ref().unwrap()["kind"],
+        "app_disabled"
     );
 
     let enable = running
@@ -1979,7 +2076,7 @@ async fn mcp_app_individual_disable_only_changes_selected_surface() {
 }
 
 #[tokio::test]
-async fn mcp_app_manager_is_hidden_and_denied_on_protected_routes() {
+async fn mcp_app_manager_is_hidden_but_telemetry_is_allowed_on_protected_routes() {
     let scope = crate::mcp::route_scope::McpRouteScope::protected_subset(
         "ops",
         ["gateway-alpha"],
@@ -2003,12 +2100,18 @@ async fn mcp_app_manager_is_hidden_and_denied_on_protected_routes() {
         .list_tools_impl(None, scoped_context(peer.clone(), &["lab:admin"]))
         .await
         .expect("protected tools");
-    assert!(
-        tools
-            .tools
-            .iter()
-            .all(|tool| tool.name.as_ref() != MCP_APP_TOOL_NAME)
+    let telemetry = tools
+        .tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == MCP_APP_TOOL_NAME)
+        .expect("protected route app-only telemetry descriptor");
+    let telemetry_meta = telemetry.meta.as_ref().expect("telemetry metadata");
+    assert_eq!(
+        telemetry_meta.0["ui"]["visibility"],
+        serde_json::json!(["app"])
     );
+    assert!(telemetry_meta.0["ui"]["resourceUri"].is_null());
+    assert!(!telemetry_meta.0.contains_key("openai/outputTemplate"));
 
     let resources = running
         .service()
@@ -2031,13 +2134,40 @@ async fn mcp_app_manager_is_hidden_and_denied_on_protected_routes() {
                     .expect("object")
                     .clone(),
             ),
-            scoped_context(peer, &["lab:admin"]),
+            scoped_context(peer.clone(), &["lab:admin"]),
         )
         .await
         .expect("protected manager denial");
     assert!(result.is_error.unwrap_or(false));
     let text = result.content[0].as_text().expect("text").text.as_str();
     assert!(text.contains("root gateway route"), "{text}");
+
+    let telemetry = running
+        .service()
+        .call_tool_impl(
+            CallToolRequestParams::new(MCP_APP_TOOL_NAME).with_arguments(
+                serde_json::json!({
+                    "action": "event",
+                    "params": {
+                        "app": "LabbyProtected",
+                        "event": "runtime.ready",
+                        "level": "info",
+                        "mode": "mcp"
+                    }
+                })
+                .as_object()
+                .expect("object")
+                .clone(),
+            ),
+            scoped_context(peer, &["lab:read"]),
+        )
+        .await
+        .expect("protected telemetry result");
+    assert!(!telemetry.is_error.unwrap_or(false));
+    assert_eq!(
+        telemetry.structured_content.expect("telemetry payload")["kind"],
+        "mcp_app_event"
+    );
 }
 
 #[tokio::test]
@@ -2120,13 +2250,20 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
         .iter()
         .find(|tool| tool.name.as_ref() == MCP_APP_TOOL_NAME)
         .expect("mcp_app control tool remains available");
+    let manager_meta = manager_tool
+        .meta
+        .as_ref()
+        .expect("mcp_app callback metadata");
     assert!(
-        manager_tool
-            .meta
-            .as_ref()
-            .is_some_and(|meta| !meta.0.contains_key("ui")),
-        "disabled manager UI must leave the control tool text-only"
+        manager_meta.0["ui"]["resourceUri"].is_null(),
+        "disabled manager UI must remove its resource binding"
     );
+    assert!(!manager_meta.0.contains_key("openai/outputTemplate"));
+    assert_eq!(
+        manager_meta.0["ui"]["visibility"],
+        serde_json::json!(["model", "app"])
+    );
+    assert_eq!(manager_meta.0["openai/widgetAccessible"], true);
     let logs = tools
         .tools
         .iter()
@@ -2183,7 +2320,7 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
             )
             .await
             .expect_err("disabled app resource must be unreadable");
-        assert!(stale.message.contains("unknown UI resource"), "{stale:?}");
+        assert_eq!(stale.data.as_ref().unwrap()["kind"], "app_disabled");
     }
     #[cfg(feature = "skills")]
     {
@@ -2195,7 +2332,7 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
             )
             .await
             .expect_err("disabled Skill Library resource must be unreadable");
-        assert!(stale.message.contains("unknown UI resource"), "{stale:?}");
+        assert_eq!(stale.data.as_ref().unwrap()["kind"], "app_disabled");
     }
 
     let enable = running
@@ -2453,6 +2590,70 @@ async fn gateway_mcp_error_envelope(
     assert!(result.is_error.unwrap_or(false), "{result:?}");
     let text = result.content[0].as_text().expect("text").text.as_str();
     serde_json::from_str(text).expect("error envelope")
+}
+
+#[tokio::test]
+async fn gateway_tool_updates_code_mode_search_policy_without_restart() {
+    let manager = code_mode_manager(false).await;
+    let mut server = test_server(
+        crate::registry::build_default_registry(),
+        Some(Arc::clone(&manager)),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    server.access_runtime = authorized_test_access_runtime().await;
+    let peer_server = test_server(
+        ToolRegistry::new(),
+        None,
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        peer_server,
+        transport,
+        None,
+    );
+    let mut context = request_context_with_peer(running.peer().clone());
+    context.extensions.insert(primary_static_bearer_identity());
+
+    let result = Box::pin(server.call_tool_impl(
+        CallToolRequestParams::new("gateway").with_arguments(serde_json::Map::from_iter([
+            (
+                "action".to_string(),
+                Value::String("gateway.code_mode.set".to_string()),
+            ),
+            (
+                "params".to_string(),
+                serde_json::json!({
+                    "search_sources": ["personal_labby", "public_depot"],
+                    "search_kinds": ["tool", "snippet"]
+                }),
+            ),
+        ])),
+        context,
+    ))
+    .await
+    .expect("call tool result");
+
+    assert!(!result.is_error.unwrap_or(false));
+    let text = result.content[0].as_text().expect("text").text.as_str();
+    let envelope: Value = serde_json::from_str(text).expect("gateway envelope");
+    assert_eq!(envelope["ok"], true);
+    assert_eq!(
+        envelope["data"]["search"]["sources"],
+        serde_json::json!(["personal_labby", "public_depot"])
+    );
+    assert_eq!(
+        envelope["data"]["search"]["kinds"],
+        serde_json::json!(["tool", "snippet"])
+    );
+
+    let immediate = manager.code_mode_config().await;
+    assert_eq!(
+        serde_json::to_value(immediate.search).expect("search policy"),
+        envelope["data"]["search"]
+    );
 }
 
 /// Field report (v1.20.1): the MCP gateway tool reported a never-initialized
@@ -4225,7 +4426,7 @@ async fn read_scope_lists_and_routes_only_codemode_read() {
     assert!(names.contains(&CODE_MODE_READ_TOOL_NAME));
     assert!(!names.contains(&CODE_MODE_TOOL_NAME));
     assert!(!names.contains(&CODE_MODE_UI_TOOL_NAME));
-    assert!(!names.contains(&MCP_APP_TOOL_NAME));
+    assert!(names.contains(&MCP_APP_TOOL_NAME));
 
     let result = running
         .service()
@@ -5645,31 +5846,50 @@ async fn call_tool_allows_direct_mcp_app_ui_tool_in_code_mode() {
 }
 
 #[tokio::test]
-async fn snapshot_catalog_hides_builtin_tools_when_code_mode_is_enabled() {
+async fn code_mode_tools_list_keeps_gateway_control_plane_visible() {
+    let mut registry = completion_test_registry();
+    registry.register(RegisteredService {
+        name: "gateway",
+        description: "Manage proxied upstream MCP gateways",
+        category: "bootstrap",
+        kind: crate::registry::RegisteredServiceKind::BootstrapOperator,
+        status: "available",
+        actions: crate::dispatch::gateway::ACTIONS,
+        dispatch: noop_dispatch,
+    });
     let server = test_server(
-        completion_test_registry(),
+        registry,
         Some(code_mode_manager(true).await),
         crate::mcp::route_scope::McpRouteScope::Root,
         crate::mcp::logging::LoggingLevel::Emergency,
     );
 
-    let snapshot = server.snapshot_catalog().await;
-
-    // Code Mode mode exposes the read-only and full text entry points, explicit
-    // UI entry point, and text-only recovery control. No legacy aliases are permitted.
-    assert_eq!(
-        snapshot.tools,
-        [
-            CODE_MODE_READ_TOOL_NAME.to_string(),
-            CODE_MODE_TOOL_NAME.to_string(),
-            CODE_MODE_UI_TOOL_NAME.to_string(),
-            MCP_APP_TOOL_NAME.to_string(),
-        ]
-        .into_iter()
-        .collect()
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
     );
+    let listed = running
+        .service()
+        .list_tools_impl(None, scoped_context(running.peer().clone(), &["lab:admin"]))
+        .await
+        .expect("admin Code Mode tools");
+    let names = listed
+        .tools
+        .iter()
+        .map(|tool| tool.name.to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+
+    for name in [
+        CODE_MODE_READ_TOOL_NAME,
+        CODE_MODE_TOOL_NAME,
+        CODE_MODE_UI_TOOL_NAME,
+        MCP_APP_TOOL_NAME,
+        "gateway",
+    ] {
+        assert!(names.contains(name), "Code Mode must advertise {name}");
+    }
     assert!(
-        !snapshot.tools.contains("code"),
+        !names.contains("code"),
         "code must not appear in Code Mode mode"
     );
 }
@@ -6157,7 +6377,7 @@ async fn peer_contracts_diverge_by_route_scope_under_global_code_mode() {
     );
     assert!(!raw_contract.tools.contains(CODE_MODE_TOOL_NAME));
     assert!(!raw_contract.tools.contains(CODE_MODE_UI_TOOL_NAME));
-    assert!(!raw_contract.tools.contains(MCP_APP_TOOL_NAME));
+    assert!(raw_contract.tools.contains(MCP_APP_TOOL_NAME));
 
     // The whole point: one global projection cannot stand in for both.
     assert_ne!(
