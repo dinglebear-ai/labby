@@ -56,6 +56,7 @@ CANONICAL_DEV = {
     "docs/dev/DISPATCH.md",
     "docs/dev/DEVELOPMENT.md",
     "docs/dev/DOCUMENTATION.md",
+    "docs/dev/UPSTREAM_INTERNALS.md",
     "docs/dev/ERRORS.md",
     "docs/dev/OBSERVABILITY.md",
     "docs/dev/RUSTDOC.md",
@@ -282,6 +283,35 @@ def validate_instruction_symlinks(failures: list[str]) -> None:
                 )
 
 
+def validate_instruction_budgets(failures: list[str]) -> None:
+    """Bound root characters and repository-only UTF-8 instruction chains.
+
+    Private/global instructions and dynamic imports are not read by this gate.
+    Two separator bytes per boundary conservatively account for concatenation.
+    """
+    guides: dict[Path, bytes] = {}
+    for path in repository_paths():
+        if path.name != "AGENTS.md" or path.is_symlink() or not path.is_file():
+            continue
+        data = path.read_bytes()
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            failures.append(f"{rel(path)}: instructions must be UTF-8")
+            continue
+        if path == ROOT / "AGENTS.md" and len(text) > 7500:
+            failures.append(f"AGENTS.md: {len(text)} characters exceeds the 7500-character limit")
+        guides[path.parent] = data
+    for directory in sorted(guides):
+        chain = [parent for parent in [directory, *directory.parents] if parent in guides]
+        total = sum(len(guides[parent]) for parent in chain) + max(0, len(chain) - 1) * 2
+        if total > 32 * 1024:
+            failures.append(
+                f"{rel(directory / 'AGENTS.md')}: repository instruction chain is {total} UTF-8 bytes; "
+                "exceeds 32768 bytes, move detailed references out of startup instructions"
+            )
+
+
 def validate_auth_bypass_guidance(failures: list[str]) -> None:
     sample = (ROOT / "config/config.example.toml").read_text(encoding="utf-8")
     marker = "# disable_auth = false"
@@ -401,6 +431,7 @@ def main() -> int:
     validate_duplicates(paths, failures)
     validate_service_index_coverage(failures)
     validate_instruction_symlinks(failures)
+    validate_instruction_budgets(failures)
     validate_auth_bypass_guidance(failures)
     validate_install_config_deployment_contracts(failures)
     validate_shipped_skill_cli_examples(failures)

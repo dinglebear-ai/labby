@@ -1,7 +1,7 @@
 ---
 title: "Documentation Maintenance"
 created: "2026-09-27"
-updated: "2026-09-27"
+updated: "2026-09-28"
 ---
 
 # Documentation Maintenance
@@ -14,6 +14,29 @@ and code-owned catalogs establish implemented product behavior.
 ## Instruction scope
 
 Keep the repository AGENTS.md focused on Labby-specific implementation boundaries, protocol contracts, verification commands, packaging, and protected documentation. Cross-project Git practices, tool preferences, reporting standards, and instruction-file conventions belong in the user-level global AGENTS.md, not copies in each repository. Private workstation and deployment facts belong only in the ignored per-checkout override described below.
+
+## Root guide quality and size
+
+Keep executable build/test commands, non-obvious implementation boundaries, and
+specific failure-prevention rules in the root guide. Check each against current
+source or manifests. Omit cross-project workflow policy, exhaustive file lists,
+volatile catalog copies, and tutorial material. Detailed subsystem rationale
+belongs in a linked reference, not an automatically expanded import.
+
+The product-doc gate limits root AGENTS.md to 7,500 Unicode characters and each
+repository-only root-to-directory instruction chain to 32,768 UTF-8 bytes,
+including separator allowance. Character counts and byte counts are different.
+Global instructions, private overrides, and client-expanded imports are outside
+this repository gate; it is not proof of a client's final loaded context size.
+The upstream pool's extended rationale now lives in
+[Upstream Runtime Maintenance Notes](UPSTREAM_INTERNALS.md) rather than startup
+instructions.
+
+These choices follow the [AGENTS.md project guidance](https://agents.md/),
+[Codex discovery and size rules](https://developers.openai.com/codex/guides/agents-md/),
+and [Claude Code instruction-writing guidance](https://code.claude.com/docs/en/best-practices).
+Treat custom-agent persona examples as a different file type, not a required
+schema for this repository's AGENTS.md.
 
 ## Sources of truth
 
@@ -59,6 +82,20 @@ Git should store AGENTS.md as a regular file and each alias with mode 120000.
 A copied Markdown alias, absolute target, reversed topology, empty source, or
 orphan alias is a validation failure. Enable actual symlink support in the
 checkout rather than maintaining independent platform-specific copies.
+
+For checkout-wide alias repair, the legacy command name remains supported:
+
+```bash
+bash plugins/scripts/link-claude-mds .
+```
+
+It delegates to scripts/link-agent-instructions.py, inventories Git-owned and
+nonignored new instruction scopes, and promotes a regular legacy CLAUDE.md only
+when doing so preserves all prose. Distinct authored copies cause a preflight
+failure before any scope is changed. Private overlays, protected history, and
+ignored worktrees are not traversed. The helper does not stage changes and is
+not a lock against concurrent writers; review its resulting diff. Its isolated
+fixtures run through tests/bin_link_claude_mds_test.sh in just docs-check.
 
 ## Private per-checkout instructions
 

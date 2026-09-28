@@ -54,7 +54,7 @@ When changing this package or the setup surfaces it documents:
 2. regenerate generated CLI/action docs when command grammar changes;
 3. run the repository docs checks;
 4. inspect the package for stale private-host defaults and secrets;
-5. preserve the `AGENTS.md` and `GEMINI.md` symlinks.
+5. preserve the regular `AGENTS.md` source and its `CLAUDE.md` / `GEMINI.md` symlinks.
 
 See `docs/PLUGINS.md`,
 `docs/adr/0001-install-labby-first-class-install-orchestrator.md`, and the

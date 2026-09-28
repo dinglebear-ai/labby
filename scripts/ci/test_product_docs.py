@@ -154,6 +154,56 @@ class ProductDocsInstructionTests(unittest.TestCase):
             MODULE.validate_links(path, failures)
         self.assertTrue(any("missing local link target" in failure for failure in failures))
 
+    def budget_failures(self) -> list[str]:
+        failures: list[str] = []
+        MODULE.validate_instruction_budgets(failures)
+        return failures
+
+    def test_root_character_budget_boundary(self) -> None:
+        root = self.root / "AGENTS.md"
+        root.write_text("x" * 7500)
+        self.assertEqual(self.budget_failures(), [])
+        root.write_text("x" * 7501)
+        self.assertTrue(any("7500-character" in item for item in self.budget_failures()))
+
+    def test_root_character_count_is_not_utf8_byte_count(self) -> None:
+        (self.root / "AGENTS.md").write_text("é" * 7500, encoding="utf-8")
+        self.assertEqual(self.budget_failures(), [])
+
+    def test_nested_budget_counts_all_ancestors_and_separators(self) -> None:
+        self.make_scope(self.root / "one")
+        self.make_scope(self.root / "one/two")
+        (self.root / "AGENTS.md").write_text("x" * 7500)
+        (self.root / "one/AGENTS.md").write_text("x" * 10000)
+        leaf = self.root / "one/two/AGENTS.md"
+        leaf.write_text("x" * (32768 - 7500 - 10000 - 4))
+        self.assertEqual(self.budget_failures(), [])
+        leaf.write_text(leaf.read_text() + "x")
+        self.assertTrue(any("one/two/AGENTS.md" in item for item in self.budget_failures()))
+
+    def test_nested_budget_uses_utf8_bytes(self) -> None:
+        self.make_scope(self.root / "unicode")
+        (self.root / "unicode/AGENTS.md").write_text("é" * 17000, encoding="utf-8")
+        self.assertTrue(any("UTF-8 bytes" in item for item in self.budget_failures()))
+
+    def test_sibling_instructions_are_not_combined(self) -> None:
+        for name in ("one", "two"):
+            self.make_scope(self.root / name)
+            (self.root / name / "AGENTS.md").write_text("x" * 25000)
+        self.assertEqual(self.budget_failures(), [])
+
+    def test_budget_excludes_ignored_private_and_protected_files(self) -> None:
+        (self.root / ".gitignore").write_text(".worktrees/\nAGENTS.override.md\n")
+        for name in (".worktrees/other", "docs/sessions"):
+            self.make_scope(self.root / name)
+            (self.root / name / "AGENTS.md").write_bytes(bytes([255]))
+        (self.root / "AGENTS.override.md").write_bytes(bytes([255]))
+        self.assertEqual(self.budget_failures(), [])
+
+    def test_invalid_utf8_has_an_actionable_failure(self) -> None:
+        (self.root / "AGENTS.md").write_bytes(bytes([255]))
+        self.assertTrue(any("must be UTF-8" in item for item in self.budget_failures()))
+
     def test_git_inventory_failure_is_not_silently_ignored(self) -> None:
         with patch.object(MODULE.subprocess, "check_output", side_effect=subprocess.CalledProcessError(128, "git")):
             with self.assertRaises(subprocess.CalledProcessError):

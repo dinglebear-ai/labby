@@ -70,6 +70,7 @@ docs-check:
     python3 -m unittest discover -s scripts/ci -p 'test_doc_links.py'
     python3 scripts/check-product-docs.py
     python3 -m unittest discover -s scripts/ci -p 'test_product_docs.py'
+    bash tests/bin_link_claude_mds_test.sh
     python3 scripts/check-depot-control-plane-contract.py
     python3 -m unittest scripts/ci/test_depot_control_plane_contract.py scripts/ci/test_product_doc_cli_options.py
 
@@ -83,7 +84,7 @@ aurora-preview item="button":
 
 # Validate Labby's portable DESIGN.md contract.
 design-check:
-    npx -y -p @google/design.md designmd lint DESIGN.md
+    npx -y -p @google/design.md designmd lint docs/DESIGN.md
 
 # Build strict Rustdoc for the complete workspace target surface.
 rustdoc:

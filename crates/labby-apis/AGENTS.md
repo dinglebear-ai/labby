@@ -1,12 +1,13 @@
 # labby-apis — Pure SDK Contracts
 
-`labby-apis` is a small pure Rust SDK/data crate for shared HTTP primitives plus the current `doctor` and `setup` contracts. It is not the old one-module-per-homelab-service SDK.
+`labby-apis` is a small pure Rust SDK/data crate for shared HTTP primitives plus `doctor`, `setup`, and provider-neutral `artifact_control` contracts. It is not the old one-module-per-homelab-service SDK.
 
 ## Current Modules
 
 - `core`
 - `doctor`
 - `setup`
+- `artifact_control`
 
 The `all` feature is an empty compatibility aggregate; `test-utils` is a reserved test marker. There are no optional product service modules.
 
