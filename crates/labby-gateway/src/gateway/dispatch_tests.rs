@@ -4003,6 +4003,10 @@ async fn gateway_mcp_cleanup_dispatch_returns_cleanup_payload() {
     let manager = test_manager();
     let upstream_name = "cleanup-dispatch";
     let runtime_arg = "cleanup-dispatch-mcp";
+    let script_dir = tempfile::tempdir().expect("sleep script directory");
+    let script = script_dir.path().join("sleep.py");
+    std::fs::write(&script, "import time\ntime.sleep(60)\n").expect("write sleep script");
+    let script_path = script.to_string_lossy().into_owned();
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
             display_name: None,
@@ -4014,8 +4018,8 @@ async fn gateway_mcp_cleanup_dispatch_returns_cleanup_payload() {
             socket_path: None,
             headers: Default::default(),
             bearer_token_env: None,
-            command: Some("uvx".to_string()),
-            args: vec![runtime_arg.to_string()],
+            command: Some("python3".to_string()),
+            args: vec![script_path.clone(), runtime_arg.to_string()],
             env: std::collections::BTreeMap::new(),
             proxy_resources: false,
             proxy_prompts: false,
@@ -4034,7 +4038,7 @@ async fn gateway_mcp_cleanup_dispatch_returns_cleanup_payload() {
     use std::os::unix::process::CommandExt;
     let mut command = Command::new("python3");
     command
-        .args(["-c", "import time; time.sleep(60)", runtime_arg])
+        .args([script_path.as_str(), runtime_arg])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -4088,6 +4092,10 @@ async fn gateway_mcp_disable_with_cleanup_returns_gateway_and_cleanup_payload() 
     let manager = test_manager();
     let upstream_name = "disable-dispatch";
     let runtime_arg = "disable-dispatch-mcp";
+    let script_dir = tempfile::tempdir().expect("sleep script directory");
+    let script = script_dir.path().join("sleep.py");
+    std::fs::write(&script, "import time\ntime.sleep(60)\n").expect("write sleep script");
+    let script_path = script.to_string_lossy().into_owned();
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
             display_name: None,
@@ -4099,8 +4107,8 @@ async fn gateway_mcp_disable_with_cleanup_returns_gateway_and_cleanup_payload() 
             socket_path: None,
             headers: Default::default(),
             bearer_token_env: None,
-            command: Some("uvx".to_string()),
-            args: vec![runtime_arg.to_string()],
+            command: Some("python3".to_string()),
+            args: vec![script_path.clone(), runtime_arg.to_string()],
             env: std::collections::BTreeMap::new(),
             proxy_resources: false,
             proxy_prompts: false,
@@ -4118,7 +4126,7 @@ async fn gateway_mcp_disable_with_cleanup_returns_gateway_and_cleanup_payload() 
 
     let mut command = Command::new("python3");
     command
-        .args(["-c", "import time; time.sleep(60)", runtime_arg])
+        .args([script_path.as_str(), runtime_arg])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -4649,11 +4657,14 @@ async fn gateway_mcp_restart_cleans_the_old_runtime_and_returns_enabled() {
         .await;
 
     // A stray runtime from an earlier gateway generation: not owned by this
-    // pool, but it matches the upstream's cleanup patterns.
+    // pool, but it has the exact configured argv and therefore matches the
+    // hardened cleanup signature. Keep stdin open so the MCP stand-in blocks
+    // waiting for input instead of exiting before cleanup can observe it.
     let mut command = Command::new("python3");
     command
-        .args(["-c", "import time; time.sleep(60)", runtime_arg])
-        .stdin(Stdio::null())
+        .arg(&script)
+        .arg(runtime_arg)
+        .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     // Cleanup kills process groups; keep the stand-in out of the test's group.
