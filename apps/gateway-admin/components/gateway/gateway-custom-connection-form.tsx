@@ -1,5 +1,7 @@
 'use client'
 
+import { useEffect, useState } from 'react'
+
 import { CheckCircle2, ChevronRight, Globe2, Loader2, Settings2, TerminalSquare } from 'lucide-react'
 
 import { Input } from '@/components/ui/input'
@@ -7,6 +9,8 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Field, FieldDescription, FieldLabel } from '@/components/ui/field'
 import type { TransportType } from '@/lib/types/gateway'
 import { cn } from '@/lib/utils'
+import { gatewayAction } from '@/lib/api/gateway-client'
+import { selectedSshStdioHost, sshStdioCommand } from '@/lib/ssh-stdio-command'
 
 const inputClassName =
   'border-aurora-border-strong bg-aurora-page-bg/80 shadow-[var(--aurora-highlight-medium)] placeholder:text-aurora-text-muted/70 hover:border-aurora-accent-primary/35 focus-visible:bg-aurora-control-surface'
@@ -36,6 +40,49 @@ export function GatewayCustomConnectionForm(props: GatewayCustomConnectionFormPr
     command, onCommandChange, envText, onEnvTextChange, envCount, errors,
     isProbing, oauthDiscovered,
   } = props
+  const [sshHosts, setSshHosts] = useState<string[]>([])
+  const [sshHost, setSshHost] = useState('local')
+  const [manualCommand, setManualCommand] = useState('')
+  const [remoteCommand, setRemoteCommand] = useState('')
+  const [sshHostsError, setSshHostsError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (transport !== 'stdio') return
+    const controller = new AbortController()
+    gatewayAction<string[]>('gateway.ssh_hosts.list', {}, controller.signal)
+      .then((hosts) => {
+        setSshHosts(hosts)
+        setSshHostsError(null)
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return
+        setSshHostsError(error instanceof Error ? error.message : 'SSH hosts could not be loaded')
+      })
+    return () => controller.abort()
+  }, [transport])
+
+  useEffect(() => {
+    if (sshHost !== 'local') return
+    const selected = selectedSshStdioHost(command)
+    if (!selected || !sshHosts.includes(selected.host)) return
+    setSshHost(selected.host)
+    setRemoteCommand(selected.remoteCommand)
+  }, [command, sshHost, sshHosts])
+
+  function selectSshHost(host: string) {
+    if (sshHost === 'local' && host !== 'local') setManualCommand(command)
+    setSshHost(host)
+    if (host === 'local') {
+      onCommandChange(manualCommand)
+    } else {
+      onCommandChange(sshStdioCommand(host, remoteCommand))
+    }
+  }
+
+  function updateRemoteCommand(value: string) {
+    setRemoteCommand(value)
+    onCommandChange(sshStdioCommand(sshHost, value))
+  }
 
   return (
     <div className="order-1 rounded-aurora-2 border border-aurora-border-strong bg-aurora-control-surface/70 p-4 shadow-[var(--aurora-highlight-medium)]">
@@ -97,11 +144,39 @@ export function GatewayCustomConnectionForm(props: GatewayCustomConnectionFormPr
             {errors.url ? <p className="text-sm text-destructive">{errors.url}</p> : <FieldDescription>Labby probes this endpoint and detects OAuth support automatically.</FieldDescription>}
           </Field>
         ) : (
-          <Field>
-            <FieldLabel htmlFor="command">Command line</FieldLabel>
-            <Input id="command" value={command} onChange={(event) => onCommandChange(event.target.value)} placeholder="npx -y @modelcontextprotocol/server-filesystem /path" className={cn(inputClassName, errors.command && 'border-destructive')} />
-            {errors.command ? <p className="text-sm text-destructive">{errors.command}</p> : <FieldDescription>Enter the full launch command. Quoted arguments with spaces are preserved.</FieldDescription>}
-          </Field>
+          <div className="space-y-4">
+            <Field>
+              <FieldLabel htmlFor="stdio-host">Run on</FieldLabel>
+              <select
+                id="stdio-host"
+                value={sshHost}
+                onChange={(event) => selectSshHost(event.target.value)}
+                className={cn('h-9 w-full rounded-aurora-1 border px-3 text-sm text-aurora-text-primary', inputClassName)}
+              >
+                <option value="local">Custom command on Labby host</option>
+                {sshHosts.map((host) => <option key={host} value={host}>{host} (SSH)</option>)}
+              </select>
+              {sshHostsError ? <p className="text-sm text-destructive">{sshHostsError}</p> : <FieldDescription>SSH devices come from the Labby gateway account&apos;s SSH config.</FieldDescription>}
+            </Field>
+            {sshHost !== 'local' && (
+              <Field>
+                <FieldLabel htmlFor="remote-command">Command on {sshHost}</FieldLabel>
+                <Input
+                  id="remote-command"
+                  value={remoteCommand}
+                  onChange={(event) => updateRemoteCommand(event.target.value)}
+                  placeholder="/usr/local/bin/remote-mcp mcp"
+                  className={inputClassName}
+                />
+                <FieldDescription>The command must start an MCP server over standard input and output on that device.</FieldDescription>
+              </Field>
+            )}
+            <Field>
+              <FieldLabel htmlFor="command">Command line</FieldLabel>
+              <Input id="command" value={command} readOnly={sshHost !== 'local'} onChange={(event) => onCommandChange(event.target.value)} placeholder="npx -y @modelcontextprotocol/server-filesystem /path" className={cn(inputClassName, errors.command && 'border-destructive')} />
+              {errors.command ? <p className="text-sm text-destructive">{errors.command}</p> : <FieldDescription>{sshHost === 'local' ? 'Enter the full launch command. Quoted arguments with spaces are preserved.' : 'Generated SSH launch command. Choose Custom command to edit it directly.'}</FieldDescription>}
+            </Field>
+          </div>
         )}
 
         <details className="group rounded-aurora-1 border border-aurora-border-default bg-aurora-panel-medium/50 p-3">
@@ -111,7 +186,11 @@ export function GatewayCustomConnectionForm(props: GatewayCustomConnectionFormPr
           </summary>
           <div className="mt-3 space-y-2">
             <textarea className={cn('min-h-[112px] w-full resize-none rounded-aurora-1 px-3 py-2 font-mono text-xs text-aurora-text-primary outline-none focus:border-aurora-accent-primary focus:ring-2 focus:ring-aurora-accent-primary/34', inputClassName)} placeholder={'GOOGLE_APPLICATION_CREDENTIALS=/path/to/creds.json\nMCP_LOG_LEVEL=info'} value={envText} onChange={(event) => onEnvTextChange(event.target.value)} />
-            <p className="text-[12px] leading-5 text-aurora-text-muted">One <code>KEY=VALUE</code> per line. Saved with this server config.</p>
+            <p className="text-[12px] leading-5 text-aurora-text-muted">
+              {sshHost === 'local'
+                ? <>One <code>KEY=VALUE</code> per line. Saved with this server config.</>
+                : 'These variables apply to SSH on the Labby host. Configure the remote server environment on the selected device.'}
+            </p>
           </div>
         </details>
       </div>

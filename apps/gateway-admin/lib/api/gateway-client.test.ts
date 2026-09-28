@@ -410,6 +410,10 @@ test('gatewayApi.getCodeModeConfig reads gateway-wide code mode settings', async
         max_tool_calls: 3,
         max_response_bytes: 12000,
         max_response_tokens: 3000,
+        search: {
+          sources: ['personal_labby', 'team_depot', 'public_depot'],
+          kinds: ['tool', 'skill', 'command', 'prompt', 'subagent', 'snippet'],
+        },
       }),
     },
     async (requests) => {
@@ -421,6 +425,10 @@ test('gatewayApi.getCodeModeConfig reads gateway-wide code mode settings', async
         max_tool_calls: 3,
         max_response_bytes: 12000,
         max_response_tokens: 3000,
+        search: {
+          sources: ['personal_labby', 'team_depot', 'public_depot'],
+          kinds: ['tool', 'skill', 'command', 'prompt', 'subagent', 'snippet'],
+        },
       })
       assert.equal(requests[0]?.action, 'gateway.code_mode.get')
       assert.deepEqual(requests[0]?.params, {})
@@ -438,6 +446,8 @@ test('gatewayApi.setCodeModeConfig sends confirm=true for gateway-wide updates',
         enabled: true,
         timeout_ms: 2500,
         max_tool_calls: 3,
+        search_sources: ['public_depot', 'personal_labby'],
+        search_kinds: ['skill', 'prompt'],
       })
 
       assert.equal(config.enabled, true)
@@ -445,6 +455,8 @@ test('gatewayApi.setCodeModeConfig sends confirm=true for gateway-wide updates',
       assert.equal(config.max_tool_calls, 3)
       assert.equal(requests[0]?.action, 'gateway.code_mode.set')
       assert.equal(requests[0]?.params.confirm, true)
+      assert.deepEqual(requests[0]?.params.search_sources, ['public_depot', 'personal_labby'])
+      assert.deepEqual(requests[0]?.params.search_kinds, ['skill', 'prompt'])
     },
   )
 })

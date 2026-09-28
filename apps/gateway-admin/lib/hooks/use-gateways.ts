@@ -54,8 +54,28 @@ const DEFAULT_CODE_MODE_CONFIG: CodeModeConfig = {
   max_tool_calls: 8,
   max_response_bytes: 24 * 1024,
   max_response_tokens: 6000,
+  search: {
+    sources: ['personal_labby', 'team_depot', 'public_depot'],
+    kinds: ['tool', 'skill', 'command', 'prompt', 'subagent', 'snippet'],
+  },
 }
 let mockCodeModeConfig: CodeModeConfig = DEFAULT_CODE_MODE_CONFIG
+
+export function applyCodeModeConfigInput(
+  current: CodeModeConfig,
+  input: CodeModeConfigInput,
+): CodeModeConfig {
+  const { search_sources, search_kinds, ...configPatch } = input
+  return {
+    ...current,
+    ...configPatch,
+    search: {
+      sources: search_sources ?? current.search.sources,
+      kinds: search_kinds ?? current.search.kinds,
+    },
+  }
+}
+
 let mockLoadouts: GatewayLoadout[] = [
   {
     name: 'operations',
@@ -840,10 +860,7 @@ export function useGatewayMutations() {
   const setCodeModeConfig = useCallback(async (input: CodeModeConfigInput): Promise<CodeModeConfig> => {
     if (USE_MOCK_DATA) {
       await mockDelay()
-      mockCodeModeConfig = {
-        ...mockCodeModeConfig,
-        ...input,
-      }
+      mockCodeModeConfig = applyCodeModeConfigInput(mockCodeModeConfig, input)
       await mutate(CODE_MODE_CONFIG_KEY, mockCodeModeConfig, false)
       return mockCodeModeConfig
     }

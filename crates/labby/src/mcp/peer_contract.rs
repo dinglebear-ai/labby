@@ -676,13 +676,18 @@ impl PeerContract {
         }
 
         #[cfg(feature = "gateway")]
-        if self.route_scope.is_root() && self.audience.code_mode_execute_allowed {
-            let tool = self
-                .registry
-                .permanent_tools()
-                .mcp_app_tool(mcp_apps_config.manager);
-            advertised_names.insert(MCP_APP_TOOL_NAME.to_string());
-            descriptors.push(tool);
+        {
+            let model_visible =
+                self.route_scope.is_root() && self.audience.code_mode_execute_allowed;
+            let callback_visible = self.audience.code_mode_read_allowed;
+            if model_visible || callback_visible {
+                let tool = self
+                    .registry
+                    .permanent_tools()
+                    .mcp_app_tool(mcp_apps_config.manager && model_visible, model_visible);
+                advertised_names.insert(MCP_APP_TOOL_NAME.to_string());
+                descriptors.push(tool);
+            }
         }
 
         #[cfg(feature = "gateway")]
@@ -865,7 +870,10 @@ mod tests {
         ))
         .visible_contract()
         .await;
-        assert_eq!(snapshot.tools.len(), 0);
+        #[cfg(feature = "gateway")]
+        assert!(snapshot.tools.contains(super::MCP_APP_TOOL_NAME));
+        #[cfg(not(feature = "gateway"))]
+        assert!(snapshot.tools.is_empty());
         assert_ne!(snapshot.contract_hash, [0; 32]);
     }
 

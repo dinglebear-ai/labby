@@ -64,6 +64,81 @@ pub(crate) const LABBY_APP_HOST_JS: &str = r#"(() => {
   const appInfo = window.__LABBY_APP_INFO || { name: "LabbyApp", version: "1.0.0" };
   const hasOpenAiBridge = () => !!(window.openai && typeof window.openai.callTool === "function");
   const hasMcpBridge = () => window.__LABBY_MCP_RESOURCE === true && window.parent && window.parent !== window;
+  const clip = (value, max) => String(value == null ? "" : value).slice(0, max);
+  const bridgeMode = () => hasOpenAiBridge() ? "chatgpt" : hasMcpBridge() ? "mcp" : "browser";
+  function widgetSessionId() {
+    const metadata = window.openai && window.openai.toolResponseMetadata;
+    if (!metadata || typeof metadata !== "object") return "";
+    const candidates = [
+      metadata["openai/widgetSessionId"],
+      metadata._meta && metadata._meta["openai/widgetSessionId"],
+      metadata.call_tool_result && metadata.call_tool_result._meta && metadata.call_tool_result._meta["openai/widgetSessionId"],
+      metadata.mcp_tool_result && metadata.mcp_tool_result._meta && metadata.mcp_tool_result._meta["openai/widgetSessionId"]
+    ];
+    return candidates.find(value => typeof value === "string" && value.length) || "";
+  }
+  let telemetryActive = false;
+  function hostLog(level, eventName, details = {}) {
+    if (!hasMcpBridge()) return;
+    const hostLevel = level === "warn" ? "warning" : level;
+    mcpNotify("notifications/message", {
+      level: hostLevel,
+      logger: "labby.mcp_app",
+      data: { app: appInfo.name, event: eventName, ...details }
+    });
+  }
+  async function reportRuntimeEvent(level, eventName, details = {}) {
+    const payload = {
+      app: clip(appInfo.name, 128) || "LabbyApp",
+      event: clip(eventName, 96) || "runtime.event",
+      level: ["debug", "info", "warn", "error"].includes(level) ? level : "info",
+      message: clip(details.message, 2048),
+      stack: clip(details.stack, 4096),
+      service: clip(details.service, 128),
+      operation: clip(details.operation, 128),
+      mode: bridgeMode(),
+      widget_session: clip(widgetSessionId(), 256)
+    };
+    hostLog(payload.level, payload.event, {
+      message: payload.message,
+      service: payload.service,
+      operation: payload.operation,
+      mode: payload.mode
+    });
+    if (telemetryActive || payload.mode === "browser") return;
+    telemetryActive = true;
+    try {
+      const args = { action: "event", params: payload };
+      if (hasOpenAiBridge()) {
+        await window.openai.callTool("mcp_app", args);
+      } else if (hasMcpBridge()) {
+        await connectMcp();
+        await mcpRequest("tools/call", { name: "mcp_app", arguments: args }, 5000);
+      }
+    } catch (_) {
+      // Runtime telemetry is best effort and must never create an error loop.
+    } finally {
+      telemetryActive = false;
+    }
+  }
+  window.addEventListener("error", event => {
+    const error = event && event.error;
+    const where = event && event.filename ? " at " + clip(event.filename, 512) + ":" + (event.lineno || 0) + ":" + (event.colno || 0) : "";
+    void reportRuntimeEvent("error", "runtime.error", {
+      message: clip(event && event.message, 1536) + where,
+      stack: error && error.stack
+    });
+  });
+  window.addEventListener("unhandledrejection", event => {
+    const reason = event && event.reason;
+    void reportRuntimeEvent("error", "runtime.unhandled_rejection", {
+      message: reason && reason.message ? reason.message : reason,
+      stack: reason && reason.stack
+    });
+  });
+  window.addEventListener("load", () => {
+    void reportRuntimeEvent("info", "runtime.ready", { message: "MCP App document loaded" });
+  }, { once: true });
   window.addEventListener("message", event => {
     if (event.source !== window.parent) return;
     const data = event.data;
@@ -159,9 +234,21 @@ pub(crate) const LABBY_APP_HOST_JS: &str = r#"(() => {
     },
     hasBridge() { return hasOpenAiBridge() || hasMcpBridge(); },
     async callAction(service, action, params, options = {}) {
-      if (hasOpenAiBridge()) return callViaOpenAi(service, action, params);
-      if (hasMcpBridge()) return callViaMcp(service, action, params);
-      return callViaHttp(service, action, params, options);
+      try {
+        if (hasOpenAiBridge()) return await callViaOpenAi(service, action, params);
+        if (hasMcpBridge()) return await callViaMcp(service, action, params);
+        return await callViaHttp(service, action, params, options);
+      } catch (error) {
+        if (!(service === "mcp_app" && action === "event")) {
+          void reportRuntimeEvent("error", "action.error", {
+            message: error && error.message ? error.message : error,
+            stack: error && error.stack,
+            service,
+            operation: action
+          });
+        }
+        throw error;
+      }
     },
     requestResize(size) {
       if (hasOpenAiBridge() && typeof window.openai.requestWidgetResize === "function") {

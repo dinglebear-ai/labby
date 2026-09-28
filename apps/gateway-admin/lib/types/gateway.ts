@@ -285,12 +285,22 @@ export interface ServiceAction {
   destructive: boolean
 }
 
+export type CodeModeSearchSource = 'personal_labby' | 'team_depot' | 'public_depot'
+
+export type CodeModeSearchKind = 'tool' | 'skill' | 'command' | 'prompt' | 'subagent' | 'snippet'
+
+export interface CodeModeSearchConfig {
+  sources: CodeModeSearchSource[]
+  kinds: CodeModeSearchKind[]
+}
+
 export interface CodeModeConfig {
   enabled: boolean
   timeout_ms: number
   max_tool_calls: number
   max_response_bytes: number
   max_response_tokens: number
+  search: CodeModeSearchConfig
 }
 
 export interface CodeModeConfigInput {
@@ -299,6 +309,8 @@ export interface CodeModeConfigInput {
   max_tool_calls?: number
   max_response_bytes?: number
   max_response_tokens?: number
+  search_sources?: CodeModeSearchSource[]
+  search_kinds?: CodeModeSearchKind[]
 }
 
 export interface GatewayLoadout {
