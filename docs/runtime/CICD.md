@@ -12,6 +12,9 @@ This document is the authoritative contract for CI, release, and artifact delive
 
 ## CI Path Routing
 
+The docs-check job also runs the pure-Python Microsandbox implementation skill receipt tests and its path-routing regression. Every file under plugins/labby/skills/implement-in-microsandbox/ routes to that job, including scripts, tests, locks, and descriptors. These checks do not claim to launch a microVM on CI.
+
+
 The incubating verification toolkit has a separate path-triggered advisory
 workflow, `.github/workflows/verification.yml`. It runs isolated compilation,
 workspace boundary tests, core tests (including generated-schema freshness),

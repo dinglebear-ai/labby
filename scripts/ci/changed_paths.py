@@ -159,6 +159,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             and not starts(p, "docs/archive/", "docs/sessions/", "docs/superpowers/")
         )
         or (starts(p, "plugins/labby/") and p.endswith(".md"))
+        or starts(p, "plugins/labby/skills/implement-in-microsandbox/")
         or p
         in {
             "README.md",

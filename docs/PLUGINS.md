@@ -42,6 +42,8 @@ install the plugin remotely never need a local binary at all. The plugin ships
 server-environment synchronization, and per-service Claude plugin lifecycle are
 retired. Plugin configuration is client-only and never mutates the Labby host.
 
+The [implementation workflow skill](../plugins/labby/skills/implement-in-microsandbox/SKILL.md) guides explicitly authorized tasks through persistent development and retained staging; it does not add a deployment service or mutate production.
+
 ## APM package (`apm.yml`)
 
 The repository root is also an [APM](https://microsoft.github.io/apm/) package.

@@ -69,6 +69,8 @@ docs-check:
     python3 scripts/check-doc-links.py
     python3 -m unittest discover -s scripts/ci -p 'test_doc_links.py'
     python3 scripts/check-product-docs.py
+    python3 -m unittest discover -s plugins/labby/skills/implement-in-microsandbox/tests -v
+    python3 -m unittest discover -s scripts/ci -p "test_microsandbox_skill_paths.py"
     python3 -m unittest discover -s scripts/ci -p 'test_product_docs.py'
     bash tests/bin_link_claude_mds_test.sh
     python3 scripts/check-depot-control-plane-contract.py

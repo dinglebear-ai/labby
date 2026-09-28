@@ -2078,3 +2078,16 @@ fn incus_bootstrap_waits_for_guest_systemd_before_systemctl_consumers() {
         "readiness must probe the guest system manager rather than only Incus RUNNING state"
     );
 }
+
+#[test]
+fn microsandbox_workflow_executable_inputs_route_to_docs_check() {
+    for path in [
+        "plugins/labby/skills/implement-in-microsandbox/scripts/verify_handoff.py",
+        "plugins/labby/skills/implement-in-microsandbox/tests/test_verify_handoff.py",
+        "plugins/labby/skills/implement-in-microsandbox/references/ubuntu-arm64.packages.lock",
+        "plugins/labby/skills/implement-in-microsandbox/agents/openai.yaml",
+    ] {
+        let out = classify("pull_request", &[path]);
+        assert_eq!(out["docs_check"], "true", "{path}");
+    }
+}
