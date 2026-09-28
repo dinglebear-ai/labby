@@ -191,6 +191,7 @@ pub fn is_sensitive_key(key: &str) -> bool {
             | "oauth_code"
             | "private_key"
             | "secret_key"
+            | "service_key"
             | "auth_key"
             | "authkey"
             | "auth_header"
@@ -492,6 +493,7 @@ mod tests {
             "client_secret",
             "service_api_key",
             "signing_secret_key",
+            "service-key",
             "tls_private_key",
             "ssh_private_key",
             "auth_key",
@@ -771,6 +773,7 @@ mod tests {
             "apikey": "e",
             "api_key": "f",
             "service-api-key": "g",
+            "service-key": "i",
             "cookie": "h"
         });
 
@@ -783,6 +786,7 @@ mod tests {
             "apikey",
             "api_key",
             "service-api-key",
+            "service-key",
             "cookie",
         ] {
             assert_eq!(
