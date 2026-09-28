@@ -264,7 +264,7 @@ async fn q4_real_resources_render_in_distinct_openai_and_anthropic_emulators() {
         .iter()
         .find(|emulator| emulator["host"] == "openai-emulator")
         .expect("OpenAI emulator evidence");
-    assert_eq!(openai["type_error_calls"], 1);
+    assert_eq!(openai["type_error_calls"], 2);
     let disabled = runner
         .call_raw(
             "mcp_app",

@@ -8,6 +8,10 @@ Historical material that still has durable value lives under `docs/archive/` and
 
 ## Start Here
 
+- [Upstream runtime maintenance notes](./dev/UPSTREAM_INTERNALS.md) — on-demand implementation rationale; the scoped AGENTS.md remains the concise contributor entrypoint.
+- [Contributor instructions](../AGENTS.md) — canonical root rules, with CLAUDE.md and GEMINI.md compatibility symlinks.
+- [Development workflow](./dev/DEVELOPMENT.md) — checkout safety, prerequisites, owning layers, validation, and publication.
+- [Documentation maintenance](./dev/DOCUMENTATION.md) — source ownership, instruction topology, protected history, regeneration, and regression gates.
 - [Architecture](./ARCH.md) — workspace boundaries, runtime flow, and product surfaces.
 - [Architecture decisions](./adr/README.md) — accepted and proposed durable architecture choices, their boundaries, and alternatives.
 - [Labby product contracts over private Depot](./adr/0002-labby-product-contracts-over-private-depot.md) — accepted ownership and shared-shim decision, with a [current capability audit](./design/depot-capability-audit.md) and [direct control-plane implementation specification](./design/labby-depot-direct-control-plane.md).

@@ -1,4 +1,4 @@
-# Creating Snippets
+# Using Snippets
 
 Use when creating, editing, validating, testing, running, explaining, or removing Labby Code Mode snippets.
 

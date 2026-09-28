@@ -1,7 +1,7 @@
 ---
 title: "Technology and Rust Build"
 created: "2026-07-30"
-updated: "2026-08-18"
+updated: "2026-09-27"
 ---
 
 # Technology and Rust Build
@@ -18,7 +18,8 @@ The workspace metadata in the root `Cargo.toml` is authoritative:
 - Cargo resolver 3
 - workspace version shared by the Rust crates
 - AGPL-3.0-only license
-- release targets: Linux x86_64 GNU, macOS arm64, and Windows x86_64 MSVC
+- release binary targets: Linux x86_64 GNU and macOS arm64
+- Windows x86_64 MSVC is covered by required CI tests, not a published release binary target; the release matrix in `.github/workflows/release.yml` is authoritative
 
 `rust-toolchain.toml` pins the toolchain used locally and in CI. The matching
 `rust-version` in `Cargo.toml` is the minimum version Cargo will accept.
@@ -47,7 +48,7 @@ validated. Do not carry validated service endpoints as raw strings.
 | Concern | Current choice |
 | --- | --- |
 | CLI | `clap` |
-| MCP | pinned `rmcp` Git revision `0665dcac` |
+| MCP | `rmcp`, pinned by the root Cargo manifest and lockfile |
 | HTTP/WebSocket | `axum`, `tower`, `tower-http`, `tokio-tungstenite` |
 | OpenAPI | `utoipa` |
 | CLI color | `owo-colors` |
@@ -66,17 +67,18 @@ The current Rust workspace is composed of:
 - `labby` — product binary and surface composition
 - `labby-apis` — small shared API/core contracts for doctor and setup
 - `labby-auth` — inbound and upstream OAuth/authentication primitives
+- `labby-browser` — surface-neutral browser bridge runtime and persistence
 - `labby-codemode` — Code Mode runtime contracts and snippet support
 - `labby-gateway` — surface-neutral gateway, upstream MCP, relay, and discovery runtime
-- `labby-openapi` — reusable OpenAPI helpers
+- `labby-model` — development-only pure lifecycle model; never a product dependency
+- `labby-openapi` — OpenAPI parsing/projection and hardened outbound execution
 - `labby-primitives` — leaf metadata and security primitives
 - `labby-runtime` — reusable runtime/config/skills contracts
 - `labby-web` — embedded static web assets and resolution helpers
 - `labby-winjob` — Windows process containment and verified filesystem primitives
 - `xtask` — repository automation
 
-The binary should compose these crates; leaf/shared crates should not reach back
-into product surface code.
+The root workspace has 13 members. The binary should compose these crates; leaf/shared crates should not reach back into product surface code. `tools/verification` is explicitly excluded and has its own workspace and lockfile. See [Development Workflow](./dev/DEVELOPMENT.md) for package-specific gates.
 
 ## Feature Gating
 

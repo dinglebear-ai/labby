@@ -4007,6 +4007,7 @@ Commands:
   search    Search the Code Mode catalog without constructing a JavaScript payload
   describe  Inspect a catalog entry's schema before using it
   status    Read gateway-wide Code Mode settings
+  catalog   Configure the sources and artifact families included by Code Mode search
   enable    Enable the gateway codemode MCP surface
   disable   Disable the gateway codemode MCP surface
   ui        Manage the explicit Code Mode MCP App UI while keeping text execution available
@@ -4155,6 +4156,143 @@ Options:
 
   -v, --verbose...
           Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby code catalog`
+
+```text
+Configure the sources and artifact families included by Code Mode search
+
+Usage: labby code catalog [OPTIONS] <COMMAND>
+
+Commands:
+  status  Read the effective Code Mode search policy
+  set     Patch the effective Code Mode search policy without restarting the server
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby code catalog status`
+
+```text
+Read the effective Code Mode search policy
+
+Usage: labby code catalog status [OPTIONS]
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby code catalog set`
+
+```text
+Patch the effective Code Mode search policy without restarting the server
+
+Usage: labby code catalog set [OPTIONS]
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --source <SOURCES>
+          Include a search source. Repeat or pass a comma-separated list
+
+          [possible values: personal_labby, team_depot, public_depot]
+
+      --clear-sources
+          Disable every search source
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --kind <KINDS>
+          Include an artifact family. Repeat or pass a comma-separated list
+
+          [possible values: tool, skill, command, prompt, subagent, snippet]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+      --clear-kinds
+          Disable every artifact family
 
   -q, --quiet
           Suppress console logs, but always report command errors
