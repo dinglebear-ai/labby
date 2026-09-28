@@ -132,6 +132,10 @@ jobs:
             runner: '"ubuntu-24.04"'
             binary: labby
             archive: lab-x86_64-unknown-linux-gnu.tar.gz
+          - target: aarch64-unknown-linux-gnu
+            runner: '"ubuntu-24.04-arm"'
+            binary: labby
+            archive: lab-aarch64-unknown-linux-gnu.tar.gz
           - target: aarch64-apple-darwin
             runner: '"macos-15"'
             binary: labby
