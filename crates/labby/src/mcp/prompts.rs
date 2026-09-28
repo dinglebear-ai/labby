@@ -17,6 +17,43 @@ pub fn list_all() -> ListPromptsResult {
     ListPromptsResult::with_all_items(vec![run_action_prompt(), service_discover_prompt()])
 }
 
+/// Validate advertised required arguments before values can be string-coerced.
+/// Unknown names are left to upstream ownership resolution. Optional renderer
+/// inputs retain their existing behavior; required service/action identifiers
+/// must be present, textual and nonblank.
+pub(crate) fn validate_arguments(
+    name: &str,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), crate::dispatch::error::ToolError> {
+    use crate::dispatch::error::ToolError;
+    let Some(prompt) = list_all()
+        .prompts
+        .into_iter()
+        .find(|prompt| prompt.name == name)
+    else {
+        return Ok(());
+    };
+    for argument in prompt.arguments.unwrap_or_default() {
+        if argument.required != Some(true) {
+            continue;
+        }
+        let param = argument.name.to_string();
+        let Some(value) = arguments.get(&param) else {
+            return Err(ToolError::MissingParam {
+                message: format!("Prompt `{name}` requires argument `{param}`."),
+                param,
+            });
+        };
+        if value.as_str().is_none_or(|text| text.trim().is_empty()) {
+            return Err(ToolError::InvalidParam {
+                message: format!("Prompt argument `{param}` must be a nonempty string."),
+                param,
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Resolve a prompt by name, interpolating the supplied arguments.
 pub fn get(
     registry: &ToolRegistry,
