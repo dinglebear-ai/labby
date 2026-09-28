@@ -31,6 +31,8 @@ pub struct AppState {
     pub depot: Arc<crate::dispatch::depot::DepotClient>,
     /// Resolved discovery runtime shared by all browser adapters.
     pub depot_manager: Arc<crate::dispatch::depot::manager::Manager>,
+    /// Bounded operator notification inbox shared by the API and background monitors.
+    pub notifications: Arc<crate::notifications::NotificationCenter>,
     /// Durable provider lifecycle dispatch, available only with browser OAuth authority.
     pub depot_admin: Option<Arc<crate::dispatch::depot::admin::Admin>>,
     depot_store: Option<Arc<crate::dispatch::depot::store::Store>>,
@@ -170,6 +172,7 @@ impl AppState {
             clients,
             depot: Arc::new(crate::dispatch::depot::DepotClient::disabled()),
             depot_manager: Arc::new(crate::dispatch::depot::manager::Manager::default()),
+            notifications: Arc::new(crate::notifications::NotificationCenter::default()),
             depot_admin: None,
             depot_store: None,
             depot_policy: Default::default(),
@@ -222,6 +225,16 @@ impl AppState {
         health: Arc<crate::runtime_health::SubsystemHealth>,
     ) -> Self {
         self.subsystem_health = health;
+        self
+    }
+
+    /// Attach the bounded operator notification center.
+    #[must_use]
+    pub fn with_notification_center(
+        mut self,
+        center: Arc<crate::notifications::NotificationCenter>,
+    ) -> Self {
+        self.notifications = center;
         self
     }
 

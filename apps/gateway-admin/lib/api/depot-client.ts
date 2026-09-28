@@ -370,6 +370,24 @@ export async function depotCall<T>(operation: string, params: Record<string, unk
 }
 
 const sourceArgsSchema = z.record(z.string(), z.unknown())
+const sourceHistoryEventSchema = z.object({
+  at: bounded(128),
+  status: z.enum(['succeeded', 'failed']),
+  jobId: optionalCatalogText,
+  phase: optionalCatalogText,
+  error: optionalCatalogText,
+  resolvedRevision: optionalCatalogText,
+  added: z.array(bounded(512)).max(10_000).optional(),
+  changed: z.array(bounded(512)).max(10_000).optional(),
+  removed: z.array(bounded(512)).max(10_000).optional(),
+  unchanged: z.boolean().optional(),
+}).passthrough()
+const sourceDriftSchema = z.object({
+  added: z.array(bounded(512)).max(10_000),
+  changed: z.array(bounded(512)).max(10_000),
+  removed: z.array(bounded(512)).max(10_000),
+  complete: z.boolean(),
+}).passthrough()
 const depotSourceSchema = z.object({
   version: z.number().int().positive().optional(),
   id: bounded(512).min(1),
@@ -378,6 +396,7 @@ const depotSourceSchema = z.object({
   enabled: z.boolean(),
   intervalSeconds: z.number().int().positive(),
   insertedAt: optionalCatalogText,
+  scheduleAnchorAt: optionalCatalogText,
   updatedAt: optionalCatalogText,
   lastAttemptAt: optionalCatalogText,
   lastSuccessAt: optionalCatalogText,
@@ -388,7 +407,8 @@ const depotSourceSchema = z.object({
   nextAttemptAt: optionalCatalogText,
   consecutiveFailures: z.number().int().nonnegative().optional(),
   snapshot: z.unknown().optional(),
-  drift: z.unknown().optional(),
+  drift: sourceDriftSchema.optional(),
+  history: z.array(sourceHistoryEventSchema).max(100).optional(),
 }).passthrough()
 const depotSourcesResultSchema = z.object({ sources: z.array(depotSourceSchema).max(10_000) }).passthrough()
 const depotIngestJobSchema = z.object({
@@ -405,7 +425,7 @@ const depotIngestJobsResultSchema = z.object({ jobs: z.array(depotIngestJobSchem
 
 export type DepotSource = z.infer<typeof depotSourceSchema>
 export type DepotIngestJob = z.infer<typeof depotIngestJobSchema>
-export type DepotRepoInput = { url: string; namespace: string; ref?: string; subdir?: string; credential?: string }
+export type DepotRepoInput = { url: string; namespace?: string; ref?: string; subdir?: string; credential?: string; intervalSeconds?: number }
 
 function operationResult<T>(value: unknown, schema: z.ZodType<T, z.ZodTypeDef, unknown>, label: string): T {
   const envelope = validate(genericResultSchema, value, label)
@@ -426,8 +446,18 @@ export async function depotIngestJobs(limit = 25, signal?: AbortSignal): Promise
   return operationResult(value, depotIngestJobsResultSchema, 'ingest job list response').jobs
 }
 
+export async function addDepotRepoSource(input: DepotRepoInput, signal?: AbortSignal): Promise<unknown> {
+  const params: Record<string, unknown> = { url: input.url.trim(), intervalSeconds: input.intervalSeconds ?? 86_400 }
+  if (input.namespace?.trim()) params.namespace = input.namespace.trim()
+  if (input.ref?.trim()) params.ref = input.ref.trim()
+  if (input.subdir?.trim()) params.subdir = input.subdir.trim()
+  if (input.credential?.trim()) params.credential = input.credential.trim()
+  return depotCall('depot.sources.add_repo', params, signal)
+}
+
 export async function startDepotRepoIngest(input: DepotRepoInput, signal?: AbortSignal): Promise<unknown> {
-  const arguments_: Record<string, string> = { url: input.url.trim(), namespace: input.namespace.trim() }
+  const arguments_: Record<string, string> = { url: input.url.trim() }
+  if (input.namespace?.trim()) arguments_.namespace = input.namespace.trim()
   if (input.ref?.trim()) arguments_.ref = input.ref.trim()
   if (input.subdir?.trim()) arguments_.subdir = input.subdir.trim()
   if (input.credential?.trim()) arguments_.credential = input.credential.trim()
