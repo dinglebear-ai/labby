@@ -65,7 +65,7 @@ async fn run_observation_cases(root: &Path) {
 
 async fn run_setup_state(root: &Path) {
     let state_home = home(root, "setup-state");
-    let state = execute(&state_home, &["setup", "--smoke", "--json"], &[]).await;
+    let state = execute(&state_home, &["setup", "state", "--json"], &[]).await;
     record_success("setup:state", &state, EvidenceLevel::LiveSuccess);
 }
 

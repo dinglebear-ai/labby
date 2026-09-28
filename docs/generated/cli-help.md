@@ -6006,7 +6006,7 @@ Guide onboarding, check prerequisites, or explicitly repair local setup
 Usage: labby setup [OPTIONS] [COMMAND]
 
 Commands:
-  wizard  Open the web-based first-run wizard or settings flow
+  state   Show the redacted setup and draft snapshot without changing configuration
   check   Check local setup prerequisites without mutating the filesystem
   repair  Repair missing local setup prerequisites without contacting external services
 
@@ -6092,22 +6092,16 @@ Options:
           Print help
 ```
 
-## `labby setup wizard`
+## `labby setup state`
 
 ```text
-Open the web-based first-run wizard or settings flow
+Show the redacted setup and draft snapshot without changing configuration
 
-Usage: labby setup wizard [OPTIONS]
+Usage: labby setup state [OPTIONS]
 
 Options:
       --json
           Emit machine-readable JSON. Diagnostics never enter stdout
-
-      --mode <MODE>
-          Setup UI mode. Standalone setup defaults to full; /setup-core passes plugin
-
-          [default: full]
-          [possible values: plugin, full]
 
       --color <COLOR>
           Control human-readable CLI styling
@@ -6115,20 +6109,11 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
-      --no-setup
-          Skip the wizard and exit cleanly. Equivalent to LABBY_SKIP_SETUP=1
-
-      --no-browser
-          Do not attempt to open the browser
-
   -v, --verbose...
           Include diagnostic events on stderr. Repeat for trace-level detail
 
   -q, --quiet
           Suppress console logs, but always report command errors
-
-      --smoke
-          Smoke-test mode: print the state machine snapshot as JSON and exit
 
       --no-input
           Never prompt for missing input or confirmation

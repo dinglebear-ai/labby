@@ -660,10 +660,9 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     crate::mcp::server::verify_upstream_subject_resolution_support()
         .context("verify upstream OAuth subject-resolution wiring")?;
 
-    // First-run self-bootstrap (setup-wizard consolidation): when no MCP token
-    // is configured, OAuth is not active, AND the bind is loopback, generate a
-    // token + minimal ~/.labby/.env so the server can start and the operator can
-    // reach /setup. Closes the headless bootstrap circularity.
+    // First-run self-bootstrap: when no MCP token is configured, OAuth is not
+    // active, AND the bind is loopback, generate a token + minimal ~/.labby/.env
+    // so the local server can start. Guided configuration belongs to `labby setup`.
     //
     // Loopback gate (HIGH-1): we deliberately do NOT auto-bootstrap on a
     // non-loopback bind. An explicit `--host 0.0.0.0` with no auth must still
@@ -714,14 +713,9 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
                     "  Generated an MCP bearer token in {} (mode 0600).",
                     env_path.display()
                 );
+                eprintln!("  For guided configuration, stop this server and run `labby setup`.");
                 if matches!(transport, Transport::Http) {
-                    eprintln!(
-                        "  Open the configured HTTP /setup endpoint to finish configuration."
-                    );
-                } else {
-                    eprintln!(
-                        "  Connect through the configured Unix socket to finish configuration."
-                    );
+                    eprintln!("  The operator UI is available at the configured HTTP / endpoint.");
                 }
                 eprintln!(
                     "  For remote clients, read the token from that file (e.g. `grep LABBY_MCP_HTTP_TOKEN {}`).\n",

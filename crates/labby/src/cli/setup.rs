@@ -1,14 +1,8 @@
 //! `labby setup` — role-aware Labby onboarding and deployment.
 //!
 //! Bare `labby setup` interactively configures a server or client, with native
-//! and Incus server backends where supported. The legacy web configuration flow
-//! remains available as `labby setup wizard`.
-//!
-//! The wizard is a thin CLI shim over the `setup` dispatch service. It detects
-//! first-run via `setup.state`, then prints either:
-//!
-//! - first-run: instructions to start `labby serve` and visit `/setup`, or
-//! - re-run: instructions to visit `/settings`.
+//! and Incus server backends where supported. `labby setup state` inspects the
+//! shared configuration snapshot without running onboarding.
 //!
 //! Honors `LABBY_SKIP_SETUP=1` and `--no-setup` for CI / power users.
 //!
@@ -23,7 +17,7 @@ use std::process::ExitCode;
 use anyhow::Result;
 use clap::{Args, Subcommand, ValueEnum};
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::output::theme::CliTheme;
 use crate::output::{OutputFormat, print};
@@ -98,22 +92,13 @@ pub struct SetupArgs {
     #[arg(long, hide = true)]
     pub bootstrap_static_owner: bool,
 
-    /// Setup UI mode for `labby setup wizard`.
-    #[arg(long, value_enum, default_value_t = SetupModeArg::Full, hide = true)]
-    pub mode: SetupModeArg,
-
-    /// Skip the wizard and exit cleanly. Equivalent to LABBY_SKIP_SETUP=1.
+    /// Skip onboarding and exit cleanly. Equivalent to LABBY_SKIP_SETUP=1.
     #[arg(long, hide = true)]
     pub no_setup: bool,
 
     /// Do not open a browser. Client setup requires bearer authentication with this flag.
     #[arg(long, hide = true)]
     pub no_browser: bool,
-
-    /// Smoke-test mode: print the state machine snapshot as JSON and exit.
-    /// Used by `just smoke-setup` for CI verification.
-    #[arg(long, hide = true)]
-    pub smoke: bool,
 
     #[command(subcommand)]
     pub command: Option<SetupCommand>,
@@ -138,10 +123,8 @@ impl Default for SetupArgs {
             no_desktop: false,
             apply_plan: None,
             bootstrap_static_owner: false,
-            mode: SetupModeArg::Full,
             no_setup: false,
             no_browser: false,
-            smoke: false,
             command: None,
         }
     }
@@ -179,25 +162,10 @@ pub enum SetupOauthArg {
     Authelia,
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum SetupModeArg {
-    Plugin,
-    Full,
-}
-
-impl SetupModeArg {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Plugin => "plugin",
-            Self::Full => "full",
-        }
-    }
-}
-
 #[derive(Debug, Subcommand)]
 pub enum SetupCommand {
-    /// Open the web-based first-run wizard or settings flow.
-    Wizard(WizardArgs),
+    /// Show the redacted setup and draft snapshot without changing configuration.
+    State,
     /// Manage the local setup draft.
     #[command(skip)]
     Draft(DraftArgs),
@@ -290,22 +258,6 @@ pub enum AccessBootstrapCommand {
         #[arg(long)]
         prepare_id: String,
     },
-}
-
-#[derive(Debug, Args, Clone, Copy)]
-pub struct WizardArgs {
-    /// Setup UI mode. Standalone setup defaults to full; /setup-core passes plugin.
-    #[arg(long, value_enum, default_value_t = SetupModeArg::Full)]
-    pub mode: SetupModeArg,
-    /// Skip the wizard and exit cleanly. Equivalent to LABBY_SKIP_SETUP=1.
-    #[arg(long)]
-    pub no_setup: bool,
-    /// Do not attempt to open the browser.
-    #[arg(long)]
-    pub no_browser: bool,
-    /// Smoke-test mode: print the state machine snapshot as JSON and exit.
-    #[arg(long)]
-    pub smoke: bool,
 }
 
 #[derive(Debug, Args)]
@@ -536,9 +488,6 @@ pub enum IncusBackupCommand {
     },
 }
 
-/// Default URL for the embedded web UI (per Q1: 127.0.0.1:8765).
-const DEFAULT_LAB_URL: &str = "http://127.0.0.1:8765";
-
 fn install_self() -> Result<PathBuf> {
     let exe = std::env::current_exe()?;
     let name = exe
@@ -586,82 +535,21 @@ pub async fn run(mut args: SetupArgs, format: OutputFormat) -> Result<ExitCode> 
     if let Some(command) = args.command.take() {
         return run_command(command, format).await;
     }
-    if setup_skip_requested()
-        || args.smoke
-        || args.no_setup
-        || !matches!(args.mode, SetupModeArg::Full)
-    {
-        return run_wizard(
-            WizardArgs {
-                mode: args.mode,
-                no_setup: args.no_setup,
-                no_browser: args.no_browser,
-                smoke: args.smoke,
-            },
-            format,
-        )
-        .await;
+    if setup_skip_requested() || args.no_setup {
+        let theme = CliTheme::from_context(format.render_context());
+        eprintln!(
+            "{}",
+            theme.muted(
+                "setup skipped (LABBY_SKIP_SETUP=1 or --no-setup); run `labby setup` manually when ready"
+            )
+        );
+        return Ok(ExitCode::SUCCESS);
     }
     if args.skip_deps {
         anyhow::bail!("--skip-deps is only valid with --provision");
     }
 
     onboarding::run(args, format).await
-}
-
-async fn run_wizard(args: WizardArgs, format: OutputFormat) -> Result<ExitCode> {
-    let theme = CliTheme::from_context(format.render_context());
-
-    if setup_skip_requested() || args.no_setup {
-        eprintln!(
-            "{}",
-            theme.muted(
-                "setup skipped (LABBY_SKIP_SETUP=1 or --no-setup); run `labby setup wizard` manually when ready"
-            )
-        );
-        return Ok(ExitCode::SUCCESS);
-    }
-
-    let snapshot = crate::dispatch::setup::dispatch("state", json!({}))
-        .await
-        .map_err(|e| anyhow::anyhow!("setup.state failed: {e:?}"))?;
-
-    if args.smoke {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&snapshot).unwrap_or_default()
-        );
-        return Ok(ExitCode::SUCCESS);
-    }
-
-    let first_run = snapshot
-        .get("first_run")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let route = if first_run { "/setup" } else { "/settings" };
-
-    let url = format!("{DEFAULT_LAB_URL}{route}?mode={}", args.mode.as_str());
-    eprintln!();
-    if first_run {
-        eprintln!("{}", theme.section("Welcome to lab. First-run detected."));
-    } else {
-        eprintln!(
-            "{}",
-            theme.section("lab is already configured. Opening Settings.")
-        );
-    }
-    eprintln!();
-    eprintln!(
-        "{} Run `labby serve` and visit: {}",
-        theme.tertiary("→"),
-        theme.accent(&url)
-    );
-    eprintln!();
-    eprintln!(
-        "{}",
-        theme.muted("Tip: set LABBY_SKIP_SETUP=1 to suppress this message in CI.")
-    );
-    Ok(ExitCode::SUCCESS)
 }
 
 async fn run_provision(args: SetupArgs, format: OutputFormat) -> Result<ExitCode> {
@@ -713,8 +601,9 @@ async fn run_provision(args: SetupArgs, format: OutputFormat) -> Result<ExitCode
 
 async fn run_command(command: SetupCommand, format: OutputFormat) -> Result<ExitCode> {
     match command {
-        SetupCommand::Wizard(args) => {
-            return run_wizard(args, format).await;
+        SetupCommand::State => {
+            let snapshot = crate::dispatch::setup::dispatch("state", json!({})).await?;
+            print(&snapshot, format)?;
         }
         SetupCommand::Draft(args) => {
             run_draft_command(args, format).await?;
@@ -1544,30 +1433,14 @@ mod tests {
     }
 
     #[test]
-    fn parses_setup_wizard_subcommand() {
-        let cli = crate::cli::Cli::try_parse_from([
-            "labby", "setup", "wizard", "--mode", "plugin", "--smoke",
-        ])
-        .unwrap();
-        let crate::cli::Command::Setup(args) = cli.command.into_operation() else {
-            panic!("expected setup command");
-        };
-        let Some(SetupCommand::Wizard(args)) = args.command else {
-            panic!("expected setup wizard subcommand");
-        };
-
-        assert!(matches!(args.mode, SetupModeArg::Plugin));
-        assert!(args.smoke);
-    }
-
-    #[test]
-    fn parses_setup_check_and_repair_subcommands() {
-        for command in ["check", "repair"] {
+    fn parses_setup_state_check_and_repair_subcommands() {
+        for command in ["state", "check", "repair"] {
             let cli = crate::cli::Cli::try_parse_from(["labby", "setup", command]).unwrap();
             let crate::cli::Command::Setup(args) = cli.command.into_operation() else {
                 panic!("expected setup command");
             };
             match (command, args.command) {
+                ("state", Some(SetupCommand::State)) => {}
                 ("check", Some(SetupCommand::Check)) => {}
                 ("repair", Some(SetupCommand::Repair)) => {}
                 _ => panic!("unexpected setup subcommand for {command}"),
