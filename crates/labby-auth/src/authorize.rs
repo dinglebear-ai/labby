@@ -1182,6 +1182,61 @@ pub mod tests {
     }
 
     #[tokio::test]
+    async fn register_google_callback_bundle_requires_every_exact_uri() {
+        let callbacks = [
+            "https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-test-client",
+            "https://oauth-redirect-sandbox.googleusercontent.com/r/user_bound_custom-mcp-test-client",
+            "https://oauth-redirect-test.googleusercontent.com/r/user_bound_custom-mcp-test-client",
+        ];
+        for allowed_count in 1..=callbacks.len() {
+            let mut config = test_auth_config();
+            config.enable_dynamic_registration = true;
+            config.allowed_client_redirect_uris = callbacks[..allowed_count]
+                .iter()
+                .map(|uri| uri.to_string())
+                .collect();
+            let app = router(test_auth_state_with_config(config).await);
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/register")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(
+                            json!({
+                                "redirect_uris": callbacks,
+                                "token_endpoint_auth_method": "none",
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let complete = allowed_count == callbacks.len();
+            assert_eq!(
+                response.status(),
+                if complete {
+                    StatusCode::CREATED
+                } else {
+                    StatusCode::BAD_REQUEST
+                }
+            );
+            let bytes = axum::body::to_bytes(response.into_body(), 8192)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            if complete {
+                assert_eq!(body["redirect_uris"], json!(callbacks));
+                assert!(body["client_id"].as_str().is_some());
+            } else {
+                assert_eq!(body["error"], "invalid_redirect_uri");
+                assert!(body.get("client_id").is_none());
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn register_rfc7591_rejects_callbacks_outside_exact_google_allowlist() {
         let allowed =
             "https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-test-client";
@@ -1400,6 +1455,53 @@ pub mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn registration_rejection_logs_are_bounded_and_exclude_private_uri_components() {
+        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK.lock().await;
+        let buf = crate::test_support::global_tracing_buffer();
+        let mut config = test_auth_config();
+        config.enable_dynamic_registration = true;
+        let app = router(test_auth_state_with_config(config).await);
+        let callbacks: Vec<String> = (0..18).map(|i| format!(
+            "https://diagnostic-user:diagnostic-password@registration-log-{i}.invalid/private-path?tenant=diagnostic-query"
+        )).collect();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/register")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({"redirect_uris": callbacks}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let logs = crate::test_support::captured_logs(buf);
+        let diagnostics: Vec<serde_json::Value> = logs
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|entry| entry.to_string().contains("registration-log-"))
+            .collect();
+        assert_eq!(diagnostics.len(), 16);
+        for i in 0..16 {
+            assert!(logs.contains(&format!("https://registration-log-{i}.invalid")));
+        }
+        for private in [
+            "diagnostic-user",
+            "diagnostic-password",
+            "private-path",
+            "diagnostic-query",
+        ] {
+            assert!(
+                !logs.contains(private),
+                "private redirect component entered logs"
+            );
+        }
+        assert!(!logs.contains("registration-log-16.invalid"));
+        assert!(!logs.contains("registration-log-17.invalid"));
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -85,18 +85,33 @@ async fn register_client_inner(
         ));
     }
     let native_callback_endpoint = crate::metadata::native_callback_endpoint(&state);
+    let mut rejected = false;
+    let mut reported = 0usize;
     for redirect_uri in &request.redirect_uris {
         if redirect_uri != &native_callback_endpoint
             && !is_allowed_redirect_uri(redirect_uri, &state.config.allowed_client_redirect_uris)
         {
-            warn!(
-                redirect_uri_id = %fingerprint(redirect_uri),
-                "oauth register rejected: redirect URI is not in the allowlist, native callback, or loopback set"
-            );
-            return Err(RegistrationError::InvalidRedirectUri(
-                "redirect URI must target a loopback host, match the native callback endpoint, or match an allowed redirect pattern".to_string(),
-            ));
+            rejected = true;
+            // Show the complete callback-host mismatch without logging paths,
+            // query values, or credentials, and bound diagnostics for large requests.
+            if reported < 16 {
+                let redirect_origin = reqwest::Url::parse(redirect_uri)
+                    .ok()
+                    .map(|url| url.origin().ascii_serialization());
+                warn!(
+                    redirect_uri_id = %fingerprint(redirect_uri),
+                    redirect_origin = ?redirect_origin,
+                    redirect_uri_count = request.redirect_uris.len(),
+                    "oauth register rejected: redirect URI is not in the allowlist, native callback, or loopback set"
+                );
+                reported += 1;
+            }
         }
+    }
+    if rejected {
+        return Err(RegistrationError::InvalidRedirectUri(
+            "redirect URI must target a loopback host, match the native callback endpoint, or match an allowed redirect pattern".to_string(),
+        ));
     }
     let client = RegisteredClient {
         client_id: format!("dcr_{}", random_token(18)?),

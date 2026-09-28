@@ -416,14 +416,28 @@ When Gemini reports that automatic registration failed, inspect the correlated
 `POST /register` response before supplying manual credentials. Discovery success
 alone does not establish successful registration or a completed OAuth flow.
 
-Copy the exact redirect URI from Gemini's connection dialog. Google Account
-Linking uses callbacks under
-`https://oauth-redirect.googleusercontent.com/r/<partner-id>`; the complete value
-in the dialog identifies the callback to permit. Append that exact URI to the
-existing `LABBY_AUTH_ALLOWED_REDIRECT_URIS` value or, when no environment override
-exists, `[auth].allowed_client_redirect_uris`. Preserve existing client entries.
-Do not substitute a guessed callback, allow every Google-hosted callback, or use
-`https://*` just to make a registration succeed.
+Copy the redirect URI from Gemini's dialog, then verify every callback actually
+submitted for registration. The copied primary callback alone may not suffice.
+Google documents primary and sandbox callback hosts; a live Gemini custom-app
+registration also submitted the test-host counterpart for the same partner ID:
+
+```text
+https://oauth-redirect.googleusercontent.com/r/<partner-id>
+https://oauth-redirect-sandbox.googleusercontent.com/r/<partner-id>
+https://oauth-redirect-test.googleusercontent.com/r/<partner-id>
+```
+
+These are observed callback shapes, not a blanket list to trust. A missing
+callback rejects the entire registration. Compare the rejected URI fingerprint
+with the exact callback under investigation, and use the logged redirect origin
+and callback count to distinguish the submitted bundle from the dialog's copied
+URI. Rejection logs do not expose callback paths, query values, or userinfo.
+
+Append only the verified exact addresses to the existing
+`LABBY_AUTH_ALLOWED_REDIRECT_URIS` value or, when no environment override exists,
+`[auth].allowed_client_redirect_uris`. Preserve existing client entries and the
+exact partner ID. Do not allow every Google-hosted callback or use `https://*`
+just to make registration succeed.
 
 Environment values take precedence over TOML and explicit lists replace product
 defaults. Apply the change through the supported operator configuration flow,
@@ -431,13 +445,14 @@ restart the service in a controlled maintenance step, and verify the running
 process loaded the new value. A source-code default or a TOML-only change cannot
 replace an active environment override.
 
-Then repeat the connection in Gemini and verify registration, browser consent,
-token exchange, and an authenticated read-only MCP call. Do not paste the gateway
+Then repeat the connection in Gemini, acknowledge its custom-app security and
+privacy consent, and verify registration, browser consent, token exchange, and an
+authenticated read-only MCP call. Do not paste the gateway
 bearer token or the upstream Google OAuth application secret into Gemini's client
 secret field. Those credentials belong to different authentication boundaries.
 
 See [Google's custom app guide](https://support.google.com/gemini/answer/17209137)
-and [Google Account Linking](https://developers.google.com/identity/account-linking/oauth-linking).
+and [Google Account Linking registration](https://developers.google.com/identity/account-linking/registration).
 
 ### Client ID metadata documents
 
