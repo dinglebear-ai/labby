@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import subprocess
 import sys
 from urllib.parse import unquote
 
@@ -53,6 +54,8 @@ CANONICAL_DIRS = (
 CANONICAL_DEV = {
     "docs/dev/CODE_MODE.md",
     "docs/dev/DISPATCH.md",
+    "docs/dev/DEVELOPMENT.md",
+    "docs/dev/DOCUMENTATION.md",
     "docs/dev/ERRORS.md",
     "docs/dev/OBSERVABILITY.md",
     "docs/dev/RUSTDOC.md",
@@ -109,25 +112,43 @@ def is_canonical(path: Path) -> bool:
     name = rel(path)
     if name.startswith(IGNORED_PREFIXES):
         return False
-    if name in TOP_LEVEL_DOCS or name in CANONICAL_DEV:
+    if path.name == "AGENTS.md" or name in TOP_LEVEL_DOCS or name in CANONICAL_DEV:
         return True
     return name.startswith(CANONICAL_DIRS) and path.suffix.lower() in {".md", ".mdx"}
 
 
+def repository_paths() -> list[Path]:
+    """Return tracked and nonignored new paths, never sibling worktree/cache files.
+
+    Git failure is fatal rather than silently broadening the audit to private or
+    generated files. Protected historical trees are excluded before any reads.
+    """
+    raw = subprocess.check_output(
+        ["git", "-C", str(ROOT), "ls-files", "--cached", "--others", "--exclude-standard", "-z"]
+    )
+    excluded = (
+        ".full-review-archive/", "docs/archive/", "docs/references/",
+        "docs/sessions/", "docs/superpowers/", "vendor/",
+    )
+    return sorted({
+        ROOT / value.decode("utf-8")
+        for value in raw.split(bytes([0]))
+        if value and not value.decode("utf-8").startswith(excluded)
+    })
+
+
 def canonical_docs() -> list[Path]:
-    paths = [p for p in ROOT.rglob("*") if p.is_file() and is_canonical(p)]
-    return sorted(paths)
+    return [p for p in repository_paths() if not p.is_symlink() and p.is_file() and is_canonical(p)]
 
 
 def maintained_noncanonical_docs() -> list[Path]:
-    paths = [
+    return [
         p
-        for p in ROOT.rglob("*")
-        if p.is_file()
+        for p in repository_paths()
+        if not p.is_symlink() and p.is_file()
         and p.suffix.lower() in {".md", ".mdx"}
         and rel(p).startswith(MAINTAINED_NONCANONICAL_DIRS)
     ]
-    return sorted(paths)
 
 
 def strip_link_target(raw: str) -> str:
@@ -231,26 +252,33 @@ def validate_service_index_coverage(failures: list[str]) -> None:
 
 
 def validate_instruction_symlinks(failures: list[str]) -> None:
-    ignored_dirs = {
-        ".git",
-        ".full-review-archive",
-        "target",
-        "node_modules",
-        ".next",
-        "out",
+    # Inventory every alias as well as the canonical name: an orphan CLAUDE.md
+    # must fail even when its AGENTS.md has been removed. Always require root.
+    names = {"AGENTS.md", "CLAUDE.md", "GEMINI.md"}
+    private_names = {
+        "AGENTS.override.md", "CLAUDE.local.md", "AGENTS.local.md",
+        "AGENTS.md.local", "CLAUDE.md.local",
     }
-    for claude in sorted(ROOT.rglob("CLAUDE.md")):
-        if any(part in ignored_dirs for part in claude.parts):
-            continue
-        directory = claude.parent
-        for sibling in ("AGENTS.md", "GEMINI.md"):
+    paths = repository_paths()
+    for path in paths:
+        if path.name in private_names:
+            failures.append(f"{rel(path)}: private instructions must remain Git-ignored and untracked")
+    directories = {ROOT}
+    directories.update(path.parent for path in paths if path.name in names)
+    for directory in sorted(directories):
+        agents = directory / "AGENTS.md"
+        if agents.is_symlink() or not agents.is_file():
+            failures.append(f"{rel(agents)}: canonical instructions must be a regular file")
+        elif not agents.read_text(encoding="utf-8").strip():
+            failures.append(f"{rel(agents)}: canonical instructions must not be empty")
+        for sibling in ("CLAUDE.md", "GEMINI.md"):
             candidate = directory / sibling
             if not candidate.is_symlink():
-                failures.append(f"{rel(claude)}: missing {sibling} symlink -> CLAUDE.md")
+                failures.append(f"{rel(candidate)}: missing symlink -> AGENTS.md")
                 continue
-            if os.readlink(candidate) != "CLAUDE.md":
+            if os.readlink(candidate) != "AGENTS.md":
                 failures.append(
-                    f"{rel(candidate)}: expected symlink target CLAUDE.md, got {os.readlink(candidate)!r}"
+                    f"{rel(candidate)}: expected symlink target AGENTS.md, got {os.readlink(candidate)!r}"
                 )
 
 
@@ -360,8 +388,10 @@ def main() -> int:
     paths = canonical_docs()
     maintained_noncanonical = maintained_noncanonical_docs()
 
+    owned = {rel(path) for path in repository_paths()}
     for retired in RETIRED_PATHS:
-        if (ROOT / retired).exists() or (ROOT / retired).is_symlink():
+        present = any(name == retired or name.startswith(retired + "/") for name in owned)
+        if present and ((ROOT / retired).exists() or (ROOT / retired).is_symlink()):
             failures.append(f"retired product doc still present: {retired}")
 
     for path in [*paths, *maintained_noncanonical]:
