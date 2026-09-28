@@ -409,6 +409,7 @@ pub fn origin_for_kind(kind: &str) -> AgentErrorOrigin {
         | "invalid_code_mode_id" => AgentErrorOrigin::Validation,
         "forbidden"
         | "permission_denied"
+        | "app_disabled"
         | "confirmation_required"
         | "auth_failed"
         | "auth_required"
@@ -537,6 +538,12 @@ pub fn recovery_for_kind(
             action: AgentRecoveryAction::Rediscover,
             same_arguments: AgentSameArgumentsRetry::Never,
             guidance: "Restart the same listing without a cursor, keeping its filters and scope consistent, then use only the next cursor returned by that listing. Do not invent or reuse an expired cursor; deduplicate items already processed.".to_string(),
+            retry_after_ms: None,
+        },
+        "app_disabled" => AgentRecoveryAdvice {
+            action: AgentRecoveryAction::Rediscover,
+            same_arguments: AgentSameArgumentsRetry::Never,
+            guidance: "This MCP App is intentionally disabled. Discard the cached UI resource/tool binding and refresh tools/list and resources/list. Do not retry the same URI unless it is advertised again. Sessionless clients that cannot receive list_changed notifications should reconnect or reinitialize discovery before retrying.".to_string(),
             retry_after_ms: None,
         },
         // An HTTP route that is not registered at all. Distinct from

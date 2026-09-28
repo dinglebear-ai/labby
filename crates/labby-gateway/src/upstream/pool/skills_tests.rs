@@ -13,6 +13,9 @@
 
 #![cfg(test)]
 
+#[cfg(feature = "skills")]
+mod bounded_discovery;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(feature = "skills")]
@@ -1431,6 +1434,66 @@ async fn expose_skills_filters_and_fails_closed_on_an_empty_allowlist() {
     assert!(
         empty.skills.is_empty(),
         "an empty allowlist must fail closed"
+    );
+}
+
+#[tokio::test]
+async fn identical_nested_resource_bindings_are_visible_but_conflicting_hidden_claims_are_not() {
+    let parent_uri = "skill://up/parent/SKILL.md";
+    let child_uri = "skill://up/parent/child/SKILL.md";
+    let shared_uri = "skill://up/parent/child/shared.md";
+    let parent_body = skill_md_body("parent");
+    let child_body = skill_md_body("child");
+    let resource = |uri: &str, bytes: &[u8]| {
+        json!({
+            "uri": uri,
+            "digest": ResourceDigest::of_bytes(bytes).to_wire(),
+            "size": bytes.len()
+        })
+    };
+    let parent = json!({
+        "uri": parent_uri,
+        "frontmatter": { "name": "parent", "description": "a test skill" },
+        "resources": [
+            resource(parent_uri, parent_body.as_bytes()),
+            resource(shared_uri, b"shared bytes")
+        ]
+    });
+    let child = |shared: &[u8]| {
+        json!({
+            "uri": child_uri,
+            "frontmatter": { "name": "child", "description": "a test skill" },
+            "resources": [
+                resource(child_uri, child_body.as_bytes()),
+                resource(shared_uri, shared)
+            ]
+        })
+    };
+    let matching = SkillsServer::new(vec![json!({
+        "skills": [parent.clone(), child(b"shared bytes")]
+    })]);
+    let matching_pool = catalog_pool_with_server("up", matching).await;
+    let visible = matching_pool
+        .upstream_skills(&skills_config("up", None), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        visible.skills.len(),
+        2,
+        "identical bindings may share a file"
+    );
+
+    let conflicting = SkillsServer::new(vec![json!({
+        "skills": [parent, child(b"different bytes")]
+    })]);
+    let conflicting_pool = catalog_pool_with_server("up", conflicting).await;
+    let narrowed = conflicting_pool
+        .upstream_skills(&skills_config("up", Some(vec!["parent"])), None)
+        .await
+        .unwrap();
+    assert!(
+        narrowed.skills.is_empty(),
+        "a hidden conflicting owner must still poison the shared URI"
     );
 }
 

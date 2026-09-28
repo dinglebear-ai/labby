@@ -17,6 +17,7 @@ use labby_codemode::{
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use serde_json::{Map, Value};
@@ -32,11 +33,17 @@ use labby_runtime::caller_auth::{
     PropagatedCallerUpstreamScope,
 };
 use labby_runtime::error::ToolError;
+use labby_runtime::gateway_config::{CodeModeSearchConfig, CodeModeSearchKind};
 use labby_runtime::lab_home;
 
 use super::search;
 use super::tool_error::{completed_tool_error, upstream_tool_safety};
 use super::validate_code_mode_params_against_schema;
+
+#[cfg(not(test))]
+const CODE_MODE_SKILL_CATALOG_TIMEOUT: Duration = Duration::from_secs(3);
+#[cfg(test)]
+const CODE_MODE_SKILL_CATALOG_TIMEOUT: Duration = Duration::from_millis(50);
 
 pub(crate) struct CheckedToolCallOutcome {
     pub(crate) outcome: ToolCallOutcome,
@@ -134,6 +141,21 @@ fn semantic_candidate_ids<'a>(
         .collect()
 }
 
+fn configured_catalog_kinds(config: &CodeModeSearchConfig) -> Vec<CodeModeCatalogKind> {
+    config
+        .kinds
+        .iter()
+        .map(|kind| match kind {
+            CodeModeSearchKind::Tool => CodeModeCatalogKind::Tool,
+            CodeModeSearchKind::Skill => CodeModeCatalogKind::Skill,
+            CodeModeSearchKind::Command => CodeModeCatalogKind::Command,
+            CodeModeSearchKind::Prompt => CodeModeCatalogKind::Prompt,
+            CodeModeSearchKind::Subagent => CodeModeCatalogKind::Subagent,
+            CodeModeSearchKind::Snippet => CodeModeCatalogKind::Snippet,
+        })
+        .collect()
+}
+
 impl GatewayManager {
     pub(crate) async fn code_mode_metadata_entries(
         &self,
@@ -150,8 +172,13 @@ impl GatewayManager {
                 | CodeModeCaller::ScopedHostProviderSkills { .. }
         ) && let Some(provider) = self.code_mode_skill_provider.as_ref()
         {
-            match provider.list(caller, scope).await {
-                Ok(skills) => {
+            match tokio::time::timeout(
+                CODE_MODE_SKILL_CATALOG_TIMEOUT,
+                provider.list(caller, scope),
+            )
+            .await
+            {
+                Ok(Ok(skills)) => {
                     for skill in skills {
                         let namespace = skill
                             .uri
@@ -172,12 +199,19 @@ impl GatewayManager {
                         entries.insert(descriptor.id.clone(), descriptor);
                     }
                 }
-                Err(error) => tracing::warn!(
+                Ok(Err(error)) => tracing::warn!(
                     surface = "dispatch",
                     service = "code_mode",
                     action = "catalog.skills",
                     error = %error,
                     "Code Mode Skill catalog projection failed open"
+                ),
+                Err(_elapsed) => tracing::warn!(
+                    surface = "dispatch",
+                    service = "code_mode",
+                    action = "catalog.skills",
+                    timeout_ms = CODE_MODE_SKILL_CATALOG_TIMEOUT.as_millis(),
+                    "Code Mode Skill catalog projection timed out and failed open"
                 ),
             }
         }
@@ -926,6 +960,48 @@ impl CodeModeHost for GatewayManager {
             top_k,
             |id| allowed_ids.contains(id),
         ))
+    }
+
+    async fn search_artifacts(
+        &self,
+        query: String,
+        limit: usize,
+        kinds: &[CodeModeCatalogKind],
+        caller: &CodeModeCaller,
+        surface: CodeModeSurface,
+        scope: &ToolScope,
+    ) -> Result<Vec<CatalogDescriptor>, ToolError> {
+        let Some(provider) = self.code_mode_artifact_search_provider.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let search_config = self.code_mode_config().await.search;
+        if search_config.sources.is_empty() || search_config.kinds.is_empty() {
+            return Ok(Vec::new());
+        }
+        let configured_kinds = configured_catalog_kinds(&search_config);
+        let effective_kinds = if kinds.is_empty() {
+            configured_kinds
+        } else {
+            kinds
+                .iter()
+                .copied()
+                .filter(|kind| configured_kinds.contains(kind))
+                .collect()
+        };
+        if effective_kinds.is_empty() {
+            return Ok(Vec::new());
+        }
+        provider
+            .search(
+                &query,
+                limit.min(51),
+                &effective_kinds,
+                &search_config,
+                caller,
+                surface,
+                scope,
+            )
+            .await
     }
 
     async fn config(&self) -> CodeModeConfig {
@@ -1973,6 +2049,28 @@ mod tests {
     #[cfg(unix)]
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+    #[test]
+    fn configured_catalog_kind_projection_is_exact() {
+        let all = configured_catalog_kinds(&CodeModeSearchConfig::default());
+        assert_eq!(all.len(), 6);
+        assert!(all.contains(&CodeModeCatalogKind::Tool));
+        assert!(all.contains(&CodeModeCatalogKind::Skill));
+        assert!(all.contains(&CodeModeCatalogKind::Command));
+        assert!(all.contains(&CodeModeCatalogKind::Prompt));
+        assert!(all.contains(&CodeModeCatalogKind::Subagent));
+        assert!(all.contains(&CodeModeCatalogKind::Snippet));
+        assert!(!all.contains(&CodeModeCatalogKind::Resource));
+
+        let skills_only = CodeModeSearchConfig {
+            kinds: std::iter::once(CodeModeSearchKind::Skill).collect(),
+            ..CodeModeSearchConfig::default()
+        };
+        assert_eq!(
+            configured_catalog_kinds(&skills_only),
+            vec![CodeModeCatalogKind::Skill]
+        );
+    }
+
     struct PersonalOauthRegistry;
 
     impl crate::registry::InProcessServiceRegistry for PersonalOauthRegistry {
@@ -2198,6 +2296,71 @@ mod tests {
         }
     }
 
+    struct StallingSkillProvider;
+
+    impl crate::gateway::code_mode::skills::CodeModeSkillProvider for StallingSkillProvider {
+        fn list<'a>(
+            &'a self,
+            _caller: &'a CodeModeCaller,
+            _scope: &'a ToolScope,
+        ) -> std::pin::Pin<
+            Box<
+                dyn Future<
+                        Output = Result<
+                            Vec<crate::gateway::code_mode::skills::CodeModeSkillSummary>,
+                            ToolError,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(std::future::pending())
+        }
+
+        fn get<'a>(
+            &'a self,
+            _uri: &'a str,
+            _caller: &'a CodeModeCaller,
+            _scope: &'a ToolScope,
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'a>> {
+            Box::pin(std::future::pending())
+        }
+
+        fn read<'a>(
+            &'a self,
+            _uri: &'a str,
+            _caller: &'a CodeModeCaller,
+            _scope: &'a ToolScope,
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'a>> {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    #[tokio::test]
+    async fn slow_skill_metadata_projection_fails_open_before_code_mode_deadline() {
+        let cfg_dir = tempfile::tempdir().unwrap();
+        let manager = GatewayManager::new(
+            cfg_dir.path().join("config.toml"),
+            GatewayRuntimeHandle::default(),
+        )
+        .with_code_mode_skill_provider(Arc::new(StallingSkillProvider));
+
+        let started = std::time::Instant::now();
+        let entries = tokio::time::timeout(
+            Duration::from_secs(1),
+            manager.code_mode_metadata_entries(
+                &CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Mcp,
+                &ToolScope::new(Vec::new(), Vec::new()),
+            ),
+        )
+        .await
+        .expect("Skill metadata timeout must not consume the Code Mode request deadline");
+
+        assert!(entries.is_empty());
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
     #[tokio::test]
     async fn canonical_skill_provider_projects_into_source_neutral_catalog() {
         let cfg_dir = tempfile::tempdir().unwrap();
@@ -2296,7 +2459,7 @@ mod tests {
         );
         drop(guard);
 
-        let request = tokio::time::timeout(std::time::Duration::from_secs(2), server)
+        let request = tokio::time::timeout(Duration::from_secs(2), server)
             .await
             .expect("cancel request was sent")
             .unwrap();

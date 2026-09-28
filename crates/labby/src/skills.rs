@@ -43,9 +43,19 @@ const EMBEDDED_FILES: &[(&str, &str, &str)] = &[
         include_str!("../../../plugins/labby/skills/using-labby/SKILL.md"),
     ),
     (
-        "using-labby",
+        "using-codemode",
+        "SKILL.md",
+        include_str!("../../../plugins/labby/skills/using-codemode/SKILL.md"),
+    ),
+    (
+        "using-codemode",
         "references/code-mode.md",
-        include_str!("../../../plugins/labby/skills/using-labby/references/code-mode.md"),
+        include_str!("../../../plugins/labby/skills/using-codemode/references/code-mode.md"),
+    ),
+    (
+        "using-codemode",
+        "agents/openai.yaml",
+        include_str!("../../../plugins/labby/skills/using-codemode/agents/openai.yaml"),
     ),
     (
         "using-labby",
@@ -73,24 +83,29 @@ const EMBEDDED_FILES: &[(&str, &str, &str)] = &[
         include_str!("../../../plugins/labby/skills/using-labby/agents/openai.yaml"),
     ),
     (
-        "creating-snippets",
+        "using-snippets",
         "SKILL.md",
-        include_str!("../../../plugins/labby/skills/creating-snippets/SKILL.md"),
+        include_str!("../../../plugins/labby/skills/using-snippets/SKILL.md"),
     ),
     (
-        "creating-snippets",
+        "using-snippets",
+        "references/authoring.md",
+        include_str!("../../../plugins/labby/skills/using-snippets/references/authoring.md"),
+    ),
+    (
+        "using-snippets",
         "README.md",
-        include_str!("../../../plugins/labby/skills/creating-snippets/README.md"),
+        include_str!("../../../plugins/labby/skills/using-snippets/README.md"),
     ),
     (
-        "creating-snippets",
+        "using-snippets",
         "CHANGELOG.md",
-        include_str!("../../../plugins/labby/skills/creating-snippets/CHANGELOG.md"),
+        include_str!("../../../plugins/labby/skills/using-snippets/CHANGELOG.md"),
     ),
     (
-        "creating-snippets",
+        "using-snippets",
         "agents/openai.yaml",
-        include_str!("../../../plugins/labby/skills/creating-snippets/agents/openai.yaml"),
+        include_str!("../../../plugins/labby/skills/using-snippets/agents/openai.yaml"),
     ),
 ];
 
@@ -282,10 +297,11 @@ mod tests {
     use labby_runtime::skills::compare_frontmatter;
 
     #[test]
-    fn both_bundled_skills_publish_a_complete_manifest() {
+    fn bundled_skills_publish_a_complete_manifest() {
         let skills = first_party_skills();
         assert!(skills.contains_key("using-labby"));
-        assert!(skills.contains_key("creating-snippets"));
+        assert!(skills.contains_key("using-snippets"));
+        assert!(skills.contains_key("using-codemode"));
 
         for (name, skill) in skills {
             let resources = skill.entry.resources.as_ref().expect("manifest present");
@@ -362,9 +378,9 @@ mod tests {
 
     #[test]
     fn lookup_resolves_entries_from_any_file_uri_and_rejects_other_origins() {
-        let uri = "skill://labby/using-labby/references/code-mode.md";
+        let uri = "skill://labby/using-codemode/references/code-mode.md";
         let entry = first_party_skill_entry(uri).expect("a supporting file resolves its entry");
-        assert_eq!(entry.uri, "skill://labby/using-labby/SKILL.md");
+        assert_eq!(entry.uri, "skill://labby/using-codemode/SKILL.md");
         assert!(read_first_party_skill_file(uri).is_some());
 
         // A proxied origin is not ours to answer for.

@@ -30,7 +30,7 @@ SKIP_FILES = {
     # product repository rather than the package directory.
     "packages/labby-mcp/README.md",
 }
-SKIP_NAMES = {"AGENTS.md", "GEMINI.md"}
+SKIP_NAMES = {"CLAUDE.md", "GEMINI.md"}
 INLINE_LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 REFERENCE_DEF_RE = re.compile(r"^\s{0,3}\[[^\]]+\]:\s*(\S.*)$")
 TITLE_RE = re.compile(r"\s+(?:\"[^\"]*\"|'[^']*'|\([^)]*\))\s*$")

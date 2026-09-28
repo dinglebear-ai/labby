@@ -37,7 +37,7 @@ pub use labby_codemode::{CodeModeExecutedCall, CodeModeExecutionResponse};
 pub(crate) use labby_codemode::split_namespaced_id;
 
 pub use code_mode_host::JournalOwner;
-pub use skills::{CodeModeSkillProvider, CodeModeSkillSummary};
+pub use skills::{CodeModeArtifactSearchProvider, CodeModeSkillProvider, CodeModeSkillSummary};
 
 // ── Host-side render caches (gateway-owned, keyed on the live tool set) ──────
 

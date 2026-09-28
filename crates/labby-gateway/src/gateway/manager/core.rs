@@ -254,6 +254,7 @@ impl GatewayManager {
             execution_capability_publication: Arc::new(std::sync::RwLock::new(())),
             execution_capability_provider: None,
             code_mode_skill_provider: None,
+            code_mode_artifact_search_provider: None,
             code_mode_personal_oauth_provider: None,
             agent_executions: Arc::new(agent_executions),
             agent_execution_cancellations: Arc::new(dashmap::DashMap::new()),
@@ -350,6 +351,16 @@ impl GatewayManager {
         provider: Arc<dyn crate::gateway::code_mode::skills::CodeModeSkillProvider>,
     ) -> Self {
         self.code_mode_skill_provider = Some(provider);
+        self
+    }
+
+    /// Attach the product-host provider for query-driven artifact discovery.
+    #[must_use]
+    pub fn with_code_mode_artifact_search_provider(
+        mut self,
+        provider: Arc<dyn crate::gateway::code_mode::skills::CodeModeArtifactSearchProvider>,
+    ) -> Self {
+        self.code_mode_artifact_search_provider = Some(provider);
         self
     }
 

@@ -4,7 +4,42 @@ import React, { act } from 'react'
 
 import { gatewayApi } from '../api/gateway-client'
 import { installTestDom, renderClient } from '../testing/dom-test-utils.tsx'
-import { GATEWAYS_KEY, gatewaysRequestKey, gatewaysRuntimeRequestKey, useGatewaySnapshots } from './use-gateways'
+import type { CodeModeConfig } from '../types/gateway'
+import {
+  applyCodeModeConfigInput,
+  GATEWAYS_KEY,
+  gatewaysRequestKey,
+  gatewaysRuntimeRequestKey,
+  useGatewaySnapshots,
+} from './use-gateways'
+
+test('mock Code Mode updates project flat search inputs into the nested server shape', () => {
+  const current: CodeModeConfig = {
+    enabled: false,
+    timeout_ms: 5000,
+    max_tool_calls: 8,
+    max_response_bytes: 24 * 1024,
+    max_response_tokens: 6000,
+    search: {
+      sources: ['personal_labby', 'team_depot', 'public_depot'],
+      kinds: ['tool', 'skill', 'command', 'prompt', 'subagent', 'snippet'],
+    },
+  }
+
+  const updated = applyCodeModeConfigInput(current, {
+    enabled: true,
+    search_sources: ['public_depot'],
+    search_kinds: ['skill', 'prompt'],
+  })
+
+  assert.equal(updated.enabled, true)
+  assert.deepEqual(updated.search, {
+    sources: ['public_depot'],
+    kinds: ['skill', 'prompt'],
+  })
+  assert.equal('search_sources' in updated, false)
+  assert.equal('search_kinds' in updated, false)
+})
 
 test('gateway loading can be disabled for closed demand-driven dialogs', () => {
   assert.equal(gatewaysRequestKey(false), null)
