@@ -26,7 +26,7 @@ mod onboarding;
 
 const DEFAULT_INCUS_SSH_KEY_PATH: &str = "/home/labby/.ssh/id_ed25519";
 
-#[derive(Debug, Args)]
+#[derive(Debug, Args, Default)]
 pub struct SetupArgs {
     /// Provision this Ubuntu 26.04/Incus box for the Labby gateway.
     #[arg(long)]
@@ -102,32 +102,6 @@ pub struct SetupArgs {
 
     #[command(subcommand)]
     pub command: Option<SetupCommand>,
-}
-
-impl Default for SetupArgs {
-    fn default() -> Self {
-        Self {
-            provision: false,
-            dry_run: false,
-            yes: false,
-            skip_deps: false,
-            role: None,
-            deployment: None,
-            host: None,
-            port: None,
-            server_url: None,
-            public_url: None,
-            auth: None,
-            oauth: None,
-            desktop: false,
-            no_desktop: false,
-            apply_plan: None,
-            bootstrap_static_owner: false,
-            no_setup: false,
-            no_browser: false,
-            command: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -1707,7 +1681,7 @@ mod tests {
             )
             .await
             .unwrap_err();
-            let envelope: Value = serde_json::from_str(&err.to_string()).unwrap();
+            let envelope: serde_json::Value = serde_json::from_str(&err.to_string()).unwrap();
 
             assert_eq!(envelope["kind"], "confirmation_required");
         }
