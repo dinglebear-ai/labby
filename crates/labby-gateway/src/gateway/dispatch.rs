@@ -74,6 +74,18 @@ pub async fn dispatch_with_manager_scoped(
         return result;
     }
     match action {
+        "gateway.ssh_hosts.list" => {
+            let home = super::discovery::home_dir().ok_or_else(|| ToolError::Sdk {
+                message: "gateway account home directory is unavailable".into(),
+                sdk_kind: "ssh_config_unavailable".into(),
+            })?;
+            let contents = read_ssh_config(&home).map_err(|_| ToolError::Sdk {
+                message: "gateway account SSH config could not be read within the listing limit"
+                    .into(),
+                sdk_kind: "ssh_config_unavailable".into(),
+            })?;
+            to_json(ssh_host_aliases(&contents))
+        }
         "gateway.host.metrics" => to_json(
             super::host_metrics::sample(
                 manager
@@ -209,6 +221,112 @@ pub async fn dispatch_with_manager_scoped(
         }
         unknown => unknown_action(unknown),
     }
+}
+
+fn ssh_host_aliases(contents: &str) -> Vec<String> {
+    labby_apis::core::ssh::parse_ssh_config(contents)
+        .into_iter()
+        .map(|host| host.alias)
+        .filter(|alias| {
+            alias.len() <= 255
+                && alias
+                    .chars()
+                    .next()
+                    .is_some_and(|first| first.is_ascii_alphanumeric())
+                && alias
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || "._-".contains(character))
+        })
+        .take(200)
+        .collect()
+}
+
+fn read_ssh_config(home: &std::path::Path) -> std::io::Result<String> {
+    use std::collections::HashSet;
+    let ssh_dir = home.join(".ssh");
+    let mut seen = HashSet::new();
+    let mut remaining = 1024 * 1024;
+    read_ssh_config_file(
+        &ssh_dir.join("config"),
+        &ssh_dir,
+        home,
+        0,
+        &mut seen,
+        &mut remaining,
+    )
+}
+
+fn read_ssh_config_file(
+    path: &std::path::Path,
+    ssh_dir: &std::path::Path,
+    home: &std::path::Path,
+    depth: usize,
+    seen: &mut std::collections::HashSet<std::path::PathBuf>,
+    remaining: &mut u64,
+) -> std::io::Result<String> {
+    use std::io::{Error, ErrorKind, Read};
+    if depth > 4 || seen.len() >= 200 {
+        return Ok(String::new());
+    }
+    let canonical = match path.canonicalize() {
+        Ok(canonical) => canonical,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(String::new()),
+        Err(error) => return Err(error),
+    };
+    if !seen.insert(canonical.clone()) {
+        return Ok(String::new());
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(&canonical)?
+        .take(*remaining + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > *remaining {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            "SSH config listing limit exceeded",
+        ));
+    }
+    *remaining -= bytes.len() as u64;
+    let contents = String::from_utf8(bytes)
+        .map_err(|_| Error::new(ErrorKind::InvalidData, "SSH config is not UTF-8"))?;
+    let mut expanded = String::new();
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        let mut words = trimmed.split_whitespace();
+        if words
+            .next()
+            .is_some_and(|word| word.eq_ignore_ascii_case("include"))
+        {
+            for include in words {
+                let pattern = if include == "~" {
+                    home.to_path_buf()
+                } else if let Some(suffix) = include.strip_prefix("~/") {
+                    home.join(suffix)
+                } else if std::path::Path::new(include).is_absolute() {
+                    include.into()
+                } else {
+                    ssh_dir.join(include)
+                };
+                let Ok(paths) = glob::glob(&pattern.to_string_lossy()) else {
+                    continue;
+                };
+                for child in paths.flatten().take(200) {
+                    expanded.push_str(&read_ssh_config_file(
+                        &child,
+                        ssh_dir,
+                        home,
+                        depth + 1,
+                        seen,
+                        remaining,
+                    )?);
+                }
+            }
+        } else {
+            expanded.push_str(line);
+            expanded.push('\n');
+        }
+    }
+    Ok(expanded)
 }
 
 const KNOWN_CLIENTS: &[&str] = &[
@@ -547,6 +665,12 @@ async fn handle_tool_actions(
             }
             if let Some(max_log_bytes) = params.max_log_bytes {
                 next.max_log_bytes = max_log_bytes;
+            }
+            if let Some(search_sources) = params.search_sources {
+                next.search.sources = search_sources;
+            }
+            if let Some(search_kinds) = params.search_kinds {
+                next.search.kinds = search_kinds;
             }
             to_json(manager.set_code_mode_config(next, None, None).await?)
         }

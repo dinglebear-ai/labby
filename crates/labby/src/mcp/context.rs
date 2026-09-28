@@ -13,6 +13,7 @@ use axum::http::request::Parts;
 use labby_auth::auth_context::AuthContext;
 use labby_runtime::caller_auth::{CALLER_AUTH_META_KEY, PropagatedCallerAuth};
 use rmcp::RoleServer;
+use rmcp::model::RequestMetaObject;
 use rmcp::service::RequestContext;
 
 #[cfg(feature = "gateway")]
@@ -40,6 +41,19 @@ pub(crate) fn redact_actor_key_for_logging(actor_key: &str) -> String {
 #[cfg(feature = "gateway")]
 pub(crate) fn redacted_oauth_subject_label() -> &'static str {
     "[redacted]"
+}
+
+pub(crate) fn openai_session_fingerprint(meta: Option<&RequestMetaObject>) -> Option<String> {
+    meta.and_then(|meta| meta.get("openai/session"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|session| !session.is_empty())
+        .map(labby_auth::util::fingerprint)
+}
+
+pub(crate) fn request_openai_session_fingerprint(
+    context: &RequestContext<RoleServer>,
+) -> Option<String> {
+    openai_session_fingerprint(Some(&context.meta))
 }
 
 impl LabMcpServer {
@@ -277,10 +291,10 @@ fn team_credential_binding_matches(
 /// capabilities. Legacy requests without modern metadata are represented by an
 /// honest empty capability set rather than falling back to connection history.
 pub(crate) fn forwardable_client_capabilities(
-    meta: Option<&rmcp::model::RequestMetaObject>,
+    meta: Option<&RequestMetaObject>,
 ) -> Option<rmcp::model::ClientCapabilities> {
     Some(
-        meta.and_then(rmcp::model::RequestMetaObject::client_capabilities)
+        meta.and_then(RequestMetaObject::client_capabilities)
             .unwrap_or_default(),
     )
 }
@@ -453,7 +467,7 @@ impl CallerAuthorization<'_> {
 /// `labby_runtime::caller_auth` for why that restriction is the whole basis for
 /// trusting it.
 pub(crate) fn propagated_caller_auth(
-    meta: Option<&rmcp::model::RequestMetaObject>,
+    meta: Option<&RequestMetaObject>,
 ) -> Option<PropagatedCallerAuth> {
     let value = meta?.get(CALLER_AUTH_META_KEY)?;
     serde_json::from_value(value.clone()).ok()

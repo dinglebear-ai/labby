@@ -98,6 +98,19 @@ caller makes the runner boundary visible and testable in this repository.
 The caller checkout lives in `caller/`, not `target/` or `vendor/`: the pinned
 checker excludes Cargo manifests beneath those build/dependency directory names.
 
+The repository-contract job runs `scripts/ci/check_repository_contract.py`
+against that immutable fleet implementation. The adapter verifies the checker
+SHA-256 before loading it, executes the complete fleet check driver, and retains
+every finding except the two exact legacy symlink-direction diagnostics. It
+replaces those with strict Git-index checks requiring regular nonempty UTF-8
+`AGENTS.md` sources and mode-120000 `CLAUDE.md` / `GEMINI.md` aliases targeting
+exactly `AGENTS.md`. Private instruction files must not be tracked. This is the
+explicit AGENTS-first policy, not a skipped check or an alternate checkout:
+unknown diagnostics, other fleet failures, malformed index entries, and a
+changed upstream checker all fail. The job runs the adapter regression suite
+before validation, and the `Repository Contract` aggregate still requires the
+contract job to succeed.
+
 That window: `ci.yml` always comes from the merge ref, so a pull request that
 adds a routing key gates on a key the trusted classifier cannot emit, and every
 already-open pull request against an older base hits it too.
