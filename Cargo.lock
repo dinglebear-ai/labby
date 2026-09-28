@@ -2271,6 +2271,7 @@ dependencies = [
  "hex",
  "javy",
  "labby-openapi",
+ "labby-primitives",
  "labby-runtime",
  "labby-winjob",
  "nix",
