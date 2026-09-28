@@ -649,6 +649,8 @@ fn leaf_plan(path: &str) -> Option<LeafPlan> {
         | "code search"
         | "code describe"
         | "code status"
+        | "code catalog status"
+        | "code catalog set"
         | "code enable"
         | "code disable"
         | "code ui status"

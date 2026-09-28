@@ -184,6 +184,7 @@ pub enum Operation {
     Identity,
     List,
     Get,
+    SkillsSearch,
 }
 
 impl Operation {
@@ -192,6 +193,7 @@ impl Operation {
             Self::Identity => "api/discovery",
             Self::List => "api/discovery/list",
             Self::Get => "api/discovery/get",
+            Self::SkillsSearch => "api/operations/depot.skills.search",
         }
     }
 }

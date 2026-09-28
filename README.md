@@ -110,7 +110,7 @@ get the skills and the MCP registration in one step:
 apm install -g dinglebear-ai/labby
 ```
 
-That deploys `install-labby`, `using-labby`, and `creating-snippets` into
+That deploys `install-labby`, `using-labby`, `using-codemode`, and `using-snippets` into
 `~/.claude/skills` and `~/.agents/skills` and registers the `labby` stdio MCP
 server (`npx -y @dinglebear/labby mcp`) for Claude Code and Codex; `apm.yml` at
 the repository root is the manifest and `apm outdated -g` reports new

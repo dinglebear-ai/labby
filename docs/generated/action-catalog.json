@@ -5123,6 +5123,18 @@
         "ty": "integer",
         "required": false,
         "description": "Maximum captured console log bytes per execution"
+      },
+      {
+        "name": "search_sources",
+        "ty": "string[]",
+        "required": false,
+        "description": "Replace the Code Mode discovery sources: personal_labby, team_depot, and/or public_depot; an empty array disables all sources"
+      },
+      {
+        "name": "search_kinds",
+        "ty": "string[]",
+        "required": false,
+        "description": "Replace the Code Mode discovery artifact families: tool, skill, command, prompt, subagent, and/or snippet; an empty array disables all families"
       }
     ],
     "returns": "CodeModeConfig",
