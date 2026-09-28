@@ -283,7 +283,7 @@ impl LabMcpServer {
                 }
                 if tool_projection_mode.includes_router() {
                     builtin_names.insert(svc.name.to_string());
-                    if hide_raw_tools && svc.name != SERVER_LOGS_TOOL_NAME {
+                    if hide_raw_tools && !matches!(svc.name, SERVER_LOGS_TOOL_NAME | "gateway") {
                         suppressed_builtin_tool_count += 1;
                     } else {
                         advertised_names.insert(svc.name.to_string());

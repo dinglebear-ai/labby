@@ -2592,6 +2592,70 @@ async fn gateway_mcp_error_envelope(
     serde_json::from_str(text).expect("error envelope")
 }
 
+#[tokio::test]
+async fn gateway_tool_updates_code_mode_search_policy_without_restart() {
+    let manager = code_mode_manager(false).await;
+    let mut server = test_server(
+        crate::registry::build_default_registry(),
+        Some(Arc::clone(&manager)),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    server.access_runtime = authorized_test_access_runtime().await;
+    let peer_server = test_server(
+        ToolRegistry::new(),
+        None,
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        peer_server,
+        transport,
+        None,
+    );
+    let mut context = request_context_with_peer(running.peer().clone());
+    context.extensions.insert(primary_static_bearer_identity());
+
+    let result = Box::pin(server.call_tool_impl(
+        CallToolRequestParams::new("gateway").with_arguments(serde_json::Map::from_iter([
+            (
+                "action".to_string(),
+                Value::String("gateway.code_mode.set".to_string()),
+            ),
+            (
+                "params".to_string(),
+                serde_json::json!({
+                    "search_sources": ["personal_labby", "public_depot"],
+                    "search_kinds": ["tool", "snippet"]
+                }),
+            ),
+        ])),
+        context,
+    ))
+    .await
+    .expect("call tool result");
+
+    assert!(!result.is_error.unwrap_or(false));
+    let text = result.content[0].as_text().expect("text").text.as_str();
+    let envelope: Value = serde_json::from_str(text).expect("gateway envelope");
+    assert_eq!(envelope["ok"], true);
+    assert_eq!(
+        envelope["data"]["search"]["sources"],
+        serde_json::json!(["personal_labby", "public_depot"])
+    );
+    assert_eq!(
+        envelope["data"]["search"]["kinds"],
+        serde_json::json!(["tool", "snippet"])
+    );
+
+    let immediate = manager.code_mode_config().await;
+    assert_eq!(
+        serde_json::to_value(immediate.search).expect("search policy"),
+        envelope["data"]["search"]
+    );
+}
+
 /// Field report (v1.20.1): the MCP gateway tool reported a never-initialized
 /// access store as a retryable outage. It is a setup gate and must name its
 /// remediation.
@@ -5782,31 +5846,50 @@ async fn call_tool_allows_direct_mcp_app_ui_tool_in_code_mode() {
 }
 
 #[tokio::test]
-async fn snapshot_catalog_hides_builtin_tools_when_code_mode_is_enabled() {
+async fn code_mode_tools_list_keeps_gateway_control_plane_visible() {
+    let mut registry = completion_test_registry();
+    registry.register(RegisteredService {
+        name: "gateway",
+        description: "Manage proxied upstream MCP gateways",
+        category: "bootstrap",
+        kind: crate::registry::RegisteredServiceKind::BootstrapOperator,
+        status: "available",
+        actions: crate::dispatch::gateway::ACTIONS,
+        dispatch: noop_dispatch,
+    });
     let server = test_server(
-        completion_test_registry(),
+        registry,
         Some(code_mode_manager(true).await),
         crate::mcp::route_scope::McpRouteScope::Root,
         crate::mcp::logging::LoggingLevel::Emergency,
     );
 
-    let snapshot = server.snapshot_catalog().await;
-
-    // Code Mode mode exposes the read-only and full text entry points, explicit
-    // UI entry point, and text-only recovery control. No legacy aliases are permitted.
-    assert_eq!(
-        snapshot.tools,
-        [
-            CODE_MODE_READ_TOOL_NAME.to_string(),
-            CODE_MODE_TOOL_NAME.to_string(),
-            CODE_MODE_UI_TOOL_NAME.to_string(),
-            MCP_APP_TOOL_NAME.to_string(),
-        ]
-        .into_iter()
-        .collect()
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
     );
+    let listed = running
+        .service()
+        .list_tools_impl(None, scoped_context(running.peer().clone(), &["lab:admin"]))
+        .await
+        .expect("admin Code Mode tools");
+    let names = listed
+        .tools
+        .iter()
+        .map(|tool| tool.name.to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+
+    for name in [
+        CODE_MODE_READ_TOOL_NAME,
+        CODE_MODE_TOOL_NAME,
+        CODE_MODE_UI_TOOL_NAME,
+        MCP_APP_TOOL_NAME,
+        "gateway",
+    ] {
+        assert!(names.contains(name), "Code Mode must advertise {name}");
+    }
     assert!(
-        !snapshot.tools.contains("code"),
+        !names.contains("code"),
         "code must not appear in Code Mode mode"
     );
 }

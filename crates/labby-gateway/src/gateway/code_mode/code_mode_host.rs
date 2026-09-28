@@ -33,6 +33,7 @@ use labby_runtime::caller_auth::{
     PropagatedCallerUpstreamScope,
 };
 use labby_runtime::error::ToolError;
+use labby_runtime::gateway_config::{CodeModeSearchConfig, CodeModeSearchKind};
 use labby_runtime::lab_home;
 
 use super::search;
@@ -137,6 +138,21 @@ fn semantic_candidate_ids<'a>(
                 && (kinds.is_empty() || kinds.contains(&entry.kind))
         })
         .map(|entry| entry.id.as_str())
+        .collect()
+}
+
+fn configured_catalog_kinds(config: &CodeModeSearchConfig) -> Vec<CodeModeCatalogKind> {
+    config
+        .kinds
+        .iter()
+        .map(|kind| match kind {
+            CodeModeSearchKind::Tool => CodeModeCatalogKind::Tool,
+            CodeModeSearchKind::Skill => CodeModeCatalogKind::Skill,
+            CodeModeSearchKind::Command => CodeModeCatalogKind::Command,
+            CodeModeSearchKind::Prompt => CodeModeCatalogKind::Prompt,
+            CodeModeSearchKind::Subagent => CodeModeCatalogKind::Subagent,
+            CodeModeSearchKind::Snippet => CodeModeCatalogKind::Snippet,
+        })
         .collect()
 }
 
@@ -944,6 +960,48 @@ impl CodeModeHost for GatewayManager {
             top_k,
             |id| allowed_ids.contains(id),
         ))
+    }
+
+    async fn search_artifacts(
+        &self,
+        query: String,
+        limit: usize,
+        kinds: &[CodeModeCatalogKind],
+        caller: &CodeModeCaller,
+        surface: CodeModeSurface,
+        scope: &ToolScope,
+    ) -> Result<Vec<CatalogDescriptor>, ToolError> {
+        let Some(provider) = self.code_mode_artifact_search_provider.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let search_config = self.code_mode_config().await.search;
+        if search_config.sources.is_empty() || search_config.kinds.is_empty() {
+            return Ok(Vec::new());
+        }
+        let configured_kinds = configured_catalog_kinds(&search_config);
+        let effective_kinds = if kinds.is_empty() {
+            configured_kinds
+        } else {
+            kinds
+                .iter()
+                .copied()
+                .filter(|kind| configured_kinds.contains(kind))
+                .collect()
+        };
+        if effective_kinds.is_empty() {
+            return Ok(Vec::new());
+        }
+        provider
+            .search(
+                &query,
+                limit.min(51),
+                &effective_kinds,
+                &search_config,
+                caller,
+                surface,
+                scope,
+            )
+            .await
     }
 
     async fn config(&self) -> CodeModeConfig {
@@ -1986,6 +2044,28 @@ mod tests {
     use rmcp::model::{ContentBlock, ErrorCode, ErrorData, MetaObject};
     #[cfg(unix)]
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn configured_catalog_kind_projection_is_exact() {
+        let all = configured_catalog_kinds(&CodeModeSearchConfig::default());
+        assert_eq!(all.len(), 6);
+        assert!(all.contains(&CodeModeCatalogKind::Tool));
+        assert!(all.contains(&CodeModeCatalogKind::Skill));
+        assert!(all.contains(&CodeModeCatalogKind::Command));
+        assert!(all.contains(&CodeModeCatalogKind::Prompt));
+        assert!(all.contains(&CodeModeCatalogKind::Subagent));
+        assert!(all.contains(&CodeModeCatalogKind::Snippet));
+        assert!(!all.contains(&CodeModeCatalogKind::Resource));
+
+        let skills_only = CodeModeSearchConfig {
+            kinds: std::iter::once(CodeModeSearchKind::Skill).collect(),
+            ..CodeModeSearchConfig::default()
+        };
+        assert_eq!(
+            configured_catalog_kinds(&skills_only),
+            vec![CodeModeCatalogKind::Skill]
+        );
+    }
 
     struct PersonalOauthRegistry;
 

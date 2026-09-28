@@ -158,11 +158,22 @@ fn catalog_kind_is_source_neutral_and_extensible() {
         CodeModeCatalogKind::Resource,
         CodeModeCatalogKind::Prompt,
         CodeModeCatalogKind::Skill,
-        CodeModeCatalogKind::Agent,
+        CodeModeCatalogKind::Command,
+        CodeModeCatalogKind::Subagent,
     ];
     assert_eq!(
         kinds.map(CodeModeCatalogKind::as_str),
-        ["tool", "snippet", "resource", "prompt", "skill", "agent"]
+        [
+            "tool", "snippet", "resource", "prompt", "skill", "command", "subagent"
+        ]
+    );
+    assert_eq!(
+        CodeModeCatalogKind::parse_filter("agent"),
+        Some(CodeModeCatalogKind::Subagent)
+    );
+    assert_eq!(
+        serde_json::to_string(&CodeModeCatalogKind::Subagent).unwrap(),
+        "\"subagent\""
     );
 }
 
@@ -173,7 +184,7 @@ fn generic_search_and_describe_cover_future_catalog_kinds() {
         capability(CodeModeCatalogKind::Resource, "github", "readme"),
         capability(CodeModeCatalogKind::Prompt, "github", "review"),
         capability(CodeModeCatalogKind::Skill, "labby", "adversarial_review"),
-        capability(CodeModeCatalogKind::Agent, "labby", "reviewer"),
+        capability(CodeModeCatalogKind::Subagent, "labby", "reviewer"),
     ];
 
     let response =
@@ -239,7 +250,7 @@ fn generic_search_can_filter_kinds_without_granting_capabilities() {
     let entries = vec![
         tool("github", "issues", "catalog capability"),
         capability(CodeModeCatalogKind::Skill, "labby", "reviewer"),
-        capability(CodeModeCatalogKind::Agent, "labby", "reviewer"),
+        capability(CodeModeCatalogKind::Subagent, "labby", "reviewer"),
     ];
     let response = search_visible_catalog_with_kinds(
         &entries,
@@ -251,6 +262,42 @@ fn generic_search_can_filter_kinds_without_granting_capabilities() {
     .unwrap();
     assert_eq!(response.total, 1);
     assert_eq!(response.results[0].kind, CodeModeCatalogKind::Skill);
+}
+
+#[test]
+fn generic_search_covers_every_configurable_artifact_kind() {
+    let entries = vec![
+        tool("labby", "smoke_tool", "search matrix marker"),
+        capability(CodeModeCatalogKind::Skill, "labby", "smoke_skill"),
+        capability(CodeModeCatalogKind::Command, "labby", "smoke_command"),
+        capability(CodeModeCatalogKind::Prompt, "labby", "smoke_prompt"),
+        capability(CodeModeCatalogKind::Subagent, "labby", "smoke_subagent"),
+        capability(CodeModeCatalogKind::Snippet, "labby", "smoke_snippet"),
+    ];
+    let configurable = [
+        CodeModeCatalogKind::Tool,
+        CodeModeCatalogKind::Skill,
+        CodeModeCatalogKind::Command,
+        CodeModeCatalogKind::Prompt,
+        CodeModeCatalogKind::Subagent,
+        CodeModeCatalogKind::Snippet,
+    ];
+
+    let response = search_visible_catalog_with_kinds(
+        &entries,
+        &ToolScope::default(),
+        "smoke",
+        50,
+        &configurable,
+    )
+    .unwrap();
+    let found = response
+        .results
+        .iter()
+        .map(|result| result.kind)
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert_eq!(found, configurable.into_iter().collect());
 }
 
 #[test]

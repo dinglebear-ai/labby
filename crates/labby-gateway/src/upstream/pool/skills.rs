@@ -472,7 +472,25 @@ impl UpstreamPool {
             .skills
             .iter()
             .enumerate()
-            .filter_map(|(index, skill)| policy.matches(&skill.name).then_some(index))
+            .filter_map(|(index, skill)| {
+                let has_ambiguous_resource = std::iter::once(&skill.entry.uri)
+                    .chain(
+                        skill
+                            .entry
+                            .resources
+                            .iter()
+                            .flatten()
+                            .map(|resource| &resource.uri),
+                    )
+                    .filter_map(|uri| parse_skill_resource_uri(uri).ok())
+                    .any(|uri| {
+                        cached
+                            .skills
+                            .ambiguous_resource_uris
+                            .contains(&uri.to_uri())
+                    });
+                (policy.matches(&skill.name) && !has_ambiguous_resource).then_some(index)
+            })
             .collect();
         let visible_count = exposed_indices.len();
         let skills = exposed_indices

@@ -562,6 +562,21 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     if let Some(runtime) = skill_library_runtime.as_ref() {
         crate::dispatch::skill_library::follow_reconciler::start(&access_runtime, runtime);
     }
+    config
+        .depot
+        .validate_public_acquisition_with_env(&config.artifacts, &|name| std::env::var_os(name))
+        .map_err(anyhow::Error::msg)?;
+    let depot_secrets = crate::dispatch::depot::manager::SecretSnapshot::capture(&config.depot);
+    depot_secrets
+        .validate_local_credentials(&config.depot)
+        .map_err(anyhow::Error::msg)?;
+    let depot_policy =
+        crate::dispatch::depot::manager::host_policy(&config.depot).map_err(anyhow::Error::msg)?;
+    let depot_manager = Arc::new(crate::dispatch::depot::manager::Manager::new(
+        &config.depot,
+        depot_secrets,
+        depot_policy.clone(),
+    ));
     #[cfg(feature = "gateway")]
     let gateway_manager = build_gateway_runtime(
         config,
@@ -574,6 +589,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         notifier.clone(),
         resource_registry.clone(),
         integrated_trusted_host,
+        Arc::clone(&depot_manager),
     )
     .await?;
     #[cfg(feature = "gateway")]
@@ -789,20 +805,9 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         web_assets_dir.is_none() && crate::api::web::embedded_web_assets_available();
 
     let oauth_enabled = matches!(auth_config.mode, AuthMode::OAuth);
-    config
-        .depot
-        .validate_public_acquisition_with_env(&config.artifacts, &|name| std::env::var_os(name))
-        .map_err(anyhow::Error::msg)?;
-    let depot_secrets = crate::dispatch::depot::manager::SecretSnapshot::capture(&config.depot);
-    depot_secrets
-        .validate_local_credentials(&config.depot)
-        .map_err(anyhow::Error::msg)?;
-    let depot_policy =
-        crate::dispatch::depot::manager::host_policy(&config.depot).map_err(anyhow::Error::msg)?;
-
     let mut state = AppState::from_registry(registry)
         .with_config(config.clone())
-        .with_depot_snapshot(depot_secrets, depot_policy)
+        .with_depot_manager(Arc::clone(&depot_manager), depot_policy)
         .with_depot_storage(
             config_path.clone(),
             dotenv_path().unwrap_or_else(|_| ".env".into()),
@@ -2076,6 +2081,7 @@ async fn build_gateway_runtime(
     notifier: PeerNotifier,
     resource_registry: Option<labby_auth::resource_registry::ResourceRegistry>,
     integrated_trusted_host: bool,
+    depot_manager: Arc<crate::dispatch::depot::manager::Manager>,
 ) -> Result<Arc<GatewayManager>> {
     let gateway_runtime = GatewayRuntimeHandle::default();
     let upstream_oauth_runtime = if suppress_upstream_runtime {
@@ -2230,6 +2236,11 @@ async fn build_gateway_runtime(
     #[cfg(feature = "skills")]
     let gateway_manager = gateway_manager.with_code_mode_skill_provider(Arc::new(
         crate::skills::code_mode::CanonicalCodeModeSkillProvider,
+    ));
+    let gateway_manager = gateway_manager.with_code_mode_artifact_search_provider(Arc::new(
+        crate::dispatch::code_mode_search::ProductCodeModeArtifactSearchProvider::production(
+            depot_manager,
+        )?,
     ));
     let gateway_manager = gateway_manager.with_code_mode_personal_oauth_provider(Arc::new(
         crate::mcp::code_mode_authority::CanonicalPersonalOauthProvider,
