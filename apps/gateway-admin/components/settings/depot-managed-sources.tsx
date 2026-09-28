@@ -132,14 +132,16 @@ export function DepotManagedSources(): React.ReactElement {
     return () => controller.abort()
   }, [])
 
-  async function mutate(key: string, action: () => Promise<unknown>): Promise<void> {
+  async function mutate(key: string, action: () => Promise<unknown>): Promise<boolean> {
     setBusy(key)
     setError(undefined)
     try {
       await action()
       await load()
+      return true
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Depot source action failed')
+      return false
     } finally {
       setBusy(undefined)
     }
@@ -152,7 +154,7 @@ export function DepotManagedSources(): React.ReactElement {
       setError('Repository URL is required.')
       return
     }
-    await mutate('add', () => addDepotRepoSource({
+    const added = await mutate('add', () => addDepotRepoSource({
       url: trimmed,
       namespace: namespace.trim() || undefined,
       ref: ref.trim() || undefined,
@@ -160,6 +162,7 @@ export function DepotManagedSources(): React.ReactElement {
       credential: credential.trim() || undefined,
       intervalSeconds: cadenceSeconds(cadenceValue, cadenceUnit),
     }))
+    if (!added) return
     setUrl('')
     setNamespace('')
     setRef('')
@@ -237,7 +240,7 @@ export function DepotManagedSources(): React.ReactElement {
               <SourceCadence
                 source={source}
                 disabled={working}
-                onSave={(seconds) => mutate(key, () => configureDepotSource(source.id, { intervalSeconds: seconds }))}
+                onSave={async (seconds) => { await mutate(key, () => configureDepotSource(source.id, { intervalSeconds: seconds })) }}
               />
               <div className="flex flex-wrap gap-2">
                 <Button size="sm" variant="outline" disabled={working} onClick={() => void mutate(key, () => refreshDepotSource(source.id))}><RefreshCw className="size-4" />Run now</Button>
