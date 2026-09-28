@@ -401,7 +401,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
         let logs = crate::test_support::captured_logs(&buf);
         for expected in [
@@ -409,8 +409,8 @@ mod tests {
             "\"service\":\"auth\"",
             "\"action\":\"oauth.register\"",
             "\"request_id\":\"req-auth-1\"",
-            "\"kind\":\"validation_failed\"",
-            "\"status\":422",
+            "\"kind\":\"invalid_client_metadata\"",
+            "\"status\":400",
             "\"dispatch.error\"",
         ] {
             assert!(

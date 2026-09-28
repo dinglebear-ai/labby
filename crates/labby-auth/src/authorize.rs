@@ -1141,6 +1141,230 @@ pub mod tests {
     }
 
     #[tokio::test]
+    async fn register_rfc7591_returns_created_with_private_response() {
+        let redirect_uri =
+            "https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-test-client";
+        let mut config = test_auth_config();
+        config.enable_dynamic_registration = true;
+        config.allowed_client_redirect_uris = vec![redirect_uri.to_string()];
+        let app = router(test_auth_state_with_config(config).await);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/register")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "redirect_uris": [redirect_uri],
+                            "client_name": "Gemini registration regression",
+                            "grant_types": ["authorization_code", "refresh_token"],
+                            "response_types": ["code"],
+                            "token_endpoint_auth_method": "none"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        assert_eq!(response.headers()[header::PRAGMA], "no-cache");
+        let bytes = axum::body::to_bytes(response.into_body(), 8192)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(body["client_id"].as_str().unwrap().starts_with("dcr_"));
+        assert_eq!(body["redirect_uris"], json!([redirect_uri]));
+        assert_eq!(body["token_endpoint_auth_method"], "none");
+        assert!(body.get("client_secret").is_none());
+    }
+
+    #[tokio::test]
+    async fn register_google_callback_bundle_requires_every_exact_uri() {
+        let callbacks = [
+            "https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-test-client",
+            "https://oauth-redirect-sandbox.googleusercontent.com/r/user_bound_custom-mcp-test-client",
+            "https://oauth-redirect-test.googleusercontent.com/r/user_bound_custom-mcp-test-client",
+            "https://oauth-redirect.googleusercontent.com/a/user_bound_custom-mcp-test-client",
+            "https://oauth-redirect-sandbox.googleusercontent.com/a/user_bound_custom-mcp-test-client",
+            "https://oauth-redirect-test.googleusercontent.com/a/user_bound_custom-mcp-test-client",
+        ];
+        for allowed_count in 1..=callbacks.len() {
+            let mut config = test_auth_config();
+            config.enable_dynamic_registration = true;
+            config.allowed_client_redirect_uris = callbacks[..allowed_count]
+                .iter()
+                .map(|uri| uri.to_string())
+                .collect();
+            let app = router(test_auth_state_with_config(config).await);
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/register")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(
+                            json!({
+                                "redirect_uris": callbacks,
+                                "token_endpoint_auth_method": "none",
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let complete = allowed_count == callbacks.len();
+            assert_eq!(
+                response.status(),
+                if complete {
+                    StatusCode::CREATED
+                } else {
+                    StatusCode::BAD_REQUEST
+                }
+            );
+            let bytes = axum::body::to_bytes(response.into_body(), 8192)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            if complete {
+                assert_eq!(body["redirect_uris"], json!(callbacks));
+                assert!(body["client_id"].as_str().is_some());
+            } else {
+                assert_eq!(body["error"], "invalid_redirect_uri");
+                assert!(body.get("client_id").is_none());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn register_rfc7591_rejects_callbacks_outside_exact_google_allowlist() {
+        let allowed =
+            "https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-test-client";
+        let mut config = test_auth_config();
+        config.enable_dynamic_registration = true;
+        config.allowed_client_redirect_uris = vec![allowed.to_string()];
+        let app = router(test_auth_state_with_config(config).await);
+        for redirect_uris in [
+            vec!["https://oauth-redirect.googleusercontent.com/r/another-client".to_string()],
+            vec![format!("{allowed}?private=must-not-be-reflected")],
+            vec![format!("{allowed}#fragment")],
+            vec![allowed.replacen("https://", "http://", 1)],
+            vec![allowed.replace(
+                "googleusercontent.com",
+                "googleusercontent.com.attacker.invalid",
+            )],
+            vec![
+                allowed.to_string(),
+                "https://untrusted.example/callback".to_string(),
+            ],
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/register")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(
+                            json!({"redirect_uris": redirect_uris}).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+            let bytes = axum::body::to_bytes(response.into_body(), 8192)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["error"], "invalid_redirect_uri");
+            assert!(
+                body["error_description"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+            );
+            assert!(body.get("kind").is_none());
+            assert!(!String::from_utf8_lossy(&bytes).contains("must-not-be-reflected"));
+        }
+    }
+
+    #[tokio::test]
+    async fn register_rfc7591_returns_metadata_errors_for_invalid_requests() {
+        let mut config = test_auth_config();
+        config.enable_dynamic_registration = true;
+        let app = router(test_auth_state_with_config(config).await);
+        for payload in [
+            "{}",
+            r#"{"redirect_uris":[]}"#,
+            r#"{"redirect_uris":"http://127.0.0.1/callback"}"#,
+            r#"{"redirect_uris":[null]}"#,
+            "not-json",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/register")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(payload))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+            let bytes = axum::body::to_bytes(response.into_body(), 8192)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["error"], "invalid_client_metadata");
+            assert!(
+                body["error_description"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+            );
+            assert!(body.get("kind").is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn register_rfc7591_preserves_request_body_limit() {
+        let mut config = test_auth_config();
+        config.enable_dynamic_registration = true;
+        let app = router(test_auth_state_with_config(config).await)
+            .layer(axum::extract::DefaultBodyLimit::max(128));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/register")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "redirect_uris": ["http://127.0.0.1/callback"],
+                            "client_name": "x".repeat(256),
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let bytes = axum::body::to_bytes(response.into_body(), 8192)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"], "invalid_client_metadata");
+    }
+
+    #[tokio::test]
     async fn register_accepts_public_dcr_and_enforces_loopback_redirects() {
         let mut config = test_auth_config();
         config.enable_dynamic_registration = true;
@@ -1162,7 +1386,7 @@ pub mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::CREATED);
 
         let rejected = app
             .oneshot(
@@ -1180,7 +1404,7 @@ pub mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(rejected.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -1203,7 +1427,7 @@ pub mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::CREATED);
     }
 
     #[tokio::test]
@@ -1232,8 +1456,55 @@ pub mod tests {
                 )
                 .await
                 .unwrap();
-            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn registration_rejection_logs_are_bounded_and_exclude_private_uri_components() {
+        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK.lock().await;
+        let buf = crate::test_support::global_tracing_buffer();
+        let mut config = test_auth_config();
+        config.enable_dynamic_registration = true;
+        let app = router(test_auth_state_with_config(config).await);
+        let callbacks: Vec<String> = (0..18).map(|i| format!(
+            "https://diagnostic-user:diagnostic-password@registration-log-{i}.invalid/private-path?tenant=diagnostic-query"
+        )).collect();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/register")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({"redirect_uris": callbacks}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let logs = crate::test_support::captured_logs(buf);
+        let diagnostics: Vec<serde_json::Value> = logs
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|entry| entry.to_string().contains("registration-log-"))
+            .collect();
+        assert_eq!(diagnostics.len(), 16);
+        for i in 0..16 {
+            assert!(logs.contains(&format!("https://registration-log-{i}.invalid")));
+        }
+        for private in [
+            "diagnostic-user",
+            "diagnostic-password",
+            "private-path",
+            "diagnostic-query",
+        ] {
+            assert!(
+                !logs.contains(private),
+                "private redirect component entered logs"
+            );
+        }
+        assert!(!logs.contains("registration-log-16.invalid"));
+        assert!(!logs.contains("registration-log-17.invalid"));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1262,7 +1533,7 @@ pub mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::CREATED);
         let logs = crate::test_support::captured_logs(buf);
         assert!(!logs.contains(secret), "redirect query leaked into logs");
         assert!(
@@ -1303,7 +1574,7 @@ pub mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -1375,7 +1646,7 @@ pub mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(registration.status(), StatusCode::OK);
+        assert_eq!(registration.status(), StatusCode::CREATED);
         let body = axum::body::to_bytes(registration.into_body(), usize::MAX)
             .await
             .unwrap();
@@ -1697,7 +1968,7 @@ pub mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::CREATED);
     }
 
     #[tokio::test]
@@ -1724,7 +1995,7 @@ pub mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(first.status(), StatusCode::CREATED);
 
         let second = app
             .oneshot(
@@ -1743,6 +2014,29 @@ pub mod tests {
             .await
             .unwrap();
         assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(second.headers()[header::CACHE_CONTROL], "no-store");
+        assert!(
+            second.headers()[header::RETRY_AFTER]
+                .to_str()
+                .unwrap()
+                .parse::<u64>()
+                .unwrap()
+                > 0
+        );
+        assert_eq!(
+            second
+                .extensions()
+                .get::<crate::error::AuthErrorKind>()
+                .unwrap()
+                .0,
+            "rate_limited"
+        );
+        let bytes = axum::body::to_bytes(second.into_body(), 8192)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"], "temporarily_unavailable");
+        assert!(body.get("kind").is_none());
     }
 
     #[test]

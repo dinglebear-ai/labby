@@ -28,11 +28,16 @@ pub(crate) struct BlobStore {
     principal_uploads: Arc<Mutex<HashMap<String, Weak<Semaphore>>>>,
     principal_downloads: Arc<Mutex<HashMap<String, Weak<Semaphore>>>>,
     active_uploads: Arc<Mutex<HashSet<String>>>,
+    #[cfg(test)]
+    orphan_snapshot_pause: Arc<Mutex<Option<OrphanSnapshotPause>>>,
 }
 
 /// Bounded retries for releasing an abandoned reservation's metadata row
 /// before the janitor takes over. See [`BlobStore::release_reserved_metadata`].
 const RELEASE_ATTEMPTS: u32 = 5;
+
+#[cfg(test)]
+type OrphanSnapshotPause = (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>);
 
 impl BlobStore {
     pub(super) fn new(
@@ -53,6 +58,8 @@ impl BlobStore {
             principal_uploads: Arc::new(Mutex::new(HashMap::new())),
             principal_downloads: Arc::new(Mutex::new(HashMap::new())),
             active_uploads: Arc::new(Mutex::new(HashSet::new())),
+            #[cfg(test)]
+            orphan_snapshot_pause: Arc::new(Mutex::new(None)),
             store,
             limits: Arc::new(limits),
         }
@@ -538,12 +545,27 @@ impl BlobStore {
     }
 
     async fn remove_orphan_batch(&self, batch: Vec<String>) -> Result<()> {
-        let committed = self.store.committed_blob_membership(batch.clone()).await?;
+        // Uploads commit metadata before releasing their active lease. Snapshot
+        // leases first so a commit between these reads cannot disappear from both
+        // reference sets and have its newly committed blob deleted by the scrub.
         let active = self
             .active_uploads
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
+        #[cfg(test)]
+        {
+            let pause = self
+                .orphan_snapshot_pause
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            if let Some((observed, resume)) = pause {
+                observed.notify_one();
+                resume.notified().await;
+            }
+        }
+        let committed = self.store.committed_blob_membership(batch.clone()).await?;
         let orphans = batch
             .into_iter()
             .filter(|name| !committed.contains(name) && !active.contains(name))
@@ -1458,6 +1480,54 @@ mod tests {
         drop(admission);
         blobs.cleanup_expired().await.unwrap();
         assert_eq!(store.usage("owner".into()).await.unwrap().reserved_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn orphan_sweep_preserves_upload_committing_between_reference_snapshots() {
+        use std::io::Write;
+        let temp = tempfile::TempDir::new().unwrap();
+        let runtime =
+            super::super::FileStashRuntime::initialize_with_preferences(root(&temp), preferences())
+                .await;
+        let blobs = runtime.blob_store().await.unwrap();
+        runtime.stop_janitor_for_test().await;
+        let store = runtime.store().await.unwrap();
+        let (reservation, admission) = blobs
+            .reserve_for_owner("owner", "a".into(), "a".into(), 3)
+            .await
+            .unwrap();
+        let id = reservation.upload_id;
+        let temp_name = format!("{id}.part");
+        let mut file = create_regular_exclusive(&blobs.tmp, &temp_name).unwrap();
+        file.write_all(b"abc").unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        publish_exclusive(&blobs.tmp, &temp_name, &blobs.blobs, &id).unwrap();
+        let observed = Arc::new(tokio::sync::Notify::new());
+        let resume = Arc::new(tokio::sync::Notify::new());
+        *blobs.orphan_snapshot_pause.lock().unwrap() =
+            Some((Arc::clone(&observed), Arc::clone(&resume)));
+        let sweep_blobs = blobs.clone();
+        let sweep_id = id.clone();
+        let sweep =
+            tokio::spawn(async move { sweep_blobs.remove_orphan_batch(vec![sweep_id]).await });
+        tokio::time::timeout(Duration::from_secs(5), observed.notified())
+            .await
+            .unwrap();
+        store.mark_blob_published(id.clone()).await.unwrap();
+        store.commit_upload(id.clone()).await.unwrap();
+        drop(admission);
+        resume.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), sweep)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(regular_size(&blobs.blobs, &id).unwrap(), Some(3));
+        assert_eq!(
+            store.usage("owner".into()).await.unwrap().committed_bytes,
+            3
+        );
     }
 
     #[tokio::test]
