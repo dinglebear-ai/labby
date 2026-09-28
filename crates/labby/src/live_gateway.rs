@@ -16,7 +16,7 @@
 //! gateway's configured public URLs (`LABBY_MCP_GATEWAY_URL`,
 //! `LABBY_PUBLIC_URL`). Only exhaustion of that bounded candidate walk permits
 //! standalone local behavior, and only for the few paths that still have one
-//! (stdio MCP serving, `gateway code exec`, `gateway list`). Gateway *actions*
+//! (stdio MCP serving, `code run`, `server list`). Gateway *actions*
 //! dispatched from the CLI fail closed with `daemon_unavailable` when no daemon
 //! is reachable: they may be scoped by the daemon's authenticated caller and
 //! selected Team, and a one-shot local manager has neither.
@@ -90,6 +90,8 @@ enum TargetSet {
 enum ExplicitSource {
     Plugin,
     Operator,
+    Argument,
+    Context,
 }
 
 impl ExplicitSource {
@@ -97,6 +99,8 @@ impl ExplicitSource {
         match self {
             Self::Plugin => "CLAUDE_PLUGIN_OPTION_SERVER_URL",
             Self::Operator => "LABBY_SERVER_URL",
+            Self::Argument => "--server",
+            Self::Context => "CLI connection context",
         }
     }
 }
@@ -126,6 +130,15 @@ fn resolve_target_set_from(
     port_env: Option<String>,
     config: &LabConfig,
 ) -> Result<TargetSet, ToolError> {
+    if let Some(selected) = &config.cli_target {
+        return Ok(TargetSet::Explicit {
+            base_url: normalize_explicit_target(&selected.server)?,
+            source: match selected.source {
+                crate::config::cli::TargetSource::Argument => ExplicitSource::Argument,
+                crate::config::cli::TargetSource::Context => ExplicitSource::Context,
+            },
+        });
+    }
     for (source, value) in [
         (ExplicitSource::Plugin, plugin_url),
         (ExplicitSource::Operator, server_url),
@@ -138,16 +151,25 @@ fn resolve_target_set_from(
         }
     }
 
-    let host = host_env
-        .or_else(|| config.mcp.host.clone())
-        .unwrap_or_else(|| "127.0.0.1".to_string());
+    let configured_host = host_env.or_else(|| config.mcp.host.clone());
     let port = port_env
         .and_then(|value| value.parse::<u16>().ok())
         .or(config.mcp.port)
         .unwrap_or(8765);
 
     let mut candidates = Vec::new();
-    push_candidate(&mut candidates, &format!("http://{host}:{port}"));
+    // Opportunistic discovery always checks the local daemon first. A configured
+    // non-loopback bind/advertise address (for example a Tailscale IP) is still
+    // tried next, but using it for an in-container CLI request can trip Labby's
+    // DNS-rebinding Host validation even though the daemon is on the same host.
+    push_candidate(&mut candidates, &format!("http://127.0.0.1:{port}"));
+    if let Some(host) = configured_host
+        && !host.eq_ignore_ascii_case("127.0.0.1")
+        && !host.eq_ignore_ascii_case("localhost")
+        && host != "::1"
+    {
+        push_candidate(&mut candidates, &format!("http://{host}:{port}"));
+    }
     let public = config.public_urls();
     for raw in [public.mcp_gateway, public.app].into_iter().flatten() {
         push_candidate(&mut candidates, &raw);
@@ -265,7 +287,7 @@ pub async fn detect(
     if token.is_none()
         && let TargetSet::Explicit {
             base_url,
-            source: ExplicitSource::Operator,
+            source: ExplicitSource::Operator | ExplicitSource::Argument | ExplicitSource::Context,
         } = &targets
     {
         // Keep the OAuth refresh future out of every CLI command's stack frame.
@@ -273,7 +295,7 @@ pub async fn detect(
             .await
             .map_err(|_| ToolError::Sdk {
                 sdk_kind: "auth_failed".to_owned(),
-                message: "Saved CLI sign-in is unavailable; run labby login for this server"
+                message: "Saved CLI sign-in is unavailable; run labby auth login for this server"
                     .to_owned(),
             })?;
     }
@@ -290,6 +312,12 @@ fn token_for_target_from(
             source: ExplicitSource::Plugin,
             ..
         } => plugin_token,
+        // Explicit CLI destinations must not borrow an unrelated environment token.
+        // The authority-bound existing OAuth profile is consulted below instead.
+        TargetSet::Explicit {
+            source: ExplicitSource::Argument | ExplicitSource::Context,
+            ..
+        } => None,
         TargetSet::Explicit {
             source: ExplicitSource::Operator,
             ..
@@ -379,6 +407,47 @@ async fn detect_targets(
                 .unwrap_or(None))
         }
     }
+}
+
+/// Compute an offline cache binding using the same explicit destination and
+/// credential precedence as live dispatch. Never refreshes OAuth or probes a server.
+pub(crate) fn completion_authority(
+    config: &LabConfig,
+    team_id: Option<&str>,
+) -> Result<Option<(Url, String)>, ToolError> {
+    use sha2::{Digest as _, Sha256};
+    let targets = resolve_target_set_from(
+        std::env::var("CLAUDE_PLUGIN_OPTION_SERVER_URL")
+            .ok()
+            .as_deref(),
+        std::env::var("LABBY_SERVER_URL").ok().as_deref(),
+        None,
+        None,
+        config,
+    )?;
+    let token = token_for_target_from(
+        &targets,
+        std::env::var("CLAUDE_PLUGIN_OPTION_API_TOKEN").ok(),
+        std::env::var("LABBY_MCP_HTTP_TOKEN").ok(),
+    );
+    let TargetSet::Explicit { base_url, source } = targets else {
+        return Ok(None);
+    };
+    let identity = match token {
+        Some(token) => format!("bearer:{}", hex::encode(Sha256::digest(token.as_bytes()))),
+        None if matches!(source, ExplicitSource::Plugin) => "anonymous".to_owned(),
+        None => crate::oauth::cli_session::stored_identity(&base_url)
+            .map_err(|_| ToolError::Sdk { sdk_kind:"auth_required".into(), message:"The selected saved session could not be read. Completion data was not reused across credential identities.".into() })?
+            .unwrap_or_else(|| "anonymous".to_owned()),
+    };
+    let binding = serde_json::to_vec(&(
+        "labby-cli-completions-v1",
+        base_url.as_str(),
+        team_id,
+        identity,
+    ))
+    .map_err(|_| ToolError::internal_message("Cannot serialize completion authority"))?;
+    Ok(Some((base_url, hex::encode(Sha256::digest(binding)))))
 }
 
 async fn probe_target(
@@ -727,6 +796,19 @@ impl LiveGateway {
     pub fn with_team_id(mut self, team_id: Option<String>) -> Self {
         self.team_id = team_id;
         self
+    }
+
+    /// Bound the transport wait for an operation with an explicit completion budget.
+    #[must_use]
+    pub fn with_dispatch_timeout(mut self, timeout: Duration) -> Self {
+        self.dispatch_timeout = timeout.min(Duration::from_secs(305));
+        self
+    }
+
+    /// Normalized destination without userinfo, queries, or fragments.
+    #[must_use]
+    pub fn server_url(&self) -> &str {
+        self.base_url.as_str()
     }
 
     /// The Team authority selected with [`Self::with_team_id`], if any.
@@ -1210,7 +1292,7 @@ mod tests {
     }
 
     #[test]
-    fn local_candidate_prefers_env_over_config_over_default() {
+    fn local_candidate_prefers_loopback_before_configured_hosts() {
         let mut config = LabConfig::default();
         config.mcp.host = Some("configured.example".to_string());
         config.mcp.port = Some(1234);
@@ -1221,7 +1303,10 @@ mod tests {
         );
         assert_eq!(
             candidate_base_urls_from(None, None, &config),
-            vec!["http://configured.example:1234".to_string()]
+            vec![
+                "http://127.0.0.1:1234".to_string(),
+                "http://configured.example:1234".to_string(),
+            ]
         );
         assert_eq!(
             candidate_base_urls_from(
@@ -1229,7 +1314,10 @@ mod tests {
                 Some("9999".to_string()),
                 &config
             ),
-            vec!["http://env.example:9999".to_string()]
+            vec![
+                "http://127.0.0.1:9999".to_string(),
+                "http://env.example:9999".to_string(),
+            ]
         );
     }
 

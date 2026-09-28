@@ -270,6 +270,7 @@ impl Harness {
                 registration,
                 scopes: Some(vec!["read".into()]),
                 credential: Default::default(),
+                additional_endpoint_origins: vec![],
                 prefer_client_metadata_document: None,
             }),
             imported_from: None,

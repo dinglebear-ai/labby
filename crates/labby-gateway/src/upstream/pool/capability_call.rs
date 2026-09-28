@@ -605,7 +605,9 @@ where
             if response_size > max_bytes {
                 // The peer returned a complete, valid response. Rejecting it at
                 // the gateway policy boundary must not mark the connection down.
-                pool.record_success_for(upstream_name, capability).await;
+                if subject.is_none() {
+                    pool.record_success_for(upstream_name, capability).await;
+                }
                 log_upstream_request_error(
                     event,
                     start.elapsed().as_millis(),
@@ -628,7 +630,9 @@ where
                     ),
                 });
             }
-            pool.record_success_for(upstream_name, capability).await;
+            if subject.is_none() {
+                pool.record_success_for(upstream_name, capability).await;
+            }
             log_upstream_request_finish(event, start.elapsed().as_millis(), Some(response_size));
             record_usage_call_with_response(
                 pool,
@@ -648,14 +652,18 @@ where
             let error = bound_upstream_service_error(error);
             let message = error_message_fn(&error);
             if service_error_affects_connection_health(&error) {
-                pool.record_failure_for(upstream_name, capability, message.clone())
-                    .await;
+                if subject.is_none() {
+                    pool.record_failure_for(upstream_name, capability, message.clone())
+                        .await;
+                }
                 if let Some(subj) = subject {
                     pool.evict_subject_connection(upstream_name, subj).await;
                 }
             } else {
                 // A valid MCP error response confirms the connection is alive.
-                pool.record_success_for(upstream_name, capability).await;
+                if subject.is_none() {
+                    pool.record_success_for(upstream_name, capability).await;
+                }
             }
             log_upstream_request_error(
                 event,
@@ -675,8 +683,10 @@ where
             Err(CapabilityCallError::from_service_error(error, message))
         }
         RawCallOutcome::Timeout => {
-            pool.record_failure_for(upstream_name, capability, timeout_message.clone())
-                .await;
+            if subject.is_none() {
+                pool.record_failure_for(upstream_name, capability, timeout_message.clone())
+                    .await;
+            }
             if let Some(subj) = subject {
                 pool.evict_subject_connection(upstream_name, subj).await;
             }
@@ -856,6 +866,39 @@ mod tests {
         assert!(matches!(
             status[0].1,
             crate::upstream::types::UpstreamHealth::Healthy
+        ));
+    }
+
+    #[tokio::test]
+    async fn subject_scoped_timeout_does_not_poison_global_capability_health() {
+        let pool = UpstreamPool::new().with_upstream_call_concurrency(1);
+        let upstream_name: Arc<str> = Arc::from("fixture");
+        pool.catalog.write().await.insert(
+            upstream_name.to_string(),
+            healthy_in_process_entry(Arc::clone(&upstream_name), HashMap::new()),
+        );
+
+        let result = timed_capability_call_with_timeout(
+            &pool,
+            Duration::from_millis(1),
+            "fixture",
+            UpstreamCapability::Resources,
+            UpstreamRequestLog::resources_list("fixture", true),
+            Instant::now(),
+            std::future::pending::<Result<(), rmcp::ServiceError>>(),
+            |_| 0,
+            Some("alice"),
+            |error| error.to_string(),
+            "subject timeout".to_string(),
+            None,
+        )
+        .await;
+
+        assert!(matches!(result, Err(CapabilityCallError::Timeout { .. })));
+        assert!(matches!(
+            pool.upstream_capability_health("fixture", UpstreamCapability::Resources)
+                .await,
+            Some(crate::upstream::types::UpstreamHealth::Healthy)
         ));
     }
 

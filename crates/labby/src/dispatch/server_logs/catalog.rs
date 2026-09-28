@@ -9,6 +9,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         requires_admin: false,
         params: &[],
         returns: "Catalog",
+        output_schema: None,
     },
     ActionSpec {
         name: "schema",
@@ -22,6 +23,7 @@ pub const ACTIONS: &[ActionSpec] = &[
             description: "Action name to describe",
         }],
         returns: "Schema",
+        output_schema: None,
     },
     ActionSpec {
         name: "server_logs.query",
@@ -103,5 +105,6 @@ pub const ACTIONS: &[ActionSpec] = &[
             },
         ],
         returns: "ServerLogsQueryResult",
+        output_schema: None,
     },
 ];

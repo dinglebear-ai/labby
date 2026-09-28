@@ -408,6 +408,12 @@ pub(crate) enum Permission {
     ProjectManage,
     AssetDiscover,
     AssetUse,
+    ArtifactUse,
+    ArtifactSync,
+    ArtifactFollow,
+    ArtifactFork,
+    ArtifactExport,
+    ArtifactReshare,
     /// Upload a new artifact to the team library; does not authorize other mutations.
     ArtifactPublish,
 }
@@ -421,17 +427,22 @@ pub(crate) enum ProjectRole {
 }
 
 impl ProjectRole {
-    const ADMIN_PERMISSIONS: [Permission; 5] = [
+    const ADMIN_PERMISSIONS: [Permission; 9] = [
         Permission::ProjectRead,
         Permission::ProjectManage,
         Permission::AssetDiscover,
         Permission::AssetUse,
+        Permission::ArtifactUse,
+        Permission::ArtifactSync,
+        Permission::ArtifactFollow,
+        Permission::ArtifactFork,
         Permission::ArtifactPublish,
     ];
-    const MEMBER_PERMISSIONS: [Permission; 4] = [
+    const MEMBER_PERMISSIONS: [Permission; 5] = [
         Permission::ProjectRead,
         Permission::AssetDiscover,
         Permission::AssetUse,
+        Permission::ArtifactUse,
         Permission::ArtifactPublish,
     ];
     const VIEWER_PERMISSIONS: [Permission; 3] = [
@@ -789,6 +800,10 @@ mod tests {
                 Permission::ProjectManage,
                 Permission::AssetDiscover,
                 Permission::AssetUse,
+                Permission::ArtifactUse,
+                Permission::ArtifactSync,
+                Permission::ArtifactFollow,
+                Permission::ArtifactFork,
                 Permission::ArtifactPublish,
             ]
         );
@@ -799,6 +814,10 @@ mod tests {
                 Permission::ProjectManage,
                 Permission::AssetDiscover,
                 Permission::AssetUse,
+                Permission::ArtifactUse,
+                Permission::ArtifactSync,
+                Permission::ArtifactFollow,
+                Permission::ArtifactFork,
                 Permission::ArtifactPublish,
             ]
         );
@@ -808,6 +827,7 @@ mod tests {
                 Permission::ProjectRead,
                 Permission::AssetDiscover,
                 Permission::AssetUse,
+                Permission::ArtifactUse,
                 Permission::ArtifactPublish,
             ]
         );

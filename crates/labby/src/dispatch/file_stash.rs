@@ -234,6 +234,7 @@ const fn action(
         requires_admin: false,
         params,
         returns,
+        output_schema: None,
     }
 }
 const OWNER_KIND_PARAM: ParamSpec = ParamSpec {

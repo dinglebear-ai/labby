@@ -1534,16 +1534,16 @@
       ]
     },
     {
-      "name": "depot_publish",
-      "description": "Publish skill archives to a protected Team Depot",
+      "name": "artifact_publish",
+      "description": "Publish skill archives through a protected Team Artifact authority",
       "category": "artifacts",
       "status": "available",
       "caller_bound": false,
       "requires_http_subject": false,
       "actions": [
         {
-          "name": "depot.publish_skill_archive",
-          "description": "Publish a skill archive to the authenticated team's Depot",
+          "name": "artifacts.publish_skill_archive",
+          "description": "Publish a skill archive to the authenticated team's Artifact authority",
           "destructive": false,
           "requires_admin": false,
           "required_scopes": [],
@@ -1831,6 +1831,17 @@
           "returns": "ServerView[]"
         },
         {
+          "name": "gateway.ssh_hosts.list",
+          "description": "List concrete SSH host aliases from the gateway process account's OpenSSH config for remote stdio setup",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [],
+          "returns": "string[]"
+        },
+        {
           "name": "gateway.skills.list",
           "description": "Operator view of Agent Skills support, trust, validation, exposure, and cache state across gateway upstreams; optionally limit to one upstream",
           "destructive": false,
@@ -1933,6 +1944,18 @@
               "ty": "integer",
               "required": false,
               "description": "Maximum captured console log bytes per execution"
+            },
+            {
+              "name": "search_sources",
+              "ty": "string[]",
+              "required": false,
+              "description": "Replace the Code Mode discovery sources: personal_labby, team_depot, and/or public_depot; an empty array disables all sources"
+            },
+            {
+              "name": "search_kinds",
+              "ty": "string[]",
+              "required": false,
+              "description": "Replace the Code Mode discovery artifact families: tool, skill, command, prompt, subagent, and/or snippet; an empty array disables all families"
             }
           ],
           "returns": "CodeModeConfig"
@@ -2883,9 +2906,15 @@
               "ty": "boolean",
               "required": false,
               "description": "Also return servers already present in the gateway config"
+            },
+            {
+              "name": "explain",
+              "ty": "boolean",
+              "required": false,
+              "description": "Return redacted scan diagnostics with the discovered servers"
             }
           ],
-          "returns": "DiscoveredServerView[]"
+          "returns": "DiscoveredServerView[] or ExplainedDiscoveryView when explain=true"
         },
         {
           "name": "gateway.import",
@@ -2913,6 +2942,12 @@
               "ty": "string[]",
               "required": false,
               "description": "Limit discovery to these client kinds. Empty means scan all."
+            },
+            {
+              "name": "dry_run",
+              "ty": "boolean",
+              "required": false,
+              "description": "Preview the exact import selection without changing gateway configuration"
             }
           ],
           "returns": "ImportResultView"
@@ -3563,6 +3598,12 @@
               "ty": "boolean",
               "required": false,
               "description": "When true, use broader host-wide process matching during cleanup"
+            },
+            {
+              "name": "wait_ms",
+              "ty": "integer",
+              "required": false,
+              "description": "Wait for completion for 0..=300000 milliseconds (default 20000). Zero returns acceptance without waiting; completed=false never means the restart finished."
             }
           ],
           "returns": "GatewayView + cleanup result"
@@ -3642,6 +3683,15 @@
             }
           ],
           "returns": "Schema"
+        },
+        {
+          "name": "capabilities.status",
+          "description": "Report configuration and runtime degradations that disable or limit Labby capabilities",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [],
+          "returns": "DoctorReport"
         },
         {
           "name": "system.checks",
@@ -3986,64 +4036,6 @@
           "returns": "SettingsState"
         },
         {
-          "name": "plugin_hook",
-          "description": "Run binary-owned local plugin setup checks; in repair mode also syncs CLAUDE_PLUGIN_OPTION_* and probes server connectivity",
-          "destructive": true,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
-          "params": [
-            {
-              "name": "repair",
-              "ty": "boolean",
-              "required": false,
-              "description": "Create missing local Lab setup files and sync plugin env; defaults to true"
-            }
-          ],
-          "returns": "PluginHookReport"
-        },
-        {
-          "name": "plugin_sync",
-          "description": "Sync CLAUDE_PLUGIN_OPTION_* env vars into ~/.labby/.env as LABBY_* vars",
-          "destructive": true,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
-          "params": [],
-          "returns": "PluginSyncOutcome"
-        },
-        {
-          "name": "plugin_export",
-          "description": "Read ~/.labby/.env and return current values keyed by userConfig field name",
-          "destructive": false,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
-          "params": [],
-          "returns": "PluginExportOutcome"
-        },
-        {
-          "name": "plugin_connectivity",
-          "description": "Validate connectivity to the lab MCP server at {server_url}/health",
-          "destructive": false,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
-          "params": [
-            {
-              "name": "server_url",
-              "ty": "string",
-              "required": false,
-              "description": "Requested server URL; it must match the active target selected from CLAUDE_PLUGIN_OPTION_SERVER_URL, LABBY_SERVER_URL, or the standard http://127.0.0.1:8765 loopback default"
-            }
-          ],
-          "returns": "ConnectivityOutcome"
-        },
-        {
           "name": "check",
           "description": "Check local Lab setup prerequisites without mutating the filesystem",
           "destructive": false,
@@ -4092,136 +4084,6 @@
             }
           ],
           "returns": "ProxySetupOutcome"
-        },
-        {
-          "name": "plugins.installed",
-          "description": "List installed Claude Code lab plugins",
-          "destructive": false,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
-          "params": [
-            {
-              "name": "force",
-              "ty": "boolean",
-              "required": false,
-              "description": "Bypass the short in-process cache"
-            }
-          ],
-          "returns": "InstalledPlugin[]"
-        },
-        {
-          "name": "installed_plugins",
-          "description": "Deprecated alias for `plugins.installed`",
-          "destructive": false,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
-          "params": [
-            {
-              "name": "force",
-              "ty": "boolean",
-              "required": false,
-              "description": "Bypass the short in-process cache"
-            }
-          ],
-          "returns": "InstalledPlugin[]"
-        },
-        {
-          "name": "services.status",
-          "description": "Join service configuration, draft, and Claude plugin state",
-          "destructive": false,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
-          "params": [],
-          "returns": "ServiceStatus[]"
-        },
-        {
-          "name": "services_status",
-          "description": "Deprecated alias for `services.status`",
-          "destructive": false,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
-          "params": [],
-          "returns": "ServiceStatus[]"
-        },
-        {
-          "name": "plugin.install",
-          "description": "Install the Claude Code plugin for one configured service",
-          "destructive": true,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
-          "params": [
-            {
-              "name": "service",
-              "ty": "string",
-              "required": true,
-              "description": "Registered service name"
-            }
-          ],
-          "returns": "PluginMutationResult"
-        },
-        {
-          "name": "install_plugin",
-          "description": "Deprecated alias for `plugin.install`",
-          "destructive": true,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
-          "params": [
-            {
-              "name": "service",
-              "ty": "string",
-              "required": true,
-              "description": "Registered service name"
-            }
-          ],
-          "returns": "PluginMutationResult"
-        },
-        {
-          "name": "plugin.uninstall",
-          "description": "Uninstall the Claude Code plugin for one service",
-          "destructive": true,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
-          "params": [
-            {
-              "name": "service",
-              "ty": "string",
-              "required": true,
-              "description": "Registered service name"
-            }
-          ],
-          "returns": "PluginMutationResult"
-        },
-        {
-          "name": "uninstall_plugin",
-          "description": "Deprecated alias for `plugin.uninstall`",
-          "destructive": true,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
-          "params": [
-            {
-              "name": "service",
-              "ty": "string",
-              "required": true,
-              "description": "Registered service name"
-            }
-          ],
-          "returns": "PluginMutationResult"
         },
         {
           "name": "finalize",
@@ -4656,6 +4518,152 @@
           "returns": "ArtifactImportBatchReceipt"
         },
         {
+          "name": "artifacts.transfer_options",
+          "description": "Evaluate current remote-use and distribution options for one exact source revision without mutating local state",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "source",
+              "ty": "object",
+              "required": true,
+              "description": "Server connection id plus exact immutable source, Artifact, and revision selector; never bytes, paths, endpoints, or credentials"
+            },
+            {
+              "name": "assignment_id",
+              "ty": "string",
+              "required": false,
+              "description": "Exact source Assignment/share whose distribution ceiling should be evaluated"
+            }
+          ],
+          "returns": "ArtifactTransferOptions"
+        },
+        {
+          "name": "artifacts.pin",
+          "description": "Materialize one exact revision as a managed local mirror without following future revisions",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "source",
+              "ty": "object",
+              "required": true,
+              "description": "Server connection id plus exact immutable source, Artifact, and revision selector; never bytes, paths, endpoints, or credentials"
+            },
+            {
+              "name": "assignment_id",
+              "ty": "string",
+              "required": true,
+              "description": "Exact active source Assignment/share authorizing managed byte materialization"
+            },
+            {
+              "name": "idempotency_key",
+              "ty": "string",
+              "required": true,
+              "description": "Bounded request idempotency key (maximum 256 bytes)"
+            }
+          ],
+          "returns": "ManagedArtifactReceipt"
+        },
+        {
+          "name": "artifacts.follow_managed",
+          "description": "Materialize one exact revision as a managed local mirror and create an explicit update subscription",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "source",
+              "ty": "object",
+              "required": true,
+              "description": "Server connection id plus exact immutable source, Artifact, and revision selector; never bytes, paths, endpoints, or credentials"
+            },
+            {
+              "name": "assignment_id",
+              "ty": "string",
+              "required": true,
+              "description": "Exact active source Assignment/share authorizing managed byte materialization"
+            },
+            {
+              "name": "idempotency_key",
+              "ty": "string",
+              "required": true,
+              "description": "Bounded request idempotency key (maximum 256 bytes)"
+            },
+            {
+              "name": "update_policy",
+              "ty": "string",
+              "required": true,
+              "description": "Follow policy: notify, auto_approved, or pinned"
+            }
+          ],
+          "returns": "ManagedArtifactReceipt"
+        },
+        {
+          "name": "artifacts.follow_update",
+          "description": "Apply one exact currently-authorized source revision to an existing followed managed mirror",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "source",
+              "ty": "object",
+              "required": true,
+              "description": "Server connection id plus exact immutable source, Artifact, and revision selector; never bytes, paths, endpoints, or credentials"
+            },
+            {
+              "name": "idempotency_key",
+              "ty": "string",
+              "required": true,
+              "description": "Bounded request idempotency key (maximum 256 bytes)"
+            }
+          ],
+          "returns": "ManagedArtifactReceipt"
+        },
+        {
+          "name": "artifacts.fork_personal",
+          "description": "Fork one exact permitted source revision into a new caller-owned Personal Artifact",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "source",
+              "ty": "object",
+              "required": true,
+              "description": "Server connection id plus exact immutable source, Artifact, and revision selector; never bytes, paths, endpoints, or credentials"
+            },
+            {
+              "name": "assignment_id",
+              "ty": "string",
+              "required": true,
+              "description": "Exact active source Assignment/share authorizing managed byte materialization"
+            },
+            {
+              "name": "name",
+              "ty": "string",
+              "required": true,
+              "description": "Name for the new caller-owned Personal Artifact"
+            },
+            {
+              "name": "title",
+              "ty": "string",
+              "required": false,
+              "description": "Optional title for the new Personal Artifact"
+            },
+            {
+              "name": "idempotency_key",
+              "ty": "string",
+              "required": true,
+              "description": "Bounded request idempotency key (maximum 256 bytes)"
+            }
+          ],
+          "returns": "PersonalArtifactForkReceipt"
+        },
+        {
           "name": "artifacts.refresh",
           "description": "Explicitly rebuild and reconcile the committed active generation",
           "destructive": false,
@@ -4805,6 +4813,172 @@
             }
           ],
           "returns": "ArtifactCandidatePage"
+        },
+        {
+          "name": "artifacts.delete_remote",
+          "description": "Delete an ingested remote Artifact while preserving immutable bundle versions",
+          "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "connection_id",
+              "ty": "string",
+              "required": false,
+              "description": "Configured remote Artifact authority; optional when exactly one is configured"
+            },
+            {
+              "name": "namespace",
+              "ty": "string",
+              "required": true,
+              "description": "Remote Artifact namespace"
+            },
+            {
+              "name": "name",
+              "ty": "string",
+              "required": true,
+              "description": "Remote Artifact name"
+            },
+            {
+              "name": "expected_version",
+              "ty": "string",
+              "required": true,
+              "description": "Current Artifact state version required for optimistic concurrency"
+            }
+          ],
+          "returns": "DeleteReceipt"
+        },
+        {
+          "name": "artifacts.list_remote_skills",
+          "description": "List canonical Skill summaries from one remote Artifact authority",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "connection_id",
+              "ty": "string",
+              "required": false,
+              "description": "Configured remote Artifact authority; optional when exactly one is configured"
+            },
+            {
+              "name": "cursor",
+              "ty": "string",
+              "required": false,
+              "description": "Opaque remote continuation cursor"
+            },
+            {
+              "name": "limit",
+              "ty": "integer",
+              "required": false,
+              "description": "Bounded remote page size"
+            }
+          ],
+          "returns": "RemoteSkillPage"
+        },
+        {
+          "name": "artifacts.get_remote_skill",
+          "description": "Get one remote Skill manifest and its exact resource inventory",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "connection_id",
+              "ty": "string",
+              "required": false,
+              "description": "Configured remote Artifact authority; optional when exactly one is configured"
+            },
+            {
+              "name": "uri",
+              "ty": "string",
+              "required": true,
+              "description": "Canonical remote SKILL.md URI returned by list_remote_skills"
+            }
+          ],
+          "returns": "RemoteSkill"
+        },
+        {
+          "name": "artifacts.load_remote_skill",
+          "description": "Load a remote Skill manifest with bounded byte continuation",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "connection_id",
+              "ty": "string",
+              "required": false,
+              "description": "Configured remote Artifact authority; optional when exactly one is configured"
+            },
+            {
+              "name": "uri",
+              "ty": "string",
+              "required": true,
+              "description": "Canonical remote SKILL.md URI returned by list_remote_skills"
+            },
+            {
+              "name": "offset",
+              "ty": "integer",
+              "required": false,
+              "description": "Continuation byte offset, from 0 through 16777216"
+            },
+            {
+              "name": "max_bytes",
+              "ty": "integer",
+              "required": false,
+              "description": "Maximum bytes to return, from 4 through 262144"
+            }
+          ],
+          "returns": "RemoteSkillContent"
+        },
+        {
+          "name": "artifacts.read_remote_skill",
+          "description": "Read a remote Skill file or list one direct-child directory page",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "connection_id",
+              "ty": "string",
+              "required": false,
+              "description": "Configured remote Artifact authority; optional when exactly one is configured"
+            },
+            {
+              "name": "uri",
+              "ty": "string",
+              "required": true,
+              "description": "Canonical remote Skill resource or directory URI"
+            },
+            {
+              "name": "offset",
+              "ty": "integer",
+              "required": false,
+              "description": "File continuation byte offset, from 0 through 16777216"
+            },
+            {
+              "name": "max_bytes",
+              "ty": "integer",
+              "required": false,
+              "description": "Maximum file bytes to return, from 4 through 262144"
+            },
+            {
+              "name": "cursor",
+              "ty": "string",
+              "required": false,
+              "description": "Opaque remote continuation cursor"
+            },
+            {
+              "name": "limit",
+              "ty": "integer",
+              "required": false,
+              "description": "Maximum direct children to return, from 1 through 250"
+            }
+          ],
+          "returns": "RemoteSkillResource"
         },
         {
           "name": "artifacts.intake_candidate",

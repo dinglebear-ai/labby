@@ -528,7 +528,7 @@ export function ProtectedMcpRoutesPanel({ upstreamNames }: { upstreamNames?: str
           ) : null}
 
           {validationHints.length > 0 ? (
-            <div className="mt-3 rounded-lg border border-aurora-warning/30 bg-aurora-warning/10 px-3 py-2 text-sm text-aurora-text-primary">
+            <div className="mt-3 rounded-lg border border-aurora-warn/30 bg-aurora-warn/10 px-3 py-2 text-sm text-aurora-text-primary">
               <ul className="space-y-1">
                 {validationHints.map((hint) => (
                   <li key={hint}>{hint}</li>
@@ -629,7 +629,7 @@ export function ProtectedMcpRoutesPanel({ upstreamNames }: { upstreamNames?: str
       </div>
 
       {pendingRestartCount > 0 ? (
-        <div className="mt-4 rounded-lg border border-aurora-warning/35 bg-aurora-warning/10 px-3 py-2 text-sm text-aurora-text-primary">
+        <div className="mt-4 rounded-lg border border-aurora-warn/35 bg-aurora-warn/10 px-3 py-2 text-sm text-aurora-text-primary">
           {pendingRestartCount} protected route change{pendingRestartCount === 1 ? ' is' : 's are'} saved for restart.
           The running process is still serving its startup-mounted gateway-subset routes.
         </div>
@@ -712,7 +712,7 @@ export function ProtectedMcpRoutesPanel({ upstreamNames }: { upstreamNames?: str
                           {route.enabled ? 'Enabled' : 'Disabled'}
                         </Badge>
                         {route.restart_required ? (
-                          <Badge variant="outline" className="border-aurora-warning/50 text-aurora-warning">
+                          <Badge variant="outline" className="border-aurora-warn/50 text-aurora-warn">
                             Restart · {route.pending_operation ?? 'update'}
                           </Badge>
                         ) : null}

@@ -167,6 +167,8 @@ export function DepotAdministrationPage() {
   const [operations, setOperations] = useState<DepotOperation[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [warnings, setWarnings] = useState<string[]>([])
+  const [availability, setAvailability] = useState({ status: false, session: false, operations: false })
   const loadGeneration = useRef(0)
   const loadController = useRef<AbortController | null>(null)
 
@@ -177,15 +179,30 @@ export function DepotAdministrationPage() {
     loadController.current = controller
     setLoading(true); setError(null)
     try {
-      const [nextStatus, nextSession, nextOperations] = await Promise.all([depotStatus(controller.signal), depotSession(controller.signal), depotOperations(controller.signal)])
-      if (generation !== loadGeneration.current) return
-      setStatus(nextStatus); setSession(nextSession); setOperations(nextOperations)
+      const [statusResult, sessionResult, operationsResult] = await Promise.allSettled([depotStatus(controller.signal), depotSession(controller.signal), depotOperations(controller.signal)])
+      if (controller.signal.aborted || generation !== loadGeneration.current) return
+      const failure = (label: string, result: PromiseSettledResult<unknown>) => result.status === 'rejected'
+        ? `${label}: ${getErrorMessage(result.reason, 'request failed')}`
+        : undefined
+      const nextWarnings = [
+        failure('Depot status unavailable', statusResult),
+        failure('control-session details unavailable', sessionResult),
+        failure('operation catalog unavailable', operationsResult),
+      ].filter((message): message is string => Boolean(message))
+      const allFailed = nextWarnings.length === 3
+      if (statusResult.status === 'fulfilled') setStatus(statusResult.value)
+      if (sessionResult.status === 'fulfilled') setSession(sessionResult.value)
+      if (operationsResult.status === 'fulfilled') setOperations(operationsResult.value)
+      setAvailability(current => ({
+        status: statusResult.status === 'fulfilled' || current.status,
+        session: sessionResult.status === 'fulfilled' || current.session,
+        operations: operationsResult.status === 'fulfilled' || current.operations,
+      }))
+      setWarnings(allFailed ? [] : nextWarnings)
+      setError(allFailed ? `Unable to load Depot administration. ${nextWarnings.join('; ')}` : null)
     } catch (cause) {
       if (controller.signal.aborted || generation !== loadGeneration.current) return
-      setStatus(null)
-      setSession(null)
-      setOperations([])
-      setError(getErrorMessage(cause, 'Unable to load Labby administration.'))
+      setError(getErrorMessage(cause, 'Unable to load Depot administration.'))
     }
     finally { if (generation === loadGeneration.current) setLoading(false) }
   }, [])
@@ -198,26 +215,27 @@ export function DepotAdministrationPage() {
     access: operations.filter(operation => operationWorkspace(operation) === 'access').length,
     operations: operations.filter(operation => operationWorkspace(operation) === 'operations').length,
   }), [operations])
-  const authority = !status?.enabled ? 'offline' : status.mutationAuthority ? 'delegated' : status.authority ?? (operations.length === 0 ? 'unknown' : 'read')
+  const authority = !availability.status ? 'unknown' : !status?.enabled ? 'offline' : status.mutationAuthority ? 'delegated' : status.authority ?? (availability.operations && operations.length > 0 ? 'read' : 'unknown')
   const controlTarget = session?.backend.deploymentId ?? '—'
   const controlScope = session?.backend.teamId ? [session.backend.tenantId ?? 'tenant', session.backend.teamId].join('/') : session?.backend.tenantId ?? '—'
 
   return <><AppHeader breadcrumbs={[{ label: 'Depot', href: '/depot/' }, { label: 'Administration' }]} /><div className={cn(AURORA_PAGE_FRAME, 'gap-3.5')}>
-    <ConsoleHero eyebrow="Depot · Control room" title="Administration" description="Operate Depot’s canonical control catalog through Labby, with dedicated source workflows and explicit authority and transport boundaries." pulse={{ color: status?.enabled ? 'var(--aurora-success)' : 'var(--aurora-warn)', label: status?.enabled ? (session?.backend.deploymentId ? session.backend.deploymentId + ' connected' : 'Control target connected') : 'Control target unavailable' }} actions={<div className="flex gap-[7px]"><Button variant="outline" size="icon" className="size-9 rounded-[10px]" asChild><a href="/settings/depot/" aria-label="Discovery providers" title="Discovery providers"><Database className="size-[15px]" /></a></Button><Button variant="outline" size="icon" aria-label="Refresh Depot administration" title="Refresh Depot administration" className="size-9 rounded-[10px]" onClick={() => void load()} disabled={loading}>{loading ? <Loader2 className="size-[15px] animate-spin" /> : <RefreshCw className="size-[15px]" />}</Button></div>} stats={[
-      { label: 'Canonical operations', value: loading || error ? '—' : operations.length },
-      { label: 'Sources', value: loading || error ? '—' : counts.sources, tone: 'var(--aurora-accent-strong)' },
-      { label: 'Artifacts', value: loading || error ? '—' : counts.artifacts, tone: 'var(--aurora-accent-strong)' },
-      { label: 'Catalog', value: loading || error ? '—' : counts.catalog, tone: 'var(--aurora-accent-strong)' },
-      { label: 'Access', value: loading || error ? '—' : counts.access, tone: 'var(--aurora-warn)' },
-      { label: 'Operations', value: loading || error ? '—' : counts.operations, tone: 'var(--aurora-success)' },
-      { label: 'Control target', value: loading || error ? '—' : controlTarget },
-      { label: 'Tenant / team', value: loading || error ? '—' : controlScope },
+    <ConsoleHero eyebrow="Depot · Control room" title="Administration" description="Operate Depot’s canonical control catalog through Labby, with dedicated source workflows and explicit authority and transport boundaries." pulse={{ color: availability.status && status?.enabled ? 'var(--aurora-success)' : 'var(--aurora-warn)', label: !availability.status ? 'Control status unavailable' : status?.enabled ? (availability.session && session?.backend.deploymentId ? session.backend.deploymentId + ' connected' : 'Control target connected') : 'Control target unavailable' }} actions={<div className="flex gap-[7px]"><Button variant="outline" size="icon" className="size-9 rounded-[10px]" asChild><a href="/settings/depot/" aria-label="Discovery providers" title="Discovery providers"><Database className="size-[15px]" /></a></Button><Button variant="outline" size="icon" aria-label="Refresh Depot administration" title="Refresh Depot administration" className="size-9 rounded-[10px]" onClick={() => void load()} disabled={loading}>{loading ? <Loader2 className="size-[15px] animate-spin" /> : <RefreshCw className="size-[15px]" />}</Button></div>} stats={[
+      { label: 'Canonical operations', value: loading || error || !availability.operations ? '—' : operations.length },
+      { label: 'Sources', value: loading || error || !availability.operations ? '—' : counts.sources, tone: 'var(--aurora-accent-strong)' },
+      { label: 'Artifacts', value: loading || error || !availability.operations ? '—' : counts.artifacts, tone: 'var(--aurora-accent-strong)' },
+      { label: 'Catalog', value: loading || error || !availability.operations ? '—' : counts.catalog, tone: 'var(--aurora-accent-strong)' },
+      { label: 'Access', value: loading || error || !availability.operations ? '—' : counts.access, tone: 'var(--aurora-warn)' },
+      { label: 'Operations', value: loading || error || !availability.operations ? '—' : counts.operations, tone: 'var(--aurora-success)' },
+      { label: 'Control target', value: loading || error || !availability.session ? '—' : controlTarget },
+      { label: 'Tenant / team', value: loading || error || !availability.session ? '—' : controlScope },
       { label: 'Authority', value: authority },
-    ]} footer={<nav aria-label="Labby administration workspaces" style={{ background: 'var(--gw0-0_30)' }} className="aurora-scrollbar flex gap-0.5 overflow-x-auto rounded-b-aurora-3 border-t border-aurora-border-default px-5">{WORKSPACES.map(({ id, label, icon: Icon }) => <button key={id} type="button" aria-current={workspace === id ? 'page' : undefined} onClick={() => setWorkspace(id)} className="flex h-[38px] shrink-0 items-center gap-2 border-b-2 border-transparent px-3.5 text-[12.5px] font-[650] text-aurora-text-muted transition-colors hover:text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-aurora-accent-primary aria-[current=page]:border-aurora-accent-primary aria-[current=page]:text-aurora-text-primary"><Icon className="size-[13px]" />{label}{id !== 'overview' ? <span className={cn('inline-flex h-[19px] min-w-5 items-center justify-center rounded-[5px] border px-[5px] text-[10.5px] font-bold tabular-nums', workspace === id ? 'border-aurora-accent-primary bg-aurora-selected-bg text-aurora-accent-strong' : 'border-aurora-border-default bg-aurora-page-bg text-aurora-text-muted')}>{counts[id]}</span> : null}</button>)}</nav>} />
-    {error ? <DashboardPanel title="Labby catalog unavailable"><p className="text-sm text-destructive">{error}</p><Button className="mt-3" variant="outline" size="sm" onClick={() => void load()}>Retry</Button></DashboardPanel> : null}
+    ]} footer={<nav aria-label="Depot administration workspaces" style={{ background: 'var(--gw0-0_30)' }} className="aurora-scrollbar flex gap-0.5 overflow-x-auto rounded-b-aurora-3 border-t border-aurora-border-default px-5">{WORKSPACES.map(({ id, label, icon: Icon }) => <button key={id} type="button" aria-current={workspace === id ? 'page' : undefined} onClick={() => setWorkspace(id)} className="flex h-[38px] shrink-0 items-center gap-2 border-b-2 border-transparent px-3.5 text-[12.5px] font-[650] text-aurora-text-muted transition-colors hover:text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-aurora-accent-primary aria-[current=page]:border-aurora-accent-primary aria-[current=page]:text-aurora-text-primary"><Icon className="size-[13px]" />{label}{id !== 'overview' ? <span className={cn('inline-flex h-[19px] min-w-5 items-center justify-center rounded-[5px] border px-[5px] text-[10.5px] font-bold tabular-nums', workspace === id ? 'border-aurora-accent-primary bg-aurora-selected-bg text-aurora-accent-strong' : 'border-aurora-border-default bg-aurora-page-bg text-aurora-text-muted')}>{availability.operations ? counts[id] : '—'}</span> : null}</button>)}</nav>} />
+    {error ? <DashboardPanel title="Depot unavailable"><p className="text-sm text-destructive">{error}</p><Button className="mt-3" variant="outline" size="sm" onClick={() => void load()}>Retry</Button></DashboardPanel> : null}
+    {warnings.length > 0 ? <DashboardPanel title="Depot is partially degraded"><p role="status" className="text-sm text-aurora-text-muted">Available administration capabilities remain usable. {warnings.join('; ')}</p></DashboardPanel> : null}
     {!error && workspace === 'overview' ? <AdministrationOverview onOpen={setWorkspace} /> : null}
     {!error && workspace === 'sources' ? <DepotSourceAdministration onOpenCatalog={() => setWorkspace('catalog')} /> : null}
     {!error && workspace === 'artifacts' ? <ArtifactControlPlane mode="administration" /> : null}
-    {!error && workspace !== 'overview' && workspace !== 'sources' && workspace !== 'artifacts' ? <OperationGrid key={workspace} operations={operations} workspace={workspace} /> : null}
+    {!error && workspace !== 'overview' && workspace !== 'sources' && workspace !== 'artifacts' ? (availability.operations ? <OperationGrid key={workspace} operations={operations} workspace={workspace} /> : <DashboardPanel title="Operation catalog unavailable"><p className="text-sm text-aurora-text-muted">Depot operation discovery failed. Other administration workspaces remain usable.</p></DashboardPanel>) : null}
   </div></>
 }

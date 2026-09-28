@@ -3,7 +3,7 @@
 //! stdio MCP servers launched via `npx -y <pkg>` / `uvx <pkg>` install into a
 //! SHARED package cache (`~/.npm/_npx`, `~/.cache/uv`) on first cold spawn. When
 //! two processes install the *same* package concurrently — the gateway daemon
-//! racing a reconnect/probe attempt, or a separate `labby gateway test` / `mcp
+//! racing a reconnect/probe attempt, or a separate `labby server test` / `mcp
 //! enable` CLI process racing the daemon — they write the same cache directory
 //! at once and corrupt it (partial `node_modules`, e.g. a missing peer dep),
 //! after which the server crashes on startup before completing the MCP

@@ -30,8 +30,9 @@ use serde_json::{Value, json};
 #[cfg(feature = "gateway")]
 use crate::mcp::resource_errors::fetch_classified as resource_fetch_classified;
 use crate::mcp::resource_errors::{
-    forbidden as forbidden_resource_error, render as resource_render_error,
-    route_scope as route_scope_resource_error, unknown as unknown_resource_error,
+    app_disabled as app_disabled_resource_error, forbidden as forbidden_resource_error,
+    render as resource_render_error, route_scope as route_scope_resource_error,
+    unknown as unknown_resource_error,
 };
 
 #[cfg(feature = "gateway")]
@@ -60,7 +61,8 @@ use crate::mcp::catalog::{CODE_MODE_UI_TOOL_NAME, SERVER_LOGS_TOOL_NAME};
 #[cfg(feature = "gateway")]
 use crate::mcp::context::oauth_upstream_subject_for_request;
 use crate::mcp::context::{
-    auth_context_from_extensions, code_mode_read_scope_allowed, tool_execute_scope_allowed,
+    auth_context_from_extensions, code_mode_read_scope_allowed, openai_session_fingerprint,
+    request_openai_session_fingerprint, tool_execute_scope_allowed,
 };
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
 use crate::mcp::pagination::{
@@ -605,11 +607,13 @@ impl LabMcpServer {
     ) -> Result<ListResourcesResult, ErrorData> {
         let start = Instant::now();
         let subject = self.request_subject_log_tag(&context);
+        let openai_session_key = request_openai_session_fingerprint(&context);
         tracing::info!(
             surface = "mcp",
             service = "labby",
             action = "list_resources",
             subject,
+            openai_session_key = openai_session_key.as_deref().unwrap_or("<none>"),
             "dispatch start"
         );
         let auth = auth_context_from_extensions(&context.extensions);
@@ -686,8 +690,8 @@ impl LabMcpServer {
         let snapshot_audience = catalog_snapshot_audience(auth);
 
         // Cursor pages must resume the exact catalog captured by page one. In
-        // particular, do not turn every offset into another fleet-wide
-        // resources/list fan-out.
+        // particular, do not turn every offset into another catalog rebuild
+        // (discovery warm-up plus the OAuth subject-scoped fan-out).
         if let Some(revision) = page_collector.expected_revision().map(str::to_owned) {
             let snapshot = self
                 .route_runtime
@@ -765,6 +769,14 @@ impl LabMcpServer {
                 project_shadow_checked_resource_count,
                 project_shadow_would_suppress_resource_count,
             ) = (0usize, 0usize);
+            #[cfg(feature = "gateway")]
+            let owned_app_resource_uris = snapshot
+                .iter()
+                .filter(|resource| is_lab_owned_ui_resource_uri(&resource.uri))
+                .map(|resource| resource.uri.to_string())
+                .collect::<Vec<_>>();
+            #[cfg(not(feature = "gateway"))]
+            let owned_app_resource_uris = Vec::<String>::new();
             let elapsed_ms = start.elapsed().as_millis();
             tracing::info!(
                 surface = "mcp",
@@ -779,6 +791,8 @@ impl LabMcpServer {
                 project_shadow_state,
                 project_shadow_checked_resource_count,
                 project_shadow_would_suppress_resource_count,
+                owned_app_resource_count = owned_app_resource_uris.len(),
+                owned_app_resource_uris = ?owned_app_resource_uris,
                 "resource list ok"
             );
             self.emit_dispatch_notification(
@@ -999,7 +1013,7 @@ impl LabMcpServer {
             }
             if !resources.finished() {
                 for listed in pool
-                    .list_upstream_resources_with_provenance_allowed(
+                    .cached_upstream_resources_with_provenance_allowed(
                         self.route_scope.allowed_upstreams(),
                     )
                     .await
@@ -1101,6 +1115,14 @@ impl LabMcpServer {
         };
         let catalog_resource_count = complete_catalog.len();
         #[cfg(feature = "gateway")]
+        let owned_app_resource_uris = complete_catalog
+            .iter()
+            .filter(|resource| is_lab_owned_ui_resource_uri(&resource.uri))
+            .map(|resource| resource.uri.to_string())
+            .collect::<Vec<_>>();
+        #[cfg(not(feature = "gateway"))]
+        let owned_app_resource_uris = Vec::<String>::new();
+        #[cfg(feature = "gateway")]
         let (
             mut project_shadow_checked_resource_count,
             mut project_shadow_would_suppress_resource_count,
@@ -1147,13 +1169,15 @@ impl LabMcpServer {
             action = "list_resources",
             subject,
             elapsed_ms,
-            catalog_source = "live_snapshot",
+            catalog_source = "cached_snapshot",
             catalog_resource_count,
             page_resource_count = resources.len(),
             has_next_cursor = next_cursor.is_some(),
             project_shadow_state,
             project_shadow_checked_resource_count,
             project_shadow_would_suppress_resource_count,
+            owned_app_resource_count = owned_app_resource_uris.len(),
+            owned_app_resource_uris = ?owned_app_resource_uris,
             "resource list ok"
         );
         self.emit_dispatch_notification(
@@ -1383,6 +1407,8 @@ impl LabMcpServer {
     ) -> Result<ReadResourceResponse, ErrorData> {
         let start = Instant::now();
         let subject = self.request_subject_log_tag(&context);
+        let openai_session_key = openai_session_fingerprint(request.meta.as_ref())
+            .or_else(|| request_openai_session_fingerprint(&context));
         let uri = request.uri.clone();
         #[cfg(feature = "gateway")]
         let resource_uri_log =
@@ -1394,6 +1420,7 @@ impl LabMcpServer {
             service = "labby",
             action = "read_resource",
             subject,
+            openai_session_key = openai_session_key.as_deref().unwrap_or("<none>"),
             resource_uri = %resource_uri_log,
             "dispatch start"
         );
@@ -1595,7 +1622,16 @@ impl LabMcpServer {
         #[cfg(feature = "gateway")]
         if uri.starts_with(MCP_APPS_APP_URI) {
             if !self.mcp_apps_config().await.manager {
-                return Err(unknown_resource_error(&uri, true));
+                return Err(self
+                    .disabled_app_resource_error(
+                        &uri,
+                        &resource_uri_log,
+                        "manager",
+                        &subject,
+                        &start,
+                        &context,
+                    )
+                    .await);
             }
             return self
                 .read_mcp_apps_app_resource_impl(&uri, &subject, start, &context)
@@ -1616,7 +1652,16 @@ impl LabMcpServer {
                 }
             };
             if !app_enabled {
-                return Err(unknown_resource_error(&uri, true));
+                return Err(self
+                    .disabled_app_resource_error(
+                        &uri,
+                        &resource_uri_log,
+                        "skill_library",
+                        &subject,
+                        &start,
+                        &context,
+                    )
+                    .await);
             }
             return self
                 .read_skill_library_app_resource_impl(&uri, &subject, start, &context)
@@ -2050,6 +2095,41 @@ impl LabMcpServer {
         ]))
     }
 
+    async fn disabled_app_resource_error(
+        &self,
+        uri: &str,
+        resource_uri_log: &str,
+        app: &str,
+        subject: &str,
+        start: &Instant,
+        context: &RequestContext<RoleServer>,
+    ) -> ErrorData {
+        let elapsed_ms = start.elapsed().as_millis();
+        tracing::warn!(
+            surface = "mcp",
+            service = "labby",
+            action = "read_resource",
+            subject,
+            elapsed_ms,
+            kind = "app_disabled",
+            app,
+            resource_uri = resource_uri_log,
+            "rejected stale MCP App resource read because app visibility is disabled"
+        );
+        self.emit_dispatch_notification(
+            context,
+            "lab",
+            "read_resource",
+            elapsed_ms,
+            DispatchLogOutcome::Failure {
+                level: LoggingLevel::Warning,
+                kind: "app_disabled".into(),
+            },
+        )
+        .await;
+        app_disabled_resource_error(uri, app)
+    }
+
     #[cfg(feature = "gateway")]
     async fn read_settings_app_resource_impl(
         &self,
@@ -2059,10 +2139,33 @@ impl LabMcpServer {
         start: Instant,
         context: &RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, ErrorData> {
-        if !self.mcp_apps_config().await.settings
-            || !self.route_scope.allows_service("setup")
-            || !self.service_visible_on_mcp("setup").await
+        if !self.mcp_apps_config().await.settings {
+            return Err(self
+                .disabled_app_resource_error(
+                    uri,
+                    resource_uri_log,
+                    "settings",
+                    subject,
+                    &start,
+                    context,
+                )
+                .await);
+        }
+        if !self.route_scope.allows_service("setup") || !self.service_visible_on_mcp("setup").await
         {
+            let elapsed_ms = start.elapsed().as_millis();
+            tracing::warn!(
+                surface = "mcp",
+                service = "labby",
+                action = "read_resource",
+                subject,
+                elapsed_ms,
+                kind = "not_found",
+                reason = "service_unavailable",
+                app = "settings",
+                resource_uri = resource_uri_log,
+                "settings app resource unavailable on this route"
+            );
             return Err(unknown_resource_error(uri, true));
         }
         if !admin_app_resources_visible(auth_context_from_extensions(&context.extensions)) {
@@ -2114,9 +2217,25 @@ impl LabMcpServer {
         start: Instant,
         context: &RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, ErrorData> {
-        if !self.code_mode_visibility().await.exposes_synthetic_tools()
-            || !self.code_mode_app_enabled_on_mcp().await
-        {
+        if !self.code_mode_app_enabled_on_mcp().await {
+            return Err(self
+                .disabled_app_resource_error(uri, uri, "codemode", subject, &start, context)
+                .await);
+        }
+        if !self.code_mode_visibility().await.exposes_synthetic_tools() {
+            let elapsed_ms = start.elapsed().as_millis();
+            tracing::warn!(
+                surface = "mcp",
+                service = "labby",
+                action = "read_resource",
+                subject,
+                elapsed_ms,
+                kind = "not_found",
+                reason = "code_mode_unavailable",
+                app = "codemode",
+                resource_uri = uri,
+                "code mode app resource unavailable on this route"
+            );
             return Err(unknown_resource_error(uri, true));
         }
         let auth = auth_context_from_extensions(&context.extensions);
@@ -2215,7 +2334,9 @@ impl LabMcpServer {
     ) -> Result<ReadResourceResult, ErrorData> {
         #[cfg(feature = "gateway")]
         if !self.mcp_apps_config().await.server_logs {
-            return Err(unknown_resource_error(uri, true));
+            return Err(self
+                .disabled_app_resource_error(uri, uri, "server_logs", subject, &start, context)
+                .await);
         }
         if !self.route_scope.allows_service(SERVER_LOGS_TOOL_NAME)
             || !self.service_visible_on_mcp(SERVER_LOGS_TOOL_NAME).await
@@ -2300,6 +2421,18 @@ impl LabMcpServer {
         start: Instant,
         context: &RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, ErrorData> {
+        if !self.mcp_apps_config().await.add_server {
+            return Err(self
+                .disabled_app_resource_error(
+                    uri,
+                    resource_uri_log,
+                    "add_server",
+                    subject,
+                    &start,
+                    context,
+                )
+                .await);
+        }
         if !self.add_server_app_available_on_mcp().await {
             let elapsed_ms = start.elapsed().as_millis();
             tracing::warn!(
@@ -2399,6 +2532,18 @@ impl LabMcpServer {
         start: Instant,
         context: &RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, ErrorData> {
+        if !self.mcp_apps_config().await.gateway_status {
+            return Err(self
+                .disabled_app_resource_error(
+                    uri,
+                    resource_uri_log,
+                    "gateway_status",
+                    subject,
+                    &start,
+                    context,
+                )
+                .await);
+        }
         if !self.gateway_status_app_available_on_mcp().await {
             let elapsed_ms = start.elapsed().as_millis();
             tracing::warn!(
@@ -2840,6 +2985,9 @@ mod tests {
         entered: Option<Arc<tokio::sync::Notify>>,
         release: Option<Arc<tokio::sync::Notify>>,
         fail_connect: bool,
+        /// When set, every resources/list blocks until a permit is added.
+        resource_gate: Option<Arc<tokio::sync::Semaphore>>,
+        resource_lists: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     impl ServerHandler for ColdResourceServer {
@@ -2889,6 +3037,11 @@ mod tests {
             _: Option<PaginatedRequestParams>,
             _: RequestContext<RoleServer>,
         ) -> Result<ListResourcesResult, ErrorData> {
+            self.resource_lists
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if let Some(gate) = &self.resource_gate {
+                gate.acquire().await.expect("open fixture gate").forget();
+            }
             Ok(ListResourcesResult::with_all_items(vec![
                 Resource::new("qa-vm-service://skill", "skill"),
                 Resource::new("qa-vm-service://private", "private"),
@@ -2972,6 +3125,56 @@ mod tests {
             1
         );
         assert_eq!(pool.list_upstream_resources().await.len(), 2);
+        task.abort();
+    }
+
+    /// A blocked resources/list must not hold the listing past its warm
+    /// budget, and the warm-up it started must still publish once the
+    /// upstream answers: the deadline stops the wait, never the fan-out.
+    #[tokio::test]
+    async fn cold_discovery_serves_the_snapshot_once_a_slow_warm_up_completes() {
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let fixture = ColdResourceServer {
+            resource_gate: Some(Arc::clone(&gate)),
+            ..Default::default()
+        };
+        let (server, pool, task) = cold_discovery_fixture(fixture.clone(), 300).await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            server.ensure_resource_upstreams_ready(&pool),
+        )
+        .await
+        .expect("discovery returns within its budget while resources/list blocks");
+        assert!(
+            pool.cached_upstream_resources_allowed(None)
+                .await
+                .is_empty(),
+            "nothing is listable before the upstream answers"
+        );
+        let blocked = fixture
+            .resource_lists
+            .load(std::sync::atomic::Ordering::SeqCst);
+        assert!(blocked >= 1, "the warm-up issued resources/list");
+
+        gate.add_permits(16);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if pool.cached_upstream_resources_allowed(None).await.len() == 2 {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the detached warm-up publishes the snapshot after release");
+
+        server.ensure_resource_upstreams_ready(&pool).await;
+        assert_eq!(
+            fixture.connects.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "no reconnect was needed"
+        );
+        assert_eq!(pool.cached_upstream_resources_allowed(None).await.len(), 2);
         task.abort();
     }
 
@@ -3548,6 +3751,7 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
                 requires_admin: false,
                 params: &[],
                 returns: "object",
+                output_schema: None,
             }];
 
         let mut registry = crate::registry::ToolRegistry::new();
@@ -3699,6 +3903,7 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
                 requires_admin: false,
                 params: &[],
                 returns: "object",
+                output_schema: None,
             }];
         for index in 0..service_count {
             let name = Box::leak(format!("resource_service_{index:03}").into_boxed_str());
@@ -3905,6 +4110,21 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
                 .iter()
                 .any(|tool| tool.name.as_ref() == UPSTREAM_UI_TOOL_NAME),
             "upstream MCP App tools must pass through synthetic Code Mode"
+        );
+
+        let pool = running
+            .service()
+            .current_upstream_pool()
+            .await
+            .expect("upstream pool");
+        let cached = pool
+            .cached_upstream_resources_with_provenance_allowed(None)
+            .await;
+        assert!(
+            cached
+                .iter()
+                .any(|listed| listed.native_uri == UPSTREAM_UI_URI),
+            "upstream MCP UI resource must be present in the regular resource cache: {cached:?}"
         );
 
         let resources = running
@@ -5509,10 +5729,10 @@ for (const value of [
                 .read_resource_impl(ReadResourceRequestParams::new(uri), context.clone())
                 .await
                 .expect_err("disabled Code Mode app resource must stay hidden");
-            assert!(
-                err.message.contains("unknown UI resource"),
-                "{uri} should be hidden as an unknown UI resource, got {err:?}"
-            );
+            let data = err.data.as_ref().expect("structured app-disabled error");
+            assert_eq!(data["kind"], "app_disabled", "{err:?}");
+            assert_eq!(data["recovery"]["action"], "rediscover", "{err:?}");
+            assert_eq!(data["stale_client_binding"], true, "{err:?}");
         }
 
         let versioned = versioned_app_uri(CODE_MODE_APP_URI);
@@ -5521,10 +5741,13 @@ for (const value of [
             .read_resource_impl(ReadResourceRequestParams::new(versioned.clone()), context)
             .await
             .expect_err("cached versioned URI must not bypass the disabled state");
-        assert!(
-            err.message.contains("unknown UI resource"),
-            "{versioned} should be hidden as an unknown UI resource, got {err:?}"
-        );
+        let data = err
+            .data
+            .as_ref()
+            .expect("structured versioned app-disabled error");
+        assert_eq!(data["kind"], "app_disabled", "{err:?}");
+        assert_eq!(data["recovery"]["action"], "rediscover", "{err:?}");
+        assert_eq!(data["stale_client_binding"], true, "{err:?}");
     }
 
     #[tokio::test]

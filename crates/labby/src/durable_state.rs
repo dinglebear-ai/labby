@@ -1350,7 +1350,11 @@ mod tests {
         private_dir(&bundle).unwrap();
         private_dir(&bundle.join("payload")).unwrap();
         export_locked(&paths, &bundle).unwrap();
-        rewrite_manifest(&bundle, |manifest| manifest.labby_version = "1.0.0".into());
+        // Same major as this build, lowest minor/patch: the restore path must accept
+        // any same-major producer, so the fixture must not pin a literal major.
+        rewrite_manifest(&bundle, |manifest| {
+            manifest.labby_version = format!("{}.0.0", env!("CARGO_PKG_VERSION_MAJOR"));
+        });
         restore_bundle_locked(&paths, &bundle).unwrap();
 
         drop(

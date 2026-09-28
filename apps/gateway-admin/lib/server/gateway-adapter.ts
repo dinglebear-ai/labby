@@ -163,6 +163,8 @@ export interface GatewayDiscoverySnapshot {
     exposed?: boolean | null
     arguments?: Array<{ name: string; description?: string; required?: boolean }>
   }>
+  /** Partial discovery failures that should not erase the usable gateway view. */
+  warnings?: GatewayWarning[]
 }
 
 /** Returns the current ISO timestamp. Used only for derived warning records (observation time), not for backend-owned fields. */
@@ -635,10 +637,13 @@ export function normalizeGateway(
         }
       }),
     },
-    warnings: buildWarnings({
-      ...probe,
-      last_error: humanizedError,
-    }),
+    warnings: [
+      ...buildWarnings({
+        ...probe,
+        last_error: humanizedError,
+      }),
+      ...(discovery.warnings ?? []),
+    ],
     // created_at / updated_at are not provided by the gateway probe/runtime
     // endpoint; leave them absent rather than fabricating synthetic timestamps.
   }

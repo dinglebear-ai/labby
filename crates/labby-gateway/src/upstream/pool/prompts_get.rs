@@ -596,12 +596,6 @@ impl UpstreamPool {
         let (peer, _tools) = match self.acquire_or_connect_subject(config, subject).await {
             Ok(pair) => pair,
             Err(error) => {
-                self.record_failure_for(
-                    &config.name,
-                    UpstreamCapability::Prompts,
-                    format!("upstream prompt connect failed: {error}"),
-                )
-                .await;
                 log_upstream_request_error(
                     event,
                     start.elapsed().as_millis(),

@@ -56,7 +56,17 @@ fn render_object(map: &serde_json::Map<String, Value>, theme: CliTheme, indent: 
     }
 
     if map.is_empty() {
-        return format!("{}{}", indent_str(indent), theme.muted("∅"));
+        return format!(
+            "{}{}",
+            indent_str(indent),
+            theme.muted(
+                if matches!(theme.context().symbols, super::theme::SymbolMode::Unicode) {
+                    "∅"
+                } else {
+                    "-"
+                }
+            )
+        );
     }
 
     let mut lines = Vec::new();
@@ -65,21 +75,36 @@ fn render_object(map: &serde_json::Map<String, Value>, theme: CliTheme, indent: 
         let key = theme.key(k);
         match v {
             Value::Array(items) if items.iter().all(Value::is_object) => {
-                lines.push(format!("{}{} {}", prefix, theme.accent("▸"), key));
+                lines.push(format!(
+                    "{}{} {}",
+                    prefix,
+                    theme.accent(theme.disclosure()),
+                    key
+                ));
                 lines.push(render_record_array(items, theme, Some(k)));
             }
             Value::Array(items) => {
-                lines.push(format!("{}{} {}", prefix, theme.accent("▸"), key));
+                lines.push(format!(
+                    "{}{} {}",
+                    prefix,
+                    theme.accent(theme.disclosure()),
+                    key
+                ));
                 lines.push(render_array(items, theme, indent + 1));
             }
             Value::Object(child) => {
-                lines.push(format!("{}{} {}", prefix, theme.accent("▸"), key));
+                lines.push(format!(
+                    "{}{} {}",
+                    prefix,
+                    theme.accent(theme.disclosure()),
+                    key
+                ));
                 lines.push(render_object(child, theme, indent + 1));
             }
             _ => lines.push(format!(
                 "{}{} {} {} {}",
                 prefix,
-                theme.accent("•"),
+                theme.accent(theme.bullet()),
                 key,
                 theme.muted(":"),
                 render_scalar(v, theme)
@@ -91,7 +116,13 @@ fn render_object(map: &serde_json::Map<String, Value>, theme: CliTheme, indent: 
 
 fn render_record_array(items: &[Value], theme: CliTheme, field_name: Option<&str>) -> String {
     if items.is_empty() {
-        return theme.muted("∅");
+        return theme.muted(
+            if matches!(theme.context().symbols, super::theme::SymbolMode::Unicode) {
+                "∅"
+            } else {
+                "-"
+            },
+        );
     }
 
     if items.iter().all(is_health_row) {
@@ -143,6 +174,11 @@ fn render_table(headers: &[String], rows: &[Vec<String>], theme: CliTheme) -> St
         }
     }
 
+    let total_width = widths.iter().sum::<usize>() + widths.len().saturating_sub(1);
+    if total_width > theme.context().columns {
+        return render_narrow_table(headers, rows, theme);
+    }
+
     let mut out = String::new();
     out.push_str(&render_table_row(headers, &widths, |header| {
         theme.section(header)
@@ -155,6 +191,30 @@ fn render_table(headers: &[String], rows: &[Vec<String>], theme: CliTheme) -> St
         out.push_str(&render_table_row(row, &widths, Clone::clone));
     }
 
+    out
+}
+
+fn render_narrow_table(headers: &[String], rows: &[Vec<String>], theme: CliTheme) -> String {
+    let label_width = headers
+        .iter()
+        .map(|header| visible_width(header))
+        .max()
+        .unwrap_or_default()
+        .min(theme.context().columns / 3);
+    let mut out = String::new();
+    for (row_index, row) in rows.iter().enumerate() {
+        if row_index > 0 {
+            out.push_str("\n\n");
+        }
+        for (index, header) in headers.iter().enumerate() {
+            if index > 0 {
+                out.push('\n');
+            }
+            let label = pad_right(&theme.secondary(header), label_width);
+            let value = row.get(index).map_or("", String::as_str);
+            write!(out, "{label}  {value}").ok();
+        }
+    }
     out
 }
 
@@ -183,7 +243,7 @@ fn render_table_separator(widths: &[usize], theme: CliTheme) -> String {
         if idx > 0 {
             line.push(' ');
         }
-        line.push_str(&theme.border(&"─".repeat(*width)));
+        line.push_str(&theme.border(&theme.divider().repeat(*width)));
     }
     line
 }
@@ -304,14 +364,23 @@ fn render_finding_rows(items: &[Value], theme: CliTheme) -> String {
 fn render_array(items: &[Value], theme: CliTheme, indent: usize) -> String {
     let prefix = indent_str(indent);
     if items.is_empty() {
-        return format!("{prefix}{}", theme.muted("∅"));
+        return format!(
+            "{prefix}{}",
+            theme.muted(
+                if matches!(theme.context().symbols, super::theme::SymbolMode::Unicode) {
+                    "∅"
+                } else {
+                    "-"
+                }
+            )
+        );
     }
 
     if items.iter().all(is_scalar) && items.len() <= 8 {
         let parts: Vec<String> = items.iter().map(|v| render_scalar(v, theme)).collect();
         return format!(
             "{prefix}[{}]",
-            parts.join(format!(" {} ", theme.accent("·")).as_str())
+            parts.join(format!(" {} ", theme.accent(theme.dot())).as_str())
         );
     }
 
@@ -319,16 +388,16 @@ fn render_array(items: &[Value], theme: CliTheme, indent: usize) -> String {
     for item in items {
         match item {
             Value::Object(map) => {
-                lines.push(format!("{prefix}{}", theme.accent("•")));
+                lines.push(format!("{prefix}{}", theme.accent(theme.bullet())));
                 lines.push(render_object(map, theme, indent + 1));
             }
             Value::Array(child) => {
-                lines.push(format!("{prefix}{}", theme.accent("•")));
+                lines.push(format!("{prefix}{}", theme.accent(theme.bullet())));
                 lines.push(render_array(child, theme, indent + 1));
             }
             _ => lines.push(format!(
                 "{prefix}{} {}",
-                theme.accent("•"),
+                theme.accent(theme.bullet()),
                 render_scalar(item, theme)
             )),
         }
@@ -338,7 +407,13 @@ fn render_array(items: &[Value], theme: CliTheme, indent: usize) -> String {
 
 fn render_scalar(value: &Value, theme: CliTheme) -> String {
     match value {
-        Value::Null => theme.muted("∅"),
+        Value::Null => theme.muted(
+            if matches!(theme.context().symbols, super::theme::SymbolMode::Unicode) {
+                "∅"
+            } else {
+                "-"
+            },
+        ),
         Value::Bool(true) => theme.ok_badge(),
         Value::Bool(false) => theme.error_badge(),
         Value::Number(n) => theme.value(&n.to_string()),
@@ -555,16 +630,16 @@ fn render_doctor_report(
         out,
         "{} {} {} {} {} {} {} {}",
         theme.muted(format!("{total_services} services").as_str()),
-        theme.muted("·"),
+        theme.muted(theme.dot()),
         theme.ok_badge(),
         theme.muted(format!("{healthy} healthy").as_str()),
-        theme.muted("·"),
+        theme.muted(theme.dot()),
         theme.warn_badge(),
         theme.muted(format!("{degraded} degraded").as_str()),
         if unhealthy > 0 {
             format!(
                 "{} {} {}",
-                theme.muted("·"),
+                theme.muted(theme.dot()),
                 theme.error_badge(),
                 theme.muted(format!("{unhealthy} unhealthy").as_str())
             )
@@ -660,7 +735,7 @@ fn render_catalog(map: &serde_json::Map<String, Value>, theme: CliTheme) -> Stri
         out,
         "{} {} {}",
         theme.display("Lab"),
-        theme.muted("·"),
+        theme.muted(theme.dot()),
         theme.muted(format!("{} services", services.len()).as_str())
     )
     .ok();
@@ -685,7 +760,7 @@ fn render_catalog(map: &serde_json::Map<String, Value>, theme: CliTheme) -> Stri
         .min(14);
 
     const ACTION_PREVIEW: usize = 5;
-    const MAX_ACTIONS_WIDTH: usize = 64;
+    let max_actions_width = theme.context().columns.saturating_sub(6).clamp(24, 64);
 
     for (idx, svc) in services.iter().filter_map(Value::as_object).enumerate() {
         if idx > 0 {
@@ -724,7 +799,7 @@ fn render_catalog(map: &serde_json::Map<String, Value>, theme: CliTheme) -> Stri
         if names.is_empty() {
             continue;
         }
-        let sep = format!(" {} ", theme.muted("·"));
+        let sep = format!(" {} ", theme.muted(theme.dot()));
         let indent = "      ";
         let mut line = String::new();
         let mut shown = 0usize;
@@ -735,7 +810,7 @@ fn render_catalog(map: &serde_json::Map<String, Value>, theme: CliTheme) -> Stri
             } else {
                 format!("{sep}{colored}")
             };
-            if visible_width(&line) + visible_width(&candidate) > MAX_ACTIONS_WIDTH {
+            if visible_width(&line) + visible_width(&candidate) > max_actions_width {
                 break;
             }
             line.push_str(&candidate);
@@ -916,5 +991,52 @@ mod tests {
             "nested ActionEntry rendered as '{{N keys}}' artifact"
         );
         assert!(!plain.contains("keys}"), "any 'keys}}' artifact leaked");
+    }
+
+    fn human_at(columns: usize, symbols: super::super::theme::SymbolMode) -> OutputFormat {
+        OutputFormat::from_json_flag(
+            false,
+            ColorPolicy::Plain,
+            RenderEnv {
+                stream_is_tty: false,
+                no_color: false,
+                term: Some("dumb".into()),
+                colorterm: None,
+                lang: Some("C".into()),
+                lab_symbols: Some(match symbols {
+                    super::super::theme::SymbolMode::Unicode => "unicode".into(),
+                    super::super::theme::SymbolMode::Ascii => "ascii".into(),
+                }),
+                columns: Some(columns),
+                ci: false,
+            },
+        )
+    }
+
+    #[test]
+    fn narrow_tables_use_scannable_key_value_blocks() {
+        let value = json!([
+            {"name": "gateway-alpha", "status": "healthy", "message": "ready"},
+            {"name": "gateway-beta", "status": "degraded", "message": "authentication required"}
+        ]);
+        let out = render(&value, human_at(40, super::super::theme::SymbolMode::Ascii)).unwrap();
+        assert!(out.contains("name"));
+        assert!(out.contains("gateway-alpha"));
+        assert!(out.contains("\n\nname"));
+        assert!(!out.contains('─'));
+        assert!(!out.contains("\x1b["));
+    }
+
+    #[test]
+    fn ascii_mode_removes_unicode_structure_symbols() {
+        let value = json!({"servers": [{"name": "alpha"}], "enabled": true});
+        let out = render(&value, human_at(80, super::super::theme::SymbolMode::Ascii)).unwrap();
+        for symbol in ['•', '▸', '✓', '✗', '⚠', '─', '·', '∅'] {
+            assert!(
+                !out.contains(symbol),
+                "unexpected unicode symbol {symbol:?}: {out}"
+            );
+        }
+        assert!(!out.contains("\x1b["));
     }
 }

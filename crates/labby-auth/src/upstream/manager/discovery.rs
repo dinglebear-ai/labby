@@ -23,8 +23,7 @@ pub(super) struct ProtectedResourceMetadata {
 /// issuer equality check.
 ///
 /// Labby validates issuer and endpoint origins itself in
-/// `verify_issuer_binding`, including the explicitly allowed Google split
-/// token endpoint. rmcp 3 validates the issuer against the metadata URL while
+/// `verify_issuer_binding`. rmcp 3 validates the issuer against the metadata URL while
 /// fetching, which would reject that policy before Labby can apply it.
 pub async fn discover_published_metadata(
     upstream_url: &str,
@@ -312,9 +311,13 @@ pub(super) fn url_origin(s: &str) -> Option<String> {
     }
 }
 
-pub(super) fn is_known_split_endpoint_origin(issuer_origin: &str, endpoint_origin: &str) -> bool {
-    issuer_origin == "https://accounts.google.com"
-        && endpoint_origin == "https://oauth2.googleapis.com"
+pub(super) fn configured_endpoint_origin_matches(
+    configured_origins: &[String],
+    endpoint_origin: &str,
+) -> bool {
+    configured_origins
+        .iter()
+        .any(|configured| url_origin(configured.trim()).as_deref() == Some(endpoint_origin))
 }
 
 pub(super) fn extract_state_param(url: &str) -> Option<String> {
@@ -393,5 +396,19 @@ mod tests {
         );
         assert!(validate_discovered_issuer(&google, "http://127.0.0.1:1234/").is_err());
         assert!(validate_discovered_issuer(&google, "https://accounts.google.com").is_ok());
+    }
+
+    #[test]
+    fn configured_split_origins_are_exact_and_provider_neutral() {
+        let configured = vec!["https://www.figma.com".to_string()];
+
+        assert!(configured_endpoint_origin_matches(
+            &configured,
+            "https://www.figma.com"
+        ));
+        assert!(!configured_endpoint_origin_matches(
+            &configured,
+            "https://evil.example.com"
+        ));
     }
 }

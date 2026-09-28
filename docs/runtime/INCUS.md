@@ -110,7 +110,7 @@ Override the snapshot policy with `--backup-config PATH` or
 `--no-backup-config`. The backup YAML maps directly to Incus `snapshots.*`
 instance config keys, so Incus owns scheduling and expiry; Labby does not run a
 cron or timer for normal snapshot retention. Bootstrap prefers the Rust-backed
-`labby setup incusbackup apply --name <container> --config <path>` validator
+`labby host incus backup apply --name <container> --config <path>` validator
 when a new enough host `labby` is on `PATH`, and falls back to the constrained
 shell parser only for older hosts.
 
@@ -129,21 +129,22 @@ For PR validation before a release exists, push a local binary instead:
 
 ```bash
 cargo build --workspace --all-features --bin labby
-target/debug/labby incus setup --local-binary target/debug/labby
+target/debug/labby host incus setup --local-binary target/debug/labby
 ```
 
 By default, `labby setup` installs the latest Labby release. Use the explicit
-`labby incus setup --version vX.Y.Z` form when you need reproducibility, or set
+`labby host incus setup --version vX.Y.Z` form when you need reproducibility, or set
 `LABBY_INSTALL_VERSION` for the checkout-local bootstrap script.
 
 The checkout-local `scripts/incus-bootstrap.sh` remains available for
 contributor debugging and CI image smoke tests, but the supported operator entry
 point is the binary-owned `labby setup` command. The explicit
-`labby incus setup` subcommand owns advanced bootstrap flags such as
-`--local-binary`, `--skip-install`, and storage overrides. For day-to-day local
-binary deploys into an existing container, use `labby incus sync`.
+`labby host incus setup` subcommand owns advanced bootstrap flags such as
+`--local-binary` and storage overrides. `--skip-install` only applies to legacy
+images that contain a Labby binary. For day-to-day local
+binary deploys into an existing container, use `labby host incus sync`.
 
-`labby incus sync` updates both runtime surfaces that affect the web UI:
+`labby host incus sync` updates both runtime surfaces that affect the web UI:
 
 - `/usr/local/bin/labby` — the executable, including embedded fallback assets
 - `/home/labby/.labby/web-assets` — the filesystem static export preferred by
@@ -158,7 +159,7 @@ Restore that binary, web assets, and supported systemd state through the same
 transactional path with:
 
 ```bash
-labby incus sync --container labby --rollback
+labby host incus sync --container labby --rollback
 ```
 
 The retained release is removed only after a successful rollback and is
@@ -178,7 +179,7 @@ For a checkout-local UI or Rust change:
 ```bash
 just web-build
 cargo build --workspace --all-features --profile release-fast --bin labby
-target/release-fast/labby incus sync \
+target/release-fast/labby host incus sync \
   --binary target/release-fast/labby \
   --check-url https://labby.dinglebear.ai/gateways/
 ```
@@ -187,21 +188,23 @@ Pass `--no-web-assets` only for a binary-only deploy where the existing
 filesystem web export should intentionally remain in place.
 
 The distrobuilder image definition lives at `config/incus/labby-image.yaml`.
-Release CI builds it as a prebuilt Incus container image:
+Image input changes trigger a separate build, smoke, and publication workflow.
+The artifact is a prebuilt Incus container image:
 `labby-incus-x86_64-unknown-linux-gnu.tar.xz` plus a `.sha256` file. Import it
 locally and launch it with the normal profile/provision converger:
 
 ```bash
 sha256sum -c labby-incus-x86_64-unknown-linux-gnu.tar.xz.sha256
 incus image import labby-incus-x86_64-unknown-linux-gnu.tar.xz \
-  --alias labby-gateway-vX.Y.Z
+  --alias labby-gateway-IMAGE_SHA
 scripts/incus-bootstrap.sh \
-  --image local:labby-gateway-vX.Y.Z \
-  --skip-install
+  --image local:labby-gateway-IMAGE_SHA \
+  --version vX.Y.Z
 ```
 
-The image bakes in the release `labby` binary, the bounded apt floor, and the
-agent runtime/toolchain floor: Node, uv-managed Python, Rust, Go, Claude Code,
+The image contains the bounded apt floor and agent runtime/toolchain floor;
+bootstrap installs the selected Labby release afterward. The image includes
+Node, uv-managed Python, Rust, Go, Claude Code,
 Codex, Gemini CLI, mise, chezmoi, ffmpeg, Android platform tooling (`adb`, Android
 SDK platform tools, and build tools), and the Tailscale client.
 `config/incus/labby-image.yaml`
@@ -258,6 +261,13 @@ number. Do not set it during normal deployment.
 `service-start`, and readiness boundaries in the release-sync transaction.
 
 ## Tailscale
+
+Bootstrap and image provisioning use a commit-pinned official Tailscale
+installer with the reviewed SHA-256 and an explicit package version. Bootstrap
+ensures Tailscale is present before running the selected Labby binary's
+provisioning plan, including historical binaries whose embedded installer URL
+was mutable. An existing installation is left intact; checksum verification is
+never bypassed to recover from upstream installer changes.
 
 Tailscale runs inside the container and gets its own tailnet identity. `/dev/net/tun`
 passthrough is required.
@@ -330,8 +340,8 @@ labby setup --provision --yes --skip-deps
 The converged service is a hardened system unit:
 
 ```bash
-labby setup host-service unit
-labby setup host-service install --install-self -y
+labby host service unit
+labby host service install --install-self -y
 systemctl status labby --no-pager
 ```
 

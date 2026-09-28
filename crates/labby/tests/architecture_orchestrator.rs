@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 /// Dispatch services (top-level `dispatch/<service>.rs` entrypoints) whose
 /// cross-service imports are governed by the allowlist. Shared subsystems
 /// (`node`, `security`, `upstream`, `code_mode`) and shared leaf modules
-/// (`error`, `access_errors`, `helpers`, `redact`, `path_safety`, `fs_atomic`,
+/// (`error`, `access_errors`, `helpers`, `schema`, `redact`, `path_safety`, `fs_atomic`,
 /// `clients`) are NOT
 /// action-dispatched services and are always importable — they are the common
 /// substrate, not peers. See `dispatch/CLAUDE.md` § "Shared subsystems".
@@ -62,6 +62,8 @@ const SHARED_NON_SERVICES: &[&str] = &[
     // denial, caller-error, and outage classification. It declares no actions
     // and dispatches nothing.
     "access_errors",
+    // Typed action output schemas are shared metadata, not a dispatch service.
+    "schema",
     // `artifact_sources` is the single admission rule for host-configured
     // `[[artifacts.sources]]`, shared by the artifact control plane and the
     // Skill Library import path so both reach one verdict per source. It
@@ -148,6 +150,11 @@ const ALLOWED_EDGES: &[(&str, &str)] = &[
     // the process-scoped provider-neutral relay used by remote Artifact
     // discovery and acquisition.
     ("skill_library", "artifact_control"),
+    // skill_library → artifact_distribution: the authenticated Skill Library
+    // surface and its follow reconciler invoke the shared managed-mirror
+    // coordinator, which owns the AccessStore + ArtifactStore saga for pin,
+    // follow, fork, and revocation purge.
+    ("skill_library", "artifact_distribution"),
     // skill_library → remote_control: the authenticated Skill Library surface
     // delegates provider-neutral remote Artifact actions to their canonical
     // transport dispatcher after resolving authority through artifact_control.
@@ -173,16 +180,8 @@ const DEPRECATED_ACTION_ALIASES: &[&str] = &[
     // setup — flat snake_case; canonical dotted forms under setup.* added.
     "state",
     "bootstrap",
-    "plugin_hook",
-    "plugin_sync",
-    "plugin_export",
-    "plugin_connectivity",
     "check",
     "repair",
-    "installed_plugins",
-    "services_status",
-    "install_plugin",
-    "uninstall_plugin",
     "finalize",
 ];
 

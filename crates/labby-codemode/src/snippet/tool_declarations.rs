@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::ToolScope;
@@ -17,7 +18,7 @@ pub const MAX_DECLARED_TOOL_ID_BYTES: usize = 1_024;
 /// `Some(empty)` expresses deny-all upstream access; `None` records no extra
 /// restriction. Host surfaces may intersect this declaration with the caller's
 /// existing policy, so it can only narrow authority and never grant it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(try_from = "Vec<String>")]
 pub struct SnippetToolDeclarations(Vec<String>);
 

@@ -28,11 +28,13 @@ fn run_serve(labby_home: &std::path::Path, user_home: &std::path::Path) -> std::
 
 fn run_setup(labby_home: &std::path::Path, user_home: &std::path::Path) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_labby"))
-        .args(["--json", "setup", "proxy", "--yes", "--auth", "bearer"])
+        .args([
+            "--json", "config", "proxy", "set", "--yes", "--auth", "bearer",
+        ])
         .env("LABBY_HOME", labby_home)
         .env("HOME", user_home)
         .output()
-        .expect("run labby setup proxy")
+        .expect("run labby config proxy set")
 }
 
 #[test]

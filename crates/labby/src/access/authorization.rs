@@ -474,6 +474,12 @@ mod tests {
             Permission::ProjectManage,
             Permission::AssetDiscover,
             Permission::AssetUse,
+            Permission::ArtifactUse,
+            Permission::ArtifactSync,
+            Permission::ArtifactFollow,
+            Permission::ArtifactFork,
+            Permission::ArtifactExport,
+            Permission::ArtifactReshare,
         ];
 
         for (project_id, role) in cases {

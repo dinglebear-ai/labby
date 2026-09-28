@@ -39,6 +39,11 @@ pub async fn dispatch_with_surface(
             let a = crate::dispatch::helpers::require_str(&params, "action")?;
             return action_schema(ACTIONS, a);
         }
+        "capabilities.status" => {
+            return to_json(Report {
+                findings: system::run_capability_checks(),
+            });
+        }
         "system.checks" => {
             let findings = system::run_system_checks().await;
             return to_json(Report { findings });
@@ -152,6 +157,9 @@ pub async fn dispatch_with_clients_relay_and_auth(
             let a = crate::dispatch::helpers::require_str(&params, "action")?;
             action_schema(ACTIONS, a)
         }
+        "capabilities.status" => to_json(Report {
+            findings: system::run_capability_checks(),
+        }),
         "system.checks" => to_json(Report {
             findings: system::run_system_checks().await,
         }),
@@ -269,7 +277,8 @@ fn resolve_auth_config() -> (Option<labby_auth::config::AuthConfig>, Option<Stri
         .and_then(|config| crate::config::resolve_auth_for_config(&config))
     {
         Ok(config) => (Some(config), None),
-        Err(error) => (None, Some(error.to_string())),
+        // `{error:#}` keeps the typed cause the outer context names.
+        Err(error) => (None, Some(format!("{error:#}"))),
     }
 }
 

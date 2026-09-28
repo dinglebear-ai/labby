@@ -740,6 +740,7 @@ mod tests {
             requires_admin: false,
             params: &[],
             returns: "object",
+            output_schema: None,
         }];
 
     fn destructive_dispatch(
@@ -2096,6 +2097,7 @@ mod tests {
             registration: UpstreamOauthRegistration::Dynamic,
             scopes: None,
             credential: Default::default(),
+            additional_endpoint_origins: vec![],
             prefer_client_metadata_document: None,
         });
         oauth_config.upstream.push(oauth.clone());

@@ -20,7 +20,7 @@ TAILSCALE_SSH=0
 TAILSCALE_HOSTNAME=""
 TAILSCALE_INSTALL_VERSION="1.102.3"
 TAILSCALE_INSTALL_SHA256="805e85ed6f6f81a7ea2e70d52d47e7d5290863299e5c922b2787d71aa312f22e"
-TAILSCALE_INSTALL_URL="https://tailscale.com/install.sh"
+TAILSCALE_INSTALL_URL="https://raw.githubusercontent.com/tailscale/tailscale/53a0d659afa51835dd7a9283873cca44261454f8/scripts/installer.sh"
 ALLOW_SOURCE_FALLBACK=0
 APPLY_BACKUP_CONFIG=1
 TRANSACTION_DIR=""
@@ -391,7 +391,7 @@ validate_backup_key() {
 }
 
 host_labby_supports_incus_backup() {
-    command -v labby >/dev/null 2>&1 && labby setup incusbackup --help >/dev/null 2>&1
+    command -v labby >/dev/null 2>&1 && labby host incus backup --help >/dev/null 2>&1
 }
 
 apply_backup_config_with_shell() {
@@ -430,11 +430,11 @@ apply_backup_config() {
 
     if [ "$DRY_RUN" -eq 1 ]; then
         if host_labby_supports_incus_backup; then
-            labby setup incusbackup validate --config "$BACKUP_CONFIG_FILE" >/dev/null
+            labby host incus backup validate --config "$BACKUP_CONFIG_FILE" >/dev/null
         else
             validate_backup_config_with_shell
         fi
-        say "+ labby setup incusbackup apply --name $(quote "$NAME") --config $(quote "$BACKUP_CONFIG_FILE") --dry-run"
+        say "+ labby host incus backup apply --name $(quote "$NAME") --config $(quote "$BACKUP_CONFIG_FILE") --dry-run"
         return
     fi
 
@@ -453,7 +453,7 @@ $(parse_backup_config)
 EOF
 
     if host_labby_supports_incus_backup; then
-        run labby setup incusbackup apply --name "$NAME" --config "$BACKUP_CONFIG_FILE" --yes
+        run labby host incus backup apply --name "$NAME" --config "$BACKUP_CONFIG_FILE" --yes
     else
         apply_backup_config_with_shell
     fi
@@ -796,23 +796,29 @@ fi
 [ "$SKIP_INSTALL" -eq 1 ] || checkpoint binary
 
 capture_owned_state
+# Historical Labby binaries embed an installer URL that is mutable upstream.
+# Satisfy this dependency with the reviewed immutable installer before invoking
+# their provisioning plan; the baseline then observes Tailscale as installed.
+if [ "$DRY_RUN" -eq 1 ]; then
+    say "+ download $(quote "$TAILSCALE_INSTALL_URL"), verify sha256 $(quote "$TAILSCALE_INSTALL_SHA256"), then install Tailscale $(quote "$TAILSCALE_INSTALL_VERSION")"
+elif ! incus exec "$NAME" -- sh -c "command -v tailscale >/dev/null 2>&1"; then
+    # This runs before the historical provisioner's apt floor on fresh images.
+    run incus exec "$NAME" -- apt-get update
+    run incus exec "$NAME" -- apt-get install -y --no-install-recommends ca-certificates curl
+    tailscale_installer="$TRANSACTION_DIR/tailscale-install.sh"
+    curl -fsSL --connect-timeout 10 --max-time 300 -o "$tailscale_installer" "$TAILSCALE_INSTALL_URL"
+    printf '%s  %s\n' "$TAILSCALE_INSTALL_SHA256" "$tailscale_installer" | sha256sum --check --strict
+    run incus file push "$tailscale_installer" "$NAME/tmp/labby-tailscale-install.sh"
+    run incus exec "$NAME" -- env TAILSCALE_VERSION="$TAILSCALE_INSTALL_VERSION" sh /tmp/labby-tailscale-install.sh
+    run incus exec "$NAME" -- rm -f /tmp/labby-tailscale-install.sh
+    incus exec "$NAME" -- tailscale version | grep -F "$TAILSCALE_INSTALL_VERSION" >/dev/null
+fi
 run incus exec "$NAME" -- labby setup --provision --yes
 checkpoint provision
 verify_labby_ready
 checkpoint readiness
 
 if [ -n "${TS_AUTHKEY:-}" ]; then
-	if [ "$DRY_RUN" -eq 1 ]; then
-		say "+ download $(quote "$TAILSCALE_INSTALL_URL"), verify sha256 $(quote "$TAILSCALE_INSTALL_SHA256"), then install Tailscale $(quote "$TAILSCALE_INSTALL_VERSION")"
-	elif ! incus exec "$NAME" -- sh -c "command -v tailscale >/dev/null 2>&1"; then
-		tailscale_installer="$TRANSACTION_DIR/tailscale-install.sh"
-		curl -fsSL --connect-timeout 10 --max-time 300 -o "$tailscale_installer" "$TAILSCALE_INSTALL_URL"
-		printf '%s  %s\n' "$TAILSCALE_INSTALL_SHA256" "$tailscale_installer" | sha256sum --check --strict
-		run incus file push "$tailscale_installer" "$NAME/tmp/labby-tailscale-install.sh"
-		run incus exec "$NAME" -- env TAILSCALE_VERSION="$TAILSCALE_INSTALL_VERSION" sh /tmp/labby-tailscale-install.sh
-		run incus exec "$NAME" -- rm -f /tmp/labby-tailscale-install.sh
-		incus exec "$NAME" -- tailscale version | grep -F "$TAILSCALE_INSTALL_VERSION" >/dev/null
-	fi
 	ts_args="--auth-key=file:/run/labby-ts-authkey --hostname=$TAILSCALE_HOSTNAME"
 	if [ "$TAILSCALE_SSH" -eq 1 ]; then
 		ts_args="$ts_args --ssh"

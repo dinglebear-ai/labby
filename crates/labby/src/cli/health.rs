@@ -1,4 +1,4 @@
-//! `labby health` — quick reachability ping for every configured service.
+//! `labby gateway status` — quick reachability ping for every configured service.
 
 use std::process::ExitCode;
 

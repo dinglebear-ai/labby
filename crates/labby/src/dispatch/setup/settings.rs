@@ -1,17 +1,18 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::dispatch::error::ToolError;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SettingsBackend {
     Env,
     ConfigToml,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SettingsControl {
     Text,
@@ -23,7 +24,7 @@ pub enum SettingsControl {
     ReadOnly,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SettingsRisk {
     Low,
@@ -32,7 +33,7 @@ pub enum SettingsRisk {
     Dangerous,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SettingsWritePolicy {
     Editable,
@@ -41,7 +42,7 @@ pub enum SettingsWritePolicy {
     SecretWriteOnlyFuture,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SettingsApplyMode {
     Immediate,
@@ -50,13 +51,13 @@ pub enum SettingsApplyMode {
     ReadOnly,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
 pub struct SettingsOption {
     pub value: &'static str,
     pub label: &'static str,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
 pub struct SettingsFieldSpec {
     pub key: &'static str,
     pub label: &'static str,
@@ -76,7 +77,7 @@ pub struct SettingsFieldSpec {
     pub example: Option<&'static str>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
 pub struct SettingsSectionSpec {
     pub id: &'static str,
     pub label: &'static str,
@@ -84,14 +85,14 @@ pub struct SettingsSectionSpec {
     pub advanced: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SettingsSchemaResponse {
     pub schema_version: u32,
     pub sections: Vec<SettingsSectionSpec>,
     pub fields: Vec<SettingsFieldSpec>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SettingsSourceKind {
     Env,
@@ -99,13 +100,13 @@ pub enum SettingsSourceKind {
     Default,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct SettingsValueSource {
     pub source: SettingsSourceKind,
     pub overridden_by_env: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SettingsStateResponse {
     pub schema_version: u32,
     pub config_path: String,
@@ -115,7 +116,7 @@ pub struct SettingsStateResponse {
     pub sources: BTreeMap<String, SettingsValueSource>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SettingsUpdateEntry {
     pub key: String,
     pub value: Value,
@@ -161,7 +162,7 @@ impl<'de> Deserialize<'de> for SettingsUpdateEntry {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SettingsMutationOutcome {
     pub state: SettingsStateResponse,
     pub backup_path: Option<String>,
@@ -169,7 +170,7 @@ pub struct SettingsMutationOutcome {
     pub maintenance_warning: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct EnvSettingSpec {
     pub service: String,
     pub key: String,

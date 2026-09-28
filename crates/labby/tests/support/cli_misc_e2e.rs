@@ -9,7 +9,6 @@ pub(crate) async fn run() {
 
     run_observation_cases(root.path()).await;
     run_setup_state(root.path()).await;
-    run_plugin_lifecycle(root.path()).await;
     run_setup_mutations(root.path()).await;
     run_snippet_workflow(root.path()).await;
 
@@ -70,72 +69,14 @@ async fn run_setup_state(root: &Path) {
     record_success("setup:state", &state, EvidenceLevel::LiveSuccess);
 }
 
-async fn run_plugin_lifecycle(root: &Path) {
-    let plugin_home = home(root, "setup-plugin-lifecycle");
-    let install = execute(
-        &plugin_home,
-        &[
-            "setup",
-            "install-plugin",
-            "matrix-owned-missing",
-            "--yes",
-            "--json",
-        ],
-        &[],
-    )
-    .await;
-    record_output(
-        "setup:plugin.install",
-        &install,
-        EvidenceLevel::LiveStateTransition,
-    );
-
-    let uninstall = execute(
-        &plugin_home,
-        &[
-            "setup",
-            "uninstall-plugin",
-            "matrix-owned-missing",
-            "--yes",
-            "--json",
-        ],
-        &[],
-    )
-    .await;
-    record_output(
-        "setup:plugin.uninstall",
-        &uninstall,
-        EvidenceLevel::LiveStateTransition,
-    );
-}
-
 async fn run_setup_mutations(root: &Path) {
-    let sync_home = home(root, "setup-plugin-sync");
-    let sync = execute(
-        &sync_home,
-        &["setup", "plugin-sync", "--yes", "--json"],
-        &[("CLAUDE_PLUGIN_OPTION_SERVER_URL", "http://127.0.0.1:8765")],
-    )
-    .await;
-    let synced_env = sync_home.join(".labby/.env");
-    assert!(
-        std::fs::read_to_string(&synced_env)
-            .expect("read synchronized plugin env")
-            .contains("LABBY_SERVER_URL"),
-        "plugin sync did not publish its owned setting"
-    );
-    record_success(
-        "setup:plugin_sync",
-        &sync,
-        EvidenceLevel::LiveStateTransition,
-    );
-
     let proxy_home = home(root, "setup-proxy");
     let proxy = execute(
         &proxy_home,
         &[
-            "setup",
+            "config",
             "proxy",
+            "set",
             "--exposure",
             "local",
             "--auth",
@@ -160,17 +101,15 @@ async fn run_setup_mutations(root: &Path) {
         EvidenceLevel::LiveStateTransition,
     );
 
-    for (directory, command, key) in [
-        ("setup-plugin-hook", "plugin-hook", "setup:plugin_hook"),
-        ("setup-repair", "repair", "setup:repair"),
-    ] {
-        let repair_home = home(root, directory);
-        let before = tree_fingerprint(&repair_home);
-        let output = execute(&repair_home, &["setup", command, "--json"], &[]).await;
-        let after = tree_fingerprint(&repair_home);
-        assert_ne!(before, after, "{key} did not mutate its owned fixture");
-        record_success(key, &output, EvidenceLevel::LiveStateTransition);
-    }
+    let repair_home = home(root, "setup-repair");
+    let before = tree_fingerprint(&repair_home);
+    let output = execute(&repair_home, &["setup", "repair", "--json"], &[]).await;
+    let after = tree_fingerprint(&repair_home);
+    assert_ne!(
+        before, after,
+        "setup:repair did not mutate its owned fixture"
+    );
+    record_success("setup:repair", &output, EvidenceLevel::LiveStateTransition);
 }
 
 async fn run_snippet_workflow(root: &Path) {
@@ -179,8 +118,8 @@ async fn run_snippet_workflow(root: &Path) {
     let create = execute(
         &snippet_home,
         &[
-            "snippets",
-            "create",
+            "snippet",
+            "add",
             name,
             "--code",
             "async () => ({ ok: true })",
@@ -198,19 +137,19 @@ async fn run_snippet_workflow(root: &Path) {
     for (action, argv) in [
         (
             "snippets:snippets.get",
-            vec!["snippets", "get", name, "--json"],
+            vec!["snippet", "get", name, "--json"],
         ),
         (
             "snippets:snippets.validate",
-            vec!["snippets", "validate", name, "--json"],
+            vec!["snippet", "validate", name, "--json"],
         ),
         (
             "snippets:snippets.exec",
-            vec!["snippets", "exec", name, "--json"],
+            vec!["snippet", "run", name, "--json"],
         ),
         (
             "snippets:snippets.test",
-            vec!["snippets", "test", name, "--json"],
+            vec!["snippet", "test", name, "--json"],
         ),
     ] {
         let output = execute(&snippet_home, &argv, &[]).await;
@@ -219,7 +158,7 @@ async fn run_snippet_workflow(root: &Path) {
 
     let remove = execute(
         &snippet_home,
-        &["snippets", "remove", name, "--yes", "--json"],
+        &["snippet", "remove", name, "--yes", "--json"],
         &[],
     )
     .await;
@@ -228,7 +167,7 @@ async fn run_snippet_workflow(root: &Path) {
         &remove,
         EvidenceLevel::LiveStateTransition,
     );
-    let absent = execute(&snippet_home, &["snippets", "get", name, "--json"], &[]).await;
+    let absent = execute(&snippet_home, &["snippet", "get", name, "--json"], &[]).await;
     assert!(
         !absent.status.success(),
         "removed owned snippet remained readable"

@@ -35,12 +35,21 @@ pub struct UpstreamCachedSummary {
     pub supports_skills: Option<bool>,
 }
 
+// The upstream listing-error prefixes are a cross-crate classification
+// contract, so they live in the dependency-leaf primitives crate: two of the
+// classifiers (the gateway projection and the doctor gateway check) are
+// compiled in feature slices that do not include this crate at all. They are
+// re-exported here so the producers in this module keep one obvious import.
+pub use labby_primitives::mcp::{
+    UPSTREAM_PROMPT_LISTING_ERROR_PREFIX, UPSTREAM_RESOURCE_LISTING_ERROR_PREFIX,
+};
+
 /// Per-upstream timeout for initial discovery (`list_tools`).
 pub(super) const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(15);
 /// Stdio discovery includes process/package-runner/SSH cold start, not just RPC.
 pub(super) const STDIO_DISCOVERY_TIMEOUT: Duration = Duration::from_mins(1);
 
-pub(super) fn upstream_discovery_timeout(
+pub(crate) fn upstream_discovery_timeout(
     config: &UpstreamConfig,
     request_timeout: Duration,
 ) -> Duration {
@@ -76,12 +85,28 @@ pub(super) const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// overrides it from `upstream_relay_timeout_ms`. See `pool/relay.rs`.
 pub(super) const DEFAULT_RELAY_TIMEOUT: Duration = Duration::from_mins(5);
 pub(super) const STDIO_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+/// Maximum number of cached connections shut down concurrently during sweep,
+/// reconcile, or pool drain. Bounds cleanup fan-out without restoring N×timeout latency.
+pub(super) const CONNECTION_SHUTDOWN_CONCURRENCY: usize = 16;
 /// Idle TTL for per-`(upstream, subject)` cached connections.
 ///
 /// A connection that has not been used for this long will be evicted from
 /// the subject-connection cache on the next access for its key (P-C1), or by
 /// the background sweep task ([`SUBJECT_CONN_SWEEP_INTERVAL`]).
 pub(super) const SUBJECT_CONN_IDLE_TTL: Duration = Duration::from_mins(5);
+
+/// Longest a cached resource snapshot is served without a re-list when the
+/// upstream has no live push channel.
+///
+/// `resources/list` is served from cached per-upstream snapshots. Upstreams on
+/// the 2026-07-28 protocol keep a `subscriptions/listen` stream open and
+/// announce `resources/list_changed`, so their snapshot only refreshes on that
+/// signal. Pooled connections to older upstreams use the unit client handler
+/// and never receive list_changed, so without this bound their catalog would
+/// only refresh on reconnect or reload. Discovery re-lists a snapshot older
+/// than this in the background (stale-while-revalidate); the same bound caps
+/// the per-subject OAuth resource catalog, which has no push channel at all.
+pub(super) const RESOURCE_SNAPSHOT_MAX_AGE: Duration = Duration::from_mins(1);
 
 /// Interval at which the background subject-connection sweep runs (P-H2).
 ///

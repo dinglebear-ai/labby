@@ -44,10 +44,9 @@ jobs:
           if actual != expected:
               raise SystemExit(f"server.json version {actual} != {expected}")
           PY
-          # Bind the registry's JSON object independent of insignificant source
-          # whitespace; the observer computes the same canonical digest from
-          # the object returned by the public registry API.
-          manifest_sha256=$(python3 -c 'import hashlib,json; d=json.load(open("server.json")); print(hashlib.sha256(json.dumps(d,sort_keys=True,separators=(",",":")).encode()).hexdigest())')
+          # The Registry omits optional false flags in its public response.
+          # Hash the same normalized object that the release observer uses.
+          manifest_sha256=$(python3 scripts/ci/mcp_registry_canonical.py server.json)
           [[ "$manifest_sha256" =~ ^[0-9a-f]{64}$ ]]
           echo "sha256=$manifest_sha256" >> "$GITHUB_OUTPUT"
   publish:

@@ -355,16 +355,16 @@ Milestone 0A implementation evidence: `labby-auth` now emits one transport-indep
 
 ### Phase 9: Local Artifact distribution semantics
 
-- [ ] TransferOptions intersection: caller + owner publisher ceiling + Assignment ceiling + Artifact state + destination.
-- [ ] managed mirror preserves source authority and never acquires ownership.
-- [ ] managed pin.
-- [ ] follow/subscription state.
-- [ ] auto-approved update reauthorization.
-- [ ] personal fork.
-- [ ] detached export authorization.
-- [ ] reshare authorization.
-- [ ] license/publication/takedown intersection.
-- [ ] revocation states.
+- [x] TransferOptions intersection: caller + owner publisher ceiling + Assignment ceiling + Artifact state + destination.
+- [x] managed mirror preserves source authority and never acquires ownership.
+- [x] managed pin.
+- [x] follow/subscription state.
+- [x] auto-approved update reauthorization. The serve-owned follow reconciler polls `auto_approved` subscriptions and reauthorizes every exact revision before applying it.
+- [x] personal fork.
+- [ ] detached export authorization. The existing secret-safe exact-acquisition export primitive is tested, but no distribution-authorized product action invokes it yet.
+- [ ] reshare authorization. Policy evaluation exists, but no reshare operation is wired.
+- [x] license/publication/takedown intersection.
+- [x] revocation states. The follow reconciler moves managed mirrors to `access_revoked`/`source_withdrawn`, pauses following, purges managed bytes, and retries a purge that failed after restriction until the mirror reaches `removed`. Source-withdrawal detection currently reads Depot heads only; `repository:` sources get access revocation but no withdrawal check.
 
 ### Phase 10: Personal Labby pairing/remote transfer
 

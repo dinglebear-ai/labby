@@ -49,13 +49,25 @@ export const browserApi = {
   async sessions(signal?: AbortSignal, cursor?: string) {
     const page = await browserAction<BrowserSessionListResponse>('browser.sessions', cursor ? { cursor } : {}, signal)
     const sessions: BrowserSession[] = []
-    // Lists intentionally omit catalogs. Fetch the reviewed detail in bounded batches.
+    const detailWarnings: string[] = []
+    // Lists intentionally omit catalogs. Fetch the reviewed detail in bounded
+    // batches, but do not let one stale/broken session erase every other page.
     for (let offset = 0; offset < page.sessions.length; offset += 4) {
-      const details = await Promise.all(page.sessions.slice(offset, offset + 4).map((session) =>
+      const summaries = page.sessions.slice(offset, offset + 4)
+      const details = await Promise.allSettled(summaries.map((session) =>
         browserAction<BrowserSession>('browser.session.get', { session_id: session.id }, signal)))
-      sessions.push(...details)
+      for (let index = 0; index < details.length; index += 1) {
+        const detail = details[index]
+        if (detail.status === 'fulfilled') {
+          sessions.push(detail.value)
+          continue
+        }
+        if (signal?.aborted) throw detail.reason
+        const summary = summaries[index]
+        detailWarnings.push(`Session ${summary.id} details unavailable: ${detail.reason instanceof Error ? detail.reason.message : 'request failed'}`)
+      }
     }
-    return { sessions, next_cursor: page.next_cursor ?? null }
+    return { sessions, next_cursor: page.next_cursor ?? null, detail_warnings: detailWarnings }
   },
   setSessionEnabled: (sessionId: string, enabled: boolean, catalogDigest: string, signal?: AbortSignal) =>
     browserAction<BrowserSession>('browser.session.enable', { session_id: sessionId, enabled, catalog_digest: catalogDigest }, signal),

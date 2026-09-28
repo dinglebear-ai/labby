@@ -22,8 +22,10 @@ pub enum SnippetsCommand {
     /// Show one snippet body and metadata.
     Get(SnippetNameArgs),
     /// Execute a snippet through gateway Code Mode.
+    #[command(name = "run")]
     Exec(SnippetExecArgs),
-    /// Create or update a user snippet.
+    /// Add a user snippet. Existing snippets require explicit --force replacement.
+    #[command(name = "add")]
     Create(SnippetCreateArgs),
     /// Validate a snippet without saving or executing it.
     Validate(SnippetValidateArgs),
@@ -173,7 +175,7 @@ pub async fn run(args: SnippetsArgs, format: OutputFormat, config: &LabConfig) -
     };
 
     if dry_run {
-        print_dry_run("snippets", &action, &params, format);
+        print_dry_run("snippets", &action, &params, format)?;
         return Ok(ExitCode::SUCCESS);
     }
 

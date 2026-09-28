@@ -67,6 +67,7 @@ const ACTIONS: &[ActionSpec] = &[ActionSpec {
     destructive: false,
     requires_admin: false,
     returns: "Value",
+    output_schema: None,
     params: &[ParamSpec {
         name: "id",
         ty: "string",

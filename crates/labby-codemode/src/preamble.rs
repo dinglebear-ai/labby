@@ -12,6 +12,7 @@
 //! separate follow-up; this module only restores the executable proxy.
 
 use super::types::{CatalogDescriptor, CodeModeCatalogKind, CodeModeDiscoveryEntry};
+use crate::host::WithheldTools;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Tool name conversion (snake_case — Cloudflare Code Mode parity)
@@ -179,17 +180,104 @@ pub(crate) fn namespace_segment(name: &str) -> String {
 // JS proxy generation (runtime executable, not type declarations)
 // ────────────────────────────────────────────────────────────────────────────
 
+/// Agent-facing explanation for tools a read-only run withheld.
+/// How to reach tools a read-only run withholds. Shared by every withheld
+/// message (Rust per-upstream guidance and the JS multi-upstream hints).
+const WITHHELD_SCOPE_ADVICE: &str = "Use the `codemode` tool to reach them (requires the `lab` or `lab:admin` scope); if this client only holds `lab:read`, reconnect it with the `lab` scope.";
+
+pub(crate) fn withheld_guidance(withheld: &WithheldTools) -> String {
+    let count = withheld.tool_count();
+    let noun = if count == 1 { "tool" } else { "tools" };
+    format!(
+        "{count} {noun} from upstream `{namespace}` are hidden because this is a read-only Code Mode run (`codemode_read`) and the upstream does not annotate them `readOnlyHint: true`. {WITHHELD_SCOPE_ADVICE}",
+        namespace = withheld.namespace()
+    )
+}
+
 pub(crate) fn generate_discovery_js(
     entries: &[CodeModeDiscoveryEntry],
     blend_weight: f32,
+    withheld: &[WithheldTools],
 ) -> Result<String, String> {
     let json = serde_json::to_string(entries)
         .map_err(|err| format!("failed to serialize Code Mode discovery catalog: {err}"))?;
+    let withheld_json = serde_json::to_string(
+        &withheld
+            .iter()
+            .map(|item| {
+                serde_json::json!({
+                    "namespace": item.namespace(),
+                    "key": crate::namespace_alias::namespace_alias_key(item.namespace()),
+                    "helper": namespace_segment(item.namespace()),
+                    "tool_count": item.tool_count(),
+                    "guidance": withheld_guidance(item),
+                })
+            })
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|err| format!("failed to serialize Code Mode withheld summary: {err}"))?;
+    let advice_json = serde_json::to_string(WITHHELD_SCOPE_ADVICE)
+        .map_err(|err| format!("failed to serialize Code Mode withheld advice: {err}"))?;
     Ok(format!(
         r##"
 globalThis.codemode = globalThis.codemode || {{}};
 var codemode = globalThis.codemode;
 var __codemodeDiscovery = {json};
+var __codemodeWithheld = {withheld_json};
+var __codemodeWithheldAdvice = {advice_json};
+function __codemodeSumTools(items) {{
+  var tools = 0;
+  for (var i = 0; i < items.length; i++) tools += items[i].tool_count;
+  return tools;
+}}
+function __codemodeAliasKey(value) {{
+  return String(value == null ? "" : value).trim().toLowerCase().replace(/[-. ]/g, "_");
+}}
+function __codemodeWithheldSummary(items) {{
+  return items.slice(0, 10).map(function(w) {{
+    return {{ namespace: w.namespace, tool_count: w.tool_count }};
+  }});
+}}
+// Withheld upstreams the query names explicitly. Never consulted when a kind
+// filter excludes tools: snippet/prompt searches cannot be explained by the
+// read-only tool gate.
+function __codemodeWithheldNamed(tokens, hasKindFilter, kindFilter) {{
+  if (!__codemodeWithheld.length || (hasKindFilter && !kindFilter["tool"])) return [];
+  var hits = [];
+  for (var w = 0; w < __codemodeWithheld.length; w++) {{
+    var ns = __codemodeNormalize(__codemodeWithheld[w].namespace);
+    for (var t = 0; t < tokens.length; t++) {{
+      if (ns.indexOf(tokens[t]) !== -1) {{ hits.push(__codemodeWithheld[w]); break; }}
+    }}
+  }}
+  return hits;
+}}
+function __codemodeWithheldHint(hits) {{
+  if (hits.length === 1) return hits[0].guidance;
+  return __codemodeSumTools(hits) + " tools across " + hits.length + " upstreams are hidden because this is a read-only Code Mode run (`codemode_read`) and those upstreams do not annotate them `readOnlyHint: true`. " + __codemodeWithheldAdvice + " `withheld` lists the affected upstreams.";
+}}
+// Secondary note for a search that found nothing at all: the gate *may* be
+// why, but the query is the likelier cause, so the no-match hint stays first.
+function __codemodeWithheldMaybe() {{
+  return " This read-only run also hides " + __codemodeSumTools(__codemodeWithheld) + " tool(s) that lack `readOnlyHint: true` (see `withheld`); if what you need is one of them: " + __codemodeWithheldAdvice;
+}}
+function __codemodeWithheldTarget(raw) {{
+  var ns = raw;
+  if (raw.indexOf("::") !== -1) ns = raw.split("::")[0];
+  else if (raw.indexOf(".") !== -1) ns = raw.split(".")[0];
+  var key = __codemodeAliasKey(ns);
+  for (var w = 0; w < __codemodeWithheld.length; w++) {{
+    if (__codemodeWithheld[w].key === key || __codemodeWithheld[w].helper === ns) return __codemodeWithheld[w];
+  }}
+  return null;
+}}
+function __codemodeNamespaceHasVisibleTools(withheld) {{
+  for (var i = 0; i < __codemodeDiscovery.length; i++) {{
+    var entry = __codemodeDiscovery[i];
+    if (entry.kind === "tool" && __codemodeAliasKey(entry.namespace) === withheld.key) return true;
+  }}
+  return false;
+}}
 function __codemodeNormalize(value) {{
   return String(value == null ? "" : value)
     .toLowerCase()
@@ -200,7 +288,9 @@ function __codemodeTokens(value) {{
   var normalized = __codemodeNormalize(value);
   return normalized ? normalized.split(/\s+/g) : [];
 }}
+var __codemodeRecentSearch = [];
 codemode.search = async function(input) {{
+  __codemodeRecentSearch = [];
   var query = typeof input === "object" && input !== null ? String(input.query || "") : String(input || "");
   var limit = typeof input === "object" && input !== null && Number.isFinite(Number(input.limit))
     ? Math.max(1, Math.min(50, Number(input.limit)))
@@ -215,11 +305,36 @@ codemode.search = async function(input) {{
   var __codemodeNoMatchHint = "No matches. Broaden the query or try synonyms.";
   if (!tokens.length) return {{ results: [], total: 0, truncated: false, hint: __codemodeNoMatchHint }};
 
+  // Keep query-backed catalogs out of the injected preamble. A search pulls
+  // only a bounded result page and merges it with this execution's authorized
+  // local catalog.
+  var searchEntries = __codemodeDiscovery.slice();
+  var queryBackedById = Object.create(null);
+  var artifactSearchIncomplete = false;
+  try {{
+    var artifactResponse = await callTool("__lab_internal::artifact_search", {{ query: query, limit: limit, kinds: requestedKinds }});
+    var artifactEntries = artifactResponse && Array.isArray(artifactResponse.entries) ? artifactResponse.entries : [];
+    var knownIds = Object.create(null);
+    for (var localIndex = 0; localIndex < searchEntries.length; localIndex++) knownIds[searchEntries[localIndex].id] = true;
+    for (var remoteIndex = 0; remoteIndex < artifactEntries.length; remoteIndex++) {{
+      var remoteEntry = artifactEntries[remoteIndex];
+      if (remoteEntry && remoteEntry.id && !knownIds[remoteEntry.id]) {{
+        knownIds[remoteEntry.id] = true;
+        searchEntries.push(remoteEntry);
+        queryBackedById[remoteEntry.id] = remoteEntry;
+      }}
+    }}
+  }} catch (e) {{
+    // Preserve local results, but never report a failed provider search as
+    // authoritative absence from the configured artifact sources.
+    artifactSearchIncomplete = true;
+  }}
+
   // --- lexical scoring (unchanged algorithm) ---
   var lexicalById = {{}};
   var scored = [];
-  for (var i = 0; i < __codemodeDiscovery.length; i++) {{
-    var entry = __codemodeDiscovery[i];
+  for (var i = 0; i < searchEntries.length; i++) {{
+    var entry = searchEntries[i];
     if (hasKindFilter && !kindFilter[String(entry.kind)]) continue;
     var fields = [
       [__codemodeNormalize(entry.path), 12],
@@ -246,6 +361,7 @@ codemode.search = async function(input) {{
       var record = {{
         path: entry.path,
         id: entry.id,
+        helper: entry.helper,
         kind: entry.kind,
         namespace: entry.namespace,
         name: entry.name,
@@ -310,12 +426,12 @@ codemode.search = async function(input) {{
       // semantic_rank ranks exclusively within this execution's
       // already-scope-filtered catalog — a security invariant on the host
       // side), so this lookup is safe and will always find a match.
-      for (var d = 0; d < __codemodeDiscovery.length; d++) {{
-        if (__codemodeDiscovery[d].id === rid) {{
-          var de = __codemodeDiscovery[d];
+      for (var d = 0; d < searchEntries.length; d++) {{
+        if (searchEntries[d].id === rid) {{
+          var de = searchEntries[d];
           if (hasKindFilter && !kindFilter[String(de.kind)]) break;
           var record2 = {{
-            path: de.path, id: de.id, kind: de.kind, namespace: de.namespace,
+            path: de.path, id: de.id, helper: de.helper, kind: de.kind, namespace: de.namespace,
             name: de.name, description: de.description, signature: de.signature,
             safety: de.safety,
             tools: de.tools,
@@ -343,21 +459,46 @@ codemode.search = async function(input) {{
     return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
   }});
   var total = scored.length;
+  var withheldHits = __codemodeWithheldNamed(tokens, hasKindFilter, kindFilter);
   if (total === 0) {{
-    return {{ results: [], total: 0, truncated: false, hint: __codemodeNoMatchHint }};
+    var empty = {{ results: [], total: 0, truncated: false, hint: __codemodeNoMatchHint }};
+    if (artifactSearchIncomplete) {{
+      empty.incomplete = true;
+      empty.hint = "Artifact search was incomplete. Retry or inspect source availability.";
+      return empty;
+    }}
+    if (withheldHits.length) {{
+      empty.hint = __codemodeWithheldHint(withheldHits);
+      empty.withheld = __codemodeWithheldSummary(withheldHits);
+    }} else if (__codemodeWithheld.length && !(hasKindFilter && !kindFilter["tool"])) {{
+      empty.hint = __codemodeNoMatchHint + __codemodeWithheldMaybe();
+      empty.withheld = __codemodeWithheldSummary(__codemodeWithheld);
+    }}
+    return empty;
   }}
   var results = scored.slice(0, limit).map(function(r) {{
-    return {{ path: r.path, id: r.id, kind: r.kind, namespace: r.namespace, name: r.name, description: r.description, signature: r.signature, tags: r.tags, tools: r.tools, safety: r.safety, score: r.score }};
+    return {{ path: r.path, id: r.id, helper: r.helper, kind: r.kind, namespace: r.namespace, name: r.name, description: r.description, signature: r.signature, tags: r.tags, tools: r.tools, safety: r.safety, score: r.score }};
   }});
-  return {{ results: results, total: total, truncated: total > limit }};
+  __codemodeRecentSearch = results.map(function(result) {{ return queryBackedById[result.id]; }}).filter(Boolean);
+  var found = {{ results: results, total: total, truncated: total > limit }};
+  if (withheldHits.length) {{
+    found.hint = __codemodeWithheldHint(withheldHits);
+    found.withheld = __codemodeWithheldSummary(withheldHits);
+  }}
+  if (artifactSearchIncomplete) {{
+    found.incomplete = true;
+    found.hint = "Artifact search was incomplete. Retry or inspect source availability." + (found.hint ? " " + found.hint : "");
+  }}
+  return found;
 }};
 codemode.describe = async function(target) {{
   var raw = String(target == null ? "" : target).trim();
   var exact = [];
   var bare = [];
   var ambiguous = [];
-  for (var i = 0; i < __codemodeDiscovery.length; i++) {{
-    var entry = __codemodeDiscovery[i];
+  var describableEntries = __codemodeDiscovery.concat(__codemodeRecentSearch);
+  for (var i = 0; i < describableEntries.length; i++) {{
+    var entry = describableEntries[i];
     if (raw === entry.id || raw === entry.path || raw === entry.helper) exact.push(entry);
     if (entry.kind === "snippet" && raw === "snippet::" + entry.name) exact.push(entry);
     if (raw === entry.name) bare.push(entry);
@@ -384,7 +525,20 @@ codemode.describe = async function(target) {{
     }}));
   }}
   if (!exact.length) {{
-    throw new Error(JSON.stringify({{ kind: "unknown_tool", message: "No Code Mode discovery target matched `" + raw + "`" }}));
+    var withheldTarget = __codemodeWithheldTarget(raw);
+    var unknownMessage = "No Code Mode discovery target matched `" + raw + "`. Run codemode.search({{ query: \"<intent>\" }}) and pass a returned `path`, `id`, or `helper` exactly; tool names are case-sensitive.";
+    if (withheldTarget && !__codemodeNamespaceHasVisibleTools(withheldTarget)) {{
+      throw new Error(JSON.stringify({{
+        kind: "forbidden",
+        reason: "read_only_withheld",
+        namespace: withheldTarget.namespace,
+        message: "`" + raw + "` is not available in this run. " + withheldTarget.guidance
+      }}));
+    }}
+    if (withheldTarget) {{
+      unknownMessage += " Some tools from upstream `" + withheldTarget.namespace + "` are also hidden in this read-only run; if you need one of them, use the `codemode` tool (requires the `lab` scope).";
+    }}
+    throw new Error(JSON.stringify({{ kind: "unknown_tool", message: unknownMessage }}));
   }}
   if (exact.length > 1) {{
     throw new Error(JSON.stringify({{
@@ -395,6 +549,8 @@ codemode.describe = async function(target) {{
   }}
   var entry = exact[0];
   var markdown;
+  var schemaStatus = null;
+  var schemaError = null;
   if (entry.kind === "snippet") {{
     var inputLines = (entry.inputs || []).map(function(input) {{
       var bits = ["- `" + input.name + "` (" + input.ty + ")"];
@@ -403,29 +559,61 @@ codemode.describe = async function(target) {{
       if (input.description) bits.push(input.description);
       return bits.join(" - ");
     }}).join("\n");
-    var toolDeclaration = entry.tools === undefined ? "omitted (caller policy unchanged)" : (entry.tools.length ? entry.tools.join(", ") : "[] (intended deny-all)");
+    var toolDeclaration;
+    if (entry.tools === undefined) {{
+      toolDeclaration = "omitted (native exec/test inherits caller scope)";
+    }} else if (entry.tools.length) {{
+      toolDeclaration = entry.tools.join(", ");
+    }} else {{
+      toolDeclaration = "[] (native exec/test denies all upstream tools)";
+    }}
     markdown = "# " + entry.name + "\n\nKind: snippet\n\nName: `" + entry.name + "`\n\nDescription: " + entry.description + "\n\nRun: `codemode.run(" + JSON.stringify(entry.name) + ", input)`\n" + (inputLines ? "\nInputs:\n" + inputLines + "\n" : "\nInputs: none\n");
-    markdown += "\nDeclared upstream tools: " + toolDeclaration + "\nMetadata only: declarations do not currently restrict execution.\n";
+    markdown += "\nDeclared upstream tools: " + toolDeclaration + "\nExecution policy: native snippets.exec/test intersects a nonempty declaration with caller authority and never grants authority. Nested codemode.run retains the enclosing run scope; it does not reapply the declaration.\n";
   }} else if (entry.kind === "tool") {{
     markdown = "# " + entry.path + "\n\n" + entry.description + "\n\n- kind: `tool`\n- id: `" + entry.id + "`\n- helper: `" + entry.helper + "`\n- signature: `" + entry.signature + "`\n";
-    // Fetched from the host on demand rather than embedded in the sandbox
-    // preamble up front — the host already has this cached from the same
-    // catalog render this execution's discovery index was built from, so
-    // this is usually a cheap round trip, not a fresh computation (see the
-    // Rust-side `describe_types` dispatch comment for when it isn't). Caught,
-    // not propagated: the target is already fully resolved above (path/id/
-    // helper/signature), so a transient failure fetching the type body alone
-    // must not fail the whole `describe()` call — degrade to no type section
-    // instead, matching the host's own fail-open behavior for this lookup.
+    // Fetch the declaration through the reserved host bridge. The host
+    // resolves this from the exact catalog snapshot used to build this
+    // execution's discovery index, so describe() does not re-enumerate the
+    // broad live catalog after it has already resolved a target.
     var typeBody = null;
     try {{
       var typeResponse = await callTool("__lab_internal::describe_types", {{ id: entry.id }});
       typeBody = typeResponse && typeResponse.dts;
+      if (typeBody) {{
+        schemaStatus = "complete";
+        markdown += "\nParameters (TypeScript):\n\n```typescript\n" + typeBody + "```\n";
+      }} else {{
+        schemaStatus = "unavailable";
+        schemaError = {{
+          kind: "schema_unavailable",
+          message: "The resolved tool has no available parameter declaration.",
+          recovery: {{
+            action: "revise_and_retry",
+            same_arguments: "conditional",
+            guidance: "Retry this Code Mode execution with top-level upstreams: [\"" + entry.namespace + "\"] using the canonical upstream id, or retry later."
+          }}
+        }};
+        markdown += "\nParameters (TypeScript): unavailable. Inspect `schema_error` for recovery guidance.\n";
+      }}
     }} catch (e) {{
-      typeBody = null;
-    }}
-    if (typeBody) {{
-      markdown += "\nParameters (TypeScript):\n\n```typescript\n" + typeBody + "```\n";
+      schemaStatus = "unavailable";
+      var typeErrorMessage = String(e && e.message ? e.message : e);
+      try {{
+        schemaError = JSON.parse(typeErrorMessage);
+      }} catch (_parseError) {{
+        schemaError = {{ kind: "schema_lookup_failed", message: typeErrorMessage }};
+      }}
+      if (!schemaError || typeof schemaError !== "object" || Array.isArray(schemaError)) {{
+        schemaError = {{ kind: "schema_lookup_failed", message: typeErrorMessage }};
+      }}
+      if (!schemaError.recovery) {{
+        schemaError.recovery = {{
+          action: "revise_and_retry",
+          same_arguments: "conditional",
+          guidance: "Retry this Code Mode execution with top-level upstreams: [\"" + entry.namespace + "\"] using the canonical upstream id, or retry later."
+        }};
+      }}
+      markdown += "\nParameters (TypeScript): unavailable. Inspect `schema_error` for the lookup failure and recovery guidance.\n";
     }}
   }} else {{
     markdown = "# " + entry.path + "\n\n" + entry.description
@@ -442,6 +630,8 @@ codemode.describe = async function(target) {{
     helper: entry.helper,
     tags: entry.tags || [],
     safety: entry.safety,
+    schema_status: schemaStatus,
+    schema_error: schemaError,
     markdown: markdown
   }};
 }};
@@ -494,8 +684,40 @@ codemode.batch = async function(jobs) {{
   if (!Array.isArray(jobs)) {{
     throw new Error("codemode.batch requires an array of jobs");
   }}
-  var settled = await Promise.allSettled(jobs.map(function(job) {{
-    return typeof job === "function" ? Promise.resolve().then(job) : job;
+  function decodeBatchError(reason) {{
+    var message = String(reason && reason.message ? reason.message : reason);
+    try {{
+      var parsed = JSON.parse(message);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {{
+        if (!["none_expected", "possible", "unknown"].includes(parsed.side_effects)) {{
+          parsed.side_effects = "unknown";
+        }}
+        if (!parsed.recovery || typeof parsed.recovery !== "object" || Array.isArray(parsed.recovery)) {{
+          parsed.recovery = {{}};
+        }}
+        if (!["safe", "conditional", "discouraged", "never"].includes(parsed.recovery.same_arguments)) {{
+          parsed.recovery.same_arguments = "discouraged";
+        }}
+        return parsed;
+      }}
+    }} catch (_) {{}}
+    return {{
+      message: message,
+      side_effects: "unknown",
+      recovery: {{ same_arguments: "discouraged" }}
+    }};
+  }}
+  var settled = await Promise.allSettled(jobs.map(function(job, index) {{
+    return Promise.resolve().then(function() {{
+      if (typeof job === "function") return job();
+      if (job && typeof job.then === "function") return job;
+      throw new Error(JSON.stringify({{
+        kind: "invalid_param",
+        message: "codemode.batch job at index " + index + " must be a function or Promise",
+        side_effects: "none_expected",
+        recovery: {{ same_arguments: "never", guidance: "Replace the invalid entry with a function or Promise." }}
+      }}));
+    }});
   }}));
   var ok = [];
   var failed = [];
@@ -503,8 +725,7 @@ codemode.batch = async function(jobs) {{
     if (result.status === "fulfilled") {{
       ok.push({{ i: index, value: result.value }});
     }} else {{
-      var reason = result.reason;
-      failed.push({{ i: index, error: String(reason && reason.message ? reason.message : reason) }});
+      failed.push({{ i: index, error: decodeBatchError(result.reason) }});
     }}
   }});
   return {{ ok: ok, failed: failed, all_ok: failed.length === 0 }};
@@ -608,6 +829,19 @@ pub(crate) fn generate_js_proxy_from_catalog(
     }
 
     let mut parts = String::new();
+    // Raw-name aliases (`codemode["claude-macpoo"]["get-issue"]`) emitted
+    // after every sanitized key exists; guarded so they never replace a
+    // helper or a sanitized key.
+    let mut raw_aliases = String::new();
+    // Raw namespaces that sanitize to the same key (`foo-bar`, `foo_bar`)
+    // share one proxy object; a raw alias would then expose both upstreams'
+    // tools under one raw name, so such namespaces get no raw alias.
+    let mut raw_per_snake: BTreeMap<String, usize> = BTreeMap::new();
+    for namespace_name in by_namespace.keys() {
+        *raw_per_snake
+            .entry(namespace_segment(namespace_name))
+            .or_default() += 1;
+    }
     let mut by_snake_namespace: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut final_proxy_keys: BTreeMap<(String, String), (String, String)> = BTreeMap::new();
     for (namespace_name, namespace_tools) in &by_namespace {
@@ -650,6 +884,28 @@ pub(crate) fn generate_js_proxy_from_catalog(
             method_defs.push(format!(
                 "    {snake_json}: function(p) {{ return callTool({tool_id_json}, p == null ? {{}} : p); }}"
             ));
+            if dotted != snake {
+                let raw_tool_json = serde_json::to_string(dotted.as_str())
+                    .unwrap_or_else(|_| "\"unknown\"".to_string());
+                let namespace_json = serde_json::to_string(&namespace_snake)
+                    .unwrap_or_else(|_| "\"unknown\"".to_string());
+                let _ = writeln!(
+                    raw_aliases,
+                    "if (!Object.prototype.hasOwnProperty.call(codemode[{namespace_json}], {raw_tool_json})) codemode[{namespace_json}][{raw_tool_json}] = codemode[{namespace_json}][{snake_json}];"
+                );
+            }
+        }
+        if *namespace_name != namespace_snake
+            && raw_per_snake.get(&namespace_snake).copied() == Some(1)
+        {
+            let raw_json =
+                serde_json::to_string(namespace_name).unwrap_or_else(|_| "\"unknown\"".to_string());
+            let snake_json = serde_json::to_string(&namespace_snake)
+                .unwrap_or_else(|_| "\"unknown\"".to_string());
+            let _ = writeln!(
+                raw_aliases,
+                "if (!Object.prototype.hasOwnProperty.call(codemode, {raw_json})) codemode[{raw_json}] = codemode[{snake_json}];"
+            );
         }
     }
 
@@ -667,7 +923,7 @@ pub(crate) fn generate_js_proxy_from_catalog(
         "// Code Mode proxy — auto-generated\n\
          globalThis.codemode = globalThis.codemode || {{}};\n\
          var codemode = globalThis.codemode;\n\
-         {parts}"
+         {parts}{raw_aliases}"
     ))
 }
 
@@ -772,12 +1028,17 @@ mod tests {
     #[test]
     fn discovery_preamble_preserves_existing_codemode_object() {
         let entries = vec![discovery_entry("arcane", "containers", "List containers")];
-        let js = generate_discovery_js(&entries, 0.5).expect("js");
+        let js = generate_discovery_js(&entries, 0.5, &[]).expect("js");
         assert!(js.contains("globalThis.codemode = globalThis.codemode || {}"));
         assert!(js.contains("codemode.search"));
         assert!(js.contains("codemode.describe"));
-        assert!(!js.contains("schema"));
-        assert!(!js.contains("output_schema"));
+        // #787 adds explicit schema lookup status/error fields to describe().
+        // Keep guarding the actual discovery payload instead of banning the
+        // word "schema" from the generated helper implementation.
+        assert!(!js.contains("\"schema\":"));
+        assert!(!js.contains("\"output_schema\":"));
+        assert!(js.contains("schema_status"));
+        assert!(js.contains("schema_error"));
         // No embedded type-declaration lookup table — `.dts` appears only as a
         // property name on the lazily-fetched `__lab_internal::describe_types`
         // response (see `discovery_describe_fetches_tool_types_lazily`), never
@@ -791,7 +1052,7 @@ mod tests {
             discovery_entry("github", "search_issues", "Search GitHub issues"),
             discovery_entry("github", "list_pull_requests", "List GitHub pull requests"),
         ];
-        let js = generate_discovery_js(&entries, 0.5).expect("js");
+        let js = generate_discovery_js(&entries, 0.5, &[]).expect("js");
 
         assert!(js.contains("typeof input === \"object\""));
         assert!(js.contains("Math.max(1, Math.min(50"));
@@ -816,9 +1077,10 @@ mod tests {
         assert!(js.contains("__lab_internal::get_skill"));
         assert!(js.contains("__lab_internal::read_skill"));
         assert!(js.contains("Promise.allSettled"));
-        assert!(js.contains("Promise.resolve().then(job)"));
+        assert!(js.contains("return Promise.resolve().then(function()"));
         assert!(js.contains("ok.push({ i: index, value: result.value })"));
-        assert!(js.contains("failed.push({ i: index, error: String"));
+        assert!(js.contains("failed.push({ i: index, error: decodeBatchError"));
+        assert!(js.contains("must be a function or Promise"));
         assert!(js.contains("all_ok: failed.length === 0"));
     }
 
@@ -831,7 +1093,7 @@ mod tests {
         entry.dts =
             "type GithubListTagsInput = { owner: string; repo: string; perPage?: number };\n"
                 .to_string();
-        let js = generate_discovery_js(&[entry], 0.5).expect("js");
+        let js = generate_discovery_js(&[entry], 0.5, &[]).expect("js");
 
         assert!(!js.contains("__codemodeTypes"));
         assert!(!js.contains("GithubListTagsInput"));
@@ -843,11 +1105,9 @@ mod tests {
         assert!(js.contains("typeResponse.dts"));
         assert!(js.contains("```typescript"));
         // Regression guard: the describe_types round trip must stay inside a
-        // try block, and a rejection must be caught and degrade to no type
-        // body (`typeBody = null`), not propagate into a `describe()`
-        // rejection. String-matching, not behavioral, but it's the difference
-        // between "this test would catch someone deleting the try/catch" and
-        // "it wouldn't" — see the end-to-end test in
+        // try block, and a rejection must be caught and converted into the
+        // explicit #787 incomplete-schema contract instead of propagating into
+        // a `describe()` rejection. See the end-to-end test in
         // `crates/labby/tests/code_mode_runner.rs` for the behavioral proof.
         assert!(
             js.contains(
@@ -856,8 +1116,12 @@ mod tests {
             "the describe_types call must be the first statement inside a try block: {js}"
         );
         assert!(
-            js.contains("} catch (e) {\n      typeBody = null;"),
-            "a rejected describe_types call must be caught, not left to propagate: {js}"
+            js.contains("} catch (e) {\n      schemaStatus = \"unavailable\";"),
+            "a rejected describe_types call must expose an unavailable schema status: {js}"
+        );
+        assert!(
+            js.contains("schemaError = JSON.parse(typeErrorMessage)"),
+            "a rejected describe_types call must preserve the structured lookup error: {js}"
         );
     }
 
@@ -870,7 +1134,7 @@ mod tests {
             "required": ["owner"],
         }));
         entry.dts = "type GithubListTagsInput = { owner: string };\n".to_string();
-        let js = generate_discovery_js(&[entry], 0.5).expect("js");
+        let js = generate_discovery_js(&[entry], 0.5, &[]).expect("js");
 
         // Neither field is serialized onto the discovery entry (`#[serde(skip)]`)
         // and types are never embedded anywhere now — assert JSON-schema-shaped
@@ -898,7 +1162,7 @@ mod tests {
                 entry
             })
             .collect::<Vec<_>>();
-        let js = generate_discovery_js(&entries, 0.5).expect("4k discovery JS");
+        let js = generate_discovery_js(&entries, 0.5, &[]).expect("4k discovery JS");
 
         assert!(
             js.len() < 2_000_000,
@@ -921,7 +1185,7 @@ mod tests {
             "list_tags",
             "List repository tags",
         )];
-        let js = generate_discovery_js(&entries, 0.5).expect("js");
+        let js = generate_discovery_js(&entries, 0.5, &[]).expect("js");
 
         assert!(js.contains("hint: __codemodeNoMatchHint"));
         assert!(js.contains("Broaden the query or try synonyms."));
@@ -952,16 +1216,57 @@ mod tests {
     #[test]
     fn generate_discovery_js_includes_semantic_blend() {
         let entries = vec![discovery_entry("arcane", "containers", "List containers")];
-        let js = generate_discovery_js(&entries, 0.5).expect("js generation succeeds");
+        let js = generate_discovery_js(&entries, 0.5, &[]).expect("js generation succeeds");
         assert!(js.contains("__lab_internal::semantic_rank"));
         assert!(js.contains("blendedScore"));
         assert!(js.contains("codemode.search = async function"));
+        assert!(js.contains("__lab_internal::artifact_search"));
+        assert!(js.contains("searchEntries.push(remoteEntry)"));
+    }
+
+    #[test]
+    fn query_backed_skill_can_be_described_after_search() {
+        let js = generate_discovery_js(&[], 0.5, &[]).expect("js");
+        let remote = CodeModeDiscoveryEntry::from_catalog(&CatalogDescriptor::metadata(
+            CodeModeCatalogKind::Skill,
+            "public_depot",
+            "depot:skill:fixture",
+            "fixture skill",
+            "query-backed result",
+            vec!["skill".to_owned()],
+        ));
+        let remote = serde_json::to_string(&remote).expect("remote entry");
+        let script = format!(
+            "{js}\n\
+             globalThis.callTool = async (id) => id === '__lab_internal::artifact_search'\n\
+               ? {{entries: [{remote}]}} : {{ranked: []}};\n\
+             globalThis.result = null;\n\
+             (async () => {{\n\
+               const hit = (await codemode.search('fixture')).results[0];\n\
+               const described = await codemode.describe(hit.id);\n\
+               globalThis.result = JSON.stringify({{hit: hit.id, described: described.id}});\n\
+             }})().catch(error => {{ globalThis.result = JSON.stringify({{error: String(error)}}); }});"
+        );
+        let runtime = javy::Runtime::new(javy::Config::default()).expect("runtime");
+        runtime
+            .context()
+            .with(|cx| cx.eval::<(), _>(script))
+            .expect("script");
+        runtime.resolve_pending_jobs().expect("pending jobs");
+        let result: String = runtime
+            .context()
+            .with(|cx| cx.globals().get("result"))
+            .expect("result");
+        let value: serde_json::Value = serde_json::from_str(&result).expect("json");
+        assert!(value.get("error").is_none(), "{value}");
+        assert_eq!(value["hit"], "depot:skill:fixture");
+        assert_eq!(value["described"], value["hit"]);
     }
 
     #[test]
     fn generate_discovery_js_interpolates_configured_blend_weight() {
         let entries = vec![discovery_entry("arcane", "containers", "List containers")];
-        let js = generate_discovery_js(&entries, 0.75).expect("js generation succeeds");
+        let js = generate_discovery_js(&entries, 0.75, &[]).expect("js generation succeeds");
         assert!(js.contains("var BLEND_WEIGHT = 0.75"));
     }
 
@@ -972,14 +1277,16 @@ mod tests {
         // (e.g. network_error surfaced as a JS Error) cannot propagate out
         // of codemode.search() and break the caller's script.
         let entries = vec![discovery_entry("arcane", "containers", "List containers")];
-        let js = generate_discovery_js(&entries, 0.5).expect("js generation succeeds");
+        let js = generate_discovery_js(&entries, 0.5, &[]).expect("js generation succeeds");
         assert!(js.contains("catch (e) {"));
+        assert!(js.contains("artifactSearchIncomplete = true"));
+        assert!(js.contains("empty.incomplete = true"));
     }
 
     #[test]
     fn discovery_describe_rejects_namespace_only_targets() {
         let entries = vec![discovery_entry("github", "search_issues", "Search issues")];
-        let js = generate_discovery_js(&entries, 0.5).expect("js");
+        let js = generate_discovery_js(&entries, 0.5, &[]).expect("js");
         assert!(js.contains("ambiguous_target"));
         assert!(js.contains("github.search_issues"));
     }
@@ -1090,9 +1397,17 @@ mod tests {
             js.contains("codemode[\"arcane_mcp\"]"),
             "hyphenated namespace key must be snake_cased: {js}"
         );
+        // The raw name is only an alias of the snake-cased object, for
+        // agents that copy the configured upstream name verbatim.
         assert!(
-            !js.contains("codemode[\"arcane-mcp\"]"),
-            "raw hyphenated key would only be bracket-accessible"
+            js.contains(
+                "if (!Object.prototype.hasOwnProperty.call(codemode, \"arcane-mcp\")) codemode[\"arcane-mcp\"] = codemode[\"arcane_mcp\"];"
+            ),
+            "raw hyphenated key must alias the snake-cased object: {js}"
+        );
+        assert!(
+            !js.contains("codemode[\"arcane-mcp\"] = {"),
+            "raw key must not get its own proxy object: {js}"
         );
         assert!(
             js.contains("arcane-mcp::arcane"),

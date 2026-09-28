@@ -833,8 +833,7 @@ async fn cli_local_oauth_fails_clearly_when_loopback_leases_are_not_enabled() {
     let requests = server.received_requests().await.unwrap();
     assert!(!requests.iter().any(|request| {
         serde_json::from_slice::<serde_json::Value>(&request.body)
-            .ok()
-            .is_some_and(|body| body["action"] == "gateway.oauth.resource_lease.create")
+            .is_ok_and(|body| body["action"] == "gateway.oauth.resource_lease.create")
     }));
 }
 

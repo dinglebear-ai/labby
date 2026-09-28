@@ -29,7 +29,7 @@ never mutates journal state or deletes files after sending an HTTP request.
 ## Prepare offline
 
 ```bash
-labby setup access-bootstrap prepare \
+labby auth bootstrap prepare \
   --proof-file /secure/new/labby-bootstrap-proof.json \
   --credential-file /secure/new/labby-project-credential \
   --organization-name "Example Org" \
@@ -60,7 +60,7 @@ its canonical digest and never receives or returns the plaintext credential.
 Start the daemon, then submit the stored prepare by public ID:
 
 ```bash
-labby setup access-bootstrap consume --prepare-id PREPARE_ID
+labby auth bootstrap consume --prepare-id PREPARE_ID
 ```
 
 The client securely reopens the exact journaled files, bypasses ambient proxy
@@ -89,8 +89,8 @@ secret.
 ## Status and cleanup
 
 ```bash
-labby setup access-bootstrap status --prepare-id PREPARE_ID
-labby setup access-bootstrap cleanup --prepare-id PREPARE_ID
+labby auth bootstrap status --prepare-id PREPARE_ID
+labby auth bootstrap cleanup --prepare-id PREPARE_ID
 ```
 
 Online status and cleanup are proof-authenticated requests to the daemon.
@@ -109,9 +109,9 @@ leaves the tombstone authoritative and reports
 When the daemon is stopped and the lifecycle lock is available:
 
 ```bash
-labby setup access-bootstrap recover --prepare-id PREPARE_ID --complete
-labby setup access-bootstrap recover --prepare-id PREPARE_ID --revoke
-labby setup access-bootstrap cleanup --prepare-id PREPARE_ID
+labby auth bootstrap recover --prepare-id PREPARE_ID --complete
+labby auth bootstrap recover --prepare-id PREPARE_ID --revoke
+labby auth bootstrap cleanup --prepare-id PREPARE_ID
 ```
 
 `--complete` is allowed only for the exact unexpired prepared files while the

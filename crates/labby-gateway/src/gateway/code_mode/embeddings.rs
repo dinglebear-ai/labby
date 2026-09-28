@@ -267,11 +267,22 @@ pub(crate) fn rank_top_k_by_similarity(
     catalog_vectors: &[(String, Vec<f32>)],
     top_k: usize,
 ) -> Vec<(String, f32)> {
-    let limit = top_k.max(1).min(catalog_vectors.len());
+    rank_top_k_by_similarity_where(query_vector, catalog_vectors, top_k, |_| true)
+}
+
+/// Score only visible ids without copying their embedding vectors.
+pub(crate) fn rank_top_k_by_similarity_where(
+    query_vector: &[f32],
+    catalog_vectors: &[(String, Vec<f32>)],
+    top_k: usize,
+    visible: impl Fn(&str) -> bool,
+) -> Vec<(String, f32)> {
     let mut scored: Vec<(&str, f32)> = catalog_vectors
         .iter()
+        .filter(|(id, _)| visible(id))
         .map(|(id, vector)| (id.as_str(), cosine_similarity(query_vector, vector)))
         .collect();
+    let limit = top_k.max(1).min(scored.len());
     if scored.len() > limit {
         scored.select_nth_unstable_by(limit, |a, b| b.1.total_cmp(&a.1));
         scored.truncate(limit);
@@ -357,6 +368,18 @@ mod tests {
         assert_eq!(ranked.len(), 2);
         assert_eq!(ranked[0].0, "high");
         assert_eq!(ranked[1].0, "mid");
+    }
+
+    #[test]
+    fn filtered_ranking_excludes_hidden_vectors() {
+        let query = vec![1.0, 0.0];
+        let catalog = vec![
+            ("hidden".to_string(), vec![1.0, 0.0]),
+            ("visible".to_string(), vec![0.7, 0.7]),
+        ];
+        let ranked = rank_top_k_by_similarity_where(&query, &catalog, 2, |id| id == "visible");
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].0, "visible");
     }
 
     #[tokio::test]

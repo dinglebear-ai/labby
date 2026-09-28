@@ -199,10 +199,11 @@ fn duplicate_registration_preserves_the_original_harness() {
             )
             .is_err()
     );
-    assert!(matches!(
-        backend.run(&plan(3000)).verdict,
-        Verdict::Bounded { .. }
-    ));
+    let report = backend.run(&plan(3000));
+    assert!(
+        matches!(report.verdict, Verdict::Bounded { .. }),
+        "{report:?}"
+    );
 }
 
 fn alloy_script(sat: bool) -> String {

@@ -372,12 +372,6 @@ impl UpstreamPool {
         let (peer, _tools) = match self.acquire_or_connect_subject(config, subject).await {
             Ok(pair) => pair,
             Err(error) => {
-                self.record_failure_for(
-                    &config.name,
-                    UpstreamCapability::Tools,
-                    format!("upstream connect failed: {error}"),
-                )
-                .await;
                 let elapsed_ms = start.elapsed().as_millis();
                 log_upstream_request_error(
                     event,
@@ -1127,6 +1121,7 @@ mod tests {
         let before = init_count.load(Ordering::SeqCst);
         let mut config = test_upstream_config();
         config.name = upstream_name.to_string();
+        pool.register_upstream_config_for_tests(&config);
 
         let r1 = pool
             .subject_scoped_call_tool_classified(

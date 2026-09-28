@@ -197,7 +197,7 @@ export type DepotStatus = z.infer<typeof depotStatusSchema>
 async function parse(response: Response): Promise<unknown> {
   const requestId = response.headers.get('x-request-id') ?? undefined
   let body: unknown
-  try { body = await response.json() } catch { throw new DepotClientError(response.status, 'invalid_response', `Labby catalog returned invalid JSON (${response.status})`, undefined, requestId) }
+  try { body = await response.json() } catch { throw new DepotClientError(response.status, 'invalid_response', response.ok ? `Labby catalog returned invalid JSON (${response.status})` : `Labby catalog request failed (${response.status}). Check the Depot connection and retry.`, undefined, requestId) }
   if (!response.ok) {
     const error = body && typeof body === 'object' ? body as Record<string, unknown> : {}
     const summary = typeof error.error === 'string' ? error.error : typeof error.message === 'string' ? error.message : `Labby catalog request failed (${response.status})`
@@ -566,7 +566,7 @@ async function requestV2<T>(path: string, init: RequestInit, schema: z.ZodType<T
     const response = await fetch(path, { credentials: 'same-origin', cache: 'no-store', ...init, headers })
     const requestId = response.headers.get('x-request-id') ?? undefined
     let body: unknown
-    try { body = await response.json() } catch { throw new DepotClientError(response.status, 'invalid_response', `Labby catalog returned invalid JSON (${response.status})`, undefined, requestId) }
+    try { body = await response.json() } catch { throw new DepotClientError(response.status, 'invalid_response', response.ok ? `Labby catalog returned invalid JSON (${response.status})` : `Labby catalog request failed (${response.status}). Check the Depot connection and retry.`, undefined, requestId) }
     if (epoch !== getBrowserSessionEpoch()) throw new DepotSessionChangedError('Session changed')
     if (!response.ok) {
       const error = z.object({ kind: bounded(128), message: bounded(4096), recovery: z.unknown().optional() }).passthrough().safeParse(body)

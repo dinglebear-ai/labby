@@ -32,7 +32,8 @@ use super::helpers::{
 /// this limit is hit.  Tests can reference this constant to assert bounds behavior.
 pub const MAX_UPSTREAM_TOOLS: usize = 1000;
 
-/// Hard cap on the total number of resources returned by `list_upstream_resources()`.
+/// Hard cap on resources in any upstream resource listing: the live fan-out,
+/// the cached projection, and subject-scoped aggregation.
 pub(crate) const MAX_UPSTREAM_RESOURCES: usize = 1000;
 
 /// Hard cap on the total number of prompts returned by `collect_upstream_prompts()`.
@@ -317,6 +318,49 @@ impl UpstreamPool {
         selected.into_iter().cloned().collect()
     }
 
+    /// The exposed, explicitly read-only tool with the smallest name on a
+    /// routable upstream, as `(name, input schema)`. Scans borrowed entries and
+    /// clones only the chosen name and schema `Arc`.
+    pub async fn read_only_example_tool(
+        &self,
+        upstream: &str,
+    ) -> Option<(String, std::sync::Arc<serde_json::Map<String, Value>>)> {
+        let catalog = self.catalog.read().await;
+        let entry = catalog
+            .get(upstream)
+            .filter(|entry| entry.tool_health.is_routable())?;
+        entry
+            .tools
+            .values()
+            .filter(|tool| {
+                entry.exposure_policy.matches(tool.tool.name.as_ref())
+                    && crate::gateway::code_mode::code_mode_host::tool_is_explicitly_read_only(tool)
+            })
+            .min_by(|left, right| left.tool.name.cmp(&right.tool.name))
+            .map(|tool| {
+                (
+                    tool.tool.name.to_string(),
+                    std::sync::Arc::clone(&tool.tool.input_schema),
+                )
+            })
+    }
+
+    /// Whether `tool` is still an exposed, explicitly read-only tool of
+    /// `upstream`. `None` when the upstream is not currently routable, so the
+    /// caller cannot tell and should keep what it has.
+    pub async fn read_only_tool_still_present(&self, upstream: &str, tool: &str) -> Option<bool> {
+        let catalog = self.catalog.read().await;
+        let entry = catalog
+            .get(upstream)
+            .filter(|entry| entry.tool_health.is_routable())?;
+        Some(entry.tools.get(tool).is_some_and(|candidate| {
+            entry.exposure_policy.matches(tool)
+                && crate::gateway::code_mode::code_mode_host::tool_is_explicitly_read_only(
+                    candidate,
+                )
+        }))
+    }
+
     /// Inspect at most `inspection_limit` exposed tools and retain the highest
     /// scoring `limit` without cloning discarded schemas.
     pub async fn healthy_tools_for_upstream_ranked_bounded(
@@ -392,7 +436,7 @@ impl UpstreamPool {
             .then(|| tool.clone())
     }
 
-    pub(super) async fn has_healthy_tools_for_upstream(&self, upstream: &str) -> bool {
+    pub(crate) async fn has_healthy_tools_for_upstream(&self, upstream: &str) -> bool {
         let _binding = self.connection_catalog_binding.read().await;
         let connections = self.connections.read().await;
         let catalog = self.catalog.read().await;
@@ -405,6 +449,32 @@ impl UpstreamPool {
             });
             entry.tool_health.is_routable() && (connected || !entry.tools.is_empty())
         })
+    }
+
+    pub(crate) async fn has_cached_subject_tools_for_upstream(
+        &self,
+        upstream: &str,
+        subject: &str,
+    ) -> bool {
+        self.subject_connections
+            .read()
+            .await
+            .get(&(upstream.to_string(), subject.to_string()))
+            .is_some_and(|entry| entry.last_used.elapsed() < SUBJECT_CONN_IDLE_TTL)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn subject_connect_lock_for_tests(
+        &self,
+        upstream: &str,
+        subject: &str,
+    ) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+        self.subject_connect_locks
+            .write()
+            .await
+            .entry((upstream.to_string(), subject.to_string()))
+            .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     }
 
     pub async fn find_tool_candidates(&self, tool_name: &str) -> Vec<(String, UpstreamTool)> {
@@ -838,6 +908,24 @@ impl UpstreamPool {
         allowed: Option<&BTreeSet<String>>,
         limit: usize,
     ) -> Vec<UpstreamTool> {
+        self.subject_scoped_upstream_tools_allowed_with_deadline(
+            configs,
+            subject,
+            allowed,
+            limit,
+            SUBJECT_SCOPED_ENUMERATION_TIMEOUT,
+        )
+        .await
+    }
+
+    pub(crate) async fn subject_scoped_upstream_tools_allowed_with_deadline(
+        &self,
+        configs: &[UpstreamConfig],
+        subject: &str,
+        allowed: Option<&BTreeSet<String>>,
+        limit: usize,
+        deadline: Duration,
+    ) -> Vec<UpstreamTool> {
         let configs = configs
             .iter()
             .filter(|config| config.enabled && upstream_allowed(allowed, &config.name))
@@ -845,8 +933,9 @@ impl UpstreamPool {
             .collect::<Vec<_>>();
         let mut routed = Vec::new();
         for (upstream, tools) in self
-            .subject_scoped_tools_bounded(&configs, subject, limit)
+            .subject_scoped_tools_inner(&configs, subject, Some(limit), None, deadline)
             .await
+            .tools
         {
             let upstream_name = std::sync::Arc::<str>::from(upstream);
             for tool in tools {
@@ -1358,7 +1447,13 @@ impl UpstreamPool {
             .filter(|tool| entry.exposure_policy.matches(tool.tool.name.as_ref()))
             .count();
         let discovered_resource_count = entry.resource_count;
-        let exposed_resource_count = if entry.resource_health.is_routable() {
+        // A rejected snapshot leaves `resource_count` describing what the
+        // upstream returned — the exposure editor still shows those rows — but
+        // none of them are retained, listable or routable, so the upstream
+        // exposes nothing until it is re-listed.
+        let exposed_resource_count = if entry.resource_health.is_routable()
+            && !catalog.resource_rows_withheld(upstream_name)
+        {
             entry.resource_count
         } else {
             0
@@ -1637,6 +1732,7 @@ mod tests {
                         },
                     scopes: None,
                     credential: Default::default(),
+                    additional_endpoint_origins: vec![],
                     prefer_client_metadata_document: None,
                 });
                 config
@@ -1650,6 +1746,43 @@ mod tests {
                 .is_empty()
         );
         assert!(started.elapsed() < Duration::from_millis(100));
+    }
+
+    #[tokio::test]
+    async fn subject_scoped_routed_projection_obeys_a_short_deadline() {
+        let pool = UpstreamPool::new();
+        let mut config = named_test_upstream_config("oauth");
+        config.oauth = Some(labby_runtime::gateway_config::UpstreamOauthConfig {
+            mode: labby_runtime::gateway_config::UpstreamOauthMode::AuthorizationCodePkce,
+            registration: labby_runtime::gateway_config::UpstreamOauthRegistration::Preregistered {
+                client_id: "client-id".into(),
+                client_secret_env: None,
+            },
+            scopes: None,
+            credential: Default::default(),
+            additional_endpoint_origins: vec![],
+            prefer_client_metadata_document: None,
+        });
+        pool.register_upstream_config_for_tests(&config);
+        let blocked = Arc::new(tokio::sync::Mutex::new(()));
+        pool.subject_connect_locks.write().await.insert(
+            (config.name.clone(), "alice".to_string()),
+            Arc::clone(&blocked),
+        );
+        let _guard = blocked.lock().await;
+
+        let started = tokio::time::Instant::now();
+        let tools = pool
+            .subject_scoped_upstream_tools_allowed_with_deadline(
+                &[config],
+                "alice",
+                None,
+                MAX_UPSTREAM_TOOLS,
+                Duration::from_millis(50),
+            )
+            .await;
+        assert!(tools.is_empty());
+        assert!(started.elapsed() < Duration::from_millis(500));
     }
 
     #[tokio::test]
@@ -1884,6 +2017,7 @@ mod tests {
             },
             scopes: None,
             credential: Default::default(),
+            additional_endpoint_origins: vec![],
             prefer_client_metadata_document: None,
         });
         pool.install_test_subject_tools_for_upstream(
@@ -1947,6 +2081,7 @@ mod tests {
             },
             scopes: None,
             credential: Default::default(),
+            additional_endpoint_origins: vec![],
             prefer_client_metadata_document: None,
         });
         pool.install_test_subject_tools_for_upstream(
@@ -1990,10 +2125,12 @@ mod tests {
             },
             scopes: None,
             credential: Default::default(),
+            additional_endpoint_origins: vec![],
             prefer_client_metadata_document: None,
         });
         pool.install_test_subject_tools_for_upstream(&config, "alice", vec![tool])
             .await;
+        pool.register_upstream_config_for_tests(&config);
 
         let listed = pool
             .cached_mcp_app_tools_allowed(

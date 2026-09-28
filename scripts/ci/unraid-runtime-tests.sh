@@ -693,6 +693,12 @@ test_page_exposes_native_gateway_controls() {
     assert_file_contains "$page_file" 'name="labby_mcp_action" value="disable"'
     assert_file_contains "$page_file" 'name="labby_mcp_action" value="cleanup_preview"'
     assert_file_contains "$page_file" 'name="labby_mcp_action" value="cleanup"'
+    assert_file_contains "$page_file" "['server', 'list']"
+    assert_file_contains "$page_file" "['server', 'add', \$newUpstreamName"
+    assert_file_contains "$page_file" "['server', 'remove', \$upstreamName]"
+    assert_file_not_contains "$page_file" "['gateway', 'mcp'"
+    assert_file_not_contains "$page_file" "['gateway', 'add'"
+    assert_file_not_contains "$page_file" "['gateway', 'remove'"
     assert_file_contains "$page_file" 'class="lb-cell-server"'
     assert_file_contains "$page_file" 'class="lb-cell-status"'
     assert_file_contains "$page_file" 'grid-template-areas:'
@@ -734,6 +740,9 @@ test_dashboard_widget_contract() {
     assert_file_not_contains "$dashboard_page_file" 'unraid-settings-shell'
 
     assert_file_contains "$dashboard_status_file" 'Cache-Control: no-store'
+    assert_file_contains "$dashboard_status_file" 'labby --json server list'
+    assert_file_contains "$dashboard_status_file" "LABBY_DASHBOARD_BIN, '--json', 'server', 'list'"
+    assert_file_not_contains "$dashboard_status_file" 'gateway mcp list'
     assert_file_contains "$dashboard_status_file" "'exposed_tool_count'"
     assert_file_contains "$dashboard_status_file" "'available' => \$available"
     assert_file_not_contains "$dashboard_status_file" "'name' =>"

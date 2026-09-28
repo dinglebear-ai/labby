@@ -9,7 +9,7 @@ use super::state::AppState;
 
 /// Whether a registry service has any HTTP API surface.
 pub(crate) fn service_has_http_surface(service: &str) -> bool {
-    service != "lab_admin" && service != crate::dispatch::depot_publish::SERVICE
+    service != "lab_admin" && !crate::dispatch::depot_publish::is_publish_service(service)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

@@ -1,6 +1,7 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, JsonSchema, Deserialize)]
 pub struct SurfaceStateView {
     #[serde(default)]
     pub enabled: bool,
@@ -8,7 +9,7 @@ pub struct SurfaceStateView {
     pub connected: bool,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, JsonSchema, Deserialize)]
 pub struct SurfaceStatesView {
     #[serde(default)]
     pub cli: SurfaceStateView,
@@ -20,13 +21,13 @@ pub struct SurfaceStatesView {
     pub webui: SurfaceStateView,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, JsonSchema, Deserialize)]
 pub struct ServerWarningView {
     pub code: String,
     pub message: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, JsonSchema, Deserialize)]
 pub struct ServerConfigSummaryView {
     #[serde(default)]
     pub transport: Option<String>,
@@ -40,7 +41,7 @@ pub struct ServerConfigSummaryView {
     pub args: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, JsonSchema, Deserialize)]
 pub struct ServerView {
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub notification_incidents: std::collections::HashMap<String, String>,

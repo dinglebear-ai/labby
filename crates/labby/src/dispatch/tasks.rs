@@ -77,6 +77,7 @@ const fn action(
         requires_admin: false,
         params,
         returns: "object",
+        output_schema: None,
     }
 }
 pub const ACTIONS: &[ActionSpec] = &[

@@ -25,20 +25,20 @@ The empty-list behavior is intentionally different from the legacy tool/resource
 ## Skills CLI
 
 ~~~bash
-labby gateway skills list
-labby gateway skills list --upstream github
-labby gateway skills trust github --yes
-labby gateway skills untrust github
-labby gateway skills expose github --pattern 'review-*' --pattern deploy
-labby gateway skills expose-all github
+labby skill source list
+labby skill source list --upstream github
+labby skill source trust github --yes
+labby skill source untrust github
+labby skill source exposure set github --pattern 'review-*' --pattern deploy
+labby skill source exposure clear github
 ~~~
 
 The generic upstream commands expose the same dispatch-backed configuration fields:
 
 ~~~bash
-labby gateway add --name github --url https://mcp.example.com --proxy-skills true --expose-skill 'review-*'
-labby gateway update github --proxy-skills true --expose-skill 'review-*'
-labby gateway update github --clear-expose-skills
+labby server add github --url https://mcp.example.com --proxy-skills true --expose-skill 'review-*'
+labby server set github --proxy-skills true --expose-skill 'review-*'
+labby server set github --clear-expose-skills
 ~~~
 
 ## Skills API and dispatch
@@ -143,14 +143,14 @@ Agent Skills require Resources because Skill files are retrieved through MCP res
 ## Loadouts CLI
 
 ~~~bash
-labby gateway loadout list
-labby gateway loadout get operations
-labby gateway loadout add operations --upstream github --service device --code-mode
-labby gateway loadout update operations --expose-tools false --expose-skills true
-labby gateway loadout update operations --clear-upstreams --service device
+labby loadout list
+labby loadout get operations
+labby loadout add operations --upstream github --service device --code-mode
+labby loadout set operations --expose-tools false --expose-skills true
+labby loadout set operations --clear-upstreams --service device
 # Mounted Loadouts are staged instead of hot-swapped:
-labby gateway loadout update operations --expose-tools false --stage-for-restart
-labby gateway loadout remove operations --stage-for-restart
+labby loadout set operations --expose-tools false --stage-for-restart
+labby loadout remove operations --stage-for-restart
 ~~~
 
 Loadout add defaults Tools, Resources, Prompts, and Skills to enabled while Code Mode remains disabled. Initial narrowing flags are --no-tools, --no-resources, --no-prompts, and --no-skills.

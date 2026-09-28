@@ -130,7 +130,9 @@ async fn degraded_subsystems(state: &AppState) -> Vec<String> {
     match state.access_runtime.status().await {
         AccessRuntimeStatus::Ready
         | AccessRuntimeStatus::SetupRequired(AccessSetupReason::Missing) => {}
-        AccessRuntimeStatus::SetupRequired(AccessSetupReason::Uninitialized) => {
+        AccessRuntimeStatus::SetupRequired(
+            AccessSetupReason::Uninitialized | AccessSetupReason::ProofPending,
+        ) => {
             degraded.push("access_setup_pending".to_owned());
         }
         AccessRuntimeStatus::Blocked(_) => degraded.push("access_blocked".to_owned()),

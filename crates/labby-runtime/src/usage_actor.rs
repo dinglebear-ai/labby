@@ -9,7 +9,9 @@ tokio::task_local! {
 
 /// Inbound identity is verified; client labels are bounded, self-reported MCP
 /// initialize metadata. Agent/task IDs are supplied only by trusted execution.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub struct UsageAttribution {
     pub inbound_actor: Option<String>,
     pub actor_kind: Option<String>,

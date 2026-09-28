@@ -136,7 +136,7 @@ impl PublicRelayRegistryManager {
 
     /// Clone of the current in-memory (live) snapshot.
     ///
-    /// Used by content-based staleness checks (e.g. `doctor oauth-relay`) that
+    /// Used by content-based staleness checks (e.g. `doctor relay`) that
     /// need to compare machine ids + target URLs against the persisted
     /// registry, not just an entry count that can mask a same-count swap.
     pub async fn snapshot(&self) -> PublicRelaySnapshot {

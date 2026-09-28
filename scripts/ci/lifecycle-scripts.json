@@ -6,6 +6,7 @@
     "scripts/incus-bootstrap.sh",
     "scripts/with_timeout.sh",
     "scripts/bench-labby-slimming",
+    "scripts/build-web.sh",
     "scripts/check-feature-slices.sh",
     "scripts/check-incus-ssh",
     "scripts/check-retired-features.sh",
@@ -36,6 +37,7 @@
     "scripts/ci/qualify-n-minus-one.sh",
     "scripts/ci/n-minus-one-diagnostics.sh",
     "scripts/ci/n-minus-one-token.sh",
+    "scripts/ci/n-minus-one-recovery.sh",
     "scripts/ci/verify-release-provenance.sh",
     "scripts/ci/upload-immutable-release-assets.sh",
     "scripts/ci/verify-and-activate-release.sh",
@@ -65,6 +67,7 @@
     "scripts/tests/incus-bootstrap-transaction.sh",
     "scripts/tests/incus-bootstrap-full-fake.py",
     "scripts/ci/test-incus-contract.py",
+    "scripts/ci/test_default_web_build.py",
     "scripts/ci/test_npm_pointer.py",
     "scripts/ci/test_update_safety_oracles.py",
     "scripts/tests/test_timeout.py"

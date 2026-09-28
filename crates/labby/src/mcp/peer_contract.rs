@@ -470,22 +470,32 @@ impl PeerContract {
             return Vec::new();
         };
         let mut upstreams = manager
-            .current_config()
+            .code_mode_enabled_upstream_hints()
             .await
-            .upstream
             .into_iter()
-            .filter(|upstream| upstream.enabled)
-            .filter(|upstream| self.route_scope.allows_upstream(&upstream.name))
-            .map(|upstream| CodeModeUpstreamDescription {
-                name: upstream.name,
-                hint: upstream
-                    .code_mode_hint
+            .filter(|(name, _)| self.route_scope.allows_upstream(name))
+            .map(|(name, hint)| CodeModeUpstreamDescription {
+                name,
+                hint: hint
                     .as_deref()
                     .and_then(labby_runtime::gateway_config::normalize_code_mode_hint),
+                example: None,
             })
             .collect::<Vec<_>>();
         upstreams.sort_by(|a, b| a.name.cmp(&b.name));
         upstreams.dedup_by(|a, b| a.name == b.name);
+        let names = upstreams
+            .iter()
+            .map(|upstream| upstream.name.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        if let Some((name, example)) = manager.code_mode_example_tool(&names).await
+            && let Some(upstream) = upstreams.iter_mut().find(|upstream| upstream.name == name)
+        {
+            upstream.example = crate::mcp::call_tool_codemode::CodeModeExampleCall::from_tool(
+                example.tool(),
+                example.input_schema(),
+            );
+        }
         upstreams
     }
 
@@ -560,6 +570,7 @@ impl PeerContract {
             SkillLibraryDescriptorMode::Hidden
         };
 
+        let tool_projection_mode = self.registry.tool_projection_mode();
         for service in self.registry.services() {
             #[cfg(feature = "skills")]
             if service.name == "artifacts"
@@ -578,19 +589,51 @@ impl PeerContract {
                 {
                     continue;
                 }
-                builtin_names.insert(service.name.to_string());
-                if hide_raw_tools && service.name != SERVER_LOGS_TOOL_NAME {
-                    continue;
+                if tool_projection_mode.includes_router() {
+                    builtin_names.insert(service.name.to_string());
+                    if !(hide_raw_tools && service.name != SERVER_LOGS_TOOL_NAME) {
+                        advertised_names.insert(service.name.to_string());
+                        descriptors.push(self.registry.permanent_tools().builtin_service_tool(
+                            service,
+                            server_logs_app_visible,
+                            skill_library_mode,
+                        ));
+                    }
                 }
-                advertised_names.insert(service.name.to_string());
-                descriptors.push(self.registry.permanent_tools().builtin_service_tool(
-                    service,
-                    server_logs_app_visible,
-                    skill_library_mode,
-                ));
+                if tool_projection_mode.includes_atomic() {
+                    #[cfg(feature = "gateway")]
+                    let allowed_actions = match &self.gateway_manager {
+                        Some(manager) => {
+                            manager.allowed_mcp_actions_for_service(service.name).await
+                        }
+                        None => None,
+                    };
+                    #[cfg(not(feature = "gateway"))]
+                    let allowed_actions: Option<Vec<String>> = None;
+
+                    for action in service.actions {
+                        if allowed_actions.as_ref().is_some_and(|allowed| {
+                            !allowed.iter().any(|candidate| candidate == action.name)
+                        }) {
+                            continue;
+                        }
+                        let Some(tool) = self
+                            .registry
+                            .permanent_tools()
+                            .atomic_action_tool(service, action)
+                        else {
+                            continue;
+                        };
+                        let name = tool.name.to_string();
+                        builtin_names.insert(name.clone());
+                        if !hide_raw_tools {
+                            advertised_names.insert(name);
+                            descriptors.push(tool);
+                        }
+                    }
+                }
             }
         }
-
         #[cfg(feature = "gateway")]
         if visibility.exposes_synthetic_tools()
             && (!matches!(project_shadow, ProjectDiscoveryShadow::Bound(_))
@@ -633,13 +676,18 @@ impl PeerContract {
         }
 
         #[cfg(feature = "gateway")]
-        if self.route_scope.is_root() && self.audience.code_mode_execute_allowed {
-            let tool = self
-                .registry
-                .permanent_tools()
-                .mcp_app_tool(mcp_apps_config.manager);
-            advertised_names.insert(MCP_APP_TOOL_NAME.to_string());
-            descriptors.push(tool);
+        {
+            let model_visible =
+                self.route_scope.is_root() && self.audience.code_mode_execute_allowed;
+            let callback_visible = self.audience.code_mode_read_allowed;
+            if model_visible || callback_visible {
+                let tool = self
+                    .registry
+                    .permanent_tools()
+                    .mcp_app_tool(mcp_apps_config.manager && model_visible, model_visible);
+                advertised_names.insert(MCP_APP_TOOL_NAME.to_string());
+                descriptors.push(tool);
+            }
         }
 
         #[cfg(feature = "gateway")]
@@ -785,6 +833,7 @@ mod tests {
             crate::mcp::call_tool_codemode::CodeModeUpstreamDescription {
                 name: "same-name-live-config".to_string(),
                 hint: Some("secret mutable hint".to_string()),
+                example: None,
             },
         ];
 
@@ -821,7 +870,10 @@ mod tests {
         ))
         .visible_contract()
         .await;
-        assert_eq!(snapshot.tools.len(), 0);
+        #[cfg(feature = "gateway")]
+        assert!(snapshot.tools.contains(super::MCP_APP_TOOL_NAME));
+        #[cfg(not(feature = "gateway"))]
+        assert!(snapshot.tools.is_empty());
         assert_ne!(snapshot.contract_hash, [0; 32]);
     }
 
@@ -897,6 +949,7 @@ mod tests {
                 },
                 scopes: None,
                 credential: Default::default(),
+                additional_endpoint_origins: vec![],
                 prefer_client_metadata_document: None,
             }),
             imported_from: None,

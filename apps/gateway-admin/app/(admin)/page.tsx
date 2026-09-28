@@ -104,6 +104,12 @@ export default function OverviewPage() {
             onRetry={() => reloadMetrics()}
           />
         ) : null}
+        {metrics?.warnings?.length ? (
+          <div role="status" className="rounded-aurora-2 border border-aurora-warn/30 bg-aurora-warn/8 px-4 py-3 text-sm text-aurora-warn">
+            <span className="font-semibold">Usage analytics are partially degraded.</span>{' '}
+            {metrics.warnings.join(' ')}
+          </div>
+        ) : null}
 
         {/* Two-thirds telemetry canvas and one-third insights rail; each lane
             retains its own visible reorder sequence. */}

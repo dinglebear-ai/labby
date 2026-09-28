@@ -15,14 +15,6 @@ function targetFor(platform = process.platform, arch = process.arch) {
     };
   }
 
-  if (platform === "win32" && arch === "x64") {
-    return {
-      asset: "lab-x86_64-pc-windows-msvc.zip",
-      binary: "labby.exe",
-      archiveType: "zip",
-    };
-  }
-
   if (platform === "darwin" && arch === "arm64") {
     return {
       asset: "lab-aarch64-apple-darwin.tar.gz",
@@ -32,7 +24,7 @@ function targetFor(platform = process.platform, arch = process.arch) {
   }
 
   throw new Error(
-    `Unsupported platform ${platform}/${arch}. Supported targets: linux/x64, darwin/arm64, win32/x64.`,
+    `Unsupported platform ${platform}/${arch}. Supported targets: linux/x64, darwin/arm64.`,
   );
 }
 

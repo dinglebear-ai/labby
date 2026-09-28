@@ -88,29 +88,7 @@ impl HostConfigLock {
     }
 
     pub fn read_raw(&self) -> Result<String, HostWriteError> {
-        let mut options = OpenOptions::new();
-        options.read(true);
-        no_follow(&mut options);
-        let file = match options.open(&self.path) {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
-            Err(_) => return Err(HostWriteError::Io),
-        };
-        let metadata = file.metadata().map_err(|_| HostWriteError::Io)?;
-        if !metadata.is_file() {
-            return Err(HostWriteError::UnsafePath);
-        }
-        if metadata.len() > MAX_CONFIG_BYTES {
-            return Err(HostWriteError::TooLarge);
-        }
-        let mut raw = String::new();
-        file.take(MAX_CONFIG_BYTES + 1)
-            .read_to_string(&mut raw)
-            .map_err(|_| HostWriteError::Io)?;
-        if raw.len() as u64 > MAX_CONFIG_BYTES {
-            return Err(HostWriteError::TooLarge);
-        }
-        Ok(raw)
+        read_config_snapshot(&self.path)
     }
 
     pub fn read(&self) -> Result<toml_edit::DocumentMut, HostWriteError> {
@@ -139,8 +117,36 @@ impl HostConfigLock {
     }
 }
 
+/// Bounded metadata-only read with the same no-follow policy as locked writes.
+/// Missing configuration is empty; reading never creates a lock or directory.
+pub fn read_config_snapshot(path: &Path) -> Result<String, HostWriteError> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    no_follow(&mut options);
+    let file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(_) => return Err(HostWriteError::Io),
+    };
+    let metadata = file.metadata().map_err(|_| HostWriteError::Io)?;
+    if !metadata.is_file() {
+        return Err(HostWriteError::UnsafePath);
+    }
+    if metadata.len() > MAX_CONFIG_BYTES {
+        return Err(HostWriteError::TooLarge);
+    }
+    let mut raw = String::new();
+    file.take(MAX_CONFIG_BYTES + 1)
+        .read_to_string(&mut raw)
+        .map_err(|_| HostWriteError::Io)?;
+    if raw.len() as u64 > MAX_CONFIG_BYTES {
+        return Err(HostWriteError::TooLarge);
+    }
+    Ok(raw)
+}
+
 /// Root writing into another account's configuration directory, for example
-/// `sudo labby setup host-service install` touching `/home/labby/.labby`, must
+/// `sudo labby host service install` touching `/home/labby/.labby`, must
 /// leave files that account can open. Otherwise its service later fails with
 /// `UnsafePath` on the root-owned, owner-only lock. Hand such files to the
 /// directory owner; nothing changes for a process writing its own directory.

@@ -27,6 +27,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         requires_admin: true,
         params: &[],
         returns: "DepotProvider[]",
+        output_schema: None,
     },
     ActionSpec {
         name: "providers.get",
@@ -35,6 +36,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         requires_admin: true,
         params: &[ID],
         returns: "DepotProvider",
+        output_schema: None,
     },
     ActionSpec {
         name: "providers.upsert",
@@ -43,6 +45,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         requires_admin: true,
         params: &[ID, VERSION, OPERATION],
         returns: "DepotProviderMutation",
+        output_schema: None,
     },
     ActionSpec {
         name: "providers.remove",
@@ -51,6 +54,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         requires_admin: true,
         params: &[ID, VERSION, OPERATION],
         returns: "DepotProviderMutation",
+        output_schema: None,
     },
     ActionSpec {
         name: "providers.probe",
@@ -59,6 +63,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         requires_admin: true,
         params: &[ID],
         returns: "DepotProviderProbe",
+        output_schema: None,
     },
     ActionSpec {
         name: "operations.get",
@@ -67,5 +72,6 @@ pub const ACTIONS: &[ActionSpec] = &[
         requires_admin: true,
         params: &[OPERATION],
         returns: "DepotProviderMutation",
+        output_schema: None,
     },
 ];

@@ -158,7 +158,7 @@
     "required": false,
     "secret": true,
     "description": "OAuth JWT signing-key path",
-    "example": "~/.labby/auth-jwt.pem",
+    "example": "$LABBY_HOME/auth-jwt.pem",
     "default_port": null
   },
   {
@@ -230,7 +230,7 @@
     "required": false,
     "secret": false,
     "description": "OAuth authorization-state SQLite database path",
-    "example": "~/.labby/auth.db",
+    "example": "$LABBY_HOME/auth.db",
     "default_port": null
   },
   {

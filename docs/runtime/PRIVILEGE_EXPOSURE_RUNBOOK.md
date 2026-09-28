@@ -131,7 +131,7 @@ If the owner identity itself was changed or lost, follow
 
 ## Config rollback
 
-`labby incus sync --rollback` restores the binary, web assets, and service
+`labby host incus sync --rollback` restores the binary, web assets, and service
 unit state only. It does not restore `config.toml` or `.env`. Labby has no
 config-restore command today. To roll back configuration by hand:
 

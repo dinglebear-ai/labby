@@ -528,6 +528,57 @@ test('protected-route failure rolls back the gateway save and keeps the dialog o
   }
 })
 
+// A 409 no longer means only "this name already exists": the access setup
+// gate answers 409 too, and replaying the write as an update would hide it.
+async function saveWithProtectedRouteAddFailure(
+  kind: string,
+): Promise<string[]> {
+  const window = installGatewayDialogDom()
+  const actions: string[] = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input, init) => {
+    const path = String(input)
+    if (path === '/v1/gateway' && init?.method === 'POST') {
+      return gatewayActionResponse(init, {
+        protectedRoutes: [],
+        onAction: (action) => actions.push(action),
+        failWith: {
+          action: 'gateway.protected_route.add',
+          status: 409,
+          kind,
+          message: `${kind} while adding the protected route`,
+        },
+      })
+    }
+    throw new Error(`unexpected fetch ${path}`)
+  }) as typeof fetch
+
+  try {
+    const view = await renderOpenGatewayDialog(gatewayFixture('tools'), async () => {})
+    const pathInput = document.querySelector('#protected-public-path') as HTMLInputElement | null
+    assert.ok(pathInput)
+    await setInputValue(window, pathInput, 'new')
+    await clickSave()
+    await waitFor(() => {
+      assert.ok(actions.includes('gateway.protected_route.add'))
+    })
+    await view.unmount()
+    return actions
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+}
+
+test('a name conflict on adding a protected route is retried as an update', async () => {
+  const actions = await saveWithProtectedRouteAddFailure('conflict')
+  assert.ok(actions.includes('gateway.protected_route.update'))
+})
+
+test('a non-conflict 409 on adding a protected route is not retried as an update', async () => {
+  const actions = await saveWithProtectedRouteAddFailure('access_setup_required')
+  assert.ok(!actions.includes('gateway.protected_route.update'))
+})
+
 test('closing the dialog aborts an in-flight gateway connection test', async () => {
   installGatewayDialogDom()
   const originalFetch = globalThis.fetch
@@ -851,6 +902,47 @@ test('inline environment editor applies stdio env vars to gateway saves', async 
     })
   } finally {
     await view.unmount()
+  }
+})
+
+test('SSH device selection builds a remote stdio server command', async () => {
+  const window = installGatewayDialogDom()
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input, init) => {
+    if (String(input) === '/v1/gateway' && init?.method === 'POST') {
+      const request = JSON.parse(String(init.body)) as { action?: string }
+      return jsonResponse(request.action === 'gateway.ssh_hosts.list' ? ['tootie', 'dookie'] : [])
+    }
+    return jsonResponse([])
+  }) as typeof fetch
+  const saved: CreateGatewayInput[] = []
+
+  try {
+    const view = await renderOpenGatewayDialog(null, async (input) => {
+      saved.push(input as CreateGatewayInput)
+    })
+    const stdioRadio = document.querySelector('#transport-stdio') as HTMLElement
+    await act(async () => {
+      stdioRadio.click()
+    })
+    await waitFor(() => assert.match(document.querySelector('#stdio-host')?.textContent ?? '', /tootie/))
+    const nameInput = document.querySelector('#name') as HTMLInputElement
+    await setInputValue(window, nameInput, 'remote-mcp')
+    const hostSelect = document.querySelector('#stdio-host') as HTMLSelectElement
+    await act(async () => {
+      hostSelect.value = 'tootie'
+      hostSelect.dispatchEvent(new window.Event('change', { bubbles: true }) as unknown as Event)
+    })
+    const remoteInput = document.querySelector('#remote-command') as HTMLInputElement
+    await setInputValue(window, remoteInput, '/usr/local/bin/mcp serve')
+    await clickSave()
+
+    assert.equal(saved.length, 1)
+    assert.equal(saved[0]?.config.command, 'ssh')
+    assert.deepEqual(saved[0]?.config.args, ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', 'tootie', '/usr/local/bin/mcp serve'])
+    await view.unmount()
+  } finally {
+    globalThis.fetch = originalFetch
   }
 })
 
@@ -1178,6 +1270,7 @@ function gatewayActionResponse(
     protectedRoutes?: ProtectedMcpRoute[]
     onAction?: (action: string, params: Record<string, unknown>) => void
     failAction?: string
+    failWith?: { action: string; status: number; kind: string; message: string }
   },
 ) {
   const body = JSON.parse(String(init?.body ?? '{}')) as { action?: string; params?: Record<string, unknown> }
@@ -1186,6 +1279,12 @@ function gatewayActionResponse(
   options.onAction?.(action, params)
   if (action === options.failAction) {
     return jsonResponse({ kind: 'upstream_error', message: 'route write failed' }, 500)
+  }
+  if (options.failWith && action === options.failWith.action) {
+    return jsonResponse(
+      { kind: options.failWith.kind, message: options.failWith.message },
+      options.failWith.status,
+    )
   }
 
   switch (action) {

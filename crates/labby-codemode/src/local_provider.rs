@@ -37,8 +37,12 @@ pub(crate) struct LocalProviderCall {
     pub(crate) params: Value,
 }
 
+/// Code Mode namespaces served by in-process local providers rather than
+/// configured upstreams.
+pub const LOCAL_PROVIDER_NAMESPACES: &[&str] = &["state", "git", "openapi"];
+
 pub(crate) fn is_reserved_provider_namespace(namespace: &str) -> bool {
-    matches!(namespace, "state" | "git" | "openapi")
+    LOCAL_PROVIDER_NAMESPACES.contains(&namespace)
 }
 
 pub(crate) fn try_parse_local_provider_call(

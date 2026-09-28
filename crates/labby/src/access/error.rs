@@ -52,6 +52,14 @@ pub(crate) enum AccessStoreError {
     InvalidProjectLoadoutInput,
     #[error("project already has a different loadout assignment")]
     ProjectLoadoutConflict,
+    #[error("artifact distribution input is invalid")]
+    InvalidArtifactDistributionInput,
+    #[error("artifact distribution state conflicts with the requested mutation")]
+    ArtifactDistributionConflict,
+    #[error("managed artifact mirror is unavailable")]
+    ArtifactMirrorUnavailable,
+    #[error("managed artifact mirror state rejects the requested transition")]
+    ArtifactMirrorStateConflict,
     #[error("access store contains malformed vocabulary")]
     MalformedVocabulary,
     #[error("access store is unavailable: {0}")]

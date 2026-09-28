@@ -434,12 +434,14 @@ impl GatewayManager {
                 &old_ns_tokens,
             )
             .await;
-            // Publish the new config and perform only the in-memory changed-name
-            // eviction/seed while holding the publication writer. Never wait on
-            // upstream I/O under this lock: several MCP readers retain the live
-            // pool Arc directly, so a network probe here would stretch a tiny
-            // config/runtime convergence window into the full upstream timeout.
-            {
+            // Wait out any generic connect already using the old revision while
+            // that revision is still published. The publication writer then
+            // performs only in-memory detach/seed work; detached peers are shut
+            // down after readers can observe the new coherent revision.
+            let reconcile_guards = pool
+                .prepare_lazy_upstream_reconcile(&changed_upstreams)
+                .await;
+            let reconcile_cleanup = {
                 let _publication = self.publication_barrier.write().await;
                 self.store
                     .set_process_code_mode_enabled(cfg.code_mode.enabled);
@@ -449,13 +451,17 @@ impl GatewayManager {
                     ProtectedRouteIndex::from_routes(&cfg.protected_mcp_routes);
                 *self.config.write().await = cfg.clone();
                 self.advance_runtime_config_generation();
-                pool.reconcile_lazy_upstreams(
+                pool.apply_lazy_upstream_reconcile(
                     &cfg.upstream,
                     &changed_upstreams,
-                    "gateway.reload.transactional_selective",
+                    &reconcile_guards,
                 )
+                .await
+            };
+            drop(reconcile_guards);
+            reconcile_cleanup
+                .finish("gateway.reload.transactional_selective")
                 .await;
-            }
 
             // Only the changed upstreams are cold-probed, after the candidate
             // revision is published. During this wait the pool/config pair is a
@@ -495,7 +501,10 @@ impl GatewayManager {
                     changed_upstream_count = changed_upstreams.len(),
                     "transactional selective reconcile failed; restoring prior live revision"
                 );
-                {
+                let rollback_guards = pool
+                    .prepare_lazy_upstream_reconcile(&changed_upstreams)
+                    .await;
+                let rollback_cleanup = {
                     let _publication = self.publication_barrier.write().await;
                     self.store
                         .set_process_code_mode_enabled(previous_cfg.code_mode.enabled);
@@ -505,16 +514,20 @@ impl GatewayManager {
                         ProtectedRouteIndex::from_routes(&previous_cfg.protected_mcp_routes);
                     *self.config.write().await = previous_cfg.clone();
                     self.advance_runtime_config_generation();
-                    pool.reconcile_lazy_upstreams(
+                    pool.apply_lazy_upstream_reconcile(
                         &previous_cfg.upstream,
                         &changed_upstreams,
-                        "gateway.reload.transactional_selective.rollback",
+                        &rollback_guards,
                     )
+                    .await
+                };
+                drop(rollback_guards);
+                rollback_cleanup
+                    .finish("gateway.reload.transactional_selective.rollback")
                     .await;
-                    // Restore recovery as well as lazy entries: the candidate
-                    // eviction cancelled the previous upstream's task.
-                    pool.ensure_recovery_tasks(&previous_cfg.upstream).await;
-                }
+                // Restore recovery as well as lazy entries: the candidate
+                // eviction cancelled the previous upstream's task.
+                pool.ensure_recovery_tasks(&previous_cfg.upstream).await;
                 // Leave restored upstreams lazy. Rollback must not depend on
                 // network availability; the next real request can reconnect the
                 // previous runtime on demand.
@@ -780,12 +793,6 @@ async fn probe_reload_upstreams(
         .filter(|upstream| allowed_names.is_none_or(|names| names.contains(upstream.name.as_str())))
         .cloned()
         .collect::<Vec<_>>();
-    let resource_names = enabled
-        .iter()
-        .filter(|upstream| upstream.proxy_resources)
-        .map(|upstream| upstream.name.clone())
-        .collect::<BTreeSet<_>>();
-
     futures::stream::iter(enabled)
         .map(|upstream| {
             let pool = Arc::clone(&pool);
@@ -826,20 +833,6 @@ async fn probe_reload_upstreams(
         .buffer_unordered(concurrency)
         .collect::<Vec<_>>()
         .await;
-
-    // Resource ownership must be populated after tool discovery because only
-    // connected peers can answer resources/list. A transactional selective
-    // reconcile limits that fan-out to the upstreams that actually changed.
-    match allowed_names {
-        Some(_) if !resource_names.is_empty() => {
-            pool.list_upstream_resources_allowed(Some(&resource_names))
-                .await;
-        }
-        Some(_) => {}
-        None => {
-            pool.list_upstream_resources().await;
-        }
-    }
 }
 
 pub(super) fn quarantine_unregistered_virtual_servers(

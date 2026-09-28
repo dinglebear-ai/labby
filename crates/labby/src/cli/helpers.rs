@@ -12,18 +12,90 @@ use labby_primitives::action::ActionSpec;
 
 use crate::dispatch::error::ToolError;
 use crate::output::theme::CliTheme;
-/// Print the canonical `[dry-run]` line for a service/action/params triple.
-#[allow(clippy::print_stdout)]
-pub fn print_dry_run(service: &str, action: &str, params: &Value, format: OutputFormat) {
+
+tokio::task_local! {
+    /// Invocation-local prompting policy; never changes the process environment.
+    pub(crate) static INTERACTIVE: bool;
+    /// Correlates finite multi-outcome responses with the existing CLI audit span.
+    pub(crate) static REQUEST_ID: String;
+}
+
+/// Prompts require a terminal and an invocation that permits interactive input.
+pub fn interactive_allowed() -> bool {
+    INTERACTIVE.try_with(|enabled| *enabled).unwrap_or(true)
+        && std::io::stdin().is_terminal()
+        && std::io::stderr().is_terminal()
+}
+
+/// Adapt structured CLI values to the canonical redactors, including stdio argv arrays.
+#[must_use]
+pub fn diagnostic_value(value: &Value, max_bytes: usize) -> Value {
+    fn redact_arguments(value: &mut Value) {
+        match value {
+            Value::Object(fields) => {
+                for (key, value) in fields {
+                    if key == "args" || key == "argv" {
+                        if let Some(values) = value
+                            .as_array()
+                            .filter(|values| values.iter().all(Value::is_string))
+                        {
+                            let arguments = values
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_string)
+                                .collect::<Vec<_>>();
+                            *value = serde_json::json!(labby_runtime::redact::redact_stdio_args(
+                                &arguments
+                            ));
+                            continue;
+                        }
+                    }
+                    redact_arguments(value);
+                }
+            }
+            Value::Array(values) => {
+                for value in values {
+                    redact_arguments(value);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut value = value.clone();
+    redact_arguments(&mut value);
+    labby_runtime::redact::redact_trace_value(&value, max_bytes)
+}
+
+/// Build a bounded, redacted preview. This function never dispatches an operation.
+#[must_use]
+pub fn dry_run_value(service: &str, action: &str, params: &Value) -> Value {
+    serde_json::json!({
+        "ok": true,
+        "dry_run": true,
+        "executed": false,
+        "service": service,
+        "action": action,
+        "side_effects": "none_expected",
+        "params": diagnostic_value(params, 16 * 1024),
+    })
+}
+
+/// Render a safe preview in the requested output format.
+pub fn print_dry_run(
+    service: &str,
+    action: &str,
+    params: &Value,
+    format: OutputFormat,
+) -> Result<()> {
+    let preview = dry_run_value(service, action, params);
+    if format.is_json() {
+        return print(&preview, format);
+    }
+    use std::io::Write as _;
     let theme = CliTheme::from_context(format.render_context());
-    println!(
-        "{} {}",
-        theme.warn("[dry-run]"),
-        theme.muted(format!(
-            "would dispatch {service} action `{action}` with params: {}",
-            serde_json::to_string(params).unwrap_or_else(|_| "{}".to_string())
-        ))
-    );
+    writeln!(std::io::stdout().lock(), "{} {}", theme.warn("[dry-run]"),
+        theme.muted(format!("would dispatch {service} action `{action}`; no operation was executed. Redacted parameters: {}", preview["params"])))?;
+    Ok(())
 }
 
 use crate::output::{OutputFormat, print};
@@ -52,10 +124,7 @@ where
                         sdk_kind: "not_found".to_string(),
                         message: format!("service `{service}` is not enabled on the cli surface"),
                     };
-                    return Err(anyhow::anyhow!(
-                        "{}",
-                        serde_json::to_string(&error).unwrap_or_else(|_| error.to_string())
-                    ));
+                    return Err(anyhow::Error::new(error));
                 }
             }
         }
@@ -84,12 +153,7 @@ where
             ),
         }
 
-        let value = result.map_err(|e| {
-            anyhow::anyhow!(
-                "{}",
-                serde_json::to_string(&e).unwrap_or_else(|_| e.to_string())
-            )
-        })?;
+        let value = result.map_err(anyhow::Error::new)?;
         print(&value, format)?;
         Ok(ExitCode::SUCCESS)
     })
@@ -117,10 +181,7 @@ where
                     sdk_kind: "not_found".to_string(),
                     message: format!("service `{service}` is not enabled on the cli surface"),
                 };
-                return Err(anyhow::anyhow!(
-                    "{}",
-                    serde_json::to_string(&error).unwrap_or_else(|_| error.to_string())
-                ));
+                return Err(anyhow::Error::new(error));
             }
         }
     }
@@ -130,14 +191,17 @@ where
             .iter()
             .any(|spec| spec.name == action && spec.destructive)
     {
-        if !std::io::stdin().is_terminal() {
+        if !interactive_allowed() {
             tracing::warn!(
                 surface = "cli",
                 service,
                 action,
                 "destructive action blocked: non-interactive stdin, pass -y"
             );
-            anyhow::bail!("pass -y / --yes to confirm destructive action `{action}`");
+            return Err(ToolError::Sdk {
+                sdk_kind: "confirmation_required".to_string(),
+                message: format!("Action `{action}` was not executed because interactive confirmation is disabled. Review its effects and pass --yes to confirm."),
+            }.into());
         }
         let confirmed = Confirm::new()
             .with_prompt(format!(
@@ -256,7 +320,12 @@ mod tests {
             )
             .await
             .unwrap_err();
-            assert!(err.to_string().contains("missing_param"));
+            assert_eq!(
+                err.downcast_ref::<ToolError>()
+                    .expect("typed dispatch error")
+                    .kind(),
+                "missing_param"
+            );
         });
 
         drop(_guard);
@@ -265,5 +334,29 @@ mod tests {
         assert!(logs.contains("\"service\":\"bytestash\""));
         assert!(logs.contains("\"action\":\"snippets.get\""));
         assert!(logs.contains("\"kind\":\"missing_param\""));
+    }
+    #[test]
+    fn previews_are_bounded_and_redact_nested_credentials_and_stdio_arguments() {
+        let params = serde_json::json!({"spec": {
+            "name":"test-server", "token":"unique-bearer-secret",
+            "args":["--password", "unique-password-secret", "--verbose"],
+            "url":"https://example.invalid/mcp?api_key=unique-query-secret"
+        }});
+        let preview = dry_run_value("gateway", "gateway.add", &params);
+        let output = serde_json::to_string(&preview).unwrap();
+        for secret in [
+            "unique-bearer-secret",
+            "unique-password-secret",
+            "unique-query-secret",
+        ] {
+            assert!(!output.contains(secret), "preview leaked a credential");
+        }
+        assert_eq!(preview["executed"], false);
+        assert_eq!(preview["side_effects"], "none_expected");
+        assert!(output.contains("test-server"));
+        assert_eq!(
+            params["spec"]["token"], "unique-bearer-secret",
+            "redaction must not mutate dispatch input"
+        );
     }
 }

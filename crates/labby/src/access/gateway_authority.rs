@@ -198,15 +198,12 @@ pub(crate) async fn authorize_gateway_action(
     if class == GatewayAuthorityClass::Public {
         return Ok(None);
     }
+    // Every runtime-lifecycle failure shares the canonical mapping so all
+    // surfaces agree on the kind, the caller-facing message, and the
+    // server-side log level: a never-initialized store is a deterministic
+    // setup gate, an integrity-blocked store is an ERROR-level outage.
     let store = runtime.store().await.map_err(|error| {
-        tracing::warn!(
-            service = "gateway",
-            action,
-            error = %error,
-            kind = "service_unavailable",
-            "Gateway authority store is unavailable"
-        );
-        unavailable()
+        crate::dispatch::access_errors::map_action_runtime_error("gateway", action, error)
     })?;
     let (owner, capability, resource_id) = match class {
         GatewayAuthorityClass::PersonalManage => {
@@ -374,6 +371,159 @@ mod tests {
         assert_eq!(gateway_authority_class("other.action"), None);
         assert!(!gateway_transport_requires_admin("gateway.loadout.add"));
         assert!(gateway_transport_requires_admin("gateway.add"));
+    }
+
+    fn static_bearer_identity() -> VerifiedIdentity {
+        VerifiedIdentity::local_credential(
+            labby_auth::Authenticator::StaticBearer,
+            "static-bearer:primary",
+        )
+        .unwrap()
+    }
+
+    async fn authorize_against(runtime: &AccessRuntime, action: &str) -> ToolError {
+        authorize_gateway_action(
+            runtime,
+            static_bearer_identity(),
+            AuthorityCeiling::trusted_local(),
+            "installation",
+            None,
+            action,
+        )
+        .await
+        .err()
+        .expect("authorization must fail without a ready access store")
+    }
+
+    /// Field report (v1.20.1, bearer-only): a never-initialized access store
+    /// surfaced as a retryable upstream-transport outage. It is a setup gate.
+    #[tokio::test]
+    async fn uninitialized_access_store_reports_setup_required_not_an_outage() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().canonicalize().unwrap().join("access.db");
+        let runtime = AccessRuntime::initialize(path).await;
+        assert!(matches!(
+            runtime.status().await,
+            crate::access::AccessRuntimeStatus::SetupRequired(_)
+        ));
+
+        for action in [
+            "gateway.oauth.start",
+            "gateway.oauth.status",
+            "gateway.list",
+            "gateway.mcp.list",
+            "gateway.oauth.authorize",
+            "gateway.loadout.list",
+        ] {
+            let error = if action.starts_with("gateway.loadout.") {
+                authorize_gateway_action(
+                    &runtime,
+                    static_bearer_identity(),
+                    AuthorityCeiling::trusted_local(),
+                    "installation",
+                    Some("alpha"),
+                    action,
+                )
+                .await
+                .err()
+                .unwrap()
+            } else {
+                authorize_against(&runtime, action).await
+            };
+            assert_eq!(error.kind(), "access_setup_required", "{action}");
+            let envelope = error.to_agent_value();
+            assert_eq!(envelope["origin"], "validation", "{action}");
+            assert_eq!(envelope["side_effects"], "none_expected", "{action}");
+            assert_eq!(envelope["recovery"]["action"], "start_dependency");
+            assert_eq!(envelope["recovery"]["same_arguments"], "never");
+            let message = envelope["message"].as_str().unwrap();
+            assert!(message.contains("access setup is required"), "{message}");
+        }
+    }
+
+    fn capture_logs() -> (crate::test_support::SharedBuf, tracing::Dispatch) {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let logs = crate::test_support::SharedBuf::default();
+        let subscriber = tracing_subscriber::registry().with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .without_time()
+                .with_writer(logs.clone()),
+        );
+        (logs, tracing::Dispatch::new(subscriber))
+    }
+
+    #[tokio::test]
+    async fn public_gateway_action_is_allowed_on_an_uninitialized_store() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().canonicalize().unwrap().join("access.db");
+        let runtime = AccessRuntime::initialize(path).await;
+        for action in ["help", "schema"] {
+            let decision = authorize_gateway_action(
+                &runtime,
+                static_bearer_identity(),
+                AuthorityCeiling::trusted_local(),
+                "installation",
+                None,
+                action,
+            )
+            .await
+            .expect("public gateway actions never consult the access store");
+            assert!(decision.is_none(), "{action}");
+        }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn setup_required_log_names_the_gateway_action() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().canonicalize().unwrap().join("access.db");
+        let runtime = AccessRuntime::initialize(path).await;
+
+        let _lock = crate::test_support::TRACING_TEST_LOCK.lock().unwrap();
+        let (logs, dispatch) = capture_logs();
+        let _subscriber = tracing::dispatcher::set_default(&dispatch);
+        crate::test_support::rebuild_tracing_interest_cache();
+
+        let error = authorize_against(&runtime, "gateway.mcp.list").await;
+        assert_eq!(error.kind(), "access_setup_required");
+        let output = crate::test_support::captured_logs(&logs);
+        assert!(output.contains("access_setup_required"), "{output}");
+        assert!(output.contains("gateway.mcp.list"), "{output}");
+    }
+
+    /// Integrity-class blocked stores share the canonical ERROR-level
+    /// operator-action log instead of a local WARN.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn corrupt_access_store_logs_operator_action_at_error_level() {
+        let runtime = AccessRuntime::blocked_for_test(crate::access::AccessBlockedReason::Corrupt);
+
+        let _lock = crate::test_support::TRACING_TEST_LOCK.lock().unwrap();
+        let (logs, dispatch) = capture_logs();
+        let _subscriber = tracing::dispatcher::set_default(&dispatch);
+        crate::test_support::rebuild_tracing_interest_cache();
+
+        let error = authorize_against(&runtime, "gateway.oauth.start").await;
+        assert_eq!(error.kind(), "service_unavailable");
+        let output = crate::test_support::captured_logs(&logs);
+        assert!(output.contains("ERROR"), "{output}");
+        assert!(output.contains("operator action required"), "{output}");
+        assert!(output.contains("gateway.oauth.start"), "{output}");
+    }
+
+    #[tokio::test]
+    async fn blocked_access_store_remains_a_service_outage() {
+        for reason in [
+            crate::access::AccessBlockedReason::Locked,
+            crate::access::AccessBlockedReason::Corrupt,
+            crate::access::AccessBlockedReason::Unavailable,
+        ] {
+            let runtime = AccessRuntime::blocked_for_test(reason);
+            let error = authorize_against(&runtime, "gateway.oauth.start").await;
+            assert_eq!(error.kind(), "service_unavailable", "{reason:?}");
+            assert_eq!(error.user_message(), "access store is unavailable");
+        }
     }
 
     #[test]

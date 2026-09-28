@@ -1,6 +1,6 @@
 //! Disk cache of the Code Mode upstream catalog for one-shot CLI invocations.
 //!
-//! `labby gateway code exec` builds the `codemode.*` JS proxy from the upstream
+//! `labby code run` builds the `codemode.*` JS proxy from the upstream
 //! tool catalog. The MCP surface refreshes that catalog from a long-lived pool,
 //! but a one-shot CLI process would have to connect every configured stdio
 //! upstream per invocation just to generate the proxy. This cache persists the

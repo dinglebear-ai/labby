@@ -213,6 +213,23 @@ pub(crate) async fn notify_catalog_peers(
 
     let peer_snapshot = peers.read().await.clone();
     let peer_count = peer_snapshot.len();
+    for registered in &peer_snapshot {
+        tracing::info!(
+            surface = "mcp",
+            service = "peers",
+            action = "catalog.notify.peer_capabilities",
+            subsystem = "mcp_server",
+            source,
+            registration_id = registered.registration_id,
+            accepts_tools_list_changed = registered.target.wants_tool_list_changed(),
+            accepts_resources_list_changed = registered.target.wants_resource_list_changed(),
+            accepts_prompts_list_changed = registered.target.wants_prompt_list_changed(),
+            requested_tools_changed = changes.tools_changed,
+            requested_resources_changed = changes.resources_changed,
+            requested_prompts_changed = changes.prompts_changed,
+            "evaluated MCP peer catalog notification capabilities"
+        );
+    }
     let evaluated = evaluate_peers(peer_snapshot, changes.clone()).await;
     let peers_notified = evaluated
         .iter()
@@ -283,6 +300,7 @@ pub(crate) async fn notify_catalog_peers(
     let notification_timeout = crate::config::resolved_catalog_notification_timeout();
     let notify_futures = evaluated.iter().enumerate().map(|(peer_index, evaluated)| {
         let target = evaluated.registered.target.clone();
+        let registration_id = evaluated.registered.registration_id;
         let changes = evaluated.changes.clone();
         async move {
             let result = tokio::time::timeout(notification_timeout, async {
@@ -291,6 +309,8 @@ pub(crate) async fn notify_catalog_peers(
                         surface = "mcp",
                         service = "peers",
                         action = "peer.disconnect",
+                        source,
+                        registration_id,
                         peer_index,
                         phase = "tools",
                         tools_changed = changes.tools_changed,
@@ -306,6 +326,8 @@ pub(crate) async fn notify_catalog_peers(
                         surface = "mcp",
                         service = "peers",
                         action = "peer.disconnect",
+                        source,
+                        registration_id,
                         peer_index,
                         phase = "resources",
                         tools_changed = changes.tools_changed,
@@ -320,6 +342,8 @@ pub(crate) async fn notify_catalog_peers(
                         surface = "mcp",
                         service = "peers",
                         action = "peer.disconnect",
+                        source,
+                        registration_id,
                         peer_index,
                         phase = "prompts",
                         tools_changed = changes.tools_changed,
@@ -329,6 +353,18 @@ pub(crate) async fn notify_catalog_peers(
                     );
                     return false;
                 }
+                tracing::info!(
+                    surface = "mcp",
+                    service = "peers",
+                    action = "catalog.notify.peer",
+                    source,
+                    registration_id,
+                    peer_index,
+                    tools_changed = changes.tools_changed,
+                    resources_changed = changes.resources_changed,
+                    prompts_changed = changes.prompts_changed,
+                    "catalog change delivered to MCP peer"
+                );
                 true
             })
             .await;
@@ -340,6 +376,8 @@ pub(crate) async fn notify_catalog_peers(
                         surface = "mcp",
                         service = "peers",
                         action = "peer.disconnect",
+                        source,
+                        registration_id,
                         peer_index,
                         timeout_ms = notification_timeout.as_millis(),
                         tools_changed = changes.tools_changed,
@@ -794,6 +832,27 @@ mod tests {
         });
 
         assert_eq!(changes, CatalogNotificationChanges::new(false, true, true));
+    }
+
+    /// The upstream `list_changed` consumer forwards all three kinds through
+    /// one `for_upstream` call, which is only equivalent to the previous
+    /// per-kind handling because a tools change stays a global signal: every
+    /// peer must re-evaluate its own contract hash. Adding a `tool_upstreams`
+    /// scope here would silently narrow that signal, so pin it.
+    #[test]
+    fn for_upstream_leaves_a_tools_change_unscoped() {
+        let tools = CatalogNotificationChanges::new(true, false, false).for_upstream("alpha");
+
+        assert!(tools.tools_changed);
+        assert!(
+            tools.resource_upstreams.is_none() && tools.prompt_upstreams.is_none(),
+            "an inactive kind contributes no scope"
+        );
+        assert_eq!(
+            tools,
+            CatalogNotificationChanges::new(true, false, false),
+            "a tools-only change is unchanged by scoping it to an upstream"
+        );
     }
 
     #[test]

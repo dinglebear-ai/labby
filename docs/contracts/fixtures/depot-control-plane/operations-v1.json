@@ -53,7 +53,9 @@
         "type": "object"
       },
       "schemaFingerprint": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
-      "title": "List ACP agents"
+      "title": "List ACP agents",
+      "requiredScope": "read",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -119,7 +121,9 @@
         "type": "object"
       },
       "schemaFingerprint": "047caa8b74f4a55cf044be0907adb187fad8a10531490fdd32cddd0e37f7e77a",
-      "title": "Get exact Artifact manifest"
+      "title": "Get exact Artifact manifest",
+      "requiredScope": "read",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -224,7 +228,9 @@
         "type": "object"
       },
       "schemaFingerprint": "95eacd7404183d82b5cec2ba9580920412a3fe86a9335f2138bcfbe8f2620146",
-      "title": "Follow Artifact upstream"
+      "title": "Follow Artifact upstream",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -330,7 +336,9 @@
         "type": "object"
       },
       "schemaFingerprint": "43ca2e18ca6b00803a5ec78d4cfd75d0cdd04db7560f81199383141153fb6c36",
-      "title": "Fork Artifact revision"
+      "title": "Fork Artifact revision",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -415,7 +423,9 @@
         "type": "object"
       },
       "schemaFingerprint": "b42f3f0ce0afc95cb8fbcb7c96907f9b88643bafc51efc602c1b21dba82c148d",
-      "title": "Get Bazaar artifact"
+      "title": "Get Bazaar artifact",
+      "requiredScope": "read",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -454,7 +464,9 @@
         "type": "object"
       },
       "schemaFingerprint": "fdd4be598017b2dc7dacdb50121c680bf187d74c4aa1da9d98232c300b793909",
-      "title": "Intake Artifact candidate"
+      "title": "Intake Artifact candidate",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -470,6 +482,27 @@
         "properties": {
           "cursor": {
             "description": "Opaque Artifact continuation cursor.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "kind": {
+            "description": "Optional Artifact kind filter.",
+            "enum": [
+              "skill",
+              "prompt",
+              "agent-definition",
+              "agent-runtime",
+              "mcp-server",
+              "mcp-config",
+              "agent-plugin",
+              "apm-package",
+              "package",
+              "agent",
+              "mcp",
+              "repository",
+              "command",
+              "hook"
+            ],
             "minLength": 1,
             "type": "string"
           },
@@ -512,8 +545,10 @@
         ],
         "type": "object"
       },
-      "schemaFingerprint": "ae219779387114fe51269259a5a15c433fbc89135ee89a00a4e1340486f829c5",
-      "title": "List Bazaar artifacts"
+      "schemaFingerprint": "b9f0ed3dca904fea6d0f71ac814f14f682cb98c92337ed9ae61d8d5d9b33217a",
+      "title": "List Bazaar artifacts",
+      "requiredScope": "read",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -566,7 +601,9 @@
         "type": "object"
       },
       "schemaFingerprint": "43dcf18f5fd2e277fe21f98cde881f4125e315636ef241ac6b03526aad1d4142",
-      "title": "List Artifact candidates"
+      "title": "List Artifact candidates",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -718,7 +755,9 @@
         "type": "object"
       },
       "schemaFingerprint": "0faaf5e02f9ffbc63815216e02737628c82de4b707e0647a67dbe5d76ce91018",
-      "title": "Set Artifact license policy"
+      "title": "Set Artifact license policy",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -839,7 +878,9 @@
         "type": "object"
       },
       "schemaFingerprint": "e9ea567f18a713da54460bffd66fbd001c974fcde4c9596bc67b708ef7fbad0a",
-      "title": "Set Artifact publication"
+      "title": "Set Artifact publication",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -919,7 +960,9 @@
         "type": "object"
       },
       "schemaFingerprint": "0d78c3e334861b262e00e14859b58f668705182efe6d58e4579e98bafe123667",
-      "title": "Add skill to bundle"
+      "title": "Add skill to bundle",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -1002,7 +1045,9 @@
         "type": "object"
       },
       "schemaFingerprint": "1e17f3565ca13065470821a627efa315041c47824810102a63f7a1fce8b64872",
-      "title": "Create bundle"
+      "title": "Create bundle",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -1042,7 +1087,9 @@
         "type": "object"
       },
       "schemaFingerprint": "f1e10caa02e84b19379ff3dd72305297bdec7db6ccf8c7690832f29b98669126",
-      "title": "Delete bundle"
+      "title": "Delete bundle",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -1110,7 +1157,9 @@
         "type": "object"
       },
       "schemaFingerprint": "f1e10caa02e84b19379ff3dd72305297bdec7db6ccf8c7690832f29b98669126",
-      "title": "Get bundle"
+      "title": "Get bundle",
+      "requiredScope": "read",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -1142,7 +1191,9 @@
         "type": "object"
       },
       "schemaFingerprint": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
-      "title": "List bundles"
+      "title": "List bundles",
+      "requiredScope": "read",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -1192,7 +1243,9 @@
         "type": "object"
       },
       "schemaFingerprint": "f1e10caa02e84b19379ff3dd72305297bdec7db6ccf8c7690832f29b98669126",
-      "title": "Publish bundle"
+      "title": "Publish bundle",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -1272,7 +1325,9 @@
         "type": "object"
       },
       "schemaFingerprint": "0d78c3e334861b262e00e14859b58f668705182efe6d58e4579e98bafe123667",
-      "title": "Remove skill from bundle"
+      "title": "Remove skill from bundle",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -1351,7 +1406,9 @@
         "type": "object"
       },
       "schemaFingerprint": "68fc8ba08ee71a0c59de90590e7fb404c6052c70d463f688c54aab6678ee863e",
-      "title": "Set bundle visibility"
+      "title": "Set bundle visibility",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -1391,7 +1448,9 @@
         "type": "object"
       },
       "schemaFingerprint": "1bd036f81ee6548a36d3981c6262f6285203325c7ecef94967e5b480ec4bf227",
-      "title": "Cancel ingest job"
+      "title": "Cancel ingest job",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -1431,7 +1490,9 @@
         "type": "object"
       },
       "schemaFingerprint": "1bd036f81ee6548a36d3981c6262f6285203325c7ecef94967e5b480ec4bf227",
-      "title": "Get ingest job"
+      "title": "Get ingest job",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -1470,7 +1531,9 @@
         "type": "object"
       },
       "schemaFingerprint": "58b36a607269af9547505db30cf7b936ea7b192c5eb8c241a36aa3d528089f92",
-      "title": "List ingest jobs"
+      "title": "List ingest jobs",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -1510,7 +1573,9 @@
         "type": "object"
       },
       "schemaFingerprint": "1bd036f81ee6548a36d3981c6262f6285203325c7ecef94967e5b480ec4bf227",
-      "title": "Retry ingest job"
+      "title": "Retry ingest job",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -1577,7 +1642,9 @@
         "type": "object"
       },
       "schemaFingerprint": "bfb8b4a43a3942c3beb867e5daa21f8660ac872404c8de7332269c10d37ebdc7",
-      "title": "Start ingest job"
+      "title": "Start ingest job",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -1629,7 +1696,9 @@
         "type": "object"
       },
       "schemaFingerprint": "34251fcc65d2bb27436b243c3dfc32a40b75cb1e690682a5c38f1ad745ba8eff",
-      "title": "Audit remote CAS inventory"
+      "title": "Audit remote CAS inventory",
+      "requiredScope": "operator",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -1675,7 +1744,9 @@
         "type": "object"
       },
       "schemaFingerprint": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
-      "title": "Audit CAS migration source"
+      "title": "Audit CAS migration source",
+      "requiredScope": "operator",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -1721,7 +1792,9 @@
         "type": "object"
       },
       "schemaFingerprint": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
-      "title": "Copy CAS migration objects"
+      "title": "Copy CAS migration objects",
+      "requiredScope": "operator",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -1767,7 +1840,9 @@
         "type": "object"
       },
       "schemaFingerprint": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
-      "title": "Cut over CAS backend"
+      "title": "Cut over CAS backend",
+      "requiredScope": "operator",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -1820,7 +1895,9 @@
         "type": "object"
       },
       "schemaFingerprint": "0843be1e7e8a6d27847d84bf27641b3310ed18c201fe23cd312d86069760fc91",
-      "title": "End CAS rollback retention"
+      "title": "End CAS rollback retention",
+      "requiredScope": "operator",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -1866,7 +1943,9 @@
         "type": "object"
       },
       "schemaFingerprint": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
-      "title": "Plan CAS migration"
+      "title": "Plan CAS migration",
+      "requiredScope": "operator",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -1912,7 +1991,9 @@
         "type": "object"
       },
       "schemaFingerprint": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
-      "title": "Roll back CAS backend"
+      "title": "Roll back CAS backend",
+      "requiredScope": "operator",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -1958,7 +2039,9 @@
         "type": "object"
       },
       "schemaFingerprint": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
-      "title": "Show CAS migration status"
+      "title": "Show CAS migration status",
+      "requiredScope": "operator",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -2004,7 +2087,9 @@
         "type": "object"
       },
       "schemaFingerprint": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
-      "title": "Verify CAS migration target"
+      "title": "Verify CAS migration target",
+      "requiredScope": "operator",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -2050,7 +2135,9 @@
         "type": "object"
       },
       "schemaFingerprint": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
-      "title": "Collect unreferenced CAS blobs"
+      "title": "Collect unreferenced CAS blobs",
+      "requiredScope": "operator",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -2112,7 +2199,9 @@
         "type": "object"
       },
       "schemaFingerprint": "06878b19f1c8d8bd0b9a350e18e31de2780cf862245ffb42ca876b2dd7df750c",
-      "title": "Find macOS sidecar files in the store"
+      "title": "Find macOS sidecar files in the store",
+      "requiredScope": "operator",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -2177,7 +2266,9 @@
         "type": "object"
       },
       "schemaFingerprint": "502d7c2c05371c0777c72c8732f3f59ea7581eb19650f5baaf0077ae4af28546",
-      "title": "Check upstream contracts"
+      "title": "Check upstream contracts",
+      "requiredScope": "operator",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -2264,7 +2355,9 @@
         "type": "object"
       },
       "schemaFingerprint": "08d503577793cd5f35fd6c549b388ef3038d7357114c7d9cb7e6812406770d8b",
-      "title": "List MCP servers"
+      "title": "List MCP servers",
+      "requiredScope": "read",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -2278,6 +2371,11 @@
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "expectedVersion": {
+            "description": "Current revision id from skills/get; stale versions are rejected atomically.",
+            "minLength": 1,
+            "type": "string"
+          },
           "name": {
             "description": "Skill name.",
             "minLength": 1,
@@ -2291,7 +2389,8 @@
         },
         "required": [
           "namespace",
-          "name"
+          "name",
+          "expectedVersion"
         ],
         "type": "object"
       },
@@ -2309,8 +2408,10 @@
         ],
         "type": "object"
       },
-      "schemaFingerprint": "35e1b4a3699b38c2ab3e989bef3a13c5876f7d9130b32c9b3f9f71e85fa0b469",
-      "title": "Delete ingested skill"
+      "schemaFingerprint": "9accbacc6ad40c4a51ff3317e014164741c012570c84fc3064c37734e9d8f9f7",
+      "title": "Delete ingested skill",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -2360,7 +2461,9 @@
         "type": "object"
       },
       "schemaFingerprint": "8c4fc62b36049b9ffa64dae2eea3c4fae05926ba0ee84c11568bd9e48c0087f4",
-      "title": "Get Depot skill"
+      "title": "Get Depot skill",
+      "requiredScope": "read",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -2421,7 +2524,9 @@
         "type": "object"
       },
       "schemaFingerprint": "0b43e39e67cf6182fd645cdbf38ccfd1328d251313328397de8faf8fa1fd9883",
-      "title": "Ingest ACP Registry"
+      "title": "Ingest ACP Registry",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -2480,7 +2585,9 @@
         "type": "object"
       },
       "schemaFingerprint": "dc544c16566f7fb3458ca275f2447348b7e186c07540110eed2464a34cea23a9",
-      "title": "Ingest ARD catalog"
+      "title": "Ingest ARD catalog",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -2549,7 +2656,9 @@
         "type": "object"
       },
       "schemaFingerprint": "a34a0a4da48ed91b9b23b03dc6d5e951e04a8d698201ade4b44726d27084100b",
-      "title": "Ingest marketplace"
+      "title": "Ingest marketplace",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -2608,7 +2717,9 @@
         "type": "object"
       },
       "schemaFingerprint": "b1b8df7638461826bfa223b953fc0f77e1611df4622ad306cab5c2d6db788be1",
-      "title": "Federate Skills over MCP"
+      "title": "Federate Skills over MCP",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -2699,7 +2810,9 @@
         "type": "object"
       },
       "schemaFingerprint": "215a1654430b3d23da33f44d0dd18d0470953f29207d42f0c927854ea96bf22e",
-      "title": "Ingest MCP Registry"
+      "title": "Ingest MCP Registry",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -2773,7 +2886,9 @@
         "type": "object"
       },
       "schemaFingerprint": "3cf028f93aba63db8368cbfc9ddd13110d321fd6dd1d057efcea7f6326c7ddfb",
-      "title": "Ingest skill repository"
+      "title": "Ingest skill repository",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -2848,7 +2963,9 @@
         "type": "object"
       },
       "schemaFingerprint": "2755a5b72736ee6ff4248f49fa4e630ac2287af9d8e71c081faeadcaa04dcb0a",
-      "title": "Ingest skills.sh result"
+      "title": "Ingest skills.sh result",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -2907,7 +3024,9 @@
         "type": "object"
       },
       "schemaFingerprint": "0d23e30d9256e9dc83def4550ed1285e3c28502383bf82adfdb7405f720c2b3a",
-      "title": "Ingest .well-known skills"
+      "title": "Ingest .well-known skills",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -2960,7 +3079,9 @@
         "type": "object"
       },
       "schemaFingerprint": "0db47745ef0e81cfef00f22118d4780c67bcf64111a20671366227f96125d178",
-      "title": "List Depot skills"
+      "title": "List Depot skills",
+      "requiredScope": "read",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -2982,7 +3103,7 @@
           },
           "offset": {
             "description": "Optional continuation byte offset.",
-            "maximum": 16777216,
+            "maximum": 524288,
             "minimum": 0,
             "type": "integer"
           },
@@ -3017,8 +3138,10 @@
         "required": [],
         "type": "object"
       },
-      "schemaFingerprint": "1e57d017464bf0caa2324d532f45f01f8f5c45c814a0a01a6f1baa25d35b0b08",
-      "title": "Load Depot skill"
+      "schemaFingerprint": "aec0c16df499c0594ea578400ac77a1f341ceb10d1a3ae7bd33d0d62a00fa00c",
+      "title": "Load Depot skill",
+      "requiredScope": "read",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -3051,7 +3174,7 @@
           },
           "offset": {
             "description": "Optional file continuation byte offset.",
-            "maximum": 16777216,
+            "maximum": 524288,
             "minimum": 0,
             "type": "integer"
           },
@@ -3086,8 +3209,10 @@
         "required": [],
         "type": "object"
       },
-      "schemaFingerprint": "f114bde7d077cb6e8991ab9552b0a8f766791d8f1f54f71c9ef97a11c04c17e8",
-      "title": "Read Depot skill resource"
+      "schemaFingerprint": "04a1903f5d932feb184d1a689cd0a29c08358f2e7c45b2f7b9d80bc5d16bf755",
+      "title": "Read Depot skill resource",
+      "requiredScope": "read",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -3137,7 +3262,9 @@
         "type": "object"
       },
       "schemaFingerprint": "964f29b4c9d7e241eb40b1e008bf38f07c3959aae1f785f9d4b6210fc1bd0925",
-      "title": "Search Depot skills"
+      "title": "Search Depot skills",
+      "requiredScope": "read",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -3342,7 +3469,9 @@
         "type": "object"
       },
       "schemaFingerprint": "f02862af885d5d524a3eb6fbf6c8b0e80a951d0c80e5a43a4b92d4a326770478",
-      "title": "Search an ARD registry"
+      "title": "Search an ARD registry",
+      "requiredScope": "read",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -3479,7 +3608,9 @@
         "type": "object"
       },
       "schemaFingerprint": "230081d99596c5eb013874d30d54846c44a48a1131463ebc66f72d0bd2a372d7",
-      "title": "Search plugin marketplace"
+      "title": "Search plugin marketplace",
+      "requiredScope": "read",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -3529,7 +3660,9 @@
         "type": "object"
       },
       "schemaFingerprint": "cfb8b3b48d34ff9dbdd5f871c924a2d8de67aa4a352e5e43a3839b5cd39a554c",
-      "title": "Search skills.sh"
+      "title": "Search skills.sh",
+      "requiredScope": "read",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -3646,7 +3779,9 @@
         "type": "object"
       },
       "schemaFingerprint": "36e5d7687b4405ece34e578bfbfdbef0cf6a98cfe11d794caf7ed28243d396a4",
-      "title": "Configure source"
+      "title": "Configure source",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -3686,7 +3821,9 @@
         "type": "object"
       },
       "schemaFingerprint": "da509757177840226aa748312fb2b571c7ac35a1636be268f3cc94eeed419724",
-      "title": "Delete source"
+      "title": "Delete source",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -3718,7 +3855,9 @@
         "type": "object"
       },
       "schemaFingerprint": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
-      "title": "List sources"
+      "title": "List sources",
+      "requiredScope": "read",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -3763,7 +3902,9 @@
         "type": "object"
       },
       "schemaFingerprint": "da509757177840226aa748312fb2b571c7ac35a1636be268f3cc94eeed419724",
-      "title": "Refresh source"
+      "title": "Refresh source",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -3834,7 +3975,9 @@
         "type": "object"
       },
       "schemaFingerprint": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
-      "title": "Depot status"
+      "title": "Depot status",
+      "requiredScope": "read",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -3890,7 +4033,9 @@
         "type": "object"
       },
       "schemaFingerprint": "30bcfd58191d38f9442105c1bca827e05038497aa48f7df29a56d4c43caded06",
-      "title": "Create access token"
+      "title": "Create access token",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -3922,7 +4067,9 @@
         "type": "object"
       },
       "schemaFingerprint": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
-      "title": "List access tokens"
+      "title": "List access tokens",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -3967,7 +4114,9 @@
         "type": "object"
       },
       "schemaFingerprint": "6f85fe7048bb3b20d0434eeb1ae50eea140e916c0b84f63223cba1fbc849d765",
-      "title": "Revoke access token"
+      "title": "Revoke access token",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -4007,7 +4156,9 @@
         "type": "object"
       },
       "schemaFingerprint": "0494e00291f11c25b559db7e25a50761791f3d3d13bd411694cd304cbaf6d3e9",
-      "title": "Create ingest upload slot"
+      "title": "Create ingest upload slot",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -4047,7 +4198,9 @@
         "type": "object"
       },
       "schemaFingerprint": "81207c6d9931f2b06f5216d259e7657cf2235049ee95041e8e1a5ba827efe720",
-      "title": "Delete ingest upload slot"
+      "title": "Delete ingest upload slot",
+      "requiredScope": "write",
+      "transportAvailable": true
     },
     {
       "annotations": {
@@ -4087,7 +4240,9 @@
         "type": "object"
       },
       "schemaFingerprint": "81207c6d9931f2b06f5216d259e7657cf2235049ee95041e8e1a5ba827efe720",
-      "title": "Get ingest upload slot"
+      "title": "Get ingest upload slot",
+      "requiredScope": "write",
+      "transportAvailable": true
     }
   ],
   "schemaVersion": "labby.depot-operations-golden/v1",

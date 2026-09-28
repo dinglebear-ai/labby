@@ -185,7 +185,10 @@ impl UpstreamPool {
                                 &name,
                                 entry,
                                 UpstreamCapability::Prompts,
-                                format!("failed to list prompts from upstream: {error_text}"),
+                                format!(
+                                    "{} {error_text}",
+                                    super::helpers::UPSTREAM_PROMPT_LISTING_ERROR_PREFIX
+                                ),
                             );
                             entry.prompt_count = 0;
                             entry.prompt_names.clear();

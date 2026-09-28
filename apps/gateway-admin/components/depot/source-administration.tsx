@@ -59,6 +59,7 @@ export function DepotSourceAdministration({ onOpenCatalog }: { onOpenCatalog?: (
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [jobsError, setJobsError] = useState<string | null>(null)
   const [deleteCandidate, setDeleteCandidate] = useState<DepotSource | null>(null)
   const [url, setUrl] = useState('')
   const [namespace, setNamespace] = useState('')
@@ -71,16 +72,21 @@ export function DepotSourceAdministration({ onOpenCatalog }: { onOpenCatalog?: (
     setLoading(true)
     setError(null)
     try {
-      const [nextSources, nextJobs] = await Promise.all([
+      const [sourcesResult, jobsResult] = await Promise.allSettled([
         depotSources(signal),
         depotIngestJobs(25, signal),
       ])
-      setSources(nextSources)
-      setIntervalDrafts(Object.fromEntries(nextSources.map(source => [source.id, String(source.intervalSeconds)])))
-      setJobs(nextJobs)
-    } catch (cause) {
-      if (!(cause instanceof DOMException && cause.name === 'AbortError')) {
-        setError(cause instanceof Error ? cause.message : 'Unable to load Depot ingestion state.')
+      if (sourcesResult.status === 'fulfilled') {
+        setSources(sourcesResult.value)
+        setIntervalDrafts(Object.fromEntries(sourcesResult.value.map(source => [source.id, String(source.intervalSeconds)])))
+      } else if (!(sourcesResult.reason instanceof DOMException && sourcesResult.reason.name === 'AbortError')) {
+        setError(sourcesResult.reason instanceof Error ? sourcesResult.reason.message : 'Unable to load Depot sources.')
+      }
+      if (jobsResult.status === 'fulfilled') {
+        setJobs(jobsResult.value)
+        setJobsError(null)
+      } else if (!(jobsResult.reason instanceof DOMException && jobsResult.reason.name === 'AbortError')) {
+        setJobsError(jobsResult.reason instanceof Error ? jobsResult.reason.message : 'Recent ingest jobs are unavailable.')
       }
     } finally {
       if (!signal?.aborted) setLoading(false)
@@ -246,11 +252,12 @@ export function DepotSourceAdministration({ onOpenCatalog }: { onOpenCatalog?: (
           <Button size="sm" variant="outline" disabled={loading} onClick={() => void load()}><RefreshCw className="size-4" />Refresh</Button>
         </CardHeader>
         <CardContent>
+          {jobsError ? <div role="status" className="mb-3 rounded-md border border-aurora-warn/40 bg-aurora-warn/10 px-3 py-2 text-sm text-aurora-text-muted"><strong className="text-aurora-warn">Ingest history unavailable.</strong> Source administration remains usable. {jobsError}</div> : null}
           <div className="overflow-x-auto rounded-lg border border-aurora-border-strong">
             <Table>
               <TableHeader><TableRow><TableHead>Job</TableHead><TableHead>Kind</TableHead><TableHead>Status</TableHead><TableHead>Started</TableHead><TableHead>Finished</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
               <TableBody>
-                {jobs.length === 0 ? <TableRow><TableCell colSpan={6} className="py-8 text-center text-aurora-text-muted">No recent ingest jobs.</TableCell></TableRow> : jobs.map(job => {
+                {jobsError && jobs.length === 0 ? <TableRow><TableCell colSpan={6} className="py-8 text-center text-aurora-text-muted">Recent ingest jobs could not be loaded.</TableCell></TableRow> : jobs.length === 0 ? <TableRow><TableCell colSpan={6} className="py-8 text-center text-aurora-text-muted">No recent ingest jobs.</TableCell></TableRow> : jobs.map(job => {
                   const retryable = ['failed', 'cancelled', 'canceled'].includes(job.status.toLowerCase())
                   const cancellable = ['queued', 'pending', 'running', 'started'].includes(job.status.toLowerCase())
                   return <TableRow key={job.id}>

@@ -39,7 +39,8 @@ use labby_runtime::gateway_config::GatewayConfig;
 use crate::upstream::pool::{HeaderRecoveryMetricsStore, InProcessConnector};
 
 use super::agent_execution::AgentExecutionStore;
-use super::code_mode::skills::CodeModeSkillProvider;
+use super::code_mode::oauth::CodeModePersonalOauthProvider;
+use super::code_mode::skills::{CodeModeArtifactSearchProvider, CodeModeSkillProvider};
 use super::code_mode::{CodeModeHistory, CodeModeSourceStore};
 use super::config_store::GatewayConfigStore;
 use super::execution_loadout::{
@@ -58,8 +59,27 @@ pub(super) struct OauthStatusDiscoverySnapshot {
     pub(super) error: Option<String>,
 }
 
+#[derive(Clone, Eq, Hash, PartialEq)]
+pub(super) struct CodeModeRefreshKey {
+    pub(super) pool_identity: usize,
+    pub(super) oauth_subject: Option<String>,
+    pub(super) allowed_upstreams: Option<Vec<String>>,
+}
+
+#[derive(Default)]
+pub(super) struct CodeModeRefreshFlight {
+    pub(super) in_flight: Mutex<()>,
+    pub(super) deadline: Mutex<Option<Instant>>,
+}
+
+#[derive(Default)]
+pub(super) struct CodeModeEmbeddingFlight {
+    pub(super) build: Mutex<()>,
+}
+
 mod code_mode_discovery;
 mod code_mode_resolve;
+pub use code_mode_resolve::CodeModeExampleTool;
 mod code_mode_runtime;
 mod config_ops;
 mod config_transaction;
@@ -154,11 +174,14 @@ pub struct GatewayManager {
     pub(super) execution_capability_publication: Arc<std::sync::RwLock<()>>,
     pub(super) execution_capability_provider: Option<Arc<dyn ExecutionCapabilityCatalogProvider>>,
     pub(super) code_mode_skill_provider: Option<Arc<dyn CodeModeSkillProvider>>,
+    pub(super) code_mode_artifact_search_provider: Option<Arc<dyn CodeModeArtifactSearchProvider>>,
+    pub(super) code_mode_personal_oauth_provider: Option<Arc<dyn CodeModePersonalOauthProvider>>,
     pub(super) agent_executions: Arc<AgentExecutionStore>,
     pub(super) agent_execution_cancellations:
         Arc<dashmap::DashMap<String, tokio_util::sync::CancellationToken>>,
     pub(super) code_mode_app_state: CodeModeAppState,
     lazy_pool_init: Arc<Mutex<()>>,
+    code_mode_example_memo: code_mode_resolve::SharedCodeModeExampleMemo,
     notifier: Option<CatalogChangeNotifier>,
     pub(super) oauth_client_cache: Option<OauthClientCache>,
     pub(super) upstream_oauth_managers: Option<Arc<dashmap::DashMap<String, UpstreamOauthManager>>>,
@@ -199,14 +222,20 @@ pub struct GatewayManager {
     /// Propagated to each pool the manager creates so built-in services are
     /// reachable without an external HTTP/stdio connection.
     in_process_connector: Option<InProcessConnector>,
-    /// Wall-clock TTL guard for `refresh_code_mode_catalog`. Tracks the
-    /// last time a full reprobe completed; back-to-back calls within the
-    /// freshness window skip the reprobe and return immediately.
-    pub(super) code_mode_refresh_deadline: Arc<Mutex<Option<Instant>>>,
-    /// Single-flight guard: only one concurrent `refresh_code_mode_catalog`
-    /// runs at a time. Subsequent callers that arrive while a refresh is in
-    /// progress wait for it to finish rather than spawning a second reprobe.
-    pub(super) code_mode_refresh_inflight: Arc<Mutex<()>>,
+    /// Scope-keyed refresh flights. Weak entries are pruned as callers finish.
+    pub(super) code_mode_refresh_flights: Arc<
+        Mutex<
+            std::collections::HashMap<CodeModeRefreshKey, std::sync::Weak<CodeModeRefreshFlight>>,
+        >,
+    >,
+    /// Next time a warm live catalog may publish its healthy non-OAuth tools
+    /// to the one-shot CLI cache without making discovery wait for disk I/O.
+    pub(super) code_mode_cache_sync_after: Arc<Mutex<Option<(usize, Instant)>>>,
+    /// Shared admission for background Code Mode connection attempts across
+    /// requests and OAuth subjects handled by this manager.
+    pub(super) code_mode_warm_up_active: Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(test)]
+    pub(super) code_mode_warm_up_task_spawns: Arc<AtomicU64>,
     /// Cached rendered Code Mode discovery catalog, keyed by a fingerprint of
     /// the live healthy tool list. Avoids regenerating `CatalogDescriptor`
     /// structs (including TS `.signature`/`.dts` via `generate_tool_types`),
@@ -241,13 +270,12 @@ pub struct GatewayManager {
     /// ranking-corpus change or the very first embed. Safety/schema-only
     /// render changes therefore do not force an identical TEI batch.
     ///
-    /// `ensure_embeddings_for_fingerprint` holds the write lock across the
-    /// full check-then-embed-then-store sequence (not just the store) as a
-    /// single-flight guard: concurrent calls against the same cold
-    /// fingerprint serialize onto one TEI batch call instead of firing N
-    /// redundant ones.
+    /// The cache lock covers only reads and publication. Per-fingerprint
+    /// flights below serialize TEI calls without holding this lock over I/O.
     pub(super) code_mode_embedding_cache:
         Arc<RwLock<Option<crate::gateway::code_mode::CatalogEmbeddingCache>>>,
+    pub(super) code_mode_embedding_flights:
+        Arc<Mutex<std::collections::HashMap<String, std::sync::Weak<CodeModeEmbeddingFlight>>>>,
     /// Fail-open cooldown gate for the TEI semantic-search embedding
     /// service. `Some(instant)` = a call failed at `instant`; calls made
     /// before `instant + 30s` skip TEI entirely (falling back to

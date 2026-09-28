@@ -1,34 +1,150 @@
 //! Action catalog for the `setup` Bootstrap orchestrator.
 
 use labby_primitives::action::{ActionSpec, ParamSpec};
+use schemars::JsonSchema;
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 
-/// Plugin-lifecycle action names — canonical dotted forms paired with their
-/// deprecated snake_case aliases. **Single source of truth** for the HTTP
-/// loopback restriction enforced in `crate::api::services::setup`.
-///
-/// Invariant: every name here MUST have (a) a catalog `ActionSpec` below and
-/// (b) a dispatch arm in `dispatch.rs`. The gate consumes this list directly,
-/// so a name that the dispatcher can route but that is missing here would be a
-/// loopback-restriction bypass. The `plugin_lifecycle_actions_*` tests enforce
-/// the catalog membership and the dispatch routing so the three locations
-/// cannot silently drift.
-///
-/// Pairs are ordered (canonical, alias) so tests can assert metadata parity.
-pub const PLUGIN_LIFECYCLE_ACTIONS: &[&str] = &[
-    "plugins.installed",
-    "installed_plugins",
-    "services.status",
-    "services_status",
-    "plugin.install",
-    "install_plugin",
-    "plugin.uninstall",
-    "uninstall_plugin",
-];
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct BootstrapResultSchema {
+    created: bool,
+    env_path: String,
+    token: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct ServiceSchemaMapSchema {
+    services: BTreeMap<String, ServiceSchemaEntrySchema>,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct ServiceSchemaEntrySchema {
+    name: String,
+    display_name: String,
+    description: String,
+    category: String,
+    supports_multi_instance: bool,
+    default_port: Option<u16>,
+    built_in_upstream_api: bool,
+    env: Vec<ServiceEnvSchema>,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct ServiceEnvSchema {
+    name: String,
+    description: String,
+    example: String,
+    secret: bool,
+    required: bool,
+    ui: Option<ServiceUiSchema>,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct ServiceUiSchema {
+    kind: String,
+    enum_values: Option<Vec<String>>,
+    advanced: bool,
+    help_url: Option<String>,
+    depends_on: Option<String>,
+    validation: ServiceUiValidationSchema,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct ServiceUiValidationSchema {
+    required: bool,
+    min_length: Option<usize>,
+    max_length: Option<usize>,
+    pattern: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct DraftGetResultSchema {
+    entries: Vec<super::types::DraftEntry>,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct DraftSetResultSchema {
+    written: usize,
+    skipped: Vec<String>,
+    backup_path: Option<PathBuf>,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct DraftDiscardResultSchema {
+    removed: bool,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct SettingsUpdateStateSchema {
+    config_path: String,
+    changed: bool,
+    previous: SettingsUpdatePreviousSchema,
+    restart_required: bool,
+    restart_note: String,
+    services: SettingsUpdateServicesSchema,
+    surfaces: SettingsUpdateSurfacesSchema,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct SettingsUpdatePreviousSchema {
+    services: SettingsUpdatePreviousServicesSchema,
+}
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct SettingsUpdatePreviousServicesSchema {
+    built_in_upstream_apis_enabled: Option<bool>,
+}
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct SettingsUpdateServicesSchema {
+    built_in_upstream_apis_enabled: bool,
+    built_in_upstream_api_services: Vec<String>,
+    bootstrap_services: Vec<String>,
+}
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct SettingsUpdateSurfacesSchema {
+    mcp: SettingsMcpSurfaceSchema,
+    web: SettingsWebSurfaceSchema,
+    auth: SettingsAuthSurfaceSchema,
+}
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct SettingsMcpSurfaceSchema {
+    transport: String,
+    host: String,
+    port: u16,
+    protocol_version: String,
+    lifecycle: String,
+}
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct SettingsWebSurfaceSchema {
+    auth_disabled: bool,
+    assets_dir: Option<String>,
+}
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct SettingsAuthSurfaceSchema {
+    mode: String,
+    public_url: Option<String>,
+}
 
 /// Setup actions that may only run from a trusted local transport. These
 /// either mint first-run credentials or initiate an outbound connectivity
 /// probe from the host, so an admin bearer alone is not sufficient.
-pub const LOCAL_ONLY_ACTIONS: &[&str] = &["bootstrap", "plugin_connectivity", "proxy.configure"];
+pub const LOCAL_ONLY_ACTIONS: &[&str] = &["bootstrap", "proxy.configure"];
 
 pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
@@ -37,6 +153,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "Catalog",
+        output_schema: None,
         params: &[],
     },
     ActionSpec {
@@ -45,6 +162,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "Schema",
+        output_schema: None,
         params: &[ParamSpec {
             name: "action",
             ty: "string",
@@ -58,6 +176,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "SetupSnapshot",
+        output_schema: Some(labby_primitives::action::schema_for::<super::types::SetupSnapshot>),
         params: &[],
     },
     ActionSpec {
@@ -66,6 +185,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: true,
         requires_admin: true,
         returns: "BootstrapOutcome",
+        output_schema: Some(labby_primitives::action::schema_for::<BootstrapResultSchema>),
         params: &[],
     },
     ActionSpec {
@@ -74,6 +194,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "ServiceSchemaMap",
+        output_schema: Some(labby_primitives::action::schema_for::<ServiceSchemaMapSchema>),
         params: &[ParamSpec {
             name: "services",
             ty: "string[]",
@@ -87,6 +208,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "DraftEntry[]",
+        output_schema: Some(labby_primitives::action::schema_for::<DraftGetResultSchema>),
         params: &[],
     },
     ActionSpec {
@@ -95,6 +217,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: true,
         requires_admin: true,
         returns: "DraftSetOutcome",
+        output_schema: Some(labby_primitives::action::schema_for::<DraftSetResultSchema>),
         params: &[
             ParamSpec {
                 name: "entries",
@@ -116,6 +239,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: true,
         requires_admin: true,
         returns: "DraftDiscardOutcome",
+        output_schema: Some(labby_primitives::action::schema_for::<DraftDiscardResultSchema>),
         params: &[],
     },
     ActionSpec {
@@ -124,6 +248,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: true,
         requires_admin: true,
         returns: "CommitOutcome",
+        output_schema: Some(labby_primitives::action::schema_for::<super::types::CommitOutcome>),
         params: &[ParamSpec {
             name: "force",
             ty: "boolean",
@@ -137,6 +262,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "SettingsState",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::settings::SettingsStateResponse>,
+        ),
         params: &[ParamSpec {
             name: "section",
             ty: "string",
@@ -150,6 +278,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "SettingsSchema",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::settings::SettingsSchemaResponse>,
+        ),
         params: &[],
     },
     ActionSpec {
@@ -158,6 +289,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "EnvSettingSpec[]",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<Vec<super::settings::EnvSettingSpec>>,
+        ),
         params: &[],
     },
     ActionSpec {
@@ -166,6 +300,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "SettingsState",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::settings::SettingsStateResponse>,
+        ),
         params: &[],
     },
     ActionSpec {
@@ -174,6 +311,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: true,
         requires_admin: true,
         returns: "SettingsState",
+        output_schema: Some(labby_primitives::action::schema_for::<SettingsUpdateStateSchema>),
         params: &[ParamSpec {
             name: "services.built_in_upstream_apis_enabled",
             ty: "boolean",
@@ -187,6 +325,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: true,
         requires_admin: true,
         returns: "SettingsMutationOutcome",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::settings::SettingsMutationOutcome>,
+        ),
         params: &[ParamSpec {
             name: "entries",
             ty: "SettingsUpdateEntry[]",
@@ -200,6 +341,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: true,
         requires_admin: true,
         returns: "SettingsState",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::settings::SettingsStateResponse>,
+        ),
         params: &[ParamSpec {
             name: "entries",
             ty: "SettingsUpdateEntry[]",
@@ -208,55 +352,14 @@ pub const ACTIONS: &[ActionSpec] = &[
         }],
     },
     ActionSpec {
-        name: "plugin_hook",
-        description: "Run binary-owned local plugin setup checks; in repair mode also syncs CLAUDE_PLUGIN_OPTION_* and probes server connectivity",
-        destructive: true,
-        requires_admin: true,
-        // Composite payload: { setup: SetupReport, sync: PluginSyncOutcome|null, connectivity: ConnectivityOutcome }.
-        // `sync` is null when called with repair=false (check mode is guaranteed non-mutating).
-        returns: "PluginHookReport",
-        params: &[ParamSpec {
-            name: "repair",
-            ty: "boolean",
-            required: false,
-            description: "Create missing local Lab setup files and sync plugin env; defaults to true",
-        }],
-    },
-    ActionSpec {
-        name: "plugin_sync",
-        description: "Sync CLAUDE_PLUGIN_OPTION_* env vars into ~/.labby/.env as LABBY_* vars",
-        destructive: true,
-        requires_admin: true,
-        returns: "PluginSyncOutcome",
-        params: &[],
-    },
-    ActionSpec {
-        name: "plugin_export",
-        description: "Read ~/.labby/.env and return current values keyed by userConfig field name",
-        destructive: false,
-        requires_admin: true,
-        returns: "PluginExportOutcome",
-        params: &[],
-    },
-    ActionSpec {
-        name: "plugin_connectivity",
-        description: "Validate connectivity to the lab MCP server at {server_url}/health",
-        destructive: false,
-        requires_admin: true,
-        returns: "ConnectivityOutcome",
-        params: &[ParamSpec {
-            name: "server_url",
-            ty: "string",
-            required: false,
-            description: "Requested server URL; it must match the active target selected from CLAUDE_PLUGIN_OPTION_SERVER_URL, LABBY_SERVER_URL, or the standard http://127.0.0.1:8765 loopback default",
-        }],
-    },
-    ActionSpec {
         name: "check",
         description: "Check local Lab setup prerequisites without mutating the filesystem",
         destructive: false,
         requires_admin: false,
         returns: "SetupReport",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::local_setup::SetupReport>,
+        ),
         params: &[],
     },
     ActionSpec {
@@ -265,6 +368,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: true,
         requires_admin: true,
         returns: "SetupReport",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::local_setup::SetupReport>,
+        ),
         params: &[],
     },
     ActionSpec {
@@ -273,6 +379,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: true,
         requires_admin: true,
         returns: "ProxySetupOutcome",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::proxy::ProxySetupOutcome>,
+        ),
         params: &[
             ParamSpec {
                 name: "preferences",
@@ -294,122 +403,13 @@ pub const ACTIONS: &[ActionSpec] = &[
             },
         ],
     },
-    // -- Plugin-lifecycle actions ------------------------------------------
-    //
-    // These actions are HTTP loopback-gated in
-    // `crate::api::services::setup::plugin_lifecycle_action`, which reads its
-    // name set from `PLUGIN_LIFECYCLE_ACTIONS` above. The canonical names are
-    // the dotted `<resource>.<verb>` forms below; the snake_case entries that
-    // follow each one are deprecated aliases retained only for backward
-    // compatibility with external callers using the historical names — no
-    // in-tree caller depends on them (the CLI uses the dotted forms). Both
-    // forms route to the same handler in `dispatch.rs`. Every name in
-    // `PLUGIN_LIFECYCLE_ACTIONS` must have an entry here and a dispatch arm;
-    // the `plugin_lifecycle_actions_*` tests enforce that lockstep.
-    ActionSpec {
-        name: "plugins.installed",
-        description: "List installed Claude Code lab plugins",
-        destructive: false,
-        requires_admin: true,
-        returns: "InstalledPlugin[]",
-        params: &[ParamSpec {
-            name: "force",
-            ty: "boolean",
-            required: false,
-            description: "Bypass the short in-process cache",
-        }],
-    },
-    // Deprecated alias for `plugins.installed`.
-    ActionSpec {
-        name: "installed_plugins",
-        description: "Deprecated alias for `plugins.installed`",
-        destructive: false,
-        requires_admin: true,
-        returns: "InstalledPlugin[]",
-        params: &[ParamSpec {
-            name: "force",
-            ty: "boolean",
-            required: false,
-            description: "Bypass the short in-process cache",
-        }],
-    },
-    ActionSpec {
-        name: "services.status",
-        description: "Join service configuration, draft, and Claude plugin state",
-        destructive: false,
-        requires_admin: true,
-        returns: "ServiceStatus[]",
-        params: &[],
-    },
-    // Deprecated alias for `services.status`.
-    ActionSpec {
-        name: "services_status",
-        description: "Deprecated alias for `services.status`",
-        destructive: false,
-        requires_admin: true,
-        returns: "ServiceStatus[]",
-        params: &[],
-    },
-    ActionSpec {
-        name: "plugin.install",
-        description: "Install the Claude Code plugin for one configured service",
-        destructive: true,
-        requires_admin: true,
-        returns: "PluginMutationResult",
-        params: &[ParamSpec {
-            name: "service",
-            ty: "string",
-            required: true,
-            description: "Registered service name",
-        }],
-    },
-    // Deprecated alias for `plugin.install`.
-    ActionSpec {
-        name: "install_plugin",
-        description: "Deprecated alias for `plugin.install`",
-        destructive: true,
-        requires_admin: true,
-        returns: "PluginMutationResult",
-        params: &[ParamSpec {
-            name: "service",
-            ty: "string",
-            required: true,
-            description: "Registered service name",
-        }],
-    },
-    ActionSpec {
-        name: "plugin.uninstall",
-        description: "Uninstall the Claude Code plugin for one service",
-        destructive: true,
-        requires_admin: true,
-        returns: "PluginMutationResult",
-        params: &[ParamSpec {
-            name: "service",
-            ty: "string",
-            required: true,
-            description: "Registered service name",
-        }],
-    },
-    // Deprecated alias for `plugin.uninstall`.
-    ActionSpec {
-        name: "uninstall_plugin",
-        description: "Deprecated alias for `plugin.uninstall`",
-        destructive: true,
-        requires_admin: true,
-        returns: "PluginMutationResult",
-        params: &[ParamSpec {
-            name: "service",
-            ty: "string",
-            required: true,
-            description: "Registered service name",
-        }],
-    },
     ActionSpec {
         name: "finalize",
         description: "Alias for draft.commit; same params, same returns",
         destructive: true,
         requires_admin: true,
         returns: "CommitOutcome",
+        output_schema: Some(labby_primitives::action::schema_for::<super::types::CommitOutcome>),
         params: &[ParamSpec {
             name: "force",
             ty: "boolean",

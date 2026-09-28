@@ -11,11 +11,13 @@ use std::path::{Path, PathBuf};
 use labby_codemode::snippet::store::{SnippetInfo, builtin_snippet_dir, list_snippets};
 use labby_codemode::{
     CatalogDescriptor, CodeModeCaller, CodeModeSurface, CodeModeToolSafety, ToolScope, ToolsRender,
+    WithheldTools,
 };
 use sha2::{Digest, Sha256};
 
 use crate::gateway::manager::GatewayManager;
 use crate::gateway::projection::{sanitize_schema, sanitize_tool_text};
+use crate::upstream::pool::ToolCatalogGeneration;
 use crate::upstream::types::{UpstreamRuntimeOwner, UpstreamTool};
 use labby_runtime::error::ToolError;
 use labby_runtime::lab_home;
@@ -26,15 +28,23 @@ use labby_runtime::lab_home;
 /// would otherwise keep serving a stale `.dts` from `codemode.describe()`.
 fn tool_shape_digest(tool: &UpstreamTool) -> String {
     let safety = normalized_tool_safety(tool);
-    let payload = serde_json::json!({
-        "description": tool.tool.description,
-        "input_schema": tool.input_schema,
-        "output_schema": tool.output_schema,
-        "safety": safety,
-    });
-    let serialized = serde_json::to_string(&payload).unwrap_or_default();
-    let digest = Sha256::digest(serialized.as_bytes());
-    digest.iter().map(|b| format!("{b:02x}")).collect()
+    // Borrow the large schemas instead of cloning them into a temporary JSON
+    // tree on every render-cache lookup.
+    #[derive(serde::Serialize)]
+    struct Shape<'a> {
+        description: &'a Option<std::borrow::Cow<'static, str>>,
+        input_schema: &'a Option<serde_json::Value>,
+        output_schema: &'a Option<serde_json::Value>,
+        safety: Option<CodeModeToolSafety>,
+    }
+    let shape = Shape {
+        description: &tool.tool.description,
+        input_schema: &tool.input_schema,
+        output_schema: &tool.output_schema,
+        safety,
+    };
+    let serialized = serde_json::to_vec(&shape).unwrap_or_default();
+    hex::encode(Sha256::digest(serialized))
 }
 
 fn normalized_tool_safety(tool: &UpstreamTool) -> Option<CodeModeToolSafety> {
@@ -114,6 +124,7 @@ fn render_from_cached_catalog(
         entries,
         catalog_json,
         serialized_size,
+        withheld: std::sync::Arc::from([]),
     }
 }
 
@@ -133,13 +144,15 @@ pub(crate) async fn build_tools_render(
     caller: &CodeModeCaller,
     surface: CodeModeSurface,
 ) -> Result<ToolsRender, ToolError> {
-    let raw_tools = if use_cache {
-        manager
+    let enumerate_started = std::time::Instant::now();
+    let (raw_tools, catalog_generation) = if use_cache {
+        let tools = manager
             .code_mode_catalog_tools_cached_allowed(Some(owner), oauth_subject, allowed_upstreams)
-            .await?
+            .await?;
+        (tools, None)
     } else {
         manager
-            .code_mode_catalog_tools_allowed(
+            .code_mode_catalog_tools_allowed_with_generation(
                 allow_cold_connect,
                 Some(owner),
                 oauth_subject,
@@ -147,39 +160,157 @@ pub(crate) async fn build_tools_render(
             )
             .await?
     };
+    tracing::debug!(
+        surface = "dispatch",
+        service = labby_codemode::SERVICE,
+        action = "catalog.enumerate",
+        source = if use_cache { "cached" } else { "live" },
+        elapsed_ms = enumerate_started.elapsed().as_millis(),
+        tool_count = raw_tools.len(),
+        upstream_scope_restricted = allowed_upstreams.is_some(),
+        "enumerated Code Mode upstream tool catalog"
+    );
     let metadata_entries = manager
         .code_mode_metadata_entries(caller, surface, scope)
         .await;
-    catalog_from_tools(
+    let accessible = filter_in_process_for_access(manager, raw_tools, caller);
+    let (tools, withheld) = partition_tools_for_access(accessible, scope);
+    let mut render = catalog_from_tools_with_generation(
         manager,
-        filter_tools_for_access(raw_tools, scope),
+        tools,
         include_snippets,
         metadata_entries,
+        if oauth_subject.is_none() && allowed_upstreams.is_none() {
+            catalog_generation
+        } else {
+            None
+        },
     )
-    .await
+    .await?;
+    render.withheld = withheld.into();
+    Ok(render)
 }
 
-fn filter_tools_for_access(tools: Vec<UpstreamTool>, scope: &ToolScope) -> Vec<UpstreamTool> {
+fn filter_in_process_for_access(
+    manager: &GatewayManager,
+    tools: Vec<UpstreamTool>,
+    caller: &CodeModeCaller,
+) -> Vec<UpstreamTool> {
+    let published = manager.published_service_registry_snapshot().ok();
     tools
         .into_iter()
         .filter(|tool| {
-            scope.allows(tool.upstream_name.as_ref(), tool.tool.name.as_ref())
-                && (!scope.is_read_only()
-                    || super::code_mode_host::tool_is_explicitly_read_only(tool))
+            let Some(service_name) = tool
+                .upstream_name
+                .strip_prefix(labby_runtime::gateway_config::IN_PROCESS_UPSTREAM_PREFIX)
+            else {
+                return true;
+            };
+            // Synthetic peers have no product access runtime or transport
+            // AuthContext. Only published, non-admin actions may be offered.
+            let Some(action_name) = tool.tool.name.strip_prefix(&format!("{service_name}.")) else {
+                return false;
+            };
+            let Some(action) = published
+                .as_ref()
+                .and_then(|catalog| {
+                    catalog
+                        .services()
+                        .iter()
+                        .find(|service| service.name() == service_name)
+                })
+                .and_then(|service| {
+                    service
+                        .actions()
+                        .iter()
+                        .find(|action| action.name() == action_name)
+                })
+            else {
+                return false;
+            };
+            if action.requires_admin() {
+                return false;
+            }
+            if service_name == "gateway"
+                && !matches!(action_name, "help" | "schema")
+                && !(action_name == "gateway.oauth.authorize"
+                    && manager.has_code_mode_personal_oauth_provider()
+                    && caller.authority_token().is_some()
+                    && caller.can_execute())
+            {
+                return false;
+            }
+            true
         })
         .collect()
 }
 
+/// Report only tools withheld by read-only annotation policy. Tools excluded
+/// by caller authority or scope are never counted as discoverable.
+fn partition_tools_for_access(
+    tools: Vec<UpstreamTool>,
+    scope: &ToolScope,
+) -> (Vec<UpstreamTool>, Vec<WithheldTools>) {
+    let mut withheld = std::collections::BTreeMap::<std::sync::Arc<str>, usize>::new();
+    let kept = tools
+        .into_iter()
+        .filter(|tool| {
+            if !scope.allows(tool.upstream_name.as_ref(), tool.tool.name.as_ref()) {
+                return false;
+            }
+            if scope.is_read_only() && !super::code_mode_host::tool_is_explicitly_read_only(tool) {
+                *withheld
+                    .entry(std::sync::Arc::clone(&tool.upstream_name))
+                    .or_default() += 1;
+                return false;
+            }
+            true
+        })
+        .collect();
+    let withheld = withheld
+        .into_iter()
+        .filter_map(|(namespace, tool_count)| WithheldTools::new(namespace.as_ref(), tool_count))
+        .collect();
+    (kept, withheld)
+}
+
+#[cfg(test)]
+fn filter_tools_for_access(
+    manager: &GatewayManager,
+    tools: Vec<UpstreamTool>,
+    scope: &ToolScope,
+    caller: &CodeModeCaller,
+) -> Vec<UpstreamTool> {
+    partition_tools_for_access(filter_in_process_for_access(manager, tools, caller), scope).0
+}
+
+#[cfg(test)]
+fn withheld_by_access(tools: &[UpstreamTool], scope: &ToolScope) -> Vec<WithheldTools> {
+    partition_tools_for_access(tools.to_vec(), scope).1
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) async fn catalog_from_tools(
     manager: &GatewayManager,
     raw_tools: Vec<UpstreamTool>,
     include_snippets: bool,
     metadata_entries: Vec<CatalogDescriptor>,
 ) -> Result<ToolsRender, ToolError> {
+    catalog_from_tools_with_generation(manager, raw_tools, include_snippets, metadata_entries, None)
+        .await
+}
+
+async fn catalog_from_tools_with_generation(
+    manager: &GatewayManager,
+    raw_tools: Vec<UpstreamTool>,
+    include_snippets: bool,
+    metadata_entries: Vec<CatalogDescriptor>,
+    catalog_generation: Option<ToolCatalogGeneration>,
+) -> Result<ToolsRender, ToolError> {
     // --- catalog render cache ---
-    // Compute a cheap fingerprint from the sorted healthy tool ids. This detects
-    // upstream additions/removals/renames without needing a pool generation
-    // counter. The sort makes the fingerprint order-independent.
+    // A stable pool generation covers tool shape, including schemas. Only a
+    // generation bracketed around the actual pool projection may use the cheap
+    // path; CLI, OAuth, and test callers retain the full shape digest.
     let snippet_fingerprint = if include_snippets {
         snippet_directory_fingerprint("admin")
             .await?
@@ -191,13 +322,14 @@ pub(super) async fn catalog_from_tools(
     let fingerprint = {
         let mut ids: Vec<String> = raw_tools
             .iter()
-            .map(|t| {
-                format!(
+            .map(|tool| match catalog_generation {
+                Some(_) => format!("{}::{}", tool.upstream_name, tool.tool.name),
+                None => format!(
                     "{}::{}::{}",
-                    t.upstream_name,
-                    t.tool.name,
-                    tool_shape_digest(t)
-                )
+                    tool.upstream_name,
+                    tool.tool.name,
+                    tool_shape_digest(tool)
+                ),
             })
             .collect();
         ids.extend(metadata_entries.iter().map(|entry| {
@@ -214,12 +346,31 @@ pub(super) async fn catalog_from_tools(
             )
         }));
         ids.sort_unstable();
-        format!("tools:\n{}\n{snippet_fingerprint}", ids.join("\n"))
+        let generation = catalog_generation
+            .map(|generation| {
+                format!(
+                    "generation:{}\n",
+                    hex::encode(generation.fingerprint_bytes())
+                )
+            })
+            .unwrap_or_default();
+        format!(
+            "tools:\n{generation}{}\n{snippet_fingerprint}",
+            ids.join("\n")
+        )
     };
 
-    if let Some((entries, catalog_json, serialized_size)) =
-        manager.cached_catalog_render(&fingerprint).await
-    {
+    let cache_lookup_started = std::time::Instant::now();
+    let cached_render = manager.cached_catalog_render(&fingerprint).await;
+    tracing::debug!(
+        surface = "dispatch",
+        service = labby_codemode::SERVICE,
+        action = "catalog.cache_lookup",
+        cache_hit = cached_render.is_some(),
+        elapsed_ms = cache_lookup_started.elapsed().as_millis(),
+        "checked Code Mode catalog render cache"
+    );
+    if let Some((entries, catalog_json, serialized_size)) = cached_render {
         tracing::debug!(
             surface = "dispatch",
             service = labby_codemode::SERVICE,
@@ -260,6 +411,7 @@ pub(super) async fn catalog_from_tools(
     }
 
     // Cache miss — build entries (includes `generate_tool_types` per entry).
+    let typescript_started = std::time::Instant::now();
     let mut entries = raw_tools
         .into_iter()
         .map(|tool| {
@@ -282,6 +434,14 @@ pub(super) async fn catalog_from_tools(
             )
         })
         .collect::<Vec<_>>();
+    tracing::debug!(
+        surface = "dispatch",
+        service = labby_codemode::SERVICE,
+        action = "catalog.typescript_render",
+        elapsed_ms = typescript_started.elapsed().as_millis(),
+        entry_count = entries.len(),
+        "rendered Code Mode TypeScript tool declarations"
+    );
 
     if include_snippets {
         let snippets = snippet_metadata_for_catalog(manager, &snippet_fingerprint).await?;
@@ -306,10 +466,9 @@ pub(super) async fn catalog_from_tools(
         message: format!("failed to serialize Code Mode discovery catalog: {err}"),
     })?;
     let serialized_size = catalog_json.len();
-    // Wrap ONCE here — every consumer below (the stored cache entry, the
-    // returned render, and any later `describe_types` re-fetch of this same
-    // fingerprint) shares this allocation via a cheap Arc clone instead of a
-    // deep copy of the whole catalog.
+    // Wrap ONCE here — the stored cache entry, returned render, and the
+    // execution-scoped snapshot retained for `describe_types` all share this
+    // allocation via cheap Arc clones instead of deep-copying the catalog.
     let entries: std::sync::Arc<[CatalogDescriptor]> = std::sync::Arc::from(entries);
     let catalog_json: std::sync::Arc<str> = std::sync::Arc::from(catalog_json);
 
@@ -340,6 +499,7 @@ pub(super) async fn catalog_from_tools(
         entries,
         catalog_json,
         serialized_size,
+        withheld: std::sync::Arc::from([]),
     })
 }
 
@@ -479,7 +639,121 @@ fn normalize_path(path: &Path) -> String {
 #[allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 mod tests {
     use super::*;
+    use std::future::Future;
     use std::sync::Arc;
+
+    struct SyntheticRegistry;
+
+    struct TestPersonalOauthProvider;
+
+    impl crate::gateway::code_mode::oauth::CodeModePersonalOauthProvider for TestPersonalOauthProvider {
+        fn authorize<'a>(
+            &'a self,
+            _: &'a GatewayManager,
+            _: &'a str,
+            _: serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<serde_json::Value, ToolError>> + Send + 'a>>
+        {
+            Box::pin(async { Ok(serde_json::Value::Null) })
+        }
+    }
+
+    impl crate::registry::InProcessServiceRegistry for SyntheticRegistry {
+        fn in_process_services(&self) -> Vec<Box<dyn crate::registry::InProcessService>> {
+            Vec::new()
+        }
+    }
+
+    impl crate::gateway::service_registry::GatewayServiceRegistry for SyntheticRegistry {
+        fn service_names(&self) -> Vec<&'static str> {
+            vec!["fixture", "gateway"]
+        }
+        fn contains_service(&self, name: &str) -> bool {
+            matches!(name, "fixture" | "gateway")
+        }
+        fn service_actions(
+            &self,
+            name: &str,
+        ) -> Option<Vec<crate::gateway::service_registry::ServiceActionInfo>> {
+            let action =
+                |name, requires_admin| crate::gateway::service_registry::ServiceActionInfo {
+                    name,
+                    description: "fixture",
+                    destructive: false,
+                    requires_admin,
+                };
+            match name {
+                "fixture" => Some(vec![action("list", false), action("reset", true)]),
+                "gateway" => Some(vec![action("gateway.oauth.authorize", false)]),
+                _ => None,
+            }
+        }
+        fn service_meta(&self, _: &str) -> Option<&'static labby_primitives::plugin::PluginMeta> {
+            None
+        }
+    }
+
+    #[test]
+    fn synthetic_catalog_hides_admin_and_unwired_personal_actions() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = GatewayManager::new(
+            dir.path().join("config.toml"),
+            crate::gateway::runtime::GatewayRuntimeHandle::default(),
+        )
+        .with_builtin_service_registry(Arc::new(SyntheticRegistry));
+        let tool = |service: &str, name: &str| UpstreamTool {
+            tool: rmcp::model::Tool::new(
+                name.to_owned(),
+                "fixture",
+                Arc::new(serde_json::Map::new()),
+            ),
+            input_schema: None,
+            output_schema: None,
+            upstream_name: Arc::from(crate::upstream::pool::in_process_upstream_name(service)),
+            destructive: false,
+        };
+        let tools = vec![
+            tool("fixture", "fixture.list"),
+            tool("fixture", "fixture.reset"),
+            tool("gateway", "gateway.gateway.oauth.authorize"),
+        ];
+        let filtered = filter_tools_for_access(
+            &manager,
+            tools,
+            &ToolScope::default(),
+            &CodeModeCaller::TrustedLocal,
+        );
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].tool.name.as_ref(), "fixture.list");
+
+        let manager =
+            manager.with_code_mode_personal_oauth_provider(Arc::new(TestPersonalOauthProvider));
+        let caller = CodeModeCaller::WithAuthority {
+            caller: Box::new(CodeModeCaller::Scoped {
+                capabilities: labby_codemode::CodeModeCallerCapabilities {
+                    can_read: true,
+                    can_execute: true,
+                    ..Default::default()
+                },
+                sub: Some("personal-user".to_owned()),
+            }),
+            authority_token: "request-token".to_owned(),
+        };
+        let visible = filter_tools_for_access(
+            &manager,
+            vec![tool("gateway", "gateway.gateway.oauth.authorize")],
+            &ToolScope::default(),
+            &caller,
+        );
+        assert_eq!(visible.len(), 1, "verified caller sees the OAuth action");
+        let hidden_on_read_route = filter_tools_for_access(
+            &manager,
+            vec![tool("gateway", "gateway.gateway.oauth.authorize")],
+            &ToolScope::default().read_only(),
+            &caller,
+        );
+        assert!(hidden_on_read_route.is_empty());
+    }
 
     fn safety_fixture(annotations: Option<rmcp::model::ToolAnnotations>) -> UpstreamTool {
         let mut tool = rmcp::model::Tool::new(
@@ -553,6 +827,39 @@ mod tests {
     }
 
     #[test]
+    fn borrowed_shape_digest_matches_legacy_shape_and_tracks_schema_changes() {
+        let mut tool = safety_fixture(Some(rmcp::model::ToolAnnotations::new().read_only(true)));
+        tool.input_schema = Some(serde_json::json!({
+            "type": "object",
+            "properties": { "query": { "type": "string" } }
+        }));
+        tool.output_schema = Some(serde_json::json!({
+            "type": "object",
+            "properties": { "results": { "type": "array" } }
+        }));
+        let legacy_payload = serde_json::json!({
+            "description": tool.tool.description,
+            "input_schema": tool.input_schema,
+            "output_schema": tool.output_schema,
+            "safety": normalized_tool_safety(&tool),
+        });
+        let legacy_digest = hex::encode(Sha256::digest(
+            serde_json::to_vec(&legacy_payload).expect("shape serializes"),
+        ));
+        let original = tool_shape_digest(&tool);
+        assert_eq!(original, legacy_digest);
+
+        tool.input_schema = Some(serde_json::json!({ "type": "integer" }));
+        assert_ne!(tool_shape_digest(&tool), original);
+        tool.input_schema = Some(serde_json::json!({
+            "type": "object",
+            "properties": { "query": { "type": "string" } }
+        }));
+        tool.output_schema = Some(serde_json::json!({ "type": "boolean" }));
+        assert_ne!(tool_shape_digest(&tool), original);
+    }
+
+    #[test]
     fn snippet_membership_changes_rendered_embedding_identity() {
         use labby_codemode::snippet::store::{SnippetInfo, SnippetSource};
 
@@ -619,6 +926,58 @@ mod tests {
             .expect("second render");
 
         assert_ne!(first_render.fingerprint, second_render.fingerprint);
+    }
+
+    #[tokio::test]
+    async fn generation_key_tracks_pool_epoch_and_filtered_tool_membership() {
+        let dir = tempfile::tempdir().expect("temporary config root");
+        let manager = GatewayManager::new(
+            dir.path().join("config.toml"),
+            crate::gateway::runtime::GatewayRuntimeHandle::default(),
+        );
+        let generation = crate::upstream::pool::UpstreamPool::new()
+            .published_tool_catalog()
+            .await
+            .expect("published catalog")
+            .generation();
+        let next_generation = crate::upstream::pool::UpstreamPool::new()
+            .published_tool_catalog()
+            .await
+            .expect("published catalog")
+            .generation();
+        let tool = safety_fixture(None);
+        let first = catalog_from_tools_with_generation(
+            &manager,
+            vec![tool.clone()],
+            false,
+            Vec::new(),
+            Some(generation),
+        )
+        .await
+        .expect("first render");
+        let changed_generation = catalog_from_tools_with_generation(
+            &manager,
+            vec![tool.clone()],
+            false,
+            Vec::new(),
+            Some(next_generation),
+        )
+        .await
+        .expect("next generation render");
+        assert_ne!(first.fingerprint, changed_generation.fingerprint);
+
+        let mut renamed = tool;
+        renamed.tool.name = "renamed".into();
+        let changed_membership = catalog_from_tools_with_generation(
+            &manager,
+            vec![renamed],
+            false,
+            Vec::new(),
+            Some(generation),
+        )
+        .await
+        .expect("changed membership render");
+        assert_ne!(first.fingerprint, changed_membership.fingerprint);
     }
 
     #[tokio::test]
@@ -704,7 +1063,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let started = std::time::Instant::now();
-        let render = catalog_from_tools(&manager, tools, false, Vec::new())
+        let render = catalog_from_tools(&manager, tools.clone(), false, Vec::new())
             .await
             .expect("4k cold render");
         let elapsed = started.elapsed();
@@ -714,6 +1073,56 @@ mod tests {
             "4k cold render: elapsed_ms={} serialized_bytes={} bytes_per_tool={bytes_per_tool}",
             elapsed.as_millis(),
             render.serialized_size
+        );
+        let hot_started = std::time::Instant::now();
+        for _ in 0..5 {
+            catalog_from_tools(&manager, tools.clone(), false, Vec::new())
+                .await
+                .expect("4k hot render");
+        }
+        eprintln!(
+            "4k hot render: mean_ms={}",
+            hot_started.elapsed().as_millis() / 5
+        );
+        let digest_started = std::time::Instant::now();
+        for _ in 0..5 {
+            for tool in &tools {
+                std::hint::black_box(tool_shape_digest(tool));
+            }
+        }
+        eprintln!(
+            "4k shape digest: mean_ms={}",
+            digest_started.elapsed().as_millis() / 5
+        );
+        let generation = crate::upstream::pool::UpstreamPool::new()
+            .published_tool_catalog()
+            .await
+            .expect("published catalog")
+            .generation();
+        catalog_from_tools_with_generation(
+            &manager,
+            tools.clone(),
+            false,
+            Vec::new(),
+            Some(generation),
+        )
+        .await
+        .expect("prime generation-key render cache");
+        let cheap_started = std::time::Instant::now();
+        for _ in 0..5 {
+            catalog_from_tools_with_generation(
+                &manager,
+                tools.clone(),
+                false,
+                Vec::new(),
+                Some(generation),
+            )
+            .await
+            .expect("4k generation-key render");
+        }
+        eprintln!(
+            "4k generation-key render: mean_ms={}",
+            cheap_started.elapsed().as_millis() / 5
         );
         assert!(elapsed < std::time::Duration::from_secs(10));
         assert!(render.serialized_size < 4_000_000);
@@ -841,6 +1250,11 @@ mod tests {
 
     #[test]
     fn exact_tool_scope_filters_model_facing_catalog_within_allowed_upstream() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = GatewayManager::new(
+            dir.path().join("config.toml"),
+            crate::gateway::runtime::GatewayRuntimeHandle::default(),
+        );
         let named = Arc::<str>::from("fixture");
         let make = |name: &str| UpstreamTool {
             tool: rmcp::model::Tool::new(
@@ -858,7 +1272,12 @@ mod tests {
             vec!["fixture::query".to_string()],
         );
 
-        let filtered = filter_tools_for_access(vec![make("query"), make("mutate")], &scope);
+        let filtered = filter_tools_for_access(
+            &manager,
+            vec![make("query"), make("mutate")],
+            &scope,
+            &CodeModeCaller::TrustedLocal,
+        );
 
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].tool.name.as_ref(), "query");
@@ -866,6 +1285,11 @@ mod tests {
 
     #[test]
     fn read_only_catalog_filter_is_fail_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = GatewayManager::new(
+            dir.path().join("config.toml"),
+            crate::gateway::runtime::GatewayRuntimeHandle::default(),
+        );
         let named = Arc::<str>::from("fixture");
         let make = |annotations: Option<rmcp::model::ToolAnnotations>| {
             let mut tool = rmcp::model::Tool::new(
@@ -889,7 +1313,12 @@ mod tests {
         ];
 
         let read_only_scope = ToolScope::default().read_only();
-        let filtered = filter_tools_for_access(tools, &read_only_scope);
+        let filtered = filter_tools_for_access(
+            &manager,
+            tools,
+            &read_only_scope,
+            &CodeModeCaller::TrustedLocal,
+        );
         assert_eq!(filtered.len(), 1);
         assert!(super::super::code_mode_host::tool_is_explicitly_read_only(
             &filtered[0]
@@ -897,7 +1326,53 @@ mod tests {
     }
 
     #[test]
+    fn read_only_scope_reports_withheld_tools_per_upstream() {
+        let make = |upstream: &str, name: &str, read_only: bool| {
+            let mut tool = rmcp::model::Tool::new(
+                name.to_string(),
+                "fixture tool",
+                Arc::new(serde_json::Map::new()),
+            );
+            if read_only {
+                tool.annotations = Some(rmcp::model::ToolAnnotations::new().read_only(true));
+            }
+            UpstreamTool {
+                tool,
+                input_schema: None,
+                output_schema: None,
+                upstream_name: Arc::from(upstream),
+                destructive: false,
+            }
+        };
+        let tools = vec![
+            make("claude-macpoo", "Bash", false),
+            make("claude-macpoo", "Read", false),
+            make("annotated", "lookup", true),
+            make("annotated", "mutate", false),
+            make("out-of-scope", "Bash", false),
+        ];
+        let scope = ToolScope::new(
+            vec!["claude-macpoo".to_string(), "annotated".to_string()],
+            Vec::new(),
+        );
+
+        assert!(withheld_by_access(&tools, &scope).is_empty());
+        assert_eq!(
+            withheld_by_access(&tools, &scope.read_only()),
+            vec![
+                WithheldTools::new("annotated", 1).expect("nonzero"),
+                WithheldTools::new("claude-macpoo", 2).expect("nonzero"),
+            ]
+        );
+    }
+
+    #[test]
     fn read_only_catalog_uses_standard_mcp_safety_annotations() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = GatewayManager::new(
+            dir.path().join("config.toml"),
+            crate::gateway::runtime::GatewayRuntimeHandle::default(),
+        );
         let named = Arc::<str>::from("fixture");
         let mut tool = rmcp::model::Tool::new(
             "query".to_string(),
@@ -915,7 +1390,13 @@ mod tests {
 
         let read_only_scope = ToolScope::default().read_only();
         assert_eq!(
-            filter_tools_for_access(vec![tool], &read_only_scope).len(),
+            filter_tools_for_access(
+                &manager,
+                vec![tool],
+                &read_only_scope,
+                &CodeModeCaller::TrustedLocal
+            )
+            .len(),
             1
         );
     }

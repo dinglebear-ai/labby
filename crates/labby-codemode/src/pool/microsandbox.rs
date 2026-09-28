@@ -20,6 +20,26 @@ static RECONCILED_EXECUTABLES: OnceLock<tokio::sync::Mutex<HashSet<std::path::Pa
     OnceLock::new();
 
 const HELPER_OUTPUT_LIMIT: usize = 8 * 1024;
+/// Default wall-clock bound for one `msb` helper invocation.
+const DEFAULT_HELPER_TIMEOUT: Duration = Duration::from_secs(5);
+/// Operator override for [`DEFAULT_HELPER_TIMEOUT`], in milliseconds.
+///
+/// The bound is wall-clock, so on a saturated host a helper that would have
+/// finished can be killed and reported as `cleanup_timeout`. Raising it trades
+/// slower failure detection for fewer false timeouts.
+const HELPER_TIMEOUT_ENV: &str = "LABBY_CODE_MODE_MICROSANDBOX_HELPER_TIMEOUT_MS";
+static HELPER_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+
+/// Wall-clock bound applied to every `msb` helper invocation. Read once.
+fn helper_timeout() -> Duration {
+    *HELPER_TIMEOUT.get_or_init(|| {
+        std::env::var(HELPER_TIMEOUT_ENV)
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u64>().ok())
+            .filter(|millis| *millis > 0)
+            .map_or(DEFAULT_HELPER_TIMEOUT, Duration::from_millis)
+    })
+}
 const CLEANUP_WORKERS: usize = 2;
 const CLEANUP_QUEUE_CAPACITY: usize = 32;
 
@@ -301,7 +321,7 @@ async fn reconcile_stale_sandboxes(config: &super::MicrosandboxSpawn) -> Result<
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let output = run_helper(list, Duration::from_secs(5))
+    let output = run_helper(list, helper_timeout())
         .await
         .map_err(|error| ToolError::Sdk {
             sdk_kind: error.sdk_kind.into(),
@@ -334,7 +354,7 @@ async fn reconcile_stale_sandboxes(config: &super::MicrosandboxSpawn) -> Result<
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
-        let removed = run_helper(remove, Duration::from_secs(5))
+        let removed = run_helper(remove, helper_timeout())
             .await
             .map_err(|error| ToolError::Sdk {
                 sdk_kind: error.sdk_kind.into(),
@@ -554,7 +574,7 @@ async fn reconcile_failed_cleanups(executable: &std::path::Path) -> Result<(), T
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
-        match run_helper(remove, Duration::from_secs(5)).await {
+        match run_helper(remove, helper_timeout()).await {
             Ok(output) if output.status.success() => {
                 resolve_failed_cleanup(&identity);
                 log_lifecycle(
@@ -605,7 +625,7 @@ async fn list_owned_sandbox_names(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let output = run_helper(list, Duration::from_secs(5))
+    let output = run_helper(list, helper_timeout())
         .await
         .map_err(|error| ToolError::Sdk {
             sdk_kind: "cleanup_failed".into(),
@@ -797,6 +817,30 @@ mod tests {
 
     use super::*;
 
+    /// Raise the helper bound for timing-sensitive tests.
+    ///
+    /// The real 5 s default is a wall-clock bound: when a loaded host delays
+    /// the fake helper past it, the test fails for scheduling reasons rather
+    /// than behavior. Tests that assert helper *outcomes* use a generous bound
+    /// so only the behavior under test can fail them.
+    fn relax_helper_timeout() {
+        let _ = HELPER_TIMEOUT.set(Duration::from_mins(2));
+    }
+
+    #[test]
+    fn helper_timeout_defaults_and_is_operator_overridable() {
+        // The default is what a fresh process uses; the override is read once.
+        assert_eq!(DEFAULT_HELPER_TIMEOUT, Duration::from_secs(5));
+        assert_eq!(
+            HELPER_TIMEOUT_ENV,
+            "LABBY_CODE_MODE_MICROSANDBOX_HELPER_TIMEOUT_MS"
+        );
+        // `helper_timeout()` latches the first value, which `relax_helper_timeout`
+        // uses to keep timing-sensitive tests from racing the host.
+        relax_helper_timeout();
+        assert_eq!(helper_timeout(), Duration::from_mins(2));
+    }
+
     async fn stateful_test_guard() -> tokio::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
@@ -814,6 +858,7 @@ mod tests {
     #[tokio::test]
     async fn reconciliation_removes_dead_owner_and_preserves_live_owner() {
         let _state = stateful_test_guard().await;
+        relax_helper_timeout();
         let dir = tempfile::tempdir().expect("tempdir");
         let executable = dir.path().join("msb");
         let calls = dir.path().join("calls");
@@ -884,6 +929,7 @@ mod tests {
     #[tokio::test]
     async fn failed_create_attempts_bounded_cleanup() {
         let _state = stateful_test_guard().await;
+        relax_helper_timeout();
         let (_dir, executable, calls) = fake_msb(23);
         let config = config(executable);
         let error = runner_command(&spawn(), Some(&config), None)
@@ -1007,6 +1053,7 @@ mod tests {
     #[tokio::test]
     async fn oversized_helper_output_is_drained_but_diagnostic_is_bounded() {
         let _state = stateful_test_guard().await;
+        relax_helper_timeout();
         let dir = tempfile::tempdir().expect("tempdir");
         let executable = dir.path().join("msb");
         let script = "#!/bin/sh\nif [ \"$1\" = create ]; then head -c 1048576 /dev/zero | tr '\\0' x >&2; exit 23; fi\nexit 0\n";
@@ -1026,6 +1073,7 @@ mod tests {
     #[tokio::test]
     async fn successful_create_returns_stream_command_and_async_guard() {
         let _state = stateful_test_guard().await;
+        relax_helper_timeout();
         let (_dir, executable, calls) = fake_msb(0);
         let config = config(executable);
         let (command, guard) = runner_command(&spawn(), Some(&config), None)
@@ -1061,6 +1109,7 @@ mod tests {
     #[tokio::test]
     async fn failed_explicit_remove_gets_bounded_drop_fallback() {
         let _state = stateful_test_guard().await;
+        relax_helper_timeout();
         let before = ACTIVE_SANDBOXES.load(std::sync::atomic::Ordering::Relaxed);
         let dir = tempfile::tempdir().expect("tempdir");
         let executable = dir.path().join("msb");
@@ -1111,6 +1160,7 @@ mod tests {
     #[tokio::test]
     async fn absent_failed_cleanup_is_reconciled_and_active_count_recovers() {
         let _state = stateful_test_guard().await;
+        relax_helper_timeout();
         let before = ACTIVE_SANDBOXES.load(std::sync::atomic::Ordering::Relaxed);
         let dir = tempfile::tempdir().expect("tempdir");
         let executable = dir.path().join("msb");
@@ -1195,6 +1245,7 @@ exit 0
     #[tokio::test]
     async fn live_failed_cleanup_remains_fail_closed_until_removal_is_proven() {
         let _state = stateful_test_guard().await;
+        relax_helper_timeout();
         let before = ACTIVE_SANDBOXES.load(std::sync::atomic::Ordering::Relaxed);
         let dir = tempfile::tempdir().expect("tempdir");
         let executable = dir.path().join("msb");
@@ -1274,6 +1325,7 @@ exit 0
     #[tokio::test]
     async fn failed_cleanup_ledger_transfers_counted_ownership_once() {
         let _state = stateful_test_guard().await;
+        relax_helper_timeout();
         let dir = tempfile::tempdir().expect("tempdir");
         let identity = CleanupIdentity {
             executable: dir.path().join("msb"),
@@ -1291,6 +1343,7 @@ exit 0
     #[tokio::test]
     async fn failed_cleanup_circuit_is_scoped_to_executable() {
         let _state = stateful_test_guard().await;
+        relax_helper_timeout();
         let dir = tempfile::tempdir().expect("tempdir");
         let executable_a = dir.path().join("msb-a");
         let executable_b = dir.path().join("msb-b");

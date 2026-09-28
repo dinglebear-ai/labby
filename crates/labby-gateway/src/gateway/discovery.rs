@@ -7,7 +7,7 @@ pub mod opencode;
 pub mod vscode;
 pub mod windsurf;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -23,6 +23,15 @@ pub struct DiscoveredServer {
     pub source_client: String,
     pub source_path: String,
     pub env_key_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiscoveryReport {
+    pub servers: Vec<DiscoveredServer>,
+    pub scanned_clients: Vec<String>,
+    pub matched_paths: Vec<String>,
+    pub discovered_by_client: BTreeMap<String, usize>,
+    pub duplicates_omitted: usize,
 }
 
 pub(crate) fn normalize_discovered_name(raw: &str) -> String {
@@ -61,22 +70,53 @@ pub(crate) fn normalize_discovered_name(raw: &str) -> String {
 /// order: cursor, claude-code, claude-desktop, codex, windsurf, opencode, vscode, gemini.
 /// GitHub Copilot is covered by the vscode scanner (Copilot uses VS Code's mcp.json).
 pub fn discover_all(home: &Path) -> Vec<DiscoveredServer> {
+    discover_with_report(home, &[]).servers
+}
+
+pub fn discover_with_report(home: &Path, selected_clients: &[String]) -> DiscoveryReport {
     let mut seen: HashMap<String, DiscoveredServer> = HashMap::new();
     let mut ordered: Vec<String> = Vec::new();
-
-    let all: Vec<DiscoveredServer> = [
-        cursor::discover(home),
-        claude_code::discover(home),
-        claude_desktop::discover(home),
-        codex::discover(home),
-        windsurf::discover(home),
-        opencode::discover(home),
-        vscode::discover(home),
-        gemini::discover(home),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
+    let client_selected = |client: &str| {
+        selected_clients.is_empty() || selected_clients.iter().any(|selected| selected == client)
+    };
+    let mut scans = Vec::new();
+    if client_selected("cursor") {
+        scans.push(("cursor", cursor::discover(home)));
+    }
+    if client_selected("claude-code") {
+        scans.push(("claude-code", claude_code::discover(home)));
+    }
+    if client_selected("claude-desktop") {
+        scans.push(("claude-desktop", claude_desktop::discover(home)));
+    }
+    if client_selected("codex") {
+        scans.push(("codex", codex::discover(home)));
+    }
+    if client_selected("windsurf") {
+        scans.push(("windsurf", windsurf::discover(home)));
+    }
+    if client_selected("opencode") {
+        scans.push(("opencode", opencode::discover(home)));
+    }
+    if client_selected("vscode") {
+        scans.push(("vscode", vscode::discover(home)));
+    }
+    if client_selected("gemini") {
+        scans.push(("gemini", gemini::discover(home)));
+    }
+    let scanned_clients = scans
+        .iter()
+        .map(|(client, _)| (*client).to_string())
+        .collect();
+    let mut discovered_by_client = BTreeMap::new();
+    let mut matched_paths = BTreeSet::new();
+    let mut all = Vec::new();
+    for (client, servers) in scans {
+        discovered_by_client.insert(client.to_string(), servers.len());
+        matched_paths.extend(servers.iter().map(|server| server.source_path.clone()));
+        all.extend(servers);
+    }
+    let discovered_count = all.len();
 
     for server in all {
         if !seen.contains_key(&server.name) {
@@ -85,10 +125,17 @@ pub fn discover_all(home: &Path) -> Vec<DiscoveredServer> {
         }
     }
 
-    ordered
+    let servers = ordered
         .into_iter()
         .filter_map(|name| seen.remove(&name))
-        .collect()
+        .collect::<Vec<_>>();
+    DiscoveryReport {
+        duplicates_omitted: discovered_count.saturating_sub(servers.len()),
+        servers,
+        scanned_clients,
+        matched_paths: matched_paths.into_iter().collect(),
+        discovered_by_client,
+    }
 }
 
 /// Test-only override for the discovery root.
@@ -337,7 +384,7 @@ pub(crate) fn entry_to_upstream(
         url,
         command,
         args,
-        env: std::collections::BTreeMap::new(),
+        env: BTreeMap::new(),
         transport: None,
         socket_path: None,
         headers: Default::default(),
@@ -657,6 +704,112 @@ mod tests {
             shared[0].spec.command.as_deref(),
             Some("from-cursor"),
             "cursor command should be preserved"
+        );
+    }
+
+    #[test]
+    fn explained_discovery_covers_every_supported_client_and_reports_deduplication() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = dir.path();
+        let write = |path: std::path::PathBuf, body: &str| {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
+        };
+
+        write(
+            home.join(".cursor/mcp.json"),
+            r#"{"mcpServers":{"cursor-fixture":{"command":"cursor"},"shared":{"command":"cursor"}}}"#,
+        );
+        write(
+            home.join(".claude/settings.json"),
+            r#"{"mcpServers":{"claude-code-fixture":{"command":"claude-code"},"shared":{"command":"claude-code"}}}"#,
+        );
+        write(
+            home.join(".codex/config.toml"),
+            "[mcp_servers.codex-fixture]\ncommand = \"codex\"\n",
+        );
+        write(
+            home.join(".codeium/windsurf/mcp_config.json"),
+            r#"{"mcpServers":{"windsurf-fixture":{"command":"windsurf"}}}"#,
+        );
+        write(
+            home.join(".gemini/mcp.json"),
+            r#"{"mcpServers":{"gemini-fixture":{"command":"gemini"}}}"#,
+        );
+
+        #[cfg(target_os = "macos")]
+        {
+            write(
+                home.join("Library/Application Support/Claude/claude_desktop_config.json"),
+                r#"{"mcpServers":{"claude-desktop-fixture":{"command":"desktop"}}}"#,
+            );
+            write(
+                home.join("Library/Application Support/Code/User/mcp.json"),
+                r#"{"servers":{"vscode-fixture":{"command":"vscode"}}}"#,
+            );
+        }
+        #[cfg(target_os = "windows")]
+        {
+            write(
+                home.join("AppData/Roaming/Claude/claude_desktop_config.json"),
+                r#"{"mcpServers":{"claude-desktop-fixture":{"command":"desktop"}}}"#,
+            );
+            write(
+                home.join("AppData/Roaming/Code/User/mcp.json"),
+                r#"{"servers":{"vscode-fixture":{"command":"vscode"}}}"#,
+            );
+            write(
+                home.join("AppData/Roaming/opencode/opencode.json"),
+                r#"{"mcp":{"opencode-fixture":{"command":"opencode"}}}"#,
+            );
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        {
+            write(
+                home.join(".config/Claude/claude_desktop_config.json"),
+                r#"{"mcpServers":{"claude-desktop-fixture":{"command":"desktop"}}}"#,
+            );
+            write(
+                home.join(".config/Code/User/mcp.json"),
+                r#"{"servers":{"vscode-fixture":{"command":"vscode"}}}"#,
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        write(
+            home.join(".config/opencode/opencode.json"),
+            r#"{"mcp":{"opencode-fixture":{"command":"opencode"}}}"#,
+        );
+
+        let report = super::discover_with_report(home, &[]);
+        assert_eq!(report.scanned_clients.len(), 8);
+        assert!(
+            report
+                .scanned_clients
+                .iter()
+                .all(|client| report.discovered_by_client.contains_key(client))
+        );
+        assert_eq!(report.duplicates_omitted, 1);
+        for name in [
+            "cursor-fixture",
+            "claude-code-fixture",
+            "claude-desktop-fixture",
+            "codex-fixture",
+            "windsurf-fixture",
+            "opencode-fixture",
+            "vscode-fixture",
+            "gemini-fixture",
+            "shared",
+        ] {
+            assert!(
+                report.servers.iter().any(|server| server.name == name),
+                "missing {name}"
+            );
+        }
+        assert!(
+            report
+                .servers
+                .iter()
+                .all(|server| server.spec.env.is_empty())
         );
     }
 }

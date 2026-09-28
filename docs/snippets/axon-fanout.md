@@ -110,7 +110,7 @@ Output contract:
 
 ### Code Mode Snippet
 
-Run through Labby's `codemode` tool or `labby gateway code exec`. Edit the `input` object at the top.
+Run through Labby's `codemode` tool or `labby code run`. Edit the `input` object at the top.
 
 ```js
 async (overrides = {}) => {

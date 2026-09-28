@@ -46,8 +46,9 @@ test('requestTeamAdmission makes one read-only /v1 request, then reloads the ses
     return new Response(JSON.stringify(admittedSession), { status: 200 })
   }) as FetchMock
 
-  await requestTeamAdmission()
+  const result = await requestTeamAdmission()
 
+  assert.equal(result.admissionError, undefined)
   assert.equal(calls[0]?.url, '/v1/catalog')
   assert.equal(calls[0]?.init?.method, 'GET')
   assert.equal(calls[0]?.init?.credentials, 'include')
@@ -68,7 +69,8 @@ test('requestTeamAdmission still reloads the session when the /v1 request fails'
     })
   }) as FetchMock
 
-  await requestTeamAdmission()
+  const result = await requestTeamAdmission()
 
   assert.ok(urls.some((url) => url.endsWith('/auth/session')), 'session is reloaded')
+  assert.match(result.admissionError ?? '', /network down/)
 })

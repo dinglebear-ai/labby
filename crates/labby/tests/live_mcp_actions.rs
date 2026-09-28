@@ -251,11 +251,6 @@ async fn assert_mcp_transition_readback(
             assert!(ok && !text.trim().is_empty(), "{key} readback: {text}");
             true
         }
-        "setup:plugin_hook" | "setup:plugin_sync" => {
-            let (ok, text) = read("setup", "plugin_export", serde_json::json!({})).await;
-            assert!(ok && !text.trim().is_empty(), "{key} readback: {text}");
-            true
-        }
         // A multi-user mutation is only proven when the owning surface can
         // read the new state back through its own authority, so each of these
         // reads the collection the mutation changed and asserts the change is
@@ -473,7 +468,7 @@ async fn raw_mode_catalog_is_exact_and_builtin_help_executes_live() {
         .filter(|service| {
             !matches!(
                 service.as_str(),
-                "lab_admin" | "bundles" | "depot_publish" | "jobs" | "sources" | "uploads"
+                "lab_admin" | "artifact_publish" | "bundles" | "jobs" | "sources" | "uploads"
             )
         })
         .cloned()
@@ -522,7 +517,7 @@ async fn code_mode_hides_raw_service_tools_without_testing_code_mode_primitives(
         .collect::<BTreeSet<_>>();
     assert_eq!(
         visible_services,
-        BTreeSet::from(["server_logs".to_string()])
+        BTreeSet::from(["gateway".to_string(), "server_logs".to_string()])
     );
     assert!(advertised.contains("codemode"));
     let hidden = runner
@@ -565,10 +560,10 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
     action_scenarios::initialize_browser_fixture(runner.http_base_url()).await;
     let expected = mcp_intents()
         .into_iter()
-        // lab_admin is intentionally local-only. depot_publish is owned by a
+        // lab_admin is intentionally local-only. artifact_publish is owned by a
         // protected team route and requires a bound user grant. Neither can be
         // exercised through the root HTTP MCP route owned by this runner.
-        .filter(|intent| !matches!(intent.service.as_str(), "lab_admin" | "depot_publish"))
+        .filter(|intent| !matches!(intent.service.as_str(), "lab_admin" | "artifact_publish"))
         .collect::<Vec<_>>();
     let expected_count = expected.len();
 
@@ -670,11 +665,11 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
 }
 
 #[tokio::test]
-async fn depot_publish_service_requires_the_protected_team_route_contract() {
+async fn artifact_publish_service_requires_the_protected_team_route_contract() {
     let runner = BuiltinMcpRunner::start().await.expect("live MCP runner");
     let intents = mcp_intents()
         .into_iter()
-        .filter(|intent| intent.service == "depot_publish")
+        .filter(|intent| intent.service == "artifact_publish")
         .collect::<Vec<_>>();
     assert_eq!(intents.len(), 3);
 
@@ -820,7 +815,10 @@ async fn project_bound_non_admin_identity_narrows_discovery_and_denies_execution
     let tools = runner.list_tool_names().await.expect("scoped tools/list");
     // This Loadout has no upstreams. The protected gateway-subset route must
     // therefore reveal no raw operator service tools at all.
-    assert_eq!(tools, BTreeSet::from(["gateway".to_string()]));
+    assert_eq!(
+        tools,
+        BTreeSet::from(["gateway".to_string(), "mcp_app".to_string()])
+    );
     assert!(!tools.contains("setup"));
     assert!(!tools.contains("lab_admin"));
 
@@ -882,7 +880,14 @@ async fn read_only_non_admin_discovers_mixed_service_but_cannot_execute_admin_ac
     );
 
     let denied = runner
-        .call("setup", "services.status", serde_json::Map::new())
+        .call(
+            "setup",
+            "settings.state",
+            serde_json::Map::from_iter([(
+                "section".to_string(),
+                serde_json::Value::String("core".to_string()),
+            )]),
+        )
         .await
         .expect("scope denial is an MCP result");
     assert_eq!(denied.is_error, Some(true));

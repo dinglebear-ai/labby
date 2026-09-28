@@ -5,6 +5,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::{collections::BTreeMap, collections::BTreeSet, path::Path};
 
+use labby_auth::VerifiedIdentity;
 use labby_runtime::artifacts::{ArtifactAcquisition, ArtifactError};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
@@ -63,6 +64,23 @@ async fn delegated_read_headers(
     project_id: &str,
     source: &ImportSource,
 ) -> Result<RequestHeaders, ImportAdapterError> {
+    delegated_read_headers_for_identity(
+        runtime,
+        caller.identity().clone(),
+        project_id,
+        caller.selected_team_id(),
+        source,
+    )
+    .await
+}
+
+async fn delegated_read_headers_for_identity(
+    runtime: &AccessRuntime,
+    identity: VerifiedIdentity,
+    project_id: &str,
+    selected_team_id: Option<&str>,
+    source: &ImportSource,
+) -> Result<RequestHeaders, ImportAdapterError> {
     if !matches!(source, ImportSource::Depot { .. }) {
         return Ok(None);
     }
@@ -74,9 +92,9 @@ async fn delegated_read_headers(
     }
     let context = crate::dispatch::artifact_control::authorize_authority_context(
         runtime,
-        caller.identity().clone(),
+        identity,
         project_id,
-        caller.selected_team_id(),
+        selected_team_id,
         crate::access::Permission::AssetUse,
     )
     .await
@@ -612,6 +630,60 @@ impl ImportCoordinator {
             )
             .await
             .map_err(ImportAdapterError::Dispatch)
+    }
+
+    pub(crate) async fn acquire_selected_for_distribution(
+        &self,
+        runtime: &AccessRuntime,
+        caller: &SkillLibraryCaller,
+        project_id: &str,
+        source: SourceSelector,
+    ) -> Result<ArtifactAcquisition, ImportAdapterError> {
+        let source = self.resolve_selector(source)?;
+        self.ensure_source_configured(&source)?;
+        if let (Some(catalog_project), ImportSource::Depot { connection_id, .. }) =
+            (&self.catalog_project, &source)
+            && connection_id == "public"
+            && catalog_project != project_id
+        {
+            return Err(SkillLibraryDispatchError::Authorization(
+                super::auth::SkillLibraryAuthorizationError::Denied,
+            )
+            .into());
+        }
+        let headers = delegated_read_headers(runtime, caller, project_id, &source).await?;
+        self.acquire(source, headers).await
+    }
+
+    pub(crate) async fn acquire_selected_for_durable_distribution(
+        &self,
+        runtime: &AccessRuntime,
+        identity: VerifiedIdentity,
+        project_id: &str,
+        selected_team_id: Option<&str>,
+        source: SourceSelector,
+    ) -> Result<ArtifactAcquisition, ImportAdapterError> {
+        let source = self.resolve_selector(source)?;
+        self.ensure_source_configured(&source)?;
+        if let (Some(catalog_project), ImportSource::Depot { connection_id, .. }) =
+            (&self.catalog_project, &source)
+            && connection_id == "public"
+            && catalog_project != project_id
+        {
+            return Err(SkillLibraryDispatchError::Authorization(
+                super::auth::SkillLibraryAuthorizationError::Denied,
+            )
+            .into());
+        }
+        let headers = delegated_read_headers_for_identity(
+            runtime,
+            identity,
+            project_id,
+            selected_team_id,
+            &source,
+        )
+        .await?;
+        self.acquire(source, headers).await
     }
 
     #[allow(clippy::too_many_arguments)]

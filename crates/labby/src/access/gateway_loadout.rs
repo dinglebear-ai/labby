@@ -362,6 +362,10 @@ fn map_access_error(error: AccessStoreError) -> GatewayLoadoutAssignmentError {
         | AccessStoreError::TeamCredentialBindingUnavailable
         | AccessStoreError::ProjectionWatermarkRegressed
         | AccessStoreError::LastActiveTeamOwner
+        | AccessStoreError::InvalidArtifactDistributionInput
+        | AccessStoreError::ArtifactDistributionConflict
+        | AccessStoreError::ArtifactMirrorUnavailable
+        | AccessStoreError::ArtifactMirrorStateConflict
         | AccessStoreError::MalformedVocabulary
         | AccessStoreError::Unavailable(_) => GatewayLoadoutAssignmentError::AccessUnavailable,
     }

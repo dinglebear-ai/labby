@@ -205,7 +205,13 @@ async fn q3_dependent_call_consumes_actual_first_result() {
 async fn q3_seeded_bounded_stress_has_literal_counts_and_no_duplicate_effects() {
     const WORKLOAD: u64 = 12;
     const EXPECTED_ERRORS: u64 = 3;
-    let limits = Limits::default();
+    // This fixture verifies fanout accounting, not the deadline boundary.
+    // Leave room for twelve concurrent calls under the full CI test matrix;
+    // the timeout-specific case below exercises the strict budget.
+    let limits = Limits {
+        timeout_ms: 5_000,
+        ..Limits::default()
+    };
     let runner = CodeModeQualification::start(limits)
         .await
         .expect("Q3 runner");
@@ -235,7 +241,12 @@ async fn q3_seeded_bounded_stress_has_literal_counts_and_no_duplicate_effects() 
         .await
         .expect("bounded stress response");
     assert!(!execution.is_error);
-    assert_eq!(execution.structured["result"]["fulfilled"], json!(9));
+    assert_eq!(
+        execution.structured["result"]["fulfilled"],
+        json!(9),
+        "stress result: {}",
+        execution.structured
+    );
     assert_eq!(
         execution.structured["result"]["rejected"],
         json!(EXPECTED_ERRORS)
@@ -268,23 +279,27 @@ async fn q3_seeded_bounded_stress_has_literal_counts_and_no_duplicate_effects() 
 #[tokio::test]
 async fn q3_execution_timeout_is_typed_and_does_not_duplicate_the_effect() {
     let limits = Limits {
-        // Leave enough admission budget under full-suite load while the
-        // deliberately pending upstream call still exceeds the deadline by an
-        // order of magnitude.
-        timeout_ms: 1_000,
+        // Use the normal two-second request budget. Code Mode reserves 500ms
+        // for response delivery, leaving 1.5s for cold proxy generation and
+        // execution; the deliberately pending upstream still takes 10s.
+        timeout_ms: 2_000,
         ..Limits::default()
     };
     let runner = CodeModeQualification::start(limits)
         .await
         .expect("Q3 runner");
-    assert_eq!(runner.limits.timeout_ms, 1_000);
+    assert_eq!(runner.limits.timeout_ms, 2_000);
     let prewarm = runner
         .execute(
             r#"async () => await callTool("forge::forge.safe", {query:"prewarm",limit:1,enabled:true})"#,
         )
         .await
         .expect("prewarm Code Mode and the upstream tool path");
-    assert!(!prewarm.is_error, "prewarm must complete before the oracle");
+    assert!(
+        !prewarm.is_error,
+        "prewarm must complete before the oracle: {}",
+        prewarm.structured
+    );
     let before = runner
         .fixture_invocation_count()
         .await
@@ -434,14 +449,30 @@ async fn q3_call_budget_rejects_before_the_third_effect() {
 #[tokio::test]
 async fn q3_queue_limit_rejects_before_dispatch_and_settles_started_effect() {
     let limits = Limits {
-        timeout_ms: 1_000,
-        upstream_request_timeout_ms: Some(50),
+        // Match the normal Code Mode budget so the 500ms response reserve
+        // cannot exhaust a cold proxy before the queue oracle begins.
+        timeout_ms: 2_000,
+        // The safe prewarm crosses a real stdio process and can take more
+        // than 50ms on a busy CI runner. Keep this below forge.delay's
+        // deterministic 250ms so the queue oracle still proves timeout.
+        upstream_request_timeout_ms: Some(150),
         upstream_max_in_flight: Some(1),
         ..Limits::default()
     };
     let runner = CodeModeQualification::start(limits)
         .await
         .expect("Q3 runner");
+    let prewarm = runner
+        .execute(
+            r#"async () => await callTool("forge::forge.safe", {query:"prewarm",limit:1,enabled:true})"#,
+        )
+        .await
+        .expect("prewarm Code Mode and the upstream tool path");
+    assert!(
+        !prewarm.is_error,
+        "prewarm must complete before the queue oracle: {}",
+        prewarm.structured
+    );
     let before = runner
         .fixture_invocation_count()
         .await

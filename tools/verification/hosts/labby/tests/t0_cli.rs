@@ -17,6 +17,7 @@ fn formal(catalog: &str) -> TempDir {
     let directory = tempfile::tempdir().unwrap();
     fs::write(directory.path().join("invariants.toml"), catalog).unwrap();
     fs::create_dir_all(directory.path().join("scenarios/browser_request")).unwrap();
+    fs::create_dir_all(directory.path().join("scenarios/capability_visibility")).unwrap();
     directory
 }
 
@@ -35,11 +36,10 @@ fn scenario(invariant: &str, model: &str, steps: Value, expect: &str, status: &s
 }
 
 fn write_scenario(root: &Path, name: &str, value: &Value) {
-    fs::write(
-        root.join("scenarios/browser_request").join(name),
-        serde_json::to_vec(value).unwrap(),
-    )
-    .unwrap();
+    let model = value["model"].as_str().unwrap_or("browser_request");
+    let directory = root.join("scenarios").join(model);
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(directory.join(name), serde_json::to_vec(value).unwrap()).unwrap();
 }
 
 fn complete_corpus(root: &Path) {
@@ -99,6 +99,37 @@ fn complete_corpus(root: &Path) {
             &scenario(
                 invariant,
                 "browser_request",
+                steps,
+                "invariant_holds",
+                "active",
+            ),
+        );
+    }
+    let capability_witnesses = [
+        (
+            "LABBY-CAP-001",
+            json!([{"action":"bind_remote"},{"action":"start"}]),
+        ),
+        (
+            "LABBY-CAP-002",
+            json!([{"action":"disable_gateway_feature"},{"action":"configure_upstream"},{"action":"start"}]),
+        ),
+        (
+            "LABBY-CAP-003",
+            json!([{"action":"start"},{"action":"record_runtime_degradation","code":"artifacts"}]),
+        ),
+        (
+            "LABBY-CAP-004",
+            json!([{"action":"disable_gateway_feature"},{"action":"configure_protected_route"},{"action":"start"}]),
+        ),
+    ];
+    for (index, (invariant, steps)) in capability_witnesses.into_iter().enumerate() {
+        write_scenario(
+            root,
+            &format!("capability-{index}.json"),
+            &scenario(
+                invariant,
+                "capability_visibility",
                 steps,
                 "invariant_holds",
                 "active",
@@ -315,12 +346,15 @@ fn actual_binary_t0_reports_complete_model_only_coverage() {
         String::from_utf8_lossy(&result.stderr)
     );
     let report: Value = serde_json::from_slice(&result.stdout).unwrap();
-    assert_eq!(report["schema"], 1);
+    assert_eq!(report["schema"], 2);
     assert_eq!(report["lane"], "model_replay");
     assert_eq!(report["catalog"]["project"], "labby");
-    assert_eq!(report["catalog"]["model"], "browser_request");
+    assert_eq!(
+        report["catalog"]["models"],
+        json!(["browser_request", "capability_visibility"])
+    );
     assert_eq!(report["universal_proof"], false);
-    assert_eq!(report["reports"].as_array().unwrap().len(), 5);
+    assert_eq!(report["reports"].as_array().unwrap().len(), 9);
     assert!(
         report["golden_coverage"]
             .as_array()
@@ -340,7 +374,7 @@ fn checked_in_formal_corpus_matches_the_embedded_catalog_and_passes_t0() {
         String::from_utf8_lossy(&result.stderr)
     );
     let report: Value = serde_json::from_slice(&result.stdout).unwrap();
-    assert_eq!(report["reports"].as_array().unwrap().len(), 9);
+    assert_eq!(report["reports"].as_array().unwrap().len(), 13);
 }
 
 #[test]
@@ -447,9 +481,11 @@ fn unknown_target_and_invariant_fail_closed() {
             .output()
             .unwrap();
         assert_eq!(result.status.code(), Some(2));
+        let stderr = String::from_utf8_lossy(&result.stderr);
         assert!(
-            String::from_utf8_lossy(&result.stderr)
-                .contains("unknown project, model, or invariant")
+            stderr.contains("unknown scenario model directory")
+                || stderr.contains("unknown or mismatched project, model, or invariant"),
+            "{stderr}"
         );
     }
 }

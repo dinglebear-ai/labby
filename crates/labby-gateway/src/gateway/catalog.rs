@@ -1,4 +1,220 @@
 use labby_primitives::action::{ActionSpec, ParamSpec};
+use schemars::JsonSchema;
+
+#[allow(dead_code)]
+#[derive(serde::Serialize, JsonSchema)]
+struct GatewayLoadoutStateSchema {
+    #[serde(flatten)]
+    loadout: labby_runtime::gateway_config::GatewayLoadoutConfig,
+    restart_required: bool,
+    pending_operation: Option<String>,
+    runtime_present: bool,
+    desired_present: bool,
+}
+
+#[allow(dead_code)]
+#[derive(serde::Serialize, JsonSchema)]
+struct GatewayLoadoutStageResultSchema {
+    loadout: labby_runtime::gateway_config::GatewayLoadoutConfig,
+    restart_required: bool,
+    pending_operation: Option<String>,
+    restart_note: String,
+}
+
+#[allow(dead_code)]
+#[derive(serde::Serialize, JsonSchema)]
+struct ProtectedMcpRouteStateSchema {
+    #[serde(flatten)]
+    route: labby_runtime::gateway_config::ProtectedMcpRouteConfig,
+    restart_required: bool,
+    pending_operation: Option<String>,
+    runtime_present: bool,
+    desired_present: bool,
+}
+
+#[allow(dead_code)]
+#[derive(serde::Serialize, JsonSchema)]
+struct ProtectedMcpRouteStageResultSchema {
+    route: labby_runtime::gateway_config::ProtectedMcpRouteConfig,
+    restart_required: bool,
+    pending_operation: Option<String>,
+    restart_note: String,
+}
+
+#[allow(dead_code)]
+#[derive(serde::Serialize, JsonSchema)]
+struct ProtectedMcpRouteTestResultSchema {
+    ok: bool,
+    route: labby_runtime::gateway_config::ProtectedMcpRouteConfig,
+    resource: String,
+    metadata_url: String,
+}
+
+#[allow(dead_code)]
+#[derive(serde::Serialize, JsonSchema)]
+struct GatewayOauthClearResultSchema {
+    ok: bool,
+}
+
+#[allow(dead_code)]
+#[derive(serde::Serialize, JsonSchema)]
+struct GatewayOauthWaitResultSchema {
+    authenticated: bool,
+    timed_out: bool,
+}
+
+#[allow(dead_code)]
+#[derive(serde::Serialize, JsonSchema)]
+struct GatewayPublicUrlsResultSchema {
+    app: Option<String>,
+    mcp_gateway: Option<String>,
+    effective_mcp_gateway: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(serde::Serialize, JsonSchema)]
+#[serde(untagged)]
+enum GatewayDiscoverResultSchema {
+    Servers(Vec<super::types::DiscoveredServerView>),
+    Explained(Box<super::types::ExplainedDiscoveryView>),
+}
+
+#[allow(dead_code)]
+#[derive(serde::Serialize, JsonSchema)]
+struct GatewayMcpDisableResultSchema {
+    gateway: super::types::GatewayView,
+    cleanup: Option<super::types::GatewayCleanupView>,
+}
+
+#[allow(dead_code)]
+#[derive(serde::Serialize, JsonSchema)]
+#[serde(untagged)]
+enum GatewayMcpRestartResultSchema {
+    InFlight {
+        completed: bool,
+        in_flight: bool,
+    },
+    Completed {
+        completed: bool,
+        gateway: Box<super::types::GatewayView>,
+        cleanup: super::types::GatewayCleanupView,
+    },
+    Pending {
+        completed: bool,
+    },
+}
+
+#[allow(dead_code)]
+#[derive(serde::Serialize, JsonSchema)]
+struct GatewayServersDocSchema {
+    servers: Vec<GatewayServerRowSchema>,
+}
+
+#[allow(dead_code)]
+#[derive(serde::Serialize, JsonSchema)]
+struct GatewayServerRowSchema {
+    name: String,
+    tool_count: Option<usize>,
+    prompt_count: usize,
+    resource_count: usize,
+    tool_health: String,
+    tool_last_error: Option<String>,
+    discovery_mode: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(serde::Serialize, JsonSchema)]
+struct GatewayServerSchemaDoc {
+    name: String,
+    tools: Vec<GatewayServerToolSchemaRow>,
+    health: String,
+    last_error: Option<String>,
+    catalog_source: String,
+}
+
+#[allow(dead_code)]
+#[derive(serde::Serialize, JsonSchema)]
+struct GatewayServerToolSchemaRow {
+    name: String,
+    description: Option<String>,
+    input_schema: Option<serde_json::Value>,
+    meta: Option<serde_json::Value>,
+}
+
+#[allow(dead_code)]
+#[derive(serde::Serialize, JsonSchema)]
+struct GatewaySkillsOperatorRowSchema {
+    upstream: String,
+    enabled: bool,
+    trusted: bool,
+    supports_skills: Option<bool>,
+    exposure_patterns: Option<Vec<String>>,
+    skills: Vec<GatewayOperatorSkillSchema>,
+    discovered_count: usize,
+    exposed_count: usize,
+    rejected: Vec<GatewayOperatorSkillRejectionSchema>,
+    excluded_count: usize,
+    truncated: bool,
+    cache_age_secs: u64,
+    refreshing: bool,
+    refresh_started_ago_secs: Option<u64>,
+    retry_after_ms: Option<u64>,
+    error: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(serde::Serialize, JsonSchema)]
+struct GatewayOperatorSkillSchema {
+    name: String,
+    identity: GatewaySkillIdentitySchema,
+    uri: Option<String>,
+    description: String,
+    resource_count: usize,
+    exposed: bool,
+    exposure: GatewaySkillExposureSchema,
+}
+
+#[allow(dead_code)]
+#[derive(serde::Serialize, JsonSchema)]
+struct GatewaySkillIdentitySchema {
+    provider: GatewaySkillProviderSchema,
+    source_id: String,
+}
+
+#[allow(dead_code)]
+#[derive(serde::Serialize, JsonSchema)]
+struct GatewaySkillProviderSchema {
+    kind: GatewaySkillProviderKindSchema,
+    instance: String,
+}
+
+#[allow(dead_code)]
+#[derive(serde::Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum GatewaySkillProviderKindSchema {
+    Bundled,
+    OperatorLocal,
+    McpUpstream,
+    ArtifactStore,
+    Registry,
+    Other(String),
+}
+
+#[allow(dead_code)]
+#[derive(serde::Serialize, JsonSchema)]
+struct GatewaySkillExposureSchema {
+    status: String,
+    reason: String,
+    matched_pattern: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(serde::Serialize, JsonSchema)]
+struct GatewayOperatorSkillRejectionSchema {
+    uri: String,
+    reason: String,
+    detail: String,
+}
 
 /// Actions whose authoritative result must not be cut off by the thin
 /// client's ordinary request deadline.
@@ -72,6 +288,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "Catalog",
+        output_schema: None,
         params: &[],
     },
     ActionSpec {
@@ -80,6 +297,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "Schema",
+        output_schema: None,
         params: &[ParamSpec {
             name: "action",
             ty: "string",
@@ -93,6 +311,18 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "ServerView[]",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<Vec<super::view_models::ServerView>>,
+        ),
+        params: &[],
+    },
+    ActionSpec {
+        name: "gateway.ssh_hosts.list",
+        description: "List concrete SSH host aliases from the gateway process account's OpenSSH config for remote stdio setup",
+        destructive: false,
+        requires_admin: true,
+        returns: "string[]",
+        output_schema: Some(labby_primitives::action::schema_for::<Vec<String>>),
         params: &[],
     },
     ActionSpec {
@@ -101,6 +331,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "UpstreamSkillsView[]",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<Vec<GatewaySkillsOperatorRowSchema>>,
+        ),
         params: &[ParamSpec {
             name: "upstream",
             ty: "string",
@@ -114,6 +347,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "CodeModeConfig",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<labby_runtime::gateway_config::CodeModeConfig>,
+        ),
         params: &[],
     },
     ActionSpec {
@@ -122,6 +358,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "CodeModeConfig",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<labby_runtime::gateway_config::CodeModeConfig>,
+        ),
         params: &[
             ParamSpec {
                 name: "enabled",
@@ -189,6 +428,18 @@ pub const ACTIONS: &[ActionSpec] = &[
                 required: false,
                 description: "Maximum captured console log bytes per execution",
             },
+            ParamSpec {
+                name: "search_sources",
+                ty: "string[]",
+                required: false,
+                description: "Replace the Code Mode discovery sources: personal_labby, team_depot, and/or public_depot; an empty array disables all sources",
+            },
+            ParamSpec {
+                name: "search_kinds",
+                ty: "string[]",
+                required: false,
+                description: "Replace the Code Mode discovery artifact families: tool, skill, command, prompt, subagent, and/or snippet; an empty array disables all families",
+            },
         ],
     },
     ActionSpec {
@@ -197,6 +448,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "ServerView",
+        output_schema: Some(labby_primitives::action::schema_for::<super::view_models::ServerView>),
         params: &[ParamSpec {
             name: "id",
             ty: "string",
@@ -210,6 +462,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "GatewayEnrichmentPreviewView",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::types::GatewayEnrichmentPreviewView>,
+        ),
         params: &[
             ParamSpec {
                 name: "upstreams",
@@ -249,6 +504,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "GatewayHintApplyView",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::types::GatewayHintApplyView>,
+        ),
         params: &[
             ParamSpec {
                 name: "upstream",
@@ -276,6 +534,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "GatewayUsageMetricsView",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::types::GatewayUsageMetricsView>,
+        ),
         params: &[
             ParamSpec {
                 name: "since_unix",
@@ -387,6 +648,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "GatewayUsageCallsView",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::types::GatewayUsageCallsView>,
+        ),
         params: &[
             ParamSpec {
                 name: "since_unix",
@@ -492,6 +756,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "SupportedServiceView[]",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<Vec<super::service_catalog::SupportedServiceView>>,
+        ),
         params: &[],
     },
     ActionSpec {
@@ -500,6 +767,11 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "GatewayLoadoutConfig[]",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<
+                Vec<labby_runtime::gateway_config::GatewayLoadoutConfig>,
+            >,
+        ),
         params: &[],
     },
     ActionSpec {
@@ -508,6 +780,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "GatewayLoadoutState[]",
+        output_schema: Some(labby_primitives::action::schema_for::<Vec<GatewayLoadoutStateSchema>>),
         params: &[],
     },
     ActionSpec {
@@ -516,6 +789,11 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "GatewayLoadoutConfig",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<
+                labby_runtime::gateway_config::GatewayLoadoutConfig,
+            >,
+        ),
         params: &[NAME_PARAM],
     },
     ActionSpec {
@@ -524,6 +802,11 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "GatewayLoadoutConfig",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<
+                labby_runtime::gateway_config::GatewayLoadoutConfig,
+            >,
+        ),
         params: &[ParamSpec {
             name: "loadout",
             ty: "json",
@@ -537,6 +820,11 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "GatewayLoadoutConfig",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<
+                labby_runtime::gateway_config::GatewayLoadoutConfig,
+            >,
+        ),
         params: &[
             NAME_PARAM,
             ParamSpec {
@@ -553,6 +841,11 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "GatewayLoadoutConfig",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<
+                labby_runtime::gateway_config::GatewayLoadoutConfig,
+            >,
+        ),
         params: &[
             NAME_PARAM,
             ParamSpec {
@@ -569,6 +862,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "GatewayLoadoutStageResult",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<GatewayLoadoutStageResultSchema>,
+        ),
         params: &[
             NAME_PARAM,
             ParamSpec {
@@ -585,6 +881,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "GatewayLoadoutStageResult",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<GatewayLoadoutStageResultSchema>,
+        ),
         params: &[
             NAME_PARAM,
             ParamSpec {
@@ -601,6 +900,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "GatewayLoadoutStageResult",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<GatewayLoadoutStageResultSchema>,
+        ),
         params: &[NAME_PARAM],
     },
     ActionSpec {
@@ -609,6 +911,11 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "GatewayLoadoutConfig",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<
+                labby_runtime::gateway_config::GatewayLoadoutConfig,
+            >,
+        ),
         params: &[NAME_PARAM],
     },
     ActionSpec {
@@ -617,6 +924,11 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "ProtectedMcpRouteConfig[]",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<
+                Vec<labby_runtime::gateway_config::ProtectedMcpRouteConfig>,
+            >,
+        ),
         params: &[],
     },
     ActionSpec {
@@ -625,6 +937,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "ProtectedMcpRouteState[]",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<Vec<ProtectedMcpRouteStateSchema>>,
+        ),
         params: &[],
     },
     ActionSpec {
@@ -633,6 +948,11 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "ProtectedMcpRouteConfig",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<
+                labby_runtime::gateway_config::ProtectedMcpRouteConfig,
+            >,
+        ),
         params: &[NAME_PARAM],
     },
     ActionSpec {
@@ -641,6 +961,11 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "ProtectedMcpRouteConfig",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<
+                labby_runtime::gateway_config::ProtectedMcpRouteConfig,
+            >,
+        ),
         params: &[ParamSpec {
             name: "route",
             ty: "json",
@@ -654,6 +979,11 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "ProtectedMcpRouteConfig",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<
+                labby_runtime::gateway_config::ProtectedMcpRouteConfig,
+            >,
+        ),
         params: &[
             NAME_PARAM,
             ParamSpec {
@@ -670,6 +1000,11 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "ProtectedMcpRouteConfig",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<
+                labby_runtime::gateway_config::ProtectedMcpRouteConfig,
+            >,
+        ),
         params: &[NAME_PARAM],
     },
     ActionSpec {
@@ -678,6 +1013,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "ProtectedMcpRouteStageResult",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<ProtectedMcpRouteStageResultSchema>,
+        ),
         params: &[ParamSpec {
             name: "route",
             ty: "json",
@@ -691,6 +1029,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "ProtectedMcpRouteStageResult",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<ProtectedMcpRouteStageResultSchema>,
+        ),
         params: &[
             NAME_PARAM,
             ParamSpec {
@@ -707,6 +1048,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "ProtectedMcpRouteStageResult",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<ProtectedMcpRouteStageResultSchema>,
+        ),
         params: &[NAME_PARAM],
     },
     ActionSpec {
@@ -715,6 +1059,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "ProtectedMcpRouteTestResult",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<ProtectedMcpRouteTestResultSchema>,
+        ),
         params: &[ParamSpec {
             name: "route",
             ty: "json",
@@ -728,6 +1075,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "ServerView",
+        output_schema: Some(labby_primitives::action::schema_for::<super::view_models::ServerView>),
         params: &[ParamSpec {
             name: "id",
             ty: "string",
@@ -741,6 +1089,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "ServerView",
+        output_schema: Some(labby_primitives::action::schema_for::<super::view_models::ServerView>),
         params: &[ParamSpec {
             name: "id",
             ty: "string",
@@ -754,6 +1103,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "ServerView",
+        output_schema: Some(labby_primitives::action::schema_for::<super::view_models::ServerView>),
         params: &[ParamSpec {
             name: "id",
             ty: "string",
@@ -767,6 +1117,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "ServerView[]",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<Vec<super::view_models::ServerView>>,
+        ),
         params: &[],
     },
     ActionSpec {
@@ -775,6 +1128,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "ServerView",
+        output_schema: Some(labby_primitives::action::schema_for::<super::view_models::ServerView>),
         params: &[ParamSpec {
             name: "id",
             ty: "string",
@@ -788,6 +1142,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "ServerView",
+        output_schema: Some(labby_primitives::action::schema_for::<super::view_models::ServerView>),
         params: &[
             ParamSpec {
                 name: "id",
@@ -815,6 +1170,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "VirtualServerMcpPolicyView",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::types::VirtualServerMcpPolicyView>,
+        ),
         params: &[ParamSpec {
             name: "id",
             ty: "string",
@@ -828,6 +1186,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "VirtualServerMcpPolicyView",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::types::VirtualServerMcpPolicyView>,
+        ),
         params: &[
             ParamSpec {
                 name: "id",
@@ -849,6 +1210,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "ServiceConfigView",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::types::ServiceConfigView>,
+        ),
         params: &[ParamSpec {
             name: "service",
             ty: "string",
@@ -862,6 +1226,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "ServiceActionView[]",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<Vec<super::types::ServiceActionView>>,
+        ),
         params: &[ParamSpec {
             name: "service",
             ty: "string",
@@ -875,6 +1242,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "ServiceConfigView",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::types::ServiceConfigView>,
+        ),
         params: &[
             ParamSpec {
                 name: "service",
@@ -896,6 +1266,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "GatewayView",
+        output_schema: Some(labby_primitives::action::schema_for::<super::types::GatewayView>),
         params: &[NAME_PARAM],
     },
     ActionSpec {
@@ -904,6 +1275,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "McpClientConfigView",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::types::McpClientConfigView>,
+        ),
         params: &[NAME_PARAM],
     },
     ActionSpec {
@@ -912,6 +1286,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "GatewayTestResult",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::types::GatewayRuntimeView>,
+        ),
         params: &[
             ParamSpec {
                 name: "name",
@@ -932,7 +1309,8 @@ pub const ACTIONS: &[ActionSpec] = &[
         description: "Scan the machine for MCP server configs from known editors and tools (cursor, claude-code, claude-desktop, codex, windsurf, opencode, vscode, gemini). Read-only — does not modify config.",
         destructive: false,
         requires_admin: true,
-        returns: "DiscoveredServerView[]",
+        returns: "DiscoveredServerView[] or ExplainedDiscoveryView when explain=true",
+        output_schema: Some(labby_primitives::action::schema_for::<GatewayDiscoverResultSchema>),
         params: &[
             ParamSpec {
                 name: "clients",
@@ -946,6 +1324,12 @@ pub const ACTIONS: &[ActionSpec] = &[
                 required: false,
                 description: "Also return servers already present in the gateway config",
             },
+            ParamSpec {
+                name: "explain",
+                ty: "boolean",
+                required: false,
+                description: "Return redacted scan diagnostics with the discovered servers",
+            },
         ],
     },
     ActionSpec {
@@ -954,6 +1338,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "ImportResultView",
+        output_schema: Some(labby_primitives::action::schema_for::<super::types::ImportResultView>),
         params: &[
             ParamSpec {
                 name: "all",
@@ -973,6 +1358,12 @@ pub const ACTIONS: &[ActionSpec] = &[
                 required: false,
                 description: "Limit discovery to these client kinds. Empty means scan all.",
             },
+            ParamSpec {
+                name: "dry_run",
+                ty: "boolean",
+                required: false,
+                description: "Preview the exact import selection without changing gateway configuration",
+            },
         ],
     },
     ActionSpec {
@@ -981,6 +1372,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "PendingImportView[]",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<Vec<super::types::PendingImportView>>,
+        ),
         params: &[],
     },
     ActionSpec {
@@ -989,6 +1383,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "PendingImportView",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::types::PendingImportView>,
+        ),
         params: &[ParamSpec {
             name: "name",
             ty: "string",
@@ -1002,6 +1399,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "PendingImportView",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::types::PendingImportView>,
+        ),
         params: &[ParamSpec {
             name: "name",
             ty: "string",
@@ -1015,6 +1415,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "ImportTombstoneView[]",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<Vec<super::types::ImportTombstoneView>>,
+        ),
         params: &[],
     },
     ActionSpec {
@@ -1023,6 +1426,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "ImportTombstoneView[]",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<Vec<super::types::ImportTombstoneView>>,
+        ),
         params: &[
             NAME_PARAM,
             ParamSpec {
@@ -1057,6 +1463,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "GatewayView",
+        output_schema: Some(labby_primitives::action::schema_for::<super::types::GatewayView>),
         params: &[
             NAME_PARAM,
             ParamSpec {
@@ -1091,6 +1498,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "GatewayView",
+        output_schema: Some(labby_primitives::action::schema_for::<super::types::GatewayView>),
         params: &[
             ParamSpec {
                 name: "spec",
@@ -1118,6 +1526,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "GatewayView",
+        output_schema: Some(labby_primitives::action::schema_for::<super::types::GatewayView>),
         params: &[
             NAME_PARAM,
             ParamSpec {
@@ -1144,6 +1553,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: true,
         requires_admin: true,
         returns: "GatewayView",
+        output_schema: Some(labby_primitives::action::schema_for::<super::types::GatewayView>),
         params: &[NAME_PARAM],
     },
     ActionSpec {
@@ -1152,6 +1562,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "GatewayCatalogDiff",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::types::GatewayCatalogDiff>,
+        ),
         params: &[],
     },
     ActionSpec {
@@ -1160,6 +1573,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "GatewayRuntimeView[]",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<Vec<super::types::GatewayRuntimeView>>,
+        ),
         params: &[ParamSpec {
             name: "name",
             ty: "string",
@@ -1173,6 +1589,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "GatewayToolExposureRowView[]",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<Vec<super::types::GatewayToolExposureRowView>>,
+        ),
         params: &[NAME_PARAM],
     },
     ActionSpec {
@@ -1181,6 +1600,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "string[]",
+        output_schema: Some(labby_primitives::action::schema_for::<Vec<String>>),
         params: &[NAME_PARAM],
     },
     ActionSpec {
@@ -1189,6 +1609,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "string[]",
+        output_schema: Some(labby_primitives::action::schema_for::<Vec<String>>),
         params: &[NAME_PARAM],
     },
     ActionSpec {
@@ -1199,6 +1620,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "GatewayServersDoc",
+        output_schema: Some(labby_primitives::action::schema_for::<GatewayServersDocSchema>),
         params: &[],
     },
     ActionSpec {
@@ -1209,6 +1631,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "GatewayServerSchema",
+        output_schema: Some(labby_primitives::action::schema_for::<GatewayServerSchemaDoc>),
         params: &[ParamSpec {
             name: "name",
             ty: "string",
@@ -1222,6 +1645,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "ResourceLease",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<labby_auth::resource_registry::ResourceLease>,
+        ),
         params: &[
             ParamSpec {
                 name: "resource",
@@ -1255,6 +1681,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "ResourceLease",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<labby_auth::resource_registry::ResourceLease>,
+        ),
         params: &[
             ParamSpec {
                 name: "id",
@@ -1276,6 +1705,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "ResourceLeaseReleaseView",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::types::ResourceLeaseReleaseView>,
+        ),
         params: &[ParamSpec {
             name: "id",
             ty: "string",
@@ -1292,6 +1724,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "ProbeResult",
+        output_schema: Some(labby_primitives::action::schema_for::<super::oauth::ProbeResult>),
         params: &[ParamSpec {
             name: "url",
             ty: "string",
@@ -1305,6 +1738,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "BeginAuthorization",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<labby_auth::upstream::types::BeginAuthorization>,
+        ),
         params: &[ParamSpec {
             name: "upstream",
             ty: "string",
@@ -1318,6 +1754,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "BeginAuthorization",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<labby_auth::upstream::types::BeginAuthorization>,
+        ),
         params: &[ParamSpec {
             name: "upstream",
             ty: "string",
@@ -1331,6 +1770,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "UpstreamOauthStatusView",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::oauth::UpstreamOauthStatusView>,
+        ),
         params: &[ParamSpec {
             name: "upstream",
             ty: "string",
@@ -1344,6 +1786,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "ok",
+        output_schema: Some(labby_primitives::action::schema_for::<GatewayOauthClearResultSchema>),
         params: &[ParamSpec {
             name: "upstream",
             ty: "string",
@@ -1357,6 +1800,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: true,
         requires_admin: true,
         returns: "GoogleProviderInvalidation",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<labby_auth::types::GoogleProviderInvalidation>,
+        ),
         params: &[
             ParamSpec {
                 name: "upstream",
@@ -1380,6 +1826,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "{authenticated: bool, timed_out: bool}",
+        output_schema: Some(labby_primitives::action::schema_for::<GatewayOauthWaitResultSchema>),
         params: &[
             ParamSpec {
                 name: "upstream",
@@ -1401,6 +1848,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "GatewayView",
+        output_schema: Some(labby_primitives::action::schema_for::<super::types::GatewayView>),
         params: &[NAME_PARAM],
     },
     ActionSpec {
@@ -1409,6 +1857,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "GatewayMcpRuntimeView[]",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<Vec<super::types::GatewayMcpRuntimeView>>,
+        ),
         params: &[OPTIONAL_NAME_PARAM],
     },
     ActionSpec {
@@ -1417,6 +1868,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "HostMetrics",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::host_metrics::HostMetrics>,
+        ),
         params: &[],
     },
     ActionSpec {
@@ -1425,6 +1879,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "GatewayClientView[]",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<Vec<super::types::GatewayClientView>>,
+        ),
         params: &[],
     },
     ActionSpec {
@@ -1433,6 +1890,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "GatewayView + optional cleanup result",
+        output_schema: Some(labby_primitives::action::schema_for::<GatewayMcpDisableResultSchema>),
         params: &[
             NAME_PARAM,
             ParamSpec {
@@ -1455,6 +1913,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "GatewayView + cleanup result",
+        output_schema: Some(labby_primitives::action::schema_for::<GatewayMcpRestartResultSchema>),
         params: &[
             NAME_PARAM,
             ParamSpec {
@@ -1462,6 +1921,12 @@ pub const ACTIONS: &[ActionSpec] = &[
                 ty: "boolean",
                 required: false,
                 description: "When true, use broader host-wide process matching during cleanup",
+            },
+            ParamSpec {
+                name: "wait_ms",
+                ty: "integer",
+                required: false,
+                description: "Wait for completion for 0..=300000 milliseconds (default 20000). Zero returns acceptance without waiting; completed=false never means the restart finished.",
             },
         ],
     },
@@ -1471,6 +1936,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "GatewayCleanupView",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::types::GatewayCleanupView>,
+        ),
         params: &[
             NAME_PARAM,
             ParamSpec {
@@ -1495,6 +1963,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "{app: string?, mcp_gateway: string?, effective_mcp_gateway: string?}",
+        output_schema: Some(labby_primitives::action::schema_for::<GatewayPublicUrlsResultSchema>),
         params: &[],
     },
 ];
@@ -1558,6 +2027,8 @@ mod tests {
             "token_estimate_divisor",
             "max_log_entries",
             "max_log_bytes",
+            "search_sources",
+            "search_kinds",
         ] {
             assert!(
                 params.contains(&param),

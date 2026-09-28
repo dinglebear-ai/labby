@@ -2,17 +2,47 @@ use std::path::{Path, PathBuf};
 
 use labby_runtime::gateway_config::UpstreamConfig;
 
-/// Standard location for the `.env` file: `~/.labby/.env`.
+/// Standard location for the `.env` file: `$LABBY_HOME/.env`, normally
+/// `~/.labby/.env`.
 ///
 /// Vendored from `lab`'s `crate::config::dotenv_path` so the upstream pool's
 /// dotenv-fallback bearer-token resolution does not reach back into the Labby
-/// binary crate. Returns `None` when the home directory cannot be resolved.
+/// binary crate. An explicit `LABBY_HOME` is exclusive, so an isolated
+/// installation never reads another installation's upstream bearer tokens.
+/// Returns `None` when neither root can be resolved.
+///
+/// This crate stays independent of the Labby product crate, which owns the
+/// full installation-root contract and validates the root (absolute, not a
+/// symlink, securely owned) at startup. The local check here is the part that
+/// protects this read on its own: a non-absolute root would otherwise resolve
+/// a `.env` relative to whatever directory the process happened to start in.
 fn dotenv_path() -> Option<PathBuf> {
     #[cfg(windows)]
-    let home = std::env::var_os("USERPROFILE").map(PathBuf::from);
+    let home = std::env::var_os("USERPROFILE");
     #[cfg(not(windows))]
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    home.map(|home| home.join(".labby").join(".env"))
+    let home = std::env::var_os("HOME");
+    dotenv_path_from(std::env::var_os("LABBY_HOME"), home)
+}
+
+fn dotenv_path_from(
+    labby_home: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    if let Some(root) = labby_home.filter(|root| !root.is_empty()) {
+        let root = PathBuf::from(root);
+        if !root.is_absolute() {
+            // Only the variable name is logged: the value is operator-supplied
+            // and a rejected path adds nothing an operator cannot re-read.
+            tracing::warn!(
+                variable = "LABBY_HOME",
+                "ignoring a non-absolute Labby installation root; no upstream dotenv was read"
+            );
+            return None;
+        }
+        return Some(root.join(".env"));
+    }
+    home.filter(|home| Path::new(home).is_absolute())
+        .map(|home| PathBuf::from(home).join(".labby").join(".env"))
 }
 
 pub fn configured_bearer_token(env_name: &str) -> Option<String> {
@@ -146,6 +176,38 @@ mod tests {
             websocket_authorization_header_with_dotenv(&config, Some(&path)),
             Some("Bearer dotenv-secret".to_string())
         );
+    }
+
+    #[test]
+    fn dotenv_path_prefers_explicit_labby_home_over_user_home() {
+        assert_eq!(
+            dotenv_path_from(
+                Some("/srv/labby-preview".into()),
+                Some("/Users/operator".into())
+            ),
+            Some(PathBuf::from("/srv/labby-preview/.env"))
+        );
+    }
+
+    /// A relative root never resolves a dotenv against the process working
+    /// directory: it is refused here, independently of the product crate's
+    /// startup validation.
+    #[test]
+    fn dotenv_path_refuses_a_non_absolute_installation_root() {
+        assert_eq!(
+            dotenv_path_from(Some("relative/root".into()), Some("/Users/operator".into())),
+            None
+        );
+        assert_eq!(dotenv_path_from(None, Some("relative/home".into())), None);
+    }
+
+    #[test]
+    fn dotenv_path_falls_back_to_user_home_installation() {
+        assert_eq!(
+            dotenv_path_from(Some("".into()), Some("/Users/operator".into())),
+            Some(PathBuf::from("/Users/operator/.labby/.env"))
+        );
+        assert_eq!(dotenv_path_from(None, None), None);
     }
 
     #[test]

@@ -2,70 +2,18 @@
 
 import { FormEvent, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
 import { Activity, ArrowUpRight, Bot, Brain, File, Folder, MessagesSquare, Paperclip, PanelRight, Send, Settings, Square, Terminal, X } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Button } from '@/components/ui/button'
 import { useBrowserSession } from '@/lib/auth/session'
 import { authorityIdentity } from '@/lib/auth/authority'
-import { skillLibrary } from '@/lib/api/skill-library-client'
-import { gatewayApi, gatewayAction } from '@/lib/api/gateway-client'
-import { snippetsApi } from '@/lib/api/snippets-client'
 import { phoenixApi, phoenixSupports, type PhoenixAttachment, type PhoenixEvent, type PhoenixMessage, type PhoenixModel, type PhoenixSessionSummary, type PhoenixStatus } from '@/lib/api/phoenix-client'
 import { Textarea } from '@/components/ui/textarea'
-import type { BackendGatewayMcpRuntimeView } from '@/lib/server/gateway-adapter'
-import { deriveConsoleStatus } from './console-status-strip'
 import { PhoenixRuntimeSummary, phoenixContextWindow, phoenixTotalTokens } from './phoenix-event-timeline'
 import { PhoenixConversation } from './phoenix-conversation'
 import { useOptionalConsoleShell } from './console-shell-context'
 
-const TRAY_DESTINATIONS = [
-  ['artifacts', '/library', 'Artifacts'], ['loadouts', '/loadouts', 'Loadouts'],
-  ['snippets', '/snippets', 'Snippets'], ['tools', '/tools', 'Tools'],
-] as const
-
-type TrayCounts = Partial<Record<(typeof TRAY_DESTINATIONS)[number][0], number>>
 type PhoenixWindowRect = { x: number; y: number; width: number; height: number }
-
-function useTrayCounts() {
-  const session = useBrowserSession()
-  const identity = session.status === 'authenticated' ? authorityIdentity(session.authority) : session.status
-  const [result, setResult] = useState<{ identity: string; counts: TrayCounts }>({ identity, counts: {} })
-  useEffect(() => {
-    const controller = new AbortController()
-    let timer: ReturnType<typeof setTimeout> | undefined
-    if (session.status !== 'authenticated') return () => controller.abort()
-    const refresh = async () => {
-      const signal = controller.signal
-      const results = await Promise.allSettled([
-        skillLibrary.list('', signal),
-        gatewayApi.listLoadouts(signal), snippetsApi.list(signal),
-        gatewayAction<BackendGatewayMcpRuntimeView[]>('gateway.mcp.list', {}, signal),
-      ])
-      if (signal.aborted) return
-      const counts: TrayCounts = {}
-      const [artifacts, loadouts, snippets, tools] = results
-      if (artifacts.status === 'fulfilled' && !artifacts.value.next_cursor) counts.artifacts = artifacts.value.items.length
-      if (loadouts.status === 'fulfilled') counts.loadouts = loadouts.value.length
-      if (snippets.status === 'fulfilled') counts.snippets = snippets.value.length
-      if (tools.status === 'fulfilled') counts.tools = deriveConsoleStatus(tools.value).tools
-      setResult({ identity, counts })
-      timer = setTimeout(() => { void refresh() }, 30_000)
-    }
-    void refresh()
-    return () => { controller.abort(); clearTimeout(timer) }
-  }, [identity, session.status])
-  return result.identity === identity && session.status === 'authenticated' ? result.counts : {}
-}
-
-export function ConsoleLibraryTray({ counts }: { counts: TrayCounts }) {
-  const pathname = usePathname() ?? ''
-  return <nav aria-label="Quick library navigation" data-console-library-tray="1" className="aurora-scrollbar flex shrink-0 gap-0.5 overflow-x-auto border-t border-aurora-border-subtle bg-[var(--gw0-0_30)] px-5 pr-20">
-    {TRAY_DESTINATIONS.map(([key, href, label]) => <Link key={key} href={href} aria-current={pathname === href || pathname.startsWith(`${href}/`) ? 'page' : undefined} className="inline-flex h-[38px] shrink-0 items-center gap-2 whitespace-nowrap border-b-2 border-transparent px-3.5 text-[12.5px] font-[650] text-aurora-text-muted hover:text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-aurora-accent-primary aria-[current=page]:border-aurora-accent-primary aria-[current=page]:text-aurora-accent-strong">
-      {label}<span title={counts[key] === undefined ? 'Count unavailable for the current authority' : undefined} className="inline-flex h-[19px] min-w-5 items-center justify-center rounded-[5px] border border-aurora-border-strong/60 bg-[var(--gw0-0_45)] px-[5px] text-[10.5px] font-bold tabular-nums">{counts[key] ?? '—'}</span>
-    </Link>)}
-  </nav>
-}
 
 function PhoenixMark() {
   return <svg aria-hidden="true" width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="3.6" r="1.05"/><path d="M12.9 4.5c.5.7.6 1.5.3 2.4M11.7 7.2C9.7 4.9 7 3.8 3.7 4.1c1.5 2.4 3.5 4.1 6 5M12.3 7.2c2-2.3 4.7-3.4 8-3.1-1.5 2.4-3.5 4.1-6 5M12 7.6c-1.4 1.3-2.2 3.2-2.5 5.6-.3 2.5.5 4.8 2.5 7 2-2.2 2.8-4.5 2.5-7-.3-2.4-1.1-4.3-2.5-5.6zM9.6 15.4 7.1 18.7M14.4 15.4l2.5 3.3M12 20.5v1.4"/></svg>
@@ -505,6 +453,5 @@ export function PhoenixAvailability() {
 }
 
 export function ConsoleGlobalTools() {
-  const counts = useTrayCounts()
-  return <><ConsoleLibraryTray counts={counts}/><PhoenixAvailability/></>
+  return <PhoenixAvailability/>
 }

@@ -11,7 +11,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use verify_core::{Backend, BackendRegistry, Catalog, CheckPlan, InvariantStatus, Verdict};
 
-use crate::{CATALOG_TOML, MAX_CATALOG_BYTES, MODEL, read_bounded_regular, require_directory};
+use crate::{CATALOG_TOML, MAX_CATALOG_BYTES, read_bounded_regular, require_directory};
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -19,7 +19,7 @@ pub(crate) struct T1Report {
     pub schema: u32,
     pub lane: String,
     pub catalog_fingerprint: String,
-    pub model: String,
+    pub models: Vec<String>,
     pub reports: Vec<verify_core::BackendReport>,
     pub universal_proof: bool,
 }
@@ -111,10 +111,13 @@ fn check(root: &Path) -> Result<T1Report, String> {
         return Err("total T1 deadline exceeded".into());
     }
     Ok(T1Report {
-        schema: 1,
+        schema: 2,
         lane: "model_checking".into(),
         catalog_fingerprint: format!("b3:{}", blake3::hash(input.as_bytes()).to_hex()),
-        model: MODEL.into(),
+        models: labby_model::MODELS
+            .iter()
+            .map(|model| (*model).to_owned())
+            .collect(),
         reports,
         universal_proof: false,
     })

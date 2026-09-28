@@ -1,4 +1,97 @@
 use labby_primitives::action::{ActionSpec, ParamSpec};
+use schemars::JsonSchema;
+use std::path::PathBuf;
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct SnippetListSchema {
+    snippets: Vec<labby_codemode::snippet::store::SnippetInfo>,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct SnippetPromotionResultSchema {
+    execution_id: String,
+    source: SnippetPromotionSourceSchema,
+    snippet: labby_codemode::snippet::store::SnippetInfo,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct SnippetPromotionSourceSchema {
+    created_at_ms: i64,
+    is_admin: bool,
+    surface: String,
+    route_scope: String,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct SnippetValidationSchema {
+    valid: bool,
+    name: String,
+    mode: String,
+    source: Option<labby_codemode::snippet::store::SnippetSource>,
+    path: Option<PathBuf>,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+#[serde(untagged)]
+enum SnippetTestResultSchema {
+    Single(Box<SnippetTestSingleSchema>),
+    All(SnippetTestAllSchema),
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct SnippetTestSingleSchema {
+    name: String,
+    passed: bool,
+    response: labby_codemode::CodeModeExecutionResponse,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct SnippetTestAllSchema {
+    passed: bool,
+    results: Vec<SnippetTestItemSchema>,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+#[serde(untagged)]
+enum SnippetTestItemSchema {
+    Success {
+        name: String,
+        passed: bool,
+        response: labby_codemode::CodeModeExecutionResponse,
+    },
+    Error {
+        name: String,
+        passed: bool,
+        error: AgentErrorEnvelopeSchema,
+    },
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct AgentErrorEnvelopeSchema {
+    contract_version: u32,
+    kind: String,
+    message: String,
+    origin: labby_runtime::agent_error::AgentErrorOrigin,
+    recovery: labby_runtime::agent_error::AgentRecoveryAdvice,
+    side_effects: labby_runtime::agent_error::AgentSideEffectRisk,
+    service: Option<String>,
+    action: Option<String>,
+    tool: Option<String>,
+    upstream: Option<String>,
+    command: Option<String>,
+    prompt: Option<String>,
+    resource: Option<String>,
+    cause: Option<String>,
+}
 
 pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
@@ -7,6 +100,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "Catalog",
+        output_schema: None,
         params: &[],
     },
     ActionSpec {
@@ -15,6 +109,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "Schema",
+        output_schema: None,
         params: &[ParamSpec {
             name: "action",
             ty: "string",
@@ -28,6 +123,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "SnippetList",
+        output_schema: Some(labby_primitives::action::schema_for::<SnippetListSchema>),
         params: &[],
     },
     ActionSpec {
@@ -36,6 +132,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "ResolvedSnippet",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<labby_codemode::snippet::store::ResolvedSnippet>,
+        ),
         params: &[ParamSpec {
             name: "name",
             ty: "string",
@@ -49,6 +148,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "CodeModeExecutionResponse",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<labby_codemode::CodeModeExecutionResponse>,
+        ),
         params: &[
             ParamSpec {
                 name: "name",
@@ -70,6 +172,9 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "SnippetInfo",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<labby_codemode::snippet::store::SnippetInfo>,
+        ),
         params: &[
             ParamSpec {
                 name: "name",
@@ -103,6 +208,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: true,
         requires_admin: true,
         returns: "SnippetPromotionResult",
+        output_schema: Some(labby_primitives::action::schema_for::<SnippetPromotionResultSchema>),
         params: &[
             ParamSpec {
                 name: "execution_id",
@@ -142,6 +248,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "SnippetValidation",
+        output_schema: Some(labby_primitives::action::schema_for::<SnippetValidationSchema>),
         params: &[
             ParamSpec {
                 name: "name",
@@ -163,6 +270,11 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: true,
         requires_admin: true,
         returns: "SnippetRemoveResult",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<
+                labby_codemode::snippet::store::SnippetRemoveResult,
+            >,
+        ),
         params: &[ParamSpec {
             name: "name",
             ty: "string",
@@ -176,6 +288,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "SnippetTestResult",
+        output_schema: Some(labby_primitives::action::schema_for::<SnippetTestResultSchema>),
         params: &[
             ParamSpec {
                 name: "name",

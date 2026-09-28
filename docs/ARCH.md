@@ -1,12 +1,12 @@
 ---
 title: "Architecture"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-09-27"
 ---
 
 # Architecture
 
-`labby` is a Rust MCP gateway implemented as a workspace split between reusable gateway/auth/runtime crates and product-facing dispatch and surface adapters. The supported product boundary is gateway, Code Mode, authentication, protected routes, the direct stdio MCP proxy, setup, doctor, server logs, snippets, and the optional filesystem browser.
+`labby` is a Rust MCP gateway and operator control plane split between reusable runtime crates, shared product dispatch, and thin surface adapters. In addition to gateway, Code Mode, auth, and the direct stdio proxy, the current product owns access/Projects, Artifacts, Agents/Tasks, browser and development-container lifecycles, and operator services. The [generated service catalog](./generated/service-catalog.md) and [service index](./services/README.md) are authoritative for exact registration and platform/feature exposure.
 
 ## Core Shape
 
@@ -20,7 +20,7 @@ updated: "2026-07-30"
 
 ### `crates/labby-primitives`
 
-`labby-primitives` is a dependency-free leaf crate: `ActionSpec`/`ParamSpec`
+`labby-primitives` is a workspace-dependency leaf crate: `ActionSpec`/`ParamSpec`
 (action metadata), `PluginMeta`/`EnvVar`/`Category` (plugin metadata),
 `UiSchema` (Bootstrap wizard field schemas), and the static SSRF preflight
 checks. These types are shared by both `labby-apis` (which re-exports them
@@ -32,7 +32,7 @@ service modules to pull in gateway/runtime machinery just to declare
 
 ### `crates/labby-apis`
 
-`labby-apis` is the pure SDK layer. It owns:
+`labby-apis` is the pure SDK layer for shared core primitives and the current setup/doctor contracts, not a general one-module-per-external-service SDK. It owns:
 
 - typed service clients
 - request and response models
@@ -51,7 +51,7 @@ or shell-facing UX.
 
 `labby-auth` is the auth middleware crate. It owns:
 
-- OAuth 2.0 authorization server (Google OIDC provider)
+- inbound OAuth authorization with the selected Google or Authelia provider
 - JWT signing and validation (Ed25519 / EdDSA; Google ID-token verification remains RS256)
 - SQLite-backed token and session storage
 - axum middleware and route handlers
@@ -71,10 +71,7 @@ and extracted runtime crates:
 - backoff/jitter helpers
 - feature-gated pure DTO dependencies
 
-Dispatch-helper payloads and the stdio spawn-guard/SSRF security checks live in
-`labby-gateway` instead — they are gateway-only concerns, and keeping them here
-would pull `labby-primitives` into `labby-auth` and `labby-codemode`'s
-dependency graph even though neither ever calls into them.
+The runtime also owns shared Artifact/Skills, authority, Agent/task, development-container, and usage contracts. Gateway-specific dispatch helpers and transport/spawn guards remain in `labby-gateway`; generic SSRF vocabulary lives in `labby-primitives`. Follow the actual Cargo dependency graph rather than assuming auth or runtime crates do not consume primitives.
 
 ### `crates/labby-codemode`
 
@@ -93,6 +90,18 @@ environment scrubbing, stderr draining, lifecycle negotiation, Unix process
 group, and Windows Job Object ownership without routing through the aggregate
 gateway catalog. It does not own product config rendering or `.env` writes;
 those are injected by the host through `GatewayConfigStore`.
+
+### `crates/labby-browser`
+
+`labby-browser` owns the surface-neutral browser bridge runtime and persistence. Product registration and HTTP/MCP adapters remain in `labby`.
+
+### `crates/labby-openapi`
+
+`labby-openapi` owns OpenAPI parsing/projection and hardened outbound execution for the Code Mode local OpenAPI provider. Its HTTP transport stays outside the host-neutral JavaScript kernel.
+
+### Development-only crates
+
+`labby-model` owns pure lifecycle models and is never a product dependency. `xtask` owns repository automation, not product behavior. The root workspace has 13 members; `tools/verification` is a separate workspace with its own lockfile. See [Development Workflow](./dev/DEVELOPMENT.md) for the distinct validation gates.
 
 ### `crates/labby-web`
 
@@ -125,7 +134,7 @@ web-serving, and runtime helpers stay in their extracted crates.
 
 ## Golden Rule
 
-If behavior is shared across product surfaces, it belongs in one shared execution layer. Upstream API logic belongs in `labby-apis`; reusable gateway/runtime/code-mode behavior belongs in the extracted `labby-*` crates; product-surface dispatch belongs in `crates/labby/src/dispatch`. The CLI, MCP, HTTP, and web layers are adapters, not logic owners.
+If behavior is shared across product surfaces, it belongs in one shared execution layer. Pure setup/doctor SDK contracts belong in `labby-apis`; reusable gateway, auth, browser, OpenAPI, runtime, and Code Mode behavior belongs in the owning extracted `labby-*` crates; product-surface dispatch belongs in `crates/labby/src/dispatch`. The CLI, MCP, HTTP, and web layers are adapters, not logic owners.
 
 That rule is structural, not aspirational:
 
@@ -142,12 +151,7 @@ The workspace uses modern Rust module layout:
 - a module `foo` is declared in `foo.rs`
 - its submodules live in `foo/`
 
-Per-service layout in `labby-apis`:
-
-- `<service>.rs`
-- `<service>/client.rs`
-- `<service>/types.rs`
-- `<service>/error.rs`
+`labby-apis` contains `core`, `doctor`, and `setup`. Do not add a new SDK module merely to connect another external capability: normally configure an upstream MCP server. For a genuine Labby-owned lifecycle, follow [Service Onboarding](./dev/SERVICE_ONBOARDING.md).
 
 Per-service layout in `labby` typically includes:
 
@@ -164,7 +168,7 @@ The architecture is anchored around a few cross-cutting contracts:
 - service-specific ID newtypes
 - `Auth`: shared auth model
 - `ApiError`: normalized transport-layer error taxonomy
-- `HttpClient`: shared request/retry/logging/error-mapping layer
+- `HttpClient`: shared SDK request/auth/timeout/logging/error mapping; operation owners decide retry/backoff
 - `ActionSpec` / `ParamSpec`: service action catalog schema
 - `PluginMeta`: service metadata for generated docs, install/setup flows, and
   doctor checks
@@ -174,14 +178,13 @@ and operator tooling compose cleanly.
 
 ### `ServiceClient`
 
-Every service client implements a common health surface:
+The pure SDK `ServiceClient` contract exposes a common health surface:
 
 - `name()`
 - `service_type()`
 - `health()`
 
-That gives `labby health`, `labby doctor`, and MCP `status` surfaces a shared
-model without forcing all other service operations into one trait.
+This provides reusable health vocabulary without forcing local product services or the upstream MCP pool through one SDK trait. Gateway capability health and product doctor operations keep their own runtime contracts.
 
 ### `ServiceStatus`
 
@@ -223,7 +226,7 @@ child's MCP surface directly and does not register a `proxy` MCP tool or
 `/v1/proxy` action route. OAuth lease management goes through the existing
 admin-authenticated `gateway` action surface on a live daemon.
 
-All three consume the same service metadata and service clients.
+Registered surfaces consume shared action metadata and operation semantics. An adapter may use the owning reusable runtime directly where appropriate; it must not duplicate business rules or invent a second service catalog.
 
 The canonical ownership and dependency rules between `labby-apis`, extracted runtime crates, the shared dispatch layer, and the product surfaces live in [DISPATCH.md](./dev/DISPATCH.md).
 
@@ -236,12 +239,13 @@ The canonical source of truth is [OBSERVABILITY.md](./dev/OBSERVABILITY.md).
 High-level ownership is:
 
 - `labby` owns caller context and dispatch logging
-- `labby-apis::core::HttpClient` owns outbound request logging and transport failure detail
+- `labby-apis::core::HttpClient` owns SDK request logging and transport failure detail
+- gateway and OpenAPI transports own equivalent logging at their specialized outbound boundaries
 
 Required boundary rules:
 
 - CLI, MCP, and HTTP must emit one dispatch event per user-visible action
-- `HttpClient` must emit `request.start` plus `request.finish` or `request.error` for every outbound call
+- SDK `HttpClient` calls emit `request.start` plus `request.finish` or `request.error`; other outbound runtimes preserve the owning transport observability contract
 - health probes must be distinguishable from normal actions
 - destructive actions must log intent and outcome
 
@@ -254,7 +258,7 @@ Normal request flow:
 1. Load config in `labby`
 2. Construct the correct SDK client or product-local subsystem
 3. Dispatch through the shared `crates/labby/src/dispatch` layer
-4. Let `HttpClient` handle auth, retry, timeout, and error mapping for upstream-backed services
+4. Invoke the owning runtime or SDK client, preserving its auth, timeout, response-budget, and error contracts; retry/backoff belongs to the operation owner
 5. Return typed or surface-neutral data to the caller surface
 6. Render via CLI, MCP envelope, API envelope, or web view
 
@@ -286,9 +290,7 @@ precedence and path contract.
 
 ## Service Model
 
-Feature-gated product slices are `gateway` and `fs`. The supported always-on
-operator services are `doctor`, `server_logs`, `setup`, and `snippets`;
-`lab_admin` is runtime-conditional. The approved principal-scoped File Stash
+Cargo features, compiled registration, runtime availability, and caller exposure are separate dimensions. Use the [feature matrix](./generated/feature-matrix.md), current registration code, and generated service catalog rather than treating a short handwritten inventory as exhaustive. The approved principal-scoped File Stash
 contract is current default `gateway-host` functionality on Linux. It is
 runtime-conditional, not a separate Cargo feature, and unsupported platforms
 omit it from registration and routing.
@@ -300,8 +302,7 @@ workspace, provider, deploy-target, Marketplace-fork, or drift semantics.
 For a first-class service or capability, add only the surfaces it actually
 supports:
 
-- a `labby-apis` module when the service needs pure data types, SDK clients, or
-  shared metadata
+- stable vocabulary in the lowest reusable crate that needs it, not an automatic new `labby-apis` service module
 - one shared dispatch entry in `crates/labby/src/dispatch`
 - CLI, MCP, API, and web adapters only when the service exposes those surfaces
 - one `PluginMeta` when it participates in generated env/service metadata

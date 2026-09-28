@@ -66,6 +66,7 @@ static MCP_ACTIONS: &[ActionSpec] = &[
             description: "Workspace-relative path to list; empty or omitted means the workspace root",
         }],
         returns: "{entries: [{name, path, kind, size, modified, accessible}], truncated: bool}",
+        output_schema: None,
     },
 ];
 

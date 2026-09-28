@@ -23,7 +23,7 @@ labby --help
 labby mcp
 labby serve
 labby doctor
-labby gateway list
+labby server list
 ```
 
 `labby serve` hosts the product HTTP API, streamable HTTP MCP at `/mcp`, auth

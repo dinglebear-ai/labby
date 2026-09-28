@@ -417,7 +417,7 @@ fn launch_agent(binary: &Path, log: &Path, path: &str) -> Result<String> {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>{LABEL}</string>
-<key>ProgramArguments</key><array><string>{binary}</string><string>update</string><string>--automatic</string></array>
+<key>ProgramArguments</key><array><string>{binary}</string><string>host</string><string>update</string><string>--automatic</string></array>
 <key>StartInterval</key><integer>86400</integer><key>RunAtLoad</key><true/>
 <key>StandardOutPath</key><string>{log}</string><key>StandardErrorPath</key><string>{log}</string>
 <key>EnvironmentVariables</key><dict><key>PATH</key><string>{}</string></dict>

@@ -47,6 +47,7 @@ export function ExposurePolicyEditor({ gateway }: ExposurePolicyEditorProps) {
   const [patterns, setPatterns] = useState<string[]>([])
   const [newPattern, setNewPattern] = useState('')
   const [preview, setPreview] = useState<ExposurePolicyPreview | null>(null)
+  const [previewError, setPreviewError] = useState<string | null>(null)
   const [isPreviewLoading, setIsPreviewLoading] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
   const [hasChanges, setHasChanges] = useState(false)
@@ -62,6 +63,7 @@ export function ExposurePolicyEditor({ gateway }: ExposurePolicyEditorProps) {
         previousGatewayId.current = gateway.id
         setHasChanges(false)
         setPreview(null)
+        setPreviewError(null)
         setIsPreviewLoading(false)
         previewRequestId.current += 1
         setMode(policy.mode)
@@ -70,6 +72,7 @@ export function ExposurePolicyEditor({ gateway }: ExposurePolicyEditorProps) {
     } else {
       previousGatewayId.current = gateway.id
       setPreview(null)
+      setPreviewError(null)
       setIsPreviewLoading(false)
       previewRequestId.current += 1
       setMode('expose_all')
@@ -91,11 +94,13 @@ export function ExposurePolicyEditor({ gateway }: ExposurePolicyEditorProps) {
   useEffect(() => {
     if (isLabGateway) {
       setPreview(null)
+      setPreviewError(null)
       setIsPreviewLoading(false)
       return
     }
     if (mode !== 'allowlist' || patterns.length === 0) {
       setPreview(null)
+      setPreviewError(null)
       setIsPreviewLoading(false)
       return
     }
@@ -105,12 +110,22 @@ export function ExposurePolicyEditor({ gateway }: ExposurePolicyEditorProps) {
     const controller = new AbortController()
     const timer = setTimeout(async () => {
       setIsPreviewLoading(true)
+      setPreviewError(null)
       try {
         const result = await previewExposurePolicy(gateway.id, patterns, controller.signal)
-        setPreview(result)
+        if (previewRequestId.current === requestId) {
+          setPreview(result)
+          setPreviewError(null)
+        }
       } catch (error) {
-        if (!(error instanceof GatewayApiError || (error instanceof DOMException && error.name === 'AbortError'))) {
-          // Silently fail preview
+        if (controller.signal.aborted || (error instanceof DOMException && error.name === 'AbortError')) return
+        if (previewRequestId.current === requestId) {
+          setPreview(null)
+          setPreviewError(
+            error instanceof GatewayApiError || error instanceof Error
+              ? error.message
+              : 'The gateway did not return a usable preview.',
+          )
         }
       } finally {
         if (previewRequestId.current === requestId) {
@@ -152,8 +167,10 @@ export function ExposurePolicyEditor({ gateway }: ExposurePolicyEditorProps) {
       await setExposurePolicy(gateway.id, { mode, patterns })
       toast.success('Exposure policy updated')
       setHasChanges(false)
-    } catch {
-      toast.error('Failed to update exposure policy')
+    } catch (error) {
+      toast.error('Failed to update exposure policy', {
+        description: error instanceof Error ? error.message : 'The gateway rejected the policy update.',
+      })
     } finally {
       setIsSaving(false)
     }
@@ -352,7 +369,17 @@ export function ExposurePolicyEditor({ gateway }: ExposurePolicyEditorProps) {
             )}
           </div>
 
-          {preview ? (
+          {previewError ? (
+            <div role="alert" className="rounded-lg border border-destructive/35 bg-destructive/8 p-4">
+              <div className="flex items-center gap-2 text-destructive">
+                <AlertTriangle className="size-4" />
+                <span className="text-sm font-semibold">Preview unavailable</span>
+              </div>
+              <p className="mt-2 text-sm text-aurora-text-muted">
+                {previewError} The saved exposure policy has not been changed. Fix the gateway connection or discovery error and retry the preview before saving.
+              </p>
+            </div>
+          ) : preview ? (
             <div className="space-y-4">
               {/* Stats */}
               <div className="grid gap-4 sm:grid-cols-3">

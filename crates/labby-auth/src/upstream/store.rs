@@ -4,12 +4,12 @@
 //! upstream × subject combination.  The underlying `SqliteStore` is `Clone` so the
 //! shared connection pool is cheap to duplicate.
 //!
-//! # `StateStore::load` is a consuming take
+//! # OAuth state ordering
 //!
-//! `StateStore::load` calls `take_upstream_oauth_state` (DELETE … RETURNING) rather than
-//! a plain SELECT.  This is intentional: consuming state on first read closes the replay
-//! window.  `StateStore::delete` is therefore a no-op — the row is already gone after
-//! a successful `load`.
+//! `StateStore::load` is deliberately non-consuming. rmcp loads callback state,
+//! validates RFC 9207 issuer, and only then calls `StateStore::delete`. The delete
+//! is the one-time consume point, so malformed callbacks cannot burn a legitimate
+//! PKCE flow while successful callbacks still reject replay.
 //!
 //! # Lifetime pattern
 //!
@@ -232,8 +232,8 @@ impl CredentialStore for SqliteCredentialStore {
 
 /// Per-`(upstream_name, subject)` state store backed by SQLite.
 ///
-/// The `load` method uses `take_upstream_oauth_state` (atomic DELETE … RETURNING)
-/// rather than a SELECT, consuming the row on first read.  `delete` is a no-op.
+/// `load` reads without consuming so rmcp can validate callback issuer first.
+/// `delete` is the scoped one-time consume point after validation succeeds.
 pub struct SqliteStateStore {
     store: SqliteStore,
     upstream_name: String,
@@ -313,7 +313,7 @@ impl StateStore for SqliteStateStore {
             let now = now_unix();
             let row = self
                 .store
-                .take_upstream_oauth_state(&self.upstream_name, &self.subject, csrf_token, now)
+                .load_upstream_oauth_state(&self.upstream_name, &self.subject, csrf_token, now)
                 .await
                 .map_err(|e| AuthError::InternalError(e.to_string()))?;
 
@@ -346,16 +346,23 @@ impl StateStore for SqliteStateStore {
 
     fn delete<'life0, 'life1, 'async_trait>(
         &'life0 self,
-        _csrf_token: &'life1 str,
+        csrf_token: &'life1 str,
     ) -> Pin<Box<dyn Future<Output = Result<(), AuthError>> + Send + 'async_trait>>
     where
         'life0: 'async_trait,
         'life1: 'async_trait,
         Self: 'async_trait,
     {
-        // `load` already performs an atomic DELETE … RETURNING; a separate
-        // delete call would be a double-delete with no effect.
-        Box::pin(async move { Ok(()) })
+        Box::pin(async move {
+            self.store
+                .delete_upstream_oauth_state_for_owner(
+                    &self.upstream_name,
+                    &self.subject,
+                    csrf_token,
+                )
+                .await
+                .map_err(|e| AuthError::InternalError(e.to_string()))
+        })
     }
 }
 
@@ -453,36 +460,42 @@ mod tests {
         assert!(result.is_none(), "unknown state token must return None");
     }
 
-    /// Loading a state token a second time returns `None` (replay prevention).
-    ///
-    /// `SqliteStateStore::load` uses an atomic DELETE … RETURNING so the first
-    /// successful load consumes the row.  A subsequent call for the same token
-    /// must return `None` rather than re-authorizing the flow.
+    /// Loading state is non-consuming so rmcp can validate RFC 9207 issuer
+    /// before committing the one-time callback state. Deletion is the consume
+    /// point: after it succeeds, replay must fail closed.
     #[tokio::test]
-    async fn replayed_state_is_rejected() {
+    async fn state_is_consumed_only_by_delete() {
         let sqlite = temp_store().await;
         let store = make_state_store(sqlite, "acme", "alice");
         let csrf = "csrf-replay-test";
 
-        // Save state once.
         store
             .save(csrf, sample_stored_state(csrf))
             .await
             .expect("save should succeed");
 
-        // First load consumes the row.
         let first = store.load(csrf).await.expect("first load should not error");
         assert!(first.is_some(), "first load must return the stored state");
 
-        // Second load must return None — the row no longer exists.
         let second = store
             .load(csrf)
             .await
-            .expect("second load should not error");
+            .expect("validation-time reload should not error");
         assert!(
-            second.is_none(),
-            "replayed (already-consumed) state token must return None"
+            second.is_some(),
+            "load must not consume state before issuer validation"
         );
+
+        store
+            .delete(csrf)
+            .await
+            .expect("delete should consume state");
+
+        let replay = store
+            .load(csrf)
+            .await
+            .expect("replay load should not error");
+        assert!(replay.is_none(), "deleted state must reject replay");
     }
 
     #[tokio::test]

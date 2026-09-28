@@ -25,10 +25,16 @@ use serde_json::Value;
 #[cfg(feature = "gateway")]
 use tracing::Instrument as _;
 
-// Base64 plus the JSON-RPC envelope must fit the HTTP MCP transport's 4 MiB cap.
-// Decimal 3 MB leaves over 190 KiB for the filename, namespace, and metadata.
-const MAX_DEPOT_PUBLISH_ARCHIVE_BYTES: usize = 3_000_000;
-const MAX_DEPOT_PUBLISH_BASE64_BYTES: usize = MAX_DEPOT_PUBLISH_ARCHIVE_BYTES.div_ceil(3) * 4;
+#[cfg(test)]
+const MAX_DEPOT_PUBLISH_ARCHIVE_BYTES: usize = crate::dispatch::depot_publish::MAX_ARCHIVE_BYTES;
+#[cfg(test)]
+const MAX_DEPOT_PUBLISH_BASE64_BYTES: usize = crate::dispatch::depot_publish::MAX_BASE64_BYTES;
+
+#[cfg(test)]
+fn depot_publish_params(params: &Value) -> Result<(String, Vec<u8>, Option<String>), ToolError> {
+    let request = crate::dispatch::depot_publish::PublishRequest::from_wire(params)?;
+    Ok((request.filename, request.archive, request.namespace))
+}
 
 fn depot_publish_grant(
     context: &RequestContext<RoleServer>,
@@ -108,88 +114,6 @@ async fn revalidate_depot_publish(
     Ok(current)
 }
 
-fn depot_publish_params(params: &Value) -> Result<(String, Vec<u8>, Option<String>), ToolError> {
-    use base64::Engine as _;
-    let object = params.as_object().ok_or_else(|| ToolError::InvalidParam {
-        message: "Depot publish parameters must be an object".into(),
-        param: "params".into(),
-    })?;
-    if !object
-        .keys()
-        .all(|key| matches!(key.as_str(), "filename" | "archive_base64" | "namespace"))
-    {
-        return Err(ToolError::InvalidParam {
-            message: "Depot publish accepts only filename, archive_base64, and namespace".into(),
-            param: "params".into(),
-        });
-    }
-    let filename = object
-        .get("filename")
-        .and_then(Value::as_str)
-        .filter(|name| {
-            !name.is_empty()
-                && name.len() <= 255
-                && !name.contains(['/', '\\'])
-                && !name.chars().any(char::is_control)
-                && {
-                    let lower = name.to_ascii_lowercase();
-                    lower.ends_with(".zip") || lower.ends_with(".tar.gz") || lower.ends_with(".tgz")
-                }
-        })
-        .ok_or_else(|| ToolError::InvalidParam {
-            message: "filename must name a supported archive".into(),
-            param: "filename".into(),
-        })?
-        .to_owned();
-    let encoded = object
-        .get("archive_base64")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::InvalidParam {
-            message: "archive_base64 is required".into(),
-            param: "archive_base64".into(),
-        })?;
-    if encoded.len() > MAX_DEPOT_PUBLISH_BASE64_BYTES {
-        return Err(ToolError::InvalidParam {
-            message: "archive_base64 is too large".into(),
-            param: "archive_base64".into(),
-        });
-    }
-    let archive = base64::engine::general_purpose::STANDARD
-        .decode(encoded)
-        .map_err(|_| ToolError::InvalidParam {
-            message: "archive_base64 is invalid".into(),
-            param: "archive_base64".into(),
-        })?;
-    if archive.is_empty() || archive.len() > MAX_DEPOT_PUBLISH_ARCHIVE_BYTES {
-        return Err(ToolError::InvalidParam {
-            message: format!(
-                "archive must contain between 1 and {MAX_DEPOT_PUBLISH_ARCHIVE_BYTES} bytes"
-            ),
-            param: "archive_base64".into(),
-        });
-    }
-    let namespace = match object.get("namespace") {
-        None => None,
-        Some(value) => Some(
-            value
-                .as_str()
-                .filter(|value| {
-                    !value.is_empty()
-                        && value.len() <= 128
-                        && value.bytes().all(|byte| {
-                            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
-                        })
-                })
-                .ok_or_else(|| ToolError::InvalidParam {
-                    message: "namespace must be a non-empty string no longer than 128 bytes".into(),
-                    param: "namespace".into(),
-                })?
-                .to_owned(),
-        ),
-    };
-    Ok((filename, archive, namespace))
-}
-
 use crate::dispatch::error::ToolError;
 #[cfg(feature = "gateway")]
 use crate::dispatch::gateway::manager::CallbackToolLookup;
@@ -210,8 +134,9 @@ use crate::mcp::catalog_coalesce::schedule_catalog_notification;
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog_notifications::CatalogNotificationChanges;
 use crate::mcp::context::{
-    auth_context_from_extensions, propagated_caller_auth, resolve_caller_authorization,
-    tool_execute_builtin_action_allowed, tool_execute_scope_allowed,
+    auth_context_from_extensions, code_mode_read_scope_allowed, openai_session_fingerprint,
+    propagated_caller_auth, resolve_caller_authorization, tool_execute_builtin_action_allowed,
+    tool_execute_scope_allowed,
 };
 use crate::mcp::envelope::{build_error, build_error_extra};
 use crate::mcp::error::DispatchError;
@@ -694,6 +619,7 @@ impl LabMcpServer {
         let service = request.name.to_string();
         let subject = self.request_subject_log_tag(context);
         let actor_key = self.request_actor_key(context);
+        let openai_session_key = openai_session_fingerprint(request.meta.as_ref());
         let param_key_count = request.arguments.as_ref().map_or(0, serde_json::Map::len);
         tracing::info!(
             surface = "mcp",
@@ -701,6 +627,7 @@ impl LabMcpServer {
             action = "call_tool",
             subject,
             actor_key,
+            openai_session_key = openai_session_key.as_deref().unwrap_or("<none>"),
             tool = %service,
             param_key_count,
             route = "project_exact_complete",
@@ -889,17 +816,36 @@ impl LabMcpServer {
         // fanout reports it as `during_tool_call` — the signal that separates
         // harmless catalog movement from the flapping clients actually feel.
         let _in_flight = crate::mcp::catalog_churn::InFlightToolCall::enter();
-        let service = request.name.as_ref().to_string();
+        let wire_name = request.name.as_ref().to_string();
+        let openai_session_key = openai_session_fingerprint(request.meta.as_ref());
         // This request remains live until the upstream tail. Keep its large
         // serde value off this already broad dispatch future's stack frame.
         let upstream_request = Box::new(request.clone());
         let args = request.arguments.unwrap_or_default();
-        let action = args
-            .get("action")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let params = args.get("params").cloned().unwrap_or(Value::Null);
+        let atomic_target = self.registry.resolve_atomic_action(&wire_name);
+        let is_atomic = atomic_target.is_some();
+        let (mut service, mut action, params) = match atomic_target {
+            Some((service, action)) => (
+                service.name.to_string(),
+                action.name.to_string(),
+                Value::Object(args.clone()),
+            ),
+            None => (
+                wire_name,
+                args.get("action")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                args.get("params").cloned().unwrap_or(Value::Null),
+            ),
+        };
+        if !is_atomic
+            && crate::dispatch::depot_publish::resolve_call(&service, &action)
+                == crate::dispatch::depot_publish::CallResolution::Legacy
+        {
+            service = crate::dispatch::depot_publish::SERVICE.to_owned();
+            action = crate::dispatch::depot_publish::ACTION.to_owned();
+        }
         let instance = params
             .get("instance")
             .and_then(Value::as_str)
@@ -910,27 +856,10 @@ impl LabMcpServer {
 
         #[cfg(feature = "gateway")]
         {
-            // ── Always-available MCP App control tool. It is root-gateway scoped so a
-            // protected subset cannot mutate gateway-global UI visibility.
+            // ── MCP App control + telemetry tool. Runtime telemetry is safe on
+            // read-scoped protected routes; status and visibility mutations remain
+            // root-gateway-only so a subset cannot inspect or mutate global UI state.
             if service == MCP_APP_TOOL_NAME {
-                if !self.route_scope.is_root() {
-                    let elapsed_ms = start.elapsed().as_millis();
-                    self.log_route_scope_denial(
-                        &context,
-                        &service,
-                        "call_tool",
-                        "MCP App management is only available on the root gateway route",
-                        elapsed_ms,
-                    );
-                    return Ok(route_scope_denied_result(
-                        &service,
-                        "call_tool",
-                        "MCP App management is only available on the root gateway route"
-                            .to_string(),
-                    )
-                    .into());
-                }
-
                 let auth = auth_context_from_extensions(&context.extensions);
                 let synthetic_action = match args.get("action") {
                     None => "status",
@@ -961,6 +890,250 @@ impl LabMcpServer {
                         return Ok(error_result_from_envelope(envelope).into());
                     }
                 };
+                if synthetic_action == "event" {
+                    if !code_mode_read_scope_allowed(auth) && !tool_execute_scope_allowed(auth) {
+                        let envelope = build_error_extra(
+                            &service,
+                            synthetic_action,
+                            "forbidden",
+                            "MCP App runtime telemetry requires one of scopes: lab:read, lab, lab:admin",
+                            &serde_json::json!({
+                                "required_scopes": ["lab:read", "lab", "lab:admin"]
+                            }),
+                        );
+                        return Ok(error_result_from_envelope(envelope).into());
+                    }
+                    let Some(event_params) = params_object else {
+                        let envelope = build_error_extra(
+                            &service,
+                            synthetic_action,
+                            "invalid_param",
+                            "MCP App runtime telemetry requires params",
+                            &serde_json::json!({ "param": "params", "expected": "object" }),
+                        );
+                        return Ok(error_result_from_envelope(envelope).into());
+                    };
+                    for field in [
+                        "app",
+                        "event",
+                        "level",
+                        "message",
+                        "stack",
+                        "service",
+                        "operation",
+                        "mode",
+                        "widget_session",
+                    ] {
+                        if event_params
+                            .get(field)
+                            .is_some_and(|value| !value.is_string())
+                        {
+                            let envelope = build_error_extra(
+                                &service,
+                                synthetic_action,
+                                "invalid_param",
+                                &format!("MCP App telemetry field {field} must be a string"),
+                                &serde_json::json!({
+                                    "param": format!("params.{field}"),
+                                    "expected": "string"
+                                }),
+                            );
+                            return Ok(error_result_from_envelope(envelope).into());
+                        }
+                    }
+                    let app = event_params
+                        .get("app")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown");
+                    let event_name = event_params
+                        .get("event")
+                        .and_then(Value::as_str)
+                        .unwrap_or("runtime.event");
+                    let level = event_params
+                        .get("level")
+                        .and_then(Value::as_str)
+                        .unwrap_or("info");
+                    let message = event_params
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let stack = event_params
+                        .get("stack")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let app_service = event_params
+                        .get("service")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let operation = event_params
+                        .get("operation")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let mode = event_params
+                        .get("mode")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown");
+                    let widget_session = event_params
+                        .get("widget_session")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    for (field, value, max_len) in [
+                        ("app", app, 128usize),
+                        ("event", event_name, 96),
+                        ("message", message, 2048),
+                        ("stack", stack, 4096),
+                        ("service", app_service, 128),
+                        ("operation", operation, 128),
+                        ("mode", mode, 16),
+                        ("widget_session", widget_session, 256),
+                    ] {
+                        if value.len() > max_len {
+                            let envelope = build_error_extra(
+                                &service,
+                                synthetic_action,
+                                "invalid_param",
+                                &format!("MCP App telemetry field {field} exceeds {max_len} bytes"),
+                                &serde_json::json!({
+                                    "param": format!("params.{field}"),
+                                    "max_bytes": max_len
+                                }),
+                            );
+                            return Ok(error_result_from_envelope(envelope).into());
+                        }
+                    }
+                    if !matches!(level, "debug" | "info" | "warn" | "error") {
+                        let envelope = build_error_extra(
+                            &service,
+                            synthetic_action,
+                            "invalid_param",
+                            "MCP App telemetry level must be debug, info, warn, or error",
+                            &serde_json::json!({
+                                "param": "params.level",
+                                "valid": ["debug", "info", "warn", "error"]
+                            }),
+                        );
+                        return Ok(error_result_from_envelope(envelope).into());
+                    }
+                    if !matches!(mode, "chatgpt" | "mcp" | "browser" | "unknown") {
+                        let envelope = build_error_extra(
+                            &service,
+                            synthetic_action,
+                            "invalid_param",
+                            "MCP App telemetry mode must be chatgpt, mcp, browser, or unknown",
+                            &serde_json::json!({
+                                "param": "params.mode",
+                                "valid": ["chatgpt", "mcp", "browser", "unknown"]
+                            }),
+                        );
+                        return Ok(error_result_from_envelope(envelope).into());
+                    }
+
+                    let subject = self.request_subject_log_tag(&context);
+                    let widget_session_key = (!widget_session.is_empty())
+                        .then(|| labby_auth::util::fingerprint(widget_session));
+                    let telemetry_message = labby_runtime::redact::sanitize_log_text(message, 2048);
+                    let telemetry_stack = labby_runtime::redact::sanitize_log_text(stack, 4096);
+                    match level {
+                        "error" => tracing::error!(
+                            surface = "mcp_app",
+                            service = MCP_APP_TOOL_NAME,
+                            action = "event",
+                            subject,
+                            openai_session_key = openai_session_key.as_deref().unwrap_or("<none>"),
+                            widget_session_key = widget_session_key.as_deref().unwrap_or("<none>"),
+                            app,
+                            event = event_name,
+                            telemetry_level = level,
+                            telemetry_message = %telemetry_message,
+                            telemetry_stack = %telemetry_stack,
+                            app_service,
+                            operation,
+                            mode,
+                            "Labby MCP App runtime event"
+                        ),
+                        "warn" => tracing::warn!(
+                            surface = "mcp_app",
+                            service = MCP_APP_TOOL_NAME,
+                            action = "event",
+                            subject,
+                            openai_session_key = openai_session_key.as_deref().unwrap_or("<none>"),
+                            widget_session_key = widget_session_key.as_deref().unwrap_or("<none>"),
+                            app,
+                            event = event_name,
+                            telemetry_level = level,
+                            telemetry_message = %telemetry_message,
+                            telemetry_stack = %telemetry_stack,
+                            app_service,
+                            operation,
+                            mode,
+                            "Labby MCP App runtime event"
+                        ),
+                        "debug" => tracing::debug!(
+                            surface = "mcp_app",
+                            service = MCP_APP_TOOL_NAME,
+                            action = "event",
+                            subject,
+                            openai_session_key = openai_session_key.as_deref().unwrap_or("<none>"),
+                            widget_session_key = widget_session_key.as_deref().unwrap_or("<none>"),
+                            app,
+                            event = event_name,
+                            telemetry_level = level,
+                            telemetry_message = %telemetry_message,
+                            telemetry_stack = %telemetry_stack,
+                            app_service,
+                            operation,
+                            mode,
+                            "Labby MCP App runtime event"
+                        ),
+                        _ => tracing::info!(
+                            surface = "mcp_app",
+                            service = MCP_APP_TOOL_NAME,
+                            action = "event",
+                            subject,
+                            openai_session_key = openai_session_key.as_deref().unwrap_or("<none>"),
+                            widget_session_key = widget_session_key.as_deref().unwrap_or("<none>"),
+                            app,
+                            event = event_name,
+                            telemetry_level = level,
+                            telemetry_message = %telemetry_message,
+                            telemetry_stack = %telemetry_stack,
+                            app_service,
+                            operation,
+                            mode,
+                            "Labby MCP App runtime event"
+                        ),
+                    }
+
+                    let payload = serde_json::json!({
+                        "kind": "mcp_app_event",
+                        "accepted": true,
+                        "app": app,
+                        "event": event_name,
+                    });
+                    let mut result =
+                        CallToolResult::success(vec![ContentBlock::text(payload.to_string())]);
+                    result.structured_content = Some(payload);
+                    return Ok(result.into());
+                }
+
+                if !self.route_scope.is_root() {
+                    let elapsed_ms = start.elapsed().as_millis();
+                    self.log_route_scope_denial(
+                        &context,
+                        &service,
+                        "call_tool",
+                        "MCP App management is only available on the root gateway route",
+                        elapsed_ms,
+                    );
+                    return Ok(route_scope_denied_result(
+                        &service,
+                        "call_tool",
+                        "MCP App management is only available on the root gateway route"
+                            .to_string(),
+                    )
+                    .into());
+                }
+
                 if !tool_execute_scope_allowed(auth) {
                     let envelope = build_error_extra(
                         &service,
@@ -1620,7 +1793,9 @@ impl LabMcpServer {
         #[cfg(feature = "gateway")]
         let mut resolved_upstream_tool = None;
         #[cfg(feature = "gateway")]
-        if self.code_mode_visibility().await.hides_raw_tools() && service != SERVER_LOGS_TOOL_NAME {
+        if self.code_mode_visibility().await.hides_raw_tools()
+            && !matches!(service.as_str(), SERVER_LOGS_TOOL_NAME | "gateway")
+        {
             let widget_callback = if svc.is_none() {
                 match self.resolve_widget_callback_gate(&service, &context).await {
                     Ok(gate) => gate,
@@ -1773,6 +1948,7 @@ impl LabMcpServer {
             action = dispatch_action,
             subject,
             actor_key,
+            openai_session_key = openai_session_key.as_deref().unwrap_or("<none>"),
             tool = %service,
             instance = instance.as_deref(),
             param_key_count,
@@ -1790,8 +1966,7 @@ impl LabMcpServer {
                 "dispatch route selected"
             );
             let result = if cfg!(feature = "gateway")
-                && service == crate::dispatch::depot_publish::SERVICE
-                && action == crate::dispatch::depot_publish::ACTION
+                && crate::dispatch::depot_publish::is_publish_call(&service, &action)
             {
                 #[cfg(feature = "gateway")]
                 {
@@ -1802,12 +1977,10 @@ impl LabMcpServer {
                     depot_publish_grant(&context),
                     self.route_runtime.depot(),
                 ) {
-                    (true, true, Some(_), Some(depot)) => match depot_publish_params(&params) {
-                        Ok((filename, archive, namespace)) => depot
-                            .publish_skill_archive_revalidated(
-                                &filename,
-                                archive,
-                                namespace.as_deref(),
+                    (true, true, Some(_), Some(depot)) => match crate::dispatch::depot_publish::PublishRequest::from_wire(&params) {
+                        Ok(request) => crate::dispatch::depot_publish::publish(
+                                depot,
+                                request,
                                 || revalidate_depot_publish(self, &context),
                             )
                             .await
@@ -2044,13 +2217,16 @@ impl LabMcpServer {
                     let store = match self.access_runtime.store().await {
                         Ok(store) => store,
                         Err(error) => {
-                            let mapped =
-                                crate::dispatch::access_errors::map_runtime_error("gateway", error);
+                            // Keep the mapped message: a setup gate must name
+                            // its remediation, not claim an outage.
+                            let mapped = crate::dispatch::access_errors::map_action_runtime_error(
+                                "gateway", &action, error,
+                            );
                             return Ok(error_result_from_envelope(build_error(
                                 &service,
                                 &action,
                                 mapped.kind(),
-                                "Gateway authority store is unavailable",
+                                mapped.user_message(),
                             ))
                             .into());
                         }
@@ -2091,11 +2267,14 @@ impl LabMcpServer {
                     {
                         Ok(authority) => authority,
                         Err(error) => {
+                            // Authorization errors carry fixed caller-safe
+                            // messages; reuse them so an outage or setup gate is
+                            // not reported as a denial.
                             return Ok(error_result_from_envelope(build_error(
                                 &service,
                                 &action,
                                 error.kind(),
-                                "Gateway operation is not authorized",
+                                error.user_message(),
                             ))
                             .into());
                         }
@@ -2375,13 +2554,14 @@ impl LabMcpServer {
 }
 
 fn is_project_depot_publish_call(request: &CallToolRequestParams) -> bool {
-    request.name.as_ref() == crate::dispatch::depot_publish::SERVICE
-        && request
-            .arguments
-            .as_ref()
-            .and_then(|arguments| arguments.get("action"))
-            .and_then(Value::as_str)
-            == Some(crate::dispatch::depot_publish::ACTION)
+    request
+        .arguments
+        .as_ref()
+        .and_then(|arguments| arguments.get("action"))
+        .and_then(Value::as_str)
+        .is_some_and(|action| {
+            crate::dispatch::depot_publish::is_publish_call(request.name.as_ref(), action)
+        })
 }
 
 #[cfg(not(feature = "gateway"))]
@@ -2396,6 +2576,9 @@ impl LabMcpServer {
         _context: &RequestContext<RoleServer>,
     ) -> bool {
         let service = request.name.as_ref();
+        if let Some((_, action)) = self.registry.resolve_atomic_action(service) {
+            return action.destructive;
+        }
         let action = request
             .arguments
             .as_ref()
@@ -2429,6 +2612,9 @@ impl LabMcpServer {
         context: &RequestContext<RoleServer>,
     ) -> bool {
         let service = request.name.as_ref();
+        if let Some((_, action)) = self.registry.resolve_atomic_action(service) {
+            return action.destructive;
+        }
         let action = request
             .arguments
             .as_ref()
@@ -2788,16 +2974,25 @@ mod depot_publish_shim_tests {
 
     #[test]
     fn only_exact_archive_publish_calls_enter_the_owned_path() {
-        let request = CallToolRequestParams::new("depot_publish".to_owned()).with_arguments(
-            json!({"action":"depot.publish_skill_archive","params":{}})
+        let request = CallToolRequestParams::new("artifact_publish".to_owned()).with_arguments(
+            json!({"action":"artifacts.publish_skill_archive","params":{}})
                 .as_object()
                 .unwrap()
                 .clone(),
         );
         assert!(is_project_depot_publish_call(&request));
+        let legacy = CallToolRequestParams::new("depot_publish".to_owned()).with_arguments(
+            json!({"action":"depot.publish_skill_archive","params":{}})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        assert!(is_project_depot_publish_call(&legacy));
         for (service, action) in [
             ("depot_publish", "depot.tokens.create"),
             ("team-depot", "depot.publish_skill_archive"),
+            ("artifact_publish", "depot.publish_skill_archive"),
+            ("depot_publish", "artifacts.publish_skill_archive"),
         ] {
             let request = CallToolRequestParams::new(service.to_owned()).with_arguments(
                 json!({"action":action,"params":{}})

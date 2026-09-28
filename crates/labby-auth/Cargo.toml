@@ -42,6 +42,7 @@ rustix = { version = "1", features = ["fs"] }
 rustls.workspace = true
 ed25519-dalek.workspace = true
 rusqlite.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 chacha20poly1305 = "0.10"

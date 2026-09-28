@@ -40,6 +40,7 @@ fn oauth_upstream_config(name: &str, expose_resources: Option<Vec<&str>>) -> Ups
             registration: UpstreamOauthRegistration::Dynamic,
             scopes: None,
             credential: Default::default(),
+            additional_endpoint_origins: vec![],
             prefer_client_metadata_document: None,
         }),
         ..named_test_upstream_config(name)

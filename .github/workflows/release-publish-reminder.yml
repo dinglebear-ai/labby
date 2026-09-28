@@ -23,7 +23,7 @@ on:
   schedule:
     - cron: "23 */6 * * *"
   workflow_run:
-    workflows: ["Release", "release-please"]
+    workflows: ["Release", "release-please", "Incus image"]
     types: [completed]
   workflow_dispatch:
 
@@ -102,17 +102,18 @@ jobs:
             const body = [
               `${drafts.length} release${drafts.length === 1 ? ' is' : 's are'} sitting unpublished.`,
               '',
-              '`release.yml` must complete every candidate publisher and',
-              'qualification gate before it promotes this draft.',
+              'The owning Release or Incus image workflow must complete its',
+              'qualification and publication gates before promoting this draft.',
               '',
               '| Tag | Waiting | Assets |',
               '| --- | --- | --- |',
               ...rows,
               '',
-              'Do not publish manually. Inspect the tag-triggered release workflow.',
+              'Do not publish manually. Inspect the workflow that created this draft.',
               '',
-              'npm and the MCP Registry cannot un-publish a version. Delete any',
-              'draft that should never ship, or repair the failed qualification.',
+              'For vX.Y.Z releases, npm and the MCP Registry cannot un-publish a',
+              'version. Delete any draft that should never ship, or repair the',
+              'failed qualification.',
               '',
               `<sub>Updated by ${context.workflow} · run ${context.runId}</sub>`,
             ].join('\n');
@@ -153,6 +154,7 @@ jobs:
           mkdir -p release-observations
           observed_count=0
           while IFS=$'\t' read -r tag is_draft; do
+            [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
             directory="release-observations/$tag"
             mkdir -p "$directory/assets"
             # Published releases predating the versioned manifest contract are

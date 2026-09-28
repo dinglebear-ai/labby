@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use base64::Engine as _;
 use jiff::Timestamp;
 use rusqlite::{Connection, OptionalExtension, params};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
@@ -35,7 +36,7 @@ const MAX_BLOCKING_STORE_JOBS: usize = 1;
 pub(crate) const MAX_CANCELLATION_AUDIT_CLEANUPS: usize = 16;
 
 /// Durable paired browser.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 pub struct BrowserRecord {
     pub id: String,
     pub display_name: String,
@@ -48,7 +49,7 @@ pub struct BrowserRecord {
 }
 
 /// Sanitized browser document and its observed WebMCP catalog.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq)]
 pub struct DocumentSession {
     pub id: String,
     pub browser_id: String,
@@ -68,7 +69,7 @@ pub struct DocumentSession {
 }
 
 /// Metadata-only session projection used by bounded administrative listings.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 pub struct DocumentSessionSummary {
     pub id: String,
     pub browser_id: String,
@@ -86,14 +87,14 @@ pub struct DocumentSessionSummary {
 }
 
 /// One stable page of session summaries.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 pub struct SessionPage {
     pub sessions: Vec<DocumentSessionSummary>,
     pub next_cursor: Option<String>,
 }
 
 /// Pairing state.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PairingStatus {
     Pending,
@@ -117,7 +118,7 @@ impl PairingStatus {
 }
 
 /// Durable pairing request, never containing private key material.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 pub struct PairingRequest {
     pub id: String,
     pub display_name: String,

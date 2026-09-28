@@ -205,7 +205,7 @@ Setup and doctor inspect access-store health read-only. They do not call this en
 
 ### Offline proof bootstrap
 
-`labby setup access-bootstrap` (`prepare`, `consume`, `status`, `recover`,
+`labby auth bootstrap` (`prepare`, `consume`, `status`, `recover`,
 `cleanup`) creates the owner from a one-time 256-bit proof prepared offline
 while the installation is pristine, through `POST /auth/bootstrap/consume` and
 its sibling `/auth/bootstrap/*` routes. It also issues a project-bound product
@@ -215,7 +215,7 @@ credential. Loopback location by itself grants nothing. See
 ### Existing stores
 
 Owner bootstrap never migrates an existing older-schema store. Upgrading a
-v1–v6 store to v7 is the offline `labby state migrate-access` flow in
+v1–v6 store to v7 is the offline `labby state access migrate` flow in
 [MIGRATION.md](../access-control/MIGRATION.md).
 
 Because every schema crossing costs the operator an approved offline
@@ -233,7 +233,7 @@ is the only identity-linking operation; other Principals cannot be linked or
 merged.
 
 1. With the gateway stopped, approve the specific identity offline:
-   `labby setup owner-link-prepare --approval-file <file>`. The protected JSON
+   `labby auth owner link --approval-file <file>`. The protected JSON
    manifest binds the new identity's fingerprint, the installation, the owner
    Principal, and an existing Project, Loadout, and protected route.
 2. Start the gateway. From the new identity's browser session, call

@@ -175,15 +175,15 @@ function labby_run_cli($cfg, $args, &$exitCode, $timeoutSeconds = 20) {
 
 function labby_gateway_rows($cfg, &$error) {
     $exitCode = 0;
-    $output = labby_run_cli($cfg, ['gateway', 'mcp', 'list'], $exitCode, 12);
+    $output = labby_run_cli($cfg, ['server', 'list'], $exitCode, 12);
     if ($exitCode !== 0) {
-        $error = $output === '' ? 'gateway mcp list failed without output' : $output;
+        $error = $output === '' ? 'server list failed without output' : $output;
         return [];
     }
 
     $decoded = json_decode($output, true);
     if (!is_array($decoded)) {
-        $error = 'gateway mcp list did not return a JSON array: ' . $output;
+        $error = 'server list did not return a JSON array: ' . $output;
         return [];
     }
 
@@ -571,7 +571,7 @@ if ($settingsError === null && isset($_POST['labby_gateway_add'])) {
     } elseif (!labby_validate_env_name($newBearerTokenEnv)) {
         $settingsError = 'Bearer token env must be an uppercase environment variable name, or blank.';
     } else {
-        $args = ['gateway', 'add', '--name', $newUpstreamName, '--url', $newUpstreamUrl];
+        $args = ['server', 'add', $newUpstreamName, '--url', $newUpstreamUrl];
         if ($newBearerTokenEnv !== '') {
             $args[] = '--bearer-token-env';
             $args[] = $newBearerTokenEnv;
@@ -580,7 +580,7 @@ if ($settingsError === null && isset($_POST['labby_gateway_add'])) {
         if ($gatewayExitCode === 0) {
             $gatewayNotice = "Gateway MCP server $newUpstreamName added.\n" . labby_format_cli_output($gatewayOutput);
         } else {
-            $settingsError = "gateway add $newUpstreamName failed:\n" . labby_format_cli_output($gatewayOutput);
+            $settingsError = "server add $newUpstreamName failed:\n" . labby_format_cli_output($gatewayOutput);
         }
     }
 }
@@ -598,7 +598,7 @@ if ($settingsError === null && isset($_POST['labby_gateway_add_stdio'])) {
     } elseif ($stdioArgsError !== null) {
         $settingsError = $stdioArgsError;
     } else {
-        $args = ['gateway', 'add', '--name', $newUpstreamName, '--command', $newStdioCommand];
+        $args = ['server', 'add', $newUpstreamName, '--command', $newStdioCommand];
         foreach ($newStdioArgs as $arg) {
             $args[] = '--arg';
             $args[] = $arg;
@@ -607,7 +607,7 @@ if ($settingsError === null && isset($_POST['labby_gateway_add_stdio'])) {
         if ($gatewayExitCode === 0) {
             $gatewayNotice = "Gateway stdio MCP server $newUpstreamName added.\n" . labby_format_cli_output($gatewayOutput);
         } else {
-            $settingsError = "gateway add $newUpstreamName failed:\n" . labby_format_cli_output($gatewayOutput);
+            $settingsError = "server add $newUpstreamName failed:\n" . labby_format_cli_output($gatewayOutput);
         }
     }
 }
@@ -620,11 +620,11 @@ if ($settingsError === null && isset($_POST['labby_gateway_server_action'])) {
     } elseif (!labby_validate_upstream_name($upstreamName)) {
         $settingsError = 'Invalid upstream name.';
     } else {
-        $gatewayOutput = labby_run_cli($cfg, ['gateway', 'remove', $upstreamName], $gatewayExitCode, 30);
+        $gatewayOutput = labby_run_cli($cfg, ['server', 'remove', $upstreamName], $gatewayExitCode, 30);
         if ($gatewayExitCode === 0) {
             $gatewayNotice = "Gateway MCP server $upstreamName removed.\n" . labby_format_cli_output($gatewayOutput);
         } else {
-            $settingsError = "gateway remove $upstreamName failed:\n" . labby_format_cli_output($gatewayOutput);
+            $settingsError = "server remove $upstreamName failed:\n" . labby_format_cli_output($gatewayOutput);
         }
     }
 }
@@ -638,20 +638,20 @@ if ($settingsError === null && isset($_POST['labby_mcp_action'])) {
         $settingsError = 'Invalid upstream name.';
     } else {
         if ($mcpAction === 'cleanup' || $mcpAction === 'cleanup_preview') {
-            $args = ['gateway', 'mcp', 'cleanup', $upstreamName];
+            $args = ['server', 'cleanup', $upstreamName];
             if ($mcpAction === 'cleanup_preview') {
                 $args[] = '--dry-run';
             }
         } elseif ($mcpAction === 'disable' && isset($_POST['cleanup'])) {
-            $args = ['gateway', 'mcp', 'disable', $upstreamName, '--cleanup'];
+            $args = ['server', 'disable', $upstreamName, '--cleanup'];
         } else {
-            $args = ['gateway', 'mcp', $mcpAction, $upstreamName];
+            $args = ['server', $mcpAction, $upstreamName];
         }
         $gatewayOutput = labby_run_cli($cfg, $args, $gatewayExitCode, 30);
         if ($gatewayExitCode === 0) {
             $gatewayNotice = "Gateway MCP server $upstreamName $mcpAction completed.\n" . labby_format_cli_output($gatewayOutput);
         } else {
-            $settingsError = "gateway mcp $mcpAction $upstreamName failed:\n" . labby_format_cli_output($gatewayOutput);
+            $settingsError = "server $mcpAction $upstreamName failed:\n" . labby_format_cli_output($gatewayOutput);
         }
     }
 }

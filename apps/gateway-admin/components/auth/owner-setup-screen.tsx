@@ -61,10 +61,21 @@ export function OwnerSetupScreen({ authorityState, bootstrapAvailable, remediati
   // Give the server's team admission policy one `/v1` request to act on; a
   // qualifying identity reloads as `ready` and this screen unmounts.
   const admissionRequested = React.useRef(false)
+  const [admissionWarning, setAdmissionWarning] = React.useState<string | null>(null)
   React.useEffect(() => {
     if (authorityState !== 'unprovisioned' || bootstrapAvailable || admissionRequested.current) return
     admissionRequested.current = true
     void requestTeamAdmission()
+      .then((result) => {
+        if (result.admissionError) {
+          setAdmissionWarning(`${result.admissionError} Your signed-in session was refreshed, but automatic team admission could not be confirmed.`)
+        }
+      })
+      .catch((error) => {
+        setAdmissionWarning(
+          `Labby could not refresh your access state: ${error instanceof Error ? error.message : 'session refresh failed'}. Retry after checking the server connection or sign out and back in.`,
+        )
+      })
   }, [authorityState, bootstrapAvailable])
 
   return (
@@ -81,6 +92,11 @@ export function OwnerSetupScreen({ authorityState, bootstrapAvailable, remediati
           <p className="mt-2 text-sm text-aurora-text-muted">
             Signed in as <span className="text-aurora-text-primary">{email}</span>
           </p>
+        ) : null}
+        {admissionWarning ? (
+          <div role="alert" className="mt-4 rounded-md border border-aurora-warn/35 bg-aurora-warn/8 px-3 py-2 text-sm leading-[1.5] text-aurora-warn">
+            {admissionWarning}
+          </div>
         ) : null}
         {bootstrapAvailable ? <OwnerBootstrapForm /> : <SignOutButton />}
       </div>

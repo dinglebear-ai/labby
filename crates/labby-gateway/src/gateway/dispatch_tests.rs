@@ -16,6 +16,43 @@ use super::super::params::{GatewayDiscoverParams, GatewayEnrichmentScope};
 use super::super::types::McpClientTransportType;
 use super::*;
 
+#[test]
+fn ssh_host_picker_only_returns_concrete_safe_aliases() {
+    let aliases = ssh_host_aliases(
+        "Host tootie dookie\n  HostName 10.0.0.1\n  IdentityFile ~/.ssh/private_key\nHost *\nHost dev-*\nHost -unsafe\nHost good.example\n",
+    );
+    assert_eq!(aliases, vec!["tootie", "dookie", "good.example"]);
+}
+
+#[tokio::test]
+async fn ssh_host_picker_reads_gateway_account_config_without_exposing_details() {
+    let home = tempfile::tempdir().unwrap();
+    let ssh_dir = home.path().join(".ssh");
+    std::fs::create_dir(&ssh_dir).unwrap();
+    std::fs::write(
+        ssh_dir.join("config"),
+        "Host tootie\n  HostName 10.0.0.1\n  IdentityFile ~/.ssh/private_key\n",
+    )
+    .unwrap();
+    let _home_guard = crate::gateway::discovery::TestHomeDirGuard::set(home.path().to_path_buf());
+    let result = dispatch_with_manager(&test_manager(), "gateway.ssh_hosts.list", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(result, json!(["tootie"]));
+}
+
+#[test]
+fn ssh_host_picker_expands_included_config_files() {
+    let home = tempfile::tempdir().unwrap();
+    let ssh_dir = home.path().join(".ssh");
+    let config_dir = ssh_dir.join("config.d");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(ssh_dir.join("config"), "Include config.d/*\nHost tootie\n").unwrap();
+    std::fs::write(config_dir.join("devices"), "Host dookie\nHost media-*\n").unwrap();
+    let contents = read_ssh_config(home.path()).unwrap();
+    assert_eq!(ssh_host_aliases(&contents), vec!["dookie", "tootie"]);
+}
+
 #[cfg(feature = "skills")]
 #[test]
 fn skills_operator_projection_preserves_candidate_count_and_rejection_detail() {
@@ -166,6 +203,7 @@ impl Respond for DashboardCatalogResponder {
 fn gateway_actions_include_management_surface() {
     let names: Vec<&str> = ACTIONS.iter().map(|a| a.name).collect();
     assert!(names.contains(&"gateway.list"));
+    assert!(names.contains(&"gateway.ssh_hosts.list"));
     assert!(names.contains(&"gateway.server.get"));
     assert!(names.contains(&"gateway.supported_services"));
     assert!(names.contains(&"gateway.protected_route.list"));
@@ -1468,6 +1506,7 @@ fn oauth_upstream_fixture(name: &str, enabled: bool) -> UpstreamConfig {
             },
             scopes: None,
             credential: Default::default(),
+            additional_endpoint_origins: vec![],
             prefer_client_metadata_document: None,
         }),
         imported_from: None,
@@ -1512,6 +1551,54 @@ async fn gateway_code_mode_set_accepts_all_public_config_fields() {
     assert_eq!(value["token_estimate_divisor"], 2);
     assert_eq!(value["max_log_entries"], 10);
     assert_eq!(value["max_log_bytes"], 2048);
+}
+
+#[tokio::test]
+async fn gateway_code_mode_search_policy_updates_immediately_and_persists() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+
+    let value = dispatch_with_manager(
+        &manager,
+        "gateway.code_mode.set",
+        json!({
+            "search_sources": ["team_depot", "personal_labby"],
+            "search_kinds": ["skill", "command", "subagent"]
+        }),
+    )
+    .await
+    .expect("search policy should update");
+
+    assert_eq!(
+        value["search"]["sources"],
+        json!(["personal_labby", "team_depot"])
+    );
+    assert_eq!(
+        value["search"]["kinds"],
+        json!(["skill", "command", "subagent"])
+    );
+
+    let immediate = dispatch_with_manager(&manager, "gateway.code_mode.get", json!({}))
+        .await
+        .expect("same manager should expose the new policy");
+    assert_eq!(immediate["search"], value["search"]);
+
+    let persisted = crate::gateway::config::load_gateway_config(&path).expect("persisted config");
+    assert_eq!(
+        serde_json::to_value(&persisted.code_mode.search).expect("serialize search policy"),
+        value["search"]
+    );
+
+    let cleared = dispatch_with_manager(
+        &manager,
+        "gateway.code_mode.set",
+        json!({"search_sources": [], "search_kinds": []}),
+    )
+    .await
+    .expect("empty sets should disable discovery");
+    assert_eq!(cleared["search"]["sources"], json!([]));
+    assert_eq!(cleared["search"]["kinds"], json!([]));
 }
 
 #[tokio::test]
@@ -4071,6 +4158,24 @@ async fn gateway_mcp_disable_with_cleanup_returns_gateway_and_cleanup_payload() 
 }
 
 #[tokio::test]
+async fn gateway_mcp_restart_rejects_invalid_wait_before_starting_transaction() {
+    let manager = test_manager();
+    for wait_ms in [300_001_u64, u64::MAX] {
+        let error = dispatch_with_manager(
+            &manager,
+            "gateway.mcp.restart",
+            json!({"name":"must-not-be-resolved", "wait_ms":wait_ms}),
+        )
+        .await
+        .expect_err("out-of-range restart budget must be rejected");
+        assert!(
+            matches!(error, ToolError::InvalidParam { ref param, .. } if param == "wait_ms"),
+            "budget validation must precede looking up a server or starting a runtime: {error:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn gateway_mcp_restart_rejects_a_disabled_upstream_without_enabling_it() {
     let manager = test_manager();
     manager
@@ -4126,7 +4231,7 @@ async fn gateway_mcp_restart_response_matches_action_spec() {
     let value = dispatch_with_manager(
         &manager,
         "gateway.mcp.restart",
-        json!({"name": "restart-spec", "aggressive": true}),
+        json!({"name": "restart-spec", "aggressive": true, "wait_ms": 300_000}),
     )
     .await
     .expect("restart dispatch");
@@ -4778,6 +4883,18 @@ fn shape_include_existing_false_filters_out_already_configured_servers() {
 
 // ── handle_import and handle_discover validation branch tests ──────────
 
+#[test]
+fn discovery_web_and_cli_default_payloads_normalize_identically() {
+    let web: GatewayDiscoverParams = serde_json::from_value(json!({})).unwrap();
+    let cli: GatewayDiscoverParams = serde_json::from_value(json!({
+        "clients": [],
+        "include_existing": false,
+        "explain": false
+    }))
+    .unwrap();
+    assert_eq!(web, cli);
+}
+
 #[tokio::test]
 async fn gateway_import_rejects_empty_params() {
     let manager = test_manager();
@@ -4847,6 +4964,75 @@ async fn gateway_import_result_has_correct_shape() {
         result.get("imported").is_some(),
         "should have imported field"
     );
+}
+
+#[tokio::test]
+async fn gateway_discover_explain_reports_scan_without_changing_default_shape() {
+    let manager = test_manager();
+    let home = tempfile::tempdir().expect("tempdir");
+    let config_path = home.path().join(".cursor/mcp.json");
+    std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &config_path,
+        r#"{"mcpServers":{"fixture":{"command":"fixture-secret-free"}}}"#,
+    )
+    .unwrap();
+    let _home_guard = crate::gateway::discovery::TestHomeDirGuard::set(home.path().to_path_buf());
+
+    let ordinary =
+        dispatch_with_manager(&manager, "gateway.discover", json!({"clients":["cursor"]}))
+            .await
+            .unwrap();
+    assert!(ordinary.is_array());
+
+    let explained = dispatch_with_manager(
+        &manager,
+        "gateway.discover",
+        json!({"clients":["cursor"], "explain":true}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(explained["servers"][0]["name"], "fixture");
+    assert_eq!(
+        explained["explanation"]["scanned_clients"],
+        json!(["cursor"])
+    );
+    assert_eq!(
+        explained["explanation"]["discovered_by_client"]["cursor"],
+        1
+    );
+    assert_eq!(
+        explained["explanation"]["matched_paths"],
+        json!([config_path])
+    );
+}
+
+#[tokio::test]
+async fn gateway_import_dry_run_returns_plan_without_mutating_config() {
+    let manager = test_manager();
+    let home = tempfile::tempdir().expect("tempdir");
+    let config_path = home.path().join(".cursor/mcp.json");
+    std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &config_path,
+        r#"{"mcpServers":{"fixture":{"command":"fixture-command","env":{"TOKEN":"secret"}}}}"#,
+    )
+    .unwrap();
+    let _home_guard = crate::gateway::discovery::TestHomeDirGuard::set(home.path().to_path_buf());
+
+    let result = dispatch_with_manager(
+        &manager,
+        "gateway.import",
+        json!({"all":true, "clients":["cursor"], "dry_run":true}),
+    )
+    .await
+    .unwrap();
+
+    assert!(result["imported"].as_array().unwrap().is_empty());
+    assert_eq!(result["planned"][0]["name"], "fixture");
+    assert_eq!(result["planned"][0]["transport"], "stdio");
+    assert!(!result.to_string().contains("secret"));
+    assert!(manager.current_config().await.upstream.is_empty());
 }
 
 // --- lab-l3cm regression: public dispatch() must handle built-ins before manager resolution ---
@@ -4979,6 +5165,7 @@ fn already_configured_flag_set_when_name_in_existing() {
         &GatewayDiscoverParams {
             include_existing: true,
             clients: vec![],
+            explain: false,
         },
     );
     assert_eq!(views.len(), 1);

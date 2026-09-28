@@ -290,7 +290,7 @@ pub(super) async fn publish(
         return Err(forbidden());
     };
     crate::api::services::require_session_csrf(
-        "depot.publish_skill_archive",
+        crate::dispatch::depot_publish::ACTION,
         &headers,
         Some(&auth),
     )
@@ -311,20 +311,21 @@ pub(super) async fn publish(
                     Json(json!({"kind":"forbidden","message":reason})),
                 )
             })?;
-        state
-            .depot
-            .publish_skill_archive_for_browser_revalidated(
-                "skill.tar.gz",
+        crate::dispatch::depot_publish::publish_for_browser(
+            &state.depot,
+            crate::dispatch::depot_publish::PublishRequest {
+                filename: "skill.tar.gz".into(),
                 archive,
-                None,
-                || async {
-                    authorize_google(&state, &authority, &auth, identity.as_ref().map(|v| &v.0))
-                        .await
-                        .map_err(|_| DepotError::DelegationUnavailable)
-                },
-            )
-            .await
-            .map_err(map_error)?
+                namespace: None,
+            },
+            || async {
+                authorize_google(&state, &authority, &auth, identity.as_ref().map(|v| &v.0))
+                    .await
+                    .map_err(|_| DepotError::DelegationUnavailable)
+            },
+        )
+        .await
+        .map_err(map_error)?
     } else {
         authorize(
             &state,
@@ -340,9 +341,14 @@ pub(super) async fn publish(
                 Json(json!({"kind":"forbidden","message":reason})),
             )
         })?;
-        state
-            .depot
-            .publish_skill_archive_revalidated("skill.tar.gz", archive, None, || async {
+        crate::dispatch::depot_publish::publish(
+            &state.depot,
+            crate::dispatch::depot_publish::PublishRequest {
+                filename: "skill.tar.gz".into(),
+                archive,
+                namespace: None,
+            },
+            || async {
                 authorize(
                     &state,
                     &authority,
@@ -352,9 +358,10 @@ pub(super) async fn publish(
                 )
                 .await
                 .map_err(|_| DepotError::DelegationUnavailable)
-            })
-            .await
-            .map_err(map_error)?
+            },
+        )
+        .await
+        .map_err(map_error)?
     };
     let job = response
         .pointer("/result/job")

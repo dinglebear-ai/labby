@@ -34,6 +34,29 @@ pub(crate) fn require_session_csrf(
         })
 }
 
+/// Fresh-install API state before owner setup completes.
+///
+/// This fixture lives outside every feature-gated service module so all-target
+/// checks for standalone product slices can compile their tests independently.
+#[cfg(test)]
+pub(crate) async fn uninitialized_access_state() -> crate::api::state::AppState {
+    let directory = tempfile::Builder::new()
+        .prefix("labby-access-setup-required-")
+        .tempdir_in(std::env::current_dir().expect("test working directory"))
+        .expect("access tempdir");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("secure access tempdir");
+    }
+    let runtime = std::sync::Arc::new(
+        crate::access::AccessRuntime::initialize(directory.keep().join("access.db")).await,
+    );
+    crate::api::state::AppState::from_registry(crate::registry::build_default_registry())
+        .with_access_runtime(runtime)
+}
+
 /// Admin-only allowlist management (`/v1/auth/allowed-emails`).
 pub mod auth_admin;
 pub mod browser;

@@ -92,6 +92,7 @@ function SessionDepotPage() {
   const [query,setQuery] = useState(initialQuery), [activeQuery,setActiveQuery] = useState(initialQuery)
   const [state,setState] = useState<LoadState>({ loading:true, window:createDiscoveryWindow(), exact:false })
   const [providers,setProviders] = useState<DepotProviderOption[]>([])
+  const [providerError,setProviderError] = useState<string>()
   const [detail,setDetail] = useState<FederatedArtifact|null>(null), [detailLoading,setDetailLoading] = useState(false)
   const [copied,setCopied] = useState<string>(), [view,setView] = useState<DiscoveryLayout>('cards')
   const [importing,setImporting] = useState(false)
@@ -179,7 +180,7 @@ function SessionDepotPage() {
     finally { if(lanes.current.isCurrent('list',generation))inFlight.current=undefined }
   },[selectedProvider,kind])
 
-  useEffect(()=>{const controller=new AbortController();const epoch=getBrowserSessionEpoch();void listProviderOptions(controller.signal).then(value=>{if(!controller.signal.aborted&&epoch===getBrowserSessionEpoch())setProviders(value)}).catch(()=>{});return()=>controller.abort()},[])
+  useEffect(()=>{const controller=new AbortController();const epoch=getBrowserSessionEpoch();void listProviderOptions(controller.signal).then(value=>{if(!controller.signal.aborted&&epoch===getBrowserSessionEpoch()){setProviders(value);setProviderError(undefined)}}).catch(error=>{if(!controller.signal.aborted&&epoch===getBrowserSessionEpoch())setProviderError(error instanceof Error?error.message:String(error))});return()=>controller.abort()},[])
   useEffect(()=>()=>{lanes.current.invalidateContext();paginationControllerRef.current?.abort();detailControllerRef.current?.abort()},[])
 
   useEffect(()=>{ const controller=new AbortController(); const timer=window.setTimeout(()=>{ const next=query.trim(); setActiveQuery(next); const params=new URLSearchParams(window.location.search); if((params.get('q')?.trim()??'')!==next){if(next)params.set('q',next);else params.delete('q');params.delete('artifact');params.delete('artifactProvider');router.replace(`${pathname}${params.size?`?${params}`:''}`,{scroll:false})} if(next.length===0||next.length>=3)void load(next,undefined,controller.signal);else setState(current=>({...current,loading:false,error:undefined,window:createDiscoveryWindow(),cursor:undefined,total:undefined,exact:false}))},query?300:0); return()=>{window.clearTimeout(timer);controller.abort()} },[load,pathname,query,router])
@@ -329,8 +330,8 @@ function SessionDepotPage() {
     <div className={`${AURORA_PAGE_SHELL} flex-1`}><div className={AURORA_PAGE_FRAME} style={{ gap: 14 }}>
       <ConsoleHero variant="discover" icon={<Compass className="size-[22px]" />} eyebrow="Depot · Bazaar" title="Discover" description="Every artifact Depot can reach — registries, marketplaces, catalogs and crawls — searched semantically and installable in any target format through APM." pulse={USE_MOCK_DATA && !state.error ? { color: 'var(--aurora-success)', label: `${providers.filter(provider => provider.enabled).length} sources indexed` } : depotCoveragePulse(state.coverage,state.error)} actions={<Button asChild size="icon" variant="outline" className="size-9 rounded-[10px] text-aurora-accent-strong" style={{ borderColor: 'color-mix(in srgb, var(--aurora-accent-primary) 55%, var(--aurora-border-strong))', background: 'color-mix(in srgb, var(--aurora-accent-primary) 9%, var(--aurora-panel-strong))' }}><Link href="/create" aria-label="Publish artifact" title="Publish artifact"><Plus aria-hidden="true" className="size-[15px]" /></Link></Button>}
         stats={[
-          { label: activeQuery ? 'Matches' : 'Indexed', value: discoveryCountLabel(resultCount, state.exact, Boolean(state.error) || state.total === undefined), suffix: activeQuery ? 'artifacts' : 'artifacts' },
-          { label: 'Sources', value: providers.filter(provider => provider.enabled).length, suffix: 'registries + crawls' },
+          { label: activeQuery ? 'Matches' : 'Indexed', value: discoveryCountLabel(resultCount, state.exact, Boolean(state.error) || state.total === undefined), suffix: 'artifacts' },
+          { label: 'Sources', value: providerError && providers.length === 0 ? '—' : providers.filter(provider => provider.enabled).length, suffix: providerError ? 'provider status unavailable' : 'registries + crawls' },
           USE_MOCK_DATA
             ? { label: 'Last crawl', value: '4m', suffix: 'ago', tone: 'var(--aurora-accent-strong)' }
             : { label: 'Last crawl', value: <span title="Crawl timestamps are not reported by the connected sources." className="text-sm font-normal text-aurora-text-muted">Not reported</span> },
@@ -350,6 +351,7 @@ function SessionDepotPage() {
       <div data-dqgrid="1" className="mt-[-4px] grid min-w-0 grid-cols-[minmax(0,1fr)] items-start gap-[14px]">
       <div className="flex min-w-0 flex-col gap-3">
       <DiscoverFilterPanel open={filtersOpen} providers={providers} artifacts={visible.items} kind={kind} selectedProvider={selectedProvider} onFilter={changeFilter} visibility={visibility} onVisibility={setVisibility} mockKinds={USE_MOCK_DATA} showVisibility={!USE_MOCK_DATA}/>
+      {providerError?<DashboardPanel title="Source filter status unavailable"><p role="status" className="text-sm text-aurora-text-muted">Artifact discovery remains usable, but the source selector may be incomplete or stale: {providerError}</p></DashboardPanel>:null}
       {incomplete&&!state.loading?<DashboardPanel title="Search coverage incomplete"><p role="status" className="text-sm text-aurora-text-muted">{incompleteMessage}</p><Button variant="outline" onClick={()=>void load(query.trim())}>Retry search</Button></DashboardPanel>:null}
       {!activeQuery && kind === 'all' && selectedProvider === 'all' && visibility === 'all' && !state.loading ? <DiscoverRails artifacts={USE_MOCK_DATA?visible.items:[]} artifactHref={artifactHref} unavailableReason={USE_MOCK_DATA?undefined:'Recommendation evidence is not reported by the current Depot contract.'}/> : null}
       <section aria-labelledby="artifact-results-title" className="contents">

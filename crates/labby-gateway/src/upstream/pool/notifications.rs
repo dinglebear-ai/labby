@@ -84,8 +84,62 @@ impl UpstreamPool {
         self.notification_tx.subscribe()
     }
 
-    /// Re-list one exact upstream after it reports `tools/list_changed` and
-    /// atomically replace only that upstream's cached tools.
+    /// Publish an event onto the normalized notification bus as an upstream
+    /// connection would.
+    ///
+    /// The bus's consumer lives in the `labby` crate, so proving that consumer
+    /// never awaits an upstream RPC needs a way to put an event on the bus
+    /// without racing a real subscription handshake.
+    #[cfg(any(test, feature = "testkit"))]
+    pub fn publish_notification_event(&self, event: UpstreamNotificationEvent) {
+        drop(self.notification_tx.send(event));
+    }
+
+    /// Refresh the cached resources of one exact upstream after it reports
+    /// `resources/list_changed`.
+    ///
+    /// Downstream resources/list reads cached snapshots, so the notification
+    /// consumer must refresh the named source before forwarding list_changed.
+    /// Every subject's cached catalog for the upstream is dropped first, so a
+    /// subject-scoped listing re-fetches even when the upstream has no pooled
+    /// connection to re-list.
+    ///
+    /// Returns `true` when the upstream was re-listed over its pooled
+    /// connection and its resources capability is healthy afterwards. Returns
+    /// `false` when it has no current pooled connection (OAuth-only or
+    /// disconnected) or the listing failed; a failed listing removes the
+    /// cached source, so cached listings withhold that upstream's rows until
+    /// the next successful re-list rather than serving stale ones.
+    pub async fn refresh_resources_after_list_changed(&self, upstream: &str) -> bool {
+        let cleared = self.invalidate_subject_resource_catalogs(upstream).await;
+        let allowed = BTreeSet::from([upstream.to_string()]);
+        if self
+            .observe_connection_catalog_entry(upstream)
+            .await
+            .is_none()
+        {
+            tracing::debug!(
+                upstream,
+                subject_catalogs_cleared = cleared,
+                "resources/list_changed for an upstream without a pooled connection; nothing to re-list"
+            );
+            return false;
+        }
+        self.refresh_resource_snapshots_allowed(Some(&allowed))
+            .await;
+        self.catalog
+            .read()
+            .await
+            .get(upstream)
+            .is_some_and(|entry| {
+                entry.resource_health.is_routable() && entry.resource_last_error.is_none()
+            })
+    }
+
+    /// Re-list one exact upstream after it reports tools/list_changed and
+    /// atomically replace only that upstream's cached tools. Returns `true`
+    /// when the replacement was published, `false` when the upstream has no
+    /// current pooled connection or the listing failed.
     ///
     /// The notification event bus has two producers: the shared
     /// subscriptions/listen connection and request-scoped relay connections.

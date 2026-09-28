@@ -35,8 +35,8 @@ require_text() {
 
 require_text README.md "Rust $expected or newer."
 require_text packages/labby-mcp/README.md "Rust $expected or newer."
-require_text CLAUDE.md "msrv\` ($expected)"
-require_text .github/CLAUDE.md "cargo +$expected check --workspace --all-features --all-targets --locked"
+# AGENTS.md links to rust-toolchain.toml instead of duplicating a version pin.
+require_text .github/AGENTS.md "cargo +$expected check --workspace --all-features --all-targets --locked"
 require_text docs/runtime/CICD.md "cargo +$expected check --workspace --all-features --all-targets --locked"
 require_text .github/actions/setup-rust-kache/action.yml "default: \"$expected\""
 require_text .github/workflows/ci.yml "toolchain: \"$expected\""
@@ -46,8 +46,7 @@ rust_toolchain_action_ref="dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d8435678
 
 require_text .github/actions/setup-rust-kache/action.yml "uses: $rust_toolchain_action_ref"
 require_text .github/workflows/ci.yml "uses: $rust_toolchain_action_ref"
-require_text .github/workflows/release.yml "uses: $rust_toolchain_action_ref"
-require_text .github/workflows/release.yml "toolchain: \"$expected\""
+require_text .github/workflows/release.yml "uses: ./.github/actions/setup-rust-kache"
 
 check_direct_rust_action_toolchains() {
   local file=$1

@@ -7,11 +7,15 @@ pub(crate) mod agents;
 #[cfg(feature = "skills")]
 pub(crate) mod artifact_control;
 #[cfg(feature = "skills")]
+pub(crate) mod artifact_distribution;
+#[cfg(feature = "skills")]
 pub(crate) mod artifact_sources;
 #[cfg(feature = "skills")]
 pub mod artifacts;
 pub mod browser;
 pub mod clients;
+#[cfg(feature = "gateway")]
+pub(crate) mod code_mode_search;
 pub mod depot;
 pub mod depot_publish;
 pub(crate) mod dev_containers;
@@ -36,6 +40,7 @@ pub(crate) mod projects;
 pub mod redact;
 #[cfg(feature = "skills")]
 pub mod remote_control;
+pub(crate) mod schema;
 pub mod security;
 pub mod server_logs;
 pub mod setup;

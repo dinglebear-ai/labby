@@ -5,6 +5,7 @@
 //! failure) with jittered backoff. Manager and discovery paths schedule tasks;
 //! on-demand readiness also uses the reprobe engine.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use tokio_util::sync::CancellationToken;
@@ -53,8 +54,8 @@ impl UpstreamPool {
         {
             return;
         }
-        let cancel = CancellationToken::new();
-        tasks.insert(config.name.clone(), cancel.clone());
+        let cancel = Arc::new(CancellationToken::new());
+        tasks.insert(config.name.clone(), Arc::clone(&cancel));
         drop(tasks);
         #[cfg(any(test, feature = "testkit"))]
         {
@@ -75,7 +76,7 @@ impl UpstreamPool {
         );
 
         let pool = self.clone();
-        tokio::spawn(async move {
+        self.lifecycle_tasks.spawn(async move {
             let mut attempt = 0_u32;
             loop {
                 let sleep_for = reprobe_sleep_for(&config.name, attempt);
@@ -179,6 +180,13 @@ impl UpstreamPool {
                     }
                 }
                 drop(permit);
+            }
+            let mut tasks = pool.probe_tasks.write().await;
+            if tasks
+                .get(&config.name)
+                .is_some_and(|current| Arc::ptr_eq(current, &cancel))
+            {
+                tasks.remove(&config.name);
             }
         });
     }
@@ -375,6 +383,10 @@ impl UpstreamPool {
             Some(&self.shared_http_client),
         )
         .await?;
+        anyhow::ensure!(
+            self.upstream_config_matches(config),
+            "upstream configuration changed while reconnect was being built"
+        );
         let supports_skills = peer_declares_skills(&conn.peer);
         self.install_connected_tools(config, conn, tools, Some(supports_skills))
             .await?;
@@ -459,7 +471,7 @@ mod tests {
         let pool = catalog_pool_with_server("slow-heartbeat", SlowListToolsServer).await;
         let config = named_test_upstream_config("slow-heartbeat");
         let heartbeat = tokio::spawn({
-            let pool = std::sync::Arc::clone(&pool);
+            let pool = Arc::clone(&pool);
             let config = config.clone();
             async move {
                 pool.reprobe_tools_for_upstream_as(&config, None, None)
@@ -538,7 +550,7 @@ mod tests {
     async fn recovery_rechecks_enabled_state_before_draining_waiting_tasks() {
         let pool = UpstreamPool::new();
         let mut tasks = pool.probe_tasks.write().await;
-        let cancel = CancellationToken::new();
+        let cancel = Arc::new(CancellationToken::new());
         let reconciliation = pool.ensure_recovery_tasks(&[]);
         tokio::pin!(reconciliation);
         assert!(futures::poll!(&mut reconciliation).is_pending());

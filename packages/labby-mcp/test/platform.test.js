@@ -15,11 +15,6 @@ test("maps supported platforms to release assets", () => {
     binary: "labby",
     archiveType: "tar.gz",
   });
-  assert.deepEqual(targetFor("win32", "x64"), {
-    asset: "lab-x86_64-pc-windows-msvc.zip",
-    binary: "labby.exe",
-    archiveType: "zip",
-  });
   assert.deepEqual(targetFor("darwin", "arm64"), {
     asset: "lab-aarch64-apple-darwin.tar.gz",
     binary: "labby",
@@ -29,6 +24,7 @@ test("maps supported platforms to release assets", () => {
 
 test("rejects unsupported platforms", () => {
   assert.throws(() => targetFor("linux", "ppc64"), /Unsupported platform/);
+  assert.throws(() => targetFor("win32", "x64"), /Supported targets: linux\/x64, darwin\/arm64/);
 });
 
 test("uses npm package version as the binary tag by default", () => {

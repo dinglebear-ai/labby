@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "project": "labby",
+  "model": "capability_visibility",
+  "invariant": "LABBY-CAP-004",
+  "origin": {
+    "kind": "manual",
+    "reference": "protected route without gateway feature"
+  },
+  "initial": {},
+  "steps": [
+    {
+      "action": "disable_gateway_feature"
+    },
+    {
+      "action": "configure_protected_route"
+    },
+    {
+      "action": "start"
+    }
+  ],
+  "expect": "invariant_holds",
+  "status": "active"
+}

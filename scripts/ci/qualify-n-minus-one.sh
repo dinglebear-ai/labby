@@ -15,5 +15,6 @@ for stage in "${stages[@]}" "${post_rollback_stages[@]}"; do
   variable="LABBY_N_MINUS_ONE_${upper_stage}"
   command=${!variable:-}
   [[ -n "$command" ]] || { echo "missing $variable for $deployment" >&2; exit 1; }
+  printf 'N-1 %s: %s (%s -> %s)\n' "$deployment" "$stage" "$previous" "$candidate"
   LABBY_DEPLOYMENT=$deployment LABBY_PREVIOUS_VERSION=$previous LABBY_CANDIDATE_VERSION=$candidate bash -euo pipefail -c "$command"
 done

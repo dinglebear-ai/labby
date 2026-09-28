@@ -1,4 +1,5 @@
 mod agent;
+mod artifact_distribution;
 mod authority;
 mod authorization;
 mod bootstrap;
@@ -124,6 +125,16 @@ pub(crate) struct ActiveFileStashPrincipalLease {
     _guards: Vec<tokio::sync::OwnedRwLockReadGuard<()>>,
 }
 
+#[allow(unused_imports)]
+pub(crate) use artifact_distribution::{
+    ArtifactAssignmentDistributionRecord, ArtifactAuthorityRecord, ArtifactAuthorityStatus,
+    ArtifactDestinationPolicy, ArtifactDistributionAuthoritySnapshot, ArtifactDistributionCeiling,
+    ArtifactDistributionGrants, ArtifactPublisherPolicyRecord, ArtifactSourcePolicyRecord,
+    ArtifactSubscriptionUpdatePolicy, ArtifactTransferDenyReason, ArtifactTransferMode,
+    ArtifactTransferOptions, BeginManagedArtifactMirrorUpdate, ManagedArtifactMirror,
+    ManagedArtifactMirrorMode, ManagedArtifactMirrorStatus, ManagedArtifactSubscription,
+    StageArtifactAuthority, StageManagedArtifactMirror,
+};
 #[allow(unused_imports)]
 pub(crate) use authority::{
     ActionAuthoritySpec, AuthorityCeiling, AuthorityRequest, authorize_action,

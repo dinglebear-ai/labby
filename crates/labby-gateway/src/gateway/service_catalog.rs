@@ -1,7 +1,8 @@
 use labby_primitives::plugin::{EnvVar, PluginMeta};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema, Deserialize)]
 pub(crate) struct ServiceFieldView {
     pub name: String,
     pub description: String,
@@ -10,7 +11,7 @@ pub(crate) struct ServiceFieldView {
     pub secret: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema, Deserialize)]
 pub(crate) struct SupportedServiceView {
     pub key: String,
     pub display_name: String,

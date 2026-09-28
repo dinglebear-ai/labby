@@ -328,6 +328,63 @@ impl SqliteStore {
         .await
     }
 
+    /// Read pending OAuth state without consuming it.
+    ///
+    /// rmcp validates RFC 9207 issuer after `StateStore::load` and only then
+    /// calls `StateStore::delete`. Keeping this SELECT non-consuming prevents
+    /// a forged or malformed callback from burning the legitimate PKCE flow.
+    pub async fn load_upstream_oauth_state(
+        &self,
+        upstream_name: &str,
+        subject: &str,
+        csrf_token: &str,
+        now: i64,
+    ) -> Result<Option<UpstreamOauthStateRow>, AuthError> {
+        let upstream_name = upstream_name.to_string();
+        let subject = subject.to_string();
+        let csrf_token = csrf_token.to_string();
+        self.with_conn(move |conn| {
+            conn.query_row(
+                "SELECT upstream_name, subject, csrf_token, pkce_verifier, expected_issuer,
+                        require_issuer, requested_scopes_json, created_at, expires_at
+                 FROM upstream_oauth_state
+                 WHERE upstream_name = ?1
+                   AND subject = ?2
+                   AND csrf_token = ?3
+                   AND expires_at > ?4",
+                params![upstream_name, subject, csrf_token, now],
+                row_to_upstream_oauth_state,
+            )
+            .optional()
+            .map_err(sqlite_error)
+        })
+        .await
+    }
+
+    /// Consume pending OAuth state after callback issuer validation succeeds.
+    pub async fn delete_upstream_oauth_state_for_owner(
+        &self,
+        upstream_name: &str,
+        subject: &str,
+        csrf_token: &str,
+    ) -> Result<(), AuthError> {
+        let upstream_name = upstream_name.to_string();
+        let subject = subject.to_string();
+        let csrf_token = csrf_token.to_string();
+        self.with_conn(move |conn| {
+            conn.execute(
+                "DELETE FROM upstream_oauth_state
+                 WHERE upstream_name = ?1
+                   AND subject = ?2
+                   AND csrf_token = ?3",
+                params![upstream_name, subject, csrf_token],
+            )
+            .map_err(sqlite_error)?;
+            Ok(())
+        })
+        .await
+    }
+
     /// Atomic take-once via `DELETE ... RETURNING`.
     pub async fn take_upstream_oauth_state(
         &self,

@@ -36,15 +36,23 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `agents` | `agents.update` | false | false | false |  | `resource_capability` | `scope.manage` | `agent` | `agent_id*: string`<br>`content_digest: string`<br>`repository_digest: string`<br>`image_digest: string`<br>`harness_digest: string`<br>`loadout_digest: string`<br>`catalog_generation: string`<br>`instructions: string`<br>`model: string` | `object` | mcp, api |
 | `agents` | `help` | true | false | false |  | `transport` | `-` | `-` |  | `HelpPayload` | mcp, api |
 | `agents` | `schema` | true | false | false |  | `transport` | `-` | `-` | `action*: string` | `ActionSpec` | mcp, api |
+| `artifact_publish` | `artifacts.publish_skill_archive` | false | false | false |  | `project_artifact_publish` | `-` | `artifact_library` | `filename*: string`<br>`archive_base64*: string`<br>`namespace: string` | `IngestJobReceipt` | mcp |
+| `artifact_publish` | `help` | true | false | false |  | `transport` | `-` | `-` |  | `HelpPayload` | mcp |
+| `artifact_publish` | `schema` | true | false | false |  | `transport` | `-` | `-` | `action*: string` | `ActionSpec` | mcp |
 | `artifacts` | `artifacts.activate` | false | false | false |  | `transport` | `-` | `-` | `artifact_id*: string`<br>`expected_revision_id*: string`<br>`expected_library_version*: integer`<br>`idempotency_key*: string` | `SkillMutationReceipt` | mcp, api, web |
 | `artifacts` | `artifacts.archive` | false | false | false |  | `transport` | `-` | `-` | `artifact_id*: string`<br>`expected_library_version*: integer`<br>`idempotency_key*: string` | `SkillMutationReceipt` | mcp, api, web |
 | `artifacts` | `artifacts.authority_status` | false | false | false |  | `transport` | `-` | `-` | `connection_id: string` | `ArtifactAuthorityStatus` | mcp, api, web |
 | `artifacts` | `artifacts.create` | false | false | false |  | `transport` | `-` | `-` | `name*: string`<br>`files*: array`<br>`visibility: string`<br>`expected_library_version*: integer`<br>`idempotency_key*: string` | `SkillMutationReceipt` | mcp, api, web |
 | `artifacts` | `artifacts.deactivate` | false | false | false |  | `transport` | `-` | `-` | `artifact_id*: string`<br>`expected_library_version*: integer`<br>`idempotency_key*: string` | `SkillMutationReceipt` | mcp, api |
+| `artifacts` | `artifacts.delete_remote` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `connection_id: string`<br>`namespace*: string`<br>`name*: string`<br>`expected_version*: string` | `DeleteReceipt` | mcp, api |
 | `artifacts` | `artifacts.follow` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `connection_id: string`<br>`id*: string`<br>`expected_version*: string`<br>`upstream_artifact_id: string`<br>`upstream_revision_id: string`<br>`following: boolean` | `RemoteArtifact` | mcp, api, web |
+| `artifacts` | `artifacts.follow_managed` | false | false | false |  | `transport` | `-` | `-` | `source*: object`<br>`assignment_id*: string`<br>`idempotency_key*: string`<br>`update_policy*: string` | `ManagedArtifactReceipt` | mcp, api |
+| `artifacts` | `artifacts.follow_update` | false | false | false |  | `transport` | `-` | `-` | `source*: object`<br>`idempotency_key*: string` | `ManagedArtifactReceipt` | mcp, api |
 | `artifacts` | `artifacts.fork` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `connection_id: string`<br>`source_artifact_id*: string`<br>`revision_id: string`<br>`namespace*: string`<br>`name*: string`<br>`following: boolean` | `RemoteArtifact` | mcp, api, web |
+| `artifacts` | `artifacts.fork_personal` | false | false | false |  | `transport` | `-` | `-` | `source*: object`<br>`assignment_id*: string`<br>`name*: string`<br>`title: string`<br>`idempotency_key*: string` | `PersonalArtifactForkReceipt` | mcp, api |
 | `artifacts` | `artifacts.get` | false | false | false |  | `transport` | `-` | `-` | `artifact_id*: string` | `VersionedSkillLibrarySummary` | mcp, api |
 | `artifacts` | `artifacts.get_remote` | false | false | false |  | `transport` | `-` | `-` | `connection_id: string`<br>`id*: string` | `RemoteArtifact` | mcp, api, web |
+| `artifacts` | `artifacts.get_remote_skill` | false | false | false |  | `transport` | `-` | `-` | `connection_id: string`<br>`uri*: string` | `RemoteSkill` | mcp, api |
 | `artifacts` | `artifacts.history` | false | false | false |  | `transport` | `-` | `-` | `artifact_id*: string`<br>`cursor: string`<br>`limit: integer` | `VersionedRevisionPage` | mcp, api |
 | `artifacts` | `artifacts.import` | false | false | false |  | `transport` | `-` | `-` | `source*: object`<br>`expected_library_version*: integer`<br>`idempotency_key*: string` | `SkillMutationReceipt` | mcp, api, web |
 | `artifacts` | `artifacts.import_batch` | false | false | false |  | `transport` | `-` | `-` | `sources*: array`<br>`expected_library_version*: integer`<br>`idempotency_key*: string` | `ArtifactImportBatchReceipt` | mcp, api |
@@ -55,7 +63,11 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `artifacts` | `artifacts.list_connections` | false | false | false |  | `transport` | `-` | `-` |  | `ArtifactAuthorityConnectionPage` | mcp, api, web |
 | `artifacts` | `artifacts.list_mcp_registry` | false | false | false |  | `transport` | `-` | `-` | `connection_id: string`<br>`query: string`<br>`category: string`<br>`tag: string`<br>`version: string`<br>`updated_since: string`<br>`include_deleted: boolean`<br>`cursor: string`<br>`limit: integer` | `McpRegistryPage` | mcp, api, web |
 | `artifacts` | `artifacts.list_remote` | false | false | false |  | `transport` | `-` | `-` | `connection_id: string`<br>`cursor: string`<br>`kind: string`<br>`limit: integer`<br>`query: string` | `RemoteArtifactPage` | mcp, api, web |
+| `artifacts` | `artifacts.list_remote_skills` | false | false | false |  | `transport` | `-` | `-` | `connection_id: string`<br>`cursor: string`<br>`limit: integer` | `RemoteSkillPage` | mcp, api |
+| `artifacts` | `artifacts.load_remote_skill` | false | false | false |  | `transport` | `-` | `-` | `connection_id: string`<br>`uri*: string`<br>`offset: integer`<br>`max_bytes: integer` | `RemoteSkillContent` | mcp, api |
+| `artifacts` | `artifacts.pin` | false | false | false |  | `transport` | `-` | `-` | `source*: object`<br>`assignment_id*: string`<br>`idempotency_key*: string` | `ManagedArtifactReceipt` | mcp, api |
 | `artifacts` | `artifacts.read` | false | false | false |  | `transport` | `-` | `-` | `artifact_id*: string`<br>`revision_id*: string`<br>`path*: string` | `VersionedRevisionFile` | mcp, api, web |
+| `artifacts` | `artifacts.read_remote_skill` | false | false | false |  | `transport` | `-` | `-` | `connection_id: string`<br>`uri*: string`<br>`offset: integer`<br>`max_bytes: integer`<br>`cursor: string`<br>`limit: integer` | `RemoteSkillResource` | mcp, api |
 | `artifacts` | `artifacts.refresh` | false | false | false |  | `transport` | `-` | `-` | `expected_library_version*: integer`<br>`idempotency_key*: string` | `SkillMutationReceipt` | mcp, api |
 | `artifacts` | `artifacts.rollback` | false | false | false |  | `transport` | `-` | `-` | `artifact_id*: string`<br>`expected_revision_id*: string`<br>`expected_library_version*: integer`<br>`idempotency_key*: string` | `SkillMutationReceipt` | mcp, api |
 | `artifacts` | `artifacts.save` | false | false | false |  | `transport` | `-` | `-` | `artifact_id*: string`<br>`expected_revision_id*: string`<br>`files*: array`<br>`expected_library_version*: integer`<br>`idempotency_key*: string` | `SkillMutationReceipt` | mcp, api, web |
@@ -66,6 +78,7 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `artifacts` | `artifacts.search_skills_sh` | false | false | false |  | `transport` | `-` | `-` | `connection_id: string`<br>`query*: string`<br>`limit: integer` | `RemoteArtifactSearch` | mcp, api, web |
 | `artifacts` | `artifacts.set_license` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `connection_id: string`<br>`id*: string`<br>`expected_version*: string`<br>`declared: string\|null`<br>`detected: array`<br>`notices: array`<br>`redistribution: string`<br>`review_state: unreviewed\|reviewed\|disputed`<br>`takedown_state: none\|requested\|restricted\|removed`<br>`evidence_at: string`<br>`metadata: object` | `RemoteArtifact` | mcp, api, web |
 | `artifacts` | `artifacts.set_publication` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `connection_id: string`<br>`id*: string`<br>`expected_version*: string`<br>`state: draft\|listed\|published\|withdrawn`<br>`visibility: private\|unlisted\|public`<br>`distribution: metadata\|bytes` | `RemoteArtifact` | mcp, api, web |
+| `artifacts` | `artifacts.transfer_options` | false | false | false |  | `transport` | `-` | `-` | `source*: object`<br>`assignment_id: string` | `ArtifactTransferOptions` | mcp, api |
 | `artifacts` | `artifacts.validate` | false | false | false |  | `transport` | `-` | `-` | `name*: string`<br>`files*: array` | `SkillValidation` | mcp, api, web |
 | `artifacts` | `help` | true | false | false |  | `transport` | `-` | `-` |  | `HelpPayload` | mcp, api |
 | `artifacts` | `schema` | true | false | false |  | `transport` | `-` | `-` | `action*: string` | `ActionSpec` | mcp, api |
@@ -90,9 +103,6 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `bundles` | `bundles.set_visibility` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `connection_id: string`<br>`slug*: string`<br>`visibility*: public\|bearer\|oauth` | `Bundle` | mcp, api, web |
 | `bundles` | `help` | true | false | false |  | `transport` | `-` | `-` |  | `HelpPayload` | mcp, api |
 | `bundles` | `schema` | true | false | false |  | `transport` | `-` | `-` | `action*: string` | `ActionSpec` | mcp, api |
-| `depot_publish` | `depot.publish_skill_archive` | false | false | false |  | `project_artifact_publish` | `-` | `artifact_library` | `filename*: string`<br>`archive_base64*: string`<br>`namespace: string` | `IngestJobReceipt` | mcp |
-| `depot_publish` | `help` | true | false | false |  | `transport` | `-` | `-` |  | `HelpPayload` | mcp |
-| `depot_publish` | `schema` | true | false | false |  | `transport` | `-` | `-` | `action*: string` | `ActionSpec` | mcp |
 | `dev_containers` | `dev_containers.build` | false | false | false |  | `resource_capability` | `scope.operate` | `dev_container` | `template_id*: string`<br>`expected_revision*: integer`<br>`request_id*: string` | `object` | mcp, api |
 | `dev_containers` | `dev_containers.build.get` | false | false | false |  | `resource_capability` | `scope.read` | `dev_container` | `build_id*: string` | `object` | mcp, api |
 | `dev_containers` | `dev_containers.create` | false | false | false |  | `resource_capability` | `scope.create` | `dev_container` | `instance_id*: string`<br>`template_id*: string`<br>`owner_kind*: installation\|team\|project\|personal`<br>`owner_id*: string`<br>`secret_references: string[]` | `object` | mcp, api |
@@ -113,6 +123,7 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `doctor` | `access.check` | false | false | false |  | `transport` | `-` | `-` |  | `DoctorReport` | mcp, api |
 | `doctor` | `audit.full` | false | false | false |  | `transport` | `-` | `-` |  | `stream&lt;Finding&gt;` | cli, mcp, api |
 | `doctor` | `auth.check` | false | false | false |  | `transport` | `-` | `-` | `live: boolean` | `DoctorReport` | cli, mcp, api |
+| `doctor` | `capabilities.status` | false | false | false |  | `transport` | `-` | `-` |  | `DoctorReport` | mcp, api |
 | `doctor` | `help` | false | false | false |  | `transport` | `-` | `-` |  | `Catalog` | mcp, api |
 | `doctor` | `oauth.relay.check` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `probe_targets: boolean` | `DoctorReport` | cli, mcp, api |
 | `doctor` | `proxy.check` | false | false | false |  | `transport` | `-` | `-` | `app_url*: string`<br>`mcp_url*: string`<br>`route*: string`<br>`backend_url: string` | `DoctorReport` | cli, mcp, api |
@@ -127,8 +138,8 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `gateway` | `gateway.client_config.get` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string` | `McpClientConfigView` | mcp, api |
 | `gateway` | `gateway.clients.list` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` |  | `GatewayClientView[]` | cli, mcp, api |
 | `gateway` | `gateway.code_mode.get` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` |  | `CodeModeConfig` | cli, mcp, api, web |
-| `gateway` | `gateway.code_mode.set` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `enabled: boolean`<br>`trusted_read_only_tools: array`<br>`mcp_ui_enabled: boolean`<br>`trace_params: boolean`<br>`result_shape_policy: string`<br>`timeout_ms: integer`<br>`max_response_bytes: integer`<br>`max_response_tokens: integer`<br>`token_estimate_divisor: integer`<br>`max_log_entries: integer`<br>`max_log_bytes: integer` | `CodeModeConfig` | cli, mcp, api, web |
-| `gateway` | `gateway.discover` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `clients: string[]`<br>`include_existing: boolean` | `DiscoveredServerView[]` | cli, mcp, api, web |
+| `gateway` | `gateway.code_mode.set` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `enabled: boolean`<br>`trusted_read_only_tools: array`<br>`mcp_ui_enabled: boolean`<br>`trace_params: boolean`<br>`result_shape_policy: string`<br>`timeout_ms: integer`<br>`max_response_bytes: integer`<br>`max_response_tokens: integer`<br>`token_estimate_divisor: integer`<br>`max_log_entries: integer`<br>`max_log_bytes: integer`<br>`search_sources: string[]`<br>`search_kinds: string[]` | `CodeModeConfig` | cli, mcp, api, web |
+| `gateway` | `gateway.discover` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `clients: string[]`<br>`include_existing: boolean`<br>`explain: boolean` | `DiscoveredServerView[] or ExplainedDiscoveryView when explain=true` | cli, mcp, api, web |
 | `gateway` | `gateway.discovered_prompts` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string` | `string[]` | mcp, api, web |
 | `gateway` | `gateway.discovered_resources` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string` | `string[]` | mcp, api, web |
 | `gateway` | `gateway.discovered_tools` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string` | `GatewayToolExposureRowView[]` | mcp, api, web |
@@ -136,7 +147,7 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `gateway` | `gateway.enrich.preview` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `upstreams: string[]`<br>`all: boolean`<br>`provider: string`<br>`max_upstreams: integer`<br>`timeout_ms: integer` | `GatewayEnrichmentPreviewView` | cli, mcp, api |
 | `gateway` | `gateway.get` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string` | `GatewayView` | cli, mcp, api, web |
 | `gateway` | `gateway.host.metrics` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` |  | `HostMetrics` | mcp, api |
-| `gateway` | `gateway.import` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `all: boolean`<br>`names: string[]`<br>`clients: string[]` | `ImportResultView` | cli, mcp, api, web |
+| `gateway` | `gateway.import` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `all: boolean`<br>`names: string[]`<br>`clients: string[]`<br>`dry_run: boolean` | `ImportResultView` | cli, mcp, api, web |
 | `gateway` | `gateway.import_pending.approve` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string` | `PendingImportView` | cli, mcp, api |
 | `gateway` | `gateway.import_pending.list` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` |  | `PendingImportView[]` | cli, mcp, api |
 | `gateway` | `gateway.import_pending.reject` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string` | `PendingImportView` | cli, mcp, api |
@@ -158,7 +169,7 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `gateway` | `gateway.mcp.disable` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string`<br>`cleanup: boolean`<br>`aggressive: boolean` | `GatewayView + optional cleanup result` | cli, mcp, api, web |
 | `gateway` | `gateway.mcp.enable` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string` | `GatewayView` | cli, mcp, api, web |
 | `gateway` | `gateway.mcp.list` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name: string` | `GatewayMcpRuntimeView[]` | cli, mcp, api, web |
-| `gateway` | `gateway.mcp.restart` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string`<br>`aggressive: boolean` | `GatewayView + cleanup result` | cli, mcp, api, web |
+| `gateway` | `gateway.mcp.restart` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string`<br>`aggressive: boolean`<br>`wait_ms: integer` | `GatewayView + cleanup result` | cli, mcp, api, web |
 | `gateway` | `gateway.oauth.authorize` | false | false | false |  | `resource_capability` | `scope.manage` | `gateway` | `upstream*: string` | `BeginAuthorization` | mcp, api |
 | `gateway` | `gateway.oauth.clear` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `upstream*: string` | `ok` | cli, mcp, api |
 | `gateway` | `gateway.oauth.google_revoke` | false | true | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `upstream*: string`<br>`confirm*: boolean` | `GoogleProviderInvalidation` | cli, mcp, api |
@@ -189,6 +200,7 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `gateway` | `gateway.service_config.get` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `service*: string` | `ServiceConfigView` | mcp, api, web |
 | `gateway` | `gateway.service_config.set` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `service*: string`<br>`values*: json` | `ServiceConfigView` | mcp, api, web |
 | `gateway` | `gateway.skills.list` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `upstream: string` | `UpstreamSkillsView[]` | cli, mcp, api |
+| `gateway` | `gateway.ssh_hosts.list` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` |  | `string[]` | mcp, api |
 | `gateway` | `gateway.status` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name: string` | `GatewayRuntimeView[]` | mcp, api, web |
 | `gateway` | `gateway.supported_services` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` |  | `SupportedServiceView[]` | mcp, api, web |
 | `gateway` | `gateway.test` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name: string`<br>`spec: json` | `GatewayTestResult` | cli, mcp, api, web |
@@ -234,21 +246,10 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `setup` | `draft.set` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `entries*: DraftEntry[]`<br>`force: boolean` | `DraftSetOutcome` | mcp, api, web |
 | `setup` | `finalize` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `force: boolean` | `CommitOutcome` | mcp, api, web |
 | `setup` | `help` | false | false | false |  | `transport` | `-` | `-` |  | `Catalog` | mcp, api |
-| `setup` | `install_plugin` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `service*: string` | `PluginMutationResult` | mcp, api, web |
-| `setup` | `installed_plugins` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `force: boolean` | `InstalledPlugin[]` | mcp, api, web |
-| `setup` | `plugin.install` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `service*: string` | `PluginMutationResult` | cli, mcp, api |
-| `setup` | `plugin.uninstall` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `service*: string` | `PluginMutationResult` | cli, mcp, api |
-| `setup` | `plugin_connectivity` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `server_url: string` | `ConnectivityOutcome` | cli, mcp, api |
-| `setup` | `plugin_export` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `PluginExportOutcome` | cli, mcp, api |
-| `setup` | `plugin_hook` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `repair: boolean` | `PluginHookReport` | cli, mcp, api |
-| `setup` | `plugin_sync` | false | true | true | lab:admin | `transport_admin` | `-` | `-` |  | `PluginSyncOutcome` | cli, mcp, api |
-| `setup` | `plugins.installed` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `force: boolean` | `InstalledPlugin[]` | cli, mcp, api |
 | `setup` | `proxy.configure` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `preferences*: ProxyPreferences`<br>`bearer_token: string`<br>`dry_run: boolean` | `ProxySetupOutcome` | cli, mcp, api |
 | `setup` | `repair` | false | true | true | lab:admin | `transport_admin` | `-` | `-` |  | `SetupReport` | cli, mcp, api |
 | `setup` | `schema` | false | false | false |  | `transport` | `-` | `-` | `action*: string` | `Schema` | mcp, api, web |
 | `setup` | `schema.get` | false | false | false |  | `transport` | `-` | `-` | `services: string[]` | `ServiceSchemaMap` | mcp, api, web |
-| `setup` | `services.status` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `ServiceStatus[]` | cli, mcp, api |
-| `setup` | `services_status` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `ServiceStatus[]` | mcp, api, web |
 | `setup` | `settings.advanced_state` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `SettingsState` | mcp, api |
 | `setup` | `settings.config.update` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `entries*: SettingsUpdateEntry[]` | `SettingsMutationOutcome` | mcp, api, web |
 | `setup` | `settings.env.update` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `entries*: SettingsUpdateEntry[]` | `SettingsState` | mcp, api, web |
@@ -257,7 +258,6 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `setup` | `settings.state` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `section: string` | `SettingsState` | mcp, api, web |
 | `setup` | `settings.update` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `services.built_in_upstream_apis_enabled*: boolean` | `SettingsState` | mcp, api, web |
 | `setup` | `state` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `SetupSnapshot` | cli, mcp, api, web |
-| `setup` | `uninstall_plugin` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `service*: string` | `PluginMutationResult` | mcp, api, web |
 | `snippets` | `help` | false | false | false |  | `transport` | `-` | `-` |  | `Catalog` | mcp, api |
 | `snippets` | `schema` | false | false | false |  | `transport` | `-` | `-` | `action*: string` | `Schema` | mcp, api |
 | `snippets` | `snippets.create` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`body*: string`<br>`description: string`<br>`force: boolean` | `SnippetInfo` | cli, mcp, api |

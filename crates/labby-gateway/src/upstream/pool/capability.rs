@@ -46,7 +46,10 @@ pub(super) async fn discover_capability_counts(
             }
             Ok(Err(error)) => (
                 0,
-                Some(format!("failed to list resources from upstream: {error}")),
+                Some(format!(
+                    "{} {error}",
+                    super::helpers::UPSTREAM_RESOURCE_LISTING_ERROR_PREFIX
+                )),
                 UpstreamHealth::Unhealthy {
                     consecutive_failures: 1,
                 },
@@ -80,7 +83,10 @@ pub(super) async fn discover_capability_counts(
             }
             Ok(Err(error)) => (
                 0,
-                Some(format!("failed to list prompts from upstream: {error}")),
+                Some(format!(
+                    "{} {error}",
+                    super::helpers::UPSTREAM_PROMPT_LISTING_ERROR_PREFIX
+                )),
                 UpstreamHealth::Unhealthy {
                     consecutive_failures: 1,
                 },

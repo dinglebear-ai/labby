@@ -17,6 +17,7 @@ use labby_codemode::{
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use labby_primitives::trace::{LabbyTraceCorrelation, TraceContext};
 use rmcp::model::{CallToolRequestParams, CallToolResult};
@@ -34,11 +35,17 @@ use labby_runtime::caller_auth::{
     PropagatedCallerUpstreamScope,
 };
 use labby_runtime::error::ToolError;
+use labby_runtime::gateway_config::{CodeModeSearchConfig, CodeModeSearchKind};
 use labby_runtime::lab_home;
 
 use super::search;
 use super::tool_error::{completed_tool_error, upstream_tool_safety};
 use super::validate_code_mode_params_against_schema;
+
+#[cfg(not(test))]
+const CODE_MODE_SKILL_CATALOG_TIMEOUT: Duration = Duration::from_secs(3);
+#[cfg(test)]
+const CODE_MODE_SKILL_CATALOG_TIMEOUT: Duration = Duration::from_millis(50);
 
 pub(crate) struct CheckedToolCallOutcome {
     pub(crate) outcome: ToolCallOutcome,
@@ -136,6 +143,21 @@ fn semantic_candidate_ids<'a>(
         .collect()
 }
 
+fn configured_catalog_kinds(config: &CodeModeSearchConfig) -> Vec<CodeModeCatalogKind> {
+    config
+        .kinds
+        .iter()
+        .map(|kind| match kind {
+            CodeModeSearchKind::Tool => CodeModeCatalogKind::Tool,
+            CodeModeSearchKind::Skill => CodeModeCatalogKind::Skill,
+            CodeModeSearchKind::Command => CodeModeCatalogKind::Command,
+            CodeModeSearchKind::Prompt => CodeModeCatalogKind::Prompt,
+            CodeModeSearchKind::Subagent => CodeModeCatalogKind::Subagent,
+            CodeModeSearchKind::Snippet => CodeModeCatalogKind::Snippet,
+        })
+        .collect()
+}
+
 impl GatewayManager {
     pub(crate) async fn code_mode_metadata_entries(
         &self,
@@ -146,14 +168,19 @@ impl GatewayManager {
         let mut entries = BTreeMap::<String, CatalogDescriptor>::new();
 
         if matches!(
-            caller,
+            caller.without_authority(),
             CodeModeCaller::TrustedLocal
                 | CodeModeCaller::ScopedSkills { .. }
                 | CodeModeCaller::ScopedHostProviderSkills { .. }
         ) && let Some(provider) = self.code_mode_skill_provider.as_ref()
         {
-            match provider.list(caller, scope).await {
-                Ok(skills) => {
+            match tokio::time::timeout(
+                CODE_MODE_SKILL_CATALOG_TIMEOUT,
+                provider.list(caller, scope),
+            )
+            .await
+            {
+                Ok(Ok(skills)) => {
                     for skill in skills {
                         let namespace = skill
                             .uri
@@ -174,12 +201,19 @@ impl GatewayManager {
                         entries.insert(descriptor.id.clone(), descriptor);
                     }
                 }
-                Err(error) => tracing::warn!(
+                Ok(Err(error)) => tracing::warn!(
                     surface = "dispatch",
                     service = "code_mode",
                     action = "catalog.skills",
                     error = %error,
                     "Code Mode Skill catalog projection failed open"
+                ),
+                Err(_elapsed) => tracing::warn!(
+                    surface = "dispatch",
+                    service = "code_mode",
+                    action = "catalog.skills",
+                    timeout_ms = CODE_MODE_SKILL_CATALOG_TIMEOUT.as_millis(),
+                    "Code Mode Skill catalog projection timed out and failed open"
                 ),
             }
         }
@@ -189,8 +223,11 @@ impl GatewayManager {
         };
         let allowed = scope.allowed_namespaces();
 
+        // Same cache-only contract as the MCP resources/list handler: warm
+        // never-listed peers, then read the snapshot instead of fanning out.
+        pool.ensure_resource_snapshots_allowed(allowed).await;
         for listed in pool
-            .list_upstream_resources_with_provenance_allowed(allowed)
+            .cached_upstream_resources_with_provenance_allowed(allowed)
             .await
         {
             let resource = listed.resource;
@@ -320,10 +357,9 @@ impl CodeModeHost for GatewayManager {
         use_cache: bool,
     ) -> Result<ToolsRender, ToolError> {
         // Catalog readers must receive a discoverable catalog even when the
-        // long-lived gateway has not contacted an upstream yet. The refresh is
-        // bounded by the catalog cold-connect budget; without it, MCP's
-        // documented search -> describe -> call workflow starts with an empty
-        // catalog and can only succeed by guessing a raw tool id.
+        // long-lived gateway has not contacted an upstream yet. Cold refresh
+        // is bounded by the catalog connect budget; once a real tool is warm,
+        // background probes keep it current without delaying every request.
         let allow_cold_connect = true;
         let owner = runtime_owner(caller, surface);
         let oauth_subject = oauth_subject(caller);
@@ -350,7 +386,7 @@ impl CodeModeHost for GatewayManager {
         };
         if scope
             .allowed_namespaces()
-            .is_some_and(|allowed| !allowed.contains("unraid"))
+            .is_some_and(|allowed| !allowed.contains(crate::core_provider::CORE_PROVIDER_NAMESPACE))
         {
             return Ok(render);
         }
@@ -389,11 +425,24 @@ impl CodeModeHost for GatewayManager {
                 message: format!("Code Mode ids must use <namespace>::<tool>: `{id}`"),
             })?;
 
-        if upstream == "unraid" {
+        // The synthetic gateway peer has no access runtime or verified caller
+        // identity. Personal OAuth uses the product host's request-bound
+        // authority adapter, never generic in-process dispatch.
+        if is_in_process_upstream(upstream) && tool == "gateway.gateway.oauth.authorize" {
+            return self
+                .call_personal_oauth_from_code_mode(
+                    id, upstream, tool, params, caller, surface, scope,
+                )
+                .await;
+        }
+
+        if upstream == crate::core_provider::CORE_PROVIDER_NAMESPACE {
             return self
                 .call_core_provider(tool, params, caller, surface, scope, ctx)
                 .await;
         }
+        let upstream = self.canonical_code_mode_upstream(upstream, scope).await?;
+        let upstream = upstream.as_str();
         let owner = runtime_owner(caller, surface);
         let oauth_subject = oauth_subject(caller);
 
@@ -416,7 +465,9 @@ impl CodeModeHost for GatewayManager {
             );
             return Err(ToolError::Sdk {
                 sdk_kind: "forbidden".to_string(),
-                message: format!("Tool `{upstream}::{tool}` is not explicitly read-only."),
+                message: format!(
+                    "Tool `{upstream}::{tool}` is not available in a read-only Code Mode run (`codemode_read`): the upstream does not annotate it `readOnlyHint: true`. Use the `codemode` tool to call it (requires the `lab` or `lab:admin` scope); if this client only holds `lab:read`, reconnect it with the `lab` scope."
+                ),
             }
             .into());
         }
@@ -898,11 +949,10 @@ impl CodeModeHost for GatewayManager {
             return Ok(Vec::new());
         }
         let allowed_ids = semantic_candidate_ids(&render.entries, scope, kinds);
-        let scoped_vectors: Vec<(String, Vec<f32>)> = vectors
-            .into_iter()
-            .filter(|(id, _)| allowed_ids.contains(id.as_str()))
-            .collect();
-        if scoped_vectors.is_empty() {
+        if !vectors
+            .iter()
+            .any(|(id, _)| allowed_ids.contains(id.as_str()))
+        {
             return Ok(Vec::new());
         }
         let query_vec = match super::embeddings::embed_via_tei(
@@ -922,11 +972,54 @@ impl CodeModeHost for GatewayManager {
             }
         };
         self.record_semantic_search_recovery().await;
-        Ok(super::embeddings::rank_top_k_by_similarity(
+        Ok(super::embeddings::rank_top_k_by_similarity_where(
             &query_vec,
-            &scoped_vectors,
+            &vectors,
             top_k,
+            |id| allowed_ids.contains(id),
         ))
+    }
+
+    async fn search_artifacts(
+        &self,
+        query: String,
+        limit: usize,
+        kinds: &[CodeModeCatalogKind],
+        caller: &CodeModeCaller,
+        surface: CodeModeSurface,
+        scope: &ToolScope,
+    ) -> Result<Vec<CatalogDescriptor>, ToolError> {
+        let Some(provider) = self.code_mode_artifact_search_provider.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let search_config = self.code_mode_config().await.search;
+        if search_config.sources.is_empty() || search_config.kinds.is_empty() {
+            return Ok(Vec::new());
+        }
+        let configured_kinds = configured_catalog_kinds(&search_config);
+        let effective_kinds = if kinds.is_empty() {
+            configured_kinds
+        } else {
+            kinds
+                .iter()
+                .copied()
+                .filter(|kind| configured_kinds.contains(kind))
+                .collect()
+        };
+        if effective_kinds.is_empty() {
+            return Ok(Vec::new());
+        }
+        provider
+            .search(
+                &query,
+                limit.min(51),
+                &effective_kinds,
+                &search_config,
+                caller,
+                surface,
+                scope,
+            )
+            .await
     }
 
     async fn config(&self) -> CodeModeConfig {
@@ -979,7 +1072,7 @@ impl CodeModeHost for GatewayManager {
     }
 }
 
-pub(super) fn tool_is_explicitly_read_only(tool: &UpstreamTool) -> bool {
+pub(crate) fn tool_is_explicitly_read_only(tool: &UpstreamTool) -> bool {
     rmcp_tool_is_explicitly_read_only(&tool.tool) && !tool.destructive
 }
 
@@ -1032,6 +1125,70 @@ fn unix_now() -> i64 {
 
 /// Gateway-side Code Mode dispatch helpers (not trait methods).
 impl GatewayManager {
+    async fn call_personal_oauth_from_code_mode(
+        &self,
+        id: &str,
+        upstream: &str,
+        tool: &str,
+        params: Value,
+        caller: &CodeModeCaller,
+        surface: CodeModeSurface,
+        scope: &ToolScope,
+    ) -> Result<ToolCallOutcome, CodeModeCallError> {
+        let denied = || {
+            CodeModeCallError::new(
+                "forbidden",
+                "Personal OAuth authorization requires verified caller authority and lab scope",
+            )
+            .with_tool(id.to_string())
+            .with_origin(CodeModeErrorOrigin::Policy)
+            .with_side_effects(CodeModeSideEffectRisk::NoneExpected)
+        };
+        if surface != CodeModeSurface::Mcp
+            || !caller.can_execute()
+            || scope.is_read_only()
+            || !scope.allows(upstream, tool)
+        {
+            return Err(denied());
+        }
+        let token = caller.authority_token().ok_or_else(denied)?;
+        let provider = self
+            .code_mode_personal_oauth_provider
+            .as_ref()
+            .ok_or_else(denied)?;
+        let published = self
+            .published_service_registry_snapshot()
+            .map_err(|error| {
+                CodeModeCallError::from(ToolError::Sdk {
+                    sdk_kind: "service_unavailable".to_string(),
+                    message: error.to_string(),
+                })
+            })?;
+        if !published.services().iter().any(|service| {
+            service.name() == "gateway"
+                && service
+                    .actions()
+                    .iter()
+                    .any(|action| action.name() == "gateway.oauth.authorize")
+        }) {
+            return Err(CodeModeCallError::new(
+                "not_found",
+                "Personal OAuth action is unavailable",
+            )
+            .with_tool(id.to_string()));
+        }
+        let data = provider.authorize(self, token, params).await?;
+        Ok(ToolCallOutcome {
+            value: serde_json::json!({
+                "ok": true,
+                "service": "gateway",
+                "action": "gateway.oauth.authorize",
+                "data": data,
+            }),
+            ui: None,
+        })
+    }
+
     async fn call_core_provider(
         &self,
         tool: &str,
@@ -1299,7 +1456,7 @@ impl GatewayManager {
             correlation,
         )
         .await
-        .map_err(CodeModeCallError::into_tool_error)
+        .map_err(CodeModeCallError::into_contract_tool_error)
     }
 
     async fn execute_upstream_tool_checked_inner(
@@ -1594,14 +1751,37 @@ impl GatewayManager {
             None => {
                 pool.record_failure(upstream, format!("upstream `{upstream}` is not connected"))
                     .await;
-                Err(CodeModeCallError::new(
-                    "not_found",
-                    format!("upstream tool `{upstream}::{tool}` was not found"),
-                )
-                .with_tool(id))
+                Err(upstream_not_connected_call_error(&id))
             }
         }
     }
+}
+
+/// The tool exists in the catalog but its upstream has no live connection, so
+/// nothing was sent. Reporting this as a missing tool (`not_found` +
+/// `rediscover`) would send agents back to search, which lists the same tool
+/// again.
+fn upstream_not_connected_call_error(id: &str) -> CodeModeCallError {
+    let upstream = id.split_once("::").map_or(id, |(upstream, _)| upstream);
+    CodeModeCallError::new(
+        "not_connected",
+        format!(
+            "Upstream `{upstream}` is not connected, so `{id}` was not called. The tool exists; \
+retry shortly (the upstream may be reconnecting), or ask the operator to check the \
+upstream's health in gateway status if it stays down."
+        ),
+    )
+    .with_tool(id.to_string())
+    .with_side_effects(CodeModeSideEffectRisk::NoneExpected)
+    .with_recovery(labby_codemode::CodeModeRecoveryAdvice {
+        action: labby_codemode::CodeModeRecoveryAction::RetryLater,
+        // Nothing was sent, so the identical call is safe once reconnected.
+        same_arguments: labby_codemode::CodeModeSameArgumentsRetry::Safe,
+        guidance: "Nothing was sent, so no effects need checking. Retry the same call after the \
+upstream reconnects; if it stays down, ask the operator to check gateway status."
+            .to_string(),
+        retry_after_ms: None,
+    })
 }
 
 fn contract_changed_call_error(id: &str) -> CodeModeCallError {
@@ -1618,10 +1798,7 @@ fn map_checked_call_error(error: CheckedToolCallError, id: &str) -> CodeModeCall
     match error {
         CheckedToolCallError::Check(error) => *error,
         CheckedToolCallError::MissingTool => contract_changed_call_error(id),
-        CheckedToolCallError::Unavailable => {
-            CodeModeCallError::new("not_found", format!("upstream tool `{id}` was not found"))
-                .with_tool(id.to_string())
-        }
+        CheckedToolCallError::Unavailable => upstream_not_connected_call_error(id),
         CheckedToolCallError::Connect(message) => CodeModeCallError::new(
             "auth_failed",
             labby_runtime::agent_error::sanitize_error_text(
@@ -1852,7 +2029,8 @@ fn is_in_process_upstream(upstream: &str) -> bool {
 /// an action whose requirements differ from Code Mode's is still evaluated
 /// correctly rather than against a stale yes/no.
 pub(crate) fn propagated_caller_auth(caller: &CodeModeCaller) -> PropagatedCallerAuth {
-    match caller {
+    match caller.without_authority() {
+        CodeModeCaller::WithAuthority { .. } => unreachable!("authority wrapper was removed"),
         CodeModeCaller::TrustedLocal => PropagatedCallerAuth::trusted_local(),
         CodeModeCaller::Scoped { capabilities, sub } => {
             // The kernel deliberately keeps Lab's scope vocabulary out of its
@@ -1940,6 +2118,168 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[test]
+    fn configured_catalog_kind_projection_is_exact() {
+        let all = configured_catalog_kinds(&CodeModeSearchConfig::default());
+        assert_eq!(all.len(), 6);
+        assert!(all.contains(&CodeModeCatalogKind::Tool));
+        assert!(all.contains(&CodeModeCatalogKind::Skill));
+        assert!(all.contains(&CodeModeCatalogKind::Command));
+        assert!(all.contains(&CodeModeCatalogKind::Prompt));
+        assert!(all.contains(&CodeModeCatalogKind::Subagent));
+        assert!(all.contains(&CodeModeCatalogKind::Snippet));
+        assert!(!all.contains(&CodeModeCatalogKind::Resource));
+
+        let skills_only = CodeModeSearchConfig {
+            kinds: std::iter::once(CodeModeSearchKind::Skill).collect(),
+            ..CodeModeSearchConfig::default()
+        };
+        assert_eq!(
+            configured_catalog_kinds(&skills_only),
+            vec![CodeModeCatalogKind::Skill]
+        );
+    }
+
+    struct PersonalOauthRegistry;
+
+    impl crate::registry::InProcessServiceRegistry for PersonalOauthRegistry {
+        fn in_process_services(&self) -> Vec<Box<dyn crate::registry::InProcessService>> {
+            Vec::new()
+        }
+    }
+
+    impl crate::gateway::service_registry::GatewayServiceRegistry for PersonalOauthRegistry {
+        fn service_names(&self) -> Vec<&'static str> {
+            vec!["gateway"]
+        }
+        fn contains_service(&self, name: &str) -> bool {
+            name == "gateway"
+        }
+        fn service_actions(
+            &self,
+            name: &str,
+        ) -> Option<Vec<crate::gateway::service_registry::ServiceActionInfo>> {
+            (name == "gateway").then_some(vec![
+                crate::gateway::service_registry::ServiceActionInfo {
+                    name: "gateway.oauth.authorize",
+                    description: "Authorize personal upstream",
+                    destructive: false,
+                    requires_admin: false,
+                },
+            ])
+        }
+        fn service_meta(&self, _: &str) -> Option<&'static labby_primitives::plugin::PluginMeta> {
+            None
+        }
+    }
+
+    struct PersonalOauthProvider;
+
+    impl crate::gateway::code_mode::oauth::CodeModePersonalOauthProvider for PersonalOauthProvider {
+        fn authorize<'a>(
+            &'a self,
+            _: &'a GatewayManager,
+            token: &'a str,
+            params: Value,
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'a>> {
+            Box::pin(async move {
+                assert_eq!(token, "verified-request-token");
+                assert_eq!(params, serde_json::json!({"upstream": "personal"}));
+                Ok(serde_json::json!({"authorization_url": "https://example.test/authorize"}))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn personal_oauth_atomic_tool_calls_product_authority_provider() {
+        let cfg_dir = tempfile::tempdir().unwrap();
+        let manager = GatewayManager::new(
+            cfg_dir.path().join("config.toml"),
+            GatewayRuntimeHandle::default(),
+        )
+        .with_builtin_service_registry(Arc::new(PersonalOauthRegistry))
+        .with_code_mode_personal_oauth_provider(Arc::new(PersonalOauthProvider));
+        let id = format!(
+            "{}gateway::gateway.gateway.oauth.authorize",
+            labby_runtime::gateway_config::IN_PROCESS_UPSTREAM_PREFIX
+        );
+        let caller = CodeModeCaller::WithAuthority {
+            caller: Box::new(CodeModeCaller::Scoped {
+                capabilities: labby_codemode::CodeModeCallerCapabilities {
+                    can_read: true,
+                    can_execute: true,
+                    ..Default::default()
+                },
+                sub: Some("personal-user".to_owned()),
+            }),
+            authority_token: "verified-request-token".to_owned(),
+        };
+        let result = CodeModeHost::call_tool(
+            &manager,
+            &id,
+            serde_json::json!({"upstream": "personal"}),
+            &caller,
+            CodeModeSurface::Mcp,
+            &ToolScope::default(),
+            ExecCtx::none(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            result.value["data"]["authorization_url"],
+            "https://example.test/authorize"
+        );
+        let error = CodeModeHost::call_tool(
+            &manager,
+            &id,
+            serde_json::json!({"upstream": "personal"}),
+            &caller,
+            CodeModeSurface::Mcp,
+            &ToolScope::default().read_only(),
+            ExecCtx::none(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind, "forbidden");
+    }
+
+    #[tokio::test]
+    async fn personal_oauth_atomic_tool_does_not_use_unauthenticated_in_process_peer() {
+        let cfg_dir = tempfile::tempdir().unwrap();
+        let manager = GatewayManager::new(
+            cfg_dir.path().join("config.toml"),
+            GatewayRuntimeHandle::default(),
+        );
+        let id = format!(
+            "{}gateway::gateway.gateway.oauth.authorize",
+            labby_runtime::gateway_config::IN_PROCESS_UPSTREAM_PREFIX
+        );
+        for caller in [
+            CodeModeCaller::TrustedLocal,
+            CodeModeCaller::Scoped {
+                capabilities: labby_codemode::CodeModeCallerCapabilities {
+                    can_read: true,
+                    can_execute: true,
+                    ..Default::default()
+                },
+                sub: Some("personal-user".to_string()),
+            },
+        ] {
+            let error = CodeModeHost::call_tool(
+                &manager,
+                &id,
+                serde_json::json!({"upstream": "personal"}),
+                &caller,
+                CodeModeSurface::Mcp,
+                &ToolScope::default(),
+                ExecCtx::none(),
+            )
+            .await
+            .expect_err("synthetic gateway peer has no personal authority context");
+            assert_eq!(error.kind, "forbidden");
+        }
+    }
+
+    #[test]
     fn semantic_candidates_are_source_neutral_and_kind_filterable() {
         let tool = CatalogDescriptor::tool("alpha", "query", "Query data", None, None);
         let mut skill =
@@ -2022,6 +2362,71 @@ mod tests {
                 })
             })
         }
+    }
+
+    struct StallingSkillProvider;
+
+    impl crate::gateway::code_mode::skills::CodeModeSkillProvider for StallingSkillProvider {
+        fn list<'a>(
+            &'a self,
+            _caller: &'a CodeModeCaller,
+            _scope: &'a ToolScope,
+        ) -> std::pin::Pin<
+            Box<
+                dyn Future<
+                        Output = Result<
+                            Vec<crate::gateway::code_mode::skills::CodeModeSkillSummary>,
+                            ToolError,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(std::future::pending())
+        }
+
+        fn get<'a>(
+            &'a self,
+            _uri: &'a str,
+            _caller: &'a CodeModeCaller,
+            _scope: &'a ToolScope,
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'a>> {
+            Box::pin(std::future::pending())
+        }
+
+        fn read<'a>(
+            &'a self,
+            _uri: &'a str,
+            _caller: &'a CodeModeCaller,
+            _scope: &'a ToolScope,
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'a>> {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    #[tokio::test]
+    async fn slow_skill_metadata_projection_fails_open_before_code_mode_deadline() {
+        let cfg_dir = tempfile::tempdir().unwrap();
+        let manager = GatewayManager::new(
+            cfg_dir.path().join("config.toml"),
+            GatewayRuntimeHandle::default(),
+        )
+        .with_code_mode_skill_provider(Arc::new(StallingSkillProvider));
+
+        let started = std::time::Instant::now();
+        let entries = tokio::time::timeout(
+            Duration::from_secs(1),
+            manager.code_mode_metadata_entries(
+                &CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Mcp,
+                &ToolScope::new(Vec::new(), Vec::new()),
+            ),
+        )
+        .await
+        .expect("Skill metadata timeout must not consume the Code Mode request deadline");
+
+        assert!(entries.is_empty());
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[tokio::test]
@@ -2122,7 +2527,7 @@ mod tests {
         );
         drop(guard);
 
-        let request = tokio::time::timeout(std::time::Duration::from_secs(2), server)
+        let request = tokio::time::timeout(Duration::from_secs(2), server)
             .await
             .expect("cancel request was sent")
             .unwrap();

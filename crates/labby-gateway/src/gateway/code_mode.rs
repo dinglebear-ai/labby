@@ -11,6 +11,7 @@
 pub(crate) mod catalog_cache;
 pub(crate) mod code_mode_host;
 pub(crate) mod embeddings;
+pub mod oauth;
 #[cfg(test)]
 mod reconstruction_tests;
 mod resources;
@@ -34,7 +35,7 @@ pub use labby_codemode::{CodeModeExecutedCall, CodeModeExecutionResponse};
 pub(crate) use labby_codemode::split_namespaced_id;
 
 pub use code_mode_host::JournalOwner;
-pub use skills::{CodeModeSkillProvider, CodeModeSkillSummary};
+pub use skills::{CodeModeArtifactSearchProvider, CodeModeSkillProvider, CodeModeSkillSummary};
 
 // ── Host-side render caches (gateway-owned, keyed on the live tool set) ──────
 
@@ -61,11 +62,11 @@ pub use skills::{CodeModeSkillProvider, CodeModeSkillSummary};
 /// `__lab_internal::*` reserved-namespace `tool_call` mechanism `semantic_rank`
 /// already used instead of the rejected `local_provider.rs` pattern, which
 /// avoids both structural objections above by construction. `entries`/
-/// `catalog_json` being `Arc`-wrapped (not `Vec`/`String`) is a direct
-/// consequence: `describe()` now calls `list_tools()` per invocation instead of
-/// once per execution, and cloning the whole catalog per call would otherwise
-/// make `describe()`-heavy scripts slower than before that change at large
-/// catalog sizes.
+/// `catalog_json` being `Arc`-wrapped (not `Vec`/`String`) lets the broker
+/// retain the exact render used for one execution's discovery proxy cheaply.
+/// `describe_types` now reads from that run-scoped snapshot instead of calling
+/// `list_tools()` again per `describe()`, so large-catalog scripts avoid both
+/// re-enumeration and full-catalog cloning.
 ///
 /// This cache is a single slot (`Mutex<Option<CatalogRenderCache>>` on
 /// `GatewayManager`) with NO caller/scope component in its fingerprint —
@@ -150,5 +151,5 @@ pub(crate) struct CatalogEmbeddingCache {
     pub fingerprint: String,
     /// `(entry.id, embedding_vector)` pairs. Callers should look up by id,
     /// not by index.
-    pub vectors: Vec<(String, Vec<f32>)>,
+    pub vectors: std::sync::Arc<Vec<(String, Vec<f32>)>>,
 }

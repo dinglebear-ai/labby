@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { authorityResultIsCurrent, deleteRequest, withAuthorityConnection } from './artifact-control-plane.tsx'
+import { authorityResultIsCurrent, deleteRequest, discoveryRequest, withAuthorityConnection } from './artifact-control-plane.tsx'
 
 test('every destructive control-plane target maps to its canonical action params', () => {
   assert.deepEqual(deleteRequest({ kind: 'source', id: 'source-1' }), {
@@ -29,4 +29,12 @@ test('a delayed authority response is rejected after authority or request genera
   assert.equal(authorityResultIsCurrent('depot-east', 'depot-east', 4, 4), true)
   assert.equal(authorityResultIsCurrent('depot-east', 'depot-west', 4, 4), false)
   assert.equal(authorityResultIsCurrent('depot-east', 'depot-east', 4, 5), false)
+})
+
+test('candidate discovery respects the Depot operation page limit', () => {
+  assert.deepEqual(discoveryRequest('candidates', '', ''), {
+    action: 'artifacts.list_candidates',
+    params: { limit: 10 },
+    key: 'candidates',
+  })
 })

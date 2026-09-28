@@ -33,9 +33,9 @@ use crate::gateway::service_registry::{
 };
 use crate::gateway::types::CatalogChangeNotifier;
 use crate::upstream::pool::{
-    ExactPromptCallError, ExactResourceReadError, ExactToolCallError, HeaderRecoveryMetricsStore,
-    InProcessConnector, PromptCatalogGeneration, ResourceCatalogGeneration, ToolCatalogGeneration,
-    UpstreamPool,
+    CapabilityCallError, ExactPromptCallError, ExactResourceReadError, ExactToolCallError,
+    HeaderRecoveryMetricsStore, InProcessConnector, PromptCatalogGeneration,
+    ResourceCatalogGeneration, ToolCatalogGeneration, UpstreamPool,
 };
 
 use super::{GatewayManager, GatewayRuntimeHandle, PoolPublicationGeneration};
@@ -254,10 +254,13 @@ impl GatewayManager {
             execution_capability_publication: Arc::new(std::sync::RwLock::new(())),
             execution_capability_provider: None,
             code_mode_skill_provider: None,
+            code_mode_artifact_search_provider: None,
+            code_mode_personal_oauth_provider: None,
             agent_executions: Arc::new(agent_executions),
             agent_execution_cancellations: Arc::new(dashmap::DashMap::new()),
             code_mode_app_state: CodeModeAppState::default(),
             lazy_pool_init: Arc::new(Mutex::new(())),
+            code_mode_example_memo: Default::default(),
             notifier: None,
             oauth_client_cache: None,
             upstream_oauth_managers: None,
@@ -279,8 +282,11 @@ impl GatewayManager {
             code_mode_history: Arc::new(Mutex::new(CodeModeHistory::default())),
             code_mode_source_store: Arc::new(Mutex::new(CodeModeSourceStore::default())),
             in_process_connector: None,
-            code_mode_refresh_deadline: Arc::new(Mutex::new(None)),
-            code_mode_refresh_inflight: Arc::new(Mutex::new(())),
+            code_mode_refresh_flights: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            code_mode_cache_sync_after: Arc::new(Mutex::new(None)),
+            code_mode_warm_up_active: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            #[cfg(test)]
+            code_mode_warm_up_task_spawns: Arc::new(AtomicU64::new(0)),
             code_mode_catalog_render_cache: Arc::new(Mutex::new(None)),
             code_mode_catalog_render_flights: Arc::new(
                 Mutex::new(std::collections::HashMap::new()),
@@ -290,6 +296,7 @@ impl GatewayManager {
             #[cfg(test)]
             _test_scratch_dir: None,
             code_mode_embedding_cache: Arc::new(RwLock::new(None)),
+            code_mode_embedding_flights: Arc::new(Mutex::new(std::collections::HashMap::new())),
             semantic_search_last_failure: Arc::new(RwLock::new(None)),
             code_mode_snippet_metadata_cache: Arc::new(Mutex::new(None)),
             code_mode_runner_pool: Arc::new(crate::gateway::code_mode::RunnerPool::from_env()?),
@@ -345,6 +352,30 @@ impl GatewayManager {
     ) -> Self {
         self.code_mode_skill_provider = Some(provider);
         self
+    }
+
+    /// Attach the product-host provider for query-driven artifact discovery.
+    #[must_use]
+    pub fn with_code_mode_artifact_search_provider(
+        mut self,
+        provider: Arc<dyn crate::gateway::code_mode::skills::CodeModeArtifactSearchProvider>,
+    ) -> Self {
+        self.code_mode_artifact_search_provider = Some(provider);
+        self
+    }
+
+    /// Attach the product authority adapter for personal OAuth Code Mode calls.
+    #[must_use]
+    pub fn with_code_mode_personal_oauth_provider(
+        mut self,
+        provider: Arc<dyn crate::gateway::code_mode::oauth::CodeModePersonalOauthProvider>,
+    ) -> Self {
+        self.code_mode_personal_oauth_provider = Some(provider);
+        self
+    }
+
+    pub(crate) fn has_code_mode_personal_oauth_provider(&self) -> bool {
+        self.code_mode_personal_oauth_provider.is_some()
     }
 
     /// Override the subprocess used for Code Mode runner execution.
@@ -709,6 +740,42 @@ impl GatewayManager {
             ExactResourceReadError::Timeout => PublishedResourceReadError::Timeout,
             ExactResourceReadError::Cancelled => PublishedResourceReadError::Cancelled,
             ExactResourceReadError::TooLarge => PublishedResourceReadError::TooLarge,
+        })
+    }
+
+    /// Read a native MCP App ui:// resource from the currently published pool.
+    ///
+    /// The upstream pool performs ownership reverse lookup from cached resource
+    /// URIs and tool metadata. This wrapper keeps the read pinned to one pool
+    /// publication so a concurrent gateway reload cannot return stale app HTML.
+    pub async fn read_published_ui_resource(
+        &self,
+        uri: &str,
+    ) -> Result<ReadResourceResult, PublishedResourceReadError> {
+        let first = self.runtime.published_pool_snapshot();
+        let pool_generation = first.generation();
+        let Some(pool) = first.into_pool() else {
+            return Err(PublishedResourceReadError::Unavailable);
+        };
+        let result = pool
+            .read_upstream_ui_resource_allowed_typed(uri, None)
+            .await
+            .ok_or(PublishedResourceReadError::Unavailable)?;
+        if self.runtime.published_pool_snapshot().generation() != pool_generation {
+            return Err(PublishedResourceReadError::Unavailable);
+        }
+        result.map_err(|error| match error {
+            CapabilityCallError::Timeout { .. } => PublishedResourceReadError::Timeout,
+            CapabilityCallError::QueueSaturated { .. } => {
+                PublishedResourceReadError::QueueUnavailable
+            }
+            CapabilityCallError::ResponseTooLarge { .. } => PublishedResourceReadError::TooLarge,
+            CapabilityCallError::Cancelled { .. } => PublishedResourceReadError::Cancelled,
+            CapabilityCallError::Mcp { .. }
+            | CapabilityCallError::Transport { .. }
+            | CapabilityCallError::Protocol { .. }
+            | CapabilityCallError::InputRequiredRoundsExceeded { .. }
+            | CapabilityCallError::Other { .. } => PublishedResourceReadError::Upstream,
         })
     }
 

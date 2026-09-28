@@ -7,6 +7,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "Catalog",
+        output_schema: None,
         params: &[],
     },
     ActionSpec {
@@ -15,6 +16,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "Schema",
+        output_schema: None,
         params: &[ParamSpec {
             name: "action",
             ty: "string",
@@ -23,11 +25,21 @@ pub const ACTIONS: &[ActionSpec] = &[
         }],
     },
     ActionSpec {
+        name: "capabilities.status",
+        description: "Report configuration and runtime degradations that disable or limit Labby capabilities",
+        destructive: false,
+        requires_admin: false,
+        returns: "DoctorReport",
+        output_schema: Some(labby_primitives::action::schema_for::<super::types::Report>),
+        params: &[],
+    },
+    ActionSpec {
         name: "system.checks",
         description: "Run local system probes: env vars, disk, ports, config files",
         destructive: false,
         requires_admin: false,
         returns: "DoctorReport",
+        output_schema: Some(labby_primitives::action::schema_for::<super::types::Report>),
         params: &[],
     },
     ActionSpec {
@@ -36,6 +48,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "stream<Finding>",
+        output_schema: Some(labby_primitives::action::schema_for::<super::types::Report>),
         params: &[],
     },
     ActionSpec {
@@ -44,6 +57,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "DoctorReport",
+        output_schema: Some(labby_primitives::action::schema_for::<super::types::Report>),
         params: &[ParamSpec {
             name: "live",
             ty: "boolean",
@@ -57,6 +71,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "DoctorReport",
+        output_schema: Some(labby_primitives::action::schema_for::<super::types::Report>),
         params: &[],
     },
     ActionSpec {
@@ -65,6 +80,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "DoctorReport",
+        output_schema: Some(labby_primitives::action::schema_for::<super::types::Report>),
         params: &[],
     },
     ActionSpec {
@@ -76,6 +92,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: false,
         returns: "DoctorReport",
+        output_schema: Some(labby_primitives::action::schema_for::<super::types::Report>),
         params: &[
             ParamSpec {
                 name: "app_url",
@@ -112,6 +129,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         // here -- see `api/router.rs::doctor_admin_actions_are_enforced_by_api_dispatch_gate`.
         requires_admin: true,
         returns: "DoctorReport",
+        output_schema: Some(labby_primitives::action::schema_for::<super::types::Report>),
         params: &[ParamSpec {
             name: "probe_targets",
             ty: "boolean",

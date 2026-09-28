@@ -62,6 +62,7 @@ async fn subject_listing(tools: Vec<rmcp::model::Tool>) -> Vec<rmcp::model::Tool
             registration: labby_runtime::gateway_config::UpstreamOauthRegistration::Dynamic,
             scopes: None,
             credential: Default::default(),
+            additional_endpoint_origins: vec![],
             prefer_client_metadata_document: None,
         }),
         ..named_test_upstream_config(upstream)

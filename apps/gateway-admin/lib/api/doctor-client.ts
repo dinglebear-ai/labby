@@ -41,6 +41,7 @@ export type Severity = 'ok' | 'warn' | 'fail' | 'error' | 'unknown'
 export interface DoctorFinding {
   service?: string
   category?: string
+  check?: string
   severity: Severity
   message: string
   hint?: string
@@ -82,6 +83,23 @@ const MOCK_DOCTOR_REPORT: DoctorReport = {
 }
 
 export const doctorApi = {
+  capabilityStatus(signal?: AbortSignal): Promise<DoctorReport> {
+    if (USE_MOCK_DATA) {
+      signal?.throwIfAborted?.()
+      return Promise.resolve({
+        findings: [
+          {
+            service: 'lab',
+            check: 'config:startup-validation',
+            severity: 'ok',
+            message: 'Mock config passes startup validation.',
+          },
+        ],
+      })
+    }
+    return doctorAction<DoctorReport>('capabilities.status', {}, signal)
+  },
+
   systemChecks(signal?: AbortSignal): Promise<DoctorReport> {
     if (USE_MOCK_DATA) {
       signal?.throwIfAborted?.()

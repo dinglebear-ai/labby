@@ -243,6 +243,7 @@ mod tests {
             requires_admin: false,
             params: STATUS_PARAMS,
             returns: "StatusResult[]",
+            output_schema: None,
         },
         ActionSpec {
             name: "status.reset",
@@ -251,6 +252,7 @@ mod tests {
             requires_admin: false,
             params: &[],
             returns: "object",
+            output_schema: None,
         },
     ];
 

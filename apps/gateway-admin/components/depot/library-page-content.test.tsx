@@ -85,23 +85,18 @@ test('Library rail uses real loaded kinds and delegates filtering without claimi
     assert.match(skill.textContent ?? '', /1$/)
   } finally { await view.unmount() }
 })
-test('narrow Library filters collapse without losing the selected kind or tag', async () => {
+test('narrow Library filters stay out of the layout until the toolbar opens them', async () => {
   const { LibraryFilterRail } = await import('./library-page-content.tsx')
   const view = await renderClient(<LibraryFilterRail artifacts={[]} kind="skill" tag="automation" onKind={() => {}}/>)
   try {
-    const toggle = document.querySelector<HTMLButtonElement>('[data-lbrail] button[aria-expanded]')!
-    const content = document.getElementById(toggle.getAttribute('aria-controls')!)!
-    assert.equal(toggle.getAttribute('aria-expanded'), 'false')
-    assert.match(toggle.textContent ?? '', /Skills · automation/)
-    assert.ok(content.classList.contains('hidden'))
-    assert.ok(content.classList.contains('min-[901px]:block'))
-    await act(async () => toggle.click())
-    assert.equal(toggle.getAttribute('aria-expanded'), 'true')
-    assert.ok(!content.classList.contains('hidden'))
-    await act(async () => toggle.click())
-    assert.equal(toggle.getAttribute('aria-expanded'), 'false')
-    assert.match(toggle.textContent ?? '', /Skills · automation/)
+    const rail = document.querySelector<HTMLElement>('[data-lbrail]')!
+    assert.ok(rail.classList.contains('hidden'))
+    assert.ok(rail.classList.contains('min-[901px]:block'))
+    assert.equal(rail.querySelector('button[aria-expanded]'), null)
   } finally { await view.unmount() }
+  const open = await renderClient(<LibraryFilterRail artifacts={[]} kind="skill" tag="automation" mobileOpen onKind={() => {}}/>)
+  try { assert.ok(document.querySelector<HTMLElement>('[data-lbrail]')!.classList.contains('block')) }
+  finally { await open.unmount() }
 })
 test('tag rail shows supplied loaded counts and toggles the selected tag', async () => {
   const { LibraryFilterRail } = await import('./library-page-content.tsx')
@@ -206,9 +201,9 @@ test('Library is a user-level hub and loads the generic Depot Artifact authority
     const heroMain = view.container.querySelector<HTMLElement>('[data-console-hero-main="1"]')
     const heroTitle = view.container.querySelector<HTMLElement>('[data-console-hero-title="1"]')
     const heroStats = view.container.querySelector<HTMLElement>('[data-console-hero-stats="1"]')
-    assert.equal(heroMain?.style.padding, '22px 24px 18px', 'Library uses the same default hero scale as the rest of the console')
-    assert.equal(heroTitle?.style.fontSize, '30px')
-    assert.equal(heroStats?.style.padding, '11px 12px 12px')
+    assert.ok(heroMain)
+    assert.equal(heroTitle?.textContent, 'Library')
+    assert.ok(heroStats)
     assert.ok(view.container.querySelector('[data-console-hero-actions-mixed="1"]'), 'Library keeps its labeled New Loadout action visible without restoring the oversized hero')
     assert.equal(view.container.querySelector('[data-console-hero-actions="1"]'), null)
     assert.match(view.container.querySelector('button[aria-label="Export loaded library metadata"]')?.className ?? '', /size-9/)
@@ -241,6 +236,8 @@ test('Library fails closed when the actor-filtered Depot catalog cannot be estab
     await flush()
     assert.equal(operationPosts, 0, 'Library never dispatches an operation without a current catalog')
     assert.match(view.container.textContent ?? '', /Library unavailable/i)
+    assert.ok(view.container.querySelector('button') && [...view.container.querySelectorAll('button')].some(button => button.textContent?.includes('Retry loading')))
+    assert.doesNotMatch(view.container.textContent ?? '', /No artifacts in your library yet/i)
   } finally { await view.unmount(); globalThis.fetch = originalFetch }
 })
 

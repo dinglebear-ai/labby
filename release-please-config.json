@@ -76,6 +76,10 @@
         {
           "type": "generic",
           "path": "apps/labby-desktop/src-tauri/Cargo.toml"
+        },
+        {
+          "type": "generic",
+          "path": "apm.yml"
         }
       ]
     }

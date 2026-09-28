@@ -10,7 +10,7 @@ mod reporting;
 pub mod stateright;
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     ffi::{OsStr, OsString},
     fs::{self, File},
     io::{Read, Write},
@@ -19,7 +19,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use labby_model::{BrowserRequestModel, CATALOG_TOML, MODEL};
+use labby_model::{
+    BrowserRequestModel, CAPABILITY_VISIBILITY_MODEL, CATALOG_TOML, CapabilityVisibilityModel,
+    MODEL, MODELS,
+};
 use serde::{Deserialize, Serialize};
 use verify_core::{BackendRegistry, Catalog, InvariantStatus};
 use verify_runner::{NormalizationOptions, ReplayLimits, ReplayReport, TargetRegistry};
@@ -94,7 +97,14 @@ fn embedded_registry() -> Result<TargetRegistry<'static>, String> {
     let mut registry = TargetRegistry::default();
     registry
         .register(&catalog, MODEL, BrowserRequestModel)
-        .map_err(|error| format!("cannot register Labby model: {error}"))?;
+        .map_err(|error| format!("cannot register browser request model: {error}"))?;
+    registry
+        .register(
+            &catalog,
+            CAPABILITY_VISIBILITY_MODEL,
+            CapabilityVisibilityModel,
+        )
+        .map_err(|error| format!("cannot register capability visibility model: {error}"))?;
     Ok(registry)
 }
 
@@ -131,7 +141,7 @@ fn replay(
 #[serde(deny_unknown_fields)]
 struct CatalogIdentity {
     project: String,
-    model: String,
+    models: Vec<String>,
     fingerprint: String,
 }
 
@@ -281,38 +291,48 @@ fn build_t0_report(root: &Path, started: Instant) -> Result<(T0Report, bool), St
     {
         return Err("runtime catalog differs from the catalog embedded in this binary".into());
     }
-    if catalog
-        .catalog()
-        .invariant
-        .iter()
-        .all(|item| item.model != MODEL)
-    {
-        return Err(format!("catalog does not contain model {MODEL}"));
+    for model in MODELS {
+        if catalog
+            .catalog()
+            .invariant
+            .iter()
+            .all(|item| item.model != *model)
+        {
+            return Err(format!("catalog does not contain model {model}"));
+        }
     }
     let mut registry = TargetRegistry::default();
     registry
         .register(&catalog, MODEL, BrowserRequestModel)
-        .map_err(|error| format!("cannot register Labby model: {error}"))?;
+        .map_err(|error| format!("cannot register browser request model: {error}"))?;
+    registry
+        .register(
+            &catalog,
+            CAPABILITY_VISIBILITY_MODEL,
+            CapabilityVisibilityModel,
+        )
+        .map_err(|error| format!("cannot register capability visibility model: {error}"))?;
 
     let scenarios = root.join("scenarios");
     require_directory(&scenarios)?;
-    let scenario_root = scenarios.join(MODEL);
-    let paths = scenario_paths(&scenario_root)?;
+    validate_scenario_model_directories(&scenarios)?;
+    let mut paths = Vec::new();
+    for model in MODELS {
+        paths.extend(scenario_paths(&scenarios.join(model))?);
+    }
+    paths.sort();
     if paths.is_empty() {
-        return Err(format!(
-            "scenario corpus is empty: {}",
-            scenario_root.display()
-        ));
+        return Err(format!("scenario corpus is empty: {}", scenarios.display()));
     }
 
     let mut coverage = BTreeMap::<String, usize>::new();
     let mut reports = Vec::with_capacity(paths.len());
     let mut gate_failure = false;
-    let catalog_ids: BTreeSet<_> = catalog
+    let catalog_models: BTreeMap<_, _> = catalog
         .catalog()
         .invariant
         .iter()
-        .map(|item| item.id.as_str())
+        .map(|item| (item.id.as_str(), item.model.as_str()))
         .collect();
     for path in paths {
         if started.elapsed() >= TOTAL_DEADLINE {
@@ -323,11 +343,11 @@ fn build_t0_report(root: &Path, started: Instant) -> Result<(T0Report, bool), St
             .map_err(|error| format!("invalid scenario {}: {error}", path.display()))?;
         let raw = scenario.scenario();
         if raw.project != catalog.catalog().project
-            || raw.model != MODEL
-            || !catalog_ids.contains(raw.invariant.as_str())
+            || !MODELS.contains(&raw.model.as_str())
+            || catalog_models.get(raw.invariant.as_str()).copied() != Some(raw.model.as_str())
         {
             return Err(format!(
-                "scenario {} has an unknown project, model, or invariant",
+                "scenario {} has an unknown or mismatched project, model, or invariant",
                 path.display()
             ));
         }
@@ -404,11 +424,11 @@ fn build_t0_report(root: &Path, started: Instant) -> Result<(T0Report, bool), St
     let catalog_fingerprint = format!("b3:{}", blake3::hash(catalog_text.as_bytes()).to_hex());
     Ok((
         T0Report {
-            schema: 1,
+            schema: 2,
             lane: "model_replay".into(),
             catalog: CatalogIdentity {
                 project: catalog.catalog().project.clone(),
-                model: MODEL.into(),
+                models: MODELS.iter().map(|model| (*model).to_owned()).collect(),
                 fingerprint: catalog_fingerprint,
             },
             reports,
@@ -419,6 +439,37 @@ fn build_t0_report(root: &Path, started: Instant) -> Result<(T0Report, bool), St
         },
         gate_failure,
     ))
+}
+
+fn validate_scenario_model_directories(root: &Path) -> Result<(), String> {
+    for entry in
+        fs::read_dir(root).map_err(|error| format!("cannot list {}: {error}", root.display()))?
+    {
+        let entry =
+            entry.map_err(|error| format!("cannot read {} entry: {error}", root.display()))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("cannot inspect {}: {error}", entry.path().display()))?;
+        if !file_type.is_dir() {
+            return Err(format!(
+                "scenario root may contain only model directories: {}",
+                entry.path().display()
+            ));
+        }
+        let Some(model) = entry.file_name().to_str().map(str::to_owned) else {
+            return Err(format!(
+                "scenario model directory is not valid UTF-8: {}",
+                entry.path().display()
+            ));
+        };
+        if !MODELS.contains(&model.as_str()) {
+            return Err(format!(
+                "unknown scenario model directory `{model}` under {}",
+                root.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn scenario_paths(root: &Path) -> Result<Vec<PathBuf>, String> {

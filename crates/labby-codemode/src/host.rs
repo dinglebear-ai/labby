@@ -27,11 +27,11 @@ use labby_runtime::CodeModeConfig;
 /// their tool set; the kernel does not require caching and treats this purely
 /// as a projection.
 ///
-/// `entries`/`catalog_json` are `Arc`-wrapped so a cache hit is a refcount
-/// bump, not a deep clone — `codemode.describe()` calls `list_tools()` again
-/// per invocation (see `execute.rs`'s `describe_types` dispatch), so a host
-/// whose cache stores owned `Vec`/`String` would re-pay a full catalog clone
-/// on every `describe()` call within one execution, not just once at start.
+/// `entries`/`catalog_json` are `Arc`-wrapped so the execution can retain the
+/// exact discovery render cheaply. `codemode.describe()` resolves `.dts` from
+/// that run-scoped snapshot rather than re-listing the live catalog, so a host
+/// cache hit and the broker's retained snapshot are both refcount bumps instead
+/// of full catalog clones.
 #[derive(Debug, Clone)]
 pub struct ToolsRender {
     /// Fingerprint of the live tool set this render was built from (sorted
@@ -53,13 +53,51 @@ pub struct ToolsRender {
     pub catalog_json: Arc<str>,
     /// Serialized catalog size in bytes (for tracing).
     pub serialized_size: usize,
+    /// Upstreams whose tools matched this execution's namespace/tool scope
+    /// but were withheld by its access mode. Discovery reports these so an
+    /// agent learns why a namespace is missing instead of seeing a silently
+    /// empty result. Never part of the cached catalog: it depends on the
+    /// per-execution scope.
+    pub withheld: Arc<[WithheldTools]>,
+}
+
+/// Tools from one upstream withheld from a read-only Code Mode catalog
+/// because the upstream does not annotate them `readOnlyHint: true`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct WithheldTools {
+    namespace: String,
+    tool_count: usize,
+}
+
+impl WithheldTools {
+    /// Summary for one upstream; `None` when nothing was withheld, so every
+    /// value reports at least one tool.
+    #[must_use]
+    pub fn new(namespace: impl Into<String>, tool_count: usize) -> Option<Self> {
+        (tool_count > 0).then(|| Self {
+            namespace: namespace.into(),
+            tool_count,
+        })
+    }
+
+    /// Configured upstream name (the `callTool` namespace).
+    #[must_use]
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+
+    /// Number of tools withheld from this upstream (at least one).
+    #[must_use]
+    pub fn tool_count(&self) -> usize {
+        self.tool_count
+    }
 }
 
 impl ToolsRender {
     /// An empty render — the shared shape every "no catalog available"
     /// fallback (a host with nothing configured, a fail-open degrade on a
     /// host error) should construct, rather than each call site duplicating
-    /// the same four-field literal and risking drift between them.
+    /// the same field literal and risking drift between them.
     #[must_use]
     pub fn empty() -> Self {
         Self {
@@ -68,6 +106,7 @@ impl ToolsRender {
             entries: Arc::from([]),
             catalog_json: Arc::from("[]"),
             serialized_size: 2,
+            withheld: Arc::from([]),
         }
     }
 }
@@ -383,6 +422,21 @@ pub trait CodeModeHost: Send + Sync {
         scope: &ToolScope,
     ) -> impl Future<Output = Result<Vec<(String, f32)>, ToolError>> + Send;
 
+    /// Query host-backed artifact providers without materializing their full
+    /// catalogs in the execution preamble. The host must enforce caller
+    /// authorization and return no more than `limit` descriptors.
+    fn search_artifacts(
+        &self,
+        _query: String,
+        _limit: usize,
+        _kinds: &[crate::CodeModeCatalogKind],
+        _caller: &CodeModeCaller,
+        _surface: CodeModeSurface,
+        _scope: &ToolScope,
+    ) -> impl Future<Output = Result<Vec<CatalogDescriptor>, ToolError>> + Send {
+        std::future::ready(Ok(Vec::new()))
+    }
+
     /// Code Mode configuration (timeouts, log/response caps).
     fn config(&self) -> impl Future<Output = CodeModeConfig> + Send;
 
@@ -445,6 +499,7 @@ impl CodeModeHost for NoopHost {
             entries: Arc::from([]),
             catalog_json: Arc::from("[]"),
             serialized_size: 2,
+            withheld: Arc::from([]),
         })
     }
 

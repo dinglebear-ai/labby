@@ -38,6 +38,25 @@
     "metadata_source": "registry synthetic metadata"
   },
   {
+    "name": "artifact_publish",
+    "display_name": "artifact_publish",
+    "description": "Publish skill archives through a protected Team Artifact authority",
+    "category": "artifacts",
+    "status": "available",
+    "feature": null,
+    "exposure": "always_on",
+    "surfaces": {
+      "cli": false,
+      "mcp": true,
+      "api": false,
+      "web_ui": false
+    },
+    "default_port": null,
+    "docs_url": null,
+    "supports_multi_instance": false,
+    "metadata_source": "registry synthetic metadata"
+  },
+  {
     "name": "artifacts",
     "display_name": "artifacts",
     "description": "Search, import, revise, validate, and activate durable Artifacts",
@@ -88,25 +107,6 @@
       "mcp": true,
       "api": true,
       "web_ui": true
-    },
-    "default_port": null,
-    "docs_url": null,
-    "supports_multi_instance": false,
-    "metadata_source": "registry synthetic metadata"
-  },
-  {
-    "name": "depot_publish",
-    "display_name": "depot_publish",
-    "description": "Publish skill archives to a protected Team Depot",
-    "category": "artifacts",
-    "status": "available",
-    "feature": null,
-    "exposure": "always_on",
-    "surfaces": {
-      "cli": false,
-      "mcp": true,
-      "api": false,
-      "web_ui": false
     },
     "default_port": null,
     "docs_url": null,

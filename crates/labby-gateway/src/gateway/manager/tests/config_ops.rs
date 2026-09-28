@@ -720,6 +720,48 @@ async fn add_update_and_remove_reconcile_against_the_previous_live_config() {
     );
     assert_eq!(after_update.upstream_count().await, 0);
 
+    // Repeating the already-applied state must not rewrite config, replace the
+    // running pool, or create another transaction backup. This is a real manager.
+    let config_path = dir.path().join("config.toml");
+    let before = std::fs::read(&config_path).unwrap();
+    let modified = std::fs::metadata(&config_path).unwrap().modified().unwrap();
+    let file_names = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect::<BTreeSet<_>>();
+    let repeated = manager
+        .update(
+            "alpha",
+            crate::gateway::params::GatewayUpdatePatch {
+                enabled: Some(false),
+                ..Default::default()
+            },
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(!repeated.config.enabled);
+    assert_eq!(std::fs::read(&config_path).unwrap(), before);
+    assert_eq!(
+        std::fs::metadata(&config_path).unwrap().modified().unwrap(),
+        modified,
+        "idempotent update rewrote the configuration"
+    );
+    assert_eq!(
+        std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<BTreeSet<_>>(),
+        file_names
+    );
+    assert!(Arc::ptr_eq(
+        &after_update,
+        &runtime.current_pool().await.unwrap()
+    ));
+    assert_eq!(after_update.upstream_count().await, 0);
+
     manager
         .update(
             "alpha",
@@ -909,6 +951,11 @@ async fn mcp_app_visibility_setting_persists_notifies_and_skips_pool_rebuild() {
     initial.mcp_apps.server_logs = true;
     initial.mcp_apps.add_server = true;
     initial.mcp_apps.settings = true;
+    std::fs::write(
+        &path,
+        toml::to_string(&initial).expect("serialize initial config"),
+    )
+    .expect("persist explicit enabled app visibility");
     manager.seed_config_unchecked_for_tests(initial).await;
     assert!(runtime.current_pool().await.is_none());
 

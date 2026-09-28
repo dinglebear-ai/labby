@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from contextlib import closing
+import hashlib
 import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import os
@@ -16,8 +18,9 @@ import tempfile
 import threading
 import time
 import unittest
-import zipfile
 import yaml
+
+from scripts.ci.mcp_registry_canonical import manifest_sha256
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -115,11 +118,34 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("scripts/ci/qualify-n-minus-one.sh", workflow)
         release = yaml.load(workflow, Loader=yaml.BaseLoader)
         matrix = release["jobs"]["upgrade-qualification"]["strategy"]["matrix"]["include"]
-        self.assertEqual(["unix", "windows", "macos", "incus", "host-service"], [row["deployment"] for row in matrix])
-        # Only host-service is advisory, until its v1.16 log-directory bug is fixed.
-        self.assertEqual("${{ matrix.advisory == 'true' }}", release["jobs"]["upgrade-qualification"]["continue-on-error"])
-        self.assertEqual({"host-service": "true"}, {row["deployment"]: row["advisory"] for row in matrix if "advisory" in row})
+        self.assertEqual(["unix", "macos", "incus", "host-service"], [row["deployment"] for row in matrix])
+        self.assertNotIn("continue-on-error", release["jobs"]["upgrade-qualification"])
+        self.assertFalse(any("advisory" in row for row in matrix))
+        self.assertIn('chmod -R go-w "$LABBY_HOME"', self.text("scripts/ci/n-minus-one/host-service"))
         self.assertNotIn("deployment: compose", workflow)
+
+    def test_release_blockers_run_before_tag_creation(self) -> None:
+        ci = yaml.load(self.text(".github/workflows/ci.yml"), Loader=yaml.BaseLoader)
+        jobs = ci["jobs"]
+        self.assertNotIn("continue-on-error", jobs["feature-slices"])
+        self.assertIn("feature-slices", jobs["ci-gate"]["needs"])
+        self.assertNotIn("continue-on-error", jobs["test"])
+        self.assertIn("test", jobs["ci-gate"]["needs"])
+        release_contract = jobs["release-contract"]
+        self.assertIn("needs.changes.outputs.workflow", release_contract["if"])
+        self.assertIn("scripts.ci.test_release_hardening", str(release_contract["steps"]))
+
+    def test_release_preflight_checks_baselines_and_credentials_before_builds(self) -> None:
+        release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
+        preflight = str(release["jobs"]["preflight"]["steps"])
+        self.assertIn("NPM_TOKEN_PRESENT", preflight)
+        self.assertIn("MCP_PRIVATE_KEY_PRESENT", preflight)
+        self.assertIn("npm whoami", preflight)
+        self.assertIn("resolve-n-minus-one-baseline.py", preflight)
+        self.assertIn("preflight", release["jobs"]["frontend-assets"]["needs"])
+        self.assertEqual("preflight", release["jobs"]["desktop-candidate"]["needs"])
+        for job in ("npm-candidate", "release"):
+            self.assertIn("desktop-candidate", release["jobs"][job]["needs"])
 
     def test_n_minus_one_baseline_is_resolved_from_published_releases(self) -> None:
         release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
@@ -205,7 +231,10 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         # The unit runs as User=labby, and no release creates that user.
         self.assertIn("sudo useradd --system", host_install)
         # v1.13.3's `setup host-service status` rejects -y.
-        self.assertIn("sudo /usr/local/bin/labby setup host-service status;", host_service)
+        self.assertIn("local prefix=(host service)", host_service)
+        self.assertIn("prefix=(setup host-service)", host_service)
+        self.assertIn('sudo /usr/local/bin/labby "${prefix[@]}" status', host_service)
+        self.assertIn('"$candidate" host service install --install-self -y', host_service)
         # v1.13.3's unit refuses to start unless every ReadWritePaths entry exists.
         self.assertIn("/home/labby/{.labby,.local,.cache,.config,.npm,.codex,.claude,.gemini,downloads}", host_install)
         incus = self.text("scripts/ci/n-minus-one/incus")
@@ -226,8 +255,8 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         # v1.13.3 reads .env and auth.db from $HOME/.labby regardless of LABBY_HOME.
         unix = self.text("scripts/ci/n-minus-one/unix")
         self.assertIn('labby_home="$user_home/.labby"', unix)
-        self.assertEqual(1, unix.count('LABBY_HOME="$labby_home"'))
-        self.assertEqual(1, unix.count('HOME="$user_home" LABBY_HOME="$labby_home"'))
+        self.assertEqual(2, unix.count('LABBY_HOME="$labby_home"'))
+        self.assertEqual(2, unix.count('HOME="$user_home" LABBY_HOME="$labby_home"'))
         self.assertIn('scripts/ci/verified-process.py" identity', unix)
         self.assertIn('scripts/ci/verified-process.py" stop', unix)
         windows = self.text("scripts/ci/n-minus-one/windows")
@@ -251,6 +280,22 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("-RedirectStandardOutput '$pwsh_work_root", windows)
         self.assertIn("-RedirectStandardError '$pwsh_work_root", windows)
         self.assertIn('"$root"/*/service*.log', self.text("scripts/ci/n-minus-one-diagnostics.sh"))
+
+    def test_n_minus_one_installs_remain_noninteractive_and_bootstrap_owner(self) -> None:
+        for name in ("unix", "macos", "incus", "host-service"):
+            adapter = self.text(f"scripts/ci/n-minus-one/{name}")
+            previous = adapter[adapter.index("install-previous)"):adapter.index("seed-state)")]
+            self.assertIn("LABBY_INSTALL_NO_SETUP=1", previous, name)
+        for name in ("unix", "macos"):
+            adapter = self.text(f"scripts/ci/n-minus-one/{name}")
+            upgrade = adapter[adapter.index("upgrade)"):adapter.index("verify-candidate)")]
+            self.assertIn("LABBY_INSTALL_NO_SETUP=1", upgrade, name)
+            self.assertIn("setup --bootstrap-static-owner", upgrade, name)
+            self.assertIn("LABBY_AUTH_MODE=bearer", adapter, name)
+        incus = self.text("scripts/ci/n-minus-one/incus")
+        upgrade = incus[incus.index("upgrade)"):incus.index("verify-candidate)")]
+        self.assertIn("setup --bootstrap-static-owner", upgrade)
+        self.assertIn("systemctl restart labby", upgrade)
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "pidfd is Linux-specific")
     def test_unix_restart_waits_for_prior_daemon_exit_before_replacement(self) -> None:
@@ -504,9 +549,7 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
                 with tarfile.open(work / archive, "w:gz") as tar:
                     tar.add(payload, arcname="labby")
                 payload.unlink()
-            with zipfile.ZipFile(work / "lab-x86_64-pc-windows-msvc.zip", "w") as archive:
-                archive.writestr("labby.exe", "binary")
-            for name in ("labby-install.sh", "labby-install.ps1"):
+            for name in ("labby-install.sh",):
                 (work / name).write_text("installer")
             for name in list(work.iterdir()):
                 (work / f"{name.name}.sha256").write_text(f"{'0' * 64}  {name.name}\n")
@@ -516,12 +559,12 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             env = os.environ | {"SYFT_BIN": str(syft)}
             subprocess.run(["bash", str(ROOT / "scripts/ci/generate-release-sboms.sh")], cwd=work, env=env, check=True)
             for sbom in ("lab-x86_64-unknown-linux-gnu.spdx.json", "lab-aarch64-apple-darwin.spdx.json",
-                         "lab-x86_64-pc-windows-msvc.spdx.json", "labby-install.sh.spdx.json", "labby-install.ps1.spdx.json"):
+                         "labby-install.sh.spdx.json"):
                 self.assertTrue((work / sbom).is_file(), sbom)
             self.assertEqual([], sorted(path.name for path in work.glob("*.spdx.json.spdx.json")))
             # Same subject globs as the release workflow's manifest step.
-            patterns = ("lab-*.tar.gz", "lab-*.zip", "lab-*.sha256", "lab-*.spdx.json", "labby-install.*.spdx.json",
-                        "labby-install.sh", "labby-install.ps1", "labby-install.sh.sha256", "labby-install.ps1.sha256")
+            patterns = ("lab-*.tar.gz", "lab-*.sha256", "lab-*.spdx.json", "labby-install.sh.spdx.json",
+                        "labby-install.sh", "labby-install.sh.sha256")
             subjects = [str(path) for pattern in patterns for path in sorted(work.glob(pattern))]
             result = subprocess.run(
                 [sys.executable, str(ROOT / "scripts/ci/create-release-manifest.py"), "--tag", "v1.2.3",
@@ -556,24 +599,24 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("scripts/ci/create-release-manifest.py", workflow)
         self.assertIn("release-manifest.json", workflow)
         self.assertIn("scripts/ci/reconcile-release.py", reminder)
+        self.assertIn('[[ "$tag" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]] || continue', reminder)
         self.assertIn("manage-release-incident.sh", reminder)
         self.assertIn("Release publication is incomplete", self.text("scripts/ci/manage-release-incident.sh"))
-        for surface in ("github", "npm", "incus", "mcp"):
+        for surface in ("github", "npm", "mcp"):
             self.assertIn(f'"{surface}"', self.text("scripts/ci/reconcile-release.py"))
         self.assertNotIn('"ghcr"', self.text("scripts/ci/reconcile-release.py"))
 
     def test_candidate_publishers_are_called_before_stable_promotion(self) -> None:
         release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
         jobs = release["jobs"]
-        self.assertEqual("./.github/workflows/build-incus-image.yml", jobs["incus-candidate"]["uses"])
+        self.assertNotIn("incus-candidate", jobs)
         self.assertEqual("./.github/workflows/mcp-registry.yml", jobs["mcp-candidate"]["uses"])
-        self.assertIn("incus-candidate", jobs["release"]["needs"])
         self.assertIn("mcp-candidate", jobs["release"]["needs"])
         # The MCP Registry verifies the npm version it references, so npm's
         # candidate publication must finish before mcp-candidate starts.
         self.assertIn("npm-candidate", jobs["mcp-candidate"]["needs"])
         self.assertIn("npm-candidate", jobs["release"]["needs"])
-        for gate in ("upgrade-qualification", "incus-candidate"):
+        for gate in ("upgrade-qualification",):
             self.assertIn(gate, jobs["npm-candidate"]["needs"])
         publish = next(step for step in jobs["npm-candidate"]["steps"] if step.get("name") == "Publish candidate-tagged npm launcher")
         self.assertIn('--tag "candidate-$version"', publish["run"])
@@ -585,13 +628,16 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
 
     def test_incus_candidate_is_immutable_and_pointer_is_transactional(self) -> None:
         release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
-        self.assertEqual("write", release["jobs"]["incus-candidate"]["permissions"]["contents"])
+        self.assertNotIn("incus-candidate", release["jobs"])
         incus = self.text(".github/workflows/build-incus-image.yml")
         self.assertNotIn("ROLLING_TAG", incus)
         self.assertNotIn("git push -f", incus)
-        workflow = self.text(".github/workflows/release.yml")
-        self.assertIn("scripts/ci/promote-incus-pointer.sh promote", workflow)
-        self.assertIn("scripts/ci/promote-incus-pointer.sh rollback", workflow)
+        self.assertIn("scripts/ci/promote-incus-pointer.sh promote", incus)
+        self.assertIn("scripts/ci/promote-incus-pointer.sh rollback", incus)
+        image = yaml.load(self.text(".github/workflows/incus-image.yml"), Loader=yaml.BaseLoader)
+        self.assertEqual("./.github/workflows/build-incus-image.yml", image["jobs"]["image"]["uses"])
+        self.assertIn("config/incus/**", image["on"]["pull_request"]["paths"])
+        self.assertIn("config/incus/**", image["on"]["push"]["paths"])
 
     def test_immutable_release_assets_are_never_clobbered(self) -> None:
         for path in (".github/workflows/release.yml", ".github/workflows/build-incus-image.yml"):
@@ -601,7 +647,8 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
     def test_mcp_observer_never_copies_expected_digest(self) -> None:
         observer = self.text("scripts/ci/observe-release.py")
         self.assertNotIn('observed["mcp"] = dist["mcp"]', observer)
-        self.assertIn("hashlib.sha256(canonical).hexdigest()", observer)
+        self.assertIn("manifest_sha256(server)", observer)
+        self.assertIn("mcp_registry_canonical.py server.json", self.text(".github/workflows/mcp-registry.yml"))
 
     def test_lifecycle_inventory_routes_every_script_and_public_copy(self) -> None:
         inventory = json.loads(self.text("scripts/ci/lifecycle-scripts.json"))
@@ -661,7 +708,7 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertEqual(job["concurrency"]["cancel-in-progress"], "false")
         rollback = next(step["run"] for step in job["steps"] if step.get("name") == "Roll back partial publication")
         self.assertLess(rollback.index("promote-npm-pointer.py rollback"), rollback.index('gh release edit "$RELEASE_TAG" --draft=true'))
-        self.assertIn('if [[ "$npm_rc" != 0 || "$pointer_rc" != 0 ]]', rollback)
+        self.assertIn('if [[ "$npm_rc" != 0 ]]', rollback)
         self.assertIn('refusing to replace a newer Incus stable generation', self.text("scripts/ci/promote-incus-pointer.sh"))
 
     def test_n_minus_one_uses_real_runtime_schema_not_probe_tables(self) -> None:
@@ -777,6 +824,35 @@ class PromotionDurabilityTests(unittest.TestCase):
 class ReleaseHelperTests(unittest.TestCase):
     def text(self, relative: str) -> str:
         return (ROOT / relative).read_text()
+
+    def test_mcp_digest_matches_registry_default_false_omissions(self) -> None:
+        # The public v2.2.1 entry dropped these false flags and previously
+        # produced a different digest despite describing the same package.
+        submitted = {
+            "name": "ai.dinglebear/labby",
+            "packages": [{
+                "identifier": "@dinglebear/labby",
+                "packageArguments": [{
+                    "value": "mcp", "isRequired": True,
+                    "isSecret": False, "isRepeated": False,
+                }],
+                "environmentVariables": [{
+                    "name": "LABBY_LOG", "isRequired": False,
+                    "isSecret": False,
+                }],
+                "enabled": False,
+            }],
+        }
+        served = json.loads(json.dumps(submitted))
+        argument = served["packages"][0]["packageArguments"][0]
+        argument.pop("isSecret")
+        argument.pop("isRepeated")
+        variable = served["packages"][0]["environmentVariables"][0]
+        variable.pop("isRequired")
+        variable.pop("isSecret")
+        self.assertEqual(manifest_sha256(submitted), manifest_sha256(served))
+        served["packages"][0]["enabled"] = True
+        self.assertNotEqual(manifest_sha256(submitted), manifest_sha256(served))
 
     def test_immutable_uploader_reuses_equal_bytes_and_rejects_drift(self) -> None:
         helper = ROOT / "scripts/ci/upload-immutable-release-assets.sh"
@@ -1075,6 +1151,34 @@ class ReleaseHelperTests(unittest.TestCase):
                 broken[broken.index(flag) + 1] = "bad"
                 self.assertNotEqual(0, subprocess.run(broken, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode)
 
+    def test_version_release_manifest_omits_independent_image(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            archive = work / "lab.tar.gz"
+            sbom = work / "lab.spdx.json"
+            archive.write_bytes(b"binary archive")
+            sbom.write_bytes(b"sbom")
+            manifest = work / "release-manifest.json"
+            subprocess.run([
+                "python3", str(ROOT / "scripts/ci/create-release-manifest.py"),
+                "--tag", "v1.2.3", "--repository", "dinglebear-ai/labby",
+                "--mcp-manifest-sha256", "a" * 64,
+                "--output", str(manifest), str(archive), str(sbom),
+            ], check=True)
+            data = json.loads(manifest.read_text())
+            self.assertEqual({"github", "npm", "mcp"}, set(data["distributions"]))
+            observed = work / "observed.json"
+            observed.write_text(json.dumps({
+                "subjects": [data["subjects"][0], data["subjects"][0]["sbom"]],
+                "distributions": data["distributions"],
+                "attestations": [{"subject": row["subject"], "status": "verified"} for row in data["attestations"]],
+            }))
+            result = subprocess.run([
+                "python3", str(ROOT / "scripts/ci/reconcile-release.py"),
+                "--manifest", str(manifest), "--observed", str(observed),
+            ], capture_output=True, text=True, check=False)
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+
     def test_reconciler_requires_every_distribution_and_exact_subject(self) -> None:
         expected = {
             "schema": "ai.dinglebear.labby/release-manifest/v1", "tag": "v1.2.3",
@@ -1099,7 +1203,7 @@ class ReleaseHelperTests(unittest.TestCase):
 
     def test_upgrade_qualification_consumes_exact_built_candidate(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
-        job = workflow[workflow.index("  upgrade-qualification:"):workflow.index("  incus-candidate:")]
+        job = workflow[workflow.index("  upgrade-qualification:"):workflow.index("  desktop-candidate:")]
         self.assertIn("actions/download-artifact@", job)
         self.assertIn("LABBY_N_MINUS_ONE_CANDIDATE_BINARY", job)
         self.assertIn("LABBY_N_MINUS_ONE_CANDIDATE_SHA256", job)
@@ -1110,7 +1214,7 @@ class ReleaseHelperTests(unittest.TestCase):
         build = workflow[workflow.index("  build:"):workflow.index("  upgrade-qualification:")]
         self.assertIn("actions/attest-build-provenance@", build)
         self.assertIn("subject-path: ${{ matrix.archive }}", build)
-        qualification = workflow[workflow.index("  upgrade-qualification:"):workflow.index("  incus-candidate:")]
+        qualification = workflow[workflow.index("  upgrade-qualification:"):workflow.index("  desktop-candidate:")]
         verify = qualification.index("verify-release-provenance.sh")
         extract = qualification.index("tar -C candidate")
         self.assertLess(verify, extract)
@@ -1149,8 +1253,9 @@ sudo() { test "$*" = 'systemctl reset-failed labby.service'; record reset; }
                     expected = expected[:expected.index(failure) + 1]
                 self.assertEqual(calls.read_text().splitlines(), expected)
                 self.assertEqual(result.returncode, 1 if failure else 0, result.stderr)
-        upgrade = next(line for line in text.splitlines() if line.startswith("  upgrade)"))
-        self.assertIn('fi; begin_candidate_phase; "$repo_root/scripts/ci/verify-and-activate-release.sh"', upgrade)
+        upgrade = text[text.index("  upgrade)"):text.index("  verify-candidate)")]
+        self.assertLess(upgrade.index("recover_state restore"), upgrade.index("begin_candidate_phase"))
+        self.assertLess(upgrade.index("begin_candidate_phase"), upgrade.index('-- sudo "$candidate"'))
 
     def test_baseline_credentials_survive_formatting_but_reject_rotation(self) -> None:
         for adapter in ("host-service", "incus"):
@@ -1278,7 +1383,7 @@ if authenticated_action; then exit 93; fi
                 "usage.db": "CREATE TABLE upstream_calls(id INTEGER PRIMARY KEY AUTOINCREMENT,ts_unix INTEGER NOT NULL,upstream_name TEXT NOT NULL,tool_name TEXT NOT NULL,capability TEXT NOT NULL,operation TEXT NOT NULL,subject_scoped INTEGER NOT NULL,actor TEXT NOT NULL,outcome TEXT NOT NULL,elapsed_ms INTEGER NOT NULL,response_bytes INTEGER)",
             }
             for name, schema in schemas.items():
-                with sqlite3.connect(Path(tmp) / name) as database:
+                with closing(sqlite3.connect(Path(tmp) / name)) as database, database:
                     database.execute(schema)
             subprocess.run(["python3", str(helper), "seed", tmp], check=True)
             self.assertEqual(0, subprocess.run(["python3", str(helper), "verify", tmp]).returncode)
@@ -1287,7 +1392,7 @@ if authenticated_action; then exit 93; fi
                 ("access.db", "DELETE FROM access_security_events"),
                 ("usage.db", "DELETE FROM upstream_calls"),
             ):
-                with sqlite3.connect(Path(tmp) / database) as connection:
+                with closing(sqlite3.connect(Path(tmp) / database)) as connection, connection:
                     connection.execute(statement)
                 self.assertNotEqual(0, subprocess.run(["python3", str(helper), "verify", tmp], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode, database)
                 subprocess.run(["python3", str(helper), "seed", tmp], check=True)
@@ -1299,12 +1404,29 @@ if authenticated_action; then exit 93; fi
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(saved)
 
+    def test_durable_state_seed_secures_nested_directories(self) -> None:
+        helper = ROOT / "scripts/ci/n-minus-one-durable-state.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with closing(sqlite3.connect(root / "auth.db")) as database, database:
+                database.execute("CREATE TABLE registered_clients(client_id TEXT PRIMARY KEY, redirect_uris TEXT, created_at INTEGER)")
+            directories = (root, root / "skills", root / "skills/n-minus-one",
+                           root / "artifacts", root / "artifacts/n-minus-one",
+                           root / "snippets", root / "snippets/n-minus-one")
+            for directory in directories:
+                directory.mkdir(parents=True, exist_ok=True)
+                directory.chmod(0o777)
+            result = subprocess.run([sys.executable, str(helper), "seed", tmp], capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            for directory in directories:
+                self.assertEqual(0o700, directory.stat().st_mode & 0o777, str(directory))
+
     def test_durable_state_seeds_only_what_an_older_baseline_created(self) -> None:
         helper = ROOT / "scripts/ci/n-minus-one-durable-state.py"
         # v1.13.3 in bearer mode: no auth.db, no access.db, and an older usage schema.
         old_usage = "CREATE TABLE upstream_calls(id INTEGER PRIMARY KEY AUTOINCREMENT,ts_unix INTEGER NOT NULL,upstream_name TEXT NOT NULL,tool_name TEXT NOT NULL,actor TEXT NOT NULL DEFAULT 'unattributed',outcome TEXT NOT NULL,elapsed_ms INTEGER NOT NULL)"
         with tempfile.TemporaryDirectory() as tmp:
-            with sqlite3.connect(Path(tmp) / "usage.db") as database:
+            with closing(sqlite3.connect(Path(tmp) / "usage.db")) as database, database:
                 database.execute(old_usage)
             seed = subprocess.run([sys.executable, str(helper), "seed", tmp], text=True, capture_output=True, check=False)
             self.assertEqual(0, seed.returncode, seed.stderr)
@@ -1315,14 +1437,14 @@ if authenticated_action; then exit 93; fi
             self.assertEqual(0, subprocess.run([sys.executable, str(helper), "verify", tmp], capture_output=True).returncode)
             # The usage store prunes rows older than its retention window, so
             # the seeded row must carry a current timestamp.
-            with sqlite3.connect(Path(tmp) / "usage.db") as database:
+            with closing(sqlite3.connect(Path(tmp) / "usage.db")) as database, database:
                 database.execute("DELETE FROM upstream_calls WHERE ts_unix < CAST(strftime('%s','now') AS INTEGER) - 86400")
             self.assertEqual(0, subprocess.run([sys.executable, str(helper), "verify", tmp], capture_output=True).returncode)
             # The candidate migrates usage.db in place; the seeded row must survive that.
-            with sqlite3.connect(Path(tmp) / "usage.db") as database:
+            with closing(sqlite3.connect(Path(tmp) / "usage.db")) as database, database:
                 database.execute("ALTER TABLE upstream_calls ADD COLUMN response_bytes INTEGER")
             self.assertEqual(0, subprocess.run([sys.executable, str(helper), "verify", tmp], capture_output=True).returncode)
-            with sqlite3.connect(Path(tmp) / "usage.db") as database:
+            with closing(sqlite3.connect(Path(tmp) / "usage.db")) as database, database:
                 database.execute("DELETE FROM upstream_calls")
             self.assertNotEqual(0, subprocess.run([sys.executable, str(helper), "verify", tmp], capture_output=True).returncode)
             (Path(tmp) / "n-minus-one-seeded.json").unlink()
@@ -1332,7 +1454,7 @@ if authenticated_action; then exit 93; fi
             self.assertNotEqual(0, none.returncode)
             self.assertIn("created none of the durable databases", none.stderr)
         with tempfile.TemporaryDirectory() as tmp:
-            with sqlite3.connect(Path(tmp) / "usage.db") as database:
+            with closing(sqlite3.connect(Path(tmp) / "usage.db")) as database, database:
                 database.execute(old_usage.replace("elapsed_ms INTEGER NOT NULL)", "elapsed_ms INTEGER NOT NULL,unknown_required TEXT NOT NULL)"))
             unknown = subprocess.run([sys.executable, str(helper), "seed", tmp], text=True, capture_output=True, check=False)
             self.assertNotEqual(0, unknown.returncode)
@@ -1342,10 +1464,156 @@ if authenticated_action; then exit 93; fi
         self.assertFalse((ROOT / "scripts/ci/n-minus-one/compose").exists())
         macos = self.text("scripts/ci/n-minus-one/macos")
         seed = macos[macos.index("seed-state)"):macos.index("verify-previous)")]
-        self.assertIn("service restart", seed)
+        self.assertIn("service uninstall; seed_persisted_state; service install", seed)
         incus = self.text("scripts/ci/n-minus-one/incus")
         self.assertNotIn("target/debug/labby", incus)
         self.assertIn("LABBY_N_MINUS_ONE_CANDIDATE_BINARY", incus)
+
+    def test_recovery_capture_is_private_and_refuses_to_replace_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            binary = root / "labby"
+            binary.write_text('#!/bin/sh\nset -eu\ntest -s "$LABBY_RECOVERY_KEY_PATH"\n'
+                              'test "$LABBY_HOME" = "$EXPECTED_STATE"\n'
+                              'printf "%s\\n" "$*" >> "$CALLS"\n')
+            binary.chmod(0o755)
+            recovery = root / "recovery"
+            state = root / "state"
+            state.mkdir()
+            env = os.environ | {"EXPECTED_STATE": str(state), "CALLS": str(root / "calls")}
+            helper = ROOT / "scripts/ci/n-minus-one-recovery.sh"
+            args = ["bash", str(helper), "capture", str(binary), str(state), str(recovery)]
+            first = subprocess.run(args, env=env, capture_output=True, text=True)
+            self.assertEqual(0, first.returncode, first.stderr)
+            key = recovery / "key"
+            before = key.read_bytes()
+            self.assertGreaterEqual(len(before), 32)
+            self.assertEqual(0o600, key.stat().st_mode & 0o777)
+            self.assertEqual(0o700, recovery.stat().st_mode & 0o777)
+            repeat = subprocess.run(args, env=env, capture_output=True, text=True)
+            self.assertNotEqual(0, repeat.returncode)
+            self.assertEqual(before, key.read_bytes())
+            restored = subprocess.run(["bash", str(helper), "restore", str(binary), str(state), str(recovery)],
+                                      env=env, capture_output=True, text=True)
+            self.assertEqual(0, restored.returncode, restored.stderr)
+            self.assertEqual([f"state export --output {recovery}/bundle", f"state restore --bundle {recovery}/bundle"],
+                             (root / "calls").read_text().splitlines())
+
+    def test_recovery_capture_repairs_inherited_write_bits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shims = root / "shims"
+            shims.mkdir()
+            dd = shims / "dd"
+            dd.write_text(
+                '#!/bin/sh\n/bin/dd "$@" || exit\n'
+                'for arg in "$@"; do case "$arg" in of=*) chmod 0666 "${arg#of=}";; esac; done\n'
+            )
+            dd.chmod(0o755)
+            binary = root / "labby"
+            binary.write_text("#!/bin/sh\nexit 0\n")
+            binary.chmod(0o755)
+            state = root / "state"
+            state.mkdir()
+            recovery = root / "recovery"
+            env = os.environ | {"PATH": f"{shims}:{os.environ['PATH']}"}
+            helper = ROOT / "scripts/ci/n-minus-one-recovery.sh"
+            capture = subprocess.run(
+                ["bash", str(helper), "capture", str(binary), str(state), str(recovery)],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, capture.returncode, capture.stderr)
+            self.assertEqual(0o700, recovery.stat().st_mode & 0o777)
+            self.assertEqual(0o600, (recovery / "key").stat().st_mode & 0o777)
+
+    @unittest.skipUnless(sys.platform == "linux", "requires Linux service-account execution")
+    def test_service_recovery_uses_state_owner_and_private_accessible_candidate(self) -> None:
+        import pwd
+        # A root-run export on a service-owned installation is rejected by
+        # InstallationPaths. Exercise real uid switching and filesystem access,
+        # including a candidate that the service account cannot traverse.
+        owner = pwd.getpwnam("nobody")
+        sudo = [] if os.geteuid() == 0 else ["sudo", "-n"]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            root.chmod(0o755)
+            source = root / "runner-private"
+            source.mkdir(mode=0o700)
+            binary = source / "candidate"
+            binary.write_text(
+                '#!/usr/bin/python3\nimport os, pathlib, sys\n'
+                'state = pathlib.Path(os.environ["LABBY_HOME"])\n'
+                'key = pathlib.Path(os.environ["LABBY_RECOVERY_KEY_PATH"])\n'
+                'assert os.geteuid() == state.stat().st_uid, "wrong recovery uid"\n'
+                'assert key.stat().st_uid == os.geteuid(), "wrong key owner"\n'
+                'assert len(key.read_bytes()) == 32\n'
+                'assert key.stat().st_mode & 0o777 == 0o600\n'
+                'assert pathlib.Path(sys.argv[0]).parent.stat().st_mode & 0o777 == 0o700\n'
+                'if sys.argv[1:3] == ["state", "export"]:\n'
+                '    pathlib.Path(sys.argv[4]).write_text(state.joinpath("config.toml").read_text())\n'
+                'elif sys.argv[1:3] == ["state", "restore"]:\n'
+                '    state.joinpath("config.toml").write_text(pathlib.Path(sys.argv[4]).read_text())\n'
+                'else: sys.exit(64)\n'
+            )
+            binary.chmod(0o755)
+            state = root / "state"
+            state.mkdir(mode=0o700)
+            (state / "config.toml").write_text("baseline-state\n")
+            recovery = root / "recovery"
+            helper = ROOT / "scripts/ci/n-minus-one-recovery.sh"
+            args = ["bash", str(helper), "capture", str(binary), str(state), str(recovery), owner.pw_name]
+            try:
+                subprocess.run(sudo + ["chown", "-R", str(owner.pw_uid), str(state)], check=True)
+                capture = subprocess.run(sudo + args, text=True, capture_output=True)
+                self.assertEqual(0, capture.returncode, capture.stdout + capture.stderr)
+                self.assertEqual(owner.pw_uid, recovery.stat().st_uid)
+                self.assertEqual(0o700, recovery.stat().st_mode & 0o777)
+                # Inspect the private artifacts only as their owner (also on CI,
+                # where this test itself is an unprivileged runner user).
+                inspect = sudo + ["runuser", "-u", owner.pw_name, "--"]
+                self.assertEqual(str(owner.pw_uid), subprocess.check_output(
+                    inspect + ["stat", "-c", "%u", str(recovery / "key")], text=True).strip())
+                key_before = subprocess.check_output(inspect + ["sha256sum", str(recovery / "key")])
+                repeat = subprocess.run(sudo + args, text=True, capture_output=True)
+                self.assertNotEqual(0, repeat.returncode)
+                self.assertEqual(key_before, subprocess.check_output(inspect + ["sha256sum", str(recovery / "key")]))
+                subprocess.run(inspect + ["sh", "-c", 'printf "migrated-state\\n" > "$1/config.toml"', "fixture", str(state)], check=True)
+                args[2] = "restore"
+                restored = subprocess.run(sudo + args, text=True, capture_output=True)
+                self.assertEqual(0, restored.returncode, restored.stdout + restored.stderr)
+                self.assertEqual(b"baseline-state\n", subprocess.check_output(inspect + ["cat", str(state / "config.toml")]))
+            finally:
+                subprocess.run(sudo + ["chown", "-R", f"{os.getuid()}:{os.getgid()}", tmp], check=True)
+
+    def test_macos_state_check_accepts_new_keys_but_rejects_changed_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp) / "labby-n-minus-one/macos"
+            state = work / "home/.labby"
+            state.mkdir(parents=True)
+            (work / "bin").mkdir()
+            binary = work / "bin/labby"
+            binary.write_text('#!/bin/sh\necho "labby 2.1.2"\n')
+            binary.chmod(0o755)
+            mocks = Path(tmp) / "commands"
+            mocks.mkdir()
+            for name, body in {"uname": "echo Darwin", "launchctl": "exit 0"}.items():
+                path = mocks / name
+                path.write_text(f"#!/bin/sh\n{body}\n")
+                path.chmod(0o755)
+            (state / "config.toml").write_text("config_version = 1\n")
+            with closing(sqlite3.connect(state / "usage.db")) as db:
+                db.execute("CREATE TABLE upstream_calls(id INTEGER PRIMARY KEY, ts_unix INTEGER, upstream_name TEXT, tool_name TEXT, actor TEXT, outcome TEXT)")
+            subprocess.run([sys.executable, str(ROOT / "scripts/ci/n-minus-one-durable-state.py"), "seed", str(state)],
+                           check=True, capture_output=True)
+            digest = hashlib.sha256((state / "config.toml").read_bytes()).hexdigest()
+            (work / "persisted-state.sha256").write_text(f"{digest}  config.toml\n")
+            env = os.environ | {"RUNNER_TEMP": tmp, "LABBY_CANDIDATE_VERSION": "v2.1.2", "PATH": f"{mocks}:{os.environ['PATH']}"}
+            args = ["bash", str(ROOT / "scripts/ci/n-minus-one/macos"), "verify-candidate"]
+            for token, expected in (("0" * 64, 0), ("1" * 64, 1)):
+                with self.subTest(token_preserved=expected == 0):
+                    (state / ".env").write_text(f"LABBY_AUTH_MODE=bearer\nLABBY_MCP_HTTP_TOKEN={token}\nLABBY_ACTOR_KEY_SECRET=fixture\n")
+                    result = subprocess.run(args, env=env, capture_output=True, text=True)
+                    self.assertEqual(expected, result.returncode, result.stdout + result.stderr)
 
     def test_post_rollback_requires_restart_and_authenticated_action(self) -> None:
         driver = (ROOT / "scripts/ci/qualify-n-minus-one.sh").read_text()
@@ -1378,7 +1646,7 @@ if authenticated_action; then exit 93; fi
 
     def test_reconciler_runs_immediately_after_release(self) -> None:
         reminder = self.text(".github/workflows/release-publish-reminder.yml")
-        self.assertIn('workflows: ["Release", "release-please"]', reminder)
+        self.assertIn('workflows: ["Release", "release-please", "Incus image"]', reminder)
 
     def test_existing_auto_merge_is_paused_before_release_please_refreshes(self) -> None:
         workflow = self.text(".github/workflows/release-please.yml")
@@ -1388,6 +1656,20 @@ if authenticated_action; then exit 93; fi
         self.assertIn("needs: stabilize-release-pr", workflow[release:])
         self.assertIn("--disable-auto", workflow[pause:release])
         self.assertIn("auto_merge_pr", workflow[pause:release])
+
+    def test_release_please_preserves_checks_when_main_has_not_advanced(self) -> None:
+        workflow = yaml.safe_load(self.text(".github/workflows/release-please.yml"))
+        jobs = workflow["jobs"]
+        pause = jobs["stabilize-release-pr"]
+        self.assertIn("skip_refresh", pause["outputs"])
+        script = pause["steps"][0]["run"]
+        self.assertIn("pulls/$number/commits?per_page=1", script)
+        self.assertIn(".[0].parents[0].sha", script)
+        self.assertIn("git/ref/heads/main", script)
+        self.assertIn("$GITHUB_EVENT_NAME\" == workflow_run", script)
+        self.assertIn("skip_refresh=true", script)
+        for job in ("release-please", "sync-release-version"):
+            self.assertIn("needs.stabilize-release-pr.outputs.skip_refresh != 'true'", jobs[job]["if"])
 
     def test_release_metadata_sync_repairs_partial_release_please_failure(self) -> None:
         workflow = self.text(".github/workflows/release-please.yml")
@@ -1466,6 +1748,37 @@ if authenticated_action; then exit 93; fi
             "Verify release provenance as a consumer",
         ):
             self.assertIn("shopt -s nullglob", release_steps[name]["run"], name)
+
+    def test_preflight_version_extraction_tolerates_release_please_marker(self) -> None:
+        # release-please annotates the desktop version line with a trailing
+        # "# x-release-please-version" comment, which the test below requires.
+        # The preflight's sed had no trailing ".*", so the substitution left the
+        # comment glued to the captured version and every tag after #646 failed
+        # with "desktop cargo version 1.21.0 # x-release-please-version != 1.21.0".
+        workflow = self.text(".github/workflows/release.yml")
+        extractions = [
+            line.strip()
+            for line in workflow.splitlines()
+            if "sed -n" in line and 's/^version = "' in line
+        ]
+        self.assertEqual(2, len(extractions), extractions)
+        for extraction in extractions:
+            self.assertIn(r'\)".*/\1/p', extraction, extraction)
+        # The published sed must return a bare version with and without the marker.
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = Path(tmp) / "Cargo.toml"
+            for line, expected in (
+                ('version = "1.21.0" # x-release-please-version', "1.21.0"),
+                ('version = "2.0.0"', "2.0.0"),
+            ):
+                manifest.write_text(line + "\n", encoding="utf-8")
+                result = subprocess.run(
+                    ["sed", "-n", r's/^version = "\([^"]*\)".*/\1/p', str(manifest)],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertEqual(expected, result.stdout.strip(), line)
 
     def test_version_sync_gate_covers_desktop_manifests(self) -> None:
         # The desktop shell follows the root workspace release, but nothing on

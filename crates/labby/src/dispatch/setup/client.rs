@@ -14,8 +14,7 @@ use labby_primitives::plugin::EnvVar;
 use crate::registry::{ToolRegistry, build_default_registry, service_meta};
 
 /// Re-exported from `dispatch::helpers` (the canonical home for this leaf path
-/// helper) so the `env_path`/`draft_path` callers below and `plugin_hook`'s
-/// `client::lab_home` import keep resolving.
+/// helper) so setup path callers share one canonical LABBY_HOME-aware resolver.
 pub use crate::dispatch::helpers::lab_home;
 
 #[must_use]

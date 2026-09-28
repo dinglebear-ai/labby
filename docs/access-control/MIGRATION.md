@@ -91,7 +91,7 @@ prior result. A changed replay fails closed.
 
 ## Offline operator activation
 
-`labby state migrate-access` is the installation-owner entry point. Stop the
+`labby state access migrate` is the installation-owner entry point. Stop the
 Labby daemon before running it. The command acquires the same installation
 lifecycle lock as the daemon and refuses to run while that lock is held.
 It requires an existing, initialized AccessStore; it does not bootstrap an
@@ -106,7 +106,7 @@ store. Do not point rehearsal approval at the live installation. Run:
 ```sh
 LABBY_HOME=/absolute/rehearsal-installation \
 LABBY_ACCESS_MIGRATION_EVIDENCE=/absolute/rehearsal-approval.json \
-labby --json state migrate-access
+labby --json state access migrate
 ```
 
 The command applies the existing approval and logical checkpoint checks,

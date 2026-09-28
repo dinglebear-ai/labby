@@ -27,8 +27,8 @@ use super::params::{
     VirtualServerSurfaceParams,
 };
 use super::types::{
-    DiscoveredServerView, ImportErrorView, ImportSkipReason, ImportSkipView,
-    McpClientTransportType, ServiceActionView,
+    DiscoveredServerView, DiscoveryExplanationView, ExplainedDiscoveryView, ImportErrorView,
+    ImportPlanView, ImportSkipReason, ImportSkipView, McpClientTransportType, ServiceActionView,
 };
 
 fn parse_params<T: DeserializeOwned>(params_value: Value) -> Result<T, ToolError> {
@@ -74,6 +74,18 @@ pub async fn dispatch_with_manager_scoped(
         return result;
     }
     match action {
+        "gateway.ssh_hosts.list" => {
+            let home = super::discovery::home_dir().ok_or_else(|| ToolError::Sdk {
+                message: "gateway account home directory is unavailable".into(),
+                sdk_kind: "ssh_config_unavailable".into(),
+            })?;
+            let contents = read_ssh_config(&home).map_err(|_| ToolError::Sdk {
+                message: "gateway account SSH config could not be read within the listing limit"
+                    .into(),
+                sdk_kind: "ssh_config_unavailable".into(),
+            })?;
+            to_json(ssh_host_aliases(&contents))
+        }
         "gateway.host.metrics" => to_json(
             super::host_metrics::sample(
                 manager
@@ -211,6 +223,112 @@ pub async fn dispatch_with_manager_scoped(
     }
 }
 
+fn ssh_host_aliases(contents: &str) -> Vec<String> {
+    labby_apis::core::ssh::parse_ssh_config(contents)
+        .into_iter()
+        .map(|host| host.alias)
+        .filter(|alias| {
+            alias.len() <= 255
+                && alias
+                    .chars()
+                    .next()
+                    .is_some_and(|first| first.is_ascii_alphanumeric())
+                && alias
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || "._-".contains(character))
+        })
+        .take(200)
+        .collect()
+}
+
+fn read_ssh_config(home: &std::path::Path) -> std::io::Result<String> {
+    use std::collections::HashSet;
+    let ssh_dir = home.join(".ssh");
+    let mut seen = HashSet::new();
+    let mut remaining = 1024 * 1024;
+    read_ssh_config_file(
+        &ssh_dir.join("config"),
+        &ssh_dir,
+        home,
+        0,
+        &mut seen,
+        &mut remaining,
+    )
+}
+
+fn read_ssh_config_file(
+    path: &std::path::Path,
+    ssh_dir: &std::path::Path,
+    home: &std::path::Path,
+    depth: usize,
+    seen: &mut std::collections::HashSet<std::path::PathBuf>,
+    remaining: &mut u64,
+) -> std::io::Result<String> {
+    use std::io::{Error, ErrorKind, Read};
+    if depth > 4 || seen.len() >= 200 {
+        return Ok(String::new());
+    }
+    let canonical = match path.canonicalize() {
+        Ok(canonical) => canonical,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(String::new()),
+        Err(error) => return Err(error),
+    };
+    if !seen.insert(canonical.clone()) {
+        return Ok(String::new());
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(&canonical)?
+        .take(*remaining + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > *remaining {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            "SSH config listing limit exceeded",
+        ));
+    }
+    *remaining -= bytes.len() as u64;
+    let contents = String::from_utf8(bytes)
+        .map_err(|_| Error::new(ErrorKind::InvalidData, "SSH config is not UTF-8"))?;
+    let mut expanded = String::new();
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        let mut words = trimmed.split_whitespace();
+        if words
+            .next()
+            .is_some_and(|word| word.eq_ignore_ascii_case("include"))
+        {
+            for include in words {
+                let pattern = if include == "~" {
+                    home.to_path_buf()
+                } else if let Some(suffix) = include.strip_prefix("~/") {
+                    home.join(suffix)
+                } else if std::path::Path::new(include).is_absolute() {
+                    include.into()
+                } else {
+                    ssh_dir.join(include)
+                };
+                let Ok(paths) = glob::glob(&pattern.to_string_lossy()) else {
+                    continue;
+                };
+                for child in paths.flatten().take(200) {
+                    expanded.push_str(&read_ssh_config_file(
+                        &child,
+                        ssh_dir,
+                        home,
+                        depth + 1,
+                        seen,
+                        remaining,
+                    )?);
+                }
+            }
+        } else {
+            expanded.push_str(line);
+            expanded.push('\n');
+        }
+    }
+    Ok(expanded)
+}
+
 const KNOWN_CLIENTS: &[&str] = &[
     "cursor",
     "claude-code",
@@ -246,22 +364,32 @@ async fn handle_discover(
         message: "cannot determine home directory".to_string(),
     })?;
 
-    let mut discovered = tokio::task::spawn_blocking(move || super::discovery::discover_all(&home))
-        .await
-        .map_err(|e| ToolError::internal_message(format!("discovery task panicked: {e}")))?;
-    if !params.clients.is_empty() {
-        let filter: std::collections::HashSet<&str> =
-            params.clients.iter().map(String::as_str).collect();
-        discovered.retain(|s| filter.contains(s.source_client.as_str()));
-    }
+    let clients = params.clients.clone();
+    let report = tokio::task::spawn_blocking(move || {
+        super::discovery::discover_with_report(&home, &clients)
+    })
+    .await
+    .map_err(|e| ToolError::internal_message(format!("discovery task panicked: {e}")))?;
 
     let cfg = manager.current_config().await;
     let existing: std::collections::HashSet<String> =
         cfg.upstream.iter().map(|u| u.name.clone()).collect();
 
-    let views = shape_discovered_views(discovered, &cfg, &existing, &params);
+    let views = shape_discovered_views(report.servers, &cfg, &existing, &params);
 
-    to_json(views)
+    if params.explain {
+        to_json(ExplainedDiscoveryView {
+            servers: views,
+            explanation: DiscoveryExplanationView {
+                scanned_clients: report.scanned_clients,
+                matched_paths: report.matched_paths,
+                discovered_by_client: report.discovered_by_client,
+                duplicates_omitted: report.duplicates_omitted,
+            },
+        })
+    } else {
+        to_json(views)
+    }
 }
 
 fn shape_discovered_views(
@@ -371,6 +499,26 @@ async fn handle_import(
     let cfg = manager.current_config().await;
     let (mut result, specs_to_add) =
         super::manager::partition_discovered_for_import(&cfg, to_import);
+
+    if params.dry_run {
+        result.planned = specs_to_add
+            .iter()
+            .map(|spec| {
+                let source = spec.imported_from.as_ref();
+                ImportPlanView {
+                    name: spec.name.clone(),
+                    source_client: source.map(|value| value.client.clone()).unwrap_or_default(),
+                    source_path: source.map(|value| value.path.clone()).unwrap_or_default(),
+                    transport: if spec.url.is_some() {
+                        McpClientTransportType::Http
+                    } else {
+                        McpClientTransportType::Stdio
+                    },
+                }
+            })
+            .collect();
+        return to_json(result);
+    }
 
     if !specs_to_add.is_empty() {
         let outcome = manager
@@ -517,6 +665,12 @@ async fn handle_tool_actions(
             }
             if let Some(max_log_bytes) = params.max_log_bytes {
                 next.max_log_bytes = max_log_bytes;
+            }
+            if let Some(search_sources) = params.search_sources {
+                next.search.sources = search_sources;
+            }
+            if let Some(search_kinds) = params.search_kinds {
+                next.search.kinds = search_kinds;
             }
             to_json(manager.set_code_mode_config(next, None, None).await?)
         }
@@ -1123,13 +1277,17 @@ async fn handle_mcp_actions(
         }
         "gateway.mcp.restart" => {
             let params: GatewayMcpRestartParams = parse_params(params_value)?;
+            let wait_ms = params.wait_ms.unwrap_or(20_000);
+            if wait_ms > 300_000 {
+                return Err(ToolError::InvalidParam { param: "wait_ms".into(), message: "Restart wait_ms must be between 0 and 300000 milliseconds. No restart was started.".into() });
+            }
             manager
                 .restart_mcp_upstream(
                     &params.name,
                     params.aggressive,
                     enrichment_scope,
                     params.owner.map(Into::into),
-                    std::time::Duration::from_secs(20),
+                    std::time::Duration::from_millis(wait_ms),
                 )
                 .await
         }
@@ -1243,7 +1401,7 @@ async fn handle_skills_list(
         return Err(ToolError::Sdk {
             sdk_kind: "not_found".to_string(),
             message: format!(
-                "gateway upstream `{filter}` was not found; run `labby gateway skills list` or `labby gateway list` to discover valid upstream names"
+                "gateway upstream `{filter}` was not found; run `labby skill source list` or `labby server list` to discover valid upstream names"
             ),
         });
     }

@@ -430,7 +430,7 @@ fn aliases_inherit_the_canonical_scenario_and_policy() {
         .collect::<Vec<_>>();
     assert_eq!(
         aliases.len(),
-        4,
+        0,
         "all compatibility aliases must be explicit"
     );
     for alias in aliases {
@@ -508,7 +508,7 @@ fn independently_defined_feature_shapes_match_intent_projections() {
         "access",
         "agents",
         "dev_containers",
-        "depot_publish",
+        "artifact_publish",
         "projects",
         "doctor",
         "server_logs",
@@ -522,7 +522,7 @@ fn independently_defined_feature_shapes_match_intent_projections() {
         "agents",
         "browser",
         "bundles",
-        "depot_publish",
+        "artifact_publish",
         "doctor",
         "dev_containers",
         "gateway",
@@ -548,7 +548,7 @@ fn independently_defined_feature_shapes_match_intent_projections() {
                 "access",
                 "agents",
                 "dev_containers",
-                "depot_publish",
+                "artifact_publish",
                 "doctor",
                 "fs",
                 "projects",
@@ -565,7 +565,7 @@ fn independently_defined_feature_shapes_match_intent_projections() {
                 "access",
                 "agents",
                 "bundles",
-                "depot_publish",
+                "artifact_publish",
                 "doctor",
                 "dev_containers",
                 "jobs",
@@ -584,7 +584,7 @@ fn independently_defined_feature_shapes_match_intent_projections() {
                 "access",
                 "agents",
                 "dev_containers",
-                "depot_publish",
+                "artifact_publish",
                 "doctor",
                 "lab_admin",
                 "projects",
@@ -600,7 +600,7 @@ fn independently_defined_feature_shapes_match_intent_projections() {
                 "browser",
                 "access",
                 "agents",
-                "depot_publish",
+                "artifact_publish",
                 "doctor",
                 "dev_containers",
                 "fs",

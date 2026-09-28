@@ -1,4 +1,4 @@
-//! `labby incus` — low-friction host-side Incus operations.
+//! `labby host incus` — low-friction host-side Incus operations.
 
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;

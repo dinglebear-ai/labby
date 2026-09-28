@@ -97,7 +97,9 @@ if a.mode == "seed":
         raise SystemExit("baseline runtime created none of the durable databases: " + ", ".join(semantic_rows))
     manifest_path.write_text(json.dumps({"seeded": seeded, "absent": absent}, sort_keys=True) + "\n")
     os.chmod(manifest_path, 0o600)
-    for directory in (root, root / "skills", root / "artifacts", root / "snippets"):
+    directories = {root, root / "skills", root / "artifacts", root / "snippets"}
+    directories.update((root / relative).parent for relative in files)
+    for directory in directories:
         os.chmod(directory, 0o700)
     print("seeded durable state: " + ", ".join(seeded))
     for name, reason in absent.items():

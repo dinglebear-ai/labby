@@ -122,7 +122,7 @@ pub(crate) fn classify_labby(action: &CatalogAction) -> Option<AuthorityClassifi
         }
         "access" => (ResourceFamily::Project, USER_OWNED, false),
         "agents" => (ResourceFamily::Agent, USER_OWNED, false),
-        "depot_publish" => (ResourceFamily::Library, PROJECT_OWNED, true),
+        "artifact_publish" => (ResourceFamily::Library, PROJECT_OWNED, true),
         "artifacts" | "bundles" | "sources" | "uploads" => {
             (ResourceFamily::Library, USER_OWNED, true)
         }

@@ -209,7 +209,11 @@ fn read_profile(path: &Path) -> Result<Option<SessionProfile>> {
     );
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)?;
-    let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+    parse_profile(&bytes)
+}
+
+fn parse_profile(bytes: &[u8]) -> Result<Option<SessionProfile>> {
+    let value: serde_json::Value = serde_json::from_slice(bytes)?;
     // Accept the initial CLI profile while preserving its exact client binding.
     if let Some(url) = value.as_str() {
         return Ok(Some(SessionProfile {
@@ -362,6 +366,71 @@ async fn finish_login(
     Ok(())
 }
 
+/// Read only the non-secret session binding, without refresh, chmod, locks, or network I/O.
+/// The random identity changes after a new login and disappears on logout.
+pub(crate) fn stored_identity(server: &Url) -> Result<Option<String>> {
+    let Ok(server) = server_url(server.as_str()) else {
+        return Ok(None);
+    };
+    let path = profile_path(&server)?.join("client.json");
+    let raw = crate::config::host_write::read_config_snapshot(&path)?;
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    ensure!(
+        raw.len() <= 8192,
+        "CLI session metadata exceeds its size limit"
+    );
+    Ok(parse_profile(raw.as_bytes())?.map(|profile| profile.upstream_name))
+}
+
+/// Stored presence is not proof of an unexpired or authorized remote session.
+pub(crate) fn status(server: &Url) -> Result<serde_json::Value> {
+    let configured = stored_identity(server)?.is_some();
+    Ok(
+        serde_json::json!({"server":server.as_str(),"saved_session":configured,"verified_online":false,
+        "guidance":if configured { "A local OAuth session is saved. This offline check did not refresh credentials or verify remote authorization." } else { "No saved OAuth session exists for this destination. Use labby auth login --server URL." }}),
+    )
+}
+
+async fn clear_profile_credentials(
+    path: &Path,
+    store: &labby_auth::sqlite::SqliteStore,
+) -> Result<bool> {
+    let Some(profile) = read_profile(path)? else {
+        return Ok(false);
+    };
+    store
+        .clear_upstream_oauth_identity(&profile.upstream_name, SUBJECT)
+        .await?;
+    std::fs::remove_file(path.join("client.json"))?;
+    #[cfg(unix)]
+    std::fs::File::open(path)?.sync_all()?;
+    Ok(true)
+}
+
+/// Sign out locally from one exact authority. Does not revoke provider-wide credentials.
+pub(crate) async fn logout(server: &Url) -> Result<bool> {
+    let server = server_url(server.as_str())?;
+    let path = profile_path(&server)?;
+    if !path.try_exists()? || !path.join("client.json").try_exists()? {
+        return Ok(false);
+    }
+    crate::installation::InstallationPaths::from_root(&path)?;
+    let _lock = lock_profile(&path).await?;
+    if read_profile(&path)?.is_none() {
+        return Ok(false);
+    }
+    let key = private_key(&path, false)?;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(key)?;
+    let key = labby_auth::at_rest::TokenEncryptionKey::from_encoded(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes),
+    )?;
+    let store =
+        labby_auth::sqlite::SqliteStore::open_with_key(path.join("oauth.db"), Some(key)).await?;
+    clear_profile_credentials(&path, &store).await
+}
+
 /// Returns no session only when this authority has never been configured.
 /// Broken/expired sessions fail closed and do not launch a browser implicitly.
 pub(crate) async fn token(server: &Url) -> Result<Option<String>> {
@@ -378,7 +447,7 @@ pub(crate) async fn token(server: &Url) -> Result<Option<String>> {
     let _lock = lock_profile(&path).await?;
     let key = private_key(&path, false)?;
     let profile =
-        read_profile(&path)?.context("CLI session profile is missing; run labby login")?;
+        read_profile(&path)?.context("CLI session profile is missing; run labby auth login")?;
     let mut config = upstream(&server, &profile.registration)?;
     config.name = profile.upstream_name;
     let runtime = build_upstream_oauth_runtime_with_redirect(
@@ -396,7 +465,7 @@ pub(crate) async fn token(server: &Url) -> Result<Option<String>> {
         .clone();
     ensure!(
         manager.has_credentials(SUBJECT).await?,
-        "no valid CLI session; run labby login again"
+        "no valid CLI session; run labby auth login again"
     );
     let client = manager.build_auth_client(SUBJECT).await?;
     Ok(Some(client.get_access_token().await?))
@@ -405,6 +474,46 @@ pub(crate) async fn token(server: &Url) -> Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn logout_clears_only_the_selected_identity_and_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = labby_auth::sqlite::SqliteStore::open(dir.path().join("oauth.db"))
+            .await
+            .unwrap();
+        publish_profile(
+            dir.path(),
+            &SessionProfile {
+                registration: UpstreamOauthRegistration::Dynamic,
+                upstream_name: "operator-server-selected".into(),
+            },
+        )
+        .unwrap();
+        for name in ["operator-server-selected", "operator-server-other"] {
+            store
+                .save_dynamic_client_registration(name, SUBJECT, name)
+                .await
+                .unwrap();
+        }
+        assert!(clear_profile_credentials(dir.path(), &store).await.unwrap());
+        assert!(!dir.path().join("client.json").exists());
+        assert!(
+            store
+                .find_dynamic_client_registration("operator-server-selected", SUBJECT)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            store
+                .find_dynamic_client_registration("operator-server-other", SUBJECT)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("operator-server-other")
+        );
+        assert!(!clear_profile_credentials(dir.path(), &store).await.unwrap());
+    }
 
     #[test]
     fn explicit_login_can_repair_malformed_profile_contents() {

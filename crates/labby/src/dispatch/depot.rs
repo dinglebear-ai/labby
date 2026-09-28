@@ -19,6 +19,7 @@ mod manager_tests;
 pub mod network;
 #[cfg(test)]
 mod network_tests;
+mod operation_contracts;
 pub mod operations;
 pub mod provider;
 pub mod scheduler;
@@ -309,7 +310,11 @@ impl DepotClient {
         if let Ok(catalog) = self.operations(actor).await
             && let Ok(catalog) = serde_json::from_value::<OperationCatalog>(catalog)
         {
-            status.authority = if catalog.operations.iter().any(|operation| {
+            status.authority = if catalog.operations.iter().any(|definition| {
+                let Ok(operation) = serde_json::from_value::<CatalogOperation>(definition.clone())
+                else {
+                    return false;
+                };
                 match operation.required_scope.as_deref() {
                     Some("write") => operation.authorized.unwrap_or(false),
                     Some(_) => false,
@@ -861,8 +866,8 @@ fn log_publish_failure(stage: &'static str, error: &DepotError) {
         DepotError::Unavailable(failure) => Some(failure.category()),
         _ => None,
     };
-    tracing::warn!(surface = "dispatch", service = "depot_publish", stage,
-        transport_failure, failure = %error_body(error), "Depot publish stage failed");
+    tracing::warn!(surface = "dispatch", service = super::depot_publish::SERVICE, stage,
+        transport_failure, failure = %error_body(error), "Artifact publish stage failed");
 }
 
 pub fn publish_tool_error(error: DepotError) -> super::error::ToolError {
@@ -870,9 +875,9 @@ pub fn publish_tool_error(error: DepotError) -> super::error::ToolError {
     super::error::ToolError::Sdk {
         sdk_kind: safe["error"]
             .as_str()
-            .unwrap_or("depot_publish_failed")
+            .unwrap_or("artifact_publish_failed")
             .into(),
-        message: format!("Depot publish failed: {safe}"),
+        message: format!("Artifact publish failed: {safe}"),
     }
 }
 
@@ -890,7 +895,7 @@ fn compatibility_envelope(value: Value) -> Result<Value, DepotError> {
 
 #[derive(Deserialize)]
 struct OperationCatalog {
-    operations: Vec<CatalogOperation>,
+    operations: Vec<Value>,
 }
 
 #[derive(Deserialize)]
@@ -923,9 +928,30 @@ fn parse_operation_catalog(
     let catalog: OperationCatalog =
         serde_json::from_value(catalog.clone()).map_err(|_| DepotError::InvalidCatalog)?;
     let mut policies = HashMap::with_capacity(catalog.operations.len());
-    for item in catalog.operations {
+    for definition in catalog.operations {
+        let item: CatalogOperation =
+            serde_json::from_value(definition.clone()).map_err(|_| DepotError::InvalidCatalog)?;
         if !valid_operation_name(&item.name)
             || item.annotations.read_only_hint && item.annotations.destructive_hint
+        {
+            return Err(DepotError::InvalidCatalog);
+        }
+        let Some(expected) = operation_contracts::expected_contract(&item.name) else {
+            // Additive Depot operations remain unavailable until Labby pins
+            // their full schema and authority contract.
+            continue;
+        };
+        if !labby_apis::artifact_control::operation_contract_is_compatible(
+            &definition,
+            &item.name,
+            &expected.schema_fingerprint,
+        ) {
+            return Err(DepotError::InvalidCatalog);
+        }
+        if item.required_scope.as_deref() != Some(expected.required_scope.as_str())
+            || item.transport_available != Some(expected.transport_available)
+            || item.annotations.read_only_hint != expected.annotations.read_only_hint
+            || item.annotations.destructive_hint != expected.annotations.destructive_hint
         {
             return Err(DepotError::InvalidCatalog);
         }
@@ -1078,6 +1104,40 @@ mod tests {
     use base64::Engine as _;
     use wiremock::matchers::{method, path};
     use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
+
+    const DEPOT_OPERATIONS_GOLDEN: &str =
+        include_str!("../../../../docs/contracts/fixtures/depot-control-plane/operations-v1.json");
+
+    #[derive(Clone, Copy)]
+    struct CatalogPolicy {
+        authorized: bool,
+        read_only: bool,
+        destructive: bool,
+        transport_available: bool,
+    }
+
+    fn catalog_operation(name: &str, required_scope: &str, policy: CatalogPolicy) -> Value {
+        let fixture: Value = serde_json::from_str(DEPOT_OPERATIONS_GOLDEN).unwrap();
+        let mut definition = fixture["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|definition| definition["name"] == name)
+            .unwrap()
+            .clone();
+        let object = definition.as_object_mut().unwrap();
+        object.insert("requiredScope".into(), json!(required_scope));
+        object.insert("authorized".into(), json!(policy.authorized));
+        object.insert(
+            "transportAvailable".into(),
+            json!(policy.transport_available),
+        );
+        object.insert(
+            "annotations".into(),
+            json!({"readOnlyHint":policy.read_only,"destructiveHint":policy.destructive}),
+        );
+        definition
+    }
 
     struct FreshDelegationWithoutActorHeader;
 
@@ -1758,14 +1818,14 @@ mod tests {
     #[test]
     fn operation_policy_separates_authority_from_side_effects() {
         let catalog = json!({"operations":[
-            {"name":"depot.new.read","requiredScope":"read","transportAvailable":true,"authorized":true,"annotations":{"readOnlyHint":true,"destructiveHint":false}},
-            {"name":"depot.new.write_read","requiredScope":"write","transportAvailable":true,"authorized":false,"annotations":{"readOnlyHint":true,"destructiveHint":false}},
-            {"name":"depot.new.destroy","requiredScope":"write","transportAvailable":true,"authorized":false,"annotations":{"readOnlyHint":false,"destructiveHint":true}},
-            {"name":"depot.new.operator","requiredScope":"operator","transportAvailable":true,"authorized":false,"annotations":{"readOnlyHint":true,"destructiveHint":false}},
-            {"name":"depot.new.local","requiredScope":"local","transportAvailable":false,"authorized":false,"annotations":{"readOnlyHint":true,"destructiveHint":false}}
+            catalog_operation("depot.system.status", "read", CatalogPolicy { authorized: true, read_only: true, destructive: false, transport_available: true }),
+            catalog_operation("depot.sources.configure", "write", CatalogPolicy { authorized: false, read_only: false, destructive: true, transport_available: true }),
+            catalog_operation("depot.tokens.revoke", "write", CatalogPolicy { authorized: false, read_only: false, destructive: true, transport_available: true }),
+            catalog_operation("depot.maintenance.upstream", "operator", CatalogPolicy { authorized: false, read_only: true, destructive: false, transport_available: true }),
+            catalog_operation("depot.artifacts.exact", "read", CatalogPolicy { authorized: false, read_only: true, destructive: false, transport_available: true })
         ]});
         assert_eq!(
-            parse_operation_policy(&catalog, "depot.new.read").unwrap(),
+            parse_operation_policy(&catalog, "depot.system.status").unwrap(),
             OperationPolicy {
                 read_only: true,
                 destructive: false,
@@ -1775,17 +1835,7 @@ mod tests {
             }
         );
         assert_eq!(
-            parse_operation_policy(&catalog, "depot.new.write_read").unwrap(),
-            OperationPolicy {
-                read_only: true,
-                destructive: false,
-                requires_write: true,
-                requires_operator: false,
-                transport_available: true,
-            }
-        );
-        assert_eq!(
-            parse_operation_policy(&catalog, "depot.new.destroy").unwrap(),
+            parse_operation_policy(&catalog, "depot.sources.configure").unwrap(),
             OperationPolicy {
                 read_only: false,
                 destructive: true,
@@ -1795,7 +1845,17 @@ mod tests {
             }
         );
         assert_eq!(
-            parse_operation_policy(&catalog, "depot.new.operator").unwrap(),
+            parse_operation_policy(&catalog, "depot.tokens.revoke").unwrap(),
+            OperationPolicy {
+                read_only: false,
+                destructive: true,
+                requires_write: true,
+                requires_operator: false,
+                transport_available: true,
+            }
+        );
+        assert_eq!(
+            parse_operation_policy(&catalog, "depot.maintenance.upstream").unwrap(),
             OperationPolicy {
                 read_only: true,
                 destructive: false,
@@ -1805,13 +1865,13 @@ mod tests {
             }
         );
         assert_eq!(
-            parse_operation_policy(&catalog, "depot.new.local").unwrap(),
+            parse_operation_policy(&catalog, "depot.artifacts.exact").unwrap(),
             OperationPolicy {
                 read_only: true,
                 destructive: false,
                 requires_write: false,
                 requires_operator: false,
-                transport_available: false,
+                transport_available: true,
             }
         );
         assert!(matches!(
@@ -1825,6 +1885,140 @@ mod tests {
             ),
             Err(DepotError::InvalidCatalog)
         ));
+    }
+
+    #[test]
+    fn operation_catalog_rejects_missing_forged_and_altered_contracts() {
+        let valid = catalog_operation(
+            "depot.system.status",
+            "read",
+            CatalogPolicy {
+                authorized: true,
+                read_only: true,
+                destructive: false,
+                transport_available: true,
+            },
+        );
+
+        for mutation in ["missing", "forged", "altered"] {
+            let mut definition = valid.clone();
+            let object = definition.as_object_mut().unwrap();
+            match mutation {
+                "missing" => {
+                    object.remove("schemaFingerprint");
+                }
+                "forged" => {
+                    object.insert("schemaFingerprint".into(), json!("0".repeat(64)));
+                }
+                "altered" => {
+                    object.insert(
+                        "inputSchema".into(),
+                        json!({"type":"object","properties":{"surprise":{"type":"string"}}}),
+                    );
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                matches!(
+                    parse_operation_catalog(&json!({"operations":[definition]})),
+                    Err(DepotError::InvalidCatalog)
+                ),
+                "{mutation} contract must fail closed"
+            );
+        }
+    }
+
+    #[test]
+    fn operation_catalog_ignores_additive_unpinned_operations() {
+        let known = catalog_operation(
+            "depot.system.status",
+            "read",
+            CatalogPolicy {
+                authorized: true,
+                read_only: true,
+                destructive: false,
+                transport_available: true,
+            },
+        );
+        let mut unknown = known.clone();
+        unknown["name"] = json!("depot.future.unreviewed");
+
+        let policies = parse_operation_catalog(&json!({"operations":[known, unknown]})).unwrap();
+        assert!(policies.contains_key("depot.system.status"));
+        assert!(!policies.contains_key("depot.future.unreviewed"));
+    }
+
+    #[test]
+    fn operation_catalog_rejects_authority_contract_mutations() {
+        let valid = catalog_operation(
+            "depot.system.status",
+            "read",
+            CatalogPolicy {
+                authorized: true,
+                read_only: true,
+                destructive: false,
+                transport_available: true,
+            },
+        );
+        let mutations = [
+            ("requiredScope", json!("write")),
+            ("transportAvailable", json!(false)),
+        ];
+        for (field, value) in mutations {
+            let mut definition = valid.clone();
+            definition[field] = value;
+            assert!(
+                matches!(
+                    parse_operation_catalog(&json!({"operations":[definition]})),
+                    Err(DepotError::InvalidCatalog)
+                ),
+                "{field} mutation must fail closed"
+            );
+        }
+
+        for (field, value) in [
+            ("readOnlyHint", json!(false)),
+            ("destructiveHint", json!(true)),
+        ] {
+            let mut definition = valid.clone();
+            definition["annotations"][field] = value;
+            assert!(
+                matches!(
+                    parse_operation_catalog(&json!({"operations":[definition]})),
+                    Err(DepotError::InvalidCatalog)
+                ),
+                "annotations.{field} mutation must fail closed"
+            );
+        }
+    }
+
+    #[test]
+    fn pinned_admin_contract_inventory_matches_the_depot_fixture() {
+        let fixture: Value = serde_json::from_str(DEPOT_OPERATIONS_GOLDEN).unwrap();
+        let operations = fixture["operations"].as_array().unwrap();
+        assert_eq!(operations.len(), 64);
+        for definition in operations {
+            let name = definition["name"].as_str().unwrap();
+            assert_eq!(
+                operation_contracts::expected_schema_fingerprint(name),
+                definition["schemaFingerprint"].as_str(),
+                "pinned fingerprint drifted for {name}"
+            );
+            let expected = operation_contracts::expected_contract(name).unwrap();
+            assert_eq!(expected.required_scope, definition["requiredScope"]);
+            assert_eq!(
+                expected.transport_available,
+                definition["transportAvailable"]
+            );
+            assert_eq!(
+                expected.annotations.read_only_hint,
+                definition["annotations"]["readOnlyHint"]
+            );
+            assert_eq!(
+                expected.annotations.destructive_hint,
+                definition["annotations"]["destructiveHint"]
+            );
+        }
     }
 
     #[test]

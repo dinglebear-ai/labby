@@ -6,6 +6,7 @@ import dynamic from 'next/dynamic'
 import { ConsoleShellProvider, useConsoleShell } from '@/components/console/console-shell-context'
 import { ConsoleSidebar } from '@/components/console/console-sidebar'
 import { ConsoleTopbar } from '@/components/console/console-topbar'
+import { CapabilityHealthBanner } from '@/components/console/capability-health-banner'
 
 const ConsoleGlobalTools = dynamic(
   () => import('@/components/console/console-global-tools').then((module) => module.ConsoleGlobalTools),
@@ -84,6 +85,7 @@ function ConsoleShellFrame({
                 gap: 16,
               }}
             >
+              <CapabilityHealthBanner />
               {children}
             </div>
           </main>

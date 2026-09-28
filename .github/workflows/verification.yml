@@ -46,7 +46,7 @@ jobs:
       - name: Test workspace boundaries
         run: python3 -m unittest discover -s tools/verification/tests -p 'test_*.py' -v
       - name: Test core and generated schema drift
-        run: cargo test --manifest-path tools/verification/Cargo.toml --workspace --all-features --locked
+        run: cargo test --manifest-path tools/verification/Cargo.toml --workspace --all-features --locked -- --test-threads=1
       - name: Lint isolated workspace
         run: cargo clippy --manifest-path tools/verification/Cargo.toml --workspace --all-features --all-targets --locked -- -D warnings
       - name: Check formatting

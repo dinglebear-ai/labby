@@ -154,6 +154,7 @@ pub struct ToolRegistry {
     action_names: Vec<&'static str>,
     dispatch_capabilities: Vec<(&'static str, DispatchCapability)>,
     permanent_tools: crate::mcp::permanent_tools::PermanentToolRegistry,
+    tool_projection_mode: crate::mcp::permanent_tools::ToolProjectionMode,
 }
 
 impl ToolRegistry {
@@ -165,6 +166,7 @@ impl ToolRegistry {
             action_names: Vec::new(),
             dispatch_capabilities: Vec::new(),
             permanent_tools: crate::mcp::permanent_tools::PermanentToolRegistry::new(),
+            tool_projection_mode: crate::mcp::permanent_tools::ToolProjectionMode::Router,
         }
     }
 
@@ -235,6 +237,20 @@ impl ToolRegistry {
         &self.permanent_tools
     }
 
+    #[must_use]
+    pub(crate) const fn tool_projection_mode(
+        &self,
+    ) -> crate::mcp::permanent_tools::ToolProjectionMode {
+        self.tool_projection_mode
+    }
+
+    pub(crate) fn set_tool_projection_mode(
+        &mut self,
+        mode: crate::mcp::permanent_tools::ToolProjectionMode,
+    ) {
+        self.tool_projection_mode = mode;
+    }
+
     /// Borrow the cached sorted unique action-name list.
     #[must_use]
     pub fn action_names(&self) -> &[&'static str] {
@@ -282,6 +298,27 @@ impl ToolRegistry {
             Some(DispatchCapability::ContextFree | DispatchCapability::CallerBound)
         )
     }
+
+    #[must_use]
+    pub(crate) fn resolve_atomic_action(
+        &self,
+        tool_name: &str,
+    ) -> Option<(&RegisteredService, &ActionSpec)> {
+        if !self.tool_projection_mode.includes_atomic() {
+            return None;
+        }
+        self.services.iter().find_map(|service| {
+            if !self.supports_context_free_dispatch(service.name) {
+                return None;
+            }
+            let action_name = tool_name.strip_prefix(service.name)?.strip_prefix('.')?;
+            service
+                .actions
+                .iter()
+                .find(|action| action.name == action_name && action.output_schema.is_some())
+                .map(|action| (service, action))
+        })
+    }
 }
 
 // === labby-gateway in-process peer seam ===
@@ -318,6 +355,14 @@ impl labby_gateway::registry::InProcessServiceRegistry for ToolRegistry {
             // authenticated outer MCP surface instead of being silently
             // downgraded to their context-free fallback.
             .filter(|service| self.supports_context_free_dispatch(service.name))
+            // Route-owned shims such as artifact_publish are registered in
+            // the host registry for protected-route dispatch, but the root
+            // route intentionally never projects them. Starting a root-like
+            // in-process server for one returns zero tools and otherwise
+            // causes the pool's ensure loop to re-register it forever.
+            .filter(|service| {
+                crate::mcp::route_scope::McpRouteScope::Root.allows_service(service.name)
+            })
             .cloned()
             .map(
                 |service| -> Box<dyn labby_gateway::registry::InProcessService> {
@@ -419,11 +464,9 @@ pub fn service_configured_by_env(service: &str) -> bool {
     let Some(meta) = service_meta(service) else {
         return false;
     };
-    meta.required_env.iter().all(|var| {
-        std::env::var(var.name)
-            .ok()
-            .is_some_and(|value| !value.trim().is_empty())
-    })
+    meta.required_env
+        .iter()
+        .all(|var| std::env::var(var.name).is_ok_and(|value| !value.trim().is_empty()))
 }
 
 #[must_use]
@@ -558,12 +601,11 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
 
     reg.register(RegisteredService::bootstrap_operator(
         crate::dispatch::depot_publish::SERVICE,
-        "Publish skill archives to a protected Team Depot",
+        "Publish skill archives through a protected Team Artifact authority",
         "artifacts",
         crate::dispatch::depot_publish::ACTIONS,
         dispatch_fn!(crate::dispatch::depot_publish::dispatch),
     ));
-
     reg.register(RegisteredService::bootstrap_operator(
         "browser",
         "Bridge browser-native WebMCP tools into Labby",
@@ -820,6 +862,7 @@ mod tests {
             requires_admin: false,
             params: &[],
             returns: "null",
+            output_schema: None,
         }];
         let service = |name: &'static str| {
             RegisteredService::bootstrap_operator(name, "probe", "bootstrap", ACTIONS, dispatch)
@@ -975,6 +1018,30 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn route_owned_publish_shim_is_not_an_in_process_peer() {
+        use labby_gateway::registry::InProcessServiceRegistry as _;
+
+        let registry = build_default_registry();
+        assert!(
+            registry
+                .service(crate::dispatch::depot_publish::SERVICE)
+                .is_some()
+        );
+        let peers = registry.in_process_services();
+        assert!(
+            peers
+                .iter()
+                .any(|service| service.service_name() == "doctor")
+        );
+        assert!(
+            peers.iter().all(|service| {
+                service.service_name() != crate::dispatch::depot_publish::SERVICE
+            })
+        );
+    }
+
     #[cfg(not(feature = "gateway"))]
     #[test]
     fn default_registry_omits_gateway_without_feature() {
@@ -1073,6 +1140,7 @@ mod tests {
             requires_admin: false,
             params: &[],
             returns: "object",
+            output_schema: None,
         },
         ActionSpec {
             name: "status.get",
@@ -1081,6 +1149,7 @@ mod tests {
             requires_admin: false,
             params: &[],
             returns: "object",
+            output_schema: None,
         },
     ];
 
@@ -1092,6 +1161,7 @@ mod tests {
             requires_admin: false,
             params: &[],
             returns: "object",
+            output_schema: None,
         },
         ActionSpec {
             name: "metrics.list",
@@ -1100,6 +1170,7 @@ mod tests {
             requires_admin: false,
             params: &[],
             returns: "object",
+            output_schema: None,
         },
     ];
 
@@ -1258,6 +1329,7 @@ mod tests {
             requires_admin: false,
             params: &[],
             returns: "null",
+            output_schema: None,
         }];
 
         let service = RegisteredService::bootstrap_operator(

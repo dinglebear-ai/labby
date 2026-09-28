@@ -198,14 +198,14 @@ impl McpRouteScope {
 
     pub(crate) fn allows_service(&self, service: &str) -> bool {
         match self {
-            Self::Root => service != crate::dispatch::depot_publish::SERVICE,
+            Self::Root => !crate::dispatch::depot_publish::is_publish_service(service),
             Self::ProtectedSubset {
                 services,
                 upstreams,
                 expose_tools,
                 ..
             } => {
-                if service == crate::dispatch::depot_publish::SERVICE {
+                if crate::dispatch::depot_publish::is_publish_service(service) {
                     *expose_tools
                         && upstreams.contains(crate::dispatch::depot_publish::REQUIRED_UPSTREAM)
                 } else {
@@ -336,6 +336,7 @@ mod tests {
     fn root_allows_everything() {
         let scope = McpRouteScope::Root;
         assert!(scope.allows_service("gateway"));
+        assert!(!scope.allows_service("artifact_publish"));
         assert!(!scope.allows_service("depot_publish"));
         assert!(scope.allows_upstream("gateway-alpha"));
         assert!(scope.exposes_tools());
@@ -348,11 +349,13 @@ mod tests {
     }
 
     #[test]
-    fn depot_publish_shim_is_owned_only_by_team_depot_protected_routes() {
+    fn artifact_publish_is_owned_only_by_team_depot_protected_routes() {
         let allowed = McpRouteScope::protected_subset("linear", ["team-depot"], ["skills"], false);
         let wrong_upstream =
             McpRouteScope::protected_subset("linear", ["catalog-depot"], ["skills"], false);
+        assert!(allowed.allows_service("artifact_publish"));
         assert!(allowed.allows_service("depot_publish"));
+        assert!(!wrong_upstream.allows_service("artifact_publish"));
         assert!(!wrong_upstream.allows_service("depot_publish"));
     }
 
@@ -366,12 +369,13 @@ mod tests {
             let scope = McpRouteScope::protected_subset_with_capabilities(
                 "team",
                 [upstream],
-                ["depot_publish", "skills"],
+                ["artifact_publish", "depot_publish", "skills"],
                 McpRouteCapabilityGates {
                     expose_tools,
                     ..McpRouteCapabilityGates::all(false)
                 },
             );
+            assert_eq!(scope.allows_service("artifact_publish"), expected);
             assert_eq!(scope.allows_service("depot_publish"), expected);
             assert!(scope.allows_service("skills"));
         }

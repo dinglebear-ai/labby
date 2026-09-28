@@ -1,8 +1,8 @@
 'use client'
 
-import type { ReactNode } from 'react'
-import { Clipboard, Pencil, RefreshCw } from 'lucide-react'
-import type { PhoenixEvent, PhoenixMessage } from '@/lib/api/phoenix-client'
+import { useState, type ReactNode } from 'react'
+import { AlertTriangle, Clipboard, Pencil, RefreshCw, Terminal } from 'lucide-react'
+import type { PhoenixEvent, PhoenixMcpApp, PhoenixMessage } from '@/lib/api/phoenix-client'
 import { PhoenixEventTimeline, isPhoenixAgentDelta, phoenixAgentDelta, phoenixEventTime } from './phoenix-event-timeline'
 
 type MessageEntry = { kind: 'message'; time: number; order: number; index: number; message: PhoenixMessage }
@@ -79,6 +79,48 @@ function buildChunks(messages: PhoenixMessage[], events: PhoenixEvent[]): Chunk[
   return chunks
 }
 
+function mcpAppHtml(app: PhoenixMcpApp): string | undefined {
+  return app.resource?.contents?.find((item) => {
+    const mime = item.mimeType ?? item.mime_type ?? ''
+    return typeof item.text === 'string' && (mime.includes('html') || item.uri === app.resourceUri)
+  })?.text
+}
+
+function PhoenixMcpAppSurface({ app }: { app: PhoenixMcpApp }) {
+  const [renderFailed, setRenderFailed] = useState(false)
+  const html = mcpAppHtml(app)
+  const ready = Boolean(html) && !renderFailed
+  return <section data-phoenix-mcp-app={ready ? 'ready' : 'fallback'} className="mt-2 overflow-hidden rounded-[10px] border border-aurora-border-default bg-aurora-panel-strong">
+    <div className="flex min-w-0 items-center gap-2 border-b border-aurora-border-default px-3 py-2">
+      <span className="grid size-7 shrink-0 place-items-center rounded-md border border-aurora-accent-primary/40 bg-aurora-accent-primary/10 text-aurora-accent-strong"><Terminal size={14}/></span>
+      <strong className="shrink-0 text-[12px] text-aurora-text-primary">MCP App</strong>
+      <span className="min-w-0 truncate text-[10.5px] text-aurora-text-muted" title={app.resourceUri}>{app.resourceUri}</span>
+      {!ready ? <span className="ml-auto inline-flex shrink-0 items-center gap-1 text-[10px] text-aurora-warn"><AlertTriangle size={11}/>fallback</span> : null}
+    </div>
+    {ready ? <iframe
+      title={app.resourceUri + ' MCP UI'}
+      className="block min-h-[320px] w-full border-0 bg-white"
+      style={{ height: 'min(620px, 72vh)' }}
+      sandbox="allow-scripts allow-forms allow-popups allow-downloads"
+      srcDoc={html}
+      onError={() => setRenderFailed(true)}
+    /> : <div className="px-4 py-3 text-[11.5px] leading-relaxed text-aurora-text-muted">
+      The MCP App surface is unavailable{app.errorKind ? ' (' + app.errorKind + ')' : ''}. The underlying tool result is still preserved in the activity above.
+    </div>}
+  </section>
+}
+
+function PhoenixMcpApps({ events }: { events: PhoenixEvent[] }) {
+  const seen = new Set<string>()
+  const apps = events.flatMap((event) => event.mcp_apps ?? []).filter((app) => {
+    if (!app.resourceUri || seen.has(app.resourceUri)) return false
+    seen.add(app.resourceUri)
+    return true
+  })
+  if (apps.length === 0) return null
+  return <div className="mt-1 w-full max-w-4xl">{apps.map((app) => <PhoenixMcpAppSurface key={app.resourceUri} app={app}/>)}</div>
+}
+
 function Reactions({ message, index, copiedIndex, onRetry, onCopy, onEdit }: { message: PhoenixMessage; index: number; copiedIndex?: number; onRetry: (index: number) => void; onCopy: (text: string, index: number) => void; onEdit?: (index: number, text: string) => void }) {
   return <div data-phoenix-reactions className="flex min-h-8 items-center gap-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
     {message.created_at_ms ? <time dateTime={new Date(message.created_at_ms).toISOString()} className="mr-1 text-[10.5px] tabular-nums text-aurora-text-muted">{new Date(message.created_at_ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time> : null}
@@ -93,7 +135,7 @@ export function PhoenixConversation({ messages, events, mark, copiedIndex, onRet
   const streamedTurns = new Set<string>()
   return <>
     {chunks.map((chunk) => {
-      if (chunk.kind === 'events') return <div key={chunk.id} className="pl-[35px]"><PhoenixEventTimeline events={chunk.events}/></div>
+      if (chunk.kind === 'events') return <div key={chunk.id} className="pl-[35px]"><PhoenixEventTimeline events={chunk.events}/><PhoenixMcpApps events={chunk.events}/></div>
       if (chunk.kind === 'assistant-stream') {
         const firstForTurn = !streamedTurns.has(chunk.turnKey)
         streamedTurns.add(chunk.turnKey)

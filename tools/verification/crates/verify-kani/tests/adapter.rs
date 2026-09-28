@@ -156,12 +156,15 @@ fn explicit_bundle_driver_can_resolve_its_sibling_tools() {
 #[test]
 fn fake_process_results_preserve_kani_semantics() {
     let directory = tempfile::tempdir().unwrap();
+    // These scripts test result classification, not deadline enforcement. CI
+    // can deschedule the child while other verification tests are running.
+    let semantic_plan = plan(5_000, 4096);
     let success = executable(
         &directory,
         "if [ \"$1\" = --version ]; then printf 'kani 0.67.0\\n'; exit 0; fi\nprintf 'VERIFICATION:- SUCCESSFUL\\nComplete - 1 successfully verified harnesses, 0 failures, 1 total.\\n'",
     );
     assert!(matches!(
-        backend(&success).run(&plan(500, 4096)).verdict,
+        backend(&success).run(&semantic_plan).verdict,
         Verdict::Bounded { .. }
     ));
 
@@ -169,7 +172,7 @@ fn fake_process_results_preserve_kani_semantics() {
         &directory,
         "if [ \"$1\" = --version ]; then printf 'kani 0.67.0\\n'; exit 0; fi\nprintf 'Status: FAILURE\\nVERIFICATION:- FAILED\\n1 failures, 1 total.\\n'; exit 1",
     );
-    let report = backend(&failure).run(&plan(500, 4096));
+    let report = backend(&failure).run(&semantic_plan);
     assert!(matches!(report.verdict, Verdict::Falsified { .. }));
     assert!(report.scenarios.is_empty());
 
@@ -177,17 +180,19 @@ fn fake_process_results_preserve_kani_semantics() {
         &directory,
         "if [ \"$1\" = --version ]; then printf 'kani 0.67.0\\n'; exit 0; fi\nprintf 'Status: FAILURE\\nDescription: unwinding assertion loop 1\\nVERIFICATION:- FAILED\\n'; exit 1",
     );
-    assert!(matches!(
-        backend(&unwind).run(&plan(500, 4096)).verdict,
-        Verdict::Incomplete { .. }
-    ));
+    let report = backend(&unwind).run(&semantic_plan);
+    assert!(
+        matches!(report.verdict, Verdict::Incomplete { .. }),
+        "unexpected unwind verdict: {:?}",
+        report.verdict
+    );
 
     let compiler = executable(
         &directory,
         "if [ \"$1\" = --version ]; then printf 'kani 0.67.0\\n'; exit 0; fi\nprintf 'error[E0308]: mismatched types\\n' >&2; exit 1",
     );
     assert!(matches!(
-        backend(&compiler).run(&plan(500, 4096)).verdict,
+        backend(&compiler).run(&semantic_plan).verdict,
         Verdict::Error { .. }
     ));
 }

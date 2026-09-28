@@ -63,7 +63,7 @@ upstream error to discard the rest of the pulse.
 Run with:
 
 ```bash
-labby gateway code exec --json --code "$(awk '/^```js$/{flag=1;next}/^```$/{if(flag){exit}}flag' docs/snippets/homelab-readonly-pulse.md)"
+labby code run --json --code "$(awk '/^```js$/{flag=1;next}/^```$/{if(flag){exit}}flag' docs/snippets/homelab-readonly-pulse.md)"
 ```
 
 ```js

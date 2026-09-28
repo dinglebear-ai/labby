@@ -6,7 +6,9 @@ use std::{
     num::NonZeroU64,
 };
 
-use labby_model::{BrowserRequestModel, BrowserRequestState, MODEL, Step};
+use labby_model::{
+    BrowserRequestModel, BrowserRequestState, CAPABILITY_VISIBILITY_MODEL, MODEL, Step,
+};
 use serde_json::json;
 use stateright::Property;
 use verify_core::{
@@ -17,12 +19,19 @@ use verify_runner::{ReplayLimits, TargetRegistry, TraceVerdict};
 use verify_scenario::Scenario;
 use verify_stateright::{BfsHarness, ScenarioMetadata, StaterightBackend};
 
-const HANDLES: [(&str, &str); 5] = [
+const REQUEST_HANDLES: [(&str, &str); 5] = [
     ("LABBY-REQ-001", "request_single_terminal"),
     ("LABBY-REQ-002", "request_terminal_cleanup"),
     ("LABBY-REQ-003", "request_terminal_immutable"),
     ("LABBY-REQ-004", "request_generation_owner"),
     ("LABBY-REQ-005", "request_cancel_before_dispatch"),
+];
+
+const CAPABILITY_HANDLES: [(&str, &str); 4] = [
+    ("LABBY-CAP-001", "degradation_visible_in_doctor"),
+    ("LABBY-CAP-002", "degradation_visible_in_readiness"),
+    ("LABBY-CAP-003", "degradation_has_operator_detail"),
+    ("LABBY-CAP-004", "fatal_guard_blocks_startup"),
 ];
 
 fn kani_metadata() -> verify_kani::KaniBackend {
@@ -57,23 +66,29 @@ fn plan(invariant: &str, handle: &str) -> CheckPlan {
 }
 
 #[test]
-fn catalog_registers_all_five_stateright_handles_without_running_search() {
+fn catalog_registers_all_stateright_handles_without_running_search() {
     let backend = labby_verify::stateright::backend().unwrap();
     let mut backends = BackendRegistry::default();
     backends.register(&backend).unwrap();
     let kani = kani_metadata();
     backends.register(&kani).unwrap();
     let catalog = labby_model::catalog(&backends).unwrap();
-    assert_eq!(catalog.catalog().invariant.len(), HANDLES.len());
-    for (_, handle) in HANDLES {
+    assert_eq!(
+        catalog.catalog().invariant.len(),
+        REQUEST_HANDLES.len() + CAPABILITY_HANDLES.len()
+    );
+    for (_, handle) in REQUEST_HANDLES {
         assert!(backend.has_handle(MODEL, handle));
+    }
+    for (_, handle) in CAPABILITY_HANDLES {
+        assert!(backend.has_handle(CAPABILITY_VISIBILITY_MODEL, handle));
     }
 }
 
 #[test]
 fn production_model_is_clean_within_the_declared_t1_bounds() {
     let backend = labby_verify::stateright::backend().unwrap();
-    for (invariant, handle) in HANDLES {
+    for (invariant, handle) in REQUEST_HANDLES {
         let report = backend.run(&plan(invariant, handle));
         assert!(
             matches!(report.verdict, Verdict::Bounded { .. }),
@@ -87,7 +102,7 @@ fn production_model_is_clean_within_the_declared_t1_bounds() {
 #[test]
 fn seeded_bfs_is_rejected_instead_of_silently_ignored() {
     let backend = labby_verify::stateright::backend().unwrap();
-    let mut seeded = plan(HANDLES[0].0, HANDLES[0].1);
+    let mut seeded = plan(REQUEST_HANDLES[0].0, REQUEST_HANDLES[0].1);
     seeded.seed = Some(7);
     let report = backend.run(&seeded);
     assert!(matches!(report.verdict, Verdict::Error { .. }));

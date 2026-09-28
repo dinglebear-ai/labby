@@ -19,6 +19,7 @@ const TEST_ACTIONS_ONE: &[ActionSpec] = &[
         requires_admin: false,
         params: &[],
         returns: "object",
+        output_schema: None,
     },
     ActionSpec {
         name: "status.get",
@@ -27,6 +28,7 @@ const TEST_ACTIONS_ONE: &[ActionSpec] = &[
         requires_admin: false,
         params: &[],
         returns: "object",
+        output_schema: None,
     },
 ];
 
@@ -38,6 +40,7 @@ const TEST_ACTIONS_TWO: &[ActionSpec] = &[
         requires_admin: false,
         params: &[],
         returns: "object",
+        output_schema: None,
     },
     ActionSpec {
         name: "status.inspect",
@@ -46,6 +49,7 @@ const TEST_ACTIONS_TWO: &[ActionSpec] = &[
         requires_admin: false,
         params: &[],
         returns: "object",
+        output_schema: None,
     },
 ];
 

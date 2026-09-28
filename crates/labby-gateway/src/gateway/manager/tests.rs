@@ -490,6 +490,7 @@ fn fixture_oauth_upstream(name: &str, url: &str) -> UpstreamConfig {
         registration: UpstreamOauthRegistration::Dynamic,
         scopes: None,
         credential: Default::default(),
+        additional_endpoint_origins: vec![],
         prefer_client_metadata_document: None,
     });
     upstream

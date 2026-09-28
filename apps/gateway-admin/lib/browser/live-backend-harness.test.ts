@@ -641,8 +641,8 @@ test('artifact scanning enforces actual streamed bytes and an absolute deadline'
   )
 })
 
-test('CI uploads only the exclusive current run-attempt evidence directory', async () => {
-  const workflowPath = path.resolve(import.meta.dirname, '../../../../.github/workflows/ci.yml')
+test('Live E2E uploads only the exclusive current run-attempt evidence directory', async () => {
+  const workflowPath = path.resolve(import.meta.dirname, '../../../../.github/workflows/live-e2e.yml')
   const workflow = await readFile(workflowPath, 'utf8')
   assert.match(
     workflow,

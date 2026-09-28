@@ -37,7 +37,7 @@ class WindowsCiPolicyTests(unittest.TestCase):
         self.assertNotIn("--no-tests pass", block)
 
     def test_desktop_windows_job_is_hosted_cached_and_bounded(self) -> None:
-        block = job_block(self.workflow, "desktop-windows", "rust-coverage")
+        block = job_block(self.workflow, "desktop-windows", "verification-t0")
         self.assertIn("runs-on: windows-latest", block)
         self.assertIn("timeout-minutes: 60", block)
         self.assertIn("Swatinem/rust-cache@", block)
@@ -65,7 +65,7 @@ class WindowsCiPolicyTests(unittest.TestCase):
 
         installer = job_block(self.workflow, "windows-installer", "macos-installer")
         windows = job_block(self.workflow, "test-windows", "release-contract")
-        desktop = job_block(self.workflow, "desktop-windows", "rust-coverage")
+        desktop = job_block(self.workflow, "desktop-windows", "verification-t0")
         manual_gate = "github.event_name == 'workflow_dispatch' && inputs.run_windows == true"
         self.assertIn(manual_gate, installer)
         self.assertIn(manual_gate, windows)
@@ -101,11 +101,12 @@ class WindowsCiPolicyTests(unittest.TestCase):
                     f"{path.name}:{name} must refuse fork pull requests",
                 )
 
-    def test_ci_gate_does_not_wait_on_self_hosted_or_heavy_jobs(self) -> None:
+    def test_ci_gate_waits_for_required_suites_but_not_advisory_jobs(self) -> None:
         gate = yaml.safe_load(self.workflow)["jobs"]["ci-gate"]["needs"]
-        for job in ("test", "rust-coverage", "feature-slices", "live-e2e-core"):
-            self.assertNotIn(job, gate, f"{job} must stay out of the merge gate")
-        for job in ("test-windows", "test-fork", "clippy"):
+        for job in ("rust-coverage", "live-e2e-core"):
+            self.assertNotIn(job, yaml.safe_load(self.workflow)["jobs"], f"{job} must run independently of CI")
+            self.assertNotIn(job, gate, f"{job} remains advisory")
+        for job in ("test", "feature-slices", "test-windows", "test-fork", "clippy"):
             self.assertIn(job, gate)
 
 

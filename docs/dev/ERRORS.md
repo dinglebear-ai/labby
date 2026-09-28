@@ -1,7 +1,7 @@
 ---
 title: "Error Contract"
 created: "2026-07-30"
-updated: "2026-08-12"
+updated: "2026-09-22"
 ---
 
 # Error Contract
@@ -125,6 +125,20 @@ Supported code may emit additional stable kinds, including:
 - concurrency/state: `rate_limited`, `queue_saturated`, `budget_exceeded`,
   `quota_exceeded`, `restart_required`, `stale_suggestion`,
   `merge_write_conflict`, `workspace_not_configured`;
+- access lifecycle: `access_setup_required` (the durable access store is not set
+  up, so no authority decision can be made; `origin: validation`,
+  `side_effects: none_expected`, `recovery.action: start_dependency` with
+  `same_arguments: never`. The operator of the Labby server completes owner
+  setup before any retry: installs with any OAuth provider (including bearer
+  plus OAuth) complete browser owner setup in the web UI, which takes effect
+  without a restart; bearer-token-only installs run `labby setup` on the server
+  host and then restart the serving Labby process, because a running Labby only
+  re-observes access setup at startup. A prepared-but-unconsumed owner
+  bootstrap reports the same kind and is finished with
+  `labby auth bootstrap consume` or removed with
+  `labby auth bootstrap cleanup` while Labby is stopped. A blocked store
+  (locked, corrupt, insecure, newer schema, read-only, unavailable) is a real
+  outage and stays `service_unavailable`);
 - internal failures: `internal_error`, `server_error`, `decode_error`.
 
 The emitting subsystem owns the precise remediation text. New stable kinds require
@@ -187,8 +201,9 @@ so the `oauth_needs_reauth` refinement below is preserved.
 - authentication failure, including `oauth_needs_reauth`: 401;
 - forbidden scope/action, including `oauth_scope_upgrade_required`: 403;
 - unknown resource: 404;
-- conflict/restart/stale state, including `oauth_account_ambiguous`,
-  `oauth_client_mismatch`, `oauth_shared_credential_protected`, and
+- conflict/restart/stale/setup state, including `oauth_account_ambiguous`,
+  `oauth_client_mismatch`, `oauth_shared_credential_protected`,
+  `workspace_not_configured`, `access_setup_required`, and
   `authority_changed`: 409;
 - invalid input, confirmation, SSRF, or path validation: 422;
 - payload limits: 413;

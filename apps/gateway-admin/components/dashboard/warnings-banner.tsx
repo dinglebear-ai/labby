@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { AlertTriangle, X } from 'lucide-react'
+import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { useGatewayNotifications } from '@/lib/notification-acknowledgements'
 
@@ -42,7 +43,9 @@ export function WarningsBanner({
     try {
       localStorage.setItem(STORAGE_KEY, signature)
     } catch {
-      /* storage unavailable — dismiss for the session only */
+      toast.warning('Warning dismissal will only last for this session.', {
+        description: 'Browser storage is unavailable, so this dashboard preference cannot be persisted.',
+      })
     }
     setDismissed(true)
   }

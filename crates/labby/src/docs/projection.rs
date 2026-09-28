@@ -201,8 +201,8 @@ fn build_env_reference(services: &[ServiceDoc]) -> Vec<EnvDoc> {
         auth_env("LABBY_AUTH_ALLOWED_REDIRECT_URIS", false, false, "https://chatgpt.com/connector/oauth/*", "Comma-separated exact or wildcard OAuth redirect allowlist"),
         auth_env("LABBY_AUTH_ALLOWED_EMAIL_DOMAINS", false, false, "example.com", "Comma-separated Google Workspace hosted-domain allowlist"),
         auth_env("LABBY_AUTH_VIEWER_EMAIL_DOMAINS", false, false, "example.com", "Exact verified-email domains admitted as browser Viewers without administrative OAuth scopes"),
-        auth_env("LABBY_AUTH_SQLITE_PATH", false, false, "~/.labby/auth.db", "OAuth authorization-state SQLite database path"),
-        auth_env("LABBY_AUTH_KEY_PATH", false, true, "~/.labby/auth-jwt.pem", "OAuth JWT signing-key path"),
+        auth_env("LABBY_AUTH_SQLITE_PATH", false, false, "$LABBY_HOME/auth.db", "OAuth authorization-state SQLite database path"),
+        auth_env("LABBY_AUTH_KEY_PATH", false, true, "$LABBY_HOME/auth-jwt.pem", "OAuth JWT signing-key path"),
         auth_env("LABBY_MCP_HTTP_TOKEN", false, true, "<labby_mcp_http_token>", "Static bearer token for protected HTTP routes in bearer mode"),
         auth_env("LABBY_TOKEN_ENCRYPTION_KEY", true, true, "<64-hex-or-base64url-key>", "Encryption key for persisted provider access and refresh tokens"),
         auth_env("LABBY_GOOGLE_CALLBACK_URL", false, false, "https://lab.example.com/auth/google/callback", "Absolute Google OAuth callback URL override"),
@@ -830,7 +830,10 @@ fn service_feature(service: &str, matrix: &FeatureMatrix) -> Option<String> {
 
 pub(super) fn service_surfaces(service: &str) -> SurfaceAvailability {
     SurfaceAvailability {
-        cli: !matches!(service, "fs" | "stash" | "depot_publish"),
+        cli: !matches!(
+            service,
+            "fs" | "stash" | "artifact_publish" | "depot_publish"
+        ),
         mcp: true,
         api: service_has_http_surface(service),
         web_ui: matches!(
@@ -1039,7 +1042,7 @@ mod tests {
         let help = super::super::render::cli_help();
         for heading in [
             "## `labby proxy`",
-            "## `labby setup proxy`",
+            "## `labby config proxy set`",
             "## `labby doctor proxy`",
         ] {
             assert!(

@@ -7,6 +7,10 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 ## Unreleased
 
+### Skills
+
+- Consolidate snippet discovery, execution, and authoring into `using-snippets` and add `using-codemode` for live gateway discovery and calls. The plugin and APM package now expose four skills; references to `creating-snippets` should migrate to `using-snippets`.
+
 ### Added
 
 - **auth/gateway:** add a central Google credential broker that reuses one
@@ -38,6 +42,16 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 ### Changed
 
+- **cli (breaking):** reorganize the public command grammar around resource and
+  action words such as `server`, `route`, `loadout`, `auth`, `host`, `plugin`,
+  `config`, `code`, `snippet`, `skill`, `state`, and `context`. Retired command
+  paths are rejected with replacement guidance instead of remaining aliases;
+  scripts, installed completions, and scheduled jobs must migrate using the
+  [generated command map](docs/generated/cli-migration.md). The redesigned CLI
+  retains shared gateway dispatch, adds contexts, guided server creation,
+  cached completion, explicit duration units, bulk lifecycle workflows, and
+  `server discover --explain`; `server import --dry-run` obtains a redacted
+  non-mutating plan from the same shared gateway action used for import.
 - **auth/access (breaking for operators):** browser sessions for allowlisted
   identities other than `LABBY_AUTH_ADMIN_EMAIL` no longer receive `lab:admin`;
   they receive the static-token scopes with admin scopes lowered (default
@@ -92,6 +106,106 @@ identifiers were removed. Commit links remain the authoritative historical recor
 ### Licensing
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
+
+## [2.3.2](https://github.com/dinglebear-ai/labby/compare/v2.3.1...v2.3.2) (2026-09-24)
+
+
+### Fixed
+
+* **ci:** keep host recovery key private during upgrade ([2333525](https://github.com/dinglebear-ai/labby/commit/2333525fe36a468223a9a71c507825afa1e261c8))
+* **ci:** normalize MCP Registry manifest digests ([b5d1fbd](https://github.com/dinglebear-ai/labby/commit/b5d1fbdb759bf829116c6c40a3767a0b292b95e5))
+
+## [2.3.1](https://github.com/dinglebear-ai/labby/compare/v2.3.0...v2.3.1) (2026-09-24)
+
+
+### Fixed
+
+* catch release failures before tagging ([#785](https://github.com/dinglebear-ai/labby/issues/785)) ([cb13e67](https://github.com/dinglebear-ai/labby/commit/cb13e675ac36b261526683627da6f960c8a4b92f))
+
+## [2.3.0](https://github.com/dinglebear-ai/labby/compare/v2.2.1...v2.3.0) (2026-09-24)
+
+
+### Added
+
+* **mcp:** atomic first-party tool projection ([#736](https://github.com/dinglebear-ai/labby/issues/736)) ([d17d45a](https://github.com/dinglebear-ai/labby/commit/d17d45aef3b58377df87ab3eb100edde64f1f8b8))
+
+
+### Fixed
+
+* **depot:** align pinned operation schemas ([#764](https://github.com/dinglebear-ai/labby/issues/764)) ([65302f2](https://github.com/dinglebear-ai/labby/commit/65302f26364e102573823a08972bc1c4fd212699))
+* **gateway:** harden connection lifecycle reliability ([#733](https://github.com/dinglebear-ai/labby/issues/733)) ([8cf781c](https://github.com/dinglebear-ai/labby/commit/8cf781c99818e759763fccd39b494a8db6d6286e))
+* **gateway:** isolate a rejected resource snapshot to its own upstream ([#747](https://github.com/dinglebear-ai/labby/issues/747)) ([24b918b](https://github.com/dinglebear-ai/labby/commit/24b918b65a9fd64cc2c7d9c3c9a7cee7d3ca77bf))
+* **web:** compact Library layout and clarify catalog failures ([37af9ce](https://github.com/dinglebear-ai/labby/commit/37af9ce967108fde9ead7971c90f7f0f0261656b))
+
+## [2.2.1](https://github.com/dinglebear-ai/labby/compare/v2.2.0...v2.2.1) (2026-09-23)
+
+
+### Fixed
+
+* **ci:** recover release state as the service owner ([#760](https://github.com/dinglebear-ai/labby/issues/760)) ([28ee7b7](https://github.com/dinglebear-ai/labby/commit/28ee7b740311ac6c859e7bfb5871feb771e76db3))
+
+## [2.2.0](https://github.com/dinglebear-ai/labby/compare/v2.1.2...v2.2.0) (2026-09-23)
+
+
+### Added
+
+* **artifacts:** pin, follow and fork Depot Artifacts into a Personal Labby ([#746](https://github.com/dinglebear-ai/labby/issues/746)) ([3222073](https://github.com/dinglebear-ai/labby/commit/3222073d34f9cc701423923ce3803b53142987ee))
+
+
+### Fixed
+
+* **release:** restore baseline state before rollback qualification ([#757](https://github.com/dinglebear-ai/labby/issues/757)) ([1151b03](https://github.com/dinglebear-ai/labby/commit/1151b03de24ca2c1ef3f647b58e7e632b9f4a2bd))
+
+## [2.1.2](https://github.com/dinglebear-ai/labby/compare/v2.1.1...v2.1.2) (2026-09-23)
+
+
+### Fixed
+
+* **release:** keep N-1 upgrade qualification noninteractive ([#755](https://github.com/dinglebear-ai/labby/issues/755)) ([8b7b294](https://github.com/dinglebear-ai/labby/commit/8b7b29483fbb5cd7299a647d13215447b92ab628))
+
+## [2.1.1](https://github.com/dinglebear-ai/labby/compare/v2.1.0...v2.1.1) (2026-09-22)
+
+
+### Fixed
+
+* limit stable releases to Linux and macOS ([#753](https://github.com/dinglebear-ai/labby/issues/753)) ([fc6dc80](https://github.com/dinglebear-ai/labby/commit/fc6dc8062e3b4272422251383ef13a1cfdd32612))
+
+## [2.1.0](https://github.com/dinglebear-ai/labby/compare/v2.0.0...v2.1.0) (2026-09-22)
+
+
+### Added
+
+* **apm:** publish Labby as an APM package ([#750](https://github.com/dinglebear-ai/labby/issues/750)) ([5ae2498](https://github.com/dinglebear-ai/labby/commit/5ae24986a710768185d5313b4ce4e53528006c8e))
+
+
+### Fixed
+
+* **codemode:** explain hidden tools, resolve upstream name aliases, rewrite descriptions ([#743](https://github.com/dinglebear-ai/labby/issues/743)) ([e6b7e8e](https://github.com/dinglebear-ai/labby/commit/e6b7e8e808dd043e70e9b8d570e3d74476b3574a))
+* **gateway:** cache resource catalogs between listings ([#741](https://github.com/dinglebear-ai/labby/issues/741)) ([f374c01](https://github.com/dinglebear-ai/labby/commit/f374c0177376eff2f69e1c2993a62ed19600d043))
+* **release:** strip the release-please marker from preflight version reads ([#745](https://github.com/dinglebear-ai/labby/issues/745)) ([522a0c7](https://github.com/dinglebear-ai/labby/commit/522a0c799df4517209ff15bd2acc5e382d824fc5))
+
+## [2.0.0](https://github.com/dinglebear-ai/labby/compare/v1.21.0...v2.0.0) (2026-09-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** ship the resource-first command redesign ([#717](https://github.com/dinglebear-ai/labby/issues/717))
+
+### Added
+
+* **cli:** ship the resource-first command redesign ([#717](https://github.com/dinglebear-ai/labby/issues/717)) ([4214810](https://github.com/dinglebear-ai/labby/commit/4214810587159051893107527f36457dcaa6d015))
+* complete CLI and Depot control plane integration ([#735](https://github.com/dinglebear-ai/labby/issues/735)) ([7954d9a](https://github.com/dinglebear-ai/labby/commit/7954d9ad221c27defa8fa987143630f87d0e6aa6))
+* **web:** render proxied MCP Apps in Phoenix ([ba0b575](https://github.com/dinglebear-ai/labby/commit/ba0b575e7e28baeecddd67abf53b2f11ac777514))
+
+
+### Fixed
+
+* **auth:** allow configured OAuth endpoint origins ([fb833d8](https://github.com/dinglebear-ai/labby/commit/fb833d8d4234acc760b8a9dd62309f4c523a5af0))
+* **codemode:** bound refresh and prefer loopback daemon ([#702](https://github.com/dinglebear-ai/labby/issues/702)) ([2f2ffc2](https://github.com/dinglebear-ai/labby/commit/2f2ffc267a8d53b5735c04339535c907e0f1cd6a))
+* **gateway:** fence OAuth catalog refresh publication ([d06b89b](https://github.com/dinglebear-ai/labby/commit/d06b89b2b6ed09903406bc3086b3fbbcfa3044a5))
+* **gateway:** refresh subject-scoped OAuth tool catalogs ([#737](https://github.com/dinglebear-ai/labby/issues/737)) ([c397eca](https://github.com/dinglebear-ai/labby/commit/c397eca128ef917afc31883f0ea2dad926c674af))
+* persist MCP app visibility ([#730](https://github.com/dinglebear-ai/labby/issues/730)) ([4464e03](https://github.com/dinglebear-ai/labby/commit/4464e03b0df4db5df89260bcc2d596e661d1d71d))
+* surface degraded capabilities and simplify setup ([#691](https://github.com/dinglebear-ai/labby/issues/691)) ([cc45223](https://github.com/dinglebear-ai/labby/commit/cc4522398c96ad265f6b81610bccfe72bed18e00))
 
 ## [1.21.0](https://github.com/dinglebear-ai/labby/compare/v1.20.1...v1.21.0) (2026-09-20)
 

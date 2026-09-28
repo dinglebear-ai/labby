@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{ConfigScalarPatch, ConfigScalarValue};
@@ -31,7 +32,7 @@ impl std::fmt::Debug for ProxySetupRequest {
     }
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
 pub struct ProxySetupOutcome {
     pub dry_run: bool,
     pub changed: bool,

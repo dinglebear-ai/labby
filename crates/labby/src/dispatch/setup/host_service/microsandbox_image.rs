@@ -265,8 +265,7 @@ fn locate_persistent_source(key: &str) -> Result<PersistentSource, ToolError> {
     // file defines the key, it is the winning persistent source even when a
     // drop-in also contains an Environment= assignment.
     if std::fs::read_to_string(&env_path)
-        .ok()
-        .is_some_and(|text| env_assignment_value(&text, key).is_some())
+        .is_ok_and(|text| env_assignment_value(&text, key).is_some())
     {
         return Ok(PersistentSource::EnvFile(env_path));
     }
@@ -283,8 +282,7 @@ fn locate_persistent_source(key: &str) -> Result<PersistentSource, ToolError> {
     dropins.sort();
     for path in dropins {
         if std::fs::read_to_string(&path)
-            .ok()
-            .is_some_and(|text| systemd_environment_value(&text, key).is_some())
+            .is_ok_and(|text| systemd_environment_value(&text, key).is_some())
         {
             selected = Some(PersistentSource::DropIn(path));
         }

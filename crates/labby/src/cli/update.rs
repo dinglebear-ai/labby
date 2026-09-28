@@ -1,4 +1,4 @@
-//! `labby update` — install the latest release, then refresh Incus when present.
+//! `labby host update` — install the latest release, then refresh Incus when present.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -59,7 +59,7 @@ struct UpdateOutcome {
 pub async fn run(args: UpdateArgs, format: OutputFormat) -> Result<ExitCode> {
     if cfg!(windows) {
         anyhow::bail!(
-            "labby update is not supported on Windows; close Labby and rerun the verified PowerShell installer described at https://github.com/dinglebear-ai/labby#quick-start to update labby.exe"
+            "labby host update is not supported on Windows; close Labby and rerun the verified PowerShell installer described at https://github.com/dinglebear-ai/labby#quick-start to update labby.exe"
         );
     }
     if let Some(action) = &args.auto_update {
@@ -148,11 +148,7 @@ fn render_outcome(outcome: UpdateOutcome, format: OutputFormat) -> Result<()> {
         return Ok(());
     }
     if outcome.dry_run {
-        println!(
-            "dry-run: would install labby {} to {}",
-            outcome.version,
-            outcome.binary.display()
-        );
+        println!("dry-run: validated the requested Labby installation update");
     } else {
         println!("updated labby: {}", outcome.binary.display());
     }

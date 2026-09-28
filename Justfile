@@ -19,7 +19,9 @@ verify-check:
 
 verify-test:
     python3 -m unittest discover -s tools/verification/tests -p 'test_*.py' -v
-    cargo test --manifest-path tools/verification/Cargo.toml --workspace --all-features --locked
+    # The backend fixtures launch and terminate process groups; running those
+    # tests concurrently makes CI failures intermittent and hard to attribute.
+    cargo test --manifest-path tools/verification/Cargo.toml --workspace --all-features --locked -- --test-threads=1
 
 verify-lint:
     cargo clippy --manifest-path tools/verification/Cargo.toml --workspace --all-features --all-targets --locked -- -D warnings
@@ -68,8 +70,9 @@ docs-check:
     python3 -m unittest discover -s scripts/ci -p 'test_doc_links.py'
     python3 scripts/check-product-docs.py
     python3 -m unittest discover -s scripts/ci -p 'test_product_docs.py'
+    bash tests/bin_link_claude_mds_test.sh
     python3 scripts/check-depot-control-plane-contract.py
-    python3 -m unittest scripts/ci/test_depot_control_plane_contract.py
+    python3 -m unittest scripts/ci/test_depot_control_plane_contract.py scripts/ci/test_product_doc_cli_options.py
 
 # Inspect an item from the canonical standalone Aurora shadcn registry.
 aurora-view item="aurora-base":
@@ -81,7 +84,7 @@ aurora-preview item="button":
 
 # Validate Labby's portable DESIGN.md contract.
 design-check:
-    npx -y -p @google/design.md designmd lint DESIGN.md
+    npx -y -p @google/design.md designmd lint docs/DESIGN.md
 
 # Build strict Rustdoc for the complete workspace target surface.
 rustdoc:
@@ -148,12 +151,12 @@ deny:
 # Build with all features using the release-fast profile (optimized, no LTO/codegen-units=1
 # slowdown). Use `cargo build --workspace --all-features` directly for a debug-assertions/
 # full-unwind dev build instead.
-build:
+build: web-build
     cargo build --workspace --all-features --profile {{local_release_profile}}
 
 # Build release binary with all features. The plugin does not ship a binary;
 # hosts install Labby via scripts/install.sh or Cargo.
-build-release:
+build-release: web-build
     cargo build --workspace --all-features --release
     mkdir -p bin
     install -m 755 target/release/labby bin/labby
@@ -196,7 +199,7 @@ _install-labby-bin profile:
 # Build release-fast binary, copy it to the system service path, and restart the
 # system Labby gateway service. The primary self-hosted runtime is the Incus
 # system-container path; this source checkout shortcut assumes sudo access.
-host-sync:
+host-sync: web-build
     #!/usr/bin/env bash
     set -euo pipefail
     profile="{{local_release_profile}}"
@@ -208,8 +211,8 @@ host-sync:
     sudo mkdir -p /usr/local/bin
     sudo install -m 755 "$LABBY_BIN" /usr/local/bin/labby
     if systemctl is-active --quiet labby.service; then
-      sudo /usr/local/bin/labby setup host-service restart -y
-      sudo /usr/local/bin/labby setup host-service status --json
+      sudo /usr/local/bin/labby host service restart -y
+      sudo /usr/local/bin/labby host service status --json
     else
       echo "error: labby.service is not active; run: just host-service-install" >&2
       exit 1
@@ -226,7 +229,7 @@ bench-slim clean="":
     fi
     scripts/bench-labby-slimming "${args[@]}"
 
-host-service-install:
+host-service-install: web-build
     #!/usr/bin/env bash
     set -euo pipefail
     profile="{{local_release_profile}}"
@@ -241,17 +244,17 @@ host-service-install:
     esac
     sudo mkdir -p /usr/local/bin
     sudo install -m 755 "$LABBY_BIN" /usr/local/bin/labby
-    sudo /usr/local/bin/labby setup host-service install -y
+    sudo /usr/local/bin/labby host service install -y
 
 host-service-restart:
-    sudo /usr/local/bin/labby setup host-service restart -y
-    sudo /usr/local/bin/labby setup host-service status --json
+    sudo /usr/local/bin/labby host service restart -y
+    sudo /usr/local/bin/labby host service status --json
 
 host-service-status:
-    sudo /usr/local/bin/labby setup host-service status --json
+    sudo /usr/local/bin/labby host service status --json
 
 host-service-uninstall:
-    sudo /usr/local/bin/labby setup host-service uninstall -y
+    sudo /usr/local/bin/labby host service uninstall -y
 
 # Install release binary to ~/.local/bin/labby (updates the host CLI)
 install: build-release
@@ -315,9 +318,10 @@ service-uninstall:
       *) echo "error: service-uninstall supports macOS (launchd) and Linux (systemd)" >&2; exit 1 ;;
     esac
 
-# Rebuild static Labby web assets served by labby serve
+# Install locked frontend dependencies and build the UI before product builds.
+# Also available explicitly for frontend-only development.
 web-build:
-    cd apps/gateway-admin && pnpm build
+    bash scripts/build-web.sh
 
 # Rebuild static Labby web assets when frontend files change
 web-watch:
@@ -344,11 +348,11 @@ web-watch:
       'cd apps/gateway-admin && pnpm build'
 
 # Run with args
-run *ARGS:
+run *ARGS: web-build
     cargo run --all-features -- {{ARGS}}
 
 # Run the binary-served static admin UI locally with browser auth disabled
-chat-local:
+chat-local: web-build
     #!/usr/bin/env bash
     set -euo pipefail
     export LABBY_WEB_UI_AUTH_DISABLED=true
@@ -400,7 +404,7 @@ smoke-setup:
 # Validate the Labby plugin setup lifecycle against a throw-away LABBY_HOME.
 validate-plugin:
     rm -rf /tmp/labby-plugin-validate
-    LABBY_HOME=/tmp/labby-plugin-validate cargo run --bin labby --all-features -- setup plugin-hook --no-repair --json
+    LABBY_HOME=/tmp/labby-plugin-validate cargo run --bin labby --all-features -- setup check --json
 
 # Report the currently installed Labby host-service runtime.
 runtime-current:

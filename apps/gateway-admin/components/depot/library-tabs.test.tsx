@@ -6,7 +6,7 @@ import { LibraryTabs } from './depot-workspace-pages'
 
 test('attached library tabs preserve routes and reserve mock-aligned count pills', () => {
   const html = renderToStaticMarkup(<LibraryTabs active="snippets" attached counts={{ snippets: 0 }} />)
-  assert.match(html, /height:56px/)
+  assert.match(html, /height:40px/)
   assert.match(html, /rounded-b-aurora-3/)
   assert.match(html, /href="\/library"/)
   assert.match(html, /href="\/loadouts"/)

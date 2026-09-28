@@ -98,6 +98,19 @@ caller makes the runner boundary visible and testable in this repository.
 The caller checkout lives in `caller/`, not `target/` or `vendor/`: the pinned
 checker excludes Cargo manifests beneath those build/dependency directory names.
 
+The repository-contract job runs `scripts/ci/check_repository_contract.py`
+against that immutable fleet implementation. The adapter verifies the checker
+SHA-256 before loading it, executes the complete fleet check driver, and retains
+every finding except the two exact legacy symlink-direction diagnostics. It
+replaces those with strict Git-index checks requiring regular nonempty UTF-8
+`AGENTS.md` sources and mode-120000 `CLAUDE.md` / `GEMINI.md` aliases targeting
+exactly `AGENTS.md`. Private instruction files must not be tracked. This is the
+explicit AGENTS-first policy, not a skipped check or an alternate checkout:
+unknown diagnostics, other fleet failures, malformed index entries, and a
+changed upstream checker all fail. The job runs the adapter regression suite
+before validation, and the `Repository Contract` aggregate still requires the
+contract job to succeed.
+
 That window: `ci.yml` always comes from the merge ref, so a pull request that
 adds a routing key gates on a key the trusted classifier cannot emit, and every
 already-open pull request against an older base hits it too.
@@ -202,7 +215,8 @@ jobs when their changed-path category is enabled:
 | Browser extension | `browser_extension` | frozen npm install, Node tests, and TypeScript type-check for extension and shared Browser Bridge protocol changes; explicitly aggregated by `ci-gate` |
 | Compile | `rust_compile` | `cargo check --workspace --all-features` |
 | MSRV | `rust_compile` | `cargo +1.97.1 check --workspace --all-features --all-targets --locked` |
-| Feature slices | `rust_compile` | warm `labby` lib/bins at normal concurrency, then run `cargo check -p labby --no-default-features --features <slice> --all-targets --locked` for `gateway`, `gateway-host`, `integrated-gateway`, `fs`, and `skills` at the same concurrency so the heavy normal library is reused; gateway, fs, and skills retain focused runtime tests |
+| Feature slices | `rust_compile` | required by `ci-gate`; warm `labby` lib/bins at normal concurrency, then run `cargo check -p labby --no-default-features --features <slice> --all-targets --locked` for `gateway`, `gateway-host`, `integrated-gateway`, `fs`, and `skills` at the same concurrency so the heavy normal library is reused; fs and skills retain focused runtime tests |
+| Gateway-only runtime suite | `rust_compile` | required by `ci-gate` on pull requests and main; four unit partitions and five integration-target shards cover the `gateway,proxy-testkit` suite in parallel, replacing the 24-minute serial main-only rerun; shared embedded harness tests run once in their dedicated target |
 | Extracted crate slices | `rust_compile` | crate-specific `cargo check` commands for extracted runtime crates |
 | Generated docs freshness | `docs_check` | `just docs-check` |
 | Format | `rust_compile` | `cargo fmt --all -- --check` |
@@ -211,22 +225,24 @@ jobs when their changed-path category is enabled:
 | JavaScript advisories | `javascript_advisories` | lockfile-aware `npm audit`/`pnpm audit` across every committed JavaScript dependency graph, with a checked, expiring exception policy |
 | Labby desktop shell | `desktop` | frozen install and static loader build |
 | Labby desktop Tauri | `desktop` | independent lockfile audit plus required Linux tests and an advisory native Windows build/test smoke |
-| Rust coverage | `rust_test` | Required PR/push LCOV gate with project and critical auth/gateway/dispatch/config floors |
-| Tests (Linux) | `rust_test` | warm normal `labby` lib/bins first, then `cargo nextest run --workspace --all-features --profile ci` on GitHub-hosted `ubuntu-24.04` |
+| Live E2E | separate pull-request, push-to-main, weekly, or manual workflow | hermetic browser/product shards and evidence uploads run beside required CI; same-repository PRs run this signal and fork PRs do not run untrusted product code |
+| Rust coverage | separate push-to-main, weekly, or manual workflow | LCOV run with project and critical auth/gateway/dispatch/config floors; its own workflow reports failures while the main CI run can finish and trigger Release Please without waiting for a second full workspace suite |
+| Tests (Linux) | `rust_test` | required by `ci-gate`; warm normal `labby` lib/bins first, then run sharded `cargo nextest` across the workspace with all features on GitHub-hosted `ubuntu-24.04` |
 | Tests (Linux fork PR fallback) | `rust_test` | same warm-up plus nextest run on GitHub-hosted `ubuntu-24.04` without repository secrets |
 | Tests (Windows) | `rust_test` | same nextest run on GitHub-hosted `windows-latest`, including fork PRs; required by `ci-gate` |
 | macOS updater lifecycle | `workflow`, `release`, or `rust_test` | shell installer contracts plus focused Rust self-update and gateway recovery tests on the native macOS runner; required by `ci-gate` |
 | MCP conformance | `rust_test` or `workflow` | Labby's revision-pinned rmcp authenticated smoke, dated `2026-07-28` suites, and the checked MCP/OpenAI auth denominator in `tools/verification/conformance/auth-requirements.json` |
 | MCP upstream drift | weekly/manual separate workflow | compares pinned MCP spec and rmcp commits, maps upstream changes to Labby code and required tests, and opens or updates one actionable issue |
-| Release metadata contract | `release` | version and Rust toolchain lockstep only; release builds do not run in PR CI |
-| Incus source contract | `incus` | runs the image release ShellCheck command at default severity and validates the Incus supply manifest, image-definition pins, install guidance, and rolling-pointer contract |
+| Release metadata contract | `release` or `workflow` | required by `ci-gate`; version and Rust toolchain lockstep plus executable release hardening and seeded N-1 fixture permission tests before tagging; release builds do not run in PR CI |
+| Incus source contract | `incus` | runs ShellCheck and validates the Incus supply manifest, image-definition pins, install guidance, and rolling-pointer contract; image-changing PRs also run the separate image build and smoke workflow |
 
 Every distributable or deployable Labby binary must include the `skills`
 feature. The Cargo feature graph makes `gateway` depend on `skills`, so the
 default `gateway-host`, the sealed `integrated-gateway`, and `all` profiles all
 include it. Featureless and non-gateway slices exist only to verify dependency
-boundaries. Release binaries and the Incus image
-each run a packaged-artifact smoke that proves the Skills CLI surface exists.
+boundaries. Release binaries run a packaged-artifact smoke. The independent
+Incus image smoke installs a candidate CLI after launch and proves its Skills
+surface works in the container.
 The standalone Skills job runs the `skills::` test filter, covering shared
 registry/provider behavior as well as MCP adapters without gateway support.
 The focused MCP job also runs `skills_mcp_e2e` cases prefixed `skills_`:
@@ -290,7 +306,7 @@ land the required code/tests and the baseline update together.
   - Native Windows workspace and Palette jobs use GitHub-hosted runners, bounded timeouts, and keyed Cargo caches; workspace tests block `ci-gate`, while Palette remains advisory
   - Heavy release work starts from an immutable stable-version tag while the
     matching GitHub release is still draft
-  - Release Linux jobs use GitHub-hosted x86_64 runners; native macOS and Windows artifacts use GitHub-hosted runners
+  - Release Linux jobs use GitHub-hosted x86_64 runners; native macOS artifacts use GitHub-hosted Apple Silicon runners
 
 The pinned fleet policy and repository contract set `allow-arm64: true` for
 Labby. This removes the former fleet-wide ARM64 token rejection while keeping
@@ -324,13 +340,11 @@ repository and is outside this repository's local runner selection.
 |----------|--------|
 | Linux x86_64 | `x86_64-unknown-linux-gnu` |
 | macOS arm64 | `aarch64-apple-darwin` |
-| Windows x86_64 | `x86_64-pc-windows-msvc` |
 
-macOS and Windows are supported platforms. Official macOS artifacts are built
-on a native GitHub-hosted Apple Silicon runner. Official Windows artifacts are
-built on native GitHub-hosted Windows runners using the MSVC target.
-Cross-compilation may be useful experimentally, but it is not the release
-support contract.
+Official macOS artifacts are built on a native GitHub-hosted Apple Silicon
+runner. Windows remains covered by required CI tests, but is not a release
+target. Cross-compilation may be useful experimentally, but it is not the
+release support contract.
 
 ## Integration Tests
 
@@ -345,18 +359,24 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
 
 ## Release Process
 
-1. Release Please prepares the version/changelog PR.
+1. Release Please prepares the version/changelog PR after green main CI. If
+   another trigger sees an open release PR built from the same main commit, it
+   preserves that branch and its running checks instead of rewriting identical
+   commits. Manual dispatch can still force a refresh.
 2. Merging that PR creates the stable `vX.Y.Z` tag plus a draft GitHub release.
 3. The immutable tag triggers candidate work; no maintainer manually publishes
    the draft. Preflight requires stable SemVer, ancestry from `origin/main`, and
-   exact Cargo/npm/MCP/release-manifest version lockstep.
+   exact Cargo/npm/MCP/release-manifest version lockstep. It also checks the
+   required npm/MCP publisher credentials, verifies npm authentication, and resolves both platform N-1
+   baselines before starting frontend or native builds.
+   The advisory desktop bundle starts after preflight in parallel with the
+   CLI builds and upgrade qualification; promotion still waits for its result
+   so any successful desktop asset enters the release manifest.
 4. Each platform archive is built, smoke-tested, and attested in its build job.
    The N-1 matrix verifies that exact archive attestation before extraction,
    checks the archive sidecar, and records an archive-to-extracted-binary digest
-   binding. It then invokes a platform-owned adapter for Unix, Windows, macOS, Incus,
-   and host-service deployment. The host-service leg is advisory: it runs
-   and reports, but cannot block a release, until the service can write its
-   logs under the v1.16 systemd sandbox. N-1 is the newest published
+   binding. It then invokes a platform-owned adapter for Unix, macOS, Incus,
+   and host-service deployment. All four legs must pass. N-1 is the newest published
    (non-draft, non-prerelease) `vX.Y.Z` release that is older than the
    candidate, merged into it, and carries the leg's archive and `.sha256`
    sidecar (`scripts/ci/resolve-n-minus-one-baseline.py`). Newer tags whose
@@ -374,6 +394,18 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
    readable, and repeat the authenticated action. A missing command or adapter
    is a hard failure. The archive is the attestation subject; the extracted
    binary digest is the activation-integrity binding, not a claimed attestation.
+   Before candidate activation, each supported adapter stops the service and
+   exports an authenticated offline state bundle with the verified candidate.
+   Rollback restores that bundle before reactivating the older executable:
+   binary rollback alone cannot undo forward-only database migrations. The
+   bundle and its random owner-only recovery key remain outside `LABBY_HOME`
+   in the disposable qualification fixture and are never uploaded as logs.
+   Linux service adapters run export and restore as the `labby` state owner,
+   not root. They stage the verified candidate in that owner's private recovery
+   directory so runner-only paths do not block access after dropping privileges.
+   macOS uses a dedicated LaunchAgent and aligned `HOME`/`LABBY_HOME` so older
+   releases cannot resolve state outside the fixture. Config bytes and the
+   original credential must survive; startup may add unrelated dotenv keys.
 5. The final gated job verifies archive checksums and creates one SPDX JSON SBOM
    for each archive and installer. It records every
    subject digest in `release-manifest.json`, records every published checksum
@@ -383,8 +415,8 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
    the exact repository, signer workflow, source ref, and hosted-runner policy.
    Offline consumers may pass a downloaded bundle and trusted root through the
    same GitHub CLI verification contract.
-7. If publication fails, the rollback transaction attempts Incus-pointer and
-   npm stable-pointer restoration before returning a previously draft GitHub
+7. If publication fails, the rollback transaction attempts npm stable-pointer
+   restoration before returning a previously draft GitHub
    release to draft. Attempted npm writes are explicitly compensated even when
    registry reads still show the old tag. If either consumer pointer cannot be
    restored, release assets remain public and recovery reports failure.
@@ -393,17 +425,11 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
    MCP versions are immutable, a failed transaction also records either
    published identity as `manual_reconciliation_required`; rollback can never
    claim success while one remains externally visible.
-8. The Incus and MCP Registry workflows are reusable calls from the candidate
-   graph. Incus publishes only immutable, version-namespaced candidate assets;
-   the parent release transaction verifies that generation in place, records
-   its checksummed `generation.json` alongside the versioned release, and moves
-   only the rolling Git ref with a force-with-lease compare-and-swap. The
-   recovery receipt retains the exact prior ref target, so rollback is another
-   pointer-only leased CAS and never rewrites generation contents.
-   They return validated 64-hex subject digests before the stable GitHub release
-   becomes visible. The MCP Registry only accepts a manifest whose npm version
+8. The MCP Registry workflow is a reusable call from the candidate graph. It
+   returns a validated manifest digest before the stable GitHub release becomes
+   visible. The MCP Registry only accepts a manifest whose npm version
    is already published with a matching `mcpName`, so the `npm-candidate` job
-   runs after the upgrade and Incus gates and before the registry call. It
+   runs after the upgrade gates and before the registry call. It
    publishes the immutable npm version under a version-specific candidate
    dist-tag; the `latest` consumer pointer is not advanced yet. No
    distribution workflow is triggered by `release.published`.
@@ -411,7 +437,7 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
    `release.yml` promote the draft through the verified promotion helper. It
    advances and verifies npm's `latest` dist-tag only after that promotion.
    A shared concurrency group serializes promotion and rollback across tags;
-   npm and Incus version guards reject an older run after a newer promotion.
+   npm version guards reject an older run after a newer promotion.
    Promotion failure enters the same recovery path and retains an actionable
    record of immutable registry identities that cannot be deleted.
 10. The aggregate reconciler runs immediately after Release completes and on a
@@ -421,7 +447,7 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
    published releases from before the manifest contract remain excluded. It keeps each
    version's result independent so a newer complete release cannot hide an older
    incomplete one. It downloads each manifest and observes
-   GitHub assets, npm version, Incus asset digest, and the MCP v0.1
+   GitHub assets, npm version, and the MCP v0.1
    version endpoint. The MCP publisher and observer hash the same canonical JSON
    object, so reconciliation fails closed unless the complete registry object,
    not merely its name and version, matches the published manifest digest. It
@@ -438,6 +464,20 @@ than clobbering it. Publishers are idempotent and the aggregate
 incident remains open until observations match the manifest. Never create a
 replacement tag or bump the version merely to hide partial publication.
 
+### Independent Incus image
+
+`incus-image.yml` runs on pull requests and main pushes that change the image
+definition, pinned supply, bootstrap, or image build/smoke/promotion logic. A
+manual run on `main` can rebuild it when an external supply source needs
+requalification. PR runs build and smoke without publishing. A successful main
+run creates an immutable `incus-<full commit SHA>` GitHub release with a
+checksummed image manifest, attests and verifies the artifacts, and advances
+`labby-incus-latest` with a leased rollback-capable pointer update. The image
+contains the container substrate and toolchains; bootstrap installs the selected
+Labby release. Normal `vX.Y.Z` releases never wait for or publish an image.
+Older version releases with an Incus asset remain covered by the reconciler's
+legacy manifest check.
+
 **Tag format:** `vX.Y.Z` — no other formats are accepted.
 
 **Version policy:** single version across the entire workspace. `labby` and
@@ -446,7 +486,7 @@ replacement tag or bump the version merely to hide partial publication.
 ## Artifact Distribution
 
 - **Surface:** GitHub Releases
-- **Artifacts per release:** one binary archive per supported target (Linux x86_64, macOS arm64, and Windows x86_64)
+- **Artifacts per release:** one binary archive per supported target (Linux x86_64 and macOS arm64)
 - **Checksums:** every binary archive has a SHA-256 checksum file
 - **SBOMs:** one identity-bound SPDX JSON document per archive and installer
 - **Manifest:** `release-manifest.json` binds every promoted subject name, size,

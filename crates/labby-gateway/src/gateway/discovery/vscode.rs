@@ -28,9 +28,14 @@ pub fn discover(home: &Path) -> Vec<DiscoveredServer> {
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let xdg = xdg_config_home(home);
-        paths.push(xdg.join("Code/User/mcp.json"));
-        paths.push(xdg.join("Code - Insiders/User/mcp.json"));
-        paths.push(xdg.join("Antigravity/User/mcp.json"));
+        for config_root in [xdg, home.join(".config")] {
+            if paths.iter().any(|path| path.starts_with(&config_root)) {
+                continue;
+            }
+            paths.push(config_root.join("Code/User/mcp.json"));
+            paths.push(config_root.join("Code - Insiders/User/mcp.json"));
+            paths.push(config_root.join("Antigravity/User/mcp.json"));
+        }
     }
 
     scan_paths(&paths, "vscode", true)

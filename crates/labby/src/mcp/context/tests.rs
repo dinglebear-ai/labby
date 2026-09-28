@@ -3,8 +3,9 @@
 
 use super::{
     AbsentAuth, actor_key_from_extensions, builtin_action_requires_admin,
-    code_mode_read_scope_allowed, forwardable_client_capabilities, resolve_caller_authorization,
-    subject_from_extensions, tool_execute_builtin_action_allowed, tool_execute_scope_allowed,
+    code_mode_read_scope_allowed, forwardable_client_capabilities, openai_session_fingerprint,
+    resolve_caller_authorization, subject_from_extensions, tool_execute_builtin_action_allowed,
+    tool_execute_scope_allowed,
 };
 #[cfg(feature = "gateway")]
 use super::{
@@ -17,6 +18,22 @@ use labby_runtime::caller_auth::PropagatedCallerAuth;
 use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
+
+#[test]
+fn openai_session_metadata_is_fingerprinted_for_correlation() {
+    let object = serde_json::json!({ "openai/session": "chatgpt-session-secretish" })
+        .as_object()
+        .expect("object")
+        .clone();
+    let meta = rmcp::model::RequestMetaObject::from(object);
+    let key = openai_session_fingerprint(Some(&meta)).expect("session fingerprint");
+    assert_eq!(
+        key,
+        labby_auth::util::fingerprint("chatgpt-session-secretish")
+    );
+    assert_ne!(key, "chatgpt-session-secretish");
+    assert_eq!(openai_session_fingerprint(None), None);
+}
 
 #[cfg(feature = "gateway")]
 #[test]

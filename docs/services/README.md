@@ -8,7 +8,7 @@ This directory documents Labby's current first-party product services. The gener
 | `agents`, `tasks` | [AGENT_TASKS.md](./AGENT_TASKS.md) |
 | `artifacts`, `sources`, `jobs`, `uploads`, `bundles` | [SKILLS.md](./SKILLS.md) |
 | `browser` | [BROWSER.md](./BROWSER.md) |
-| `depot_publish` | [DEPOT_PROVIDERS.md](./DEPOT_PROVIDERS.md) |
+| `artifact_publish` | [ARTIFACT_PUBLISH.md](./ARTIFACT_PUBLISH.md) |
 | `dev_containers` | [DEV_CONTAINERS.md](./DEV_CONTAINERS.md) |
 | `doctor` | [DOCTOR.md](./DOCTOR.md) |
 | `fs` | [FILESYSTEM.md](./FILESYSTEM.md) |

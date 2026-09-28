@@ -171,7 +171,7 @@ pub(crate) fn fixtures() -> BTreeMap<String, ServiceFixture> {
         include_str!("../fixtures/e2e_actions/agents.json"),
         include_str!("../fixtures/e2e_actions/doctor.json"),
         include_str!("../fixtures/e2e_actions/dev_containers.json"),
-        include_str!("../fixtures/e2e_actions/depot_publish.json"),
+        include_str!("../fixtures/e2e_actions/artifact_publish.json"),
         include_str!("../fixtures/e2e_actions/browser.json"),
         include_str!("../fixtures/e2e_actions/fs.json"),
         include_str!("../fixtures/e2e_actions/gateway.json"),
@@ -471,17 +471,6 @@ fn dedicated_contract(key: &str) -> Option<(&'static str, &'static str)> {
         key if key.starts_with("gateway:gateway.virtual_server.") => {
             Some(("requires_migration_created_virtual_server", "not_found"))
         }
-        "setup:plugin.install"
-        | "setup:plugin.uninstall"
-        | "setup:install_plugin"
-        | "setup:uninstall_plugin" => Some((
-            "requires_configured_external_plugin_service",
-            "unknown_service",
-        )),
-        "setup:services.status" => Some((
-            "requires_configured_external_plugin_service",
-            "claude_cli_unavailable",
-        )),
         "setup:settings.config.update" | "setup:settings.env.update" => {
             Some(("typed_compare_and_swap_contract_probed", "invalid_param"))
         }
@@ -570,7 +559,7 @@ fn dedicated_contract_for(key: &str, surface: Surface) -> Option<(&'static str, 
             "daemon_unavailable",
         ));
     }
-    if key.starts_with("depot_publish:") && surface == Surface::Mcp {
+    if key.starts_with("artifact_publish:") && surface == Surface::Mcp {
         return Some((
             "requires_protected_team_route_bound_grant",
             "route_scope_denied",
@@ -626,6 +615,7 @@ fn dedicated_contract_for(key: &str, surface: Surface) -> Option<(&'static str, 
                 | "artifacts:artifacts.archive"
                 | "artifacts:artifacts.rollback"
                 | "artifacts:artifacts.refresh"
+                | "artifacts:artifacts.delete_remote"
         )
     {
         return Some(("requires_project_bound_artifact_authority", "forbidden"));
@@ -673,6 +663,7 @@ fn dedicated_contract_for(key: &str, surface: Surface) -> Option<(&'static str, 
                 | "artifacts:artifacts.search_skills_sh"
                 | "artifacts:artifacts.set_license"
                 | "artifacts:artifacts.set_publication"
+                | "artifacts:artifacts.delete_remote"
         )
     {
         // Artifact authority failures now collapse to the non-enumerating
@@ -688,14 +679,7 @@ fn dedicated_contract_for(key: &str, surface: Surface) -> Option<(&'static str, 
     }
     if surface == Surface::Mcp {
         return match key {
-            // `services.status` answers `claude_cli_unavailable` on every
-            // surface. It was listed here as `internal_error` only because the
-            // MCP seam used to rewrite unrecognised kinds; it now reports the
-            // kind it declares, so the shared contract applies.
             "setup:bootstrap" => Some(("requires_host_bootstrap_authority", "forbidden")),
-            "setup:plugin_connectivity" => {
-                Some(("requires_host_plugin_connectivity_authority", "forbidden"))
-            }
             "setup:proxy.configure" => {
                 Some(("requires_host_proxy_configuration_authority", "forbidden"))
             }

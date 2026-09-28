@@ -1,7 +1,7 @@
 ---
 title: "Artifacts And Agent Skills"
 created: "2026-08-26"
-updated: "2026-09-03"
+updated: "2026-09-20"
 ---
 
 # Artifacts And Agent Skills
@@ -56,6 +56,7 @@ The canonical action catalog is generated from code. The lifecycle groups are:
 | Publish | `artifacts.activate`, `.deactivate`, `.rollback`, `.refresh` | Exact revision and optimistic library-version preconditions; publication is atomic |
 | Acquire | `artifacts.import`, `.import_batch` | Exact immutable selectors through server-configured connections; no caller-supplied endpoint, path, bytes, or credential |
 | Remote discovery | `artifacts.search_remote`, `.list_remote`, `.get_remote`, `.list_candidates`, `.search_skills_sh`, `.search_ard`, `.search_marketplace`, `.list_mcp_registry`, `.list_acp_registry`, `.authority_status` | Provider-neutral views over configured and public discovery authorities |
+| Remote Skill reads | `artifacts.list_remote_skills`, `.get_remote_skill`, `.load_remote_skill`, `.read_remote_skill` | Explicit reads against one configured remote authority; separate from the local and aggregated native Skills facade |
 | Remote lifecycle | `artifacts.intake_candidate`, `.follow`, `.fork`, `.set_publication`, `.set_license` | Candidate evidence, lineage, publication, redistribution, and takedown policy remain enforced by the remote authority |
 | Retire | `artifacts.archive` | Hides the record from other readers while retaining immutable owner/admin history |
 
@@ -150,9 +151,23 @@ from model-facing MCP. Labby revalidates current browser authority, requires
 `lab:admin` plus session CSRF for mutations, binds execution to the validated
 catalog/intent, and Depot independently enforces its write scope and resource
 policy. Callers cannot select arbitrary endpoints, headers, or credentials.
-Direct provider `skills.*` methods are available only when present in that
-validated operator catalog; ordinary Labby MCP continues to use native Agent
-Skills reads and durable `jobs.start` ingestion.
+The `artifacts` service exposes explicit remote Skill reads without publishing
+provider operation names. `list_remote_skills` returns canonical summaries with
+an opaque continuation cursor. `get_remote_skill` accepts the canonical
+`SKILL.md` URI and returns its manifest metadata and exact resource inventory.
+`load_remote_skill` reads that manifest with byte-offset continuation, while
+`read_remote_skill` reads a file or lists one direct-child directory page with
+an opaque directory cursor. The caller may select `connection_id`; omission is
+valid only when exactly one Artifact authority is configured. URI and cursor
+values are authority-owned opaque identities and must be passed back unchanged.
+
+These actions use the same direct HTTPS authority client as the rest of the
+remote Artifact control plane. Labby verifies the operation schema fingerprint,
+revalidates project authority after connection admission, delegates only
+`skills:read`, and redacts provider security metadata. They do not connect to a
+Depot MCP server and they do not change the semantics of native `skills/list`,
+`skills/get`, or local `artifacts.*` reads. Durable remote ingestion continues
+through `jobs.start`.
 
 One Depot connection can provide exact acquisition and the remote control plane,
 but those URLs are separate contracts:

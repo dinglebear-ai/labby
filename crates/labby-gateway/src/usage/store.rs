@@ -593,9 +593,18 @@ impl UsageStore {
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(sqlite_error)?;
 
-            let mut top_tools = target_rollups
+            // Discovery/list operations intentionally carry no item target. Keep
+            // them in fleet/upstream totals, but keep them out of the top,
+            // least-used, slowest, and distinct-tool rankings, which are about
+            // user-invoked items.
+            let ranked_target_rollups = target_rollups
                 .iter()
-                .map(|(tool, _, _)| tool.clone())
+                .filter(|(tool, _, _)| !tool.tool.is_empty())
+                .collect::<Vec<_>>();
+
+            let mut top_tools = ranked_target_rollups
+                .iter()
+                .map(|(tool, _, _)| (*tool).clone())
                 .collect::<Vec<_>>();
             top_tools.sort_by(|left, right| {
                 right
@@ -609,9 +618,9 @@ impl UsageStore {
             });
             top_tools.truncate(super::query::TOP_N);
 
-            let mut least_tools = target_rollups
+            let mut least_tools = ranked_target_rollups
                 .iter()
-                .map(|(tool, _, _)| tool.clone())
+                .map(|(tool, _, _)| (*tool).clone())
                 .collect::<Vec<_>>();
             least_tools.sort_by(|left, right| {
                 left.calls
@@ -625,11 +634,11 @@ impl UsageStore {
             least_tools.truncate(super::query::TOP_N);
 
             let mut stable_targets = BTreeSet::new();
-            for (tool, _, _) in &target_rollups {
+            for (tool, _, _) in &ranked_target_rollups {
                 stable_targets.insert((tool.upstream.clone(), tool.tool.clone()));
             }
             let distinct_tools = i64::try_from(stable_targets.len()).unwrap_or(i64::MAX);
-            let mut slowest_tools = target_rollups
+            let mut slowest_tools = ranked_target_rollups
                 .iter()
                 .map(|(target, calls, elapsed_total)| {
                     super::query::UsageLatencyStat {
@@ -1304,6 +1313,14 @@ mod tests {
         failed.tool_name = "search_repos".to_string();
         store.record_call(failed).await.unwrap();
 
+        let mut discovery = sample_record(1_002);
+        discovery.tool_name.clear();
+        discovery.capability = "resources".to_string();
+        discovery.operation = "resources.list".to_string();
+        // Slow enough to top the latency ranking if plumbing were ranked.
+        discovery.elapsed_ms = 5_000;
+        store.record_call(discovery).await.unwrap();
+
         let metrics = store
             .metrics(UsageMetricsQuery {
                 since_unix: None,
@@ -1315,11 +1332,21 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(metrics.total_calls, 3);
+        assert_eq!(metrics.total_calls, 4);
         assert_eq!(metrics.error_calls, 1);
         assert_eq!(metrics.top_tools.len(), 1);
         assert_eq!(metrics.top_tools[0].tool, "search_repos");
         assert_eq!(metrics.top_tools[0].calls, 3);
+        assert_eq!(metrics.least_tools.len(), 1);
+        assert_eq!(metrics.least_tools[0].tool, "search_repos");
+        assert_eq!(metrics.slowest_tools.len(), 1);
+        assert_eq!(metrics.slowest_tools[0].tool, "search_repos");
+        assert_eq!(metrics.distinct_tools, 1);
+        assert_eq!(
+            metrics.upstreams.iter().map(|row| row.calls).sum::<i64>(),
+            4,
+            "discovery records stay in the upstream totals"
+        );
     }
 
     #[tokio::test]

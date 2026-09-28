@@ -52,6 +52,8 @@ export function BrowserBridgePage() {
   const [loading, setLoading] = React.useState(true)
   const [refreshing, setRefreshing] = React.useState(false)
   const [error, setError] = React.useState<string>()
+  const [warnings, setWarnings] = React.useState<string[]>([])
+  const [availability, setAvailability] = React.useState({ browsers: false, pairings: false, sessions: false })
   const [busyKey, setBusyKey] = React.useState<string>()
   const [pairingFingerprints, setPairingFingerprints] = React.useState<Record<string, string>>({})
   const [revokeTarget, setRevokeTarget] = React.useState<BrowserIdentity>()
@@ -62,18 +64,37 @@ export function BrowserBridgePage() {
     const generation = ++loadGeneration.current
     if (announce) setRefreshing(true)
     try {
-      const [browsers, pairings, sessionPage] = await Promise.all([
+      const [browserResult, pairingResult, sessionResult] = await Promise.allSettled([
         browserApi.list(signal), browserApi.pairings(signal), browserApi.sessions(signal, sessionCursor),
       ])
-      if (generation === loadGeneration.current) {
-        setData({ browsers, pairings, sessions: sessionPage.sessions, sessionNextCursor: sessionPage.next_cursor })
-        setError(undefined)
-      }
-      return true
-    } catch (cause) {
       if (signal?.aborted || generation !== loadGeneration.current) return false
-      setError(cause instanceof Error ? cause.message : 'Browser bridge state could not be loaded.')
-      return false
+
+      const issue = (label: string, result: PromiseSettledResult<unknown>) =>
+        result.status === 'rejected'
+          ? `${label}: ${result.reason instanceof Error ? result.reason.message : 'request failed'}`
+          : undefined
+      const nextWarnings = [
+        issue('paired browsers unavailable', browserResult),
+        issue('pairing requests unavailable', pairingResult),
+        issue('browser sessions unavailable', sessionResult),
+        ...(sessionResult.status === 'fulfilled' ? sessionResult.value.detail_warnings : []),
+      ].filter((message): message is string => Boolean(message))
+      const allFailed = nextWarnings.length === 3
+
+      setData((current) => ({
+        browsers: browserResult.status === 'fulfilled' ? browserResult.value : current.browsers,
+        pairings: pairingResult.status === 'fulfilled' ? pairingResult.value : current.pairings,
+        sessions: sessionResult.status === 'fulfilled' ? sessionResult.value.sessions : current.sessions,
+        sessionNextCursor: sessionResult.status === 'fulfilled' ? sessionResult.value.next_cursor : current.sessionNextCursor,
+      }))
+      setAvailability((current) => ({
+        browsers: browserResult.status === 'fulfilled' || current.browsers,
+        pairings: pairingResult.status === 'fulfilled' || current.pairings,
+        sessions: sessionResult.status === 'fulfilled' || current.sessions,
+      }))
+      setWarnings(allFailed ? [] : nextWarnings)
+      setError(allFailed ? `Browser bridge state could not be loaded. ${nextWarnings.join('; ')}` : undefined)
+      return !allFailed
     } finally {
       if (!signal?.aborted && generation === loadGeneration.current) {
         setLoading(false)
@@ -137,19 +158,26 @@ export function BrowserBridgePage() {
         eyebrow="Browser-native WebMCP"
         title="Browser bridges"
         description="Paired extension identities and the WebMCP pages they observe. Discovery is metadata-only; execution stays disabled until you enable the exact active document."
-        pulse={{ color: connected.length > 0 ? 'var(--aurora-success)' : 'var(--aurora-warn)', label: `${connected.length} connected` }}
+        pulse={{ color: availability.browsers && connected.length > 0 ? 'var(--aurora-success)' : 'var(--aurora-warn)', label: availability.browsers ? `${connected.length} connected` : 'browser state unavailable' }}
         actions={<Button variant="outline" size="icon" aria-label="Refresh browser bridge" title="Refresh browser bridge" className="size-9 rounded-[10px] text-aurora-text-muted" onClick={() => void load(undefined, true)} disabled={refreshing}><RefreshCw className={cn('size-[15px]', refreshing && 'animate-spin')} /></Button>}
         stats={[
-          { label: 'Paired', value: data.browsers.filter((browser) => !browser.revoked_at).length },
-          { label: 'Pending', value: data.pairings.length, tone: data.pairings.length ? 'var(--aurora-warn)' : undefined },
-          { label: 'Pages shown', value: activeSessions.length },
-          { label: 'Enabled shown', value: enabled.length, tone: enabled.length ? 'var(--aurora-success)' : undefined },
+          { label: 'Paired', value: availability.browsers ? data.browsers.filter((browser) => !browser.revoked_at).length : '—' },
+          { label: 'Pending', value: availability.pairings ? data.pairings.length : '—', tone: availability.pairings && data.pairings.length ? 'var(--aurora-warn)' : undefined },
+          { label: 'Pages shown', value: availability.sessions ? activeSessions.length : '—' },
+          { label: 'Enabled shown', value: availability.sessions ? enabled.length : '—', tone: availability.sessions && enabled.length ? 'var(--aurora-success)' : undefined },
         ]}
       />
 
       {error ? <Alert variant="error"><Unplug /><AlertTitle>Browser bridge unavailable</AlertTitle><AlertDescription>{error}<Button variant="outline" size="sm" onClick={() => void load(undefined, true)}>Try again</Button></AlertDescription></Alert> : null}
+      {warnings.length > 0 ? (
+        <Alert>
+          <Unplug />
+          <AlertTitle>Browser bridge is partially degraded</AlertTitle>
+          <AlertDescription>Available browser data remains usable. {warnings.join('; ')}</AlertDescription>
+        </Alert>
+      ) : null}
 
-      {data.pairings.length > 0 ? (
+      {availability.pairings && data.pairings.length > 0 ? (
         <BrowserPanel title="Pending pairing requests" description="Approve only identities you initiated from a browser you control.">
           <div className="grid gap-2.5 p-3 md:grid-cols-2">
             {data.pairings.map((pairing) => {
@@ -193,7 +221,7 @@ export function BrowserBridgePage() {
       ) : null}
 
       <BrowserPanel title="Paired browsers" description="Durable extension identities and their connection state">
-        {loading ? <LoadingPanel label="Loading paired browsers" /> : data.browsers.length === 0 ? <EmptyPanel icon={<MonitorSmartphone />} title="No paired browsers" description="Open the Labby Browser Bridge extension and send a pairing request. It will appear here for approval." /> : (
+        {loading ? <LoadingPanel label="Loading paired browsers" /> : !availability.browsers ? <EmptyPanel icon={<Unplug />} title="Paired browser state unavailable" description="This part of Browser Bridge could not be loaded. Other bridge capabilities remain usable; retry when the browser identity service recovers." /> : data.browsers.length === 0 ? <EmptyPanel icon={<MonitorSmartphone />} title="No paired browsers" description="Open the Labby Browser Bridge extension and send a pairing request. It will appear here for approval." /> : (
           <div className="grid gap-2.5 p-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 320px), 1fr))' }}>
             {data.browsers.map((browser) => (
               <Card key={browser.id} className={cn('gap-2.5 rounded-xl px-3.5 py-[13px] shadow-none', browser.revoked_at && 'opacity-65')} style={{ background: 'var(--gw0-0_40)' }}>
@@ -214,7 +242,7 @@ export function BrowserBridgePage() {
       </BrowserPanel>
 
       <BrowserPanel title="Observed pages and tools" description="Discovery is metadata-only until execution is enabled per document">
-        {loading ? <LoadingPanel label="Loading observed browser pages" /> : activeSessions.length === 0 ? <EmptyPanel icon={<Globe2 />} title={sessionCursors.length > 1 || data.sessionNextCursor ? "No active WebMCP pages on this session page" : "No WebMCP pages observed"} description={sessionCursors.length > 1 || data.sessionNextCursor ? "Use the session-page controls to review older or newer observed pages." : "Grant the extension access to a WebMCP-enabled page. Catalog metadata will appear after the next scan."} /> : (
+        {loading ? <LoadingPanel label="Loading observed browser pages" /> : !availability.sessions ? <EmptyPanel icon={<Unplug />} title="Browser session state unavailable" description="Observed pages could not be loaded. Paired-browser and pairing controls remain usable if their services are available." /> : activeSessions.length === 0 ? <EmptyPanel icon={<Globe2 />} title={sessionCursors.length > 1 || data.sessionNextCursor ? "No active WebMCP pages on this session page" : "No WebMCP pages observed"} description={sessionCursors.length > 1 || data.sessionNextCursor ? "Use the session-page controls to review older or newer observed pages." : "Grant the extension access to a WebMCP-enabled page. Catalog metadata will appear after the next scan."} /> : (
           <div>
             {activeSessions.map((session) => (
               <Card key={session.id} className="gap-2.5 rounded-none border-0 border-t px-[15px] py-[13px] shadow-none" style={{ background: 'transparent' }}>
@@ -232,7 +260,7 @@ export function BrowserBridgePage() {
             ))}
           </div>
         )}
-        {!loading && (sessionCursors.length > 1 || data.sessionNextCursor) ? (
+        {!loading && availability.sessions && (sessionCursors.length > 1 || data.sessionNextCursor) ? (
           <div className="flex items-center justify-between gap-3 px-[15px] py-3">
             <Button variant="outline" size="sm" onClick={showPreviousSessionPage} disabled={sessionCursors.length <= 1 || Boolean(busyKey)}>Previous pages</Button>
             <span className={cn(AURORA_DENSE_META, 'text-aurora-text-muted')}>Session page {sessionCursors.length}</span>
