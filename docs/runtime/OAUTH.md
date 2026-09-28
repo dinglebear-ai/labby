@@ -391,6 +391,56 @@ Registration rules in the initial launch:
 - `POST /register`, `/authorize`, and hosted browser-login initiation are process-locally rate limited
 - new login/authorization state is rejected once the pending non-expired state cap is reached
 
+### Dynamic registration responses
+
+The registration endpoint uses the [RFC 7591](https://www.rfc-editor.org/rfc/rfc7591)
+wire contract, including through the product HTTP router:
+
+- A successful registration returns HTTP `201 Created`, the registered redirect
+  URIs, a client ID, and `token_endpoint_auth_method: "none"`. These public clients
+  do not receive a client secret; authorization still requires PKCE and consent.
+- A rejected redirect returns HTTP `400` with `error: "invalid_redirect_uri"`.
+  Missing, empty, or malformed registration metadata returns HTTP `400` with
+  `error: "invalid_client_metadata"`.
+- Responses include `Cache-Control: no-store` and `Pragma: no-cache`.
+  Body-size limits and registration rate limits remain in force: oversized bodies
+  return `413`, and rate-limited requests return `429` with `Retry-After`.
+- Registration errors use OAuth `error` / `error_description` fields, not the
+  product `kind` / `message` envelope. Diagnostic kinds and request correlation
+  remain available in server logs. Rejected callback query values and internal
+  storage errors are not reflected in registration error descriptions.
+
+### Gemini custom connected apps
+
+When Gemini reports that automatic registration failed, inspect the correlated
+`POST /register` response before supplying manual credentials. Discovery success
+alone does not establish successful registration or a completed OAuth flow.
+
+Copy the exact redirect URI from Gemini's connection dialog. Google Account
+Linking uses callbacks under
+`https://oauth-redirect.googleusercontent.com/r/<partner-id>`; the complete value
+in the dialog identifies the callback to permit. Append that exact URI to the
+existing `LABBY_AUTH_ALLOWED_REDIRECT_URIS` value or, when no environment override
+exists, `[auth].allowed_client_redirect_uris`. Preserve existing client entries.
+Do not substitute a guessed callback, allow every Google-hosted callback, or use
+`https://*` just to make a registration succeed.
+
+Environment values take precedence over TOML and explicit lists replace product
+defaults. Apply the change through the supported operator configuration flow,
+restart the service in a controlled maintenance step, and verify the running
+process loaded the new value. A source-code default or a TOML-only change cannot
+replace an active environment override.
+
+Then repeat the connection in Gemini and verify registration, browser consent,
+token exchange, and an authenticated read-only MCP call. Do not paste the gateway
+bearer token or the upstream Google OAuth application secret into Gemini's client
+secret field. Those credentials belong to different authentication boundaries.
+
+See [Google's custom app guide](https://support.google.com/gemini/answer/17209137)
+and [Google Account Linking](https://developers.google.com/identity/account-linking/oauth-linking).
+
+### Client ID metadata documents
+
 Clients may skip `POST /register` entirely and use a Client ID Metadata
 Document (CIMD) — an HTTPS URL as the `client_id`, per
 `draft-ietf-oauth-client-id-metadata-document`. Labby advertises this with
@@ -1082,7 +1132,7 @@ Interpretation:
   saw it.
 - `POST /register` reaches the origin and returns 4xx: inspect Labby logs and
   redirect allowlist config.
-- `POST /register` reaches the origin and returns 200: DCR itself is not the
+- `POST /register` reaches the origin and returns 201: DCR itself is not the
   current failure; continue to the OAuth/token/MCP checks below.
 
 When Cloudflare proxying is enabled, a WAF/bot rule can block ChatGPT's DCR
@@ -1112,7 +1162,7 @@ curl --resolve "$ISSUER:443:$WAN_IP" \
 Use the actual callback URI from the failed connector when reproducing a
 redirect-allowlist problem; the placeholder above is only the expected shape.
 
-If the direct-origin POST returns 200 but ChatGPT still gets 403, fix the edge
+If the direct-origin POST returns 201 but ChatGPT still gets 403, fix the edge
 configuration, not Labby. The simplest operational fix is to make the connector
 host DNS-only instead of Cloudflare-proxied. Alternatively, add a narrow WAF
 bypass for the OAuth/MCP paths used by MCP clients:
