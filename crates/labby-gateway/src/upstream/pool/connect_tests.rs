@@ -32,6 +32,7 @@ struct LegacyLifecycleResponder {
     discover_requests: Arc<AtomicUsize>,
     initialize_requests: Arc<AtomicUsize>,
     list_tools_requests: Arc<AtomicUsize>,
+    reject_protocol_version: bool,
 }
 
 impl Respond for LegacyLifecycleResponder {
@@ -51,9 +52,12 @@ impl Respond for LegacyLifecycleResponder {
                     .get("mcp-protocol-version")
                     .and_then(|value| value.to_str().ok());
                 if version == Some("2026-07-28") {
-                    ResponseTemplate::new(400).set_body_string(
-                        "Bad Request: Unsupported MCP-Protocol-Version: 2026-07-28",
-                    )
+                    let body = if self.reject_protocol_version {
+                        "Bad Request: Unsupported MCP-Protocol-Version: 2026-07-28"
+                    } else {
+                        "Bad Request"
+                    };
+                    ResponseTemplate::new(400).set_body_string(body)
                 } else {
                     ResponseTemplate::new(200).set_body_json(json!({
                         "jsonrpc": "2.0",
@@ -143,6 +147,43 @@ async fn http_upstream_falls_back_after_transport_rejects_2026_discovery() {
     assert_eq!(responder.list_tools_requests.load(Ordering::SeqCst), 1);
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0].name, "legacy_echo");
+}
+
+#[tokio::test]
+async fn http_upstream_does_not_downgrade_explicit_protocol_version_rejection() {
+    let server = MockServer::start().await;
+    let responder = LegacyLifecycleResponder {
+        reject_protocol_version: true,
+        ..Default::default()
+    };
+    Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/mcp"))
+        .respond_with(responder.clone())
+        .mount(&server)
+        .await;
+
+    let mut config = test_upstream_config();
+    config.url = Some(format!("{}/mcp", server.uri()));
+
+    let error = connect_http_upstream(
+        config.url.as_deref().expect("url"),
+        &config,
+        None,
+        None,
+        None,
+        (),
+    )
+    .await
+    .expect_err("explicit protocol rejection must not trigger a legacy retry");
+
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported mcp-protocol-version"),
+        "{error}"
+    );
+    assert_eq!(responder.discover_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(responder.initialize_requests.load(Ordering::SeqCst), 0);
 }
 
 #[derive(Clone, Default)]
