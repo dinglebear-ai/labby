@@ -11,6 +11,10 @@ updated: "2026-09-27"
 different purposes: instructions govern repository work; current implementation
 and code-owned catalogs establish implemented product behavior.
 
+## Instruction scope
+
+Keep the repository AGENTS.md focused on Labby-specific implementation boundaries, protocol contracts, verification commands, packaging, and protected documentation. Cross-project Git practices, tool preferences, reporting standards, and instruction-file conventions belong in the user-level global AGENTS.md, not copies in each repository. Private workstation and deployment facts belong only in the ignored per-checkout override described below.
+
 ## Sources of truth
 
 | Concern | Authority |
