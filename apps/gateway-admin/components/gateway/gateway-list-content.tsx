@@ -6,16 +6,14 @@ import {
   ArrowLeft,
   Download,
   MoreHorizontal,
-  LayoutGrid,
-  List,
   Plus,
   RefreshCw,
   Search,
   SlidersHorizontal,
-  Table2,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { AppHeader } from '@/components/app-header'
+import { CollectionViewToggle, type CollectionViewMode } from '@/components/console/collection-view-toggle'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
@@ -59,7 +57,7 @@ import { describeGatewayOperationalState } from '@/lib/gateway-operational-state
 const DEFAULT_GATEWAY_LENS: GatewayPrimaryLens = 'enabled'
 const DEFAULT_DENSITY: 'comfortable' | 'condensed' = 'comfortable'
 const BULK_RELOAD_CONCURRENCY = 4
-type GatewayLayout = 'table' | 'cards' | 'list'
+type GatewayLayout = CollectionViewMode
 const GatewayFormDialog = dynamic(
   () => import('./gateway-form-dialog').then((module) => module.GatewayFormDialog),
   { ssr: false },
@@ -712,6 +710,7 @@ export function GatewayListView({
     try {
       const saved = window.localStorage.getItem('labby.gateway.layout')
       if (saved === 'table' || saved === 'cards' || saved === 'list') setLayout(saved)
+      else if (window.matchMedia('(max-width: 640px)').matches) setLayout('cards')
     } catch {
       toast.warning('Gateway layout could not be loaded; using the default for this session.')
     }
@@ -820,51 +819,40 @@ export function GatewayListView({
           </div>
 
           <div className="grid gap-4">
-            {showToolbar || activeSearch || mobileSheetOpen ? <div className="flex min-w-0 flex-col items-stretch gap-2 sm:flex-row sm:items-start" data-gateway-filters="all-viewports">
-              <div className="min-w-0 sm:flex-1">
-              <GatewayFilters
-              mode={showToolsView ? 'tools' : 'gateways'}
-              search={activeSearch}
-              gatewayFilters={{
-                status: gatewayFilters.status,
-                source: gatewayFilters.source,
-                transport: gatewayFilters.transport,
-              }}
-              toolFilters={toolFilters}
-              gatewayOptions={gatewayOptions}
-              mobileSheetOpen={mobileSheetOpen}
-              onMobileSheetOpenChange={onMobileSheetOpenChange}
-              onSearchChange={onSearchChange}
-              onGatewayFilterToggle={onGatewayFilterToggle}
-              onToolFilterToggle={onToolFilterToggle}
-              onExposureChange={onExposureChange}
-              onClearFilters={onClearFilters}
-              />
+            {showToolbar || activeSearch || mobileSheetOpen || !showToolsView ? (
+              <div className="flex min-w-0 flex-col items-stretch gap-2 sm:flex-row sm:items-start">
+                {showToolbar || activeSearch || mobileSheetOpen ? (
+                  <div data-gateway-filters="all-viewports" className="min-w-0 sm:flex-1">
+                    <GatewayFilters
+                      mode={showToolsView ? 'tools' : 'gateways'}
+                      search={activeSearch}
+                      gatewayFilters={{
+                        status: gatewayFilters.status,
+                        source: gatewayFilters.source,
+                        transport: gatewayFilters.transport,
+                      }}
+                      toolFilters={toolFilters}
+                      gatewayOptions={gatewayOptions}
+                      mobileSheetOpen={mobileSheetOpen}
+                      onMobileSheetOpenChange={onMobileSheetOpenChange}
+                      onSearchChange={onSearchChange}
+                      onGatewayFilterToggle={onGatewayFilterToggle}
+                      onToolFilterToggle={onToolFilterToggle}
+                      onExposureChange={onExposureChange}
+                      onClearFilters={onClearFilters}
+                    />
+                  </div>
+                ) : null}
+                {!showToolsView ? (
+                  <CollectionViewToggle
+                    value={layout}
+                    onChange={selectLayout}
+                    ariaLabel="Server view"
+                    className="self-end sm:self-start lg:mt-3.5"
+                  />
+                ) : null}
               </div>
-              {!showToolsView ? (
-                <div className="inline-flex shrink-0 self-end rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface p-0.5 sm:self-start lg:mt-3.5" role="group" aria-label="Server view">
-                  {([
-                    ['table', Table2, 'Table view'],
-                    ['cards', LayoutGrid, 'Card view'],
-                    ['list', List, 'List view'],
-                  ] as const).map(([value, Icon, label]) => (
-                    <Button
-                      key={value}
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className={cn('size-8', layout === value && 'bg-aurora-selected-bg text-aurora-accent-strong')}
-                      aria-label={label}
-                      aria-pressed={layout === value}
-                      title={label}
-                      onClick={() => selectLayout(value)}
-                    >
-                      <Icon className="size-3.5" />
-                    </Button>
-                  ))}
-                </div>
-              ) : null}
-            </div> : null}
+            ) : null}
 
             {/* Keep intrinsic table contents from widening the page grid. */}
             <div className="min-w-0">

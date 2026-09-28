@@ -6,6 +6,7 @@ import Link from 'next/link'
 import { ArrowLeftRight, Compass, Info, Loader2, Plus } from 'lucide-react'
 import { toast } from 'sonner'
 
+import { useCollectionView } from '@/hooks/use-collection-view'
 import { AppHeader } from '@/components/app-header'
 import { ConsoleHero } from '@/components/console/console-hero'
 import { DashboardPanel } from '@/components/dashboard/panel'
@@ -21,7 +22,7 @@ import { appendDiscoveryPage, createDiscoveryWindow, visibleArtifacts, type Disc
 import { RequestLanes } from './request-lanes'
 import { controlPlaneAction } from '@/lib/api/artifact-control-client'
 import { artifactMatchLabel, DISCOVERY_SHELVES, selectDiscoveryResults, selectDiscoveryShelf, type DiscoveryShelf, type DiscoverySort } from './discover-model'
-import { DiscoverArtifactCard as ArtifactCard } from './discover-artifact-card'
+import { DiscoverArtifactCard as ArtifactCard, DiscoverTableHeader } from './discover-artifact-card'
 import { DiscoverArtifactInspection as ArtifactInspection } from './discover-artifact-inspection'
 import { DiscoverViewOptions, type DiscoveryDensity, type DiscoveryLayout } from './discover-view-options'
 import { DiscoverRails } from './discover-rails'
@@ -94,7 +95,8 @@ function SessionDepotPage() {
   const [providers,setProviders] = useState<DepotProviderOption[]>([])
   const [providerError,setProviderError] = useState<string>()
   const [detail,setDetail] = useState<FederatedArtifact|null>(null), [detailLoading,setDetailLoading] = useState(false)
-  const [copied,setCopied] = useState<string>(), [view,setView] = useState<DiscoveryLayout>('cards')
+  const [copied,setCopied] = useState<string>()
+  const [view,selectView] = useCollectionView('labby.depot.layout', 'cards')
   const [importing,setImporting] = useState(false)
   const importPending = useRef(false)
   const [density, setDensity] = useState<DiscoveryDensity>('comfortable')
@@ -108,6 +110,7 @@ function SessionDepotPage() {
   const [now, setNow] = useState<number>()
   const lanes = useRef(new RequestLanes()), inFlight = useRef<string | undefined>(undefined)
   const loadMoreRef = useRef<HTMLDivElement>(null)
+
   const paginationControllerRef = useRef<AbortController>(null)
   const detailControllerRef = useRef<AbortController>(null)
   const contextKey = JSON.stringify([selectedProvider, kind, query.trim()])
@@ -359,7 +362,7 @@ function SessionDepotPage() {
           <DiscoverResultTabs shelf={shelf} setShelf={setShelf} />
           <span className="min-w-3 flex-1" />
           <span className="mb-[5px] inline-flex h-[22px] items-center rounded-md border border-aurora-border-default/50 bg-aurora-control-surface px-[9px] text-[10.5px] font-[650] tabular-nums text-aurora-text-muted" title={`${state.window.rowCount} retained results; sorting applies to loaded artifacts.`}>{state.loading ? 'Searching…' : incomplete && state.total === undefined ? 'Total unavailable' : `${results.length} shown · ${state.exact ? '' : '≥ '}${resultCount}`}</span>
-          <div className="pb-1"><DiscoverViewOptions sort={sort} setSort={setSort} layout={view} setLayout={setView} density={density} setDensity={setDensity} /></div>
+          <div className="pb-1"><DiscoverViewOptions sort={sort} setSort={setSort} layout={view} setLayout={selectView} density={density} setDensity={setDensity} /></div>
         </div>
         <div className="-mt-[5px] flex h-[17px] min-w-0 items-center gap-[7px] px-[3px]"><Info aria-hidden className="size-3 shrink-0 text-[color-mix(in_srgb,var(--aurora-accent-strong)_80%,transparent)]" strokeWidth={1.7}/><span className="shrink-0 font-display text-xs font-bold leading-[17px] tracking-[-0.005em] text-[color-mix(in_srgb,var(--aurora-text-muted)_55%,var(--aurora-text-primary))]">{shelfMeta.title}</span><span aria-hidden className="h-[11px] w-px shrink-0 bg-aurora-border-default/65"/><span className="min-w-0 text-[11.5px] leading-[17px] text-aurora-text-muted">{shelfMeta.hint}</span></div>
         {!USE_MOCK_DATA?<div data-discovery-feed-unavailable className="rounded-aurora-1 border border-dashed border-aurora-border-strong/60 bg-aurora-panel-medium px-3 py-2 text-[11.5px] leading-relaxed text-aurora-text-muted">Depot does not currently report a canonical {shelfMeta.label.toLowerCase()} feed. Results below remain the retained catalog window and are only ordered by the selected display sort.</div>:null}
@@ -381,5 +384,5 @@ function SessionDepotPage() {
 export function ArtifactResults({artifacts,activeQuery,loading,incomplete,view,density,now,selectedKey,artifactHref,onReset,selectionMode,selectedBulkKeys,cursorIndex,onToggleSelected,onEnterSelectionMode,onAdd,onFork,onSend,isInLibrary,actionPending}:{artifacts:FederatedArtifact[];activeQuery:string;loading:boolean;incomplete:boolean;view:DiscoveryLayout;density:DiscoveryDensity;now?:number;selectedKey?:string;artifactHref:(providerId?:string,id?:string)=>string;onReset:()=>void;selectionMode:boolean;selectedBulkKeys:string[];cursorIndex:number;onToggleSelected:(artifact:FederatedArtifact)=>void;onEnterSelectionMode:(artifact:FederatedArtifact)=>void;onAdd:(artifact:FederatedArtifact)=>void|Promise<void>;onFork?:((artifact:FederatedArtifact)=>void|Promise<void>);onSend?:((artifact:FederatedArtifact)=>void|Promise<void>);isInLibrary:(artifact:FederatedArtifact)=>boolean;actionPending:boolean}){
   if(loading&&!artifacts.length)return <div className="flex min-h-56 items-center justify-center rounded-aurora-2 border border-dashed border-aurora-border-subtle text-sm text-aurora-text-muted"><Loader2 className="mr-2 size-4 animate-spin"/>Searching catalog…</div>
   if(!artifacts.length)return <div className="mt-3 rounded-aurora-2 border-[1.5px] border-dashed border-aurora-border-strong/55 px-[22px] py-11 text-center"><div className="font-display text-base font-[760] leading-[22px] text-aurora-text-primary">{incomplete?'Search results are not complete yet.':'No artifacts match that filter.'}</div><div className="mt-1.5 text-[12.5px] leading-[15px] text-aurora-text-muted">{incomplete?'Retry once every source is available.':'Clear the kind and source filters, or publish the first one.'}</div>{!incomplete?<Button className="mt-3.5 h-[30px] rounded-lg px-[13px] py-0 text-xs font-[650] leading-normal" variant="outline" onClick={onReset}>Reset Filters</Button>:null}</div>
-  return <div className={view==='cards'?'grid grid-cols-[repeat(auto-fill,minmax(min(100%,268px),1fr))] items-start gap-3':'overflow-hidden rounded-aurora-2 border border-[color-mix(in_srgb,var(--aurora-border-default)_45%,var(--aurora-page-bg))] bg-[linear-gradient(180deg,var(--aurora-panel-strong-top),var(--aurora-panel-strong))] shadow-[var(--aurora-shadow-medium),inset_0_1px_0_rgba(255,255,255,0.04)]'}><div className={view==='list'?'min-w-0 overflow-x-hidden':'contents'}>{artifacts.map((artifact,index)=>{ const key=artifactKey(artifact.providerId,artifact.artifactId); return <ArtifactCard key={key} artifact={artifact} compact={view==='list'} density={density} now={now} selected={selectedKey===key} href={artifactHref(artifact.providerId,artifact.artifactId)} selectionMode={selectionMode} selectedForBulk={selectedBulkKeys.includes(key)} cursorActive={cursorIndex===index} matchLabel={artifactMatchLabel(artifact,activeQuery)} specLabels={USE_MOCK_DATA?mockDepotSpecLabels(artifact):undefined} metricLabels={USE_MOCK_DATA?mockDepotMetricLabels(artifact):undefined} onToggleSelected={()=>onToggleSelected(artifact)} onEnterSelectionMode={()=>onEnterSelectionMode(artifact)} onAdd={()=>onAdd(artifact)} onFork={onFork?()=>onFork(artifact):undefined} onSend={onSend?()=>onSend(artifact):undefined} inLibrary={isInLibrary(artifact)} actionPending={actionPending}/> })}</div></div>
+  return <div className={view==='cards'?'grid grid-cols-[repeat(auto-fill,minmax(min(100%,268px),1fr))] items-start gap-3':view==='list'?'grid grid-cols-1 gap-3':'aurora-scrollbar overflow-x-auto rounded-aurora-2 border border-[color-mix(in_srgb,var(--aurora-border-default)_45%,var(--aurora-page-bg))] bg-[linear-gradient(180deg,var(--aurora-panel-strong-top),var(--aurora-panel-strong))] shadow-[var(--aurora-shadow-medium),inset_0_1px_0_rgba(255,255,255,0.04)]'}>{view==='table'?<DiscoverTableHeader selectionVisible={selectionMode || selectedBulkKeys.length > 0} actionCount={1 + Number(Boolean(onFork)) + Number(Boolean(onSend))}/>:null}<div className={view==='table'?'min-w-[760px]':'contents'}>{artifacts.map((artifact,index)=>{ const key=artifactKey(artifact.providerId,artifact.artifactId); return <ArtifactCard key={key} artifact={artifact} compact={view==='table'} density={density} now={now} selected={selectedKey===key} href={artifactHref(artifact.providerId,artifact.artifactId)} selectionMode={selectionMode || selectedBulkKeys.length > 0} selectedForBulk={selectedBulkKeys.includes(key)} cursorActive={cursorIndex===index} matchLabel={artifactMatchLabel(artifact,activeQuery)} specLabels={USE_MOCK_DATA?mockDepotSpecLabels(artifact):undefined} metricLabels={USE_MOCK_DATA?mockDepotMetricLabels(artifact):undefined} onToggleSelected={()=>onToggleSelected(artifact)} onEnterSelectionMode={()=>onEnterSelectionMode(artifact)} onAdd={()=>onAdd(artifact)} onFork={onFork?()=>onFork(artifact):undefined} onSend={onSend?()=>onSend(artifact):undefined} inLibrary={isInLibrary(artifact)} actionPending={actionPending}/> })}</div></div>
 }

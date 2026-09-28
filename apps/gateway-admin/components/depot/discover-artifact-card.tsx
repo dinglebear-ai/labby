@@ -65,7 +65,7 @@ export function DiscoverArtifactCard({ artifact, compact, selected, href, now, d
 
   if (compact) {
     const installs = Number.isSafeInteger(artifact.metrics?.installs) && artifact.metrics!.installs! >= 0 ? artifact.metrics!.installs : undefined
-    return <article data-density={density} data-discover-result={artifactKey(artifact.providerId, artifact.artifactId)} data-cursor-active={cursorActive ? 'true' : undefined} style={{ borderLeftColor: `color-mix(in srgb, ${tone} 45%, transparent)` }} className={`relative -mx-[7px] -my-1 box-border flex min-w-0 items-center gap-2.5 border-t border-l-2 border-t-[color-mix(in_srgb,var(--aurora-border-default)_40%,var(--aurora-page-bg))] px-4 ${density === 'compact' ? 'py-1.5' : 'py-2.5'} transition-colors hover:bg-aurora-hover-bg focus-within:ring-1 focus-within:ring-inset focus-within:ring-aurora-accent-primary ${selected ? 'ring-1 ring-inset ring-aurora-accent-primary' : cursorActive ? 'ring-1 ring-inset ring-aurora-accent-pink' : ''}`}>
+    return <article data-density={density} data-discover-result={artifactKey(artifact.providerId, artifact.artifactId)} data-cursor-active={cursorActive ? 'true' : undefined} style={{ borderLeftColor: `color-mix(in srgb, ${tone} 45%, transparent)` }} className={`relative box-border flex min-w-[760px] items-center gap-2.5 border-t border-l-2 border-t-[color-mix(in_srgb,var(--aurora-border-default)_40%,var(--aurora-page-bg))] px-4 ${density === 'compact' ? 'py-1.5' : 'py-2.5'} transition-colors hover:bg-aurora-hover-bg focus-within:ring-1 focus-within:ring-inset focus-within:ring-aurora-accent-primary ${selected ? 'ring-1 ring-inset ring-aurora-accent-primary' : cursorActive ? 'ring-1 ring-inset ring-aurora-accent-pink' : ''}`}>
       {selectionVisible ? <button type="button" aria-pressed={selectedForBulk} aria-label={`Select ${artifactTitle(artifact)}`} title="Select for bulk actions" onClick={event => { event.stopPropagation(); onToggleSelected?.() }} className={`grid size-[15px] shrink-0 place-items-center rounded-[5px] border p-0 ${selectedForBulk ? 'border-[color-mix(in_srgb,var(--aurora-accent-primary)_70%,transparent)] bg-aurora-accent-primary text-[#06202e]' : 'border-[color-mix(in_srgb,var(--aurora-border-strong)_70%,transparent)] bg-[var(--gw0-0_45)] text-transparent'}`}>{selectedForBulk ? <Check aria-hidden className="size-2.5" strokeWidth={3.2}/> : null}</button> : null}
       <Link href={href} data-artifact-key={artifactKey(artifact.providerId, artifact.artifactId)} aria-current={selected ? 'page' : undefined} onMouseDown={beginPress} onMouseUp={clearPress} onMouseLeave={clearPress} onTouchStart={beginPress} onTouchEnd={clearPress} onClick={event => { if (selectionMode || longPressFired.current) { event.preventDefault(); longPressFired.current = false; onToggleSelected?.() } }} className="contents">
         <span aria-hidden="true" style={iconStyle} className="grid size-6 shrink-0 place-items-center rounded-[7px] border"><Icon className="size-3" /></span>
@@ -149,4 +149,20 @@ function DiscoverSpecMark({ label }: { label: string }) {
     : /line/.test(value) ? List
     : Clock3
   return <Icon aria-hidden className="size-[11px] shrink-0" strokeWidth={1.7}/>
+}
+
+
+/** Match the compact rows, including optional selection and action columns. */
+export function DiscoverTableHeader({ selectionVisible, actionCount }: { selectionVisible: boolean; actionCount: number }) {
+  return <div aria-hidden="true" className="flex min-w-[760px] items-center gap-2.5 border-b border-l-2 border-l-transparent border-aurora-border-subtle bg-aurora-control-surface px-4 py-2 text-[9px] font-bold uppercase tracking-[0.11em] text-aurora-text-muted">
+    {selectionVisible ? <span className="w-[15px] shrink-0"/> : null}
+    <span className="w-6 shrink-0"/>
+    <span className="w-[78px] shrink-0">Kind</span>
+    <span className="min-w-[96px] flex-1 pr-0.5">Artifact</span>
+    <span className="hidden min-w-[96px] flex-1 pr-0.5 sm:block">Description</span>
+    <span className="hidden box-content w-[120px] shrink-0 pr-0.5 min-[1401px]:block">Publisher</span>
+    <span className="hidden w-24 shrink-0 min-[1181px]:block">Source</span>
+    <span className="hidden w-[62px] shrink-0 text-right md:block">Installs</span>
+    <span className="shrink-0" style={{ width: actionCount * 26 + Math.max(0, actionCount - 1) * 4 }}/>
+  </div>
 }

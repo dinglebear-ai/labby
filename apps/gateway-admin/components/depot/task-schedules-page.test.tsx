@@ -29,6 +29,10 @@ test('schedule rows expose real action callbacks without optimistic switch succe
   const operations: string[] = []
   const view = await renderClient(<TaskScheduleRows rows={[row]} agents={[agent]} states={{}} canOperate canDelete onToggle={() => operations.push('pause')} onRun={() => operations.push('run')} onEdit={() => operations.push('edit')} onDelete={() => operations.push('delete')} />)
   try {
+    assert.ok(view.container.querySelector('[aria-label="Task view"]'))
+    assert.ok(view.container.querySelector('[aria-label="Table view"]'))
+    assert.ok(view.container.querySelector('[aria-label="Card view"]'))
+    assert.ok(view.container.querySelector('[aria-label="List view"]'))
     await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Pause Daily review"]')!.click())
     assert.equal(document.querySelector('[aria-label="Pause Daily review"]')!.getAttribute('aria-checked'), 'true')
     await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Run Daily review now"]')!.click())
@@ -115,4 +119,18 @@ test('retries require explicit opt-in and preserve bounded server policy', () =>
   assert.throws(() => validateRetryPolicy({ ...draft, retryEnabled: true, backoffMinutes: '0' }), /retry delay/)
   const existing = newScheduleDraft({ ...row, retry_policy: { max_retries: 3, backoff_ms: 120000 }, task_template: { owner_kind: 'personal', owner_id: 'principal', agent_id: 'agent', input: 'Review' } })
   assert.deepEqual(validateRetryPolicy(existing), { max_retries: 3, backoff_ms: 120000 })
+})
+
+
+test('card summaries do not invent a pending state for an unavailable latest run', async () => {
+  window.localStorage.setItem('labby.tasks.layout', 'cards')
+  const view = await renderClient(<TaskScheduleRows rows={[{ ...row, last_task_id: 'missing-run' }]} agents={[agent]} states={{}} canOperate canDelete onToggle={() => {}} onRun={() => {}} onEdit={() => {}} onDelete={() => {}} />)
+  try {
+    const summary = view.container.querySelector('[aria-label="Inspect Daily review"]')!.textContent ?? ''
+    assert.match(summary, /not reported/)
+    assert.doesNotMatch(summary, /pending/)
+  } finally {
+    await view.unmount()
+    window.localStorage.removeItem('labby.tasks.layout')
+  }
 })
