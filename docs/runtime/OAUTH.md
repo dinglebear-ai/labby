@@ -418,20 +418,26 @@ alone does not establish successful registration or a completed OAuth flow.
 
 Copy the redirect URI from Gemini's dialog, then verify every callback actually
 submitted for registration. The copied primary callback alone may not suffice.
-Google documents primary and sandbox callback hosts; a live Gemini custom-app
-registration also submitted the test-host counterpart for the same partner ID:
+Google documents primary and sandbox callback hosts. A live Gemini custom-app
+registration submitted six URLs: both `/r/` and `/a/` paths on the primary,
+sandbox, and test hosts, all with the same exact partner ID:
 
 ```text
 https://oauth-redirect.googleusercontent.com/r/<partner-id>
 https://oauth-redirect-sandbox.googleusercontent.com/r/<partner-id>
 https://oauth-redirect-test.googleusercontent.com/r/<partner-id>
+https://oauth-redirect.googleusercontent.com/a/<partner-id>
+https://oauth-redirect-sandbox.googleusercontent.com/a/<partner-id>
+https://oauth-redirect-test.googleusercontent.com/a/<partner-id>
 ```
 
 These are observed callback shapes, not a blanket list to trust. A missing
 callback rejects the entire registration. Compare the rejected URI fingerprint
 with the exact callback under investigation, and use the logged redirect origin
 and callback count to distinguish the submitted bundle from the dialog's copied
-URI. Rejection logs do not expose callback paths, query values, or userinfo.
+URI. The server reports up to 16 rejected origins per request so a client with
+multiple callback variants can be diagnosed in one attempt. Rejection logs do
+not expose callback paths, query values, or userinfo.
 
 Append only the verified exact addresses to the existing
 `LABBY_AUTH_ALLOWED_REDIRECT_URIS` value or, when no environment override exists,

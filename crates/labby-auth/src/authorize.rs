@@ -1187,6 +1187,9 @@ pub mod tests {
             "https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-test-client",
             "https://oauth-redirect-sandbox.googleusercontent.com/r/user_bound_custom-mcp-test-client",
             "https://oauth-redirect-test.googleusercontent.com/r/user_bound_custom-mcp-test-client",
+            "https://oauth-redirect.googleusercontent.com/a/user_bound_custom-mcp-test-client",
+            "https://oauth-redirect-sandbox.googleusercontent.com/a/user_bound_custom-mcp-test-client",
+            "https://oauth-redirect-test.googleusercontent.com/a/user_bound_custom-mcp-test-client",
         ];
         for allowed_count in 1..=callbacks.len() {
             let mut config = test_auth_config();
