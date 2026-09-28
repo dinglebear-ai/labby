@@ -34,16 +34,22 @@ const PHOENIX_DEVELOPER_INSTRUCTIONS: &str = "You are Phoenix, Labby's concise o
 
 #[cfg(feature = "skills")]
 async fn phoenix_developer_instructions() -> Result<String, ToolError> {
-    const BOOTSTRAP_URI: &str = "skill://labby/using-labby/SKILL.md";
     let context = crate::skills::facade::SkillRegistryContext::first_party_only();
-    let file = crate::skills::facade::read_visible_skill_file(&context, BOOTSTRAP_URI).await?;
-    let body = file
-        .content
-        .text()
-        .ok_or_else(|| unavailable("Phoenix bootstrap skill is not text"))?;
-    Ok(format!(
-        "{PHOENIX_DEVELOPER_INSTRUCTIONS}\n\nThe bundled Agent Skill at {BOOTSTRAP_URI} is loaded for this session. Follow its instructions when operating Labby:\n\n{body}"
-    ))
+    let mut instructions = PHOENIX_DEVELOPER_INSTRUCTIONS.to_owned();
+    for uri in [
+        "skill://labby/using-labby/SKILL.md",
+        "skill://labby/using-codemode/SKILL.md",
+    ] {
+        let file = crate::skills::facade::read_visible_skill_file(&context, uri).await?;
+        let body = file
+            .content
+            .text()
+            .ok_or_else(|| unavailable("Phoenix bootstrap skill is not text"))?;
+        instructions.push_str(&format!(
+            "\n\nThe bundled Agent Skill at {uri} is loaded for this session. Follow its instructions when operating Labby:\n\n{body}"
+        ));
+    }
+    Ok(instructions)
 }
 
 #[cfg(not(feature = "skills"))]
@@ -1863,6 +1869,7 @@ mod tests {
         let instructions = phoenix_developer_instructions().await.unwrap();
         assert!(instructions.starts_with(PHOENIX_DEVELOPER_INSTRUCTIONS));
         assert!(instructions.contains("skill://labby/using-labby/SKILL.md"));
+        assert!(instructions.contains("skill://labby/using-codemode/SKILL.md"));
         assert!(instructions.contains("codemode.listSkills()"));
         assert!(instructions.contains("codemode.getSkill(uri)"));
         assert!(instructions.contains("codemode.readSkill(uri)"));

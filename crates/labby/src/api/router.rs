@@ -2314,6 +2314,12 @@ mod tests {
         let js = String::from_utf8(body.to_vec()).unwrap();
         assert!(js.contains("LabbyAppHost"));
         assert!(js.contains("callAction"));
+        assert!(js.contains("runtime.unhandled_rejection"));
+        assert!(js.contains("runtime.ready"));
+        assert!(js.contains("action.error"));
+        assert!(js.contains("openai/widgetSessionId"));
+        assert!(js.contains("widget_session"));
+        assert!(js.contains("action: \"event\""));
         assert!(text.contains("appPath"));
     }
 

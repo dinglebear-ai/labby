@@ -346,6 +346,20 @@ impl AppState {
         self
     }
 
+    /// Share the already-resolved provider topology with other daemon
+    /// runtimes (notably Code Mode) so provider publication is immediately
+    /// visible everywhere without a restart.
+    #[must_use]
+    pub(crate) fn with_depot_manager(
+        mut self,
+        manager: Arc<crate::dispatch::depot::manager::Manager>,
+        policy: crate::dispatch::depot::network::NetworkPolicy,
+    ) -> Self {
+        self.depot_policy = policy;
+        self.depot_manager = manager;
+        self
+    }
+
     #[must_use]
     pub fn with_depot_storage(
         mut self,

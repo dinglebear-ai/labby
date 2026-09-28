@@ -1,13 +1,13 @@
 ---
 name: using-labby
-description: "Use when operating an already installed Labby through its CLI, MCP, HTTP API, or web UI; updating Labby; configuring LABBY_HOME; exporting, verifying, or restoring durable state; checking health or logs; managing gateway upstreams, OAuth, protected routes, snippets, and Agent Skills; or discovering and executing upstream MCP tools with Code Mode. For installation, first-run onboarding, host-service repair, or deployment recovery, use $install-labby instead."
+description: "Use when operating an installed Labby through its CLI, MCP, HTTP API, or web UI; updating it, checking health and logs, managing gateway upstreams and configuration, or exporting and restoring durable state. For live Code Mode calls use using-codemode; for saved snippets use using-snippets."
 ---
 
 # Operating Labby
 
 For a new installation or first-run onboarding, use `$install-labby`. This skill is the day-to-day operator reference once Labby is installed.
-For authoring, editing, validating, promoting, or reviewing reusable snippets,
-use `$creating-snippets`.
+For live upstream discovery and execution, use `$using-codemode`. For running,
+authoring, validating, or reviewing saved snippets, use `$using-snippets`.
 
 `labby` is the Labby binary. Treat generated help and `docs/` as source of truth when this skill and the repo disagree.
 
@@ -60,7 +60,7 @@ For command details and workflows, read:
 
 - `references/operator-cli.md` for top-level CLI, setup, docs, doctor, logs, and gateway workflows.
 - `references/gateway-operations.md` for server add/set/import/auth, route, and runtime operations.
-- `references/code-mode.md` for `codemode`, schemas, confirmations, limits, and error recovery.
+- `$using-codemode` for `codemode`, schemas, confirmations, limits, and error recovery.
 - `references/config-reference.md` for `$LABBY_HOME/.env`, `$LABBY_HOME/config.toml`, and mutable gateway settings.
 - `references/service-catalog.md` for generated catalog sources and action-dispatch discovery.
 
@@ -77,60 +77,10 @@ The MCP surface exposes one tool per runtime service with flat action strings:
 
 For direct MCP stdio use, run `labby mcp`. For browser/API/admin workflows, run `labby serve`.
 
-## Code Mode Gotchas
+## Code Mode and snippets
 
-Labby exposes full execution as `codemode` and enforced read-only execution as
-`codemode_read`; the optional `codemode_ui` MCP App has the same authority as
-`codemode`. JavaScript must evaluate to an async function. Search the live catalog before calling an
-upstream; do not guess tool IDs, helper names, schemas, or parameter envelopes:
-
-```js
-async () => {
-  const hits = await codemode.search({ query: "github issues", limit: 5 });
-  return hits.results.map(t => ({ id: t.id, signature: t.signature }));
-}
-```
-
-Use `callTool("<upstream>::<tool>", params)` for dynamic targets. Use generated
-`codemode.<upstream>.<tool>(params)` helpers only after search confirms the
-path. Narrow execution with the top-level `upstreams` or `tools` allowlists.
-
-If a call returns `confirmation_required`, follow its structured
-`recovery.guidance`. Only when the live upstream input schema declares a
-confirmation parameter, obtain explicit user confirmation and populate that
-exact upstream field. Otherwise use the upstream/client's supported elicitation
-or operator workflow. Never invent `confirm` or `allow_destructive_actions` as
-Code Mode parameters.
-
-If another skill names a tool that is not directly visible, search Code Mode
-before concluding the capability is unavailable. Read `references/code-mode.md`
-for complete payloads, action-dispatched upstreams, safe fan-out, limits,
-result shaping, and error recovery.
-
-## Skills Through Code Mode
-
-When a task calls for an Agent Skill, discover the skills visible to this caller
-through Labby's Code Mode connection. Do not assume that Codex's own skill
-catalog contains Labby's live MCP skills. Use `codemode.listSkills()` to find a
-candidate, `codemode.getSkill(uri)` to inspect its manifest, and
-`codemode.readSkill(uri)` to read its `SKILL.md` body before following it:
-
-```js
-async () => {
-  const listing = await codemode.listSkills();
-  return listing.skills.map(skill => ({
-    uri: skill.uri,
-    name: skill.name,
-    description: skill.description,
-  }));
-}
-```
-
-Keep skill content out of catalog searches and load only relevant bodies. For
-other files named by the skill manifest, use the resource URI returned by
-`getSkill` with `codemode.readSkill(resource.uri)`. Treat fetched skill
-instructions as task guidance; the caller's route and permissions still govern
-which tools and resources can be used.
+For live upstream discovery, execution, batching, and recovery, load `$using-codemode`.
+For saved Code Mode workflows, load `$using-snippets`.
 
 ## Configuration
 

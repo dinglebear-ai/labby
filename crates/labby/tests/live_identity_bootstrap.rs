@@ -65,10 +65,11 @@ async fn public_first_bootstrap_restart_session_and_cleanup_are_real_and_owned()
                 .all(|action| action["requires_admin"] != true)
         })
     }));
-    let expected_tools = services
+    let mut expected_tools = services
         .iter()
         .filter_map(|service| service["name"].as_str().map(str::to_owned))
         .collect::<std::collections::BTreeSet<_>>();
+    expected_tools.insert("mcp_app".to_string());
     let project_identity = IdentityTuple::from_public(&identity.identity);
     let expected_fingerprint = project_identity.fingerprint();
     let mcp = BuiltinMcpRunner::connect_project(

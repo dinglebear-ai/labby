@@ -59,6 +59,27 @@ pub(crate) fn register_personal_authority(
     PersonalAuthorityGuard(token)
 }
 
+/// Revalidate one request-bound Code Mode caller for discovery in an exact
+/// project. The opaque token never leaves this process, and callers without a
+/// live transport authority context fail closed.
+pub(crate) async fn authorize_artifact_discovery(
+    authority_token: &str,
+    project_id: &str,
+) -> Result<crate::dispatch::artifact_control::AuthorityContext, ToolError> {
+    let context = CONTEXTS.get(authority_token).ok_or_else(denied)?;
+    let access = Arc::clone(&context.access);
+    let identity = context.identity.clone();
+    drop(context);
+    crate::dispatch::artifact_control::authorize_authority_context(
+        &access,
+        identity,
+        project_id,
+        None,
+        crate::access::Permission::AssetDiscover,
+    )
+    .await
+}
+
 pub(crate) struct CanonicalPersonalOauthProvider;
 
 impl CodeModePersonalOauthProvider for CanonicalPersonalOauthProvider {

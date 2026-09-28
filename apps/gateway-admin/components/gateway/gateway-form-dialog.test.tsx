@@ -905,6 +905,47 @@ test('inline environment editor applies stdio env vars to gateway saves', async 
   }
 })
 
+test('SSH device selection builds a remote stdio server command', async () => {
+  const window = installGatewayDialogDom()
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input, init) => {
+    if (String(input) === '/v1/gateway' && init?.method === 'POST') {
+      const request = JSON.parse(String(init.body)) as { action?: string }
+      return jsonResponse(request.action === 'gateway.ssh_hosts.list' ? ['tootie', 'dookie'] : [])
+    }
+    return jsonResponse([])
+  }) as typeof fetch
+  const saved: CreateGatewayInput[] = []
+
+  try {
+    const view = await renderOpenGatewayDialog(null, async (input) => {
+      saved.push(input as CreateGatewayInput)
+    })
+    const stdioRadio = document.querySelector('#transport-stdio') as HTMLElement
+    await act(async () => {
+      stdioRadio.click()
+    })
+    await waitFor(() => assert.match(document.querySelector('#stdio-host')?.textContent ?? '', /tootie/))
+    const nameInput = document.querySelector('#name') as HTMLInputElement
+    await setInputValue(window, nameInput, 'remote-mcp')
+    const hostSelect = document.querySelector('#stdio-host') as HTMLSelectElement
+    await act(async () => {
+      hostSelect.value = 'tootie'
+      hostSelect.dispatchEvent(new window.Event('change', { bubbles: true }) as unknown as Event)
+    })
+    const remoteInput = document.querySelector('#remote-command') as HTMLInputElement
+    await setInputValue(window, remoteInput, '/usr/local/bin/mcp serve')
+    await clickSave()
+
+    assert.equal(saved.length, 1)
+    assert.equal(saved[0]?.config.command, 'ssh')
+    assert.deepEqual(saved[0]?.config.args, ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', 'tootie', '/usr/local/bin/mcp serve'])
+    await view.unmount()
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('shouldAutoConnectOauth only allows new HTTP no-auth OAuth discoveries', async () => {
   const { shouldAutoConnectOauth } = await import('./gateway-form-dialog')
 
