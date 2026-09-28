@@ -908,13 +908,13 @@ export function SnippetsPageContent() {
                             }
                           />
                           <DetailButton
-                            label="Test"
+                            label="Test live"
                             icon={<FlaskConical size={11} />}
                             busy={running === 'Test'}
                             disabled={running !== null}
                             onClick={() =>
                               withParams(snippet, 'Test', (params) =>
-                                snippetsApi.test(snippet.name, params),
+                                snippetsApi.testLive(snippet.name, params),
                               )
                             }
                           />

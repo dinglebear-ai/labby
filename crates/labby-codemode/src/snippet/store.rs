@@ -899,7 +899,20 @@ fn parse_inputs_block(
                 param: "body".to_string(),
             });
         };
-        validate_snippet_name(input_name)?;
+        // Input keys are JSON fields, not filesystem-backed snippet slugs.
+        // Preserve camelCase callers without relaxing artifact-name safety.
+        if input_name.is_empty()
+            || input_name.len() > 128
+            || !input_name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            || inputs.contains_key(input_name)
+        {
+            return Err(ToolError::InvalidParam {
+                message: "snippet input names must be unique, bounded alphanumeric keys".into(),
+                param: "body".into(),
+            });
+        }
         i += 1;
 
         let mut ty = None;

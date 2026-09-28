@@ -1,0 +1,167 @@
+{
+  "calls": [
+    {
+      "tool": "linear-notification-worker::list_issues",
+      "match": {
+        "team": "U8",
+        "assignee": "me",
+        "state": "started",
+        "limit": 100
+      },
+      "result": {
+        "issues": [
+          {
+            "id": "U8-16",
+            "title": "Authorization",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-767",
+            "title": "Design",
+            "status": "In Progress"
+          }
+        ],
+        "hasNextPage": false
+      }
+    },
+    {
+      "tool": "github::get_me",
+      "result": {
+        "login": "jmagar"
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {
+        "query": "author:jmagar org:unraid is:open",
+        "page": 1
+      },
+      "result": {
+        "items": [
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 10,
+            "title": "Fix U8-16",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/10",
+            "user": {
+              "login": "jmagar"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 11,
+            "title": "Fix U8-160",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/11",
+            "user": {
+              "login": "jmagar"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/cloudflare",
+            "number": 12,
+            "title": "Worker hardening",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/cloudflare/pull/12",
+            "user": {
+              "login": "jmagar"
+            },
+            "pull_request": {}
+          }
+        ],
+        "total_count": 3,
+        "incomplete_results": false
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {
+        "query": "\"U8-16\" org:unraid is:open OR \"U8-767\" org:unraid is:open",
+        "page": 1
+      },
+      "result": {
+        "items": [
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 10,
+            "title": "Fix U8-16",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/10",
+            "user": {
+              "login": "jmagar"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 11,
+            "title": "Fix U8-160",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/11",
+            "user": {
+              "login": "jmagar"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/cloudflare",
+            "number": 12,
+            "title": "Worker hardening",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/cloudflare/pull/12",
+            "user": {
+              "login": "jmagar"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 13,
+            "title": "chore: release 8.0",
+            "body": "Includes U8-16",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/13",
+            "user": {
+              "login": "jmagar"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 14,
+            "title": "Unrelated",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/14",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          }
+        ],
+        "total_count": 5,
+        "incomplete_results": false
+      }
+    }
+  ],
+  "expect": {
+    "/summary/myOpenPRCount": 999
+  }
+}

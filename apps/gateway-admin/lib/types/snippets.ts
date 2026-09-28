@@ -54,13 +54,34 @@ export interface SnippetValidation {
   path?: string
 }
 
+export interface SnippetTestMetrics {
+  wall_clock_ms: number
+  tool_calls: number
+  output_bytes: number
+  estimated_tokens: number
+  max_in_flight?: number
+  calls_by_tool?: Record<string, number>
+  failed_calls?: number
+  truncated?: boolean
+}
+
 export interface SnippetTestResult {
   name?: string
   passed: boolean
+  mode?: 'mock' | 'live'
+  metrics?: SnippetTestMetrics
+  failures?: string[]
+  result?: unknown
+  calls?: unknown[]
+  trace_truncated?: boolean
   response?: unknown
   results?: Array<{
     name: string
     passed: boolean
+    mode?: 'mock' | 'live'
+    metrics?: SnippetTestMetrics
+    failures?: string[]
+    trace_truncated?: boolean
     response?: unknown
     error?: unknown
   }>

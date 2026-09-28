@@ -9797,6 +9797,12 @@
           "all": {
             "type": "boolean"
           },
+          "fixture": {
+            "type": "object"
+          },
+          "live": {
+            "type": "boolean"
+          },
           "name": {
             "type": "string"
           },

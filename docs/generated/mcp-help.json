@@ -6194,13 +6194,25 @@
         },
         {
           "name": "snippets.test",
-          "description": "Execute one snippet and report pass/fail",
+          "description": "Test with deterministic fixtures; real upstream calls require live: true",
           "destructive": false,
           "requires_admin": true,
           "required_scopes": [
             "lab:admin"
           ],
           "params": [
+            {
+              "name": "fixture",
+              "ty": "object",
+              "required": false,
+              "description": "Synthetic calls, JSON Pointer assertions, snapshot and resource budgets"
+            },
+            {
+              "name": "live",
+              "ty": "boolean",
+              "required": false,
+              "description": "Explicitly execute real upstream calls instead of deterministic fixtures"
+            },
             {
               "name": "name",
               "ty": "string",
@@ -6217,7 +6229,7 @@
               "name": "all",
               "ty": "boolean",
               "required": false,
-              "description": "Run every listed snippet with default params"
+              "description": "Test every listed snippet with sibling .test.json fixtures (or explicitly live)"
             }
           ],
           "returns": "SnippetTestResult"

@@ -39,6 +39,7 @@ struct SnippetValidationSchema {
 #[derive(JsonSchema)]
 #[serde(untagged)]
 enum SnippetTestResultSchema {
+    Mock(Box<labby_codemode::snippet::harness::SnippetFixtureReport>),
     Single(Box<SnippetTestSingleSchema>),
     All(SnippetTestAllSchema),
 }
@@ -46,6 +47,8 @@ enum SnippetTestResultSchema {
 #[allow(dead_code)]
 #[derive(JsonSchema)]
 struct SnippetTestSingleSchema {
+    mode: String,
+    metrics: serde_json::Value,
     name: String,
     passed: bool,
     response: labby_codemode::CodeModeExecutionResponse,
@@ -60,18 +63,14 @@ struct SnippetTestAllSchema {
 
 #[allow(dead_code)]
 #[derive(JsonSchema)]
-#[serde(untagged)]
-enum SnippetTestItemSchema {
-    Success {
-        name: String,
-        passed: bool,
-        response: labby_codemode::CodeModeExecutionResponse,
-    },
-    Error {
-        name: String,
-        passed: bool,
-        error: AgentErrorEnvelopeSchema,
-    },
+struct SnippetTestItemSchema {
+    name: String,
+    passed: bool,
+    mode: Option<String>,
+    metrics: Option<serde_json::Value>,
+    failures: Option<Vec<String>>,
+    trace_truncated: Option<bool>,
+    error: Option<AgentErrorEnvelopeSchema>,
 }
 
 #[allow(dead_code)]
@@ -284,12 +283,24 @@ pub const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "snippets.test",
-        description: "Execute one snippet and report pass/fail",
+        description: "Test with deterministic fixtures; real upstream calls require live: true",
         destructive: false,
         requires_admin: true,
         returns: "SnippetTestResult",
         output_schema: Some(labby_primitives::action::schema_for::<SnippetTestResultSchema>),
         params: &[
+            ParamSpec {
+                name: "fixture",
+                ty: "object",
+                required: false,
+                description: "Synthetic calls, JSON Pointer assertions, snapshot and resource budgets",
+            },
+            ParamSpec {
+                name: "live",
+                ty: "boolean",
+                required: false,
+                description: "Explicitly execute real upstream calls instead of deterministic fixtures",
+            },
             ParamSpec {
                 name: "name",
                 ty: "string",
@@ -306,7 +317,7 @@ pub const ACTIONS: &[ActionSpec] = &[
                 name: "all",
                 ty: "boolean",
                 required: false,
-                description: "Run every listed snippet with default params",
+                description: "Test every listed snippet with sibling .test.json fixtures (or explicitly live)",
             },
         ],
     },
