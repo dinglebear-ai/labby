@@ -35,7 +35,7 @@ Build traps: `just build` uses release-fast. `just build-release`/`just install`
 
 - `crates/labby/src/dispatch/` owns product operations; cli/, mcp/, and api/ are adapters. entrypoint.rs and cli/serve.rs compose the runtime. registry.rs and catalog.rs own product discovery; access/ owns durable authority and migrations.
 - `labby-gateway` owns upstream pools, transports, catalogs, OAuth lifecycle, routing, and the gateway Code Mode host. Product dispatch/upstream.rs is a shim.
-- `labby-codemode` owns the host-neutral Javy/QuickJS subprocess runner, protocol, budgets, and snippets. Do not duplicate it in the gateway or substitute Wasmtime.
+- `labby-codemode` owns Javy/QuickJS execution, budgets, protocol, and snippets over process or opt-in Microsandbox transport, not gateway adapters.
 - `labby-primitives` owns leaf action/plugin/security vocabulary; `labby-runtime` owns shared errors, authority, Artifacts, Agents/Tasks, and lifecycle contracts. `labby-auth` owns reusable inbound/upstream authentication.
 - `labby-apis` owns pure core, doctor, setup, and artifact_control SDK contracts, without ambient config loading or product transports. Browser runtime belongs in labby-browser; hardened OpenAPI execution in labby-openapi; static assets in labby-web.
 - `labby-model` is development-only. Windows FFI stays behind labby-winjob's safe API; xtask is repository automation.
@@ -44,7 +44,7 @@ Use MCP upstreams for external capabilities; add built-ins only for Labby-owned 
 
 ## Contracts that must survive changes
 
-Keep `lab://`, `ui://lab/`, MCP server key `lab`, and scopes `lab:read`, `lab`, `lab:admin`. Product MCP service tools accept action + params. CLI commands derive from Clap, not a copied MCP command inventory. The direct stdio proxy exposes its child and is not a registered proxy service.
+Keep `lab://`, `ui://lab/`, MCP server key `lab`, and scopes `lab:read`, `lab`, `lab:admin`. Router tools accept action + params; atomic projections derive schemas from ActionSpec. CLI commands derive from Clap, not a copied MCP command inventory. `labby proxy` exposes its child, not a registered service.
 
 Construct Labby-owned Tool descriptors through permanent_tools.rs. Wire listing and peer_contract.rs descriptor hashing must agree, or tools/list_changed lies about visibility. Preserve upstream annotations and native ui:// identities without Labby normalization.
 
