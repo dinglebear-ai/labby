@@ -75,19 +75,18 @@ impl NotificationCenter {
     }
 
     pub async fn push_if_new(&self, record: NotificationRecord) -> Result<bool> {
-        let snapshot = {
-            let mut records = self.records.write().await;
-            if records
-                .iter()
-                .any(|existing| existing.dedupe_key == record.dedupe_key)
-            {
-                return Ok(false);
-            }
-            records.insert(0, record);
-            records.truncate(self.retention);
-            records.clone()
-        };
+        let mut records = self.records.write().await;
+        if records
+            .iter()
+            .any(|existing| existing.dedupe_key == record.dedupe_key)
+        {
+            return Ok(false);
+        }
+        let mut snapshot = records.clone();
+        snapshot.insert(0, record);
+        snapshot.truncate(self.retention);
         self.persist(&snapshot).await?;
+        *records = snapshot;
         Ok(true)
     }
 
@@ -401,6 +400,29 @@ mod tests {
         assert!(center.push_if_new(record.clone()).await.unwrap());
         assert!(!center.push_if_new(record).await.unwrap());
         assert_eq!(center.list().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn failed_persist_does_not_suppress_notification_retry() {
+        let mut center = NotificationCenter::memory(2);
+        let missing_dir =
+            std::env::temp_dir().join(format!("labby-notifications-{}", uuid::Uuid::new_v4()));
+        center.path = Some(Arc::new(missing_dir.join("notifications.json")));
+        let record = NotificationRecord {
+            id: "retry".into(),
+            created_at_unix_ms: 1,
+            level: "error".into(),
+            title: "failed".into(),
+            body: "body".into(),
+            source: "depot_ingest".into(),
+            dedupe_key: "retry".into(),
+        };
+        assert!(center.push_if_new(record.clone()).await.is_err());
+        assert!(center.list().await.is_empty());
+        tokio::fs::create_dir(&missing_dir).await.unwrap();
+        assert!(center.push_if_new(record).await.unwrap());
+        assert_eq!(center.list().await.len(), 1);
+        tokio::fs::remove_dir_all(missing_dir).await.unwrap();
     }
 
     #[test]
