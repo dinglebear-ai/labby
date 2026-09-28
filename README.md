@@ -299,9 +299,11 @@ Bootstrap writes these required `setup` keys if no env exists yet:
 - `LABBY_AUTH_MODE=bearer`
 
 It also enforces secure file creation via Labby's `env_merge` path (`0600` perms on
-Unix) and then skips creating anything else until the web wizard runs.
+Unix). This is a minimal loopback bootstrap, not the guided onboarding flow.
+Run `labby setup` for interactive server/client configuration; it does not require
+completing a web wizard.
 
-For explicit setup:
+For explicit setup with a manually generated bearer token:
 
 ```bash
 mkdir -p ~/.labby
@@ -312,7 +314,7 @@ labby serve --host 127.0.0.1 --port 8765
 ```
 
 Open `http://127.0.0.1:8765/`. Release binaries and normal source builds already
-include the setup wizard and operator UI; no separate web-assets step is needed.
+include the operator UI; no separate web-assets step is needed.
 
 ### Self-Host The Gateway
 
