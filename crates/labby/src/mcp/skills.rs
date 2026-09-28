@@ -18,6 +18,8 @@ use rmcp::model::{CustomRequest, CustomResult, ErrorData};
 use rmcp::service::RequestContext;
 
 #[cfg(feature = "gateway")]
+use crate::mcp::context::AbsentAuth;
+#[cfg(feature = "gateway")]
 use crate::mcp::context::oauth_upstream_subject_for_request;
 use crate::mcp::context::{auth_context_from_extensions, code_mode_read_scope_allowed};
 use crate::mcp::server::LabMcpServer;
@@ -27,6 +29,18 @@ use crate::skills::facade::list_visible_skills;
 use crate::skills::facade::{
     SkillCallerScope, SkillRegistryContext, get_visible_skill, list_visible_skills_page,
 };
+
+#[cfg(feature = "gateway")]
+fn skill_oauth_subject<'a>(
+    auth: Option<&labby_auth::auth_context::AuthContext>,
+    request_subject: Option<&'a str>,
+    absent_auth: AbsentAuth,
+) -> Option<std::borrow::Cow<'a, str>> {
+    if auth.is_none() && absent_auth == AbsentAuth::Untrusted {
+        return None;
+    }
+    oauth_upstream_subject_for_request(auth, request_subject)
+}
 
 fn optional_header_str<'a>(
     headers: &'a axum::http::HeaderMap,
@@ -254,11 +268,19 @@ impl LabMcpServer {
                 ToolAccess::Direct
             };
             let auth = auth_context_from_extensions(&context.extensions);
-            let subject = auth
-                .and_then(|auth| {
-                    oauth_upstream_subject_for_request(Some(auth), self.request_subject(context))
-                })
-                .map(|subject| subject.into_owned());
+            let absent_auth = self.absent_auth_trust();
+            // A team binding must not turn an untrusted in-process request with
+            // no propagated identity into an authorized Skills caller.
+            let subject = if auth.is_none() && absent_auth == AbsentAuth::Untrusted {
+                None
+            } else {
+                self.route_oauth_subject(skill_oauth_subject(
+                    auth,
+                    self.request_subject(context),
+                    absent_auth,
+                ))
+                .map(std::borrow::Cow::into_owned)
+            };
             let scope = match self.route_scope.allowed_upstreams() {
                 None => SkillCallerScope::root(subject, access),
                 Some(allowed) => {
@@ -468,6 +490,52 @@ pub(crate) fn skill_read_error(error: ToolError) -> ErrorData {
 #[cfg(test)]
 mod serve_tests {
     use super::*;
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn skills_oauth_subject_respects_transport_and_verified_scope() {
+        let auth = |scopes: &[&str]| labby_auth::auth_context::AuthContext {
+            sub: "reader".to_owned(),
+            actor_key: None,
+            scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
+            issuer: "test".to_owned(),
+            via_session: false,
+            csrf_token: None,
+            email: None,
+        };
+        let shared = crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
+        assert_eq!(
+            skill_oauth_subject(None, None, AbsentAuth::TrustedLocal).as_deref(),
+            Some(shared)
+        );
+        assert_eq!(
+            skill_oauth_subject(None, None, AbsentAuth::Untrusted),
+            None,
+            "an in-process peer without propagated auth cannot inherit shared credentials"
+        );
+        assert_eq!(
+            skill_oauth_subject(
+                Some(&auth(&["lab:admin"])),
+                Some("admin"),
+                AbsentAuth::Untrusted
+            )
+            .as_deref(),
+            Some(shared)
+        );
+        assert_eq!(
+            skill_oauth_subject(
+                Some(&auth(&["lab:read"])),
+                Some("reader"),
+                AbsentAuth::Untrusted
+            )
+            .as_deref(),
+            Some("reader")
+        );
+        assert_eq!(
+            skill_oauth_subject(Some(&auth(&["lab:read"])), None, AbsentAuth::Untrusted),
+            None
+        );
+    }
 
     #[test]
     fn skill_read_error_reserves_invalid_params_for_malformed_requests() {
