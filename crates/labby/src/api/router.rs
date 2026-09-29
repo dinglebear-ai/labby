@@ -279,14 +279,17 @@ async fn auth_jwks(State(state): State<AppState>) -> Result<impl IntoResponse, L
 async fn auth_register(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    body: Json<labby_auth::types::ClientRegistrationRequest>,
+    body: Result<
+        Json<labby_auth::types::ClientRegistrationRequest>,
+        axum::extract::rejection::JsonRejection,
+    >,
 ) -> Result<impl IntoResponse, LabAuthError> {
     Ok(labby_auth::authorize::register_client(
         State(app_auth_state(&state)?),
         ConnectInfo(addr),
         body,
     )
-    .await?)
+    .await)
 }
 
 async fn auth_authorize(
@@ -3833,6 +3836,75 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["issuer"], "https://lab.example.com");
         assert_eq!(json["token_endpoint"], "https://lab.example.com/token");
+    }
+
+    #[tokio::test]
+    async fn dynamic_registration_product_route_preserves_rfc7591_responses() {
+        let mut auth_state = test_lab_auth_state().await;
+        let config = std::sync::Arc::make_mut(&mut auth_state.config);
+        config.enable_dynamic_registration = true;
+        let redirect_uri =
+            "https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-test-client";
+        config.allowed_client_redirect_uris = vec![redirect_uri.to_string()];
+        let app = build_router(AppState::new(), None, Some(auth_state), None, &[]);
+        for (payload, status, error) in [
+            (
+                serde_json::json!({"redirect_uris": [redirect_uri]}).to_string(),
+                StatusCode::CREATED,
+                None,
+            ),
+            (
+                serde_json::json!({"redirect_uris": ["https://untrusted.example/callback"]})
+                    .to_string(),
+                StatusCode::BAD_REQUEST,
+                Some("invalid_redirect_uri"),
+            ),
+            (
+                "{}".to_string(),
+                StatusCode::BAD_REQUEST,
+                Some("invalid_client_metadata"),
+            ),
+            (
+                "not-json".to_string(),
+                StatusCode::BAD_REQUEST,
+                Some("invalid_client_metadata"),
+            ),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/register")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 9001))))
+                        .body(Body::from(payload))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), status);
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+            assert_eq!(response.headers()[header::PRAGMA], "no-cache");
+            let bytes = axum::body::to_bytes(response.into_body(), 8192)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            if let Some(error) = error {
+                assert_eq!(body["error"], error);
+                assert!(
+                    body["error_description"]
+                        .as_str()
+                        .is_some_and(|value| !value.is_empty())
+                );
+                assert!(body.get("kind").is_none());
+            } else {
+                assert!(body["client_id"].as_str().unwrap().starts_with("dcr_"));
+                assert_eq!(body["redirect_uris"], serde_json::json!([redirect_uri]));
+                assert_eq!(body["token_endpoint_auth_method"], "none");
+                assert!(body.get("client_secret").is_none());
+            }
+        }
     }
 
     #[tokio::test]
