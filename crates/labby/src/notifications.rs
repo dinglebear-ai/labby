@@ -48,6 +48,8 @@ struct NotificationState {
     source_cursors: BTreeMap<String, SourceCursor>,
     #[serde(default)]
     pending_apprise: Vec<NotificationRecord>,
+    #[serde(default)]
+    apprise_overflow_count: u64,
 }
 
 #[derive(Clone)]
@@ -109,17 +111,27 @@ impl NotificationCenter {
             return Ok(false);
         }
         let mut snapshot = state.clone();
+        let mut overflowed = false;
         if apprise_enabled {
-            anyhow::ensure!(
-                snapshot.pending_apprise.len() < MAX_RETENTION,
-                "Apprise retry queue is full"
-            );
+            if snapshot.pending_apprise.len() >= MAX_RETENTION {
+                snapshot.pending_apprise.remove(0);
+                snapshot.apprise_overflow_count = snapshot.apprise_overflow_count.saturating_add(1);
+                overflowed = true;
+            }
             snapshot.pending_apprise.push(record.clone());
         }
         snapshot.records.insert(0, record);
         snapshot.records.truncate(self.retention);
         self.persist(&snapshot).await?;
         *state = snapshot;
+        if overflowed {
+            tracing::error!(
+                subsystem = "notifications",
+                source = "apprise",
+                overflow_count = state.apprise_overflow_count,
+                "Apprise delivery queue full; oldest pending delivery dropped"
+            );
+        }
         Ok(true)
     }
 
@@ -385,11 +397,19 @@ fn history_key(source_id: &str, event: &Value) -> String {
         .get("phase")
         .and_then(Value::as_str)
         .unwrap_or("refresh");
-    let status = event
-        .get("status")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    format!("depot:{source_id}:{at}:{job_id}:{phase}:{status}")
+    let key = format!("depot:{source_id}:{at}:{job_id}:{phase}");
+    // Failed-event keys were already persisted by older notification stores.
+    // Keep that exact format so their first poll after migration cannot alert
+    // again. Other statuses need a distinct cursor identity.
+    if event.get("status").and_then(Value::as_str) == Some("failed") {
+        key
+    } else {
+        let status = event
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        format!("{key}:{status}")
+    }
 }
 
 fn unseen_history<'a>(
@@ -614,6 +634,10 @@ mod tests {
     async fn legacy_notification_array_loads_and_migrates_on_next_write() {
         let dir = tempfile::tempdir().unwrap();
         let store_path = dir.path().join("notifications.json");
+        let matching_event = json!({
+            "at":"2026-09-29T00:00:00Z", "status":"failed",
+            "jobId":"job-1", "phase":"refresh"
+        });
         let old = NotificationRecord {
             id: "old".into(),
             created_at_unix_ms: 1,
@@ -621,7 +645,7 @@ mod tests {
             title: "old".into(),
             body: "body".into(),
             source: "depot_ingest".into(),
-            dedupe_key: "old".into(),
+            dedupe_key: "depot:source:2026-09-29T00:00:00Z:job-1:refresh".into(),
         };
         tokio::fs::write(&store_path, serde_json::to_vec(&vec![old.clone()]).unwrap())
             .await
@@ -632,6 +656,22 @@ mod tests {
             retention: 2,
         };
         assert_eq!(center.list().await, vec![old]);
+        let matching_key = history_key("source", &matching_event);
+        assert_eq!(
+            matching_key,
+            "depot:source:2026-09-29T00:00:00Z:job-1:refresh"
+        );
+        let replay = NotificationRecord {
+            id: "replay".into(),
+            created_at_unix_ms: 2,
+            level: "error".into(),
+            title: "replay".into(),
+            body: "body".into(),
+            source: "depot_ingest".into(),
+            dedupe_key: matching_key,
+        };
+        assert!(!center.push_if_new_with_apprise(replay, true).await.unwrap());
+        assert!(center.pending_apprise().await.is_empty());
         center
             .advance_source_cursor(
                 "source",
@@ -752,6 +792,45 @@ mod tests {
             MAX_APPRISE_ATTEMPTS_PER_POLL
         );
         assert_eq!(center.pending_apprise().await.len(), 8);
+    }
+
+    #[tokio::test]
+    async fn full_apprise_queue_keeps_new_failure_in_inbox_and_records_overflow() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("notifications.json");
+        let center = NotificationCenter {
+            state: Arc::new(RwLock::new(NotificationState::default())),
+            path: Some(Arc::new(store_path.clone())),
+            retention: 1,
+        };
+        let record = |index: usize| NotificationRecord {
+            id: index.to_string(),
+            created_at_unix_ms: 1,
+            level: "error".into(),
+            title: "failure".into(),
+            body: "body".into(),
+            source: "depot_ingest".into(),
+            dedupe_key: index.to_string(),
+        };
+        {
+            let mut state = center.state.write().await;
+            state.pending_apprise = (0..MAX_RETENTION).map(record).collect();
+        }
+        assert!(
+            center
+                .push_if_new_with_apprise(record(MAX_RETENTION), true)
+                .await
+                .unwrap()
+        );
+        assert_eq!(center.list().await[0].dedupe_key, MAX_RETENTION.to_string());
+        let state = load_state(&store_path, 1).await.unwrap();
+        assert_eq!(state.pending_apprise.len(), MAX_RETENTION);
+        assert_eq!(state.pending_apprise[0].dedupe_key, "1");
+        assert_eq!(
+            state.pending_apprise.last().unwrap().dedupe_key,
+            MAX_RETENTION.to_string()
+        );
+        assert_eq!(state.apprise_overflow_count, 1);
     }
 
     #[tokio::test]
