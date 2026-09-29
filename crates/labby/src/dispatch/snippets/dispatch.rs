@@ -12,7 +12,7 @@ use super::catalog::ACTIONS;
 use super::store::{
     builtin_snippet_dir, code_for_snippet, create_promoted_user_snippet, create_user_snippet,
     list_snippets, merge_snippet_input, remove_user_snippet, resolve_snippet,
-    validate_snippet_body, validate_snippet_name,
+    validate_snippet_body, validate_snippet_name, wrap_snippet_with_input_bounded,
 };
 
 #[derive(Debug, Deserialize)]
@@ -86,7 +86,25 @@ impl SnippetDispatchContext {
 
 pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
     let manager = crate::dispatch::gateway::current_gateway_manager();
-    dispatch_inner(manager.as_deref(), action, params, None).await
+    dispatch_inner(manager.as_deref(), action, params, None, None).await
+}
+
+/// CLI mock tests have already loaded configuration but intentionally have no
+/// gateway manager or upstream connections. Carry its source ceiling explicitly.
+pub async fn dispatch_with_source_limit(
+    action: &str,
+    params: Value,
+    max_source_bytes: usize,
+) -> Result<Value, ToolError> {
+    let manager = crate::dispatch::gateway::current_gateway_manager();
+    dispatch_inner(
+        manager.as_deref(),
+        action,
+        params,
+        None,
+        Some(max_source_bytes),
+    )
+    .await
 }
 
 pub async fn dispatch_with_manager_and_context(
@@ -95,7 +113,7 @@ pub async fn dispatch_with_manager_and_context(
     params: Value,
     dispatch_context: Option<SnippetDispatchContext>,
 ) -> Result<Value, ToolError> {
-    dispatch_inner(Some(manager), action, params, dispatch_context).await
+    dispatch_inner(Some(manager), action, params, dispatch_context, None).await
 }
 
 async fn dispatch_inner(
@@ -103,6 +121,7 @@ async fn dispatch_inner(
     action: &str,
     params: Value,
     dispatch_context: Option<SnippetDispatchContext>,
+    source_limit_override: Option<usize>,
 ) -> Result<Value, ToolError> {
     let execution_scope = dispatch_context
         .as_ref()
@@ -179,6 +198,7 @@ async fn dispatch_inner(
                 &execution_scope,
                 &execution_caller,
                 execution_surface,
+                source_limit_override,
             )
             .await
         }
@@ -350,30 +370,6 @@ pub(super) async fn execute_snippet_outcome(
         raw_response: outcome.raw_response,
         display_response: outcome.display_response,
     })
-}
-
-fn wrap_snippet_with_input_bounded(
-    code: &str,
-    input: &Value,
-    max_source_bytes: usize,
-) -> Result<String, ToolError> {
-    let input = serde_json::to_string(input).map_err(|e| ToolError::InvalidParam {
-        message: format!("snippet params must be JSON-serializable: {e}"),
-        param: "params".to_string(),
-    })?;
-    let wrapped = format!(
-        "async () => {{\n  const __labSnippetInput = {input};\n  return await ({code})(__labSnippetInput);\n}}"
-    );
-    if wrapped.len() > max_source_bytes {
-        return Err(ToolError::InvalidParam {
-            message: format!(
-                "saved snippet invocation exceeds Code Mode source limit {max_source_bytes} bytes after serializing params ({} bytes)",
-                wrapped.len()
-            ),
-            param: "params".to_string(),
-        });
-    }
-    Ok(wrapped)
 }
 
 fn parse_params<T: serde::de::DeserializeOwned>(params: Value) -> Result<T, ToolError> {

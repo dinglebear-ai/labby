@@ -26,6 +26,23 @@ fn fixture_defaults_and_unknown_keys() {
     assert!(serde_json::from_value::<SnippetFixture>(json!({"budgest": {}})).is_err());
 }
 
+#[tokio::test]
+async fn configured_live_source_limit_is_applied_before_fixture_wrapping() {
+    let snippet: ResolvedSnippet = serde_json::from_value(json!({
+        "name": "bounded",
+        "description": null,
+        "tags": [],
+        "source": "user",
+        "path": "/tmp/bounded.js",
+        "body": "async () => true"
+    }))
+    .unwrap();
+    let error = run_fixture_with_source_limit(&snippet, json!({}), &SnippetFixture::default(), 32)
+        .await
+        .expect_err("mock must enforce the lower live source ceiling");
+    assert_eq!(error.kind(), "invalid_param");
+}
+
 #[test]
 fn rejects_bad_rules_and_budgets() {
     for value in [

@@ -58,6 +58,9 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
     def test_pr_arm64_smoke_uses_exact_head_and_cannot_publish(self):
         workflow = yaml.load((ROOT / '.github/workflows/arm64-package-smoke.yml').read_text(), Loader=yaml.BaseLoader)
         self.assertEqual(['pull_request'], list(workflow['on']))
+        paths = set(workflow['on']['pull_request']['paths'])
+        for build_input in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'crates/**', 'config/**', 'apps/gateway-admin/**', 'docs/**', 'plugins/**', '.github/actions/build-gateway-admin/**'):
+            self.assertIn(build_input, paths)
         self.assertEqual({'contents': 'read'}, workflow['permissions'])
         job = workflow['jobs']['package-smoke']
         self.assertEqual('ubuntu-24.04-arm', job['runs-on'])

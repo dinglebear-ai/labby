@@ -204,13 +204,23 @@ pub async fn run(args: SnippetsArgs, format: OutputFormat, config: &LabConfig) -
 
     let test_failed = Cell::new(false);
     let failed_flag = &test_failed;
+    let source_limit = config.code_mode.max_source_bytes;
     let exit = run_action_command(
         "snippets",
         action,
         params,
         format,
         |action, params| async move {
-            let report = crate::dispatch::snippets::dispatch(&action, params).await?;
+            let report = if action == "snippets.test" {
+                crate::dispatch::snippets::dispatch::dispatch_with_source_limit(
+                    &action,
+                    params,
+                    source_limit,
+                )
+                .await?
+            } else {
+                crate::dispatch::snippets::dispatch(&action, params).await?
+            };
             if action == "snippets.test" {
                 failed_flag.set(report["passed"] != true);
             }

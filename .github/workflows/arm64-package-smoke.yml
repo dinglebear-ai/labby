@@ -5,11 +5,19 @@ on:
     paths:
       - .github/workflows/arm64-package-smoke.yml
       - .github/workflows/release.yml
+      - .github/actions/build-gateway-admin/**
+      - .github/actions/setup-rust-kache/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - crates/**
+      - config/**
+      - apps/gateway-admin/**
+      - docs/**
+      - plugins/**
+      - scripts/**
+      - packages/**
       - install.sh
-      - scripts/install.sh
-      - packages/labby-mcp/lib/platform.js
-      - packages/labby-mcp/scripts/check-package.js
-      - packages/labby-mcp/test/platform.test.js
 
 concurrency:
   group: arm64-package-smoke-${{ github.event.pull_request.number }}

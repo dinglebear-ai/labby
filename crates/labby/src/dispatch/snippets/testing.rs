@@ -4,7 +4,9 @@ use super::store::{builtin_snippet_dir, list_snippets, resolve_snippet};
 use crate::dispatch::error::ToolError;
 use crate::dispatch::gateway::manager::GatewayManager;
 use crate::dispatch::helpers::lab_home;
-use labby_codemode::snippet::harness::{MAX_FIXTURE_BYTES, SnippetFixture, run_fixture};
+use labby_codemode::snippet::harness::{
+    MAX_FIXTURE_BYTES, SnippetFixture, run_fixture_with_source_limit,
+};
 use labby_codemode::{CodeModeCaller, CodeModeSurface, ToolScope};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -54,11 +56,21 @@ pub(super) async fn test(
     scope: &ToolScope,
     caller: &CodeModeCaller,
     surface: CodeModeSurface,
+    source_limit_override: Option<usize>,
 ) -> Result<Value, ToolError> {
     let params: TestParams = serde_json::from_value(params).map_err(|e| invalid(e.to_string()))?;
     params.validate()?;
     if let Some(name) = &params.name {
-        return test_one(manager, name, &params, scope, caller, surface).await;
+        return test_one(
+            manager,
+            name,
+            &params,
+            scope,
+            caller,
+            surface,
+            source_limit_override,
+        )
+        .await;
     }
     let names: BTreeSet<_> = list_snippets(&lab_home(), &builtin_snippet_dir())?
         .into_iter()
@@ -71,7 +83,17 @@ pub(super) async fn test(
     }
     let mut results = Vec::new();
     for name in names {
-        let mut report = match test_one(manager, &name, &params, scope, caller, surface).await {
+        let mut report = match test_one(
+            manager,
+            &name,
+            &params,
+            scope,
+            caller,
+            surface,
+            source_limit_override,
+        )
+        .await
+        {
             Ok(report) => report,
             Err(error) => json!({"name": name, "passed": false, "error": error}),
         };
@@ -94,6 +116,7 @@ async fn test_one(
     scope: &ToolScope,
     caller: &CodeModeCaller,
     surface: CodeModeSurface,
+    source_limit_override: Option<usize>,
 ) -> Result<Value, ToolError> {
     if !params.live {
         let snippet = resolve_snippet(&lab_home(), &builtin_snippet_dir(), name)?;
@@ -114,7 +137,17 @@ async fn test_one(
                     .map_err(|error| invalid(format!("invalid fixture JSON: {error}")))?
             }
         };
-        let report = run_fixture(&snippet, params.params.clone(), &fixture).await?;
+        let max_source_bytes = match manager {
+            Some(manager) => manager.code_mode_config().await.max_source_bytes,
+            None => source_limit_override.unwrap_or(labby_codemode::MAX_SOURCE_BYTES),
+        };
+        let report = run_fixture_with_source_limit(
+            &snippet,
+            params.params.clone(),
+            &fixture,
+            max_source_bytes,
+        )
+        .await?;
         return serde_json::to_value(report).map_err(|error| invalid(error.to_string()));
     }
     let started = Instant::now();

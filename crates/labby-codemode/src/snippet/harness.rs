@@ -1,5 +1,7 @@
 //! Deterministic snippet tests in the production parser and isolated runner.
-use super::store::{ResolvedSnippet, code_for_snippet, merge_snippet_input};
+use super::store::{
+    ResolvedSnippet, code_for_snippet, merge_snippet_input, wrap_snippet_with_input_bounded,
+};
 use crate::error::ToolError;
 use crate::{CodeModeBroker, CodeModeCaller, CodeModeConfig, CodeModeSurface, ToolScope};
 use schemars::JsonSchema;
@@ -269,6 +271,17 @@ pub async fn run_fixture(
     input: Value,
     fixture: &SnippetFixture,
 ) -> Result<SnippetFixtureReport, ToolError> {
+    run_fixture_with_source_limit(snippet, input, fixture, crate::MAX_SOURCE_BYTES).await
+}
+
+/// Run a fixture while applying the same configured source ceiling as live
+/// saved-snippet execution. Fixture data itself uses a separate bounded wrapper.
+pub async fn run_fixture_with_source_limit(
+    snippet: &ResolvedSnippet,
+    input: Value,
+    fixture: &SnippetFixture,
+    max_source_bytes: usize,
+) -> Result<SnippetFixtureReport, ToolError> {
     fixture.validate()?;
     if let Some(declared) = &snippet.tools {
         for rule in &fixture.calls {
@@ -281,6 +294,9 @@ pub async fn run_fixture(
     }
     let code = code_for_snippet(snippet)?;
     let input = merge_snippet_input(snippet, input)?;
+    // Match live invocation admission before fixture data is embedded in the
+    // larger isolated test wrapper.
+    wrap_snippet_with_input_bounded(&code, &input, max_source_bytes.min(crate::MAX_SOURCE_BYTES))?;
     let encode = |v: &Value| serde_json::to_string(v).map_err(|e| invalid(e.to_string()));
     let code_json = encode(&Value::String(code))?;
     let fixture_json = encode(&serde_json::to_value(fixture).map_err(|e| invalid(e.to_string()))?)?;

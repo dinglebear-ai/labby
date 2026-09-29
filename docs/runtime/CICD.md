@@ -321,6 +321,9 @@ binary, verifies the archive checksum and contents, and executes the extracted
 binary's Code Mode and Skill CLI smoke. It retains the archive, checksum, and a
 source-head/digest receipt for seven days. This qualification has read-only
 repository permissions and never publishes a tag, release, or package.
+Its trigger includes Rust manifests and crates, embedded configuration,
+Gateway Admin, embedded docs and plugins, package assets, scripts, and the
+native build actions.
 
 ## GitHub-hosted runners
 

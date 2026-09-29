@@ -3,7 +3,20 @@ use serde_json::{Value, json};
 use std::{fs, process::Command};
 
 fn run(name: &str, source: &str, fixture: Value, input: &[&str]) -> (bool, Value) {
+    run_with_config(name, source, fixture, input, None)
+}
+
+fn run_with_config(
+    name: &str,
+    source: &str,
+    fixture: Value,
+    input: &[&str],
+    config: Option<&str>,
+) -> (bool, Value) {
     let home = tempfile::tempdir().expect("temporary fixture home");
+    if let Some(config) = config {
+        fs::write(home.path().join("config.toml"), config).unwrap();
+    }
     let snippets = home.path().join("snippets");
     fs::create_dir(&snippets).unwrap();
     fs::write(snippets.join(format!("{name}.md")), source).unwrap();
@@ -25,14 +38,19 @@ fn run(name: &str, source: &str, fixture: Value, input: &[&str]) -> (bool, Value
     }
     let output = command.output().expect("run fixture CLI");
     let stdout = String::from_utf8(output.stdout).unwrap();
-    let report = serde_json::from_str(&stdout)
-        .map_err(|error| {
-            format!(
-                "invalid CLI JSON: {error}; stdout={stdout}; stderr={}",
-                String::from_utf8_lossy(&output.stderr)
-            )
-        })
-        .expect("valid JSON report");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let report = serde_json::from_str(if stdout.trim().is_empty() {
+        &stderr
+    } else {
+        &stdout
+    })
+    .map_err(|error| {
+        format!(
+            "invalid CLI JSON: {error}; stdout={stdout}; stderr={}",
+            stderr
+        )
+    })
+    .expect("valid JSON report");
     (output.status.success(), report)
 }
 
@@ -99,14 +117,45 @@ fn caught_fixture_errors_and_normalized_snapshots_can_be_asserted() {
 }
 
 #[test]
-fn maximum_size_saved_snippet_can_run_with_a_fixture() {
+fn near_limit_live_eligible_snippet_can_run_with_a_fixture() {
     let prefix = "async () => { /*";
     let suffix = "*/ return true; }";
-    let padding = "x".repeat(labby_codemode::MAX_SOURCE_BYTES - prefix.len() - suffix.len());
+    let padding = "x".repeat(labby_codemode::MAX_SOURCE_BYTES - prefix.len() - suffix.len() - 128);
     let source = format!("{prefix}{padding}{suffix}");
     let (success, report) = run("source-limit", &source, json!({}), &[]);
     assert!(success, "fixture failed: {report}");
     assert_eq!(report["passed"], true);
+}
+
+#[test]
+fn fixture_rejects_snippet_that_live_invocation_cannot_fit() {
+    let prefix = "async () => { /*";
+    let suffix = "*/ return true; }";
+    let padding = "x".repeat(labby_codemode::MAX_SOURCE_BYTES - prefix.len() - suffix.len());
+    let source = format!("{prefix}{padding}{suffix}");
+    let (success, report) = run("over-live-limit", &source, json!({}), &[]);
+    assert!(!success, "fixture unexpectedly passed: {report}");
+    assert!(
+        report.to_string().contains("saved snippet invocation"),
+        "{report}"
+    );
+}
+
+#[test]
+fn cli_fixture_honors_configured_source_limit_without_connecting_upstreams() {
+    let source = format!("async () => {{ /*{}*/ return true; }}", "x".repeat(1_024));
+    let (success, report) = run_with_config(
+        "configured-limit",
+        &source,
+        json!({}),
+        &[],
+        Some("[code_mode]\nmax_source_bytes = 1024\n"),
+    );
+    assert!(!success, "fixture unexpectedly passed: {report}");
+    assert!(
+        report.to_string().contains("source limit 1024 bytes"),
+        "{report}"
+    );
 }
 
 #[test]
