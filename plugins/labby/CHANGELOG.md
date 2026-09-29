@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Split the guided installer skill and MCP connection into the separate `install-labby` plugin; this plugin now contains usage skills only.
+
 ### Added
 
 - Added the first-class `install-labby` Agent Skill with guided verified
