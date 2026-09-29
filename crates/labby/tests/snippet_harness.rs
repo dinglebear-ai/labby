@@ -116,6 +116,7 @@ fn caught_fixture_errors_and_normalized_snapshots_can_be_asserted() {
     assert_eq!(report["passed"], true);
 }
 
+#[cfg(feature = "gateway")]
 #[test]
 fn near_limit_live_eligible_snippet_can_run_with_a_fixture() {
     let prefix = "async () => { /*";
@@ -127,6 +128,7 @@ fn near_limit_live_eligible_snippet_can_run_with_a_fixture() {
     assert_eq!(report["passed"], true);
 }
 
+#[cfg(feature = "gateway")]
 #[test]
 fn fixture_rejects_snippet_that_live_invocation_cannot_fit() {
     let prefix = "async () => { /*";
