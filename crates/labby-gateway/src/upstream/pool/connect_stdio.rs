@@ -7,7 +7,7 @@
 
 use anyhow::Context as _;
 use labby_runtime::gateway_config::{UpstreamConfig, UpstreamLifecycle};
-use labby_runtime::redact::{redact_secret_like_segments, redact_stdio_args};
+use labby_runtime::redact::redact_secret_like_segments;
 use rmcp::ClientHandler;
 use rmcp::service::ClientServiceExt;
 use rmcp::transport::TransportAdapterIdentity;
@@ -591,15 +591,6 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     cmd.envs(command.env.iter().cloned());
 
     let program = command.program.to_string_lossy().into_owned();
-    let argv = command
-        .args
-        .iter()
-        .map(|arg| arg.to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
-    let log_args = redact_stdio_args(&argv)
-        .into_iter()
-        .map(|arg| redact_secret_like_segments(&arg))
-        .collect::<Vec<_>>();
     let cwd = command.cwd.as_ref().map(|path| path.display().to_string());
     let env_keys = command
         .env
@@ -618,7 +609,7 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
         upstream = %command.name,
         transport = "stdio",
         program = %program,
-        args = ?log_args,
+        arg_count = command.args.len(),
         cwd = ?cwd,
         env_keys = ?env_keys,
         inherit_env = ?inherit_env,
@@ -663,7 +654,7 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
         transport = "stdio",
         action = "upstream.spawn.started",
         program = %program,
-        args = ?log_args,
+        arg_count = command.args.len(),
         pid = ?pid,
         generation,
         "stdio upstream child started"
@@ -675,7 +666,7 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
         transport = "stdio",
         action = "upstream.connect.start",
         program = %program,
-        args = ?log_args,
+        arg_count = command.args.len(),
         pid = ?pid,
         generation,
         "upstream connect start",

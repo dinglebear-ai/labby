@@ -115,12 +115,14 @@ export function DepotManagedSources(): React.ReactElement {
   const [cadenceValue, setCadenceValue] = useState(1)
   const [cadenceUnit, setCadenceUnit] = useState<CadenceUnit>('days')
 
-  async function load(signal?: AbortSignal): Promise<void> {
+  async function load(signal?: AbortSignal): Promise<boolean> {
     setError(undefined)
     try {
       setSources(await depotSources(signal))
+      return true
     } catch (reason) {
       if (!signal?.aborted) setError(reason instanceof Error ? reason.message : 'Depot sources unavailable')
+      return false
     } finally {
       if (!signal?.aborted) setLoading(false)
     }
@@ -137,7 +139,9 @@ export function DepotManagedSources(): React.ReactElement {
     setError(undefined)
     try {
       await action()
-      await load()
+      if (!(await load())) {
+        setError('Action succeeded, but the source list could not refresh. Refresh the list before retrying.')
+      }
       return true
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Depot source action failed')

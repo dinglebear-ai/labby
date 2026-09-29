@@ -17,12 +17,16 @@ export default function NotificationsSettingsPage(): React.ReactElement {
   const [notifications, setNotifications] = useState<LabbyNotification[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>()
+  const [feedError, setFeedError] = useState<string>()
 
   function loadNotifications(signal?: AbortSignal): void {
     void listNotifications(signal)
-      .then(setNotifications)
+      .then((items) => {
+        setNotifications(items)
+        setFeedError(undefined)
+      })
       .catch((reason: unknown) => {
-        if (!signal?.aborted) setError(reason instanceof Error ? reason.message : 'notification feed unavailable')
+        if (!signal?.aborted) setFeedError(reason instanceof Error ? reason.message : 'notification feed unavailable')
       })
   }
 
@@ -31,13 +35,11 @@ export default function NotificationsSettingsPage(): React.ReactElement {
     Promise.all([
       setupApi.settingsSchema(controller.signal),
       setupApi.settingsState('notifications', controller.signal),
-      listNotifications(controller.signal),
     ])
-      .then(([nextSchema, nextSettings, nextNotifications]) => {
+      .then(([nextSchema, nextSettings]) => {
         if (controller.signal.aborted) return
         setSchema(nextSchema)
         setSettings(nextSettings)
-        setNotifications(nextNotifications)
       })
       .catch((reason: unknown) => {
         if (controller.signal.aborted || isAbortError(reason)) return
@@ -46,6 +48,12 @@ export default function NotificationsSettingsPage(): React.ReactElement {
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false)
       })
+    return () => controller.abort()
+  }, [])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    loadNotifications(controller.signal)
     return () => controller.abort()
   }, [])
 
@@ -74,6 +82,7 @@ export default function NotificationsSettingsPage(): React.ReactElement {
         description="A bounded local inbox survives restarts and deduplicates the same failed Depot run."
         action={<Button size="sm" variant="outline" onClick={() => loadNotifications()}><RefreshCw className="size-4" />Refresh</Button>}
       >
+        {feedError ? <p role="alert" className="p-4 text-xs text-aurora-error">{feedError}</p> : null}
         {notifications.length === 0 ? (
           <div className="flex items-center gap-2 p-4 text-xs text-aurora-text-muted"><Bell className="size-4" />No notifications recorded.</div>
         ) : notifications.map((notification) => (

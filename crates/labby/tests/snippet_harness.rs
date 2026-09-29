@@ -99,6 +99,17 @@ fn caught_fixture_errors_and_normalized_snapshots_can_be_asserted() {
 }
 
 #[test]
+fn maximum_size_saved_snippet_can_run_with_a_fixture() {
+    let prefix = "async () => { /*";
+    let suffix = "*/ return true; }";
+    let padding = "x".repeat(labby_codemode::MAX_SOURCE_BYTES - prefix.len() - suffix.len());
+    let source = format!("{prefix}{padding}{suffix}");
+    let (success, report) = run("source-limit", &source, json!({}), &[]);
+    assert!(success, "fixture failed: {report}");
+    assert_eq!(report["passed"], true);
+}
+
+#[test]
 fn output_and_call_budgets_produce_nonzero_exit_codes() {
     let (success, report) = run(
         "large-output",

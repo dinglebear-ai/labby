@@ -290,20 +290,19 @@ pub async fn run_fixture(
     );
     let config = CodeModeConfig {
         timeout_ms: fixture.budgets.wall_clock_ms,
-        max_source_bytes: crate::MAX_SOURCE_BYTES,
+        max_source_bytes: 10 * crate::MAX_SOURCE_BYTES,
         trace_params: false,
         ..CodeModeConfig::default()
     };
     let host = offline::OfflineHost::new(config.clone())?;
     let started = Instant::now();
     let execution = CodeModeBroker::new(Some(&host))
-        .execute_with_raw_response(
+        .execute_fixture_with_raw_response(
             &wrapped,
             CodeModeCaller::TrustedLocal,
             CodeModeSurface::Cli,
             config,
             ToolScope::scoped_namespaces(Vec::new(), Vec::new()).read_only(),
-            None,
         )
         .await;
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);

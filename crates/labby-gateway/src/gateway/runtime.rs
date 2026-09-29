@@ -940,7 +940,7 @@ impl GatewayManager {
         protected_pids.extend(local_protected_pids);
         protected_pids.extend(aggressive_protected_pids);
 
-        let (command, args) = redacted_stdio_command(&upstream);
+        let (command, _) = redacted_stdio_command(&upstream);
         tracing::info!(
             surface = "dispatch",
             service = "gateway",
@@ -949,7 +949,7 @@ impl GatewayManager {
             aggressive,
             dry_run,
             command = ?command,
-            args = ?args,
+            arg_count = upstream.args.len(),
             gateway_matched = count_matched_processes(&gateway_matches),
             local_matched = count_matched_processes(&local_matches),
             aggressive_matched = count_matched_processes(&aggressive_matches),

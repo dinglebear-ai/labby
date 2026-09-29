@@ -105,6 +105,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                 scope,
                 execution_id,
                 trace_context,
+                MAX_SOURCE_BYTES,
             )
             .await?
             .display_response)
@@ -128,6 +129,30 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             scope,
             execution_id,
             None,
+            MAX_SOURCE_BYTES,
+        )
+        .await
+    }
+
+    /// The fixture harness embeds bounded snippet and fixture data in its
+    /// isolated wrapper. Keep this larger source allowance local to that path.
+    pub(crate) async fn execute_fixture_with_raw_response(
+        &self,
+        code: &str,
+        caller: CodeModeCaller,
+        surface: CodeModeSurface,
+        config: CodeModeConfig,
+        scope: ToolScope,
+    ) -> Result<CodeModeExecutionOutcome, CodeModeExecutionError> {
+        self.execute_with_raw_response_and_trace_context(
+            code,
+            caller,
+            surface,
+            config,
+            scope,
+            None,
+            None,
+            10 * MAX_SOURCE_BYTES,
         )
         .await
     }
@@ -141,6 +166,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         scope: ToolScope,
         execution_id: Option<Arc<str>>,
         trace_context: Option<Arc<TraceContext>>,
+        source_ceiling: usize,
     ) -> Result<CodeModeExecutionOutcome, CodeModeExecutionError> {
         // `codemode` is exposed only when the host's Code Mode surface is
         // enabled; the surface handler gates on that before reaching here.
@@ -151,7 +177,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             }
             .into());
         }
-        let max_source_bytes = config.max_source_bytes.min(MAX_SOURCE_BYTES);
+        let max_source_bytes = config.max_source_bytes.min(source_ceiling);
         if code.len() > max_source_bytes {
             return Err(ToolError::InvalidParam {
                 message: format!("code exceeds max length {max_source_bytes} bytes"),
