@@ -248,7 +248,7 @@ async (input = {}) => {
   }
   timings.handoffMs = Date.now() - handoffStarted;
   const shapingStarted = Date.now();
-  const matchesId = (value, id) => new RegExp("(^|[^A-Za-z0-9_])" + id + "(?![A-Za-z0-9_])", "i").test(value || "");
+  const matchesId = (value, id) => new RegExp("(^|[^A-Za-z0-9_-])" + id + "(?![A-Za-z0-9_-])", "i").test(value || "");
   const matchesBranch = (value, branch) => Boolean(branch) && String(value || "").toLowerCase().includes(String(branch).toLowerCase());
   const releaseLike = title => /^(?:chore(?:\([^)]*\))?:\s*)?(?:release\b|changelog\b)|release[- ]please/i.test(title || "");
   const rows = issues.map(i => ({id: i.id, title: clip(i.title), status: clip(i.status, 40),

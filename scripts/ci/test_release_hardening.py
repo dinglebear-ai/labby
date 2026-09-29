@@ -54,6 +54,18 @@ def resolve_baseline(releases: list, merged: list[str], candidate: str = "v1.16.
         return subprocess.run(command, text=True, capture_output=True, check=False)
 
 
+def resolve_arm_baseline(releases: list, merged: list[str], candidate: str = "v2.3.3") -> subprocess.CompletedProcess:
+    with tempfile.TemporaryDirectory() as tmp:
+        work = Path(tmp)
+        (work / "releases.json").write_text(json.dumps(releases))
+        (work / "merged.txt").write_text("\n".join(merged) + "\n")
+        return subprocess.run([
+            sys.executable, str(ROOT / "scripts/ci/resolve_arm64_n_minus_one.py"),
+            "--candidate", candidate, "--releases", str(work / "releases.json"),
+            "--merged-tags", str(work / "merged.txt"),
+        ], text=True, capture_output=True, check=False)
+
+
 class ReleaseWorkflowContractTests(unittest.TestCase):
     def test_pr_arm64_smoke_uses_exact_head_and_cannot_publish(self):
         workflow = yaml.load((ROOT / '.github/workflows/arm64-package-smoke.yml').read_text(), Loader=yaml.BaseLoader)
@@ -154,7 +166,18 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("scripts/ci/qualify-n-minus-one.sh", workflow)
         release = yaml.load(workflow, Loader=yaml.BaseLoader)
         matrix = release["jobs"]["upgrade-qualification"]["strategy"]["matrix"]["include"]
-        self.assertEqual(["unix", "macos", "incus", "host-service"], [row["deployment"] for row in matrix])
+        self.assertEqual(["unix", "unix", "macos", "incus", "host-service"], [row["deployment"] for row in matrix])
+        arm = next(row for row in matrix if row["archive"] == "lab-aarch64-unknown-linux-gnu.tar.gz")
+        self.assertEqual("unix", arm["deployment"])
+        self.assertEqual("ubuntu-24.04-arm", arm["runner"])
+        self.assertEqual("lab-aarch64-unknown-linux-gnu", arm["artifact"])
+        steps = release["jobs"]["upgrade-qualification"]["steps"]
+        bootstrap = next(step for step in steps if step.get("name") == "Build first-release ARM64 N-1 source baseline")
+        self.assertIn("mode == 'bootstrap'", bootstrap["if"])
+        self.assertIn('git worktree add --detach "$source_dir" "$source_sha"', bootstrap["run"])
+        self.assertIn("cargo build --package labby --bin labby --all-features --locked --release", bootstrap["run"])
+        qualify = next(step for step in steps if step.get("name") == "N-1 stateful upgrade and rollback qualification")
+        self.assertEqual("${{ steps.previous.outputs.mode }}", qualify["env"]["LABBY_N_MINUS_ONE_BASELINE_MODE"])
         self.assertNotIn("continue-on-error", release["jobs"]["upgrade-qualification"])
         self.assertFalse(any("advisory" in row for row in matrix))
         self.assertIn('chmod -R go-w "$LABBY_HOME"', self.text("scripts/ci/n-minus-one/host-service"))
@@ -178,6 +201,7 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("MCP_PRIVATE_KEY_PRESENT", preflight)
         self.assertIn("npm whoami", preflight)
         self.assertIn("resolve-n-minus-one-baseline.py", preflight)
+        self.assertIn("resolve_arm64_n_minus_one.py", preflight)
         self.assertIn("preflight", release["jobs"]["frontend-assets"]["needs"])
         self.assertEqual("preflight", release["jobs"]["desktop-candidate"]["needs"])
         for job in ("npm-candidate", "release"):
@@ -197,6 +221,61 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertNotIn("head -1", run)
         qualify = next(step for step in steps if step.get("name") == "N-1 stateful upgrade and rollback qualification")
         self.assertIn("${{ steps.previous.outputs.tag }}", qualify["run"])
+
+    def test_arm64_baseline_bootstraps_once_then_requires_published_arm_archive(self) -> None:
+        x86 = LINUX_ASSETS
+        arm = ("lab-aarch64-unknown-linux-gnu.tar.gz", "lab-aarch64-unknown-linux-gnu.tar.gz.sha256")
+        merged = ["v2.3.2", "v2.2.1", "v2.3.3"]
+        first = resolve_arm_baseline([[release_row("v2.3.2", assets=x86),
+                                       release_row("v2.2.1", assets=x86)]], merged)
+        self.assertEqual(0, first.returncode, first.stderr)
+        self.assertEqual("bootstrap v2.3.2", first.stdout.strip())
+        later = resolve_arm_baseline([[release_row("v2.3.2", assets=x86 + arm),
+                                       release_row("v2.2.1", assets=x86)]], merged)
+        self.assertEqual(0, later.returncode, later.stderr)
+        self.assertEqual("published v2.3.2", later.stdout.strip())
+        incomplete = resolve_arm_baseline([[release_row("v2.3.2", assets=x86 + arm[:1])]], merged)
+        self.assertNotEqual(0, incomplete.returncode)
+        self.assertIn("lacks its checksum sidecar", incomplete.stderr)
+        absent = resolve_arm_baseline([[release_row("v2.3.2", assets=())]], merged)
+        self.assertNotEqual(0, absent.returncode)
+
+    def test_arm64_source_bootstrap_retains_candidate_and_rollback_guards(self) -> None:
+        adapter = self.text("scripts/ci/n-minus-one/unix")
+        self.assertIn("LABBY_INSTALL_LOCAL_BINARY=\"$LABBY_N_MINUS_ONE_BASELINE_BINARY\"", adapter)
+        self.assertIn("verify_installed_bootstrap_baseline; verify_persisted_state", adapter)
+        self.assertIn('verify_provenance\n        stop_service', adapter)
+        workflow = self.text(".github/workflows/release.yml")
+        self.assertIn("LABBY_N_MINUS_ONE_BASELINE_SOURCE_SHA=$source_sha", workflow)
+        self.assertIn("LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE_SHA256", workflow)
+
+    def test_unix_bootstrap_installs_only_the_bound_local_baseline(self) -> None:
+        tag = "HEAD"
+        source_sha = subprocess.check_output(
+            ["git", "rev-parse", f"{tag}^{{commit}}"], cwd=ROOT, text=True,
+        ).strip()
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = Path(tmp) / "baseline-labby"
+            binary.write_text("#!/bin/sh\necho 'labby 2.3.2'\n")
+            binary.chmod(0o755)
+            digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+            env = os.environ | {
+                "RUNNER_TEMP": tmp,
+                "LABBY_PREVIOUS_VERSION": tag,
+                "LABBY_N_MINUS_ONE_BASELINE_MODE": "bootstrap",
+                "LABBY_N_MINUS_ONE_BASELINE_BINARY": str(binary),
+                "LABBY_N_MINUS_ONE_BASELINE_SHA256": digest,
+                "LABBY_N_MINUS_ONE_BASELINE_SOURCE_SHA": source_sha,
+            }
+            adapter = ROOT / "scripts/ci/n-minus-one/unix"
+            installed = subprocess.run([str(adapter), "install-previous"], env=env, text=True,
+                                       capture_output=True, check=False)
+            self.assertEqual(0, installed.returncode, installed.stderr)
+            self.assertEqual(binary.read_bytes(), (Path(tmp) / "labby-n-minus-one/unix/bin/labby").read_bytes())
+            wrong = subprocess.run([str(adapter), "install-previous"],
+                                   env=env | {"LABBY_N_MINUS_ONE_BASELINE_SHA256": "0" * 64},
+                                   text=True, capture_output=True, check=False)
+            self.assertNotEqual(0, wrong.returncode)
 
     def test_n_minus_one_baseline_skips_drafts_and_releases_without_assets(self) -> None:
         # Shape of dinglebear-ai/labby on 2026-09-11, as `gh api --paginate --slurp` pages.
