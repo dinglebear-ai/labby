@@ -91,6 +91,24 @@ pub trait GatewayConfigStore: Send + Sync {
         token_value: &'a str,
     ) -> StoreFuture<'a, Result<(), ToolError>>;
 
+    /// Compensate one credential key after a failed owned config transaction.
+    /// Hosts must support removing a newly introduced key without restoring an
+    /// old whole-file snapshot over unrelated credential writes.
+    fn restore_gateway_bearer_token<'a>(
+        &'a self,
+        env_name: &'a str,
+        previous: Option<&'a str>,
+    ) -> StoreFuture<'a, Result<(), ToolError>> {
+        match previous {
+            Some(value) => self.persist_gateway_bearer_token(env_name, value),
+            None => Box::pin(async {
+                Err(ToolError::internal_message(
+                    "credential store cannot remove a new gateway credential during rollback",
+                ))
+            }),
+        }
+    }
+
     /// Idempotently write a registered service's credential env vars and refresh
     /// cached service clients. `values` maps env field name → value.
     fn persist_service_env<'a>(
@@ -142,6 +160,55 @@ impl FsGatewayConfigStore {
 
     fn write_env_pairs(&self, pairs: &[(String, String)]) -> Result<(), ToolError> {
         merge_env_pairs(&self.env_path, pairs)
+    }
+
+    fn restore_env_key(&self, env_name: &str, previous: Option<&str>) -> Result<(), ToolError> {
+        reject_env_symlink(&self.env_path)?;
+        let raw = match fs::read_to_string(&self.env_path) {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(_) => {
+                return Err(ToolError::internal_message(
+                    "cannot read credential rollback file",
+                ));
+            }
+        };
+        let mut inserted = false;
+        let mut matched = false;
+        let mut lines = Vec::new();
+        for line in raw.lines() {
+            let assignment = line.trim_start();
+            let assignment = assignment
+                .strip_prefix("export")
+                .filter(|rest| rest.starts_with(char::is_whitespace))
+                .map_or(assignment, str::trim_start);
+            if assignment
+                .split_once('=')
+                .is_some_and(|(key, _)| key.trim() == env_name)
+            {
+                matched = true;
+                if !inserted && let Some(value) = previous {
+                    lines.push(format!("{env_name}={}", quote_env_value(value)));
+                    inserted = true;
+                }
+            } else {
+                lines.push(line.to_string());
+            }
+        }
+        if !inserted && let Some(value) = previous {
+            lines.push(format!("{env_name}={}", quote_env_value(value)));
+        }
+        if (!matched && previous.is_none()) || lines.join("\n") + "\n" == raw {
+            return Ok(());
+        }
+        if self.env_path.exists() {
+            create_env_backup(&self.env_path)?;
+        }
+        write_env_lines_atomically(
+            &self.env_path,
+            self.env_path.parent().unwrap_or(Path::new(".")),
+            &lines,
+        )
     }
 }
 
@@ -410,9 +477,15 @@ impl GatewayConfigStore for FsGatewayConfigStore {
         token_value: &'a str,
     ) -> StoreFuture<'a, Result<(), ToolError>> {
         // The manager normalizes the header before calling; write it verbatim.
-        Box::pin(
-            async move { self.write_env_pairs(&[(env_name.to_string(), token_value.to_string())]) },
-        )
+        Box::pin(async move { self.restore_env_key(env_name, Some(token_value)) })
+    }
+
+    fn restore_gateway_bearer_token<'a>(
+        &'a self,
+        env_name: &'a str,
+        previous: Option<&'a str>,
+    ) -> StoreFuture<'a, Result<(), ToolError>> {
+        Box::pin(async move { self.restore_env_key(env_name, previous) })
     }
 
     fn persist_service_env<'a>(

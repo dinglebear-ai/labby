@@ -11,7 +11,8 @@ use super::GatewayManager;
 
 impl GatewayManager {
     /// Search the root catalog for the API browser. The product API owns the
-    /// `lab:admin` authorization gate; this method only projects catalog data.
+    /// scope ceiling and durable PlatformManage authorization; this method only
+    /// projects catalog data.
     pub async fn search_admin_tools(
         &self,
         subject: Option<String>,

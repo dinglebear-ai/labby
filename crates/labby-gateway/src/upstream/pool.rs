@@ -328,10 +328,9 @@ pub struct UpstreamPool {
     notification_tx: tokio::sync::broadcast::Sender<UpstreamNotificationEvent>,
     /// Cancellation tokens for one active subscriptions/listen stream per upstream.
     subscription_tasks: Arc<RwLock<HashMap<String, Arc<CancellationToken>>>>,
-    /// Single-flight gate for resource snapshot warm-ups, so concurrent
-    /// `resources/list` calls that find the same cold upstreams issue one
-    /// fan-out instead of one per caller.
-    resource_snapshot_warmup: Arc<Mutex<()>>,
+    /// Per-upstream single-flight gates. Only registry lookup holds this mutex;
+    /// disjoint snapshots never queue behind another upstream's network I/O.
+    resource_snapshot_warmup: Arc<Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>>,
     /// Upstreams already queued for a background subscription reconcile.
     subscription_refresh_pending: Arc<Mutex<BTreeSet<String>>>,
     /// Cancels queued/in-flight subscription reconcile batches during pool drain.
@@ -654,7 +653,7 @@ impl UpstreamPool {
             resource_upstreams: Arc::new(RwLock::new(Vec::new())),
             notification_tx,
             subscription_tasks: Arc::new(RwLock::new(HashMap::new())),
-            resource_snapshot_warmup: Arc::new(Mutex::new(())),
+            resource_snapshot_warmup: Arc::new(Mutex::new(HashMap::new())),
             subscription_refresh_pending: Arc::new(Mutex::new(BTreeSet::new())),
             subscription_reconcile_cancel: CancellationToken::new(),
             subscription_resources: Arc::new(RwLock::new(HashMap::new())),

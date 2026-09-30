@@ -379,6 +379,77 @@ pub fn merge(path: &Path, req: MergeRequest) -> Result<MergeOutcome, MergeError>
     })
 }
 
+/// Remove one credential key through the canonical compensation primitive.
+pub fn remove_key(path: &Path, key: &str) -> Result<MergeOutcome, MergeError> {
+    restore_key(path, key, None)
+}
+
+/// Restore the effective credential under one host lock. Canonicalize only this
+/// key (including exported/duplicate rows), retaining unrelated current bytes.
+pub fn restore_key(
+    path: &Path,
+    key: &str,
+    previous: Option<&str>,
+) -> Result<MergeOutcome, MergeError> {
+    use std::fmt::Write as _;
+
+    let write_error = |error: super::host_write::HostWriteError| MergeError::WriteFailed {
+        path: path.to_path_buf(),
+        reason: WriteFailReason::Other(error.to_string()),
+    };
+    let lock = HostConfigLock::acquire(path).map_err(write_error)?;
+    let raw = lock.read_raw().map_err(write_error)?;
+    let mut inserted = false;
+    let mut output = String::new();
+    for line in raw.split_inclusive('\n') {
+        let trimmed = line.trim();
+        let assignment = trimmed
+            .strip_prefix("export")
+            .filter(|rest| rest.starts_with(char::is_whitespace))
+            .map_or(trimmed, str::trim_start);
+        if assignment
+            .split_once('=')
+            .is_some_and(|(name, _)| name.trim() == key)
+        {
+            if !inserted && let Some(value) = previous {
+                writeln!(output, "{key}={}", quote_value(value))
+                    .expect("writing to a String cannot fail");
+                inserted = true;
+            }
+        } else {
+            output.push_str(line);
+        }
+    }
+    if !inserted && let Some(value) = previous {
+        if !output.is_empty() && !output.ends_with('\n') {
+            output.push('\n');
+        }
+        writeln!(output, "{key}={}", quote_value(value)).expect("writing to a String cannot fail");
+    }
+    if output == raw {
+        return Ok(MergeOutcome::default());
+    }
+    let backup_path = if path.exists() {
+        Some(create_backup(path)?)
+    } else {
+        None
+    };
+    lock.write(&output).map_err(write_error)?;
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let pruned =
+        prune_backups(parent, path).map_err(|source| MergeError::CommittedMaintenanceFailed {
+            path: path.to_path_buf(),
+            backup_path: backup_path.clone(),
+            source,
+        })?;
+    Ok(MergeOutcome {
+        written: 1,
+        backup_path,
+        pruned,
+        ..Default::default()
+    })
+}
+
 /// Classify a merge without writing, backing up, or pruning files.
 #[cfg(test)]
 pub fn preview(path: &Path, req: &MergeRequest) -> Result<MergePreview, MergeError> {
@@ -699,6 +770,25 @@ mod tests {
         let path = dir.join(name);
         fs::write(&path, contents).unwrap();
         path
+    }
+
+    #[test]
+    fn remove_key_preserves_comments_exports_and_unrelated_current_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        let raw = "# operator note\nexport\tTOKEN=one\nTOKEN=two\nexport=literal-key\nTOKEN_SUFFIX=keep\nOTHER=new writer\n";
+        fs::write(&path, raw).unwrap();
+        let outcome = remove_key(&path, "TOKEN").unwrap();
+        assert_eq!(outcome.written, 1);
+        assert_eq!(
+            fs::read_to_string(outcome.backup_path.unwrap()).unwrap(),
+            raw
+        );
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "# operator note\nexport=literal-key\nTOKEN_SUFFIX=keep\nOTHER=new writer\n"
+        );
+        assert_eq!(remove_key(&path, "TOKEN").unwrap().written, 0);
     }
 
     #[test]

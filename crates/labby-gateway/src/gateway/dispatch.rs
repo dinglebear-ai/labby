@@ -528,7 +528,12 @@ async fn handle_import(
         result.imported.extend(outcome.views);
 
         for (name, err) in outcome.errors {
-            if matches!(err, ToolError::Conflict { .. }) {
+            if err.kind() == "import_tombstoned" {
+                result.skipped.push(ImportSkipView {
+                    name,
+                    reason: ImportSkipReason::Tombstoned,
+                });
+            } else if matches!(err, ToolError::Conflict { .. }) {
                 result.skipped.push(ImportSkipView {
                     name,
                     reason: ImportSkipReason::Conflict,

@@ -178,3 +178,67 @@ async fn reject_pending_import_persists_through_injected_store() {
     assert!(cfg.upstream_pending.is_empty());
     assert_eq!(cfg.upstream_import_tombstones.len(), 1);
 }
+
+async fn stale_discovered_import_preserves_completed_rejection(origin: &str) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let server = fixture_discovered_http("rejected");
+    let initial = GatewayConfig {
+        upstream_pending: vec![server.spec.clone()],
+        ..Default::default()
+    };
+    crate::gateway::config::write_gateway_config(&path, &initial).unwrap();
+    let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+    manager.seed_config(initial).await;
+    let (_, eligible_before_rejection) =
+        partition_discovered_for_import(&manager.current_config().await, vec![server]);
+    assert_eq!(eligible_before_rejection.len(), 1);
+    manager.reject_pending_import("rejected").await.unwrap();
+    let result = manager
+        .batch_add(eligible_before_rejection, Some(origin), None)
+        .await
+        .unwrap();
+    let durable = crate::gateway::config::load_gateway_config(&path).unwrap();
+    assert!(
+        durable.upstream.is_empty(),
+        "stale discovery must not restore a rejected entry"
+    );
+    assert_eq!(durable.upstream_import_tombstones.len(), 1);
+    assert!(result.views.is_empty());
+    assert_eq!(result.errors.len(), 1);
+    assert_eq!(result.errors[0].1.kind(), "import_tombstoned");
+}
+#[tokio::test]
+async fn automatic_import_rechecks_tombstone_after_rejection() {
+    stale_discovered_import_preserves_completed_rejection("gateway.auto_import").await;
+}
+#[tokio::test]
+async fn manual_import_rechecks_tombstone_after_rejection() {
+    stale_discovered_import_preserves_completed_rejection("gateway.import").await;
+}
+
+#[tokio::test]
+async fn explicit_add_can_restore_a_rejected_discovered_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let server = fixture_discovered_http("restore-explicit");
+    let mut spec = server.spec;
+    spec.enabled = false;
+    let initial = GatewayConfig {
+        upstream_import_tombstones: vec![UpstreamImportTombstone::now(
+            &spec.name,
+            fixture_import_source("restore-explicit"),
+        )],
+        ..Default::default()
+    };
+    crate::gateway::config::write_gateway_config(&path, &initial).unwrap();
+    let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+    manager.seed_config(initial).await;
+    manager
+        .add(spec, None, Some("gateway.add"), None)
+        .await
+        .unwrap();
+    let durable = crate::gateway::config::load_gateway_config(&path).unwrap();
+    assert_eq!(durable.upstream.len(), 1);
+    assert!(durable.upstream_import_tombstones.is_empty());
+}

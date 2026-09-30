@@ -14,6 +14,36 @@ use crate::gateway::config::validate_bearer_token_env_name;
 use super::GatewayManager;
 
 impl GatewayManager {
+    pub(super) async fn snapshot_gateway_bearer_token(
+        &self,
+        env_name: &str,
+    ) -> Result<Option<String>, ToolError> {
+        let path = self.store.env_path();
+        let env_name = env_name.to_string();
+        tokio::task::spawn_blocking(move || {
+            let entries = match dotenvy::from_path_iter(&path) {
+                Ok(entries) => entries,
+                Err(error) if error.not_found() => return Ok(None),
+                Err(_) => {
+                    return Err(ToolError::internal_message(
+                        "cannot snapshot gateway credential file",
+                    ));
+                }
+            };
+            for entry in entries {
+                let (key, candidate) = entry.map_err(|_| {
+                    ToolError::internal_message("cannot parse gateway credential file")
+                })?;
+                if key == env_name {
+                    return Ok(Some(candidate));
+                }
+            }
+            Ok(None)
+        })
+        .await
+        .map_err(|_| ToolError::internal_message("gateway credential snapshot task failed"))?
+    }
+
     pub(super) fn env_path(&self) -> PathBuf {
         self.store.env_path()
     }
