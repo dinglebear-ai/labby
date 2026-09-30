@@ -199,6 +199,7 @@ pub struct GatewayManager {
     pub(super) oauth_redirect_uri: Option<Arc<String>>,
     pub(super) resource_registry: Option<labby_auth::resource_registry::ResourceRegistry>,
     pub(super) usage_store: Option<Arc<crate::usage::UsageStore>>,
+    pub(super) task_route_store: Option<Arc<crate::upstream::pool::TaskRouteStore>>,
     /// Process-lifetime SEP-2243 recovery counters shared by every pool
     /// generation built by this manager.
     pub(super) header_recovery_metrics_store: HeaderRecoveryMetricsStore,

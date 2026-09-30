@@ -453,7 +453,7 @@ impl RelayRouteState {
         }
     }
 
-    async fn gateway_task_id(&self, native_task_id: &str) -> Option<String> {
+    pub(super) async fn gateway_task_id(&self, native_task_id: &str) -> Option<String> {
         self.tasks
             .lock()
             .await
@@ -1416,7 +1416,13 @@ impl UpstreamPool {
                         }
                     };
                 let result = self
-                    .register_task_response(&relay_key, caller_subject, task_authorization, result)
+                    .register_task_response(
+                        &relay_key,
+                        &crate::gateway::code_mode::catalog_cache::fingerprint(config),
+                        caller_subject,
+                        task_authorization,
+                        result,
+                    )
                     .await;
                 match result {
                     Ok(result) => {
@@ -1441,19 +1447,13 @@ impl UpstreamPool {
                         Some(Ok(result))
                     }
                     Err(message) => {
-                        let error = ServiceError::UnexpectedResponse;
-                        self.record_relay_failure_for(
-                            &config.name,
-                            UpstreamCapability::Tools,
-                            subject,
-                            message.clone(),
-                        )
-                        .await;
+                        // A local routing/store rejection is not an upstream
+                        // protocol failure and must not trip its circuit breaker.
                         log_upstream_request_error(
                             event,
                             started.elapsed().as_millis(),
-                            "protocol_error",
-                            Some(&error),
+                            "task_registration_failed",
+                            None,
                             None,
                             None,
                         );
@@ -1461,10 +1461,10 @@ impl UpstreamPool {
                             self,
                             event,
                             caller_subject,
-                            "protocol_error",
+                            "task_registration_failed",
                             started.elapsed().as_millis(),
                         );
-                        Some(Err(super::CapabilityCallError::Protocol { message }))
+                        Some(Err(super::CapabilityCallError::Other { message }))
                     }
                 }
             }
@@ -3644,6 +3644,11 @@ mod tests {
             capabilities.clone(),
         )
         .await;
+        let pool = pool.with_task_route_store(Arc::new(
+            super::super::TaskRouteStore::open_in_memory()
+                .await
+                .expect("task route store"),
+        ));
         let result = pool
             .call_tool_relayed(
                 &config,
