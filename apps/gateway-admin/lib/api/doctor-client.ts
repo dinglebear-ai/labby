@@ -1,8 +1,7 @@
 // TypeScript wrapper over the lab-bg3e.2 doctor dispatch service.
 //
-// audit.full uses the buffered POST path here (not SSE) — the wizard's
-// PreFlight Round 2 panel can switch to the SSE endpoint when needed,
-// but for the default form-flow we await the structured Report.
+// audit.full uses the buffered POST path here (not SSE); settings forms
+// await the structured Report.
 
 import { doctorActionUrl } from './gateway-config.ts'
 import { performServiceAction, type ServiceActionError } from './service-action-client.ts'

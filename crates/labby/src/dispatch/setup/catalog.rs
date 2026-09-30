@@ -172,7 +172,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "state",
-        description: "First-run + draft snapshot for the wizard / settings UI",
+        description: "First-run and draft snapshot for CLI onboarding and settings",
         destructive: false,
         requires_admin: true,
         returns: "SetupSnapshot",
