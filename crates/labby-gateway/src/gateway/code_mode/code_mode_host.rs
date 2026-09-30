@@ -988,13 +988,13 @@ impl CodeModeHost for GatewayManager {
         caller: &CodeModeCaller,
         surface: CodeModeSurface,
         scope: &ToolScope,
-    ) -> Result<Vec<CatalogDescriptor>, ToolError> {
+    ) -> Result<labby_codemode::ArtifactSearchResult, ToolError> {
         let Some(provider) = self.code_mode_artifact_search_provider.as_ref() else {
-            return Ok(Vec::new());
+            return Ok(labby_codemode::ArtifactSearchResult::default());
         };
         let search_config = self.code_mode_config().await.search;
         if search_config.sources.is_empty() || search_config.kinds.is_empty() {
-            return Ok(Vec::new());
+            return Ok(labby_codemode::ArtifactSearchResult::default());
         }
         let configured_kinds = configured_catalog_kinds(&search_config);
         let effective_kinds = if kinds.is_empty() {
@@ -1007,7 +1007,7 @@ impl CodeModeHost for GatewayManager {
                 .collect()
         };
         if effective_kinds.is_empty() {
-            return Ok(Vec::new());
+            return Ok(labby_codemode::ArtifactSearchResult::default());
         }
         provider
             .search(

@@ -483,6 +483,22 @@ not grant access, request approval, or replace the live descriptor and policy
 checks immediately before dispatch. When a schema is missing or too complex for
 the TypeScript emitter, generated signatures fall back to `unknown`.
 
+Query-backed Skill search uses Depot's indexed API for selected, caller-visible
+Depot providers. To avoid listing the same catalog through a separate MCP
+hostname, bind its Skill proxy upstream in `[code_mode.search.depot_skill_upstreams]`
+with an upstream name as the key and Depot provider ID as the value (for example,
+`public-depot = "public"`). An MCP URL exactly matching the provider's `/mcp`
+endpoint is also recognized. Unbound aliases remain searchable as ordinary MCP
+Skill upstreams. A disabled or unauthorized indexed source does not suppress its
+MCP Skill proxy. Labby-owned Skills and other route-visible MCP Skill upstreams
+remain searchable. Personal and Depot sources run concurrently; once Depot
+completes, a still-running personal scan gets a short grace period. Successful
+hits are returned when another source fails or exceeds that period, with
+`incomplete: true` and `incompleteSources` naming the affected source. Native
+`skills/list` remains the caller-facing listing surface.
+Depot admission and provider requests have separate short deadlines; completed
+provider buckets remain in the response when another bucket exceeds its deadline.
+
 ### Authenticated Web tool browser
 
 The Gateway Admin UI exposes `/tools` for authenticated operators carrying

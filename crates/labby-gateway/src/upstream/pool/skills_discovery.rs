@@ -1,5 +1,7 @@
 //! Request-bounded discovery without weakening full catalog/cache semantics.
 
+use std::time::{Duration, Instant};
+
 use labby_runtime::gateway_config::UpstreamConfig;
 use labby_runtime::skills::{SkillDiscoverySource, limits};
 
@@ -7,7 +9,7 @@ use super::UpstreamPool;
 use super::entries::resolve_request_skill_exposure_policy;
 use super::skills::{ExposedSkills, skills_cache_subject};
 use super::skills_cache::CachedSkills;
-use super::skills_list::UpstreamSkillsError;
+use super::skills_list::{UpstreamSkillSearch, UpstreamSkillsError};
 
 impl UpstreamPool {
     pub(super) async fn search_upstream_skills(
@@ -16,17 +18,73 @@ impl UpstreamPool {
         subject: Option<&str>,
         query: &str,
         max_items: usize,
-    ) -> Result<Vec<labby_runtime::skills::ValidatedSkill>, UpstreamSkillsError> {
+        budget: Duration,
+    ) -> Result<UpstreamSkillSearch, UpstreamSkillsError> {
         if !config.proxy_skills {
-            return Ok(Vec::new());
+            return Ok(UpstreamSkillSearch {
+                skills: Vec::new(),
+                incomplete: false,
+            });
         }
-        let Some(peer) = self.skills_discovery_peer(config, subject).await? else {
-            return Ok(Vec::new());
+        let max_items = max_items.clamp(1, limits::MAX_SKILLS_PER_UPSTREAM);
+        let subject = skills_cache_subject(config, subject);
+        let key = (config.name.clone(), subject.map(str::to_owned));
+        if let Some(cached) = self.cached_skills(&key).await
+            && cached.is_fresh()
+            && !cached.skills.truncated
+        {
+            let exposed = self.apply_skill_exposure_with_limit(
+                config,
+                &cached,
+                subject,
+                SkillDiscoverySource::Cached,
+                limits::MAX_SKILLS_PER_UPSTREAM,
+            );
+            let query = query.trim().to_ascii_lowercase();
+            let skills = exposed
+                .skills
+                .into_iter()
+                .filter(|skill| {
+                    format!(
+                        "{} {} {}",
+                        skill.entry.uri,
+                        skill.name,
+                        skill
+                            .entry
+                            .frontmatter_str("description")
+                            .unwrap_or_default()
+                    )
+                    .to_ascii_lowercase()
+                    .contains(&query)
+                })
+                .take(max_items)
+                .collect();
+            return Ok(UpstreamSkillSearch {
+                skills,
+                incomplete: false,
+            });
+        }
+        let deadline = Instant::now() + budget;
+        let peer = tokio::time::timeout(budget, self.skills_discovery_peer(config, subject))
+            .await
+            .map_err(|_| UpstreamSkillsError::SearchIncomplete)??;
+        let Some(peer) = peer else {
+            return Ok(UpstreamSkillSearch {
+                skills: Vec::new(),
+                incomplete: false,
+            });
         };
         let exposure =
             resolve_request_skill_exposure_policy(&config.name, config.expose_skills.clone());
-        self.fetch_upstream_skills_matching(&config.name, &peer, query, max_items, &exposure)
-            .await
+        self.fetch_upstream_skills_matching(
+            &config.name,
+            &peer,
+            query,
+            max_items,
+            &exposure,
+            deadline,
+        )
+        .await
     }
 
     /// Smaller requests reuse an existing snapshot or perform an uncached

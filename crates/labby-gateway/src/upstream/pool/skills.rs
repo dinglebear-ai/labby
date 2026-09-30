@@ -522,67 +522,6 @@ impl UpstreamPool {
         }
     }
 
-    /// Fetch one skill by URI from an upstream that did not list it.
-    ///
-    /// SEP-2640 requires a host to load a skill given only its URI, and says an
-    /// empty or partial listing is never proof a server has no skills. Without
-    /// this, a skill absent from a cached or budget-truncated listing is
-    /// permanently unreachable even though the upstream would serve it.
-    ///
-    /// Still gated: the upstream must opt in, and the returned entry passes the
-    /// same ingest validation and `expose_skills` allowlist a listed skill does,
-    /// so unlisted does not mean unfiltered.
-    pub(crate) async fn fetch_unlisted_skill(
-        &self,
-        config: &UpstreamConfig,
-        subject: Option<&str>,
-        uri: &str,
-    ) -> Result<Option<ValidatedSkill>, UpstreamSkillsError> {
-        if !config.proxy_skills {
-            return Ok(None);
-        }
-        let canonical_uri = parse_skill_resource_uri(uri)
-            .map_err(|_| UpstreamSkillsError::InvalidUri)?
-            .to_uri();
-        if let Some(skill) = self
-            .cached_direct_skill(config, subject, &canonical_uri)
-            .await
-        {
-            return Ok(Some(skill));
-        }
-        let peer = self
-            .acquire_peer(
-                &config.name,
-                super::super::types::UpstreamCapability::Skills,
-                "skills.get",
-            )
-            .await
-            .ok_or(UpstreamSkillsError::Unavailable)?;
-        if !peer_declares_skills(&peer) {
-            return Ok(None);
-        }
-        let Some(skill) = self
-            .fetch_upstream_skill(&config.name, &peer, uri, subject)
-            .await?
-        else {
-            return Ok(None);
-        };
-
-        // The allowlist applies to a skill fetched by URI exactly as it does to
-        // a listed one; filtering only the listing would be a bypass.
-        let policy =
-            resolve_request_skill_exposure_policy(&config.name, config.expose_skills.clone());
-        if !policy.matches(&skill.name) {
-            return Ok(None);
-        }
-        if skill.entry.uri != canonical_uri {
-            return Err(UpstreamSkillsError::IdentityMismatch);
-        }
-        self.store_direct_skill(config, subject, skill.clone())
-            .await?;
-        Ok(Some(skill))
-    }
-
     pub(super) async fn cached_direct_skill(
         &self,
         config: &UpstreamConfig,
@@ -604,7 +543,7 @@ impl UpstreamPool {
             .then(|| snapshot.skill.clone())
     }
 
-    async fn store_direct_skill(
+    pub(super) async fn store_direct_skill(
         &self,
         config: &UpstreamConfig,
         subject: Option<&str>,

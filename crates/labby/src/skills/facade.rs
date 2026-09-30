@@ -4,6 +4,8 @@
 //! skills without depending on MCP request types. Native SEP handlers, the
 //! compatibility service, CLI, and API all consume this facade.
 
+#[cfg(feature = "gateway")]
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::sync::{Arc, LazyLock};
 
@@ -152,7 +154,7 @@ pub(crate) struct SkillRegistryContext {
     artifact_access: Option<ArtifactAccessSnapshot>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct ArtifactAccessSnapshot {
     tenant_id: LibraryTenantId,
     actor_id: LibraryActorId,
@@ -266,6 +268,39 @@ impl SkillRegistryContext {
             );
         }
         narrowed
+    }
+
+    /// Code Mode searches selected, caller-visible Depot providers through
+    /// their indexed API. Exclude only explicitly bound MCP Skill upstreams
+    /// or ones whose URL directly matches that provider's MCP endpoint.
+    #[cfg(feature = "gateway")]
+    pub(crate) async fn without_depot_skill_upstreams(
+        &self,
+        providers: &[(String, String)],
+        bindings: &BTreeMap<String, String>,
+    ) -> Self {
+        let Some(manager) = self.manager.as_deref() else {
+            return self.clone();
+        };
+        let allowed = manager
+            .current_config()
+            .await
+            .upstream
+            .into_iter()
+            .filter(|upstream| {
+                !providers.iter().any(|(id, endpoint)| {
+                    if bindings.get(&upstream.name) == Some(id) {
+                        return true;
+                    }
+                    upstream.url.as_deref().is_some_and(|url| {
+                        let base = endpoint.trim_end_matches('/');
+                        url == format!("{base}/mcp") || url == format!("{base}/mcp/")
+                    })
+                })
+            })
+            .map(|upstream| upstream.name)
+            .collect::<BTreeSet<_>>();
+        self.narrowed_to_upstreams(Some(&allowed))
     }
 
     #[must_use]
@@ -469,6 +504,12 @@ pub(crate) async fn search_visible_skills_bounded(
     if proxied.truncated {
         listing.note_incomplete("truncated", serde_json::Value::Bool(true));
     }
+    if proxied.incomplete_search_upstreams > 0 {
+        listing.note_incomplete(
+            "incompleteSearchUpstreams",
+            serde_json::Value::from(proxied.incomplete_search_upstreams),
+        );
+    }
     listing
 }
 
@@ -479,24 +520,236 @@ pub(crate) async fn list_visible_skills_page(
     context: &SkillRegistryContext,
     cursor: Option<&str>,
 ) -> Result<SkillsListResult, ToolError> {
-    paginate_visible_skills(context, list_visible_skills(context).await, cursor)
+    let snapshot = native_catalog_snapshot(context).await?;
+    let mut page =
+        paginate_visible_skills_with_digest(context, &snapshot.listing, cursor, &snapshot.digest)?;
+    page.ttl_ms = page.ttl_ms.map(|ttl| {
+        ttl.saturating_sub(
+            u64::try_from(snapshot.created.elapsed().as_millis()).unwrap_or(u64::MAX),
+        )
+    });
+    Ok(page)
 }
 
+struct NativeCatalogSnapshot {
+    listing: SkillsListResult,
+    digest: String,
+    created: std::time::Instant,
+}
+
+struct NativeCatalogCacheEntry {
+    key: String,
+    snapshot: Arc<NativeCatalogSnapshot>,
+    bytes: usize,
+    _first_party: std::sync::Weak<FirstPartyGeneration>,
+    // Weak pointers keep identities allocated without retaining retired pools.
+    #[cfg(feature = "gateway")]
+    _pool: Option<std::sync::Weak<UpstreamPool>>,
+}
+
+static NATIVE_CATALOG_CACHE: LazyLock<
+    std::sync::Mutex<std::collections::VecDeque<NativeCatalogCacheEntry>>,
+> = LazyLock::new(|| std::sync::Mutex::new(std::collections::VecDeque::new()));
+const NATIVE_CATALOG_CACHE_BYTES: usize = 8 * 1024 * 1024;
+const NATIVE_CATALOG_CACHE_ENTRIES: usize = 16_384;
+
+struct NativeCatalogIdentity {
+    key: String,
+    ttl_ms: u64,
+    #[cfg(feature = "gateway")]
+    pool: Option<std::sync::Weak<UpstreamPool>>,
+}
+
+#[cfg_attr(
+    not(feature = "gateway"),
+    allow(unused_mut, reason = "federated identities append provider components")
+)]
+async fn native_catalog_identity(context: &SkillRegistryContext) -> Option<NativeCatalogIdentity> {
+    let mut components = vec![format!(
+        "{:p}:{}:{}:{:?}:{:?}",
+        Arc::as_ptr(&context.first_party),
+        context.generation_id(),
+        context.first_party.digest,
+        context.scope,
+        context.artifact_access
+    )];
+    let mut ttl_ms = FIRST_PARTY_SKILLS_LIST_TTL_MS;
+    #[cfg(feature = "gateway")]
+    let mut pool_guard = None;
+    #[cfg(feature = "gateway")]
+    if let Some(manager) = context.manager.as_deref() {
+        let mut configs = manager
+            .current_config()
+            .await
+            .upstream
+            .into_iter()
+            .filter(|config| {
+                config.enabled && config.proxy_skills && context.scope.allows_upstream(&config.name)
+            })
+            .collect::<Vec<_>>();
+        configs.sort_by(|left, right| left.name.cmp(&right.name));
+        if !configs.is_empty() {
+            let pool = manager.current_pool().await?;
+            components.push(format!("{:p}", Arc::as_ptr(&pool)));
+            pool_guard = Some(Arc::downgrade(&pool));
+            let subject = context.scope.subject().map(str::to_string);
+            let identities = stream::iter(configs)
+                .map(|config| {
+                    let pool = Arc::clone(&pool);
+                    let subject = subject.clone();
+                    async move {
+                        let provider =
+                            SepSkillProvider::new(Arc::clone(&pool), config.clone(), subject);
+                        let (revision, remaining) = provider.catalog_revision().await?;
+                        let origin =
+                            origin_meta(&config.name, &pool, context.scope.tool_access()).await;
+                        let config_digest =
+                            labby_runtime::artifacts::canonical_json::digest(&config).ok()?;
+                        Some((config.name, revision, remaining, config_digest, origin))
+                    }
+                })
+                .buffer_unordered(8)
+                .collect::<Vec<_>>()
+                .await;
+            let mut identities = identities.into_iter().collect::<Option<Vec<_>>>()?;
+            identities.sort_by(|left, right| left.0.cmp(&right.0));
+            for (name, revision, remaining, config_digest, origin) in identities {
+                ttl_ms = ttl_ms.min(u64::try_from(remaining.as_millis()).unwrap_or(u64::MAX));
+                components.push(format!(
+                    "{name}:{revision}:{config_digest}:{}",
+                    serde_json::to_string(&origin).ok()?
+                ));
+            }
+        }
+    }
+    Some(NativeCatalogIdentity {
+        key: labby_runtime::artifacts::canonical_json::digest(&components).ok()?,
+        ttl_ms,
+        #[cfg(feature = "gateway")]
+        pool: pool_guard,
+    })
+}
+
+async fn native_catalog_snapshot(
+    context: &SkillRegistryContext,
+) -> Result<Arc<NativeCatalogSnapshot>, ToolError> {
+    let started = std::time::Instant::now();
+    let identity = native_catalog_identity(context).await;
+    if let Some(identity) = &identity {
+        let mut cache = NATIVE_CATALOG_CACHE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cache.retain(|entry| {
+            entry.snapshot.created.elapsed().as_millis()
+                < u128::from(FIRST_PARTY_SKILLS_LIST_TTL_MS)
+        });
+        if let Some(entry) = cache.iter().find(|entry| entry.key == identity.key) {
+            tracing::debug!(
+                cache_hit = true,
+                elapsed_ms = started.elapsed().as_millis(),
+                "native Skill catalog page snapshot"
+            );
+            return Ok(Arc::clone(&entry.snapshot));
+        }
+    }
+    let mut listing = list_visible_skills(context).await;
+    if let Some(identity) = &identity {
+        listing.ttl_ms = Some(
+            listing
+                .ttl_ms
+                .unwrap_or(identity.ttl_ms)
+                .min(identity.ttl_ms),
+        );
+    }
+    let digest = catalog_digest(&listing)?;
+    let snapshot = Arc::new(NativeCatalogSnapshot {
+        listing,
+        digest,
+        created: started,
+    });
+    // Recheck after assembly: a concurrent refresh must not publish a listing
+    // under the revision of the previous immutable upstream catalog.
+    if let Some(identity) = identity
+        && native_catalog_identity(context)
+            .await
+            .is_some_and(|current| current.key == identity.key)
+        && snapshot.listing.meta.as_ref().is_none_or(|meta| {
+            meta.get("unreachableUpstreams")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0)
+                == 0
+                && meta.get("truncated").and_then(serde_json::Value::as_bool) != Some(true)
+        })
+    {
+        let bytes = serde_json::to_vec(&snapshot.listing).map_or(usize::MAX, |value| value.len());
+        if bytes <= NATIVE_CATALOG_CACHE_BYTES
+            && snapshot.listing.skills.len() <= NATIVE_CATALOG_CACHE_ENTRIES
+        {
+            let mut cache = NATIVE_CATALOG_CACHE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            cache.retain(|entry| entry.key != identity.key);
+            while cache.len() >= 32
+                || cache
+                    .iter()
+                    .map(|entry| entry.bytes)
+                    .sum::<usize>()
+                    .saturating_add(bytes)
+                    > NATIVE_CATALOG_CACHE_BYTES
+                || cache
+                    .iter()
+                    .map(|entry| entry.snapshot.listing.skills.len())
+                    .sum::<usize>()
+                    .saturating_add(snapshot.listing.skills.len())
+                    > NATIVE_CATALOG_CACHE_ENTRIES
+            {
+                cache.pop_front();
+            }
+            cache.push_back(NativeCatalogCacheEntry {
+                key: identity.key,
+                snapshot: Arc::clone(&snapshot),
+                bytes,
+                _first_party: Arc::downgrade(&context.first_party),
+                #[cfg(feature = "gateway")]
+                _pool: identity.pool,
+            });
+        }
+    }
+    tracing::debug!(
+        cache_hit = false,
+        elapsed_ms = started.elapsed().as_millis(),
+        skills = snapshot.listing.skills.len(),
+        "native Skill catalog page snapshot"
+    );
+    Ok(snapshot)
+}
+
+fn catalog_digest(listing: &SkillsListResult) -> Result<String, ToolError> {
+    labby_runtime::artifacts::canonical_json::digest(&listing.skills).map_err(|_| ToolError::Sdk {
+        sdk_kind: "serialization_error".to_owned(),
+        message: "Skill catalog could not be serialized".to_owned(),
+    })
+}
+
+#[cfg(test)]
 fn paginate_visible_skills(
     context: &SkillRegistryContext,
-    mut listing: SkillsListResult,
+    listing: SkillsListResult,
     cursor: Option<&str>,
 ) -> Result<SkillsListResult, ToolError> {
-    let digest =
-        labby_runtime::artifacts::canonical_json::digest(&listing.skills).map_err(|_| {
-            ToolError::Sdk {
-                sdk_kind: "serialization_error".to_owned(),
-                message: "Skill catalog could not be serialized".to_owned(),
-            }
-        })?;
+    let digest = catalog_digest(&listing)?;
+    paginate_visible_skills_with_digest(context, &listing, cursor, &digest)
+}
+
+fn paginate_visible_skills_with_digest(
+    context: &SkillRegistryContext,
+    listing: &SkillsListResult,
+    cursor: Option<&str>,
+    digest: &str,
+) -> Result<SkillsListResult, ToolError> {
     let offset = match cursor {
         None => 0,
-        Some(cursor) => decode_list_cursor(context, &digest, cursor)?,
+        Some(cursor) => decode_list_cursor(context, digest, cursor)?,
     };
     if offset > listing.skills.len() {
         return Err(ToolError::InvalidParam {
@@ -508,9 +761,14 @@ fn paginate_visible_skills(
         .saturating_add(NATIVE_SKILLS_LIST_PAGE_SIZE)
         .min(listing.skills.len());
     let total = listing.skills.len();
-    listing.skills = listing.skills[offset..end].to_vec();
-    listing.next_cursor = (end < total).then(|| encode_list_cursor(context, &digest, end));
-    Ok(listing)
+    Ok(SkillsListResult {
+        result_type: listing.result_type,
+        skills: listing.skills[offset..end].to_vec(),
+        next_cursor: (end < total).then(|| encode_list_cursor(context, digest, end)),
+        ttl_ms: listing.ttl_ms,
+        cache_scope: listing.cache_scope.clone(),
+        meta: listing.meta.clone(),
+    })
 }
 
 fn encode_list_cursor(context: &SkillRegistryContext, digest: &str, offset: usize) -> String {
@@ -591,6 +849,38 @@ pub(crate) async fn resolve_visible_skill(
             config.clone(),
             context.scope.subject().map(str::to_string),
         );
+        if let Some(upstream_uri) = parsed.upstream_uri_for_origin(&config.name)
+            && labby_runtime::skills::parse_skill_resource_uri(&upstream_uri)
+                .is_ok_and(|uri| uri.skill_md_parts().is_some())
+        {
+            let (fetched, discovered) = match provider
+                .get_with_catalog(&SkillGetRequest {
+                    id: SkillId::new(provider.id().clone(), upstream_uri),
+                    deadline: SkillProviderDeadline::default(),
+                })
+                .await
+            {
+                Ok(result) => result,
+                Err(SkillProviderError::SkillNotFound) => return Ok(None),
+                Err(error) => return Err(provider_error_to_tool(error)),
+            };
+            let validated = discovered
+                .skills
+                .into_iter()
+                .map(SkillProviderEntry::into_validated)
+                .collect::<Vec<_>>();
+            let meta = origin_meta(&origin, &pool, context.scope.tool_access()).await;
+            let minted = aggregate::mint_proxied_entries(&config, &validated, Some(&meta));
+            if let Some(entry) = minted.entries.iter().find(|entry| entry.uri == uri) {
+                return Ok(Some(entry.clone()));
+            }
+            if minted.excludes_uri(uri) {
+                return Ok(None);
+            }
+            let candidate =
+                aggregate::mint_proxied_entry(&config.name, fetched.skill.validated(), Some(&meta));
+            return Ok(candidate.filter(|entry| entry.uri == uri && !minted.conflicts_with(entry)));
+        }
         let discovered = provider
             .discover(&SkillDiscoverRequest::default())
             .await
@@ -945,6 +1235,7 @@ struct ProxiedSkills {
     unreachable_upstreams: usize,
     excluded_count: usize,
     truncated: bool,
+    incomplete_search_upstreams: usize,
     cache_scope: Option<String>,
     ttl_ms: Option<u64>,
 }
@@ -1088,8 +1379,10 @@ async fn proxied_skill_search(
     for (config, result) in results {
         match result {
             Ok(entries) => {
+                aggregated.incomplete_search_upstreams += usize::from(entries.incomplete);
                 let meta = origin_meta(&config.name, &pool, context.scope.tool_access()).await;
                 let validated = entries
+                    .skills
                     .into_iter()
                     .map(SkillProviderEntry::into_validated)
                     .collect::<Vec<_>>();
@@ -1145,6 +1438,167 @@ mod tests {
     use crate::skills::providers::{ArtifactSkillAccess, FirstPartySkillProviders};
     use labby_runtime::artifacts::LibraryOwnership;
     use labby_runtime::skills::wire::SkillResource;
+
+    #[tokio::test]
+    async fn native_pages_reuse_immutable_catalog_without_rebuilding() {
+        use crate::skills::registry::{FirstPartyGenerationManager, GenerationLimits};
+        #[cfg(target_os = "macos")]
+        let root = tempfile::tempdir_in("/private/tmp").unwrap();
+        #[cfg(not(target_os = "macos"))]
+        let root = tempfile::tempdir().unwrap();
+        for index in 0..385 {
+            let dir = root.path().join(format!("page-{index:03}"));
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: page-{index:03}\ndescription: pagination\n---\n\n# Body\n"),
+            )
+            .unwrap();
+        }
+        let manager = FirstPartyGenerationManager::new(
+            root.path().to_path_buf(),
+            GenerationLimits {
+                active_skills: 512,
+                ..GenerationLimits::default()
+            },
+        );
+        let generation = manager.generation();
+        assert!(
+            generation.providers.discover().len() >= 385,
+            "fixture Skill admission failed: {:?}",
+            generation.rejected
+        );
+        let context = SkillRegistryContext::from_generation(generation);
+        let first = native_catalog_snapshot(&context).await.unwrap();
+        let mut cursor = None;
+        let mut count = 0;
+        let mut pages = 0;
+        loop {
+            // Native MCP requests reconstruct their context on every page.
+            let generation = manager.generation();
+            assert!(
+                generation.providers.discover().len() >= 385,
+                "fixture Skill admission failed: {:?}",
+                generation.rejected
+            );
+            let context = SkillRegistryContext::from_generation(generation);
+            let snapshot = native_catalog_snapshot(&context).await.unwrap();
+            assert!(
+                Arc::ptr_eq(&first, &snapshot),
+                "unchanged native traversal must reuse its assembled catalog"
+            );
+            let page = list_visible_skills_page(&context, cursor.as_deref())
+                .await
+                .unwrap();
+            count += page.skills.len();
+            pages += 1;
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(pages, 4);
+        assert!(count >= 385);
+    }
+
+    #[tokio::test]
+    async fn native_page_cache_keeps_artifact_callers_isolated() {
+        let base = artifact_context(SkillVisibility::Private);
+        let owner = base
+            .clone()
+            .with_artifact_access(artifact_access("tenant-a", "owner", false));
+        let stranger = base.with_artifact_access(artifact_access("tenant-a", "stranger", false));
+        let owner_page = list_visible_skills_page(&owner, None).await.unwrap();
+        assert!(
+            owner_page
+                .skills
+                .iter()
+                .any(|entry| entry.uri == "skill://labby/artifact/SKILL.md")
+        );
+        let stranger_page = list_visible_skills_page(&stranger, None).await.unwrap();
+        assert!(
+            !stranger_page
+                .skills
+                .iter()
+                .any(|entry| entry.uri == "skill://labby/artifact/SKILL.md")
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(all(feature = "gateway", feature = "proxy-testkit"))]
+    async fn native_page_cache_rejects_replaced_upstream_catalog() {
+        use crate::skills::registry::{FirstPartyGenerationManager, GenerationLimits};
+        use labby_gateway::gateway::manager::GatewayRuntimeHandle;
+        use labby_runtime::gateway_config::{GatewayConfig, UpstreamConfig};
+        use serde_json::json;
+        let listing = |description: &str| {
+            let entries = (0..129).map(|index| {
+                let uri = format!("skill://native/page-{index:03}/SKILL.md");
+                json!({"uri": uri, "frontmatter": {"name": format!("page-{index:03}"), "description": description},
+                    "resources": [{"uri": uri, "digest": ResourceDigest::of_bytes(b"body").to_wire(), "size": 4}]})
+            }).collect::<Vec<_>>();
+            json!({"resultType": "complete", "skills": entries, "ttlMs": 30000})
+        };
+        let pool = Arc::new(UpstreamPool::new());
+        pool.insert_scripted_skills_server_for_tests(
+            "up",
+            listing("old"),
+            json!({}),
+            std::collections::HashMap::new(),
+        )
+        .await;
+        let runtime = GatewayRuntimeHandle::default();
+        runtime.swap(Some(Arc::clone(&pool))).await;
+        let gateway = Arc::new(
+            crate::dispatch::gateway::config_store::test_gateway_manager(
+                std::path::PathBuf::from("config.toml"),
+                runtime,
+            ),
+        );
+        let config: UpstreamConfig =
+            serde_json::from_value(json!({"name": "up", "command": "true", "proxy_skills": true}))
+                .unwrap();
+        gateway
+            .seed_config_unchecked_for_tests(GatewayConfig {
+                upstream: vec![config],
+                ..GatewayConfig::default()
+            })
+            .await;
+        let root = tempfile::tempdir().unwrap();
+        let generation = FirstPartyGenerationManager::new(
+            root.path().to_path_buf(),
+            GenerationLimits::default(),
+        )
+        .generation();
+        let context = SkillRegistryContext::from_generation_with_manager(
+            Arc::clone(&generation),
+            gateway,
+            SkillCallerScope::root(Some("alice".to_string()), ToolAccess::Direct),
+        );
+        assert!(
+            native_catalog_identity(&context).await.is_none(),
+            "catalog revision probes must not discover a cold upstream"
+        );
+        let first = list_visible_skills_page(&context, None).await.unwrap();
+        let cursor = first.next_cursor.unwrap();
+        assert!(
+            list_visible_skills_page(&context, Some(&cursor))
+                .await
+                .is_ok()
+        );
+        pool.invalidate_upstream_skills("up").await;
+        pool.insert_scripted_skills_server_for_tests(
+            "up",
+            listing("new"),
+            json!({}),
+            std::collections::HashMap::new(),
+        )
+        .await;
+        assert!(
+            matches!(list_visible_skills_page(&context, Some(&cursor)).await, Err(ToolError::InvalidParam { param, .. }) if param == "cursor")
+        );
+        assert_eq!(context.generation_id(), generation.id);
+    }
 
     #[test]
     fn native_cursor_rejects_changed_upstream_catalog_with_same_local_generation() {

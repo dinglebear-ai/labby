@@ -9,7 +9,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use labby_codemode::{
-    CatalogDescriptor, CodeModeCaller, CodeModeCatalogKind, CodeModeSurface, ToolScope,
+    ArtifactSearchResult, CodeModeCaller, CodeModeCatalogKind, CodeModeSurface, ToolScope,
 };
 use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::CodeModeSearchConfig;
@@ -73,5 +73,5 @@ pub trait CodeModeArtifactSearchProvider: Send + Sync {
         caller: &'a CodeModeCaller,
         surface: CodeModeSurface,
         scope: &'a ToolScope,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<CatalogDescriptor>, ToolError>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<ArtifactSearchResult, ToolError>> + Send + 'a>>;
 }
