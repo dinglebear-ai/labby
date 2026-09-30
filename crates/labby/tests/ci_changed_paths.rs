@@ -858,10 +858,8 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         );
     }
 
-    assert!(
-        gate.contains("HEAD_REPOSITORY") && gate.contains("fork safety"),
-        "ci-gate must document the narrow fork-safety exception for skipped changes"
-    );
+    // Executable event/result-matrix regressions in test_windows_ci_policy.py
+    // require classifier success even on forks and reject missing routed suites.
     let unconditional = "fleet-policy";
     assert!(
         gate.contains(&format!("require_success {unconditional} ")),
@@ -869,7 +867,7 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
     );
     assert!(
         gate.contains("require_success changes "),
-        "ci-gate must still require changes on trusted branches"
+        "ci-gate must require changes on every event"
     );
     assert!(
         gate.contains("needs.changes.outputs.gate_key_drift"),
@@ -1112,11 +1110,9 @@ fn fork_pull_requests_use_hosted_ci() {
     let workflow = ci_workflow_yaml(include_str!("../../../.github/workflows/ci.yml"));
     let changes = &workflow["jobs"]["changes"];
     assert_eq!(changes["runs-on"].as_str(), Some("ubuntu-24.04"));
-    assert_eq!(
-        changes["if"].as_str(),
-        Some(
-            "${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}"
-        )
+    assert!(
+        changes["if"].is_null(),
+        "changed-path classification must also run for fork pull requests"
     );
 }
 
