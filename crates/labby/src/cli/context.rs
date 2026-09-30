@@ -110,7 +110,7 @@ fn supports_target(command: &super::Command) -> bool {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "gateway"))]
 mod snippet_target_tests {
     use super::*;
     use crate::cli::snippets::{SnippetTestArgs, SnippetsArgs, SnippetsCommand};
