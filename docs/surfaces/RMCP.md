@@ -1,7 +1,7 @@
 ---
 title: "RMCP"
 created: "2026-07-30"
-updated: "2026-09-16"
+updated: "2026-09-30"
 ---
 
 # RMCP
@@ -18,9 +18,18 @@ It is the source of truth for:
 
 This document is normative for future work even where the codebase is still converging.
 
-The reproducible production rmcp Git revision, pinned upstream rmcp `3.1.0`
-conformance fixture, and MCP `2026-07-28` validation matrix are
-documented in [MCP_CONFORMANCE.md](./MCP_CONFORMANCE.md).
+The production dependency is the pinned `dinglebear-ai/rust-sdk` fork at
+RMCP `3.3.0`, not an unmodified upstream release. The stock upstream conformance
+fixture is also version `3.3.0`, with a different Git revision. Exact pins and
+the MCP `2026-07-28` validation matrix are documented in
+[MCP_CONFORMANCE.md](./MCP_CONFORMANCE.md); the manifests and lockfiles remain
+the dependency authority.
+
+An SDK migration must preserve the fork APIs used by the gateway, including
+typed/raw response forwarding and bounded Unix-socket response bodies. A newer
+version number alone is not evidence of compatibility. See the scoped
+[issue #771 Lane A audit](../tasks/issue-771-protocol/audit.md) for the comparison
+with official RMCP `3.4.0` and its verification limits.
 
 ## Scope
 

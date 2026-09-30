@@ -1,0 +1,2 @@
+# Captured output is byte-exact evidence; whitespace is data, not source formatting.
+*.log -text -whitespace

@@ -1,0 +1,28 @@
+{
+  "label": "prepare-official34-final",
+  "command": [
+    "python3",
+    "docs/tasks/issue-771-protocol/prepare_harness.py",
+    "official34"
+  ],
+  "cwd": "/Users/jmagar/workspace/labby/.worktrees/issue-771-protocol",
+  "head": "b42818f256968466c7d85828aa42c1cd8523efad",
+  "environment_overrides": {
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_TARGET_DIR": "/Users/jmagar/workspace/labby/.worktrees/issue-771-protocol/target/lane-a/build",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "CARGO_TERM_COLOR": "never",
+    "RUSTUP_TOOLCHAIN": "1.97.1"
+  },
+  "started_at": "2026-09-30T06:23:21.433006+00:00",
+  "finished_at": "2026-09-30T06:23:21.664107+00:00",
+  "elapsed_seconds": 0.231,
+  "timeout_seconds": 30,
+  "minimum_free_gib": 3,
+  "exit_code": 0,
+  "stopped_by_capture": null,
+  "log": "prepare-official34-final.log",
+  "log_sha256": "25cdc0a12ecba0e08abb2e24d521e65cffb0a70d16f806f972689ad25f6d9c1c"
+}

@@ -1,0 +1,28 @@
+{
+  "label": "a1-fork-audit",
+  "command": [
+    "bash",
+    "-lc",
+    "S=/Users/jmagar/workspace/labby/.worktrees/issue-771-protocol/target/lane-a/rust-sdk; git -C \"$S\" rev-parse labby-pin rmcp-v3.4.0^{commit}; git -C \"$S\" merge-base labby-pin rmcp-v3.4.0; git -C \"$S\" log --left-right --cherry-pick --no-merges --oneline rmcp-v3.4.0...labby-pin; git -C \"$S\" diff --stat $(git -C \"$S\" merge-base labby-pin rmcp-v3.4.0) labby-pin; git -C \"$S\" diff rmcp-v3.4.0 labby-pin -- crates/rmcp/src/transport/streamable_http_server/tower.rs crates/rmcp/src/transport/common/unix_socket.rs"
+  ],
+  "cwd": "/Users/jmagar/workspace/labby/.worktrees/issue-771-protocol",
+  "head": "b42818f256968466c7d85828aa42c1cd8523efad",
+  "environment_overrides": {
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_TARGET_DIR": "/Users/jmagar/workspace/labby/.worktrees/issue-771-protocol/target/lane-a/build",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "CARGO_TERM_COLOR": "never",
+    "RUSTUP_TOOLCHAIN": "1.97.1"
+  },
+  "started_at": "2026-09-30T05:56:45.971715+00:00",
+  "finished_at": "2026-09-30T05:56:46.214880+00:00",
+  "elapsed_seconds": 0.243,
+  "timeout_seconds": 60,
+  "minimum_free_gib": 3,
+  "exit_code": 0,
+  "stopped_by_capture": null,
+  "log": "a1-fork-audit.log",
+  "log_sha256": "060c9a512de8c9622032524a1552555354f71a1bdddc0f25c162aad391af6583"
+}

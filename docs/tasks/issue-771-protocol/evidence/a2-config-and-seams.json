@@ -1,0 +1,28 @@
+{
+  "label": "a2-config-and-seams",
+  "command": [
+    "bash",
+    "-lc",
+    "S=target/lane-a/rust-sdk; git -C \"$S\" diff --shortstat rmcp-v3.4.0 labby-pin; git -C \"$S\" show 165ff92 -- crates/rmcp/src/model.rs crates/rmcp/src/service/client.rs crates/rmcp/src/handler/server.rs; git grep -n -e ClientInfo -e ServerInfo -e serve_with_lifecycle -- crates/labby-gateway/src/upstream/pool/legacy_client.rs crates/labby-gateway/src/upstream/pool/connect.rs crates/labby-gateway/src/upstream/pool/connect_stdio.rs crates/labby/src/mcp/server.rs"
+  ],
+  "cwd": "/Users/jmagar/workspace/labby/.worktrees/issue-771-protocol",
+  "head": "b42818f256968466c7d85828aa42c1cd8523efad",
+  "environment_overrides": {
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_TARGET_DIR": "/Users/jmagar/workspace/labby/.worktrees/issue-771-protocol/target/lane-a/build",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "CARGO_TERM_COLOR": "never",
+    "RUSTUP_TOOLCHAIN": "1.97.1"
+  },
+  "started_at": "2026-09-30T05:59:10.316584+00:00",
+  "finished_at": "2026-09-30T05:59:10.794112+00:00",
+  "elapsed_seconds": 0.476,
+  "timeout_seconds": 60,
+  "minimum_free_gib": 3,
+  "exit_code": 0,
+  "stopped_by_capture": null,
+  "log": "a2-config-and-seams.log",
+  "log_sha256": "9dc6b6e032ea841999a9986839f0dc2ae7aa097f873b10d0ed9d4ff5bd144ee4"
+}

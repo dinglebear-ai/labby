@@ -1,0 +1,31 @@
+{
+  "label": "strict-pin-subscription",
+  "command": [
+    "env",
+    "LABBY_LANE_A_REQUIRE_TASK_SUBSCRIPTIONS=1",
+    "target/lane-a/build/debug/deps/issue_771_protocol-6631cd4ea9a846e4",
+    "known_sdk_gap_raw_task_subscription",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "cwd": "/Users/jmagar/workspace/labby/.worktrees/issue-771-protocol",
+  "head": "b42818f256968466c7d85828aa42c1cd8523efad",
+  "environment_overrides": {
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_TARGET_DIR": "/Users/jmagar/workspace/labby/.worktrees/issue-771-protocol/target/lane-a/build",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "CARGO_TERM_COLOR": "never",
+    "RUSTUP_TOOLCHAIN": "1.97.1"
+  },
+  "started_at": "2026-09-30T06:17:26.297441+00:00",
+  "finished_at": "2026-09-30T06:17:26.782193+00:00",
+  "elapsed_seconds": 0.482,
+  "timeout_seconds": 30,
+  "minimum_free_gib": 3,
+  "exit_code": 101,
+  "stopped_by_capture": null,
+  "log": "strict-pin-subscription.log",
+  "log_sha256": "7310e2f6312fc711c0b77675bec4668909da47924c57ad2ee99e3e26da7975e2"
+}

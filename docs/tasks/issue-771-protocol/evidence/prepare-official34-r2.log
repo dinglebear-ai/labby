@@ -1,0 +1,11 @@
+{
+  "manifest": "/Users/jmagar/workspace/labby/.worktrees/issue-771-protocol/target/lane-a/harness-official34/Cargo.toml",
+  "source_sha256": {
+    "crates/labby-gateway/tests/issue_771_protocol.rs": "f2d0e6fa9e0d8055a2a9131969e55a8b72aed5a927fcd0acef30c110a10db40c",
+    "crates/labby-gateway/tests/issue_771_protocol/fixture.rs": "f518f42571d2ac327cae61ec4ce80232b6d15ad99fa1d2c938e2b844e2c9b4a5",
+    "crates/labby-gateway/tests/issue_771_protocol/http_headers.rs": "1fdd944757fa0a79559705b8c54739b81aa191643cd1b20f140a27851ebc6f64",
+    "crates/labby-gateway/tests/issue_771_protocol/lifecycle.rs": "593a9498ff4114bfa28f78fd6960ca87c01828f068b4c79a3c73fee36d17bd00",
+    "crates/labby-gateway/tests/issue_771_protocol/subscription_gap.rs": "30353b51544c6158d632ef36b076f9f623d3401ade3b478d70d2cfffc174bb56"
+  },
+  "comparison_only_type_renames": true
+}

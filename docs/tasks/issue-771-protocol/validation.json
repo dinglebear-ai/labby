@@ -1,0 +1,899 @@
+{
+  "issue": 771,
+  "lane": "A",
+  "branch": "codex/issue-771-protocol",
+  "validated_base_sha": "b42818f256968466c7d85828aa42c1cd8523efad",
+  "observed_origin_main_sha": "138ef902dc1842daf883a6e7710b140fbfaf53c0",
+  "status": "validated audit and characterization; strict task-subscription conformance blocked",
+  "rmcp_decision": "hold production 3.3 fork pin; no shared lifecycle or SDK upgrade",
+  "positive_protocol_tests": 9,
+  "known_gap_characterizations": 2,
+  "gateway_baseline": {
+    "passed": 1484,
+    "skipped": 5
+  },
+  "strict_oracles": {
+    "pin": "failed -32021 requirement",
+    "official34": "failed -32021 requirement"
+  },
+  "not_proven": [
+    "combined revision after main absorbed #847/#848",
+    "live restart/reconnect durability",
+    "complete external MCP conformance matrix",
+    "Gate 0 acceptance"
+  ],
+  "shared_source_and_production_locks_unchanged": true,
+  "receipts": {
+    "a1-fork-audit": {
+      "command": [
+        "bash",
+        "-lc",
+        "S=/Users/jmagar/workspace/labby/.worktrees/issue-771-protocol/target/lane-a/rust-sdk; git -C \"$S\" rev-parse labby-pin rmcp-v3.4.0^{commit}; git -C \"$S\" merge-base labby-pin rmcp-v3.4.0; git -C \"$S\" log --left-right --cherry-pick --no-merges --oneline rmcp-v3.4.0...labby-pin; git -C \"$S\" diff --stat $(git -C \"$S\" merge-base labby-pin rmcp-v3.4.0) labby-pin; git -C \"$S\" diff rmcp-v3.4.0 labby-pin -- crates/rmcp/src/transport/streamable_http_server/tower.rs crates/rmcp/src/transport/common/unix_socket.rs"
+      ],
+      "exit_code": 0,
+      "stopped_by_capture": null,
+      "elapsed_seconds": 0.243,
+      "log": "a1-fork-audit.log",
+      "log_sha256": "060c9a512de8c9622032524a1552555354f71a1bdddc0f25c162aad391af6583"
+    },
+    "a2-config-and-seams": {
+      "command": [
+        "bash",
+        "-lc",
+        "S=target/lane-a/rust-sdk; git -C \"$S\" diff --shortstat rmcp-v3.4.0 labby-pin; git -C \"$S\" show 165ff92 -- crates/rmcp/src/model.rs crates/rmcp/src/service/client.rs crates/rmcp/src/handler/server.rs; git grep -n -e ClientInfo -e ServerInfo -e serve_with_lifecycle -- crates/labby-gateway/src/upstream/pool/legacy_client.rs crates/labby-gateway/src/upstream/pool/connect.rs crates/labby-gateway/src/upstream/pool/connect_stdio.rs crates/labby/src/mcp/server.rs"
+      ],
+      "exit_code": 0,
+      "stopped_by_capture": null,
+      "elapsed_seconds": 0.476,
+      "log": "a2-config-and-seams.log",
+      "log_sha256": "9dc6b6e032ea841999a9986839f0dc2ae7aa097f873b10d0ed9d4ff5bd144ee4"
+    },
+    "baseline-sdk-pin": {
+      "command": [
+        "bash",
+        "scripts/ci/mcp-conformance.sh",
+        "--check-sdk-pin"
+      ],
+      "exit_code": 0,
+      "stopped_by_capture": null,
+      "elapsed_seconds": 0.32,
+      "log": "baseline-sdk-pin.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "docs-links": {
+      "command": [
+        "python3",
+        "scripts/check-doc-links.py"
+      ],
+      "exit_code": 0,
+      "stopped_by_capture": null,
+      "elapsed_seconds": 0.444,
+      "log": "docs-links.log",
+      "log_sha256": "b9788ee58ce885d4af044e3e72259552040ca1a8b6a6a73bd9f5887044f05dac"
+    },
+    "docs-product": {
+      "command": [
+        "python3",
+        "scripts/check-product-docs.py"
+      ],
+      "exit_code": 0,
+      "stopped_by_capture": null,
+      "elapsed_seconds": 1.876,
+      "log": "docs-product.log",
+      "log_sha256": "8612358092d06330aa56eb328c05f86b10ed44d1889f0010f252b957dc6b2d5f"
+    },
+    "final-lane-checks": {
+      "command": [
+        "bash",
+        "-lc",
+        "set -e; python3 -m py_compile docs/tasks/issue-771-protocol/capture.py docs/tasks/issue-771-protocol/prepare_harness.py; H=target/lane-a/harness-official34; test ! -e \"$H/Cargo.lock.seed-check\"; mv \"$H/Cargo.lock\" \"$H/Cargo.lock.seed-check\"; python3 docs/tasks/issue-771-protocol/prepare_harness.py official34; cmp \"$H/Cargo.lock\" \"$H/Cargo.lock.seed-check\"; rm \"$H/Cargo.lock.seed-check\"; rustup run 1.97.1 cargo fmt --all -- --check; rustup run 1.97.1 cargo clippy -p labby-gateway --all-features --all-targets --locked --offline -- -D warnings; just docs-check; git diff --check; git diff --quiet b42818f256968466c7d85828aa42c1cd8523efad -- Cargo.toml Cargo.lock crates/labby-gateway/src crates/labby/src"
+      ],
+      "exit_code": 0,
+      "stopped_by_capture": null,
+      "elapsed_seconds": 27.468,
+      "log": "final-lane-checks.log",
+      "log_sha256": "ae165bef5da24268bae1f785bcfc602f7faaae1ec7f4cfbb7925737502d695cd"
+    },
+    "final-main-drift": {
+      "command": [
+        "bash",
+        "-lc",
+        "set -e; git rev-parse HEAD origin/main; git log --oneline b42818f256968466c7d85828aa42c1cd8523efad..origin/main; git diff --stat b42818f256968466c7d85828aa42c1cd8523efad..origin/main; git diff --name-only b42818f256968466c7d85828aa42c1cd8523efad..origin/main -- Cargo.toml Cargo.lock crates/labby-gateway/src/upstream docs/surfaces/RMCP.md tools/verification/conformance/expected-failures-extensions.yaml"
+      ],
+      "exit_code": 0,
+      "stopped_by_capture": null,
+      "elapsed_seconds": 0.255,
+      "log": "final-main-drift.log",
+      "log_sha256": "bc11195d95ff21b386eda43dd3bd0a6c707c0644944a5d9e7cf86e88ccd083a7"
+    },
+    "full-docs-check": {
+      "command": [
+        "just",
+        "docs-check"
+      ],
+      "exit_code": 0,
+      "stopped_by_capture": null,
+      "elapsed_seconds": 269.627,
+      "log": "full-docs-check.log",
+      "log_sha256": "363a475484c80d18e7a36e5d46f963d70f18085e758f0b7d7b8a81dcd884edfb"
+    },
+    "gateway-clippy": {
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "clippy",
+        "-p",
+        "labby-gateway",
+        "--all-features",
+        "--all-targets",
+        "--locked",
+        "--offline",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "stopped_by_capture": null,
+      "elapsed_seconds": 83.397,
+      "log": "gateway-clippy.log",
+      "log_sha256": "4c584b65487c116c825bb4f5841e16ad496ff6677e2e5c724a9b695caab9b9d5"
+    },
+    "gateway-doctests": {
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "test",
+        "-p",
+        "labby-gateway",
+        "--all-features",
+        "--locked",
+        "--offline",
+        "--doc"
+      ],
+      "exit_code": 0,
+      "stopped_by_capture": null,
+      "elapsed_seconds": 2.461,
+      "log": "gateway-doctests.log",
+      "log_sha256": "9ae74cc26bebcd7ffa4cdfaf07beb42637826d3310daafde34d69b6dc424ee4e"
+    },
+    "gateway-existing-suite": {
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "nextest",
+        "run",
+        "-p",
+        "labby-gateway",
+        "--all-features",
+        "--locked",
+        "--offline",
+        "--lib",
+        "--test-threads",
+        "2"
+      ],
+      "exit_code": 0,
+      "stopped_by_capture": null,
+      "elapsed_seconds": 358.693,
+      "log": "gateway-existing-suite.log",
+      "log_sha256": "b47e065828cbe38de78101d6f0f05e7e29d88cb26f21c298894cb0c6786dc259"
+    },
+    "gateway-fixtures-final": {
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "test",
+        "-p",
+        "labby-gateway",
+        "--all-features",
+        "--locked",
+        "--offline",
+        "--test",
+        "issue_771_protocol",
+        "--",
+        "--test-threads=2"
+      ],
+      "exit_code": 0,
+      "stopped_by_capture": null,
+      "elapsed_seconds": 75.004,
+      "log": "gateway-fixtures-final.log",
+      "log_sha256": "342ef6f7f3e2f9df70ca90cf19a4f69b8ba674ca86e524f3a652db221fd09314"
+    },
+    "gateway-fixtures-initial": {
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "test",
+        "-p",
+        "labby-gateway",
+        "--all-features",
+        "--locked",
+        "--offline",
+        "--test",
+        "issue_771_protocol",
+        "--",
+        "--test-threads=2"
+      ],
+      "exit_code": 101,
+      "stopped_by_capture": null,
+      "elapsed_seconds": 276.634,
+      "log": "gateway-fixtures-initial.log",
+      "log_sha256": "b87605a2b6519ac0f514780c63f86df29f004529a7246bfc9804612e3eb28c82"
+    },
+    "gateway-fixtures-r2": {
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "test",
+        "-p",
+        "labby-gateway",
+        "--all-features",
+        "--locked",
+        "--offline",
+        "--test",
+        "issue_771_protocol",
+        "--",
+        "--test-threads=2"
+      ],
+      "exit_code": 101,
+      "stopped_by_capture": null,
+      "elapsed_seconds": 13.931,
+      "log": "gateway-fixtures-r2.log",
+      "log_sha256": "64a94663f000fc41ad93f94f38afa68e67c3e2eb622e8eade8a7448c1a4b47dc"
+    },
+    "gateway-fixtures-r3": {
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "test",
+        "-p",
+        "labby-gateway",
+        "--all-features",
+        "--locked",
+        "--offline",
+        "--test",
+        "issue_771_protocol",
+        "--",
+        "--test-threads=2"
+      ],
+      "exit_code": 101,
+      "stopped_by_capture": null,
+      "elapsed_seconds": 6.671,
+      "log": "gateway-fixtures-r3.log",
+      "log_sha256": "a2dae86d4be79ffbe46a0a23f3dae0bc59e0bb5c94da88cd0cc2c023aabd3580"
+    },
+    "gateway-fixtures-r4": {
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "test",
+        "-p",
+        "labby-gateway",
+        "--all-features",
+        "--locked",
+        "--offline",
+        "--test",
+        "issue_771_protocol",
+        "--",
+        "--test-threads=2"
+      ],
+      "exit_code": 101,
+      "stopped_by_capture": null,
+      "elapsed_seconds": 16.261,
+      "log": "gateway-fixtures-r4.log",
+      "log_sha256": "50be36b86105ca17f056bd557c87edbb366307b5b9d1635c1247cab39f0862d3"
+    },
+    "gateway-fixtures-r5": {
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "test",
+        "-p",
+        "labby-gateway",
+        "--all-features",
+        "--locked",
+        "--offline",
+        "--test",
+        "issue_771_protocol",
+        "--",
+        "--test-threads=2"
+      ],
+      "exit_code": 0,
+      "stopped_by_capture": null,
+      "elapsed_seconds": 54.717,
+      "log": "gateway-fixtures-r5.log",
+      "log_sha256": "f5666f43dd52c0792c301c751190f4a0cec52520f22e679e220ca60bc2e9df3e"
+    },
+    "module-reachability": {
+      "command": [
+        "just",
+        "module-reachability"
+      ],
+      "exit_code": 0,
+      "stopped_by_capture": null,
+      "elapsed_seconds": 5.399,
+      "log": "module-reachability.log",
+      "log_sha256": "fe6983a8e5db745246f30b4db72892195503c89fe7932126c90ab285ce2713ea"
+    },
+    "official34-fixtures-final": {
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "test",
+        "--manifest-path",
+        "target/lane-a/harness-official34/Cargo.toml",
+        "--locked",
+        "--offline",
+        "--test",
+        "issue_771_protocol",
+        "--",
+        "--test-threads=2"
+      ],
+      "exit_code": 0,
+      "stopped_by_capture": null,
+      "elapsed_seconds": 3.469,
+      "log": "official34-fixtures-final.log",
+      "log_sha256": "2c754bd98682924d2d39dff7caeebe2bdd81d27b38f49ba136cccb69198f0b84"
+    },
+    "official34-fixtures": {
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "test",
+        "--manifest-path",
+        "target/lane-a/harness-official34/Cargo.toml",
+        "--locked",
+        "--offline",
+        "--test",
+        "issue_771_protocol",
+        "--",
+        "--test-threads=2"
+      ],
+      "exit_code": 0,
+      "stopped_by_capture": null,
+      "elapsed_seconds": 102.336,
+      "log": "official34-fixtures.log",
+      "log_sha256": "51c99c22342113c0a0252ba729110fd312e0bc08c9b4deb97c6b6dafd1178105"
+    },
+    "official34-lock-r2": {
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "generate-lockfile",
+        "--manifest-path",
+        "target/lane-a/harness-official34/Cargo.toml",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "stopped_by_capture": null,
+      "elapsed_seconds": 0.669,
+      "log": "official34-lock-r2.log",
+      "log_sha256": "537975606dfea40f65b407fe8a6886b9fb28cab19277c3c90a231eca81f44d44"
+    },
+    "official34-lock": {
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "generate-lockfile",
+        "--manifest-path",
+        "target/lane-a/harness-official34/Cargo.toml",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "stopped_by_capture": null,
+      "elapsed_seconds": 0.856,
+      "log": "official34-lock.log",
+      "log_sha256": "bff17b42b17f74b0b79d4fd715dacb7d1335533bda5650d6f2ad2f64c176795b"
+    },
+    "prepare-official34-final": {
+      "command": [
+        "python3",
+        "docs/tasks/issue-771-protocol/prepare_harness.py",
+        "official34"
+      ],
+      "exit_code": 0,
+      "stopped_by_capture": null,
+      "elapsed_seconds": 0.231,
+      "log": "prepare-official34-final.log",
+      "log_sha256": "25cdc0a12ecba0e08abb2e24d521e65cffb0a70d16f806f972689ad25f6d9c1c"
+    },
+    "prepare-official34-r2": {
+      "command": [
+        "python3",
+        "docs/tasks/issue-771-protocol/prepare_harness.py",
+        "official34"
+      ],
+      "exit_code": 0,
+      "stopped_by_capture": null,
+      "elapsed_seconds": 0.24,
+      "log": "prepare-official34-r2.log",
+      "log_sha256": "4ca96a6b08f2250ceff4d7e340df3345bbfb4d10092e30e203a97e52218ba53a"
+    },
+    "prepare-official34": {
+      "command": [
+        "python3",
+        "docs/tasks/issue-771-protocol/prepare_harness.py",
+        "official34"
+      ],
+      "exit_code": 0,
+      "stopped_by_capture": null,
+      "elapsed_seconds": 0.265,
+      "log": "prepare-official34.log",
+      "log_sha256": "71166cd9aa80177de3eaa294c955ea05af02c92e6f390eeb9889d8ca0ae9a829"
+    },
+    "rustfmt": {
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "stopped_by_capture": null,
+      "elapsed_seconds": 5.201,
+      "log": "rustfmt.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "staged-review": {
+      "command": [
+        "bash",
+        "-lc",
+        "set -e; python3 scripts/check-product-docs.py; python3 scripts/check-doc-links.py; git diff --cached --check; git diff --check; git diff --quiet HEAD -- Cargo.toml Cargo.lock crates/labby-gateway/src crates/labby/src; git check-attr whitespace text -- docs/tasks/issue-771-protocol/evidence/a1-fork-audit.log crates/labby-gateway/tests/issue_771_protocol.rs"
+      ],
+      "exit_code": 0,
+      "stopped_by_capture": null,
+      "elapsed_seconds": 2.709,
+      "log": "staged-review.log",
+      "log_sha256": "2c698dbbc87f1337cee296abc5fa5ca431c663f34981cfe48f2ae784cb1216b1"
+    },
+    "strict-official34-subscription": {
+      "command": [
+        "env",
+        "LABBY_LANE_A_REQUIRE_TASK_SUBSCRIPTIONS=1",
+        "target/lane-a/build/debug/deps/issue_771_protocol-f90e8e1fdd653358",
+        "known_sdk_gap_raw_task_subscription",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 101,
+      "stopped_by_capture": null,
+      "elapsed_seconds": 0.406,
+      "log": "strict-official34-subscription.log",
+      "log_sha256": "c904c4de6c2670491878f7339111a4e44c0c4543925b965ba0eb0c11b146f60a"
+    },
+    "strict-pin-subscription": {
+      "command": [
+        "env",
+        "LABBY_LANE_A_REQUIRE_TASK_SUBSCRIPTIONS=1",
+        "target/lane-a/build/debug/deps/issue_771_protocol-6631cd4ea9a846e4",
+        "known_sdk_gap_raw_task_subscription",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 101,
+      "stopped_by_capture": null,
+      "elapsed_seconds": 0.482,
+      "log": "strict-pin-subscription.log",
+      "log_sha256": "7310e2f6312fc711c0b77675bec4668909da47924c57ad2ee99e3e26da7975e2"
+    },
+    "strict-subscription-oracle": {
+      "command": [
+        "env",
+        "LABBY_LANE_A_REQUIRE_TASK_SUBSCRIPTIONS=1",
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "test",
+        "-p",
+        "labby-gateway",
+        "--all-features",
+        "--locked",
+        "--offline",
+        "--test",
+        "issue_771_protocol",
+        "known_sdk_gap_raw_task_subscription",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": -15,
+      "stopped_by_capture": "timeout",
+      "elapsed_seconds": 60.221,
+      "log": "strict-subscription-oracle.log",
+      "log_sha256": "256920d31a6e3c8c7b7c6e25b6976dd361363b398cfdd33869c4affe88178eb2"
+    }
+  },
+  "files": [
+    {
+      "path": "crates/labby-gateway/tests/issue_771_protocol.rs",
+      "bytes": 6369,
+      "sha256": "f2d0e6fa9e0d8055a2a9131969e55a8b72aed5a927fcd0acef30c110a10db40c"
+    },
+    {
+      "path": "crates/labby-gateway/tests/issue_771_protocol/fixture.rs",
+      "bytes": 6875,
+      "sha256": "f518f42571d2ac327cae61ec4ce80232b6d15ad99fa1d2c938e2b844e2c9b4a5"
+    },
+    {
+      "path": "crates/labby-gateway/tests/issue_771_protocol/http_headers.rs",
+      "bytes": 3150,
+      "sha256": "1fdd944757fa0a79559705b8c54739b81aa191643cd1b20f140a27851ebc6f64"
+    },
+    {
+      "path": "crates/labby-gateway/tests/issue_771_protocol/lifecycle.rs",
+      "bytes": 5501,
+      "sha256": "593a9498ff4114bfa28f78fd6960ca87c01828f068b4c79a3c73fee36d17bd00"
+    },
+    {
+      "path": "crates/labby-gateway/tests/issue_771_protocol/subscription_gap.rs",
+      "bytes": 3174,
+      "sha256": "c37bfbff3048ed0d2aa470869ea0aec19599690456eb6485785ccab3d2e7e5c0"
+    },
+    {
+      "path": "docs/surfaces/RMCP.md",
+      "bytes": 14860,
+      "sha256": "24148e99b0924f1840c82351b839d010202be0a4f877b122916c8a0b75d92df4"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/audit.md",
+      "bytes": 17991,
+      "sha256": "ea86a34b30a860c95704ac8ad86b70edc00b49ecd8913bf754633f48eeb61416"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/capture.py",
+      "bytes": 4004,
+      "sha256": "a493dee3240395b0dc913669cf875eee8ee0fad86634f1a11649c73f95e4cd73"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/.gitattributes",
+      "bytes": 109,
+      "sha256": "2cd1f374cff1078618dfc4968d0993076ae15bbe9e0aea910af7d6bdd3a775d9"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/a1-fork-audit.json",
+      "bytes": 1409,
+      "sha256": "b2265eb6de57ed56a68b963a22e8d3207c0cfe91e130a2ca429a234e4eb1ef98"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/a1-fork-audit.log",
+      "bytes": 17554,
+      "sha256": "060c9a512de8c9622032524a1552555354f71a1bdddc0f25c162aad391af6583"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/a2-config-and-seams.json",
+      "bytes": 1366,
+      "sha256": "eb078853b28cb4a7ff35709a94ee278ab17cb76a5c79ce9be371dfa717dca67d"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/a2-config-and-seams.log",
+      "bytes": 10903,
+      "sha256": "9dc6b6e032ea841999a9986839f0dc2ae7aa097f873b10d0ed9d4ff5bd144ee4"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/baseline-sdk-pin.json",
+      "bytes": 937,
+      "sha256": "8f778796d6db88818cd43efba6d6bb2072c029e80239b419d777283cd07a8c72"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/baseline-sdk-pin.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/docs-links.json",
+      "bytes": 903,
+      "sha256": "5ae88dddac55d3cbc57db12af3825eab5e6506e0272c13c991934bafafa680e5"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/docs-links.log",
+      "bytes": 89,
+      "sha256": "b9788ee58ce885d4af044e3e72259552040ca1a8b6a6a73bd9f5887044f05dac"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/docs-product.json",
+      "bytes": 910,
+      "sha256": "9020214d9717b39c556aab022ef61537c8f7d7fd8452b7c6fe4058e5299caa05"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/docs-product.log",
+      "bytes": 131,
+      "sha256": "8612358092d06330aa56eb328c05f86b10ed44d1889f0010f252b957dc6b2d5f"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/final-lane-checks.json",
+      "bytes": 1620,
+      "sha256": "4bf52edc7d5a1d9d28bbf4c0350181253d6404bcbabfff7f5104bc916011173d"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/final-lane-checks.log",
+      "bytes": 8567,
+      "sha256": "ae165bef5da24268bae1f785bcfc602f7faaae1ec7f4cfbb7925737502d695cd"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/final-main-drift.json",
+      "bytes": 1301,
+      "sha256": "ec41a0a59a684543e7a02d464c83bf2030512476362c9621779167cac9424c9b"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/final-main-drift.log",
+      "bytes": 2639,
+      "sha256": "bc11195d95ff21b386eda43dd3bd0a6c707c0644944a5d9e7cf86e88ccd083a7"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/full-docs-check.json",
+      "bytes": 897,
+      "sha256": "6d30dbcc82ce2cc2e3aeab96cf5ab445ecc0c21e84aaf4ca3a56cffd1d9678a2"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/full-docs-check.log",
+      "bytes": 11271,
+      "sha256": "363a475484c80d18e7a36e5d46f963d70f18085e758f0b7d7b8a81dcd884edfb"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/gateway-clippy.json",
+      "bytes": 1073,
+      "sha256": "4baad7feecc9c0149490d2d6dd83d76b5ff1264ee4161f9c1ef0cf1b14a36b5b"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/gateway-clippy.log",
+      "bytes": 9705,
+      "sha256": "4c584b65487c116c825bb4f5841e16ad496ff6677e2e5c724a9b695caab9b9d5"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/gateway-doctests.json",
+      "bytes": 1030,
+      "sha256": "d1c09848f706bb000a82f357d9b72f2941d77f62a11bb8ed0f5dd03f3a68d1be"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/gateway-doctests.log",
+      "bytes": 300,
+      "sha256": "9ae74cc26bebcd7ffa4cdfaf07beb42637826d3310daafde34d69b6dc424ee4e"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/gateway-existing-suite.json",
+      "bytes": 1089,
+      "sha256": "b295b0e43c0d2006fd1f2a32b81ebd6282a26192a393a10317a2f5934ed45df4"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/gateway-existing-suite.log",
+      "bytes": 209454,
+      "sha256": "b47e065828cbe38de78101d6f0f05e7e29d88cb26f21c298894cb0c6786dc259"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/gateway-fixtures-final.json",
+      "bytes": 1104,
+      "sha256": "b2eb331597e3e80ba5409124b80add904a5cf9310c335d08efc9dbff5da503f9"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/gateway-fixtures-final.log",
+      "bytes": 1421,
+      "sha256": "342ef6f7f3e2f9df70ca90cf19a4f69b8ba674ca86e524f3a652db221fd09314"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/gateway-fixtures-initial.json",
+      "bytes": 1111,
+      "sha256": "e04b4d6073d35a577d6dea307084bf618c63f98064e7c495cae03c6d68b76112"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/gateway-fixtures-initial.log",
+      "bytes": 13762,
+      "sha256": "b87605a2b6519ac0f514780c63f86df29f004529a7246bfc9804612e3eb28c82"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/gateway-fixtures-r2.json",
+      "bytes": 1100,
+      "sha256": "2eca5c70519187863b5b4d6891457f1e5999268c25d33ac1bd652dbacece9990"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/gateway-fixtures-r2.log",
+      "bytes": 4728,
+      "sha256": "64a94663f000fc41ad93f94f38afa68e67c3e2eb622e8eade8a7448c1a4b47dc"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/gateway-fixtures-r3.json",
+      "bytes": 1099,
+      "sha256": "437ed8d8185e8e3d2469e0df16adbebac89a78c30cbdf7cc75dd22bf23f61965"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/gateway-fixtures-r3.log",
+      "bytes": 1751,
+      "sha256": "a2dae86d4be79ffbe46a0a23f3dae0bc59e0bb5c94da88cd0cc2c023aabd3580"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/gateway-fixtures-r4.json",
+      "bytes": 1100,
+      "sha256": "140cf028684e321e1824ea0c7aa8731db99738a570f6ae62e0cd40670d038c04"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/gateway-fixtures-r4.log",
+      "bytes": 2007,
+      "sha256": "50be36b86105ca17f056bd557c87edbb366307b5b9d1635c1247cab39f0862d3"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/gateway-fixtures-r5.json",
+      "bytes": 1098,
+      "sha256": "3102b298aed72ccf9bc73275e30ff2afa5337f24b50b0630732c9f317f73a380"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/gateway-fixtures-r5.log",
+      "bytes": 1421,
+      "sha256": "f5666f43dd52c0792c301c751190f4a0cec52520f22e679e220ca60bc2e9df3e"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/module-reachability.json",
+      "bytes": 912,
+      "sha256": "20cf6211709b8643f4b5d5a6becb080e57b8183b67ced51546bd6bdf8539a5b9"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/module-reachability.log",
+      "bytes": 1402,
+      "sha256": "fe6983a8e5db745246f30b4db72892195503c89fe7932126c90ab285ce2713ea"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/official34-fixtures-final.json",
+      "bytes": 1130,
+      "sha256": "dbbd063db49b1b95e20f195a9445e96753d9d3fe3c6008f5abe95897ed8cefa1"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/official34-fixtures-final.log",
+      "bytes": 1286,
+      "sha256": "2c754bd98682924d2d39dff7caeebe2bdd81d27b38f49ba136cccb69198f0b84"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/official34-fixtures.json",
+      "bytes": 1120,
+      "sha256": "74b92d0facf231d222419dde44f429f04c70e9b39a5590e9bace380b8cd1cca4"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/official34-fixtures.log",
+      "bytes": 6596,
+      "sha256": "51c99c22342113c0a0252ba729110fd312e0bc08c9b4deb97c6b6dafd1178105"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/official34-lock-r2.json",
+      "bytes": 1038,
+      "sha256": "44f5621a6cf49b466d80d5cf4d4439f4412ae64a0020ab6f07f223c1aacf7c43"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/official34-lock-r2.log",
+      "bytes": 124,
+      "sha256": "537975606dfea40f65b407fe8a6886b9fb28cab19277c3c90a231eca81f44d44"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/official34-lock.json",
+      "bytes": 1032,
+      "sha256": "613c9c2495b773cc8f1cd0d4a7c0bf990f6adeb9c630fc4ad4534d5675095695"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/official34-lock.log",
+      "bytes": 124,
+      "sha256": "bff17b42b17f74b0b79d4fd715dacb7d1335533bda5650d6f2ad2f64c176795b"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/prepare-official34-final.json",
+      "bytes": 971,
+      "sha256": "0f8d84019cfed9ae9aaf46188baf1f074ac5ce1fdfbc5216f6c9466dc6c71196"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/prepare-official34-final.log",
+      "bytes": 857,
+      "sha256": "25cdc0a12ecba0e08abb2e24d521e65cffb0a70d16f806f972689ad25f6d9c1c"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/prepare-official34-r2.json",
+      "bytes": 964,
+      "sha256": "413f105625a832c2960f94bada16f2746842b6829b1353ecc6c011d3ea34e6f6"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/prepare-official34-r2.log",
+      "bytes": 857,
+      "sha256": "4ca96a6b08f2250ceff4d7e340df3345bbfb4d10092e30e203a97e52218ba53a"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/prepare-official34.json",
+      "bytes": 959,
+      "sha256": "3e3f1a44e3cf1bd51dcbd959ee19a3b141903699c64a754c865d1e9313cbfe43"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/prepare-official34.log",
+      "bytes": 850,
+      "sha256": "71166cd9aa80177de3eaa294c955ea05af02c92e6f390eeb9889d8ca0ae9a829"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/rustfmt.json",
+      "bytes": 949,
+      "sha256": "e35b4f9a1e233aa5803c78fe1df28e594c51538dd9b40728d28a23c00cc28256"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/rustfmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/staged-review.json",
+      "bytes": 1248,
+      "sha256": "d0d21b360cc28467dc667e037a92fade51ad5ef4ab7ac34b860ce02c40b214e2"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/staged-review.log",
+      "bytes": 508,
+      "sha256": "2c698dbbc87f1337cee296abc5fa5ca431c663f34981cfe48f2ae784cb1216b1"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/strict-official34-subscription.json",
+      "bytes": 1116,
+      "sha256": "36b67b1385686cb8df8d6adc4b020d8a063fe943a0749ba12fd99023ace10f93"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/strict-official34-subscription.log",
+      "bytes": 907,
+      "sha256": "c904c4de6c2670491878f7339111a4e44c0c4543925b965ba0eb0c11b146f60a"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/strict-pin-subscription.json",
+      "bytes": 1102,
+      "sha256": "375f39cf2fe8b5a86695a79824c404cb2ca9935fdf545840054a44528bf1991e"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/strict-pin-subscription.log",
+      "bytes": 934,
+      "sha256": "7310e2f6312fc711c0b77675bec4668909da47924c57ad2ee99e3e26da7975e2"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/strict-subscription-oracle.json",
+      "bytes": 1240,
+      "sha256": "087c9f9f287df54bc4dd091b71813de420c10257e1818d0dd1d1f8899a0ca0da"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/evidence/strict-subscription-oracle.log",
+      "bytes": 54,
+      "sha256": "256920d31a6e3c8c7b7c6e25b6976dd361363b398cfdd33869c4affe88178eb2"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/official34.Cargo.lock",
+      "bytes": 49503,
+      "sha256": "d61f4372aa29559df510c898e54a457fb765bceefd12c440ea27ecedc92eb9cb"
+    },
+    {
+      "path": "docs/tasks/issue-771-protocol/prepare_harness.py",
+      "bytes": 3364,
+      "sha256": "28452af3cdf66c1b64b193211263541cd05700586901afd17276ef58354c881f"
+    },
+    {
+      "path": "tools/verification/conformance/expected-failures-extensions.yaml",
+      "bytes": 813,
+      "sha256": "2f27df1a0b6538ef9cf357f549be84d85e69488ce029b8bedf3081d23cc5b9cb"
+    }
+  ],
+  "manifest_excludes_self": true
+}

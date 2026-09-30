@@ -1,0 +1,33 @@
+{
+  "label": "official34-lock-r2",
+  "command": [
+    "rustup",
+    "run",
+    "1.97.1",
+    "cargo",
+    "generate-lockfile",
+    "--manifest-path",
+    "target/lane-a/harness-official34/Cargo.toml",
+    "--offline"
+  ],
+  "cwd": "/Users/jmagar/workspace/labby/.worktrees/issue-771-protocol",
+  "head": "b42818f256968466c7d85828aa42c1cd8523efad",
+  "environment_overrides": {
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_TARGET_DIR": "/Users/jmagar/workspace/labby/.worktrees/issue-771-protocol/target/lane-a/build",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "CARGO_TERM_COLOR": "never",
+    "RUSTUP_TOOLCHAIN": "1.97.1"
+  },
+  "started_at": "2026-09-30T06:14:59.385582+00:00",
+  "finished_at": "2026-09-30T06:15:00.054736+00:00",
+  "elapsed_seconds": 0.669,
+  "timeout_seconds": 60,
+  "minimum_free_gib": 3,
+  "exit_code": 0,
+  "stopped_by_capture": null,
+  "log": "official34-lock-r2.log",
+  "log_sha256": "537975606dfea40f65b407fe8a6886b9fb28cab19277c3c90a231eca81f44d44"
+}

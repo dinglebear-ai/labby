@@ -1,0 +1,206 @@
+ 85 files changed, 1931 insertions(+), 2649 deletions(-)
+commit 165ff92df1db1d54f051f9369e99d5251daa6039
+Author: Dale Seo <5466341+DaleSeo@users.noreply.github.com>
+Date:   Mon Sep 14 15:30:41 2026 -0400
+
+    feat(model): add ServerConfig and ClientConfig (#1266)
+
+diff --git a/crates/rmcp/src/handler/server.rs b/crates/rmcp/src/handler/server.rs
+index a6dd83b..f846724 100644
+--- a/crates/rmcp/src/handler/server.rs
++++ b/crates/rmcp/src/handler/server.rs
+@@ -334,15 +334,15 @@ macro_rules! server_handler_methods {
+         /// ```
+         /// use rmcp::{
+         ///     ErrorData as McpError, RoleServer, ServerHandler,
+-        ///     model::{InitializeRequestParams, InitializeResult, ServerInfo},
++        ///     model::{InitializeRequestParams, InitializeResult, ServerConfig},
+         ///     service::RequestContext,
+         /// };
+         ///
+         /// struct MyServer;
+         ///
+         /// impl ServerHandler for MyServer {
+-        ///     fn get_info(&self) -> ServerInfo {
+-        ///         ServerInfo::default()
++        ///     fn get_info(&self) -> ServerConfig {
++        ///         ServerConfig::default()
+         ///     }
+         ///
+         ///     async fn initialize(
+@@ -600,8 +600,8 @@ macro_rules! server_handler_methods {
+             std::future::ready(())
+         }
+ 
+-        fn get_info(&self) -> ServerInfo {
+-            InitializeResult::default()
++        fn get_info(&self) -> ServerConfig {
++            ServerConfig::default()
+         }
+ 
+         /// SEP-2663 `tasks/get`: return the current [`DetailedTask`] state.
+@@ -839,7 +839,7 @@ macro_rules! impl_server_handler_for_wrapper {
+                 (**self).on_custom_notification(notification, context)
+             }
+ 
+-            fn get_info(&self) -> ServerInfo {
++            fn get_info(&self) -> ServerConfig {
+                 (**self).get_info()
+             }
+ 
+diff --git a/crates/rmcp/src/model.rs b/crates/rmcp/src/model.rs
+index 9981658..ec7b93b 100644
+--- a/crates/rmcp/src/model.rs
++++ b/crates/rmcp/src/model.rs
+@@ -1119,26 +1119,58 @@ impl InitializeResult {
+     }
+ }
+ 
+-/// Full server initialize payload (`InitializeResult`).
++/// A server's own configuration: the protocol version, capabilities,
++/// implementation identity, and instructions it advertises to clients.
+ ///
+-/// Prefer [`InitializeResult`]. The name collides with the protocol's
+-/// `serverInfo` field, which is only the [`Implementation`] identity (#1082).
+-//
+-// The signatures this crate publishes (`ServerHandler::get_info`,
+-// `DiscoverResult::from_server_info`, and the `ClientInfo` equivalents below)
+-// keep spelling the alias. It resolves to the same type, so the spelling makes
+-// no difference to callers, but rustdoc records the name as written and the
+-// public API check treats a respelling as a changed item. Moving those
+-// signatures onto the canonical names is a documented API change and belongs in
+-// the next major release.
+-#[deprecated(note = "use `InitializeResult` instead")]
++/// This is what `ServerHandler::get_info` returns. It is an alias for
++/// [`InitializeResult`] because the same value is sent as the `initialize`
++/// response on the wire.
++///
++/// # Examples
++///
++/// ```
++/// use rmcp::model::{ServerCapabilities, ServerConfig};
++///
++/// let config = ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
++///     .with_instructions("Call `add` to sum two numbers.");
++/// assert!(config.capabilities.tools.is_some());
++/// ```
++pub type ServerConfig = InitializeResult;
++
++/// A client's own configuration: the protocol version, capabilities, and
++/// implementation identity it advertises to servers.
++///
++/// This is what `ClientHandler::get_info` returns. It is an alias for
++/// [`InitializeRequestParams`] because the same value is sent as the
++/// `initialize` request on the wire.
++///
++/// # Examples
++///
++/// ```
++/// use rmcp::model::{ClientCapabilities, ClientConfig, Implementation};
++///
++/// let config = ClientConfig::new(
++///     ClientCapabilities::builder().enable_elicitation().build(),
++///     Implementation::new("my-client", "1.0.0"),
++/// );
++/// assert!(config.capabilities.elicitation.is_some());
++/// ```
++pub type ClientConfig = InitializeRequestParams;
++
++/// Deprecated alias for [`ServerConfig`].
++///
++/// The name collides with the protocol's `serverInfo` field, which is only the
++/// [`Implementation`] identity, so `server_info.server_info` was easy to
++/// misread (#1082).
++#[deprecated(note = "use `ServerConfig` instead")]
+ pub type ServerInfo = InitializeResult;
+ 
+-/// Full client initialize params (`InitializeRequestParams`).
++/// Deprecated alias for [`ClientConfig`].
+ ///
+-/// Prefer [`InitializeRequestParams`]. The name collides with the protocol's
+-/// `clientInfo` field, which is only the [`Implementation`] identity (#1082).
+-#[deprecated(note = "use `InitializeRequestParams` instead")]
++/// The name collides with the protocol's `clientInfo` field, which is only the
++/// [`Implementation`] identity, so `client_info.client_info` was easy to
++/// misread (#1082).
++#[deprecated(note = "use `ClientConfig` instead")]
+ pub type ClientInfo = InitializeRequestParams;
+ 
+ /// Information negotiated about a server peer.
+@@ -1298,18 +1330,18 @@ impl DiscoverResult {
+         self
+     }
+ 
+-    /// Create a discovery result from the server's initialization information.
++    /// Create a discovery result from the server's configuration.
+     pub fn from_server_info(
+         supported_versions: Vec<ProtocolVersion>,
+-        server_info: ServerInfo,
++        server_config: ServerConfig,
+     ) -> Self {
+-        let InitializeResult {
++        let ServerConfig {
+             capabilities,
+             server_info,
+             instructions,
+             meta,
+             ..
+-        } = server_info;
++        } = server_config;
+         let mut result = Self {
+             result_type: ResultType::COMPLETE,
+             supported_versions,
+diff --git a/crates/rmcp/src/service/client.rs b/crates/rmcp/src/service/client.rs
+index 47eeace..7a35360 100644
+--- a/crates/rmcp/src/service/client.rs
++++ b/crates/rmcp/src/service/client.rs
+@@ -13,10 +13,10 @@ use crate::{
+     model::{
+         ArgumentInfo, CacheScope, CallToolRequest, CallToolRequestParams, CallToolResponse,
+         CallToolResult, CancelTaskParams, CancelTaskRequest, CancelledNotification,
+-        CancelledNotificationParam, ClientJsonRpcMessage, ClientNotification, ClientRequest,
+-        ClientResult, CompleteRequest, CompleteRequestParams, CompleteResult, CompletionContext,
+-        CompletionInfo, DEFAULT_MRTR_MAX_ROUNDS, DiscoverRequest, DiscoverRequestParams,
+-        DiscoverResult, ErrorData, GetExtensions, GetMeta, GetPromptRequest,
++        CancelledNotificationParam, ClientConfig, ClientJsonRpcMessage, ClientNotification,
++        ClientRequest, ClientResult, CompleteRequest, CompleteRequestParams, CompleteResult,
++        CompletionContext, CompletionInfo, DEFAULT_MRTR_MAX_ROUNDS, DiscoverRequest,
++        DiscoverRequestParams, DiscoverResult, ErrorData, GetExtensions, GetMeta, GetPromptRequest,
+         GetPromptRequestParams, GetPromptResponse, GetPromptResult, GetTaskParams, GetTaskRequest,
+         GetTaskResult, InitializeRequest, InitializeRequestParams, InitializedNotification,
+         InputRequest, InputRequiredResult, InputResponses, JsonRpcResponse, ListPromptsRequest,
+@@ -266,7 +266,7 @@ impl ServiceRole for RoleClient {
+     type PeerReq = ServerRequest;
+     type PeerResp = ServerResult;
+     type PeerNot = ServerNotification;
+-    type Info = InitializeRequestParams;
++    type Info = ClientConfig;
+     type PeerInfo = ServerPeerInfo;
+     type InitializeError = ClientInitializeError;
+     const IS_CLIENT: bool = true;
+crates/labby-gateway/src/upstream/pool/connect.rs:603:                    .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(
+crates/labby-gateway/src/upstream/pool/connect.rs:611:                    .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(
+crates/labby-gateway/src/upstream/pool/connect.rs:629:                    .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(
+crates/labby-gateway/src/upstream/pool/connect.rs:637:                    .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(
+crates/labby-gateway/src/upstream/pool/connect.rs:751:                .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(transport, lifecycle.mode())
+crates/labby-gateway/src/upstream/pool/connect.rs:756:                .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(transport, lifecycle.mode())
+crates/labby-gateway/src/upstream/pool/connect.rs:965:                    .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(
+crates/labby-gateway/src/upstream/pool/connect.rs:973:                    .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(
+crates/labby-gateway/src/upstream/pool/connect.rs:1009:                .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(worker, lifecycle.mode())
+crates/labby-gateway/src/upstream/pool/connect.rs:1014:                .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(worker, lifecycle.mode())
+crates/labby-gateway/src/upstream/pool/connect_stdio.rs:697:                .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(process, lifecycle.mode())
+crates/labby-gateway/src/upstream/pool/connect_stdio.rs:726:                .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(process, lifecycle.mode())
+crates/labby-gateway/src/upstream/pool/legacy_client.rs:4://! per-request metadata. Legacy `initialize` carries it in `ClientInfo`, so a
+crates/labby-gateway/src/upstream/pool/legacy_client.rs:135:    fn get_info(&self) -> ClientInfo {
+crates/labby-gateway/src/upstream/pool/legacy_client.rs:148:        let mut original = ClientInfo::default();
+crates/labby/src/mcp/server.rs:25:    ServerInfo, SubscriptionFilter, UpdateTaskParams,
+crates/labby/src/mcp/server.rs:510:/// `ServerInfo` without standing up a gateway manager (the flag is
+crates/labby/src/mcp/server.rs:512:fn withhold_legacy_unusable_capabilities(info: &mut ServerInfo) {
+crates/labby/src/mcp/server.rs:552:    fn get_info(&self) -> ServerInfo {
+crates/labby/src/mcp/server.rs:586:        let mut info = ServerInfo::new(capabilities);
+crates/labby/src/mcp/server.rs:1061:        ServerCapabilities, ServerInfo, cancel_tracked_request_by_token, request_cancellation_key,
+crates/labby/src/mcp/server.rs:1106:        running.peer().set_peer_info(rmcp::model::ClientInfo::new(
+crates/labby/src/mcp/server.rs:1360:        let mut info = ServerInfo::new(capabilities);
+crates/labby/src/mcp/server.rs:1396:        let mut info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build());
+crates/labby/src/mcp/server.rs:1723:            .serve_with_lifecycle(
+crates/labby/src/mcp/server.rs:1840:            .serve_with_lifecycle(

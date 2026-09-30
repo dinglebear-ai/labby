@@ -1,0 +1,83 @@
+[kache] still compiling rmcp — 30s elapsed
+[kache] still compiling labby_gateway — 30s elapsed
+   Compiling labby-gateway v2.3.2 (/Users/jmagar/workspace/labby/.worktrees/issue-771-protocol/crates/labby-gateway)
+warning: non-binding let on a type that has a destructor
+  --> crates/labby-gateway/tests/issue_771_protocol/lifecycle.rs:52:13
+   |
+52 |             let _ = timeout(DEADLINE, wire.receive()).await;
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: requested on the command line with `-W let-underscore-drop`
+help: consider binding to an unused variable to avoid immediately dropping the value
+   |
+52 |             let _unused = timeout(DEADLINE, wire.receive()).await;
+   |                  ++++++
+help: consider immediately dropping the value
+   |
+52 -             let _ = timeout(DEADLINE, wire.receive()).await;
+52 +             drop(timeout(DEADLINE, wire.receive()).await);
+   |
+
+warning: `labby-gateway` (test "issue_771_protocol") generated 1 warning (run `cargo fix --test "issue_771_protocol" -p labby-gateway` to apply 1 suggestion)
+    Finished `test` profile [unoptimized] target(s) in 7.22s
+     Running tests/issue_771_protocol.rs (target/lane-a/build/debug/deps/issue_771_protocol-6631cd4ea9a846e4)
+
+running 9 tests
+test absent_server_extension_and_removed_modern_task_methods_are_not_found ... FAILED
+test handler_failure_cannot_become_a_task_acknowledgement ... FAILED
+test http_headers::sdk_http_helpers_emit_native_task_routing_headers_without_session_ids ... FAILED
+test lifecycle::sdk_auto_discovers_first_and_falls_back_to_explicit_legacy_version ... ok
+test lifecycle::sdk_auto_does_not_downgrade_modern_protocol_errors ... FAILED
+test task_result_discriminators_and_status_payloads_are_flat ... ok
+test tasks_advertisement_uses_sdk_extension_helpers ... ok
+test tasks_capabilities_are_enforced_on_each_request_and_subscription ... FAILED
+test immediate_get_and_cooperative_acknowledgements_use_modern_wire_shapes ... FAILED
+
+failures:
+
+---- absent_server_extension_and_removed_modern_task_methods_are_not_found stdout ----
+
+thread 'absent_server_extension_and_removed_modern_task_methods_are_not_found' (263036837) panicked at crates/labby-gateway/tests/issue_771_protocol/fixture.rs:171:37:
+called `Result::unwrap()` on an `Err` value: Elapsed(())
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- handler_failure_cannot_become_a_task_acknowledgement stdout ----
+
+thread 'handler_failure_cannot_become_a_task_acknowledgement' (263036838) panicked at crates/labby-gateway/tests/issue_771_protocol/fixture.rs:171:37:
+called `Result::unwrap()` on an `Err` value: Elapsed(())
+
+---- http_headers::sdk_http_helpers_emit_native_task_routing_headers_without_session_ids stdout ----
+
+thread 'http_headers::sdk_http_helpers_emit_native_task_routing_headers_without_session_ids' (263038160) panicked at /kache/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/reqwest-0.13.3/src/async_impl/client.rs:2461:5:
+No provider set
+
+---- lifecycle::sdk_auto_does_not_downgrade_modern_protocol_errors stdout ----
+
+thread 'lifecycle::sdk_auto_does_not_downgrade_modern_protocol_errors' (263038168) panicked at crates/labby-gateway/tests/issue_771_protocol/lifecycle.rs:120:9:
+assertion failed: matches!(result, Err(ClientInitializeError::JsonRpcError(ref error)) if
+    error.code == code)
+
+---- tasks_capabilities_are_enforced_on_each_request_and_subscription stdout ----
+
+thread 'tasks_capabilities_are_enforced_on_each_request_and_subscription' (263038177) panicked at crates/labby-gateway/tests/issue_771_protocol.rs:129:9:
+assertion `left == right` failed: subscriptions/listen: {"jsonrpc":"2.0","id":6,"error":{"code":-32601,"message":"subscriptions/listen"}}
+  left: Number(-32601)
+ right: -32021
+
+---- immediate_get_and_cooperative_acknowledgements_use_modern_wire_shapes stdout ----
+
+thread 'immediate_get_and_cooperative_acknowledgements_use_modern_wire_shapes' (263038163) panicked at crates/labby-gateway/tests/issue_771_protocol/fixture.rs:171:37:
+called `Result::unwrap()` on an `Err` value: Elapsed(())
+
+
+failures:
+    absent_server_extension_and_removed_modern_task_methods_are_not_found
+    handler_failure_cannot_become_a_task_acknowledgement
+    http_headers::sdk_http_helpers_emit_native_task_routing_headers_without_session_ids
+    immediate_get_and_cooperative_acknowledgements_use_modern_wire_shapes
+    lifecycle::sdk_auto_does_not_downgrade_modern_protocol_errors
+    tasks_capabilities_are_enforced_on_each_request_and_subscription
+
+test result: FAILED. 3 passed; 6 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.01s
+
+error: test failed, to rerun pass `-p labby-gateway --test issue_771_protocol`

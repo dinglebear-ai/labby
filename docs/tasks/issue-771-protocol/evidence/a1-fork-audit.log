@@ -1,0 +1,399 @@
+b19cfc03025047153fa283c0064c651b6e2f623e
+fd7811fdaa9fefa1c8034534b4d7a31c97204f89
+3e636cab26c013eca5131103c03d20237f12c4df
+> b19cfc0 fix(rmcp): bound unix socket response bodies
+< fd7811f chore: release v3.4.0 (#1258)
+< 0550e13 fix(rmcp): use ServerConfig in cancellation test (#1273)
+< b037c0f fix(rmcp): route peer cancellation by lifecycle (#1262)
+< d481cb0 fix: run first pre-init request in service loop (#1263)
+< 47fcdf4 fix(auth): let url origin decide prm discovery (#1264)
+< 165ff92 feat(model): add ServerConfig and ClientConfig (#1266)
+< fbfc5cc ci: add OpenSSF Scorecard analysis (#1214)
+> 68e6f4a fix(rmcp): harden typed response compatibility
+> 0e1184b feat: preserve typed custom responses on rmcp 3.3 and enforce Origin validation
+< 3075dc9 fix(model): deprecate ServerInfo and ClientInfo aliases (#1156)
+< a5d1169 fix(auth): ignore non-metadata JSON when probing for protected resource metadata (#1204)
+< 4fa84a5 fix: do not treat malformed JSON 200 as Accepted for requests (#1208)
+< b86995a fix(streamable-http-server): map handler-generated HeaderMismatch to HTTP 400 (#1259)
+< e27c5d1 fix(http): enforce Origin validation semantics (#1192)
+> 0665dca feat(rmcp): preserve typed custom request responses (#1)
+ crates/rmcp/CHANGELOG.md                           |  11 +
+ crates/rmcp/Cargo.toml                             |   2 +-
+ crates/rmcp/src/service.rs                         | 243 ++++++++--
+ crates/rmcp/src/service/client.rs                  |  10 +-
+ crates/rmcp/src/service/server.rs                  |  10 +-
+ crates/rmcp/src/transport.rs                       |  56 ++-
+ crates/rmcp/src/transport/async_rw.rs              |  22 +-
+ crates/rmcp/src/transport/child_process.rs         |  14 +-
+ .../common/auth/streamable_http_client.rs          |   4 +
+ .../rmcp/src/transport/common/client_side_sse.rs   |   7 +-
+ .../common/reqwest/streamable_http_client.rs       |  11 +-
+ crates/rmcp/src/transport/common/unix_socket.rs    |  59 ++-
+ .../rmcp/src/transport/streamable_http_client.rs   | 214 +++++++--
+ .../src/transport/streamable_http_server/tower.rs  |  24 +-
+ crates/rmcp/src/transport/worker.rs                |  90 +++-
+ crates/rmcp/tests/support/typed_stdio_server.sh    |  20 +
+ crates/rmcp/tests/test_custom_headers.rs           |  91 +++-
+ crates/rmcp/tests/test_custom_request.rs           | 534 ++++++++++++++++++++-
+ .../tests/test_streamable_http_json_response.rs    |  78 ++-
+ crates/rmcp/tests/test_typed_child_process.rs      |  54 +++
+ crates/rmcp/tests/test_unix_socket_transport.rs    | 132 +++++
+ 21 files changed, 1553 insertions(+), 133 deletions(-)
+diff --git a/crates/rmcp/src/transport/common/unix_socket.rs b/crates/rmcp/src/transport/common/unix_socket.rs
+index 688c9ad..cb2f366 100644
+--- a/crates/rmcp/src/transport/common/unix_socket.rs
++++ b/crates/rmcp/src/transport/common/unix_socket.rs
+@@ -1,6 +1,6 @@
+ use std::{borrow::Cow, collections::HashMap, sync::Arc};
+ 
+-use bytes::Bytes;
++use bytes::{Bytes, BytesMut};
+ use futures::stream::BoxStream;
+ use http::{HeaderName, HeaderValue, Method, Request, StatusCode, header::WWW_AUTHENTICATE};
+ use http_body_util::{BodyExt, Full};
+@@ -10,7 +10,7 @@ use sse_stream::Sse;
+ use tokio::net::UnixStream;
+ 
+ use crate::{
+-    model::{ClientJsonRpcMessage, ServerJsonRpcMessage},
++    model::ClientJsonRpcMessage,
+     transport::{
+         common::{
+             client_side_sse::{DEFAULT_MAX_SSE_EVENT_SIZE, bounded_sse_stream},
+@@ -34,6 +34,8 @@ pub enum UnixSocketError {
+     Http(#[from] http::Error),
+     #[error("JSON error: {0}")]
+     Json(#[from] serde_json::Error),
++    #[error("response_too_large: received more than {max_bytes} bytes")]
++    ResponseTooLarge { max_bytes: usize },
+ }
+ 
+ impl From<UnixSocketError> for StreamableHttpError<UnixSocketError> {
+@@ -66,6 +68,7 @@ impl From<UnixSocketError> for StreamableHttpError<UnixSocketError> {
+ pub struct UnixSocketHttpClient {
+     socket_path: Arc<str>,
+     host_header: HeaderValue,
++    max_response_bytes: Option<usize>,
+ }
+ 
+ impl UnixSocketHttpClient {
+@@ -97,8 +100,16 @@ impl UnixSocketHttpClient {
+         Self {
+             socket_path: resolve_socket_path(socket_path).into(),
+             host_header,
++            max_response_bytes: None,
+         }
+     }
++
++    /// Limit buffered non-SSE response bodies read from the socket.
++    #[must_use]
++    pub fn with_max_response_bytes(mut self, max_response_bytes: usize) -> Self {
++        self.max_response_bytes = Some(max_response_bytes);
++        self
++    }
+ }
+ 
+ /// Converts the `@`-prefixed abstract socket notation to the null-byte prefix
+@@ -149,6 +160,25 @@ async fn send_http_request(
+     Ok(sender.send_request(request).await?)
+ }
+ 
++async fn collect_response_body(
++    mut body: Incoming,
++    max_response_bytes: Option<usize>,
++) -> Result<Bytes, UnixSocketError> {
++    let mut buffer = BytesMut::new();
++    while let Some(frame) = body.frame().await {
++        let frame = frame?;
++        if let Ok(data) = frame.into_data() {
++            if let Some(max_bytes) = max_response_bytes
++                && buffer.len().saturating_add(data.len()) > max_bytes
++            {
++                return Err(UnixSocketError::ResponseTooLarge { max_bytes });
++            }
++            buffer.extend_from_slice(&data);
++        }
++    }
++    Ok(buffer.freeze())
++}
++
+ /// Applies custom headers to a request builder, rejecting reserved headers.
+ fn apply_custom_headers(
+     mut builder: http::request::Builder,
+@@ -164,6 +194,10 @@ fn apply_custom_headers(
+ impl StreamableHttpClient for UnixSocketHttpClient {
+     type Error = UnixSocketError;
+ 
++    fn preserves_raw_responses() -> bool {
++        true
++    }
++
+     async fn post_message(
+         &self,
+         uri: Arc<str>,
+@@ -268,12 +302,10 @@ impl StreamableHttpClient for UnixSocketHttpClient {
+         }
+ 
+         if !status.is_success() {
+-            let body = response
+-                .into_body()
+-                .collect()
++            let body = collect_response_body(response.into_body(), self.max_response_bytes)
+                 .await
+-                .map(|c| String::from_utf8_lossy(&c.to_bytes()).into_owned())
+-                .unwrap_or_else(|_| "<failed to read response body>".to_owned());
++                .map_err(StreamableHttpError::Client)?;
++            let body = String::from_utf8_lossy(&body).into_owned();
+             if let Some(response) =
+                 legacy_discover_response(&message, session_was_attached, status, &body)
+             {
+@@ -315,30 +347,19 @@ impl StreamableHttpClient for UnixSocketHttpClient {
+                 Ok(StreamableHttpPostResponse::Sse(sse_stream, session_id))
+             }
+             Some(ref ct) if ct.as_bytes().starts_with(JSON_MIME_TYPE.as_bytes()) => {
+-                let body = response
+-                    .into_body()
+-                    .collect()
++                let body = collect_response_body(response.into_body(), self.max_response_bytes)
+                     .await
+-                    .map_err(|e| StreamableHttpError::Client(UnixSocketError::Hyper(e)))?
+-                    .to_bytes();
+-                match serde_json::from_slice::<ServerJsonRpcMessage>(&body) {
+-                    Ok(parsed) => Ok(StreamableHttpPostResponse::Json(parsed, session_id)),
+-                    Err(e)
+-                        if matches!(
+-                            message,
+-                            ClientJsonRpcMessage::Notification(_)
+-                                | ClientJsonRpcMessage::Response(_)
+-                                | ClientJsonRpcMessage::Error(_)
+-                        ) =>
+-                    {
++                    .map_err(StreamableHttpError::Client)?;
++                match serde_json::from_slice::<crate::service::RawRxJsonRpcMessage<crate::RoleClient>>(
++                    &body,
++                ) {
++                    Ok(message) => Ok(StreamableHttpPostResponse::RawJson(message, session_id)),
++                    Err(e) => {
+                         tracing::warn!(
+                             "could not parse JSON response as ServerJsonRpcMessage, treating as accepted: {e}"
+                         );
+                         Ok(StreamableHttpPostResponse::Accepted)
+                     }
+-                    Err(e) => Err(StreamableHttpError::UnexpectedServerResponse(Cow::Owned(
+-                        json_rpc_parse_error_message(&e, &body),
+-                    ))),
+                 }
+             }
+             _ => Err(StreamableHttpError::UnexpectedContentType(
+diff --git a/crates/rmcp/src/transport/streamable_http_server/tower.rs b/crates/rmcp/src/transport/streamable_http_server/tower.rs
+index 1b53820..59ef1a0 100644
+--- a/crates/rmcp/src/transport/streamable_http_server/tower.rs
++++ b/crates/rmcp/src/transport/streamable_http_server/tower.rs
+@@ -28,7 +28,7 @@ use crate::{
+         ClientCapabilities, ClientJsonRpcMessage, ClientNotification, ClientRequest, ErrorCode,
+         ErrorData, GetExtensions, GetMeta, Implementation, InitializeRequest,
+         InitializeRequestParams, InitializedNotification, JsonObject, JsonRpcError,
+-        ProtocolVersion, RequestId, ServerConfig, ServerJsonRpcMessage, ServerResult,
++        ProtocolVersion, RequestId, ServerInfo, ServerJsonRpcMessage, ServerResult,
+     },
+     serve_server,
+     service::{
+@@ -110,18 +110,13 @@ pub struct StreamableHttpServerConfig {
+     pub allowed_hosts: Vec<String>,
+     /// Allowed browser origins for inbound `Origin` validation.
+     ///
+-    /// Defaults to an empty list, which disables Origin validation for backward
+-    /// compatibility. A non-empty list enables validation. Requests carrying
+-    /// an `Origin` header must match per RFC 6454 `(scheme, host, port)`;
+-    /// missing-`Origin` requests still pass. Entries must include a scheme;
+-    /// `"null"` matches the browser's `Origin: null`.
+-    ///
+-    /// Call [`StreamableHttpServerConfig::enforce_origin_validation`] to enable
+-    /// validation with an empty list, rejecting every present Origin value.
++    /// Defaults to an empty list, which disables Origin validation. When
++    /// non-empty, requests carrying an `Origin` header must match per RFC 6454
++    /// `(scheme, host, port)`; missing-`Origin` requests still pass. Entries
++    /// must include a scheme; `"null"` matches the browser's `Origin: null`.
+     /// examples:
+     ///     allowed_origins = ["https://app.example.com", "http://localhost:8080"]
+     pub allowed_origins: Vec<String>,
+-    validate_empty_origin_allowlist: bool,
+     /// Optional external session store for cross-instance recovery.
+     ///
+     /// When set, [`SessionState`] (the client's `initialize` parameters) is
+@@ -194,7 +189,6 @@ impl Default for StreamableHttpServerConfig {
+             cancellation_token: CancellationToken::new(),
+             allowed_hosts: vec!["localhost".into(), "127.0.0.1".into(), "::1".into()],
+             allowed_origins: vec![],
+-            validate_empty_origin_allowlist: false,
+             session_store: None,
+             max_request_body_bytes: DEFAULT_MAX_REQUEST_BODY_BYTES,
+             stateless_protocol_metadata_required: false,
+@@ -222,15 +216,9 @@ impl StreamableHttpServerConfig {
+         self.allowed_origins = allowed_origins.into_iter().map(Into::into).collect();
+         self
+     }
+-    /// Enable Origin validation, including when the allowed Origins list is empty.
+-    pub fn enforce_origin_validation(mut self) -> Self {
+-        self.validate_empty_origin_allowlist = true;
+-        self
+-    }
+-    /// Disable Origin validation, allowing requests with any `Origin` header.
++    /// Disable Origin validation, reverting to the default ignore-Origin behavior.
+     pub fn disable_allowed_origins(mut self) -> Self {
+         self.allowed_origins.clear();
+-        self.validate_empty_origin_allowlist = false;
+         self
+     }
+     pub fn with_sse_keep_alive(mut self, duration: Option<Duration>) -> Self {
+@@ -367,7 +355,7 @@ impl<S: Service<RoleServer>> Service<RoleServer> for NegotiatingStatelessHttpSer
+         self.0.handle_notification(notification, context).await
+     }
+ 
+-    fn get_info(&self) -> ServerConfig {
++    fn get_info(&self) -> ServerInfo {
+         self.0.get_info()
+     }
+ 
+@@ -644,52 +632,12 @@ fn jsonrpc_http_status(message: &ServerJsonRpcMessage) -> http::StatusCode {
+     match error.error.code {
+         ErrorCode::UNSUPPORTED_PROTOCOL_VERSION
+         | ErrorCode::MISSING_REQUIRED_CLIENT_CAPABILITY
+-        | ErrorCode::INVALID_PARAMS
+-        | ErrorCode::HEADER_MISMATCH => http::StatusCode::BAD_REQUEST,
++        | ErrorCode::INVALID_PARAMS => http::StatusCode::BAD_REQUEST,
+         ErrorCode::METHOD_NOT_FOUND => http::StatusCode::NOT_FOUND,
+         _ => http::StatusCode::OK,
+     }
+ }
+ 
+-#[cfg(test)]
+-mod jsonrpc_http_status_tests {
+-    use super::*;
+-
+-    fn error_message(code: ErrorCode) -> ServerJsonRpcMessage {
+-        ServerJsonRpcMessage::Error(JsonRpcError::new(
+-            Some(RequestId::Number(1)),
+-            ErrorData::new(code, "test error", None),
+-        ))
+-    }
+-
+-    /// A handler returning `ErrorData::header_mismatch(..)` on the modern per-request path
+-    /// must map to HTTP 400, not the default HTTP 200. Regression test for
+-    /// https://github.com/modelcontextprotocol/rust-sdk/issues/1225
+-    #[test]
+-    fn header_mismatch_maps_to_bad_request() {
+-        assert_eq!(
+-            jsonrpc_http_status(&error_message(ErrorCode::HEADER_MISMATCH)),
+-            http::StatusCode::BAD_REQUEST
+-        );
+-    }
+-
+-    #[test]
+-    fn method_not_found_maps_to_not_found() {
+-        assert_eq!(
+-            jsonrpc_http_status(&error_message(ErrorCode::METHOD_NOT_FOUND)),
+-            http::StatusCode::NOT_FOUND
+-        );
+-    }
+-
+-    #[test]
+-    fn unmapped_error_defaults_to_ok() {
+-        assert_eq!(
+-            jsonrpc_http_status(&error_message(ErrorCode::INTERNAL_ERROR)),
+-            http::StatusCode::OK
+-        );
+-    }
+-}
+-
+ fn jsonrpc_message_response(
+     message: ServerJsonRpcMessage,
+     map_protocol_status: bool,
+@@ -843,17 +791,29 @@ fn parse_origin_value(value: &str) -> Option<NormalizedOrigin> {
+     if value.eq_ignore_ascii_case("null") {
+         return Some(NormalizedOrigin::Null);
+     }
++    let (_, serialized_authority) = value.split_once("://")?;
++    if serialized_authority.contains(['/', '?', '#', '@']) {
++        return None;
++    }
+     let uri = http::Uri::try_from(value).ok()?;
+     let scheme = uri.scheme_str()?.to_ascii_lowercase();
+     let authority = uri.authority()?;
++    let port = authority.port_u16().or(match scheme.as_str() {
++        "http" => Some(80),
++        "https" => Some(443),
++        _ => None,
++    });
+     Some(NormalizedOrigin::Tuple {
+         scheme,
+         host: normalize_host(authority.host()),
+-        port: authority.port_u16(),
++        port,
+     })
+ }
+ 
+ fn origin_is_allowed(origin: &NormalizedOrigin, allowed_origins: &[String]) -> bool {
++    if allowed_origins.is_empty() {
++        return true;
++    }
+     allowed_origins
+         .iter()
+         .filter_map(|raw| parse_origin_value(raw))
+@@ -870,7 +830,7 @@ fn origin_is_allowed(origin: &NormalizedOrigin, allowed_origins: &[String]) -> b
+                     host: o_host,
+                     port: o_port,
+                 },
+-            ) => a_scheme == o_scheme && a_host == o_host && (a_port.is_none() || a_port == o_port),
++            ) => a_scheme == o_scheme && a_host == o_host && a_port == o_port,
+             _ => false,
+         })
+ }
+@@ -925,20 +885,22 @@ fn validate_dns_rebinding_headers(
+         );
+         return Err(forbidden_response("Forbidden: Host header is not allowed").into());
+     }
+-    validate_origin_header(headers, config)?;
++    validate_origin_header(headers, &config.allowed_origins)?;
+     Ok(())
+ }
+ 
+-fn validate_origin_header(
+-    headers: &HeaderMap,
+-    config: &StreamableHttpServerConfig,
+-) -> HttpResult<()> {
+-    if !config.validate_empty_origin_allowlist && config.allowed_origins.is_empty() {
++fn validate_origin_header(headers: &HeaderMap, allowed_origins: &[String]) -> HttpResult<()> {
++    if allowed_origins.is_empty() {
+         return Ok(());
+     }
+-    let Some(origin_header) = headers.get(http::header::ORIGIN) else {
++    let mut origin_headers = headers.get_all(http::header::ORIGIN).iter();
++    let Some(origin_header) = origin_headers.next() else {
+         return Ok(());
+     };
++    if origin_headers.next().is_some() {
++        tracing::warn!("rejected request with multiple Origin headers");
++        return Err(forbidden_response("Forbidden: Multiple Origin headers").into());
++    }
+     let origin_str = origin_header
+         .to_str()
+         .inspect_err(|_| {
+@@ -952,7 +914,7 @@ fn validate_origin_header(
+         );
+         forbidden_response("Forbidden: Invalid Origin header")
+     })?;
+-    if !origin_is_allowed(&origin, &config.allowed_origins) {
++    if !origin_is_allowed(&origin, allowed_origins) {
+         tracing::warn!(
+             origin = ?origin,
+             "rejected request with disallowed Origin header (possible cross-origin attack)",
+@@ -2111,7 +2073,7 @@ where
+         Ok(accepted_response())
+     }
+ 
+-    /// Build a `InitializeRequestParams` (peer_info) for a stateless request so that
++    /// Build a `ClientInfo` (peer_info) for a stateless request so that
+     /// `context.protocol_version()` returns the correct value inside handlers.
+     ///
+     /// `serve_directly` skips the MCP handshake and accepts `peer_info = None`,

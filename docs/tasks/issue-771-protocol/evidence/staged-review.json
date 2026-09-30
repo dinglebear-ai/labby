@@ -1,0 +1,28 @@
+{
+  "label": "staged-review",
+  "command": [
+    "bash",
+    "-lc",
+    "set -e; python3 scripts/check-product-docs.py; python3 scripts/check-doc-links.py; git diff --cached --check; git diff --check; git diff --quiet HEAD -- Cargo.toml Cargo.lock crates/labby-gateway/src crates/labby/src; git check-attr whitespace text -- docs/tasks/issue-771-protocol/evidence/a1-fork-audit.log crates/labby-gateway/tests/issue_771_protocol.rs"
+  ],
+  "cwd": "/Users/jmagar/workspace/labby/.worktrees/issue-771-protocol",
+  "head": "b42818f256968466c7d85828aa42c1cd8523efad",
+  "environment_overrides": {
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_TARGET_DIR": "/Users/jmagar/workspace/labby/.worktrees/issue-771-protocol/target/lane-a/build",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "CARGO_TERM_COLOR": "never",
+    "RUSTUP_TOOLCHAIN": "1.97.1"
+  },
+  "started_at": "2026-09-30T06:36:19.792612+00:00",
+  "finished_at": "2026-09-30T06:36:22.502593+00:00",
+  "elapsed_seconds": 2.709,
+  "timeout_seconds": 60,
+  "minimum_free_gib": 3,
+  "exit_code": 0,
+  "stopped_by_capture": null,
+  "log": "staged-review.log",
+  "log_sha256": "2c698dbbc87f1337cee296abc5fa5ca431c663f34981cfe48f2ae784cb1216b1"
+}

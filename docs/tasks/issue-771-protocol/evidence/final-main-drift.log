@@ -1,0 +1,42 @@
+b42818f256968466c7d85828aa42c1cd8523efad
+138ef902dc1842daf883a6e7710b140fbfaf53c0
+138ef902d feat(gateway): durable task acknowledgement and opaque routing IDs (#771) (#848)
+e756673f4 fix: preserve notification drafts, fence refresh races, and deduplicate bulk snippets (#847)
+ .../(admin)/settings/notifications/page.test.tsx   | 121 ++++++-
+ .../app/(admin)/settings/notifications/page.tsx    |  28 +-
+ crates/labby-gateway/src/gateway/manager.rs        |   1 +
+ crates/labby-gateway/src/gateway/manager/core.rs   |  19 ++
+ crates/labby-gateway/src/upstream/pool.rs          |  20 +-
+ .../src/upstream/pool/capability_call.rs           |   7 +-
+ crates/labby-gateway/src/upstream/pool/relay.rs    |  33 +-
+ .../labby-gateway/src/upstream/pool/relay_cache.rs |  12 +-
+ .../src/upstream/pool/task_registration.rs         | 148 +++++++++
+ .../src/upstream/pool/task_registration_tests.rs   | 242 ++++++++++++++
+ .../src/upstream/pool/task_route_record.rs         | 146 +++++++++
+ .../src/upstream/pool/task_route_schema.rs         | 217 +++++++++++++
+ .../src/upstream/pool/task_route_store.rs          | 252 ++++++++++++++
+ .../src/upstream/pool/task_route_store_tests.rs    | 274 ++++++++++++++++
+ crates/labby-gateway/src/upstream/pool/tasks.rs    | 361 ++++++++++++---------
+ .../src/upstream/pool/tasks_review_tests.rs        | 306 +++++++++++++++++
+ crates/labby/src/cli/gateway.rs                    |  15 +
+ crates/labby/src/cli/serve.rs                      |  19 ++
+ crates/labby/src/cli/snippets.rs                   |  57 +++-
+ crates/labby/src/config.rs                         |   4 +-
+ crates/labby/src/config/paths.rs                   |   3 +
+ crates/labby/src/runtime_health.rs                 |   2 +
+ docs/dev/UPSTREAM_INTERNALS.md                     |   8 +-
+ docs/surfaces/MCP_CONFORMANCE.md                   |  50 ++-
+ scripts/ci/test-incus-contract.py                  |  19 ++
+ 25 files changed, 2144 insertions(+), 220 deletions(-)
+crates/labby-gateway/src/upstream/pool.rs
+crates/labby-gateway/src/upstream/pool/capability_call.rs
+crates/labby-gateway/src/upstream/pool/relay.rs
+crates/labby-gateway/src/upstream/pool/relay_cache.rs
+crates/labby-gateway/src/upstream/pool/task_registration.rs
+crates/labby-gateway/src/upstream/pool/task_registration_tests.rs
+crates/labby-gateway/src/upstream/pool/task_route_record.rs
+crates/labby-gateway/src/upstream/pool/task_route_schema.rs
+crates/labby-gateway/src/upstream/pool/task_route_store.rs
+crates/labby-gateway/src/upstream/pool/task_route_store_tests.rs
+crates/labby-gateway/src/upstream/pool/tasks.rs
+crates/labby-gateway/src/upstream/pool/tasks_review_tests.rs

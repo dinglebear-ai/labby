@@ -1,0 +1,38 @@
+{
+  "label": "official34-fixtures",
+  "command": [
+    "rustup",
+    "run",
+    "1.97.1",
+    "cargo",
+    "test",
+    "--manifest-path",
+    "target/lane-a/harness-official34/Cargo.toml",
+    "--locked",
+    "--offline",
+    "--test",
+    "issue_771_protocol",
+    "--",
+    "--test-threads=2"
+  ],
+  "cwd": "/Users/jmagar/workspace/labby/.worktrees/issue-771-protocol",
+  "head": "b42818f256968466c7d85828aa42c1cd8523efad",
+  "environment_overrides": {
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_TARGET_DIR": "/Users/jmagar/workspace/labby/.worktrees/issue-771-protocol/target/lane-a/build",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "CARGO_TERM_COLOR": "never",
+    "RUSTUP_TOOLCHAIN": "1.97.1"
+  },
+  "started_at": "2026-09-30T06:15:00.285333+00:00",
+  "finished_at": "2026-09-30T06:16:42.621957+00:00",
+  "elapsed_seconds": 102.336,
+  "timeout_seconds": 600,
+  "minimum_free_gib": 3,
+  "exit_code": 0,
+  "stopped_by_capture": null,
+  "log": "official34-fixtures.log",
+  "log_sha256": "51c99c22342113c0a0252ba729110fd312e0bc08c9b4deb97c6b6dafd1178105"
+}

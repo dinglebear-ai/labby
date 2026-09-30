@@ -1,0 +1,27 @@
+{
+  "label": "full-docs-check",
+  "command": [
+    "just",
+    "docs-check"
+  ],
+  "cwd": "/Users/jmagar/workspace/labby/.worktrees/issue-771-protocol",
+  "head": "b42818f256968466c7d85828aa42c1cd8523efad",
+  "environment_overrides": {
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_TARGET_DIR": "/Users/jmagar/workspace/labby/.worktrees/issue-771-protocol/target/lane-a/build",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "CARGO_TERM_COLOR": "never",
+    "RUSTUP_TOOLCHAIN": "1.97.1"
+  },
+  "started_at": "2026-09-30T06:19:00.293739+00:00",
+  "finished_at": "2026-09-30T06:23:29.921237+00:00",
+  "elapsed_seconds": 269.627,
+  "timeout_seconds": 300,
+  "minimum_free_gib": 3,
+  "exit_code": 0,
+  "stopped_by_capture": null,
+  "log": "full-docs-check.log",
+  "log_sha256": "363a475484c80d18e7a36e5d46f963d70f18085e758f0b7d7b8a81dcd884edfb"
+}

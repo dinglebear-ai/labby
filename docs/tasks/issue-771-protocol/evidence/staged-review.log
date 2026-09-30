@@ -1,0 +1,6 @@
+product docs check passed: 188 canonical docs, 17 maintained planning/feature docs; service indexes and instruction symlinks valid
+documentation link check passed: 1094 local link(s) and 65 Markdown fragment(s) verified
+docs/tasks/issue-771-protocol/evidence/a1-fork-audit.log: whitespace: unset
+docs/tasks/issue-771-protocol/evidence/a1-fork-audit.log: text: unset
+crates/labby-gateway/tests/issue_771_protocol.rs: whitespace: unspecified
+crates/labby-gateway/tests/issue_771_protocol.rs: text: unspecified

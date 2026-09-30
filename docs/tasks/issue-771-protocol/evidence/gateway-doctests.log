@@ -1,0 +1,9 @@
+[kache] still compiling rmcp — 30s elapsed
+[kache] still compiling labby_gateway — 30s elapsed
+    Finished `test` profile [unoptimized] target(s) in 0.72s
+   Doc-tests labby_gateway
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

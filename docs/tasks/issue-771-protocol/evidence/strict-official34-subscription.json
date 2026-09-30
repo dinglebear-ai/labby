@@ -1,0 +1,31 @@
+{
+  "label": "strict-official34-subscription",
+  "command": [
+    "env",
+    "LABBY_LANE_A_REQUIRE_TASK_SUBSCRIPTIONS=1",
+    "target/lane-a/build/debug/deps/issue_771_protocol-f90e8e1fdd653358",
+    "known_sdk_gap_raw_task_subscription",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "cwd": "/Users/jmagar/workspace/labby/.worktrees/issue-771-protocol",
+  "head": "b42818f256968466c7d85828aa42c1cd8523efad",
+  "environment_overrides": {
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_TARGET_DIR": "/Users/jmagar/workspace/labby/.worktrees/issue-771-protocol/target/lane-a/build",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "CARGO_TERM_COLOR": "never",
+    "RUSTUP_TOOLCHAIN": "1.97.1"
+  },
+  "started_at": "2026-09-30T06:17:27.105768+00:00",
+  "finished_at": "2026-09-30T06:17:27.514062+00:00",
+  "elapsed_seconds": 0.406,
+  "timeout_seconds": 30,
+  "minimum_free_gib": 3,
+  "exit_code": 101,
+  "stopped_by_capture": null,
+  "log": "strict-official34-subscription.log",
+  "log_sha256": "c904c4de6c2670491878f7339111a4e44c0c4543925b965ba0eb0c11b146f60a"
+}

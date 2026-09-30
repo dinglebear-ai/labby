@@ -1,0 +1,36 @@
+{
+  "label": "gateway-doctests",
+  "command": [
+    "rustup",
+    "run",
+    "1.97.1",
+    "cargo",
+    "test",
+    "-p",
+    "labby-gateway",
+    "--all-features",
+    "--locked",
+    "--offline",
+    "--doc"
+  ],
+  "cwd": "/Users/jmagar/workspace/labby/.worktrees/issue-771-protocol",
+  "head": "b42818f256968466c7d85828aa42c1cd8523efad",
+  "environment_overrides": {
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_TARGET_DIR": "/Users/jmagar/workspace/labby/.worktrees/issue-771-protocol/target/lane-a/build",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "CARGO_TERM_COLOR": "never",
+    "RUSTUP_TOOLCHAIN": "1.97.1"
+  },
+  "started_at": "2026-09-30T06:23:30.267793+00:00",
+  "finished_at": "2026-09-30T06:23:32.729896+00:00",
+  "elapsed_seconds": 2.461,
+  "timeout_seconds": 120,
+  "minimum_free_gib": 3,
+  "exit_code": 0,
+  "stopped_by_capture": null,
+  "log": "gateway-doctests.log",
+  "log_sha256": "9ae74cc26bebcd7ffa4cdfaf07beb42637826d3310daafde34d69b6dc424ee4e"
+}

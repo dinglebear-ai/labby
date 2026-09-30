@@ -1,0 +1,34 @@
+[kache] still compiling rmcp — 30s elapsed
+[kache] still compiling labby_gateway — 30s elapsed
+   Compiling labby-gateway v2.3.2 (/Users/jmagar/workspace/labby/.worktrees/issue-771-protocol/crates/labby-gateway)
+    Finished `test` profile [unoptimized] target(s) in 3.86s
+     Running tests/issue_771_protocol.rs (target/lane-a/build/debug/deps/issue_771_protocol-6631cd4ea9a846e4)
+
+running 11 tests
+test handler_failure_cannot_become_a_task_acknowledgement ... ok
+test absent_server_extension_and_removed_modern_task_methods_are_not_found ... ok
+test immediate_get_and_cooperative_acknowledgements_use_modern_wire_shapes ... ok
+test lifecycle::sdk_auto_discovers_first_and_falls_back_to_explicit_legacy_version ... ok
+test http_headers::sdk_http_helpers_emit_native_task_routing_headers_without_session_ids ... ok
+test lifecycle::sdk_auto_does_not_downgrade_modern_protocol_errors ... ok
+test subscription_gap::known_sdk_gap_subscription_filter_discards_task_ids ... ok
+test task_result_discriminators_and_status_payloads_are_flat ... ok
+test tasks_advertisement_uses_sdk_extension_helpers ... ok
+test tasks_capabilities_are_enforced_on_each_task_request ... ok
+test subscription_gap::known_sdk_gap_raw_task_subscription_is_acknowledged_without_capability ... FAILED
+
+failures:
+
+---- subscription_gap::known_sdk_gap_raw_task_subscription_is_acknowledged_without_capability stdout ----
+
+thread 'subscription_gap::known_sdk_gap_raw_task_subscription_is_acknowledged_without_capability' (263636660) panicked at crates/labby-gateway/tests/issue_771_protocol/subscription_gap.rs:42:10:
+called `Result::unwrap()` on an `Err` value: Elapsed(())
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    subscription_gap::known_sdk_gap_raw_task_subscription_is_acknowledged_without_capability
+
+test result: FAILED. 10 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.02s
+
+error: test failed, to rerun pass `-p labby-gateway --test issue_771_protocol`

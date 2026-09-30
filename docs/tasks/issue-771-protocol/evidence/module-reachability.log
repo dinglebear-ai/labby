@@ -1,0 +1,30 @@
+cargo test -p xtask module_reachability
+    Blocking waiting for file lock on build directory
+   Compiling libc v0.2.186
+   Compiling getrandom v0.3.4
+   Compiling rustix v1.1.4
+   Compiling errno v0.3.14
+   Compiling cpufeatures v0.3.0
+   Compiling digest v0.11.3
+   Compiling sha2 v0.11.0
+   Compiling once_cell v1.21.4
+   Compiling xtask v2.3.2 (/Users/jmagar/workspace/labby/.worktrees/issue-771-protocol/crates/xtask)
+   Compiling tempfile v3.27.0
+    Finished `test` profile [unoptimized] target(s) in 4.78s
+     Running unittests src/main.rs (target/lane-a/build/debug/deps/xtask-69bf48795c87f278)
+
+running 5 tests
+test module_reachability::tests::inline_modules_and_path_attributes_are_not_false_positives ... ok
+test module_reachability::tests::a_dropped_module_declaration_is_detected ... ok
+test module_reachability::tests::a_directory_with_no_parent_module_file_is_itself_an_orphan ... ok
+test module_reachability::tests::cargo_discovered_bin_directories_are_not_orphans ... ok
+test module_reachability::tests::every_source_file_is_reachable_from_a_module_declaration ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.16s
+
+     Running tests/proxy_verify_cli.rs (target/lane-a/build/debug/deps/proxy_verify_cli-b2b6cd89ec01cb15)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+

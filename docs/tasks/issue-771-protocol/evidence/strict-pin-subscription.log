@@ -1,0 +1,18 @@
+
+running 1 test
+test subscription_gap::known_sdk_gap_raw_task_subscription_is_acknowledged_without_capability ... task_subscription_observed={"jsonrpc":"2.0","method":"notifications/subscriptions/acknowledged","params":{"_meta":{"io.modelcontextprotocol/subscriptionId":71},"notifications":{}}}
+
+thread 'subscription_gap::known_sdk_gap_raw_task_subscription_is_acknowledged_without_capability' (263993891) panicked at crates/labby-gateway/tests/issue_771_protocol/subscription_gap.rs:67:9:
+assertion `left == right` failed: Tasks specification requires capability rejection, not an empty subscription ack
+  left: Null
+ right: -32021
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    subscription_gap::known_sdk_gap_raw_task_subscription_is_acknowledged_without_capability
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.03s
+
