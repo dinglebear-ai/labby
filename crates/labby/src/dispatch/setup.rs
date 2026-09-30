@@ -17,6 +17,7 @@ mod draft;
 pub(crate) mod host_service;
 pub(crate) mod incus;
 mod local_setup;
+mod onboarding;
 pub(crate) mod owner_link;
 mod params;
 pub(crate) mod provision;

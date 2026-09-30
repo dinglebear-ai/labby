@@ -64,6 +64,8 @@ struct SetupPlan {
     no_browser: bool,
     invoking_home: PathBuf,
     invoking_user: Option<String>,
+    #[serde(default)]
+    installation_root: Option<PathBuf>,
 }
 
 pub(super) async fn run(args: SetupArgs, format: OutputFormat) -> Result<ExitCode> {
@@ -133,6 +135,12 @@ fn rederive_invoking_identity(
     sudo_user: Option<&str>,
     ambient_home: Option<PathBuf>,
 ) -> Result<SetupPlan> {
+    // A caller-writable plan must never redirect privileged writes or chown.
+    if plan.installation_root.is_some() {
+        bail!(
+            "custom LABBY_HOME is not supported by privileged server setup; refusing an untrusted installation root"
+        );
+    }
     let (invoking_user, invoking_home) = sudo_invoking_identity(sudo_uid, sudo_user, ambient_home)?;
     if plan.invoking_user != invoking_user || plan.invoking_home != invoking_home {
         bail!(
@@ -195,8 +203,8 @@ fn collect_plan(args: &SetupArgs, interactive: bool) -> Result<SetupPlan> {
         None if interactive => match Select::with_theme(&theme)
             .with_prompt("What are we setting up?")
             .items([
-                "Server — run Labby here",
-                "Client — connect to a Labby server",
+                "Use Labby on this computer (recommended)",
+                "Connect to an existing Labby",
             ])
             .default(0)
             .interact()?
@@ -258,11 +266,23 @@ fn collect_server_plan(
     invoking_home: PathBuf,
     invoking_user: Option<String>,
 ) -> Result<SetupPlan> {
-    let incus_ready =
-        cfg!(all(target_os = "linux", target_arch = "x86_64")) && command_ok("incus", &["version"]);
+    #[cfg(target_os = "linux")]
+    if selected_installation_root()?.is_some() {
+        bail!(
+            "Linux server setup owns its service/container state root. Unset LABBY_HOME for server installation; use client mode to select a custom client state root."
+        );
+    }
+    let customize = interactive
+        && Confirm::with_theme(theme)
+            .with_prompt("Customize networking, authentication, or deployment?")
+            .default(false)
+            .interact()?;
+    let incus_ready = (customize || matches!(args.deployment, Some(SetupDeploymentArg::Incus)))
+        && cfg!(all(target_os = "linux", target_arch = "x86_64"))
+        && command_ok("incus", &["version"]);
     let deployment = match args.deployment {
         Some(value) => value,
-        None if interactive && incus_ready => match Select::with_theme(theme)
+        None if customize && incus_ready => match Select::with_theme(theme)
             .with_prompt("Deployment")
             .items(["Native service — fastest", "Incus container — isolated"])
             .default(0)
@@ -279,7 +299,7 @@ fn collect_server_plan(
 
     let host = match args.host.as_deref() {
         Some(value) => validate_host(value)?,
-        None if interactive => validate_host(
+        None if customize => validate_host(
             &Input::<String>::with_theme(theme)
                 .with_prompt("Listen address")
                 .default(DEFAULT_HOST.to_string())
@@ -290,7 +310,7 @@ fn collect_server_plan(
     let port = match args.port {
         Some(port) if port > 0 => port,
         Some(_) => bail!("port must be between 1 and 65535"),
-        None if interactive => Input::<u16>::with_theme(theme)
+        None if customize => Input::<u16>::with_theme(theme)
             .with_prompt("Port")
             .default(DEFAULT_PORT)
             .validate_with(|value: &u16| {
@@ -315,7 +335,7 @@ fn collect_server_plan(
         {
             SetupAuthArg::Both
         }
-        None if interactive => match Select::with_theme(theme)
+        None if customize => match Select::with_theme(theme)
             .with_prompt("Authentication")
             .items(["Bearer token", "OAuth only", "OAuth + bearer break-glass"])
             .default(0)
@@ -456,6 +476,7 @@ fn collect_server_plan(
         client_bearer_token: None,
         install_desktop,
         no_browser: args.no_browser,
+        installation_root: selected_installation_root()?,
         invoking_home,
         invoking_user,
     })
@@ -538,6 +559,7 @@ fn collect_client_plan(
         client_bearer_token,
         install_desktop: desktop_choice(args, interactive, theme)?,
         no_browser: args.no_browser,
+        installation_root: selected_installation_root()?,
         invoking_home,
         invoking_user,
     })
@@ -836,7 +858,7 @@ async fn apply_native_server(plan: &SetupPlan) -> Result<serde_json::Value> {
     }
     #[cfg(target_os = "macos")]
     {
-        let home_env = plan.invoking_home.join(".labby/.env");
+        let home_env = user_installation_paths(plan)?.dotenv();
         let token = configure_server_env(&home_env, plan)?;
         if matches!(resolved_server_auth(plan), SetupAuthArg::Bearer) {
             bootstrap_static_owner_at(
@@ -1245,7 +1267,7 @@ async fn apply_client_with(
         .server_url
         .as_deref()
         .context("client setup requires a server URL")?;
-    let env_path = plan.invoking_home.join(".labby/.env");
+    let env_path = user_installation_paths(plan)?.dotenv();
     configure_client_env(&env_path, server_url, plan.client_bearer_token.as_deref())?;
     if matches!(plan.client_auth, Some(ClientAuth::OAuth)) {
         let server = crate::oauth::cli_session::server_url(server_url)?;
@@ -1416,8 +1438,8 @@ fn configure_server_env(path: &Path, plan: &SetupPlan) -> Result<Option<String>>
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn configure_local_client(plan: &SetupPlan, token: Option<&str>) -> Result<()> {
-    let env = plan.invoking_home.join(".labby/.env");
-    let server = format!("http://127.0.0.1:{}", plan.port);
+    let env = user_installation_paths(plan)?.dotenv();
+    let server = local_server_url(&plan.host, plan.port);
     merge_env(
         &env,
         vec![
@@ -1428,7 +1450,7 @@ fn configure_local_client(plan: &SetupPlan, token: Option<&str>) -> Result<()> {
     if is_unix_root()
         && let Some(user) = plan.invoking_user.as_deref()
     {
-        chown_tree(&plan.invoking_home.join(".labby"), user)?;
+        chown_tree(user_installation_paths(plan)?.root(), user)?;
     }
     Ok(())
 }
@@ -1465,7 +1487,7 @@ fn install_macos_service(plan: &SetupPlan) -> Result<()> {
         .env("LABBY_SERVICE_BIN", &executable)
         .env("LABBY_SERVICE_HOST", &plan.host)
         .env("LABBY_SERVICE_PORT", plan.port.to_string())
-        .env("LABBY_HOME", plan.invoking_home.join(".labby"))
+        .env("LABBY_HOME", user_installation_paths(plan)?.root())
         .status()?;
     if !status.success() {
         bail!("macOS service installer exited with {status}");
@@ -1557,6 +1579,11 @@ fn with_desktop_summary(
     desktop: &DesktopOutcome,
 ) -> serde_json::Value {
     if let Some(object) = summary.as_object_mut() {
+        object.insert("onboarding".into(), json!({
+            "state": "verification_required",
+            "guide_url": format!("{}/onboarding", plan.server_url.as_deref().unwrap_or(&advertised_url(plan)).trim_end_matches('/')),
+            "required_checks": ["agent_provider", "agent_execution", "discover", "mcp_connection", "selected_clients", "first_tool_call"],
+        }));
         object.insert("desktop_requested".into(), json!(plan.install_desktop));
         object.insert("desktop_installed".into(), json!(desktop.installed));
         object.insert("desktop_error".into(), json!(desktop.error));
@@ -1606,16 +1633,45 @@ fn install_desktop(plan: &SetupPlan) -> Result<()> {
     crate::desktop_install::install_release_app(&target)
 }
 
+fn selected_installation_root() -> Result<Option<PathBuf>> {
+    std::env::var_os("LABBY_HOME")
+        .filter(|value| !value.is_empty())
+        .map(|root| {
+            crate::installation::InstallationPaths::from_root(PathBuf::from(root))
+                .map(|paths| paths.root().to_path_buf())
+                .map_err(Into::into)
+        })
+        .transpose()
+}
+
+fn user_installation_paths(plan: &SetupPlan) -> Result<crate::installation::InstallationPaths> {
+    crate::installation::InstallationPaths::from_root(
+        plan.installation_root
+            .clone()
+            .unwrap_or_else(|| plan.invoking_home.join(".labby")),
+    )
+    .map_err(Into::into)
+}
+
+fn local_server_url(host: &str, port: u16) -> String {
+    let host = host.trim_matches(['[', ']']);
+    let connect_host = match host {
+        "0.0.0.0" => "127.0.0.1",
+        "::" => "::1",
+        value => value,
+    };
+    if connect_host.contains(':') {
+        format!("http://[{connect_host}]:{port}")
+    } else {
+        format!("http://{connect_host}:{port}")
+    }
+}
+
 fn advertised_url(plan: &SetupPlan) -> String {
     if let Some(url) = plan.public_url.as_deref() {
         return url.trim_end_matches('/').to_string();
     }
-    let host = if plan.host == "0.0.0.0" || plan.host == "::" {
-        "127.0.0.1"
-    } else {
-        plan.host.as_str()
-    };
-    format!("http://{host}:{}", plan.port)
+    local_server_url(&plan.host, plan.port)
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1692,6 +1748,7 @@ mod tests {
             client_bearer_token: None,
             install_desktop: true,
             no_browser: true,
+            installation_root: None,
             invoking_home: home,
             invoking_user: Some("operator".into()),
         }
@@ -1751,6 +1808,7 @@ mod tests {
             client_bearer_token: Some("client-token".into()),
             install_desktop: true,
             no_browser: true,
+            installation_root: None,
             invoking_home: home.path().to_path_buf(),
             invoking_user: None,
         };
@@ -2180,6 +2238,60 @@ esac
     }
 
     #[test]
+    fn local_client_url_matches_the_selected_listener_and_ipv6_family() {
+        assert_eq!(local_server_url("10.1.0.8", 9123), "http://10.1.0.8:9123");
+        assert_eq!(local_server_url("0.0.0.0", 9123), "http://127.0.0.1:9123");
+        assert_eq!(local_server_url("::", 9123), "http://[::1]:9123");
+        assert_eq!(local_server_url("fd00::2", 9123), "http://[fd00::2]:9123");
+        assert_eq!(local_server_url("[::1]", 9123), "http://[::1]:9123");
+    }
+
+    #[test]
+    fn selected_root_is_shared_by_user_setup_paths() {
+        let home = tempfile::tempdir().unwrap();
+        let mut plan = server_plan(home.path().to_path_buf());
+        let custom = home.path().join("isolated-state");
+        plan.installation_root = Some(custom.clone());
+        assert_eq!(
+            user_installation_paths(&plan).unwrap().dotenv(),
+            std::fs::canonicalize(home.path()).unwrap().join("isolated-state/.env")
+        );
+        plan.installation_root = Some(PathBuf::from("relative-state"));
+        assert!(user_installation_paths(&plan).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn elevated_plan_cannot_redirect_installation_state() {
+        let mut plan = server_plan(PathBuf::from("/home/operator"));
+        plan.installation_root = Some(PathBuf::from("/sensitive-target"));
+        let error =
+            rederive_invoking_identity(plan, None, None, Some(PathBuf::from("/home/operator")))
+                .unwrap_err();
+        assert!(error.to_string().contains("untrusted installation root"));
+    }
+
+    #[test]
+    fn successful_install_still_requires_first_use_verification() {
+        let mut plan = server_plan(PathBuf::from("/home/operator"));
+        plan.install_desktop = false;
+        let summary = with_desktop_summary(
+            json!({"ok":true}),
+            &plan,
+            &DesktopOutcome {
+                installed: false,
+                error: None,
+            },
+        );
+        assert_eq!(summary["ok"], true);
+        assert_eq!(summary["onboarding"]["state"], "verification_required");
+        assert_eq!(
+            summary["onboarding"]["guide_url"],
+            "http://127.0.0.1:8765/onboarding"
+        );
+    }
+
+    #[test]
     fn advertised_url_never_uses_unspecified_address() {
         let plan = SetupPlan {
             role: SetupRoleArg::Server,
@@ -2194,6 +2306,7 @@ esac
             client_bearer_token: None,
             install_desktop: false,
             no_browser: false,
+            installation_root: None,
             invoking_home: PathBuf::from("/tmp/user"),
             invoking_user: Some("user".into()),
         };

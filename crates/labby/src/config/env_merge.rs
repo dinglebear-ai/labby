@@ -185,12 +185,14 @@ pub enum MergeError {
 #[derive(Debug, Clone, Copy)]
 pub enum WriteConflictReason {
     MtimeSkew,
+    ExistingValue,
 }
 
 impl std::fmt::Display for WriteConflictReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::MtimeSkew => write!(f, "mtime_skew"),
+            Self::ExistingValue => write!(f, "existing_value"),
         }
     }
 }
@@ -237,6 +239,21 @@ pub fn snapshot_mtime(path: &Path) -> Option<SystemTime> {
 /// Merge `req.entries` into `path`, writing atomically with backup + prune.
 /// Writers using this primitive are serialized through a sibling lock file.
 pub fn merge(path: &Path, req: MergeRequest) -> Result<MergeOutcome, MergeError> {
+    merge_inner(path, req, false)
+}
+
+/// Atomically add an entire group of previously absent keys. Unlike `merge`,
+/// any existing requested key rejects the whole batch before writes or backups.
+/// This first-use contract is checked under the same cross-process writer lock.
+pub fn merge_new_keys(path: &Path, req: MergeRequest) -> Result<MergeOutcome, MergeError> {
+    merge_inner(path, req, true)
+}
+
+fn merge_inner(
+    path: &Path,
+    req: MergeRequest,
+    require_absent: bool,
+) -> Result<MergeOutcome, MergeError> {
     let parent = path.parent().unwrap_or(Path::new(".")).to_path_buf();
     let host_lock = HostConfigLock::acquire(path).map_err(|error| MergeError::WriteFailed {
         path: path.to_path_buf(),
@@ -257,6 +274,21 @@ pub fn merge(path: &Path, req: MergeRequest) -> Result<MergeOutcome, MergeError>
             path: path.to_path_buf(),
             reason: WriteConflictReason::MtimeSkew,
         });
+    }
+
+    if require_absent {
+        for parsed in dotenvy::from_read_iter(existing_raw.as_bytes()) {
+            let (key, _) = parsed.map_err(|_| MergeError::WriteFailed {
+                path: path.to_path_buf(),
+                reason: WriteFailReason::Other("existing environment is not valid dotenv".into()),
+            })?;
+            if req.entries.iter().any(|entry| entry.key == key) {
+                return Err(MergeError::WriteConflict {
+                    path: path.to_path_buf(),
+                    reason: WriteConflictReason::ExistingValue,
+                });
+            }
+        }
     }
 
     let existing_lines: Vec<&str> = existing_raw.lines().collect();
@@ -757,6 +789,85 @@ mod tests {
         assert!(after.contains("BAR=2"));
         // Blank line preserved between comment and FOO.
         assert!(after.contains("# top comment\n\nFOO="));
+    }
+
+    #[test]
+    fn first_use_merge_rejects_the_entire_batch_before_writing() {
+        for raw in [
+            "EXISTING=original\n",
+            "export EXISTING=original\n",
+            "EXISTING=\n",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = write_initial(dir.path(), ".env", raw);
+            let result = merge_new_keys(
+                &path,
+                MergeRequest {
+                    entries: vec![
+                        EnvEntry::new("NEW", "new-secret"),
+                        EnvEntry::new("EXISTING", "replacement").force(),
+                    ],
+                    force: true,
+                    ..Default::default()
+                },
+            );
+            let error = result.unwrap_err();
+            assert_eq!(error.kind(), "merge_write_conflict");
+            assert!(!error.to_string().contains("original"));
+            assert_eq!(fs::read_to_string(&path).unwrap(), raw);
+            assert_eq!(
+                fs::read_dir(dir.path())
+                    .unwrap()
+                    .filter_map(Result::ok)
+                    .filter(|entry| entry.file_name().to_string_lossy().starts_with(".env.bak."))
+                    .count(),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn first_use_merge_detects_a_file_created_after_the_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        let expected_mtime = snapshot_mtime(&path);
+        assert!(expected_mtime.is_none());
+        fs::write(&path, "PROVIDER=another-writer\n").unwrap();
+        assert!(
+            merge_new_keys(
+                &path,
+                MergeRequest {
+                    entries: vec![
+                        EnvEntry::new("PROVIDER", "candidate"),
+                        EnvEntry::new("KEY", "candidate-secret")
+                    ],
+                    expected_mtime,
+                    force: false,
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "PROVIDER=another-writer\n"
+        );
+    }
+
+    #[test]
+    fn first_use_merge_fails_closed_on_malformed_existing_dotenv() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_initial(dir.path(), ".env", "BROKEN='unclosed\n");
+        assert!(
+            merge_new_keys(
+                &path,
+                MergeRequest {
+                    entries: vec![EnvEntry::new("NEW", "value")],
+                    ..Default::default()
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "BROKEN='unclosed\n");
     }
 
     #[test]

@@ -27,6 +27,7 @@ import {
   DELETE_AGENT_CONFIRM_LABEL, DELETE_AGENT_TITLE, actionRequiresConfirmation, deleteAgentDescription,
 } from '@/lib/agent-tasks/confirmation'
 import { useCommandCatalog } from '@/lib/hooks/use-command-catalog'
+import { getSessionAuthority } from '@/lib/auth/session-store'
 
 const demoArtifacts = [
   ['Skill', 'repo-triage', 'Cluster open PRs and issues, then draft a triage note.', '#review · #github'],
@@ -108,18 +109,13 @@ export function AgentsPage() {
   const [ownerKind, setOwnerKind] = useState<OwnerKind>('personal')
   const [ownerId, setOwnerId] = useState('')
   const [instructions, setInstructions] = useState('')
-  const [model, setModel] = useState('chatgpt-browser')
+  const [model, setModel] = useState('')
   const [mutating, setMutating] = useState(false)
 
   const applyAgents = (items: AgentView[]) => {
     setAgents(items)
     setLoadError(null)
     setSelected(current => current ? items.find(item => item.agent_id === current.agent_id) ?? null : null)
-    if (!ownerId && items[0]) {
-      const kind = toOwnerKind(items[0].owner_kind)
-      if (kind) setOwnerKind(kind)
-      setOwnerId(items[0].owner_id)
-    }
   }
   const refresh = async () => {
     try { applyAgents(await listAgents()) }
@@ -141,7 +137,9 @@ export function AgentsPage() {
     setMutating(true)
     setLoadError(null)
     try {
-      const created = await createAgent({ agentId: agentId.trim(), ownerKind, ownerId: ownerId.trim(), instructions, model })
+      const resolvedOwnerId = ownerKind === 'personal' ? getSessionAuthority()?.principalId : ownerId.trim()
+      if (!resolvedOwnerId) throw new Error('A signed-in identity or selected owner is required.')
+      const created = await createAgent({ agentId: agentId.trim(), ownerKind, ownerId: resolvedOwnerId, instructions, model: model.trim() })
       setCreating(false)
       setSelected(created)
       setAgentId('')
@@ -165,6 +163,7 @@ export function AgentsPage() {
         {label:'Runtime',value:'Assistant LLM',icon:<CheckCircle2 size={12}/>},
       ]}/>
       {loadError?<InlineError message={loadError}/>:null}
+      {agents.length === 0 ? <p className="rounded-aurora-2 border border-aurora-border-default p-4 text-sm text-aurora-text-muted">New to Labby? <a href="/onboarding" className="font-semibold text-aurora-accent-strong underline">Connect a provider and test your first Agent</a> without copying IDs or editing configuration files.</p> : null}
       <AgentsCollection agents={agents} onSelect={setSelected}/>
     </PageFrame>
     <AgentSessionSheet agent={selected} onOpenChange={open => !open && setSelected(null)} onChanged={refresh} />
@@ -175,11 +174,11 @@ export function AgentsPage() {
         <label className="text-xs font-semibold text-aurora-text-muted">Agent ID<input autoFocus value={agentId} onChange={event=>setAgentId(event.target.value)} className="mt-2 h-10 w-full rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface px-3 text-sm text-aurora-text-primary" placeholder="release-reviewer"/></label>
         <div className="grid grid-cols-2 gap-3">
           <SelectField label="Owner" value={ownerKind} onChange={value=>setOwnerKind(value as OwnerKind)}><option value="personal">Personal</option><option value="team">Team</option><option value="project">Project</option></SelectField>
-          <label className="text-xs text-aurora-text-muted">Owner ID<input value={ownerId} onChange={event=>setOwnerId(event.target.value)} className="mt-2 h-10 w-full rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface px-3 text-sm text-aurora-text-primary" placeholder="principal / team / project ID"/></label>
+          {ownerKind === 'personal' ? <p className="self-end py-3 text-xs text-aurora-text-muted">Owned by your signed-in identity.</p> : <label className="text-xs text-aurora-text-muted">Owner ID<input value={ownerId} onChange={event=>setOwnerId(event.target.value)} className="mt-2 h-10 w-full rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface px-3 text-sm text-aurora-text-primary" placeholder="team / project ID"/></label>}
         </div>
-        <label className="text-xs font-semibold text-aurora-text-muted">Model<input value={model} onChange={event=>setModel(event.target.value)} className="mt-2 h-10 w-full rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface px-3 text-sm text-aurora-text-primary" placeholder="chatgpt-browser"/></label>
+        <label className="text-xs font-semibold text-aurora-text-muted">Model<input value={model} onChange={event=>setModel(event.target.value)} className="mt-2 h-10 w-full rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface px-3 text-sm text-aurora-text-primary" placeholder="Model ID from your provider"/></label>
         <label className="text-xs font-semibold text-aurora-text-muted">Instructions<textarea value={instructions} onChange={event=>setInstructions(event.target.value)} rows={7} className="mt-2 w-full resize-y rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface p-3 text-sm text-aurora-text-primary" placeholder="Describe the Agent’s role, constraints, and expected output."/></label>
-        <Button onClick={()=>void create()} disabled={mutating||!agentId.trim()||!ownerId.trim()||!instructions.trim()}><CirclePlus/>{mutating?'Creating…':'Create Agent'}</Button>
+        <Button onClick={()=>void create()} disabled={mutating||!agentId.trim()||!(ownerKind === 'personal' ? getSessionAuthority()?.principalId : ownerId.trim())||!model.trim()||!instructions.trim()}><CirclePlus/>{mutating?'Creating…':'Create Agent'}</Button>
       </DialogContent>
     </Dialog>
   </>
@@ -304,7 +303,6 @@ function SelectField({label,value,onChange,children}:{label:string;value:string;
 function StatusDot({status}:{status:string}) { const normalized=status.toLowerCase(); const color=['active','running','succeeded'].includes(normalized)?'bg-aurora-success':['failed','expired'].includes(normalized)?'bg-aurora-error':['suspended','cancelling'].includes(normalized)?'bg-aurora-warn':'bg-aurora-text-muted'; return <span role="img" aria-label={status} title={status} className={'block size-2 rounded-full '+color}/> }
 function InlineError({message}:{message:string}) { return <div role="alert" className="rounded-aurora-1 border border-aurora-error/30 bg-aurora-error/5 p-3 text-sm text-aurora-error">{message}</div> }
 function errorMessage(error:unknown,fallback:string) { return error instanceof Error && error.message ? error.message : fallback }
-function toOwnerKind(value:string):OwnerKind|null { return value==='personal'||value==='team'||value==='project'?value:null }
 
 export function DevContainersPage() { return <><AppHeader breadcrumbs={[{label:'Workspace'},{label:'Dev Containers'}]}/><PageFrame><DevContainersPageContent /></PageFrame></> }
 

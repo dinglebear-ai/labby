@@ -40,6 +40,38 @@ async function setupAction<T>(
   })
 }
 
+// First-use operations never synthesize mock success: configuration and live
+// verification are distinct, and a provider probe does not prove Agent execution.
+export interface FirstRunProvider {
+  configured: boolean
+  base_url: string | null
+  api_key_configured: boolean
+  externally_managed: boolean
+}
+
+export interface FirstRunState {
+  schema_version: 1
+  provider: FirstRunProvider
+  guide_path: string
+}
+
+export interface VerifiedFirstRunProvider {
+  provider: FirstRunProvider
+  models: string[]
+  restart_required: boolean
+  agent_verified: false
+}
+
+export const firstRunApi = {
+  state: (signal?: AbortSignal) => setupAction<FirstRunState>('onboarding.state', {}, signal),
+  models: (signal?: AbortSignal) => setupAction<VerifiedFirstRunProvider>('onboarding.provider.models', {}, signal),
+  configureProvider: (baseUrl: string, apiKey: string, signal?: AbortSignal) =>
+    setupAction<VerifiedFirstRunProvider>('onboarding.provider.configure', {
+      base_url: baseUrl.trim(),
+      ...(apiKey.trim() ? { api_key: apiKey.trim() } : {}),
+    }, signal),
+}
+
 // ─── State machine ──────────────────────────────────────────────────────
 
 export type SetupStateKind =

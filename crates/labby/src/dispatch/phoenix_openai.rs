@@ -14,6 +14,12 @@ const MAX_ERROR_BODY_BYTES: usize = 8 * 1024;
 // A 16 MiB UTF-8 completion can expand close to 6x when JSON-escaped. Keep
 // provider responses bounded without rejecting the runtime's valid output range.
 const MAX_SUCCESS_BODY_BYTES: usize = 100 * 1024 * 1024;
+const MAX_MODELS_BODY_BYTES: usize = 1024 * 1024;
+
+// A verified first-run provider is published only after its protected .env
+// write commits. New sessions see it without mutating the process environment;
+// existing sessions retain their pinned backend. Restart loads the durable file.
+static FIRST_RUN_BACKEND: std::sync::RwLock<Option<OpenAiBackend>> = std::sync::RwLock::new(None);
 
 #[derive(Clone)]
 pub(crate) struct OpenAiBackend {
@@ -57,7 +63,27 @@ pub(crate) fn install_test_base_url(url: &str) {
 }
 
 impl OpenAiBackend {
+    pub(crate) fn first_run_backend() -> Option<Self> {
+        FIRST_RUN_BACKEND
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn publish_first_run(backend: Self) {
+        *FIRST_RUN_BACKEND
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(backend);
+    }
+
+    pub(crate) fn api_key_configured(&self) -> bool {
+        self.api_key.is_some()
+    }
+
     pub(crate) fn from_env() -> Option<Self> {
+        if let Some(backend) = Self::first_run_backend() {
+            return Some(backend);
+        }
         #[cfg(test)]
         if let Some(base_url) = TEST_BASE_URL.get() {
             return Self::from_url(base_url, None).ok();
@@ -240,7 +266,12 @@ impl OpenAiBackend {
         })?;
         let status = response.status();
         let bytes = if status.is_success() {
-            read_body_limited(response, MAX_SUCCESS_BODY_BYTES, true).await?
+            let limit = if path == "models" {
+                MAX_MODELS_BODY_BYTES
+            } else {
+                MAX_SUCCESS_BODY_BYTES
+            };
+            read_body_limited(response, limit, true).await?
         } else {
             read_body_limited(response, MAX_ERROR_BODY_BYTES, false).await?
         };

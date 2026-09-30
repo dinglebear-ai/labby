@@ -40,6 +40,7 @@ const REDACTED_LOG_ACTIONS: &[&str] = &[
     "settings.env.update",
     "settings.config.update",
     "proxy.configure",
+    "onboarding.provider.configure",
 ];
 use crate::dispatch::error::ToolError;
 use crate::dispatch::helpers::{action_schema, help_payload, to_json};
@@ -92,6 +93,11 @@ async fn dispatch_inner(
             action_schema(ACTIONS, a)
         }
         "state" => run_blocking_setup("state", state_action).await,
+        "onboarding.state" => to_json(super::onboarding::state()),
+        "onboarding.provider.models" => to_json(super::onboarding::models().await?),
+        "onboarding.provider.configure" => {
+            to_json(super::onboarding::configure(caller, params).await?)
+        }
         "bootstrap" => run_blocking_setup("bootstrap", super::bootstrap_action).await,
         "schema.get" => {
             let params = params.clone();

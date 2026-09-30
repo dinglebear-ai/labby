@@ -230,6 +230,7 @@ const DIRECT_ROUTE_MANIFEST: ReadonlyArray<readonly [prefix: string, capability:
   ['/docs', 'platform.manage'],
   ['/design-system', 'platform.manage'],
   ['/settings', 'platform.manage'],
+  ['/onboarding', 'platform.manage'],
 ]
 
 /** Project-bound browser sessions may enter Skills without a durable authority projection. */

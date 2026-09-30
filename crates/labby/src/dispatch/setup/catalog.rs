@@ -144,9 +144,59 @@ struct SettingsAuthSurfaceSchema {
 /// Setup actions that may only run from a trusted local transport. These
 /// either mint first-run credentials or initiate an outbound connectivity
 /// probe from the host, so an admin bearer alone is not sufficient.
-pub const LOCAL_ONLY_ACTIONS: &[&str] = &["bootstrap", "proxy.configure"];
+pub const LOCAL_ONLY_ACTIONS: &[&str] = &[
+    "bootstrap",
+    "proxy.configure",
+    "onboarding.provider.configure",
+];
 
 pub const ACTIONS: &[ActionSpec] = &[
+    ActionSpec {
+        name: "onboarding.state",
+        description: "Read first-use provider configuration without claiming execution readiness",
+        destructive: false,
+        requires_admin: true,
+        returns: "OnboardingState",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::onboarding::OnboardingState>,
+        ),
+        params: &[],
+    },
+    ActionSpec {
+        name: "onboarding.provider.models",
+        description: "Verify the configured Agent provider from the gateway host and list bounded model choices",
+        destructive: false,
+        requires_admin: true,
+        returns: "VerifiedProvider",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::onboarding::VerifiedProvider>,
+        ),
+        params: &[],
+    },
+    ActionSpec {
+        name: "onboarding.provider.configure",
+        description: "Verify and securely save the first Agent provider; never replace existing credentials",
+        destructive: false,
+        requires_admin: true,
+        returns: "VerifiedProvider",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::onboarding::VerifiedProvider>,
+        ),
+        params: &[
+            ParamSpec {
+                name: "base_url",
+                ty: "string",
+                required: true,
+                description: "OpenAI-compatible base URL reachable from the gateway host, normally ending in /v1",
+            },
+            ParamSpec {
+                name: "api_key",
+                ty: "string",
+                required: false,
+                description: "Write-only provider credential; omitted for a keyless local provider",
+            },
+        ],
+    },
     ActionSpec {
         name: "help",
         description: "Show this action catalog",

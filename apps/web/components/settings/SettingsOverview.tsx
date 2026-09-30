@@ -1,6 +1,8 @@
 'use client'
 
 import type { ReactNode } from 'react'
+import Link from 'next/link'
+import { Button } from '@/components/ui/button'
 import { useEffect, useState } from 'react'
 
 import { isAbortError } from '@/lib/api/service-action-client'
@@ -75,6 +77,9 @@ export function SettingsOverviewCards({
           Some settings could not be read. {snapshot.errors.join(' · ')}
         </p>
       ) : null}
+      <SettingsCard title="Get started">
+        <SettingsRow label="First-run guide" description="Connect your provider, test a personal Agent, search Discover, and verify MCP connectivity." control={<Button asChild variant="outline" size="sm"><Link href="/onboarding">Open guide</Link></Button>} />
+      </SettingsCard>
       <SettingsCard title="Gateway">
         <SettingsRow
           label="Code Mode"

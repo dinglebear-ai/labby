@@ -377,7 +377,7 @@ impl PhoenixRuntime {
                         .as_ref()
                         .is_some_and(|path| path.is_dir())
             }
-            PhoenixProvider::OpenAiCompatible => self.openai.is_some(),
+            PhoenixProvider::OpenAiCompatible => self.openai_backend().is_ok(),
         }
     }
 
@@ -1188,12 +1188,14 @@ impl PhoenixRuntime {
     }
 
     fn openai_backend(&self) -> Result<OpenAiBackend, ToolError> {
-        self.openai.clone().ok_or_else(|| {
-            unavailable(format!(
-                "Phoenix OpenAI-compatible provider requires {}",
-                crate::dispatch::phoenix_openai::BASE_URL_ENV
-            ))
-        })
+        OpenAiBackend::first_run_backend()
+            .or_else(|| self.openai.clone())
+            .ok_or_else(|| {
+                unavailable(format!(
+                    "Phoenix OpenAI-compatible provider requires {}",
+                    crate::dispatch::phoenix_openai::BASE_URL_ENV
+                ))
+            })
     }
 
     fn require_available(&self) -> Result<(), ToolError> {
