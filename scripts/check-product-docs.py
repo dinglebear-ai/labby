@@ -26,9 +26,9 @@ TOP_LEVEL_DOCS = {
     "docs/TECH.md",
     "docs/depot-unified-frontend.md",
     "apps/README.md",
-    "apps/gateway-admin/README.md",
-    "apps/gateway-admin/components/aurora/README.md",
-    "apps/labby-desktop/README.md",
+    "apps/web/README.md",
+    "apps/web/components/aurora/README.md",
+    "apps/tauri/README.md",
     "crates/labby/README.md",
     "crates/labby-apis/README.md",
     "docs/assets/brand/README.md",
@@ -47,8 +47,8 @@ CANONICAL_DIRS = (
     "docs/design/",
     "docs/generated/",
     "docs/snippets/",
-    "plugins/labby/skills/",
-    "apps/gateway-admin/docs/",
+    "plugins/labby/.apm/skills/",
+    "apps/web/docs/",
 )
 
 CANONICAL_DEV = {
@@ -88,7 +88,7 @@ RETIRED_PATHS = (
     "docs/specs/code-mode-spec-legacy.md",
     "docs/specs/gateway-schema-resources.md",
     "docs/dev/SCAFFOLD_AND_AUDIT.md",
-    "apps/gateway-admin/docs/gateway-detail-redesign.md",
+    "apps/web/docs/gateway-detail-redesign.md",
 )
 
 STALE_PATTERNS = (
@@ -135,6 +135,7 @@ def repository_paths() -> list[Path]:
         ROOT / value.decode("utf-8")
         for value in raw.split(bytes([0]))
         if value and not value.decode("utf-8").startswith(excluded)
+        and ((ROOT / value.decode("utf-8")).exists() or (ROOT / value.decode("utf-8")).is_symlink())
     })
 
 
@@ -313,7 +314,7 @@ def validate_instruction_budgets(failures: list[str]) -> None:
 
 
 def validate_auth_bypass_guidance(failures: list[str]) -> None:
-    sample = (ROOT / "config/config.example.toml").read_text(encoding="utf-8")
+    sample = (ROOT / ".config/config.example.toml").read_text(encoding="utf-8")
     marker = "# disable_auth = false"
     prefix, found, _ = sample.partition(marker)
     guidance = "\n".join(prefix.splitlines()[-5:]).lower()
@@ -322,7 +323,7 @@ def validate_auth_bypass_guidance(failures: list[str]) -> None:
         for phrase in ("local development only", "loopback", "must not", "reverse proxy")
     ):
         failures.append(
-            "config/config.example.toml: disable_auth must be fenced as loopback-only local development and forbidden behind a reverse proxy"
+            ".config/config.example.toml: disable_auth must be fenced as loopback-only local development and forbidden behind a reverse proxy"
         )
 
 
@@ -333,7 +334,7 @@ def validate_install_config_deployment_contracts(failures: list[str]) -> None:
             "docs/services/UPSTREAM.md: stdio administration must not be described as destructive solely because it spawns or mutates restartable state"
         )
 
-    skill_root = ROOT / "plugins/labby/skills/using-labby"
+    skill_root = ROOT / "plugins/labby/.apm/skills/using-labby"
     retired = re.compile(
         r"\b(?:marketplace|service[ _.-]?deploy|deploy product)\b|"
         r'\"service\"\s*:\s*\"deploy\"',
@@ -378,7 +379,7 @@ def validate_shipped_skill_cli_examples(failures: list[str]) -> None:
             )
         ) | set(re.findall(r"(?m)^\s+(-[A-Za-z0-9])(?:,|\s|$)", body))
 
-    skill_root = ROOT / "plugins/labby/skills/using-labby"
+    skill_root = ROOT / "plugins/labby/.apm/skills/using-labby"
     for path in sorted(skill_root.rglob("*.md")):
         in_bash = False
         for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):

@@ -16,10 +16,10 @@
 .broadcastr
 # ── Runtime artifacts ────────────────────────────────────────────────────────
 /logs/
-!apps/gateway-admin/app/(admin)/logs/
-!apps/gateway-admin/app/(admin)/logs/page.tsx
-!apps/gateway-admin/components/logs/
-!apps/gateway-admin/components/logs/*.tsx
+!apps/web/app/(admin)/logs/
+!apps/web/app/(admin)/logs/page.tsx
+!apps/web/components/logs/
+!apps/web/components/logs/*.tsx
 *.runtime.json
 /artifacts/
 backups/
@@ -57,6 +57,7 @@ erl_crash.dump
 .broadcastr/
 .codex
 .delta/
+.superpowers/
 .remember/
 /memory/
 .gemini
@@ -127,6 +128,7 @@ packages/*/vendor/
 data/
 proxies/
 outputs/
+/worktrees/
 /dist/
 /dist
 /.zcode/

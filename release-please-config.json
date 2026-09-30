@@ -65,21 +65,25 @@
       "extra-files": [
         {
           "type": "json",
-          "path": "apps/labby-desktop/package.json",
+          "path": "apps/tauri/package.json",
           "jsonpath": "$.version"
         },
         {
           "type": "json",
-          "path": "apps/labby-desktop/src-tauri/tauri.conf.json",
+          "path": "apps/tauri/src-tauri/tauri.conf.json",
           "jsonpath": "$.version"
         },
         {
           "type": "generic",
-          "path": "apps/labby-desktop/src-tauri/Cargo.toml"
+          "path": "apps/tauri/src-tauri/Cargo.toml"
         },
         {
           "type": "generic",
           "path": "apm.yml"
+        },
+        {
+          "type": "generic",
+          "path": "plugins/labby/apm.yml"
         }
       ]
     }

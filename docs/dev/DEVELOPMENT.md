@@ -50,7 +50,7 @@ Install its locked dependencies from that package before frontend work:
 rustup show active-toolchain
 just --list
 just rust-toolchain-sync
-pnpm --dir apps/gateway-admin install --frozen-lockfile
+pnpm --dir apps/web install --frozen-lockfile
 ```
 
 Use the existing host compiler cache when healthy. See [Technology](../TECH.md)
@@ -70,7 +70,7 @@ build as a routine workaround.
 | OpenAPI parsing and hardened outbound execution | `crates/labby-openapi` |
 | Shared runtime, Artifact, task, and authority contracts | `crates/labby-runtime` |
 | Product operations and thin CLI/MCP/API adapters | `crates/labby/src` |
-| Static operator UI / native shell | `apps/gateway-admin` / `apps/labby-desktop` |
+| Static operator UI / native shell | `apps/web` / `apps/tauri` |
 
 Do not add a built-in service for an external capability that can be an upstream
 MCP server. Follow [Service Onboarding](./SERVICE_ONBOARDING.md) for a genuine
@@ -98,9 +98,9 @@ matching platform lane; macOS success is not Linux/Windows acceptance.
 For Gateway Admin changes:
 
 ```bash
-pnpm --dir apps/gateway-admin lint
-pnpm --dir apps/gateway-admin test
-pnpm --dir apps/gateway-admin test:browser
+pnpm --dir apps/web lint
+pnpm --dir apps/web test
+pnpm --dir apps/web test:browser
 just web-build
 ```
 

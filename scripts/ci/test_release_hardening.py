@@ -636,8 +636,8 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("scripts/ci/promote-incus-pointer.sh rollback", incus)
         image = yaml.load(self.text(".github/workflows/incus-image.yml"), Loader=yaml.BaseLoader)
         self.assertEqual("./.github/workflows/build-incus-image.yml", image["jobs"]["image"]["uses"])
-        self.assertIn("config/incus/**", image["on"]["pull_request"]["paths"])
-        self.assertIn("config/incus/**", image["on"]["push"]["paths"])
+        self.assertIn(".config/incus/**", image["on"]["pull_request"]["paths"])
+        self.assertIn(".config/incus/**", image["on"]["push"]["paths"])
 
     def test_immutable_release_assets_are_never_clobbered(self) -> None:
         for path in (".github/workflows/release.yml", ".github/workflows/build-incus-image.yml"):
@@ -1685,8 +1685,8 @@ if authenticated_action; then exit 93; fi
         patch = next(step["run"] for step in steps if step.get("name", "").startswith("Patch release metadata"))
         code = patch.split("<< 'PY'\n", 1)[1].split("\nPY", 1)[0]
         paths = ["Cargo.toml", "packages/labby-mcp/package.json", "server.json",
-                 "apps/labby-desktop/package.json", "apps/labby-desktop/src-tauri/Cargo.toml",
-                 "apps/labby-desktop/src-tauri/tauri.conf.json"]
+                 "apps/tauri/package.json", "apps/tauri/src-tauri/Cargo.toml",
+                 "apps/tauri/src-tauri/tauri.conf.json"]
         # The verification workspace pins labby-model at the exact release
         # version; the patch script refuses to run without that manifest.
         pinned = "tools/verification/hosts/labby/Cargo.toml"
@@ -1708,10 +1708,10 @@ if authenticated_action; then exit 93; fi
                 first = {path: (root / path).read_bytes() for path in paths}
                 subprocess.run([sys.executable, "-", version], input=code, text=True, cwd=root, check=True)
                 self.assertEqual(first, {path: (root / path).read_bytes() for path in paths})
-        self.assertIn("cargo update --manifest-path apps/labby-desktop/src-tauri/Cargo.toml --workspace", patch)
+        self.assertIn("cargo update --manifest-path apps/tauri/src-tauri/Cargo.toml --workspace", patch)
         commit = next(step["run"] for step in steps if step.get("name") == "Commit and push if changed")
         staged = commit.split("paths=(", 1)[1].split(")", 1)[0].split()
-        self.assertIn("apps/labby-desktop/src-tauri/Cargo.lock", staged)
+        self.assertIn("apps/tauri/src-tauri/Cargo.lock", staged)
         for path in paths:
             self.assertIn(path, staged)
 
@@ -1787,9 +1787,9 @@ if authenticated_action; then exit 93; fi
         # marker on its own line never rewrote src-tauri/Cargo.toml.
         script = self.text("scripts/check-version-sync.sh")
         desktop = (
-            "apps/labby-desktop/package.json",
-            "apps/labby-desktop/src-tauri/tauri.conf.json",
-            "apps/labby-desktop/src-tauri/Cargo.toml",
+            "apps/tauri/package.json",
+            "apps/tauri/src-tauri/tauri.conf.json",
+            "apps/tauri/src-tauri/Cargo.toml",
         )
         for path in desktop:
             self.assertIn(path, script)
@@ -1799,11 +1799,11 @@ if authenticated_action; then exit 93; fi
         for path in desktop:
             self.assertIn(path, result.stdout)
         # release-please's generic updater rewrites only the annotated line.
-        cargo = self.text("apps/labby-desktop/src-tauri/Cargo.toml")
+        cargo = self.text("apps/tauri/src-tauri/Cargo.toml")
         self.assertRegex(cargo, r'(?m)^version = "[^"]+" # x-release-please-version$')
         self.assertNotRegex(cargo, r"(?m)^# x-release-please-version$")
         # The lockfile records the same version for the desktop package.
-        lock = self.text("apps/labby-desktop/src-tauri/Cargo.lock")
+        lock = self.text("apps/tauri/src-tauri/Cargo.lock")
         version = re.search(r'(?m)^version = "([^"]+)"', cargo).group(1)
         self.assertIn(f'name = "labby-desktop"\nversion = "{version}"', lock)
 

@@ -7,7 +7,7 @@ updated: "2026-08-18"
 # Component Development Process
 
 **Status:** Active  
-**Scope:** `apps/gateway-admin` web UI feature and component work  
+**Scope:** `apps/web` web UI feature and component work
 **Primary contract:** [Labby Design System Contract](./design-system-contract.md)
 
 ## Purpose
@@ -26,7 +26,7 @@ For substantial changes, capture the user problem, page structure, interaction m
 
 ### 3. Reuse Aurora
 
-Review [design-system-contract.md](./design-system-contract.md) and the nested `apps/gateway-admin/CLAUDE.md` instructions. Reuse existing tokens, components, density, spacing, typography, surfaces, focus behavior, and motion patterns before creating a new primitive.
+Review [design-system-contract.md](./design-system-contract.md) and the nested `apps/web/CLAUDE.md` instructions. Reuse existing tokens, components, density, spacing, typography, surfaces, focus behavior, and motion patterns before creating a new primitive.
 
 ### 4. Use A Mockup When Visual Direction Is Unsettled
 
@@ -71,7 +71,7 @@ Before calling a UI change complete, inspect the actual production component rat
 Run the checks appropriate to the change:
 
 ```bash
-cd apps/gateway-admin
+cd apps/web
 pnpm lint
 pnpm test
 pnpm test:browser

@@ -18,7 +18,7 @@ keeping the gateway inside a container boundary.
 The supported Incus substrate is amd64 / x86_64.
 - Ubuntu 26.04 (`images:ubuntu/26.04`)
 - Incus system container
-- `config/incus/labby-gateway-profile.yaml` applied as the `labby-gateway`
+- `.config/incus/labby-gateway-profile.yaml` applied as the `labby-gateway`
   Incus profile
 - unprivileged container with nesting disabled
 - `/dev/net/tun` passthrough when Tailscale is enabled, validated by creating
@@ -80,8 +80,8 @@ labby setup
 ```
 
 The declarative Incus shape lives in
-`config/incus/labby-gateway-profile.yaml`, and the default snapshot policy lives
-in `config/incus/labby-backup.yaml`. `labby setup` embeds those vetted artifacts
+`.config/incus/labby-gateway-profile.yaml`, and the default snapshot policy lives
+in `.config/incus/labby-backup.yaml`. `labby setup` embeds those vetted artifacts
 in the binary, materializes them into a temporary workspace, and runs the same
 host bootstrap logic from there. The bootstrap creates or updates the profile,
 launches `images:ubuntu/26.04` with it, then applies the snapshot policy with
@@ -187,7 +187,7 @@ target/release-fast/labby host incus sync \
 Pass `--no-web-assets` only for a binary-only deploy where the existing
 filesystem web export should intentionally remain in place.
 
-The distrobuilder image definition lives at `config/incus/labby-image.yaml`.
+The distrobuilder image definition lives at `.config/incus/labby-image.yaml`.
 Image input changes trigger a separate build, smoke, and publication workflow.
 The artifact is a prebuilt Incus container image:
 `labby-incus-x86_64-unknown-linux-gnu.tar.xz` plus a `.sha256` file. Import it
@@ -207,7 +207,7 @@ bootstrap installs the selected Labby release afterward. The image includes
 Node, uv-managed Python, Rust, Go, Claude Code,
 Codex, Gemini CLI, mise, chezmoi, ffmpeg, Android platform tooling (`adb`, Android
 SDK platform tools, and build tools), and the Tailscale client.
-`config/incus/labby-image.yaml`
+`.config/incus/labby-image.yaml`
 is the source of truth for both the apt package list and the named provisioning
 action scripts; bare-metal `labby setup --provision` derives its install and
 verification steps from the same YAML so image builds and non-image provisioning
@@ -305,7 +305,7 @@ labby setup --provision --yes --skip-deps
 
 The plan is explicit about privilege. Root actions are limited to:
 
-- apt install of the bounded floor derived from `config/incus/labby-image.yaml`,
+- apt install of the bounded floor derived from `.config/incus/labby-image.yaml`,
   including core CLI/runtime packages plus `rsync`, `ffmpeg`, `adb`, and Android
   SDK command-line tooling
 - `labby` user creation

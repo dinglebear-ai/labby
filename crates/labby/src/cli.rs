@@ -333,7 +333,9 @@ fn dispatch_inner(mut cli: Cli, mut config: LabConfig) -> impl Future<Output = R
             #[cfg(feature = "gateway")]
             Command::Gateway(args) => gateway::run(args, format, &config, team_id.as_deref()).await,
             #[cfg(feature = "gateway")]
-            Command::Snippets(args) => snippets::run(args, format, &config).await,
+            Command::Snippets(args) => {
+                snippets::run(args, format, &config, team_id.as_deref()).await
+            }
             #[cfg(feature = "skills")]
             Command::Skills(args) => skills::run(args, format, &config).await,
             Command::Oauth(args) => oauth::run(args, format, &config).await,

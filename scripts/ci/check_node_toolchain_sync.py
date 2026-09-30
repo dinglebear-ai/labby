@@ -11,10 +11,10 @@ from pathlib import Path
 
 def main() -> int:
     root = Path(__file__).resolve().parents[2]
-    package = json.loads((root / "apps/gateway-admin/package.json").read_text())
+    package = json.loads((root / "apps/web/package.json").read_text())
     declared = package.get("engines", {}).get("node")
     if declared != "22.x":
-        print("apps/gateway-admin/package.json: engines.node must be exactly 22.x", file=sys.stderr)
+        print("apps/web/package.json: engines.node must be exactly 22.x", file=sys.stderr)
         return 1
 
     action_path = root / ".github/actions/build-gateway-admin/action.yml"

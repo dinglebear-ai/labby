@@ -29,7 +29,7 @@ require(workflow, "cargo test -p labby --all-features --locked self_update::test
 require(workflow, "cargo test -p labby --all-features --locked --test gateway_auto_reconnect", "macOS CI must execute gateway recovery E2E")
 require(macos_job, "needs.changes.outputs.rust_test == 'true'", "Rust changes must route through the macOS updater job")
 
-copies = [ROOT / "install.sh", ROOT / "apps/gateway-admin/public/install.sh"]
+copies = [ROOT / "install.sh", ROOT / "apps/web/public/install.sh"]
 if any(path.read_bytes() != (ROOT / "scripts/install.sh").read_bytes() for path in copies):
     raise SystemExit("update safety oracle failed: published installer copies diverged")
 

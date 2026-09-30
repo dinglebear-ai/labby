@@ -9,7 +9,7 @@ Keep `AGENTS.md` canonical and preserve those aliases.
 ## Package boundaries
 
 - The package does not bundle the `labby` binary.
-- `skills/install-labby` is the first-class guided installation/orchestration
+- `.apm/skills/install-labby` is the first-class guided installation/orchestration
   surface for humans using a skill-aware agent.
 - The Labby binary remains authoritative for durable setup, credentials,
   service installation, repair, gateway mutation, and validation.

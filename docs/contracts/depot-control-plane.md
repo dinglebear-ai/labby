@@ -7,7 +7,7 @@ updated: 2026-09-20
 
 # Depot control-plane compatibility contract
 
-`apps/gateway-admin` is the only Labby and Depot frontend. The browser calls
+`apps/web` is the only Labby and Depot frontend. The browser calls
 relative Labby URLs; only Labby holds a Depot credential. Depot remains the
 authority for Artifact visibility, mutation policy, immutable revisions, and
 audit truth.

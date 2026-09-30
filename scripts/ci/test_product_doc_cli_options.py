@@ -27,7 +27,7 @@ class ShippedCliOptionsTests(unittest.TestCase):
                 "      --json\n          JSON output\n```\n",
                 encoding="utf-8",
             )
-            skill = root / "plugins/labby/skills/using-labby/SKILL.md"
+            skill = root / "plugins/labby/.apm/skills/using-labby/SKILL.md"
             skill.parent.mkdir(parents=True)
             skill.write_text(
                 "```bash\nlabby -h\nlabby --help\nlabby -v\n"

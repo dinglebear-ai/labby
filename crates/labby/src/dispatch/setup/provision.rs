@@ -29,7 +29,7 @@ const TS_AUTHKEY_ENV: &str = "TS_AUTHKEY";
 const TS_HOSTNAME_ENV: &str = "LABBY_TAILSCALE_HOSTNAME";
 const TS_AUTHKEY_PATH: &str = "/run/labby-ts-authkey";
 const LABBY_ZPROFILE: &str = "/home/labby/.zprofile";
-const LABBY_IMAGE_YAML: &str = include_str!("../../../../../config/incus/labby-image.yaml");
+const LABBY_IMAGE_YAML: &str = include_str!("../../../../../.config/incus/labby-image.yaml");
 const LABBY_USER_DIRS: &[&str] = &[
     "/home/labby/.labby",
     "/home/labby/.local/bin",
@@ -555,11 +555,11 @@ fn apt_floor() -> Vec<&'static str> {
     static PACKAGES: OnceLock<Vec<String>> = OnceLock::new();
     let packages = PACKAGES.get_or_init(|| {
         parse_image_install_packages(LABBY_IMAGE_YAML)
-            .expect("config/incus/labby-image.yaml must be constrained YAML")
+            .expect(".config/incus/labby-image.yaml must be constrained YAML")
     });
     assert!(
         !packages.is_empty(),
-        "config/incus/labby-image.yaml must declare packages.sets action=install packages"
+        ".config/incus/labby-image.yaml must declare packages.sets action=install packages"
     );
     packages.iter().map(String::as_str).collect()
 }
@@ -605,7 +605,7 @@ async fn run_image_provision_action(name: &str) -> Result<(), ToolError> {
     let script = image_provision_action(name).ok_or_else(|| ToolError::Sdk {
         sdk_kind: "internal_error".into(),
         message: format!(
-            "missing LABBY_PROVISION_ACTION `{name}` in config/incus/labby-image.yaml"
+            "missing LABBY_PROVISION_ACTION `{name}` in .config/incus/labby-image.yaml"
         ),
     })?;
     run_checked("bash", &["-lc", &script]).await?;
@@ -615,7 +615,7 @@ async fn run_image_provision_action(name: &str) -> Result<(), ToolError> {
 fn image_provision_action(name: &str) -> Option<String> {
     let marker = format!("# LABBY_PROVISION_ACTION: {name}");
     parse_image_action_scripts(LABBY_IMAGE_YAML)
-        .expect("config/incus/labby-image.yaml must be constrained YAML")
+        .expect(".config/incus/labby-image.yaml must be constrained YAML")
         .into_iter()
         .find(|script| script.lines().any(|line| line.trim() == marker))
 }

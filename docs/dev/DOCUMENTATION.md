@@ -99,7 +99,7 @@ when doing so preserves all prose. Distinct authored copies cause a preflight
 failure before any scope is changed. Private overlays, protected history, and
 ignored worktrees are not traversed. The helper does not stage changes and is
 not a lock against concurrent writers; review its resulting diff. Its isolated
-fixtures run through tests/bin_link_claude_mds_test.sh in just docs-check.
+fixtures run through scripts/tests/bin_link_claude_mds_test.sh in just docs-check.
 
 ## Private per-checkout instructions
 

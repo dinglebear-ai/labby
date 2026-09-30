@@ -15,6 +15,7 @@ OUTPUT_KEYS = [
     "all",
     "docs",
     "docs_check",
+    "native_plugins",
     "workflow",
     "rust_compile",
     "rust_test",
@@ -85,8 +86,6 @@ def is_skills_conformance_input(path: str) -> bool:
 
 def is_js_dependency_input(path: str) -> bool:
     return path.endswith(("/package.json", "/package-lock.json", "/pnpm-lock.yaml")) or path in {
-        "package.json",
-        "package-lock.json",
         "pnpm-lock.yaml",
         "scripts/ci/js-advisory-policy.json",
         "scripts/ci/js_advisory_gate.py",
@@ -139,8 +138,8 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             "scripts/install.sh",
             "scripts/install.ps1",
             "scripts/install-macos-service.sh",
-            "apps/gateway-admin/scripts/sync-install-script.mjs",
-            "apps/gateway-admin/scripts/sync-install-script.test.mjs",
+            "apps/web/scripts/sync-install-script.mjs",
+            "apps/web/scripts/sync-install-script.test.mjs",
         },
     )
     docs = any_match(
@@ -161,6 +160,8 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
         or (starts(p, "plugins/labby/") and p.endswith(".md"))
         or p
         in {
+            ".config/.env.example",
+            ".config/config.example.toml",
             "README.md",
             "CLAUDE.md",
             "AGENTS.md",
@@ -172,16 +173,21 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             "Justfile",
         },
     )
+    native_plugins = any_match(
+        paths,
+        lambda p: starts(p, "plugins/labby/")
+        or p in {"scripts/generate-native-plugins.py", "LICENSE", "apm.yml"},
+    )
     web = any_match(
         paths,
-        lambda p: starts(p, "apps/gateway-admin/")
+        lambda p: starts(p, "apps/web/")
         or p in {"Justfile", "scripts/build-web.sh", "scripts/ci/test_default_web_build.py"},
     )
     browser_extension = any_match(
         paths,
         lambda p: starts(
             p,
-            "apps/browser-extension/",
+            "apps/chrome/",
             "crates/labby-browser/",
             "crates/labby/src/api/browser_session.rs",
             "crates/labby/src/api/services/browser.rs",
@@ -189,7 +195,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             "crates/labby/src/dispatch/browser/",
         ),
     )
-    desktop = any_match(paths, lambda p: starts(p, "apps/labby-desktop/"))
+    desktop = any_match(paths, lambda p: starts(p, "apps/tauri/"))
     npm = any_match(paths, lambda p: starts(p, "packages/labby-mcp/") or p == "server.json")
     # The M3 model consumes only core/scenario from the isolated toolkit.
     # Their sources and inherited manifest/lints affect product compilation;
@@ -199,7 +205,6 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
         lambda p: starts(
             p,
             "crates/",
-            "tests/",
             ".cargo/",
             "tools/verification/crates/verify-core/",
             "tools/verification/crates/verify-scenario/",
@@ -246,7 +251,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
     docs_check = docs_check or rust_sources
     incus_inputs = any_match(
         paths,
-        lambda p: starts(p, "config/incus/")
+        lambda p: starts(p, ".config/incus/")
         or p in {
             "scripts/incus-bootstrap.sh",
             "scripts/check-incus-ssh",
@@ -275,6 +280,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
         "all": False,
         "docs": docs,
         "docs_check": docs_check,
+        "native_plugins": native_plugins,
         "workflow": workflow,
         "rust_compile": rust_compile,
         "rust_test": rust_test,

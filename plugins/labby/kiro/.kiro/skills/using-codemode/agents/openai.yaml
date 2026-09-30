@@ -1,0 +1,4 @@
+interface:
+  display_name: "Using Labby Code Mode"
+  short_description: "Discover and call live gateway MCP capabilities"
+  default_prompt: "Use $using-codemode to discover the live upstream schema and complete this gateway task."

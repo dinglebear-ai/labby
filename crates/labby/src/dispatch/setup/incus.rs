@@ -21,8 +21,8 @@ use crate::dispatch::error::ToolError;
 const INCUS_BOOTSTRAP_SCRIPT: &str = include_str!("../../../../../scripts/incus-bootstrap.sh");
 const INSTALL_SCRIPT: &str = include_str!("../../../../../scripts/install.sh");
 const GATEWAY_PROFILE_YAML: &str =
-    include_str!("../../../../../config/incus/labby-gateway-profile.yaml");
-const BACKUP_CONFIG_YAML: &str = include_str!("../../../../../config/incus/labby-backup.yaml");
+    include_str!("../../../../../.config/incus/labby-gateway-profile.yaml");
+const BACKUP_CONFIG_YAML: &str = include_str!("../../../../../.config/incus/labby-backup.yaml");
 
 const SUPPORTED_BACKUP_KEYS: &[&str] = &[
     "snapshots.schedule",
@@ -591,7 +591,7 @@ pub(crate) fn materialize_bootstrap_artifacts(
     root: &Path,
 ) -> Result<IncusBootstrapArtifacts, ToolError> {
     let scripts_dir = root.join("scripts");
-    let config_dir = root.join("config").join("incus");
+    let config_dir = root.join(".config").join("incus");
     std::fs::create_dir_all(&scripts_dir).map_err(|e| ToolError::Sdk {
         message: format!("failed to create {}: {e}", scripts_dir.display()),
         sdk_kind: "incus_bootstrap_materialize_failed".into(),
@@ -3442,6 +3442,10 @@ config:
         assert!(artifacts.install_script.exists());
         assert!(artifacts.profile_file.exists());
         assert!(artifacts.backup_config_file.exists());
+        assert_eq!(
+            artifacts.profile_file,
+            dir.path().join(".config/incus/labby-gateway-profile.yaml")
+        );
 
         let bootstrap = std::fs::read_to_string(&artifacts.bootstrap_script).unwrap();
         assert!(bootstrap.contains("incus-bootstrap.sh"));

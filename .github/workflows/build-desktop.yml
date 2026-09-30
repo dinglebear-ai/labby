@@ -102,11 +102,11 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
         with:
-          workspaces: apps/labby-desktop/src-tauri
+          workspaces: apps/tauri/src-tauri
           shared-key: labby-desktop-release-${{ matrix.kind }}
           cache-on-failure: true
       - name: Install desktop frontend dependencies
-        run: pnpm --dir apps/labby-desktop install --frozen-lockfile
+        run: pnpm --dir apps/tauri install --frozen-lockfile
       - name: Import Developer ID certificate
         # The macOS matrix entry exists only when preflight saw every Apple
         # secret; the step-level gate keeps that invariant visible here.
@@ -135,8 +135,8 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
-          pnpm --dir apps/labby-desktop exec tauri build --bundles app --target aarch64-apple-darwin -- --locked
-          app="apps/labby-desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Labby.app"
+          pnpm --dir apps/tauri exec tauri build --bundles app --target aarch64-apple-darwin -- --locked
+          app="apps/tauri/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Labby.app"
           [[ -d "$app" ]] || { echo "::error::missing Labby.app bundle"; exit 1; }
           tar -C "$(dirname "$app")" -czf "${{ matrix.asset }}" Labby.app
           shasum -a 256 "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
@@ -144,8 +144,8 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          pnpm --dir apps/labby-desktop exec tauri build --bundles appimage -- --locked
-          appimage="$(find apps/labby-desktop/src-tauri/target/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
+          pnpm --dir apps/tauri exec tauri build --bundles appimage -- --locked
+          appimage="$(find apps/tauri/src-tauri/target/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
           [[ -n "$appimage" ]] || { echo "::error::missing Labby AppImage"; exit 1; }
           cp "$appimage" "${{ matrix.asset }}"
           sha256sum "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"

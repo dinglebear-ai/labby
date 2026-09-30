@@ -267,11 +267,11 @@ run_shard() {
     live-mcp-parity) cargo test -p labby --all-features --test live_mcp_actions --test live_surface_parity --locked -- --test-threads=1 >"$log" 2>&1;;
     live-identity-protected-restart) cargo test -p labby --all-features --test live_identity_bootstrap --test live_protected_routes --test live_restart_persistence --locked -- --test-threads=1 >"$log" 2>&1;;
     mcp-app-host) PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-/home/runner/.cache/ms-playwright}" cargo test -p labby --all-features --test mcp_apps_host_qualification --locked -- q4_real_resources_render_in_distinct_openai_and_anthropic_emulators --exact --ignored --test-threads=1 >"$log" 2>&1;;
-    browser-live) node_bin="$(command -v node)"; case "$node_bin" in */mise/shims/*) node_bin="$(mise which node)";; esac; PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-/home/runner/.cache/ms-playwright}" LABBY_NODE_BIN="$node_bin" LABBY_LIVE_BROWSER_RUN=1 LABBY_LIVE_BROWSER_NIGHTLY="$([ "$tier" = nightly ] && echo true || echo false)" LABBY_LIVE_BROWSER_ASSETS_DIR="${LABBY_LIVE_BROWSER_ASSETS_DIR:-$repo_root/apps/gateway-admin/out}" cargo test -p labby --all-features --test live_browser_supervisor --locked -- --test-threads=1 >"$log" 2>&1;;
+    browser-live) node_bin="$(command -v node)"; case "$node_bin" in */mise/shims/*) node_bin="$(mise which node)";; esac; PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-/home/runner/.cache/ms-playwright}" LABBY_NODE_BIN="$node_bin" LABBY_LIVE_BROWSER_RUN=1 LABBY_LIVE_BROWSER_NIGHTLY="$([ "$tier" = nightly ] && echo true || echo false)" LABBY_LIVE_BROWSER_ASSETS_DIR="${LABBY_LIVE_BROWSER_ASSETS_DIR:-$repo_root/apps/web/out}" cargo test -p labby --all-features --test live_browser_supervisor --locked -- --test-threads=1 >"$log" 2>&1;;
     fault-qualification) LABBY_E2E_FAULT_REPORT="$run_root/artifacts/fault-qualification.json" cargo test -p labby --all-features --test e2e_fault_qualification --locked -- --test-threads=1 >"$log" 2>&1;;
     wedged-cleanup-selftest) bash -c 'trap "" TERM; sleep 6; touch -- "$LABBY_E2E_WEDGED_MARKER"; while :; do sleep 1; done' >"$log" 2>&1;;
     escaped-cleanup-selftest) "$LABBY_E2E_HELPER_TEST_BINARY" "$LABBY_E2E_HELPER_TEST_FILTER" --exact --ignored --nocapture >"$log" 2>&1;;
-    escaped-browser-selftest) "$LABBY_NODE_BIN" --experimental-strip-types "$repo_root/apps/gateway-admin/lib/browser/noncooperative-browser-parent.fixture.ts" >"$log" 2>&1;;
+    escaped-browser-selftest) "$LABBY_NODE_BIN" --experimental-strip-types "$repo_root/apps/web/lib/browser/noncooperative-browser-parent.fixture.ts" >"$log" 2>&1;;
   esac && complete "$shard" "$log"
 }
 start_owned_shard() {
