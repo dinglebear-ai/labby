@@ -9,7 +9,7 @@ status: "mixed-current-and-design"
 
 > **Status (2026-09-16).** This packet mixes the original design with parts
 > that are now implemented. Implemented today: the access store at schema v7
-> ([DATA_MODEL.md](./DATA_MODEL.md#schema-v7-current)), owner bootstrap (browser
+> ([DATA_MODEL.md](./DATA_MODEL.md#schema-v9-current)), owner bootstrap (browser
 > and offline proof), Teams, invitations, platform administration, Project
 > memberships, and the v1 contract in
 > [MULTI_USER_AUTHORITY.md](./MULTI_USER_AUTHORITY.md). Operator behavior is in
