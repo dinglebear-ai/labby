@@ -286,8 +286,14 @@ jobs:
         with:
           php-version: "8.3"
           coverage: none
-      - run: scripts/ci/unraid-plugin-checksums.sh
-      - run: scripts/ci/unraid-runtime-tests.sh
+      - name: Check Unraid plugin assets when present
+        run: |
+          if [ -f unraid/labby.plg ]; then
+            scripts/ci/unraid-plugin-checksums.sh
+            scripts/ci/unraid-runtime-tests.sh
+          else
+            echo 'Unraid plugin assets are absent; skipping retired plugin checks.'
+          fi
 
   actionlint:
     name: Actionlint

@@ -98,6 +98,8 @@ test('snippets page renders fetched snippets and typed inputs', async () => {
           '<script>alert("nope")</script>',
           '![tracking pixel](https://example.com/pixel.png)',
           '[bad link](javascript:alert("nope"))',
+          '[data link](data:text/html,unsafe)',
+          '[vbscript link](vbscript:msgbox("unsafe"))',
           '',
           '```js',
           'async () => ({ ok: true })',
@@ -157,12 +159,11 @@ test('snippets page renders fetched snippets and typed inputs', async () => {
   assert.deepEqual(requests[1]?.params, { name: 'homelab-readonly-pulse' })
   assert.equal(view.container.querySelector('script'), null)
   assert.equal(view.container.querySelector('img'), null)
-  assert.equal(
-    Array.from(view.container.querySelectorAll('a')).some((link) =>
-      link.getAttribute('href')?.startsWith('javascript:'),
-    ),
-    false,
-  )
+  for (const link of view.container.querySelectorAll('a')) {
+    const href = link.getAttribute('href') ?? ''
+    const scheme = href.match(/^([a-z][a-z0-9+.-]*):/i)?.[1]?.toLowerCase()
+    assert.ok(!scheme || ['http', 'https', 'mailto'].includes(scheme), `unsafe link: ${href}`)
+  }
 
   const testButton = Array.from(view.container.querySelectorAll('button')).find(
     (button) => button.textContent?.trim() === 'Test live',

@@ -99,7 +99,7 @@ $install-labby
 
 The skill inspects the machine, asks for authentication/listener/deployment choices, drives the verified release installer plus `labby setup`, configures supported persistence and HTTPS exposure, helps register Labby in installed agents, and does not declare success until `labby doctor` plus a live MCP smoke pass. Security-sensitive durable writes remain owned by the Labby binary rather than duplicated in skill prose.
 
-See [`skills/install-labby/SKILL.md`](../../skills/install-labby/SKILL.md) for the canonical orchestration skill and [`docs/adr/0001-install-labby-first-class-install-orchestrator.md`](../../docs/adr/0001-install-labby-first-class-install-orchestrator.md) for the architecture decision.
+See [`skills/install-labby/SKILL.md`](./skills/install-labby/SKILL.md) for the canonical APM orchestration skill and [`docs/adr/0001-install-labby-first-class-install-orchestrator.md`](./docs/adr/0001-install-labby-first-class-install-orchestrator.md) for the architecture decision.
 
 #### Install through APM
 
