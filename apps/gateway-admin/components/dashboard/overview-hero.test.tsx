@@ -33,6 +33,7 @@ test('desktop refresh control keeps its recency label visible', () => {
   assert.ok(html.includes('>7d<'))
   assert.ok(html.includes('>30d<'))
   assert.ok(html.includes('>Manage Servers<'))
+  assert.equal((html.match(/data-visible-label="1"/g) ?? []).length, 5)
 })
 
 function gatewayWithStatus(status: Partial<Gateway['status']>): Gateway {
