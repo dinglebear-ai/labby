@@ -373,6 +373,7 @@ fn generated_client_plugin_inputs_route_to_drift_check() {
         "plugins/labby/codex/plugin.json",
         "plugins/labby/copilot/mcp.json",
         "plugins/labby/.claude-plugin/plugin.json",
+        "plugins/install-labby/skills/install-labby/SKILL.md",
         "plugins/labby/apm.yml",
         "scripts/generate-native-plugins.py",
         "LICENSE",

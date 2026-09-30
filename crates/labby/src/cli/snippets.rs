@@ -120,12 +120,8 @@ pub async fn run(
         || matches!(&args.command, SnippetsCommand::Test(test) if test.live);
     if needs_upstreams {
         if let Some(live) = crate::live_gateway::detect(config, "cli").await? {
-            return run_on_selected_daemon(
-                args.command,
-                live.with_team_id(team_id.map(str::to_owned)),
-                format,
-            )
-            .await;
+            validate_remote_team_selection(team_id)?;
+            return run_on_selected_daemon(args.command, live, format).await;
         }
         crate::cli::gateway::build_manager(config, true).await?;
     }
@@ -271,6 +267,7 @@ async fn run_on_selected_daemon(
             let params = crate::cli::params::parse_kv_params(args.params)?;
             let response = execute_remote_snippet(&live, &args.name, params).await?;
             crate::output::print(&response, format)?;
+            Ok(ExitCode::SUCCESS)
         }
         SnippetsCommand::Test(args) => {
             let params = crate::cli::params::parse_kv_params(args.params)?;
@@ -279,32 +276,37 @@ async fn run_on_selected_daemon(
                     &crate::dispatch::helpers::lab_home(),
                     &crate::dispatch::snippets::store::builtin_snippet_dir(),
                 )?;
+                anyhow::ensure!(
+                    snippets.len() <= 100,
+                    "test --all is bounded to 100 snippets; test named subsets instead"
+                );
                 let mut results = Vec::with_capacity(snippets.len());
                 for snippet in snippets {
-                    let result = test_remote_snippet(
-                        &live,
-                        &snippet.name,
-                        Value::Object(Default::default()),
-                    )
-                    .await;
-                    results.push(match result {
+                    let result = test_remote_snippet(&live, &snippet.name, params.clone()).await;
+                    let mut report = match result {
                         Ok(value) => value,
-                        Err(error) => json!({"name": snippet.name, "passed": false, "error": error.to_string()}),
-                    });
+                        Err(error) => {
+                            json!({"name": snippet.name, "passed": false, "error": error.to_string()})
+                        }
+                    };
+                    compact_bulk_report(&mut report);
+                    results.push(report);
                 }
-                let passed = results.iter().all(|value| value["passed"] == true);
+                let passed =
+                    !results.is_empty() && results.iter().all(|value| value["passed"] == true);
                 crate::output::print(&json!({"passed": passed, "results": results}), format)?;
+                Ok(remote_test_exit_code(passed))
             } else {
                 let name = args
                     .name
                     .ok_or_else(|| anyhow::anyhow!("provide a snippet name or --all"))?;
                 let result = test_remote_snippet(&live, &name, params).await?;
                 crate::output::print(&result, format)?;
+                Ok(remote_test_exit_code(result["passed"] == true))
             }
         }
         _ => unreachable!("only executable snippet commands select a daemon"),
     }
-    Ok(ExitCode::SUCCESS)
 }
 
 async fn test_remote_snippet(
@@ -325,7 +327,101 @@ fn remote_snippet_passed(response: &Value) -> bool {
         .get("ok")
         .and_then(Value::as_bool)
         .unwrap_or(true);
-    calls_passed && result_passed
+    let shaped_or_truncated = response["result_shaping"]["changed"] == true
+        || response["result_shaping"]["truncated"] == true
+        || response["result"].get("truncated") == Some(&Value::Bool(true));
+    calls_passed && result_passed && response.get("result").is_some() && !shaped_or_truncated
+}
+
+fn remote_test_exit_code(passed: bool) -> ExitCode {
+    if passed {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+fn compact_bulk_report(report: &mut Value) {
+    let diagnostics = if report["passed"] == false {
+        report.get("response").map(|response| {
+            json!({
+                "failed_calls": response["calls"].as_array().map_or(0, |calls| calls.iter().filter(|call| call["ok"] != true).count()),
+                "missing_result": response.get("result").is_none(),
+                "result_failed": response["result"]["ok"] == false,
+                "result_shaped": response["result_shaping"]["changed"] == true
+                    || response["result_shaping"]["truncated"] == true
+                    || response["result"]["truncated"] == true,
+            })
+        })
+    } else {
+        None
+    };
+    if let Some(object) = report.as_object_mut() {
+        object.remove("result");
+        object.remove("response");
+        object.remove("calls");
+        if let Some(diagnostics) = diagnostics {
+            object.insert("diagnostics".into(), diagnostics);
+        }
+    }
+}
+
+fn validate_remote_team_selection(team_id: Option<&str>) -> Result<()> {
+    anyhow::ensure!(
+        team_id.is_none(),
+        "remote snippet execution cannot apply --team-id to the daemon's MCP Code Mode route; use a Team-bound gateway endpoint"
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod remote_snippet_tests {
+    use super::*;
+
+    #[test]
+    fn live_verdict_requires_a_result_successful_calls_and_complete_output() {
+        assert!(remote_snippet_passed(&json!({"result": null, "calls": []})));
+        for response in [
+            json!({"calls": []}),
+            json!({"result": {"ok": false}, "calls": []}),
+            json!({"result": true, "calls": [{"ok": false}]}),
+            json!({"result": true, "calls": [], "result_shaping": {"truncated": true}}),
+            json!({"result": true, "calls": [], "result_shaping": {"changed": true}}),
+            json!({"result": {"truncated": true}, "calls": []}),
+        ] {
+            assert!(!remote_snippet_passed(&response), "{response}");
+        }
+    }
+
+    #[test]
+    fn failed_live_verdict_sets_failure_exit_status() {
+        assert_eq!(remote_test_exit_code(false), ExitCode::FAILURE);
+        assert_eq!(remote_test_exit_code(true), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn selected_team_is_rejected_before_remote_execution() {
+        assert!(validate_remote_team_selection(Some("team-alpha")).is_err());
+        assert!(validate_remote_team_selection(None).is_ok());
+    }
+
+    #[test]
+    fn bulk_reports_keep_verdicts_without_large_payloads() {
+        let mut report = json!({
+            "name": "demo", "passed": false,
+            "response": {"result": [1, 2, 3], "calls": [{"ok": false}]},
+            "error": "failed"
+        });
+        compact_bulk_report(&mut report);
+        assert_eq!(
+            report,
+            json!({
+                "name": "demo", "passed": false, "error": "failed",
+                "diagnostics": {"failed_calls": 1, "missing_result": false,
+                    "result_failed": false, "result_shaped": false}
+            })
+        );
+    }
 }
 
 async fn execute_remote_snippet(
