@@ -1,5 +1,11 @@
 #![allow(clippy::panic, dead_code)]
 
+#[cfg(target_os = "linux")]
+#[path = "support/action_matrix.rs"]
+mod action_matrix;
+#[cfg(target_os = "linux")]
+#[path = "support/action_scenarios.rs"]
+mod action_scenarios;
 #[path = "support/evidence.rs"]
 mod evidence;
 #[path = "support/live_identity.rs"]
@@ -396,4 +402,186 @@ async fn file_stash_round_trips_across_two_principals_and_restart() {
     let cleanup = identity.cleanup().await.expect("cleanup");
     assert!(cleanup.is_clean(), "cleanup: {:?}", cleanup.failures);
     assert!(!root.exists(), "owned installation survived cleanup");
+}
+
+// These requests run against the real child daemon. Bind dependent actions to
+// the save receipt instead of treating the matrix's placeholder IDs as success.
+#[cfg(target_os = "linux")]
+async fn context_api(
+    client: &reqwest::Client,
+    identity: &live_identity::LiveIdentity,
+    action: &str,
+    params: Value,
+) -> Value {
+    client
+        .post(format!("{}/v1/stash", identity.base()))
+        .bearer_auth(identity.credential_for_request())
+        .json(&serde_json::json!({"action": action, "params": params}))
+        .send()
+        .await
+        .expect("context API request")
+        .error_for_status()
+        .expect("context API success")
+        .json()
+        .await
+        .expect("context API JSON")
+}
+
+#[cfg(target_os = "linux")]
+async fn context_rpc(
+    client: &reqwest::Client,
+    identity: &live_identity::LiveIdentity,
+    method: &str,
+    params: Value,
+) -> Value {
+    let response: Value = client
+        .post(format!("{}/mcp", identity.base()))
+        .bearer_auth(identity.credential_for_request())
+        .header("accept", "application/json, text/event-stream")
+        .json(&serde_json::json!({"jsonrpc":"2.0", "id":1, "method":method, "params":params}))
+        .send()
+        .await
+        .expect("context MCP request")
+        .error_for_status()
+        .expect("context MCP status")
+        .json()
+        .await
+        .expect("context MCP JSON");
+    assert!(response.get("error").is_none(), "MCP error: {response}");
+    response["result"].clone()
+}
+
+#[cfg(target_os = "linux")]
+async fn context_tool(
+    client: &reqwest::Client,
+    identity: &live_identity::LiveIdentity,
+    action: &str,
+    params: Value,
+) -> Value {
+    let result = context_rpc(
+        client,
+        identity,
+        "tools/call",
+        serde_json::json!({"name":"stash", "arguments":{"action":action,"params":params}}),
+    )
+    .await;
+    assert_ne!(result["isError"], true, "Stash tool error: {result}");
+    let envelope: Value = serde_json::from_str(
+        result["content"][0]["text"]
+            .as_str()
+            .expect("Stash tool text"),
+    )
+    .expect("Stash tool JSON");
+    assert_eq!(envelope["ok"], true, "Stash success envelope");
+    envelope["data"].clone()
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn context_documents_keep_text_and_uri_across_surfaces_move_and_restart() {
+    use action_matrix::{EvidenceLevel, Surface};
+    let mut identity = live_identity::LiveIdentity::bootstrap_with_scopes(
+        "stash-context-owner",
+        live_identity::AUTHORITY_SCOPES,
+    )
+    .await
+    .expect("context owner bootstrap");
+    let root = identity.root().to_path_buf();
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(action_scenarios::CHILD_DEADLINE)
+        .build()
+        .unwrap();
+    let intent = |action: &str| {
+        action_matrix::intents()
+            .iter()
+            .find(|intent| intent.service == "stash" && intent.action == action)
+            .expect("independent Stash intent")
+    };
+    let initialize = serde_json::json!({"protocolVersion":"2026-07-28","capabilities":{},
+        "clientInfo":{"name":"stash-context-journey","version":"1"}});
+    context_rpc(&client, &identity, "initialize", initialize.clone()).await;
+    let save_params = action_scenarios::fixture_params(intent("stash.save_text"));
+    let content = save_params["content"].as_str().unwrap().to_owned();
+    let first = context_tool(&client, &identity, "stash.save_text", save_params.clone()).await;
+    let mut second_params = save_params;
+    second_params["filename"] = serde_json::json!("api-context.md");
+    let second = context_api(&client, &identity, "stash.save_text", second_params).await;
+    let saved = [first, second];
+    let destination = "matrix/reviewed";
+    for (index, file) in saved.iter().enumerate() {
+        let uri = file["uri"].as_str().expect("saved URI");
+        assert_eq!(
+            uri,
+            format!("stash://me/files/{}", file["file_id"].as_str().unwrap())
+        );
+        let params = serde_json::json!({"file_id":file["file_id"], "folder":destination});
+        let moved = if index == 0 {
+            context_tool(&client, &identity, "stash.move", params).await
+        } else {
+            context_api(&client, &identity, "stash.move", params).await
+        };
+        assert_eq!(moved["uri"], uri, "move changed the stable URI");
+        assert_eq!(moved["folder"], destination);
+    }
+    for restart in [false, true] {
+        if restart {
+            identity
+                .restart()
+                .await
+                .expect("restart with context documents");
+            context_rpc(&client, &identity, "initialize", initialize.clone()).await;
+        }
+        for file in &saved {
+            let params = serde_json::json!({"uri":file["uri"]});
+            let api = context_api(&client, &identity, "stash.read_text", params.clone()).await;
+            let mcp = context_tool(&client, &identity, "stash.read_text", params.clone()).await;
+            assert_eq!(api, mcp, "API and MCP document reads differ");
+            assert_eq!(api["content"], content);
+            assert_eq!(api["file"]["uri"], file["uri"]);
+            assert_eq!(api["file"]["folder"], destination);
+            assert!(api["next_cursor"].is_null());
+            let resource = context_rpc(&client, &identity, "resources/read", params).await;
+            assert_eq!(resource["contents"][0]["text"], content);
+            assert_eq!(resource["contents"][0]["mimeType"], "text/markdown");
+            assert_eq!(resource["contents"][0]["uri"], file["uri"]);
+        }
+        let api = context_api(&client, &identity, "stash.folders", serde_json::json!({})).await;
+        let mcp = context_tool(&client, &identity, "stash.folders", serde_json::json!({})).await;
+        assert_eq!(api, mcp, "API and MCP folder listings differ");
+        assert_eq!(
+            api["folders"],
+            serde_json::json!([{"folder":destination,"file_count":2}])
+        );
+    }
+    let cleanup = identity.cleanup().await.expect("journaled context cleanup");
+    assert!(cleanup.is_clean(), "cleanup: {:?}", cleanup.failures);
+    assert!(
+        !root.exists(),
+        "owned context installation survived cleanup"
+    );
+    // Publish evidence only after the real reads, restart, and cleanup pass.
+    for action in [
+        "stash.save_text",
+        "stash.read_text",
+        "stash.folders",
+        "stash.move",
+    ] {
+        let intent = intent(action);
+        for surface in [Surface::Api, Surface::Mcp] {
+            let outcome = action_scenarios::ActionOutcome {
+                key: intent.key(),
+                surface,
+                disposition: action_scenarios::disposition(intent),
+                evidence: EvidenceLevel::LiveRestartPersistence,
+                owner: intent.scenario_owner,
+                outcome_kind: "context_text_and_folder_persisted".into(),
+                recovery: "owned_daemon_restarted".into(),
+                side_effects: "two_owned_documents_verified_and_cleaned".into(),
+                canary_free: cleanup.is_clean(),
+            };
+            assert!(outcome.satisfies_surface(intent, surface));
+            outcome.record();
+        }
+    }
 }
