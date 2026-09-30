@@ -51,6 +51,67 @@ test('notification feed failure does not hide delivery settings and refresh clea
   }
 })
 
+for (const staleStatus of [200, 503]) {
+  for (const latestStatus of [200, 503]) {
+    test(`latest notification response (${latestStatus}) wins over stale response (${staleStatus})`, async () => {
+      installTestDom()
+      const { renderClient } = await import('@/lib/testing/dom-test-utils')
+      const { default: NotificationsSettingsPage } = await import('./page')
+      const originalSchema = setupApi.settingsSchema
+      const originalState = setupApi.settingsState
+      const originalFetch = globalThis.fetch
+      const pending: { signal: AbortSignal | null | undefined, resolve: (response: Response) => void }[] = []
+      setupApi.settingsSchema = async () => ({ schema_version: 1, sections: [], fields: [] })
+      setupApi.settingsState = async () => ({
+        schema_version: 1, config_path: '/tmp/config.toml', env_path: '/tmp/.env',
+        section: 'notifications', values: {}, sources: {},
+      })
+      // Ignore cancellation to also exercise responses already received before abort.
+      globalThis.fetch = async (_url, init) => new Promise<Response>((resolve) => {
+        pending.push({ signal: init?.signal, resolve })
+      })
+      function response(title: string, status: number): Response {
+        return new Response(JSON.stringify(status === 200 ? { notifications: [{
+          id: title, createdAtUnixMs: 1, level: 'error', title,
+          body: '', source: 'test', dedupeKey: title,
+        }] } : { message: title }), { status })
+      }
+
+      let view: Awaited<ReturnType<typeof renderClient>> | undefined
+      try {
+        view = await renderClient(<NotificationsSettingsPage />)
+        assert.equal(pending.length, 1)
+        const refresh = [...view.container.querySelectorAll('button')].find((button) => button.textContent?.includes('Refresh'))
+        assert.ok(refresh)
+        await act(async () => {
+          refresh.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+        })
+        assert.equal(pending.length, 2)
+        await act(async () => { pending[1].resolve(response('latest response', latestStatus)) })
+        assert.match(view.container.textContent ?? '', /latest response/)
+        await act(async () => { pending[0].resolve(response('stale response', staleStatus)) })
+        assert.match(view.container.textContent ?? '', /latest response/)
+        assert.doesNotMatch(view.container.textContent ?? '', /stale response/)
+        assert.equal(pending[0].signal?.aborted, true)
+
+        await act(async () => {
+          refresh.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+        })
+        assert.equal(pending.length, 3)
+        await view.unmount()
+        view = undefined
+        assert.equal(pending[2].signal?.aborted, true)
+        await act(async () => { pending[2].resolve(response('unmounted response', 200)) })
+      } finally {
+        await view?.unmount()
+        setupApi.settingsSchema = originalSchema
+        setupApi.settingsState = originalState
+        globalThis.fetch = originalFetch
+      }
+    })
+  }
+}
+
 test('refreshing the notification feed preserves unsaved delivery settings', async () => {
   installTestDom()
   const { renderClient } = await import('@/lib/testing/dom-test-utils')
