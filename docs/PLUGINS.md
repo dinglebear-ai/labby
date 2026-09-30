@@ -6,7 +6,7 @@ updated: "2026-08-18"
 
 # Labby Plugins
 
-The checked-in `plugins/labby` tree ships **no binary**. Hosts install `labby`
+The checked-in `plugins/install-labby` and `plugins/labby` trees ship **no binary**. Hosts install `labby`
 explicitly and the binary owns the setup flow from there:
 
 ```bash
@@ -33,9 +33,9 @@ An unrestorable journal is retained and reported rather than discarded. The
 installer's only job is bootstrap; everything after first contact (config,
 credentials, connectivity, repair) is owned by `labby setup`.
 
-## Checked-in plugin (`plugins/labby`)
+## Checked-in plugins
 
-Skills and MCP configuration only. Its `.mcp.json` connects over HTTP to a
+The `install-labby` plugin owns the installer skill and MCP configuration; the `labby` plugin owns the usage skills. The installer plugin `.mcp.json` connects over HTTP to a
 running `labby serve` (`${user_config.server_url}/mcp`), so machines that
 install the plugin remotely never need a local binary at all. The plugin ships
 **no Claude Code hooks**. The former SessionStart / ConfigChange setup shims,
@@ -48,7 +48,7 @@ The [implementation workflow skill](../plugins/labby/skills/implement-in-microsa
 
 The repository root is also an [APM](https://microsoft.github.io/apm/) package.
 `apm install -g dinglebear-ai/labby` deploys the same four skills (the root
-`skills/` entries are symlinks into `plugins/labby/skills`, so there is one
+`skills/` entries are symlinks into the two plugin skill trees, so there is one
 source) and registers the `labby` stdio MCP server through the npm launcher.
 `apm.yml` carries a `# x-release-please-version` marker, so Release Please keeps
 its version aligned with the workspace. The package ships no binary and no
@@ -58,7 +58,7 @@ hooks; host provisioning stays with `install-labby` and `labby setup`.
 
 Labby no longer generates or publishes an in-product plugin marketplace. The marketplace
 moved to a dedicated repo, [dendrite](https://github.com/dinglebear-ai/dendrite), so it
-is decoupled from this Rust workspace. Dendrite catalogs `plugins/labby` (via a
+is decoupled from this Rust workspace. Dendrite catalogs both plugin packages (via a
 `git-subdir` source pointing at this repo) alongside the other Labby/Labby plugins
 and third-party entries.
 
