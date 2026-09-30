@@ -40,16 +40,17 @@ inputs:
 
 # Repository Status GitHub Pulse
 
-Use this snippet for the GitHub half of a repository-status sweep. The current
-Labby GitHub catalog exposes a dedicated `github::search_pull_requests` tool, so
-PR discovery no longer needs to masquerade as generic issue search. Workflow-run
-listing is still a shell-only parity gap in the active GitHub Code Mode catalog.
+Use this snippet for the GitHub half of a repository-status sweep. It targets
+the `github::search_pull_requests` tool observed on 2026-09-16 and returns shell
+commands for workflow-run evidence. It does not discover whether today's
+upstream offers workflow tools; rediscover the intended gateway before treating
+its hardcoded `shell_only` result as a capability diagnosis.
 
 ## Current Calls
 
 - `github::search_pull_requests` with explicit `owner` and `repo` for open PRs.
 - A second pull-request search scoped by `head:<branch>` when `branch` is provided.
-- Returned `gh run list` commands for workflow evidence because no live workflow-run tool is discoverable in the current GitHub upstream.
+- Returned `gh run list` commands for workflow evidence, reflecting the recorded upstream gap rather than a live capability probe.
 
 The pull-request calls are independent and run through `codemode.batch`.
 This snippet is read-only and complements local Git status/worktree/diff evidence.

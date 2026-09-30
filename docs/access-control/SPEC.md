@@ -66,7 +66,7 @@ Milestone 1 has no authorization cache. It includes explicit single-owner bootst
 
 ### Explicit first-owner workflow
 
-The initial owner is created only through `POST /v1/access/bootstrap-owner`, which is mounted only when OAuth browser mode exists. This endpoint is an authenticated browser projection, not a general access service: there is no MCP, Code Mode, CLI, stdio, local-credential, or bearer-automation equivalent. Without OAuth browser mode the route is absent and returns `404` before body validation.
+The original browser milestone creates the initial owner through `POST /v1/access/bootstrap-owner`, mounted only when OAuth browser mode exists. Without OAuth browser mode that route is absent and returns `404` before body validation. Current product bootstrap also supports the explicit offline `labby auth bootstrap` proof workflow and `/auth/bootstrap/consume`; these use the reserved bootstrap transaction rather than granting authority from loopback origin. The browser-specific requirements below apply to the browser endpoint, not to every bootstrap workflow. See `crates/labby/src/access/bootstrap.rs`, `crates/labby/src/dispatch/access_bootstrap.rs`, and the operator [Access contract](../services/ACCESS.md).
 
 The `/v1` middleware MUST validate the browser session and CSRF token and MUST derive both `AuthContext` and canonical `VerifiedIdentity`. The handler additionally requires `lab:admin` and an authenticated email equal to the configured bootstrap admin email. Email establishes eligibility for this one operation; the durable Principal link remains the verified provider issuer and subject. Caller input MUST NOT select or replace identity, and loopback origin MUST NOT grant authority.
 

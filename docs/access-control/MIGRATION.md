@@ -7,9 +7,19 @@ status: "implemented-runbook"
 
 # Multi-user ownership migration and recovery
 
-## Execution schema v8
+## Current schema v9
 
-The current binary targets schema v8 (`labby-access-v8-20260916`). A v7
+The binary targets schema v9 (`labby-access-v9-20260918`). The approved offline
+v8-to-v9 migration preserves existing state and adds the six local Artifact
+distribution tables listed in [DATA_MODEL.md](./DATA_MODEL.md#schema-v9-current).
+Source authority is `crates/labby/src/access/migrations.rs`; its
+`v8_migration_preserves_existing_state_and_adds_empty_artifact_distribution_tables`
+test covers that transition. Older stores cross the intermediate versions under
+the same approval for the final target. Normal daemon startup does not migrate.
+
+## Historical execution schema v8
+
+The v8 binary targeted schema v8 (`labby-access-v8-20260916`). A v7
 installation uses the same offline approval, independent checkpoint and
 verified-reopen workflow below. Its upgrade preserves existing ownership,
 bootstrap generation, authority revisions, definitions and sessions. It adds
@@ -146,8 +156,9 @@ verified-reopen controls as an ordinary version migration. The same-version
 repair writes a distinct compatibility completion marker so an existing v8
 receipt from the earlier v7-to-v8 crossing is preserved and cannot block or be
 overwritten by the repair. Approval therefore
-uses `source_version: 8` and `target_version: 8`, while
-`target_fingerprint` remains `labby-access-v8-20260916`. No daemon startup
+uses `source_version: 8` and `target_version: 9`, with
+`target_fingerprint: "labby-access-v9-20260918"`. The current migration first
+repairs canonical v8 shape and then advances to v9 under that approval. No daemon startup
 path performs this reconciliation implicitly.
 
 ## Production-shaped v5 inventory

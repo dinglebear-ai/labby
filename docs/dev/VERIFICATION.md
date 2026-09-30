@@ -95,8 +95,8 @@ granular source obligations are present for review. It does **not** mean:
 - 2,223 unique user-visible features exist; or
 - an unmapped row has failed a test.
 
-The current catalog has nine reviewed dispositions and nine registered oracles,
-leaving 2,214 rows unreviewed before considering execution state. Initially
+The current catalog has eight reviewed dispositions and five registered oracles,
+leaving 2,215 rows without a disposition before considering execution state. Initially
 crediting five requirements while reporting 2,218 unresolved meant
 that five rows had the full chain of reviewed applicability, sufficient oracle
 scope, and passing bound execution evidence. The other rows still needed one
@@ -190,45 +190,31 @@ directory as the `mcp-spec-compliance` artifact.
 ## Running the MCP gates
 
 Use the repository's MCP specification Just recipes with a checkout whose HEAD
-exactly matches `tools/verification/conformance/mcp-spec-sources.json`. They default to
-`target/mcp-spec-source`, or accept a checkout path as their final argument.
+exactly matches `tools/verification/conformance/mcp-spec-sources.json`. All three
+recipes require an explicit checkout path; they do not fetch the specification.
 The recipe list in the Justfile is the command source of truth:
 
 ```bash
-# Materialize and authenticate the default immutable source checkout.
-just mcp-spec-source
-
-# Intentionally rewrite the generated prose and schema inventories.
-just mcp-spec-inventory /path/to/modelcontextprotocol
-
 # Validate source extraction, catalogs, mappings, and coordinator tests.
 just mcp-spec-check /path/to/modelcontextprotocol
 
-# Check intent, then execute all registered oracles.
-just mcp-spec-verify oracles /path/to/modelcontextprotocol
-
-# Equivalent CI-safe aggregate entry point.
-just mcp-spec-gate /path/to/modelcontextprotocol
+# Execute all registered oracles while reporting unmapped coverage.
+just mcp-spec-oracles /path/to/modelcontextprotocol
 
 # Rebuild a report from an existing matching receipt without rerunning tests.
-just mcp-spec-report /path/to/modelcontextprotocol
-
-# Refresh and print the same report counts without failing merely because the
-# denominator is still incomplete. Invalid or stale evidence still fails.
-just mcp-spec-summary /path/to/modelcontextprotocol
+python3 scripts/ci/mcp_spec_compliance.py report --spec-checkout /path/to/modelcontextprotocol
 
 # Strict denominator-wide gate; expected red while coverage is incomplete.
 just mcp-spec-compliance /path/to/modelcontextprotocol
 ```
 
-`just mcp-spec-verify check`, `oracles`, and `full` provide the three named
-tiers. `mcp-spec-inventory` is a mutation and belongs only in an intentional
-spec migration; ordinary checks never regenerate committed catalogs.
-`mcp-spec-report` preserves the strict compliance exit status and therefore
-normally exits 1 while coverage remains incomplete. `mcp-spec-summary` is the
-explicitly non-gating operator view: it accepts only exit 0 (complete) or exit
-1 (valid report, incomplete compliance), while source, catalog, binding, and
-receipt errors still exit 2 and fail the recipe. Neither command runs oracles.
+The Python coordinator provides `check`, `run`, and `report`; `run --gate
+oracles` requires the complete registered set, while `run` defaults to the
+strict full gate. `report` normally exits 1 while compliance is incomplete;
+invalid source, catalogs, binding, or receipts exit 2. It does not execute
+oracles. There are no `mcp-spec-source`, `mcp-spec-inventory`, `mcp-spec-verify`,
+`mcp-spec-gate`, `mcp-spec-report`, or `mcp-spec-summary` Just recipes. Intentional
+inventory regeneration uses the extractor scripts, not ordinary checks.
 
 The supported workflow has three stages:
 
@@ -268,7 +254,8 @@ The report's `compliant` field is true only when every requirement outcome is
 | `not_run` | Suitable mappings exist, but the current valid receipt lacks passing results for all of them. | Execute the complete registered suite. |
 | `failed` | At least one linked oracle failed or timed out. | Triage the product, fixture, or contract; never rewrite the disposition to hide it. |
 
-`registered_oracles_passed: true` means only that the currently registered
+The coordinator's printed summary field `registered_oracles_passed: true`
+(not a field in the retained report) means only that the currently registered
 tests passed. It may coexist with thousands of unresolved rows. Only
 `compliant: true` supports a full-compliance claim, and even that claim is
 limited to the pinned version, reviewed Labby roles/transports, and retained
@@ -291,16 +278,20 @@ hash, exact backend releases, bounds/deadlines, results, and rendered reports.
 Missing evidence remains explicit. A backend registered in a catalog but not
 executed does not receive credit.
 
-The local recipe-to-evidence mapping is exact:
+The local recipe and workflow mapping is:
 
 | Recipe | Executes | Claim and prerequisites |
 | --- | --- | --- |
 | `just verify-t0` | `labby-verify t0 tools/verification/formal` | Model catalog and deterministic replay only. |
 | `just verify-t1` | `labby-verify t1 tools/verification/formal` | Bounded Stateright exploration only. |
-| `just verify-c1` | Serial `lifecycle_conformance` product test | Real-process controlled lifecycle relation; use the workflow for retained CI provenance. |
-| `just verify-t2-shuttle` | `verify-loom` Shuttle lifecycle controls | Local bounded schedules; no external installation. |
-| `just verify-t2-kani` | Ignored `actual_kani` controls | Requires executable Kani 0.67.0 in `LABBY_KANI_DRIVER`; the recipe does not install it. |
-| `just verify-t3-formal` | Ignored TLC and Alloy actual-tool controls | Requires authenticated TLA+ 1.7.4 and Alloy 6.2.0 jars in the named environment variables; the recipe does not download them. |
+| `verification-conformance.yml` | Serial `lifecycle_conformance` product test plus evidence validation | Real-process controlled lifecycle relation with retained CI provenance. |
+| `verification-t2.yml` | `verify-loom` Shuttle controls and ignored `actual_kani` controls | Bounded schedules and Kani 0.67.0 qualification; workflow provisions Kani. |
+| `verification-t3.yml` | Ignored TLC and Alloy actual-tool controls | Authenticated TLA+ 1.7.4 and Alloy 6.2.0 jars; workflow downloads and hashes them. |
+
+There are no `verify-c1`, `verify-t2-shuttle`, `verify-t2-kani`, or
+`verify-t3-formal` Just recipes. For a local reproduction, use the exact Cargo
+selectors and prerequisites from the corresponding workflow and retain the
+distinction between a local test pass and workflow provenance.
 
 The canonical CI workflows remain `.github/workflows/verification-t0.yml`,
 `verification-t1.yml`, `verification-conformance.yml`,
@@ -409,19 +400,19 @@ semantics:
 
 | Command | Identifier namespace | Meaning |
 | --- | --- | --- |
-| `just mcp-auth-list` | `MCP-2026-AUTH-INDEX-*` and section-specific `MCP-2026-AUTH-*` matrix row IDs | List all 132 normative denominator rows; does not execute tests. |
-| `just mcp-auth-validate` | entire MCP authorization matrix | Validate provenance, actors, dispositions, aggregate links, coverage projection, evidence paths, and exact test resolution; does not execute tests. |
-| `just mcp-auth-resolve MCP-2026-AUTH-INDEX-001` | one exact matrix row ID | Print the deduplicated exact tests behind a direct or aggregate row; does not execute them. |
-| `just mcp-auth-oracles` | complete MCP authorization matrix | Validate and execute every mapped repository and pinned-rmcp test. |
-| `just mcp-auth-oracles MCP-2026-AUTH-INDEX-001` | one exact matrix row ID | Validate the complete matrix, resolve the selected row, and execute its exact tests. |
-| `just openai-auth-list` | `OAI-AUTH-001` through `OAI-AUTH-011` | List executable OpenAI authorization verification groups; these are not the `OAI-CLAUSE-*` source rows. |
-| `just openai-auth-oracles` | all `OAI-AUTH-*` groups | Execute the optimized exact-test aggregate plus the backup/restore drill. |
-| `just openai-auth-oracles OAI-AUTH-NNN` | one exact verification group | Execute that group's exact tests; unknown IDs fail. |
+| `python3 scripts/ci/mcp_auth_normative_conformance.py --list` | `MCP-2026-AUTH-INDEX-*` and section-specific `MCP-2026-AUTH-*` matrix row IDs | List all 132 normative denominator rows; does not execute tests. |
+| `python3 scripts/ci/mcp_auth_normative_conformance.py --validate-only` | entire MCP authorization matrix | Validate provenance, actors, dispositions, aggregate links, coverage projection, evidence paths, and exact test resolution; does not execute tests. |
+| `python3 scripts/ci/mcp_auth_normative_conformance.py --resolve MCP-2026-AUTH-INDEX-001` | one exact matrix row ID | Print the deduplicated exact tests behind a direct or aggregate row; does not execute them. |
+| `python3 scripts/ci/mcp_auth_normative_conformance.py` | complete MCP authorization matrix | Validate and execute every mapped repository and pinned-rmcp test. |
+| `python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-001` | one exact matrix row ID | Validate the complete matrix, resolve the selected row, and execute its exact tests. |
+| `bash scripts/ci/openai-auth-conformance.sh --list` | `OAI-AUTH-001` through `OAI-AUTH-011` | List executable OpenAI authorization verification groups; these are not the `OAI-CLAUSE-*` source rows. |
+| `bash scripts/ci/openai-auth-conformance.sh` | all `OAI-AUTH-*` groups | Execute the optimized exact-test aggregate plus the backup/restore drill. |
+| `bash scripts/ci/openai-auth-conformance.sh OAI-AUTH-NNN` | one exact verification group | Execute that group's exact tests; unknown IDs fail. |
 
 The 21 `OAI-CLAUSE-*` entries in
 `tools/verification/conformance/openai-auth-normative.json` are source obligations. They map to
 the 11 executable `OAI-AUTH-*` groups, so a clause ID is not accepted by the
-OpenAI execution recipe. The OpenAI shell runner supports listing and exact or
+OpenAI execution script. These auth runners have no Just wrappers. The OpenAI shell runner supports listing and exact or
 complete execution, but has no separate validation-only mode; its matrix
 relationships are checked by repository tests and the execution selectors fail
 closed on zero matches.

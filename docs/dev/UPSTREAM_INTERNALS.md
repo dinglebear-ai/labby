@@ -21,7 +21,7 @@ Dependency direction is `product adapters -> shared dispatch/gateway composition
 | File | Purpose |
 |------|---------|
 | `upstream.rs` | Module entrypoint. |
-| `pool.rs` | Coordinator (~160 LOC): `UpstreamPool` / `UpstreamConnection` struct defs, `InProcessConnector`/`InProcessRegistration` types, builders (`new`/`with_*`/`Default`), `mod` declarations, and `pub`/`pub(crate)` re-exports. **No business logic** — all method bodies live in the `pool/` child modules as additional `impl UpstreamPool` blocks. |
+| `pool.rs` | Pool state, connection wrappers, `InProcessConnector`/`InProcessRegistration` types, builders, module declarations, and re-exports. Also owns shared admission permits, OAuth publication guards, recovery counters, and connection-generation helpers; capability-specific operations live in `pool/` child modules as additional `impl UpstreamPool` blocks. |
 | `types.rs` | `UpstreamEntry`, `UpstreamTool`, `UpstreamHealth` types and the `CIRCUIT_BREAKER_THRESHOLD` / `REPROBE_INTERVAL` constants. |
 | `auth.rs`, `http_client.rs`, `process_guard.rs`, `transport.rs` | Bearer/websocket auth, body-capped HTTP client, process-group guard, and transport modules. `transport/websocket.rs` owns WebSocket I/O; `transport/unix_socket.rs` wraps rmcp's native Unix Streamable HTTP client with Labby's established header/response-budget policy only. |
 
@@ -46,7 +46,7 @@ Dependency direction is `product adapters -> shared dispatch/gateway composition
 | `pool/capability.rs` | `discover_capability_counts`. |
 | `pool/probe.rs` | `ensure_probe_task` + `reprobe_upstream` background heartbeat/reconnect. |
 | `pool/registration.rs` | In-process service-peer registration. |
-| `pool/relay.rs` | `RelayClientHandler` — a `ClientHandler` for dedicated upstream connections that mirrors the downstream agent's MRTR input capabilities. `UpstreamPool::call_tool_relayed(config, subject, params, downstream, session_id)` returns a connection from a per-`(upstream, session_id, subject, capability_fingerprint)` cache (`relay_connections`) or opens one through the generic connection seam. Capability generations coexist so renegotiation cannot terminate an older in-flight call. Calls preserve typed MCP errors and `input_required`; the handler does not implement legacy server-initiated callbacks. Both MCP proxy branches select this path automatically when the downstream advertises an input capability. |
+| `pool/relay.rs` | `RelayClientHandler` — a `ClientHandler` for dedicated upstream connections that mirrors the downstream agent's MRTR input capabilities. `UpstreamPool::call_tool_relayed` uses a per-`(upstream, session_id, subject, capability_fingerprint)` connection cache (`relay_connections`) or opens one through the generic connection seam. Capability generations coexist so renegotiation cannot terminate an older in-flight call. Calls preserve typed MCP errors and `input_required`; the handler does not implement legacy server-initiated callbacks. MCP proxy branches forward the current request capability snapshot, including an empty snapshot when metadata is absent. The raw branch also honors the configured `MCP_UPSTREAM_RELAY_MODE=pooled` opt-out. |
 | `pool/relay_cache.rs` | Relay capability fingerprints, cache key/value ownership, downstream rebinding, task-notification flushing, and bounded LRU eviction. Keeps connection lifecycle state separate from relay request translation/execution. |
 | `pool/relay_cancellation.rs` | Coordinates acknowledgement-aware relay-token cancellation, standard cancellation compatibility delivery, fixed relay-send deadlines, and bounded detached request-handle cleanup. |
 | `pool/relay_cancellation_tests.rs` | Focused regressions for early false acknowledgements, blocked relay sends, and stalled request-handle cleanup. |
@@ -77,7 +77,7 @@ Dependency direction is `product adapters -> shared dispatch/gateway composition
 | `pool/prompts_list.rs` | Prompt listing + ownership lookup (`collect_upstream_prompts`, `find_prompt_owner`, …). |
 | `pool/prompts_get.rs` | `subject_scoped_prompts`, `get_prompt`, `subject_scoped_get_prompt`. |
 | `pool/prompts_exposure.rs` | `retain_exposed_prompts` — applies incarnation-checked compiled `expose_prompts` policies to an already-merged prompt list. |
-| `pool/testsupport.rs` | `#[cfg(test)]` shared fixtures + mock servers (`pub(super)`). |
+| `pool/testsupport.rs` | Shared fixtures and mock servers, enabled by tests or the `testkit` feature (`pub(crate)`). |
 
 **The 500-LOC limit (tests included) remains the target and the rule for new
 files.** Multiple legacy upstream modules still exceed that target and require
@@ -99,7 +99,8 @@ follow-up splits. All new files added to `pool/` must stay under 500 LOC.
 | `REPROBE_INTERVAL` | 30 seconds base | `types.rs` |
 | `MAX_REPROBE_INTERVAL` | 30 minutes | `types.rs` |
 | `DEFAULT_UPSTREAM_CALL_CONCURRENCY` | 8 per upstream | `pool/helpers.rs` |
-| `DISCOVERY_TIMEOUT` | 15 seconds | `pool/helpers.rs` |
+| `DISCOVERY_TIMEOUT` | 15 seconds (HTTP/WebSocket/Unix socket) | `pool/helpers.rs` |
+| `STDIO_DISCOVERY_TIMEOUT` | 60 seconds | `pool/helpers.rs` |
 | `DEFAULT_MAX_RESPONSE_BYTES` | 10 MiB ordinary response | `pool/helpers.rs` |
 | `DEFAULT_MAX_SKILL_RESPONSE_BYTES` | 24 MiB Skills wire response | `pool/helpers.rs` |
 
@@ -113,15 +114,20 @@ follow-up splits. All new files added to `pool/` must stay under 500 LOC.
   no longer has any `crate::mcp` import — the boundary is clean. Do not re-add
   `mcp/` imports to any `dispatch/upstream/` file.
   **PATH/basename-only spawn-guard caveat (S6):** the spawn-guard allowlist check
-  in `crate::security::spawn_guard` (`src/security/spawn_guard.rs`) is basename-only
+  in `crate::security::spawn_guard` (`crates/labby-gateway/src/security/spawn_guard.rs`) is basename-only
   — `/tmp/x/node` passes because its basename is `node`. This is an accepted
   residual: the trust boundary is admin-write access to the gateway config, and
   no further PATH resolution is performed at spawn time. See
-  `src/security/spawn_guard.rs` for the canonical comment.
+  that module for the canonical comment.
 - Do not import API-specific types (router, state) from `api/`.
 - **Unix upstream socket I/O belongs to rmcp.** `transport/unix_socket.rs` must remain a thin policy adapter around rmcp's `UnixSocketHttpClient`; do not add a second `reqwest::ClientBuilder::unix_socket(...)`, duplicate abstract-socket/path conversion, or custom HTTP framing in Labby. Normal upstream RPCs and the relay-cancellation side channel must use the same adapter so Host/request-target handling, response caps, SSE limits, auth, and SEP-2243 header behavior cannot drift apart.
 - The pool is constructed in `cli/serve.rs` and injected into `AppState` and `LabMcpServer`.
-- Circuit breaker state is internal to the pool. Surfaces call `record_failure()` and `record_success()`. Open circuits use exponential quarantine, and every failed reprobe resets the quarantine clock.
+- Circuit breaker accounting is owned by the pool's capability/relay primitives.
+  Adapters must not record a second failure or success for an already-accounted
+  call. Completed tool errors and valid MCP rejections prove reachability;
+  caller cancellation does not trip the breaker. Open circuits use exponential
+  quarantine, and every failed reprobe resets the quarantine clock. See
+  [Error Contract](ERRORS.md#circuit-breaker-and-completed-tool-errors).
 - A caller-attributed tool call must carry the downstream cancellation token. `timed_capability_call_with_timeout` takes `cancel: Option<&CancellationToken>` and abandons both the bulkhead wait and the RPC when it fires, letting the RPC's own guard tell the upstream to stop. `None` is correct only for fan-out/discovery passes, which have no downstream request to withdraw from. Do not add a parallel `*_cancellable` method — thread the token through the existing signature.
 - `biased;` in those `select!`s is load-bearing. The RPC future is lazy, so polling the token first means an already-cancelled caller never dispatches the request at all; without it tokio's random order writes the request out roughly half the time, executing a side effect for a caller that is already gone.
 - A cancelled call is NOT a circuit-breaker failure — the caller withdrew and the upstream is healthy — and it logs at INFO with `event = "cancelled"`, not the WARN `event = "error"`. Client disconnects are routine; upstream error rate is the primary is-my-gateway-sick signal and must not be buried under them. The no-breaker decision depends on the HTTP transport backstop exceeding the upstream deadline (`LabConfig::http_request_timeout`), so a wedged upstream still trips via `Timeout` before any caller withdraws.

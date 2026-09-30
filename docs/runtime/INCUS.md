@@ -37,7 +37,7 @@ Use Incus for normal self-hosting:
 # First download labby-install.sh and its checksum from one explicit vX.Y.Z
 # release and verify its GitHub attestation and SHA-256 sidecar.
 LABBY_INSTALL_VERSION=vX.Y.Z sh ./labby-install.sh
-labby setup
+labby host incus setup --version vX.Y.Z
 ```
 
 Use bare metal when the host itself is the gateway appliance:
@@ -76,13 +76,13 @@ Install Labby, then run the host-side Incus bootstrap:
 ```bash
 # Use the verified labby-install.sh from one explicit vX.Y.Z release.
 LABBY_INSTALL_VERSION=vX.Y.Z sh ./labby-install.sh
-labby setup
+labby host incus setup --version vX.Y.Z
 ```
 
 The declarative Incus shape lives in
 `config/incus/labby-gateway-profile.yaml`, and the default snapshot policy lives
-in `config/incus/labby-backup.yaml`. `labby setup` embeds those vetted artifacts
-in the binary, materializes them into a temporary workspace, and runs the same
+in `config/incus/labby-backup.yaml`. The binary embeds those vetted artifacts.
+`labby host incus setup` materializes them into a temporary workspace and runs the same
 host bootstrap logic from there. The bootstrap creates or updates the profile,
 launches `images:ubuntu/26.04` with it, then applies the snapshot policy with
 Incus instance config. The profile owns
@@ -132,13 +132,14 @@ cargo build --workspace --all-features --bin labby
 target/debug/labby host incus setup --local-binary target/debug/labby
 ```
 
-By default, `labby setup` installs the latest Labby release. Use the explicit
+By default, `labby host incus setup` installs the latest Labby release. Use the explicit
 `labby host incus setup --version vX.Y.Z` form when you need reproducibility, or set
 `LABBY_INSTALL_VERSION` for the checkout-local bootstrap script.
 
 The checkout-local `scripts/incus-bootstrap.sh` remains available for
 contributor debugging and CI image smoke tests, but the supported operator entry
-point is the binary-owned `labby setup` command. The explicit
+point is the binary-owned `labby setup` command with the server role and Incus
+deployment selected; interactive setup defaults to a native service. The explicit
 `labby host incus setup` subcommand owns advanced bootstrap flags such as
 `--local-binary` and storage overrides. `--skip-install` only applies to legacy
 images that contain a Labby binary. For day-to-day local
@@ -205,8 +206,10 @@ scripts/incus-bootstrap.sh \
 The image contains the bounded apt floor and agent runtime/toolchain floor;
 bootstrap installs the selected Labby release afterward. The image includes
 Node, uv-managed Python, Rust, Go, Claude Code,
-Codex, Gemini CLI, mise, chezmoi, ffmpeg, Android platform tooling (`adb`, Android
-SDK platform tools, and build tools), and the Tailscale client.
+Codex, Gemini CLI, mise, chezmoi, crgx, ffmpeg, and the Tailscale client.
+Android tooling (`adb`, SDK platform tools, and build tools) is a separate
+opt-in action, not part of the default apt floor; in-box provisioning enables
+it with `LABBY_ENABLE_ANDROID_SDK=1` or `[setup].install_android_sdk = true`.
 `config/incus/labby-image.yaml`
 is the source of truth for both the apt package list and the named provisioning
 action scripts; bare-metal `labby setup --provision` derives its install and
@@ -282,7 +285,7 @@ TS_AUTHKEY=tskey-... scripts/incus-bootstrap.sh --version vX.Y.Z
 With the binary-owned bootstrap:
 
 ```bash
-TS_AUTHKEY=tskey-... labby setup
+TS_AUTHKEY=tskey-... labby host incus setup --version vX.Y.Z
 ```
 
 The same `TS_AUTHKEY` variable is honored by `labby setup --provision --yes`
@@ -306,11 +309,12 @@ labby setup --provision --yes --skip-deps
 The plan is explicit about privilege. Root actions are limited to:
 
 - apt install of the bounded floor derived from `config/incus/labby-image.yaml`,
-  including core CLI/runtime packages plus `rsync`, `ffmpeg`, `adb`, and Android
-  SDK command-line tooling
+  including core CLI/runtime packages plus `rsync` and `ffmpeg`; Android
+  packages are opt-in
 - `labby` user creation
 - writing `/etc/systemd/system/labby.service`
 - enabling and restarting `labby.service`
+- Tailscale installation/join and apt/npm cache cleanup
 
 User-space actions run as `labby` and install:
 
@@ -318,7 +322,7 @@ User-space actions run as `labby` and install:
 - `uv`, `uvx`, and a managed Python exposed as `python` and `python3`
 - Rust and Go
 - `claude`, `codex`, and `gemini`
-- Tailscale when not already installed
+- mise, chezmoi, and crgx
 
 Provisioning does not install or initialize Incus or expose root
 package/user/systemd mutation through MCP, HTTP, Code Mode, or remote admin
@@ -493,7 +497,7 @@ incus stop labby
 incus delete labby
 ```
 
-Rollback from bare metal:
+Bare-metal service teardown (this does not restore a previous release):
 
 ```bash
 sudo systemctl disable --now labby.service
@@ -503,7 +507,7 @@ sudo systemctl daemon-reload
 
 ## Dependency Diagnostics
 
-The runtime floor covers `npx`, `uvx`, `python`, `ssh`, `ffmpeg`, `adb`, and
-the baked agent toolchains. Missing additional leaf dependencies are diagnosed
+The runtime floor covers `npx`, `uvx`, `python`, `ssh`, `ffmpeg`, and
+the baked agent toolchains; `adb` requires the Android opt-in. Missing additional leaf dependencies are diagnosed
 from the existing bounded upstream stderr/health path and reported as redacted
 hints instead of being installed automatically by the gateway runtime.

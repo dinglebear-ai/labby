@@ -14,7 +14,7 @@ loopback access or being the first requester—is the sole eligibility check.
 
 ## Before you begin
 
-- Stop the Labby daemon before `prepare`, `recover`, or offline `cleanup`.
+- Stop the Labby daemon before CLI `prepare`, `recover`, or `cleanup`.
 - Choose an existing enabled protected route that names an already-published
   Loadout. Bootstrap never creates or silently activates gateway configuration.
 - Choose two new absolute paths in owner-only directories. Neither output may
@@ -63,6 +63,11 @@ Start the daemon, then submit the stored prepare by public ID:
 labby auth bootstrap consume --prepare-id PREPARE_ID
 ```
 
+The CLI uses `LABBY_API_BASE_URL`, defaulting to `http://127.0.0.1:8765`.
+Set it to the actual direct loopback origin when the daemon uses another port;
+it is separate from the ordinary remote `LABBY_SERVER_URL` selector. Proof
+routes still reject remote or forwarded callers.
+
 The client securely reopens the exact journaled files, bypasses ambient proxy
 configuration, and submits the identical normalized manifest with
 `X-Labby-Bootstrap-Proof`. The daemon admits only a direct loopback or Unix
@@ -81,8 +86,10 @@ credential, then consumes the proof. No filesystem or network operation occurs
 while SQLite is held. Journal advancement occurs only after the transaction
 and policy lease are released.
 
-If the response is lost, the CLI probes the exact credential and retries the
-same proof, request digest, and idempotency key. A changed retry conflicts; an
+After a non-success HTTP response, the CLI probes the exact credential and
+retries the same proof, request digest, and idempotency key. A transport error
+returns immediately; rerun consume with the same prepare ID to reconcile an
+uncertain outcome. A changed retry conflicts; an
 identical committed retry reports the existing metadata without issuing a new
 secret.
 
@@ -90,10 +97,12 @@ secret.
 
 ```bash
 labby auth bootstrap status --prepare-id PREPARE_ID
-labby auth bootstrap cleanup --prepare-id PREPARE_ID
 ```
 
-Online status and cleanup are proof-authenticated requests to the daemon.
+CLI status sends a proof-authenticated request to the daemon. The online
+cleanup API is `POST /auth/bootstrap/cleanup` with `X-Labby-Bootstrap-Proof`
+and a JSON `prepare_id`; the CLI `cleanup` command instead takes the offline
+lifecycle lock and requires the daemon to be stopped.
 Responses contain public metadata only: status, prepare ID, and—after
 successful consume—the credential ID. Unknown, malformed, expired, replaced,
 or mismatched inputs use the same denial response and reveal no record state.

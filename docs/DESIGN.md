@@ -226,7 +226,7 @@ Implementation mapping today:
 - `apps/gateway-admin/app/globals.css` maps Labby's current Aurora values into CSS and Tailwind v4 variables;
 - `apps/gateway-admin/components/aurora/tokens.ts` contains local reusable typography and surface recipes;
 - `apps/gateway-admin/components/ui/` is the pre-registry compatibility layer still used by existing pages;
-- canonical registry components install under `apps/gateway-admin/components/ui/aurora/` as they are adopted;
+- `apps/gateway-admin/components/ui/aurora/` is the intended destination for adopted registry components, not an existing directory in this checkout; current product primitives live in `apps/gateway-admin/components/ui/`;
 - `/design-system` is Labby's interactive visual reference and anti-pattern gallery;
 - `docs/design/design-system-contract.md` is the longer Labby consumer/implementation contract.
 

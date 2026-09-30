@@ -6,7 +6,25 @@ updated: 2026-09-16
 
 # Claude and Codex Artifact Authoring Reference
 
-This is the source-of-truth mapping used by Labby's Creator UI. It intentionally separates **portable Artifact metadata** from **provider-specific authoring formats**. Labby must not invent a universal frontmatter schema where Claude Code or Codex uses a different file type or sidecar.
+This is the target provider-format mapping for Labby's Creator UI. It intentionally separates **portable Artifact metadata** from **provider-specific authoring formats**. Labby must not invent a universal frontmatter schema where Claude Code or Codex uses a different file type or sidecar.
+
+## Current implementation boundary
+
+`apps/gateway-admin/lib/editor/artifact-standards.ts` selects fields and paths by
+Artifact kind, not by provider. It emits Markdown for Skills, Agents, Commands,
+and Prompts; its Agent fields are Claude-oriented and its Prompt format is the
+legacy Codex Markdown format. It does not implement a provider selector, a Codex
+Agent TOML writer, or a Skill `agents/openai.yaml` sidecar writer. Plugin JSON
+editing is not a provider-specific manifest exporter. The Creator requirements
+below therefore include work beyond the current editor.
+
+Labby's internal runtime materializers are separate contracts: `AGENT.md` with
+Labby runtime/activation/capability metadata, `PROMPT.md` with a required name,
+and inert `HOOK.json` are not interchangeable with provider-native Agent,
+Prompt, or Hook files. In particular, the editor's shell Hook path and its
+name-less Codex Prompt frontmatter are not those runtime materializer formats.
+The external format references below retain their recorded source-check date;
+they do not establish current provider compatibility or shipped export support.
 
 Official sources checked on 2026-09-16:
 

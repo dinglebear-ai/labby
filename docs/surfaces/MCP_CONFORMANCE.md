@@ -195,7 +195,8 @@ MCP candidates in this order: `/.well-known/oauth-protected-resource/<path>`,
 `/.well-known/oauth-protected-resource`. Authorization-server discovery keeps
 the selected issuer path and tries RFC 8414 metadata, path-scoped OIDC metadata,
 then the issuer-path OIDC form. Published `issuer` values are compared exactly;
-only the explicitly tested Google issuer/token-origin split is permitted.
+endpoint origins must match the issuer origin or explicitly configured
+`additional_endpoint_origins` (including split-origin providers such as Google).
 
 Trusted enterprise issuers may be configured for enterprise-managed
 authorization. Labby validates `oauth-id-jag+jwt` assertions against pinned

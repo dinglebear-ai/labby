@@ -11,9 +11,10 @@ Code Mode is the JavaScript execution surface behind the MCP `codemode` and
 compact docs, and run one async JavaScript function in a sandbox that can call
 the tools allowed by that entry point.
 
-Labby actions are intentionally not exposed through Code Mode. Call Labby built-in
-service tools directly when raw tools are visible, or use the native gateway
-management/API surfaces for Labby actions.
+Code Mode primarily exposes upstream capabilities. Root-scope catalogs can also
+include permitted non-admin built-in actions through in-process peers, described
+below. Use native management surfaces for admin operations; Code Mode does not
+grant those actions merely because its caller is an administrator.
 
 ## Surface
 
@@ -359,9 +360,12 @@ async () => {
 }
 ```
 
-`Promise.all([...])` and `Promise.allSettled([...])` fan out independent upstream
-calls. A failed `callTool` rejects only that promise; catch locally when partial
-success is useful.
+Use `codemode.batch([() => firstCall(), () => secondCall()])` for independent
+calls. It returns `{ ok: [{ i, value }], failed: [{ i, error }], all_ok }`,
+preserving original indices and structured recovery metadata. It also accepts
+Promises; functions let it capture synchronous failures. It settles all jobs
+but does not impose a concurrency limit. Bound the job list yourself. Raw
+`Promise.all` rejects on the first failure without cancelling the other calls.
 
 Synthetic Code Mode exposes the fixed Labby-owned entry points instead of raw
 upstream tools. Discovery, schema inspection, tool calls, and intermediate
@@ -500,33 +504,36 @@ retried on every call. Protected MCP routes never see them: the
 `__in_process__` prefix is **rejected at config load** both as an upstream
 name and in a route's `target.upstreams`, so the exclusion is enforced,
 not merely conventional.
-Authorization matches ordinary upstream tools: builtin peers carry no
-annotations, so they fail closed as destructive (Code Mode execute
-permission required) and are always excluded from read-only Code Mode. The
-legacy `trusted_read_only_tools` setting does not override missing live MCP
-safety annotations. Each peer serves exactly its own service, pinned to Raw
-mode regardless of the process-wide Code Mode flag.
+Each peer serves exactly its own service, pinned to Raw visibility and the
+combined router/atomic projection. Code Mode admission resolves atomic action
+names against the published service registry and excludes admin actions. The
+ordinary live annotation check still determines read-only admission; do not
+assume every built-in action has the same safety metadata. The legacy
+`trusted_read_only_tools` setting does not override missing live annotations.
 
 The peer transport carries no `AuthContext` — there is no HTTP layer to
 inject one — so it does **not** inherit the stdio trust model. Actions
 marked `requires_admin`, and the stdio-only `setup` actions, are refused
-over this transport; only non-admin actions are reachable through Code
-Mode. Without that guard a caller holding just `lab` (enough for Code Mode
+over this transport; only permitted non-admin actions are reachable through Code
+Mode. Gateway actions are further restricted to `help`/`schema`, plus
+`gateway.oauth.authorize` when a personal OAuth provider and request-bound
+authority token are available. That OAuth action uses a dedicated host authority
+adapter, never the unauthenticated mini-peer. Without that guard a caller holding just `lab` (enough for Code Mode
 execute, deliberately not enough for admin) could reach admin builtins.
 
 ## Catalog Freshness
 
-Code Mode does not build or read a durable vector, lexical, or RRF index. Each
-`codemode` execution projects a transient catalog from the gateway runtime and
-refreshes enabled upstream tool metadata through the gateway manager before
-building the local discovery helpers and runtime proxy. Legacy `search` uses the
-same catalog source, so helper visibility and direct `callTool` routing stay
-aligned.
+Code Mode builds run-scoped discovery helpers from the gateway catalog.
+The live path uses bounded refresh and published snapshots, with a rendered
+catalog cache. The one-shot CLI path can also reuse a persisted, config-bound
+non-OAuth tool catalog with bounded cold probing and negative-cache backoff
+(`gateway/code_mode/catalog_cache.rs` and `manager/code_mode_runtime.rs`). These
+caches do not grant execution authority; invocation rechecks current policy and
+the tool contract. Semantic ranking is separate from this tool-metadata cache.
 
-`gateway.reload` swaps in a freshly seeded lazy upstream pool. The next Code Mode
-execution or compatibility catalog call reprobes the relevant live upstreams and
-should see tool-list changes such as the agent-workstation Windows-MCP `PowerShell`,
-`FileSystem`, `Snapshot`, and `Wait` tools without requiring a process restart.
+`gateway.reload` reconciles the configuration and may preserve the live pool
+selectively or rebuild it. Upstream list-change refreshes and scoped discovery
+can update metadata without restarting the process.
 
 ## Catalog Drift Diagnostics
 
@@ -541,40 +548,29 @@ When search results do not match live execution, check the layers in order:
    Confirm the upstream reports the expected discovered tool count and is not
    carrying a tools-capability error.
 
-2. Code Mode `codemode` proxy:
+2. Discover the configured upstream inside the intended Code Mode scope:
 
    ```ts
-   async () => Object.keys(codemode.agent_os_windows_mcp).sort()
+   async () => await codemode.search({ query: "<configured upstream>", kinds: ["tool"] })
    ```
 
-   For agent-workstation, the list should include `PowerShell`, `FileSystem`, `Snapshot`,
-   and `Wait`.
+   Retain the returned `id`, `helper`, and any withheld-tool diagnostics. A
+   deployment-specific namespace or tool name is not a portable test fixture.
 
-3. Direct callability:
+3. Inspect one returned target before testing a non-mutating call:
 
    ```ts
-   async () => callTool("windows_windows-mcp::PowerShell", {
-     command: "Write-Output MCP_OK"
-   })
+   async () => await codemode.describe("<id returned by search>")
    ```
 
-   If this succeeds while search is stale, the upstream is callable and the
-   issue is catalog visibility rather than tool execution.
+   Follow `schema_status` and recovery metadata. Then call the exact returned ID
+   with schema-valid parameters for an intended read-only operation. Successful
+   description alone proves discovery, not execution.
 
-4. MCP legacy `search` injected catalog:
-
-   ```ts
-   async () => tools
-     .filter(t => t.upstream === "windows_windows-mcp")
-     .map(t => t.name)
-     .sort()
-   ```
-
-   Missing `PowerShell`, `FileSystem`, or `Snapshot` here after layers 1-3 are
-   fresh indicates Code Mode catalog freshness drift in the active MCP session.
-   Run `gateway.reload` once to swap the runtime pool; if the same MCP session
-   still sees stale search results while execute is fresh, reconnect that MCP
-   client session so it receives the current gateway manager state.
+4. Compare the caller's route, OAuth subject, read-only admission, and explicit
+   `upstreams`/`tools` filters with the operator view. A hidden tool can be an
+   intentional policy result. Refresh client discovery when its descriptors are
+   stale; a reload or reconnect is not a substitute for correcting scope.
 
 `codemode` accepts optional `upstreams` and `tools` arrays to narrow the per-run
 capability set. When present, each filter must be a JSON array of strings; other
@@ -631,7 +627,7 @@ since 2026-05-31 and pinned by an edge-case test matrix. First match wins:
    including the upstream's `_meta` — a deliberate, upstream-controlled
    exposure.
 
-`codemode` returns a capped envelope with:
+`codemode` returns a budget-shaped envelope with:
 
 - `result` — the JavaScript function return value.
 - `calls[]` — lightweight per-call metadata: `id`, canonical `namespace`,
@@ -664,6 +660,17 @@ Defaults:
 - `max_source_bytes = 1048576`
 - `max_response_bytes = 24576`
 - `max_response_tokens = 6000`
+- `timeout_ms = 30000` (configurable from 1 through 300000 ms)
+- `max_calls_per_run = 512` (hard ceiling 2048); excess calls reject with
+  `call_budget_exceeded` before dispatch
+- `calltool_result_max_mib = 8`; an oversized individual result rejects with
+  `result_too_large` before entering the sandbox, after upstream execution
+
+The last two settings accept `[code_mode]` fallbacks, overridden by
+`LABBY_CODE_MODE_MAX_CALLS_PER_RUN` and
+`LABBY_CODE_MODE_CALLTOOL_RESULT_MAX_MIB`. Reserved `__lab_internal::*` requests
+have a separate 32-call ceiling; snippet resolution is limited to 32 resolutions
+and 1 MiB total resolved source per execution.
 
 ### Final Result Shaping
 
@@ -692,17 +699,21 @@ is ever stringified-and-reparsed beyond the marker itself:
   `max_response_bytes`/`max_response_tokens`, the final `result` is replaced
   with an **object** marker carrying `truncated: true`, `original_size`,
   `original_tokens`, a bounded `preview`, `artifacts`, `next_action`, and, when the budget permits, an executable `resource_read_example`. Small budgets use concise recovery prose instead of the example and discard preview bytes first.
-  Structured `calls[]` metadata survives verbatim. Logs are trimmed
-  oldest-first after result truncation if needed.
+  Optional traced call parameters are discarded first, before replacing a
+  useful result. Call identity/timing/error rows remain; logs are then trimmed
+  oldest-first if needed. This is best-effort shaping: retained call metadata
+  alone can exceed the configured envelope budget.
 - **Shaping policy `truncate` (opt-in, non-`Off` policy only):** the final
   result becomes a single marker **string** prefixed
   `[code mode result truncated]` with a pretty-printed preview and a pointer
   to `result_shaping.warning`, which carries the same recovery guidance and
   resource-read example.
 
-Truncation happens only at the outer sandbox→MCP boundary. Values seen by
-sandbox code through `callTool()` / `codemode.<upstream>.<tool>()` are never
-truncated or reshaped.
+Final-result truncation happens at the outer sandbox boundary. Individual
+`callTool()` values are not silently truncated or reshaped, but the per-call
+result ceiling can reject them before they enter the sandbox. Such a rejection
+does not undo upstream side effects; never blindly replay a mutation to recover
+its output.
 
 For an oversized resource, substitute its discovered URI in the marker's
 `resource_read_example`. Return one chunk per execution, then set `offset` to
@@ -828,8 +839,13 @@ Canonical error kinds:
 | `snippet_not_found` | Fix and retry | Requested snippet name does not exist. |
 | `internal_error` | Bug or unsupported state | Unexpected host/runner failure. |
 
-`code_mode_fuel_exhausted` is **not** emitted on the live path; it belongs to
-the dead Wasmtime reference engine and is normalized away by the host.
+The recovery envelope takes precedence over these short bucket labels. A
+timeout or result-size failure can happen after an upstream mutation completed;
+inspect `side_effects` and verify the outcome before retrying smaller work.
+
+`code_mode_fuel_exhausted` is **not** emitted by the live runner. The former
+Wasmtime reference engine has been deleted; legacy error mappings are not a
+second execution backend.
 
 ## Destructive tool calls
 
@@ -956,7 +972,8 @@ LABBY_CODE_MODE_MICROSANDBOX_IMAGE=debian@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 LABBY_CODE_MODE_MICROSANDBOX_MAX_RUNNERS=4
 ```
 
-All three variables are required to opt in. The image must be an immutable
+The backend, executable, and image variables are required to opt in;
+`LABBY_CODE_MODE_MICROSANDBOX_MAX_RUNNERS` is optional. The image must be an immutable
 `name@sha256:<64 hex>` OCI digest reference and must already be cached; URLs,
 userinfo, queries, and tag-only references are rejected. The runner uses
 `--pull never` and never performs an implicit registry fetch.
@@ -1016,15 +1033,10 @@ executes inside the no-network guest. It does not
 provide Node, Deno, Bun, `fetch`, `connect`, `XMLHttpRequest`, `require`, or host
 module `import()` access. `callTool` is the only host bridge exposed to user code.
 
-> **Wasmtime is dead reference code, not a live path.** `wasm_runner.rs` is an
-> unused engine skeleton retained only for reference; nothing on the live Code
-> Mode path constructs or runs it. Its fuel/epoch-interruption design would
-> normalize fuel and timeout traps to `code_mode_fuel_exhausted` and
-> `code_mode_timeout`, but because the skeleton never executes, **neither kind is
-> emitted today.** The only budget kind a caller observes on the live
-> Javy/QuickJS path is `timeout` (the wall-clock backstop). Treat
-> `code_mode_fuel_exhausted` / `code_mode_timeout` as reserved-for-the-dead-path
-> and do not switch-case on them as live outcomes.
+The former `wasm_runner.rs` skeleton was deleted. The live wall-clock error is
+`timeout`; call, result, snippet, and artifact budgets have their own errors.
+Do not treat `code_mode_fuel_exhausted` or `code_mode_timeout` as live runner
+outcomes.
 
 Loose JavaScript snippets are normalized before execution. Already-formed
 function expressions pass through, while statement blocks such as

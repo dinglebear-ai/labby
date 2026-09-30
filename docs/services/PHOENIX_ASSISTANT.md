@@ -6,7 +6,13 @@ updated: 2026-09-16
 
 # Phoenix Assistant UI and App Server Event Contract
 
-Phoenix is the conversational surface inside Labby's web UI. Codex App Server is the event authority. The UI must preserve the event stream's chronology instead of grouping tool activity into a synthetic block before or after the response.
+Phoenix is the conversational surface inside Labby's web UI. This document
+describes its Codex App Server provider, where App Server is the event authority.
+The alternative OpenAI-compatible provider currently accepts text-only messages
+and does not support active-turn steering, Codex reviews, or Codex diagnostics;
+the status response reports provider-specific capabilities. The UI must preserve
+the selected provider's event chronology instead of grouping tool activity into
+a synthetic block before or after the response.
 
 Official protocol reference: https://developers.openai.com/codex/app-server.md
 

@@ -131,7 +131,7 @@ Each Loadout contains:
 
 - name and optional description
 - selected upstream MCP server names
-- selected built-in Labby service names
+- a compatibility field for built-in service names, currently kept empty
 - expose_tools
 - expose_resources
 - expose_prompts
@@ -140,14 +140,22 @@ Each Loadout contains:
 
 Agent Skills require Resources because Skill files are retrieved through MCP resources. A Loadout with Skills enabled and Resources disabled is rejected before persistence/mounting.
 
+The built-in `services` selector is currently unavailable: Loadout validation
+requires service metadata, while the product
+`crates/labby/src/registry.rs::service_meta` resolver returns no entries. Use
+upstream-only selections, omit `--service`, and keep API `services` empty.
+An advertised compatibility field is not evidence that a non-empty selection
+can be persisted. This does not itself determine which in-process actions are
+admitted through the runtime execution catalog.
+
 ## Loadouts CLI
 
 ~~~bash
 labby loadout list
 labby loadout get operations
-labby loadout add operations --upstream github --service device --code-mode
+labby loadout add operations --upstream github --code-mode
 labby loadout set operations --expose-tools false --expose-skills true
-labby loadout set operations --clear-upstreams --service device
+labby loadout set operations --clear-upstreams
 # Mounted Loadouts are staged instead of hot-swapped:
 labby loadout set operations --expose-tools false --stage-for-restart
 labby loadout remove operations --stage-for-restart
@@ -171,7 +179,7 @@ Loadout update uses patch semantics. Unspecified fields remain unchanged. Explic
       "name": "operations",
       "description": "Operations agents",
       "upstreams": ["github"],
-      "services": ["device"],
+      "services": [],
       "expose_tools": false,
       "expose_resources": true,
       "expose_prompts": true,
@@ -279,7 +287,7 @@ cargo test -p labby-gateway --features skills --locked loadout_
 cargo test -p labby-gateway --features skills --locked protected_route_rejects_unknown_loadout
 cargo test -p labby-gateway --features skills --locked update_upstream_applies_and_clears_expose_skills
 cargo test -p labby --lib --features skills --locked route_scope
-cargo test -p labby --lib --features skills --locked gateway_cli_parser_accepts_expected_commands
+cargo test -p labby --test cli_contract --all-features --locked
 pnpm --dir apps/gateway-admin exec tsc --noEmit
 pnpm --dir apps/gateway-admin run test:unit
 pnpm --dir apps/gateway-admin run lint

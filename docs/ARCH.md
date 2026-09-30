@@ -14,7 +14,7 @@ updated: "2026-09-27"
 - Reusable `labby-*` crates plus one product binary crate
 - One `labby` binary
 - A small set of feature-gated product slices
-- One MCP tool per service
+- Service-router MCP tools by default, with optional atomic projections derived from the same action metadata
 
 ## Crate Split
 
@@ -32,7 +32,7 @@ service modules to pull in gateway/runtime machinery just to declare
 
 ### `crates/labby-apis`
 
-`labby-apis` is the pure SDK layer for shared core primitives and the current setup/doctor contracts, not a general one-module-per-external-service SDK. It owns:
+`labby-apis` is the pure SDK layer for shared core primitives, setup/doctor contracts, and the provider-neutral Artifact control-plane client, not a general one-module-per-external-service SDK. It owns:
 
 - typed service clients
 - request and response models
@@ -139,7 +139,7 @@ If behavior is shared across product surfaces, it belongs in one shared executio
 That rule is structural, not aspirational:
 
 - `labby-apis` has no `clap`, `rmcp`, or `axum`
-- `labby-auth` has no `clap` or `rmcp`
+- `labby-auth` has no `clap`; its optional `rmcp-client` dependency supports upstream OAuth through the `upstream-oauth-rmcp` feature, not product MCP server handlers
 - `labby-runtime` has no product-surface transport dependencies
 - `labby` depends on extracted crates rather than duplicating runtime logic
 
@@ -151,7 +151,7 @@ The workspace uses modern Rust module layout:
 - a module `foo` is declared in `foo.rs`
 - its submodules live in `foo/`
 
-`labby-apis` contains `core`, `doctor`, and `setup`. Do not add a new SDK module merely to connect another external capability: normally configure an upstream MCP server. For a genuine Labby-owned lifecycle, follow [Service Onboarding](./dev/SERVICE_ONBOARDING.md).
+`labby-apis` contains `core`, `doctor`, `setup`, and the provider-neutral `artifact_control` client contracts. Do not add a new SDK module merely to connect another external capability: normally configure an upstream MCP server. For a genuine Labby-owned lifecycle, follow [Service Onboarding](./dev/SERVICE_ONBOARDING.md).
 
 Per-service layout in `labby` typically includes:
 

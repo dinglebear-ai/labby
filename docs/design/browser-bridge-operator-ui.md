@@ -23,12 +23,19 @@ The page polls every five seconds because browser connections and page navigatio
 
 ## Interaction and safety
 
-Pairing approval is explicit. Session execution begins disabled and uses the exact backend session identity. Revocation requires confirmation and tells the operator that reconnecting requires a new pairing. Backend authorization, tuple validation, catalog membership, and stale-document rejection remain authoritative.
+Pairing approval is explicit and requires the operator to enter the extension's twelve-hex-digit pairing fingerprint; approval stays disabled until the normalized input is valid. Session execution begins disabled and uses the exact backend session identity. Revocation requires confirmation and tells the operator that reconnecting requires a new pairing. Backend authorization, tuple validation, catalog membership, and stale-document rejection remain authoritative.
 
 The UI never accepts arbitrary tool arguments or executes page tools directly. It does not display persisted page content because the bridge stores only sanitized identity and catalog metadata.
 
 ## States and accessibility
 
 Loading, empty, populated, mutation-busy, and backend-error states are represented. Switches have page-specific accessible labels, headings label each region, and all mutations use standard Aurora focusable controls. Cards collapse to one column on narrow screens, while long extension IDs and URLs truncate or wrap without widening the viewport.
+
+The three datasets load independently through `Promise.allSettled`; a partial
+failure leaves available panels usable and displays bounded warnings. Observed
+sessions use cursor-based page controls, so an empty current page does not imply
+there are no sessions. A successful mutation followed by failed refresh is
+reported as stale display state rather than as a failed mutation. These behaviors
+live in `components/browser/browser-bridge-page.tsx` and its adjacent tests.
 
 No new design token or primitive is introduced. The page reuses the console hero, Aurora cards, alerts, badges, buttons, switches, empty states, and confirmation dialog.

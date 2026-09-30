@@ -12,6 +12,7 @@ The generated [action catalog](../generated/action-catalog.md) is authoritative 
 
 ## Current Actions
 
+- `capabilities.status` reports configured capability readiness and degradation.
 - `system.checks` runs the local system diagnostic set.
 - `auth.check` validates current authentication readiness.
 - `access.check` inspects access-store readiness and filesystem safety without creating, migrating, repairing, or otherwise modifying the store.

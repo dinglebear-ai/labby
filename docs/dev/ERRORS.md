@@ -69,6 +69,9 @@ the same top-level envelope:
 { "kind": "auth_failed", "message": "..." }
 ```
 
+This is an abbreviated example of kind promotion, not a complete wire error;
+real serialization includes the version, origin, recovery, and side-effect fields.
+
 ## Common Subsystem Kinds
 
 Supported code may emit additional stable kinds, including:
@@ -199,6 +202,8 @@ so the `oauth_needs_reauth` refinement below is preserved.
 `ApiError` is the local axum wrapper around `ToolError`. Broad mapping rules:
 
 - authentication failure, including `oauth_needs_reauth`: 401;
+- `unknown_action`, `unknown_subaction`, `unknown_instance`, and
+  `oauth_state_invalid`: 400;
 - forbidden scope/action, including `oauth_scope_upgrade_required`: 403;
 - unknown resource: 404;
 - conflict/restart/stale/setup state, including `oauth_account_ambiguous`,
@@ -215,6 +220,12 @@ so the `oauth_needs_reauth` refinement below is preserved.
 
 MCP and CLI retain the same serialized error envelope even when HTTP assigns a
 status code.
+
+The match in `crates/labby/src/api/error.rs` is authoritative: classification in
+the shared recovery vocabulary does not automatically add an HTTP mapping.
+For example, unmapped `permission_denied`, `auth_required`, and
+`result_too_large` currently fall through to 500. Do not infer an HTTP status
+from a kind's wording or retry advice.
 
 ## Logging And Redaction
 

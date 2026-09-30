@@ -85,7 +85,7 @@
     "env_var": "LABBY_AUTH_ALLOWED_EMAIL_DOMAINS",
     "required": false,
     "secret": false,
-    "description": "Comma-separated Google Workspace hosted-domain allowlist",
+    "description": "Comma-separated admission-domain allowlist: Google Workspace hosted domains or verified Authelia email domains",
     "example": "example.com",
     "default_port": null
   },

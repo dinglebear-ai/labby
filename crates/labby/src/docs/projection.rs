@@ -199,7 +199,7 @@ fn build_env_reference(services: &[ServiceDoc]) -> Vec<EnvDoc> {
         auth_env("LABBY_AUTHELIA_CA_CERT_PATH", false, false, "/etc/labby/authelia-ca.pem", "PEM CA certificate trusted only for the exact Authelia issuer origin"),
         auth_env("LABBY_AUTH_ADMIN_EMAIL", true, false, "admin@example.com", "Administrator email, or comma-separated emails, required in oauth mode"),
         auth_env("LABBY_AUTH_ALLOWED_REDIRECT_URIS", false, false, "https://chatgpt.com/connector/oauth/*", "Comma-separated exact or wildcard OAuth redirect allowlist"),
-        auth_env("LABBY_AUTH_ALLOWED_EMAIL_DOMAINS", false, false, "example.com", "Comma-separated Google Workspace hosted-domain allowlist"),
+        auth_env("LABBY_AUTH_ALLOWED_EMAIL_DOMAINS", false, false, "example.com", "Comma-separated admission-domain allowlist: Google Workspace hosted domains or verified Authelia email domains"),
         auth_env("LABBY_AUTH_VIEWER_EMAIL_DOMAINS", false, false, "example.com", "Exact verified-email domains admitted as browser Viewers without administrative OAuth scopes"),
         auth_env("LABBY_AUTH_SQLITE_PATH", false, false, "$LABBY_HOME/auth.db", "OAuth authorization-state SQLite database path"),
         auth_env("LABBY_AUTH_KEY_PATH", false, true, "$LABBY_HOME/auth-jwt.pem", "OAuth JWT signing-key path"),
@@ -934,6 +934,27 @@ mod tests {
             stash.exposure,
             ServiceExposure::RuntimeConditional
         ));
+    }
+
+    #[test]
+    fn auth_domain_environment_docs_cover_both_inbound_providers() {
+        let vars = build_env_reference(&[]);
+        let domains = vars
+            .iter()
+            .find(|var| var.env_var == "LABBY_AUTH_ALLOWED_EMAIL_DOMAINS")
+            .expect("inbound domain allowlist documentation");
+        assert!(
+            domains
+                .description
+                .contains("Google Workspace hosted domains")
+        );
+        assert!(
+            domains
+                .description
+                .contains("verified Authelia email domains")
+        );
+        assert!(!domains.required);
+        assert!(!domains.secret);
     }
 
     #[test]

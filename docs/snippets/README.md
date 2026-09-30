@@ -1,6 +1,9 @@
 # Code Mode Snippets
 
-Code Mode snippets are reusable JavaScript workflows for Labby's single `codemode` MCP tool. They let an agent run many upstream MCP calls from one controlled async function, combine the results, and return a structured answer that is easier to reuse than a one-off chat transcript.
+Code Mode snippets are reusable JavaScript workflows executed through full
+Code Mode or the snippets service. Saved snippet execution requires an admin or
+trusted-local caller; `codemode_read` does not grant snippet execution. They let
+an agent combine upstream calls in one async function and return a compact result.
 
 This document is only about snippets that run inside Code Mode.
 
@@ -51,19 +54,31 @@ Before writing or running a snippet, use `codemode.search()` and `codemode.descr
 
 ## How Users Should Build Snippets
 
+The following schema-driven builder is an authoring design, not a description of
+a shipped schema-driven call-plan editor. The current Snippets UI lists,
+inspects, edits, and runs saved source, and builds drafts from manually entered
+tool IDs and one example input object. Its parallel template currently uses
+`Promise.all`; review it for the failure-isolated batch pattern below. Runtime
+syntax/frontmatter/input validation is implemented;
+`snippet validate` does not execute tools or statically prove every embedded
+call's parameters against live upstream schemas.
+
 The snippet builder should make authoring feel like assembling a small checklist, not writing JavaScript.
 
 ### 1. Search the live gateway tools
 
-The gateway already knows every connected upstream tool. Each catalog entry includes:
+The full host catalog can carry schemas and TypeScript declarations. The reduced
+in-sandbox `codemode.search()` result instead includes:
 
 - `id`, such as `time::get_current_time` or `Axon::axon`
-- `upstream`, such as `time` or `axon`
+- `namespace`, such as `time` or `Axon`
 - `name`, such as `get_current_time` or `axon`
 - `description`
-- input `schema`
-- output schema when the upstream provides one
-- generated TypeScript signature and DTS help text
+- `kind`, `path`, `helper`, tags, and a compact signature
+- optional intrinsic tool safety facts
+
+Use `codemode.describe()` for the selected tool's focused type declaration and
+its `schema_status`; search does not inject full input/output schemas or DTS.
 
 The user should search this live catalog with in-sandbox `codemode.search()` by service, tool name, or description, then select the tools they want the snippet to call.
 
@@ -212,6 +227,12 @@ Use `labby snippet test <name>` to execute one snippet as a smoke test, or
 `labby snippet test --all` to run every listed snippet with its declared
 defaults. MCP/API callers use `snippets.test` with `{ "all": true }` for the
 same all-snippet check.
+
+These are real executions against configured upstreams, not hermetic validation.
+`--all` can contact SSH hosts, registries, and research providers, and required
+inputs without defaults (such as `docker-host-inventory.alias`) can fail. Prefer
+`snippet validate` for a non-executing source check and select smoke tests only
+when their external work is intended.
 
 When Code Mode final-result shaping is enabled, `snippets.exec` returns the
 same shaped display response as Code Mode. `snippets.test` evaluates pass/fail
@@ -471,4 +492,11 @@ A snippet is ready to reuse when:
 - [`cross-server-docs-brief.md`](./cross-server-docs-brief.md) combines Context7, SearXNG, Cloudflare docs, GitHub, Axon, and time into a compact documentation brief.
 - [`repo-context-triage.md`](./repo-context-triage.md) combines local file reads, current Octocode lexical search, and GitHub issue/file lookups for repo orientation.
 - [`repo-status-gh-pulse.md`](./repo-status-gh-pulse.md) collects the GitHub PR/CI side of a repo-status evidence sweep and returns equivalent `gh` commands for shell parity.
-- [`homelab-readonly-pulse.md`](./homelab-readonly-pulse.md) combines Dozzle, Cortex, Gotify, Synapse, and time for a read-only homelab status pulse.
+- [`homelab-readonly-pulse.md`](./homelab-readonly-pulse.md) combines Dozzle, Cortex, Synapse, and time for a read-only homelab status pulse.
+- [`homelab-ssh-targets.md`](./homelab-ssh-targets.md) discovers and probes SSH aliases through the configured controller.
+- [`docker-host-inventory.md`](./docker-host-inventory.md) inventories one SSH-reachable Docker host, including optional registry digest checks.
+- [`homelab-docker-inventory.md`](./homelab-docker-inventory.md) composes those primitives and writes a combined artifact.
+
+Upstream names and schemas in these examples are deployment-specific snapshots,
+not built-in Labby capabilities. Rediscover them on the intended gateway before
+execution. Dated smoke-test notes record prior evidence, not current health.

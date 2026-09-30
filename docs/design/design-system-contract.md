@@ -580,7 +580,7 @@ The Overview warning banner is not a standalone pattern; it must migrate to the 
 
 Product pages should reach for shared Aurora primitives before assembling long class strings.
 
-- `StatCard` owns dashboard-style metrics, number typography, label treatment, helper text, icon treatment, and icon-tone variants (`default | success | warning | info`). The inline Overview implementation is the source candidate and should move to `components/aurora/stat-card.tsx`.
+- `StatCard` is the target shared primitive for dashboard metrics, including helper text and icon-tone variants. The current product implementation is `StatTile` in `components/dashboard/stat-tile.tsx`, with `default | success | warning | error | info` tones, loading skeletons, and no helper-text prop. `components/aurora/stat-card.tsx` is a proposed extraction destination, not an existing import.
 - `TonedIconBox` owns the recurring centered icon container: tone (`accent | success | warn | error | neutral`), size (`sm | md | lg`), radius, tint, and icon color. Use it in stat cards, recent gateway rows, empty states, and command-palette rows.
 - `Eyebrow` renders the canonical `AURORA_MUTED_LABEL`; product code should not hand-roll `text-xs uppercase tracking-*`.
 - `MutedLabel` is the non-heading muted metadata label companion for dense surfaces.

@@ -13,6 +13,11 @@ already-running Labby. It does not alter the existing standalone Labby Unraid
 plugin, its `.plg` lifecycle, or Labby's independently deployable management
 API. A future Core-bundled artifact is a separate packaging decision.
 
+The implementation status covers Labby's integrated feature slice, trusted-host
+verification, and Core provider adapter. Core ingress, audit admission, native
+navigation, and packaging statements below specify counterpart obligations;
+they are not evidence that this checkout ships or qualifies those Core pieces.
+
 Unbundled protocol, provider, lifecycle, and test development may proceed in
 isolated worktrees against an independently installed Labby. The licensing
 gate below applies to packaging and release, not to that source-level work.

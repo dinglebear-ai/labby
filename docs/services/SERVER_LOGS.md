@@ -22,7 +22,11 @@ Callers should treat the returned structure as the stable product response and s
 
 ## CLI Journal Tail
 
-`labby logs` is the operator-facing journal tail. It reads the `labby` systemd unit locally or, when a Labby Incus container is selected or uniquely detected, runs the journal query inside that container.
+`labby logs` performs a bounded query of local rolling process logs and exits.
+`labby logs journal` explicitly selects the deployment journal: it reads the
+`labby` systemd unit locally or, when a Labby Incus container is selected or
+uniquely detected, runs the query inside that container. Use `--follow` for a
+streaming journal tail; journal output does not support `--json`.
 
 Use the generated [CLI help](../generated/cli-help.md) for current flags and arguments.
 

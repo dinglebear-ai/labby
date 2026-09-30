@@ -62,16 +62,17 @@ ASCII escaping). The curated `ArtifactControlClient` checks three-way agreement 
 declared fingerprint, the fingerprint it recomputes from the served
 `inputSchema`, and the constant it was built against
 (`docs/contracts/fixtures/depot-control-plane/operations-v1.json` is the
-golden catalog). The generic Administration execution path currently parses
-operation policy without performing that three-way fingerprint check; browser
-metadata parsing accepts an optional fingerprint but does not verify its hash.
-This is an implementation gap against the required compatibility contract,
-not equivalent validation. Administration renders Depot's
+golden catalog). The generic Administration backend also verifies that three-way
+agreement and pins required scope, transport availability, and read-only and
+destructive annotations. Missing, forged, or changed known contracts reject the
+catalog; additive unpinned operations remain unavailable until this Labby build
+admits them. Browser metadata is presentation, not execution authority.
+Administration renders Depot's
 published `labby.depot-operation-schema/v1` subset as typed controls. The subset,
 cardinality limits, authority states, fingerprint binding, and fail-closed
 `incompatible` behavior are machine-readable in compatibility-v1. Under that
 contract, missing, oversized, or unknown required contracts must render
-`incompatible`; the generic fingerprint gap above remains to be closed.
+`incompatible`.
 Labby never invents an unadvertised operation.
 
 ## Actor and mount policy
