@@ -1,7 +1,7 @@
 ---
 title: "Code Mode"
 created: "2026-07-30"
-updated: "2026-09-26"
+updated: "2026-09-30"
 ---
 
 # Code Mode
@@ -14,6 +14,13 @@ the tools allowed by that entry point.
 Labby actions are intentionally not exposed through Code Mode. Call Labby built-in
 service tools directly when raw tools are visible, or use the native gateway
 management/API surfaces for Labby actions.
+
+The native `gateway` and `server_logs` router tools remain visible while Code
+Mode is enabled. The native `stash` router also remains visible for callers with
+a verified identity and read scope on an outer native transport. Call `stash`
+directly to save or retrieve [context documents](../services/STASH.md); its
+actions retain the caller's identity and ordinary Stash authorization.
+Caller-bound Stash is excluded from context-free synthetic peers.
 
 ## Surface
 

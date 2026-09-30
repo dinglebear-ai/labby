@@ -517,7 +517,15 @@ async fn code_mode_hides_raw_service_tools_without_testing_code_mode_primitives(
         .collect::<BTreeSet<_>>();
     assert_eq!(
         visible_services,
-        BTreeSet::from(["gateway".to_string(), "server_logs".to_string()])
+        if cfg!(target_os = "linux") {
+            BTreeSet::from([
+                "gateway".to_string(),
+                "server_logs".to_string(),
+                "stash".to_string(),
+            ])
+        } else {
+            BTreeSet::from(["gateway".to_string(), "server_logs".to_string()])
+        }
     );
     assert!(advertised.contains("codemode"));
     let hidden = runner

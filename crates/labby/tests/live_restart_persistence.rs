@@ -477,6 +477,30 @@ async fn context_tool(
 }
 
 #[cfg(target_os = "linux")]
+async fn assert_context_tool_visible(
+    client: &reqwest::Client,
+    identity: &live_identity::LiveIdentity,
+) {
+    let result = context_rpc(client, identity, "tools/list", serde_json::json!({})).await;
+    assert!(
+        result["tools"]
+            .as_array()
+            .expect("MCP tools")
+            .iter()
+            .any(|tool| tool["name"] == "codemode"),
+        "context journey must use default-enabled Code Mode"
+    );
+    assert!(
+        result["tools"]
+            .as_array()
+            .expect("MCP tools")
+            .iter()
+            .any(|tool| tool["name"] == "stash"),
+        "default Code Mode must expose caller-bound Stash before and after restart"
+    );
+}
+
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn context_documents_keep_text_and_uri_across_surfaces_move_and_restart() {
     use action_matrix::{EvidenceLevel, Surface};
@@ -501,6 +525,7 @@ async fn context_documents_keep_text_and_uri_across_surfaces_move_and_restart() 
     let initialize = serde_json::json!({"protocolVersion":"2026-07-28","capabilities":{},
         "clientInfo":{"name":"stash-context-journey","version":"1"}});
     context_rpc(&client, &identity, "initialize", initialize.clone()).await;
+    assert_context_tool_visible(&client, &identity).await;
     let save_params = action_scenarios::fixture_params(intent("stash.save_text"));
     let content = save_params["content"].as_str().unwrap().to_owned();
     let first = context_tool(&client, &identity, "stash.save_text", save_params.clone()).await;
@@ -531,6 +556,7 @@ async fn context_documents_keep_text_and_uri_across_surfaces_move_and_restart() 
                 .await
                 .expect("restart with context documents");
             context_rpc(&client, &identity, "initialize", initialize.clone()).await;
+            assert_context_tool_visible(&client, &identity).await;
         }
         for file in &saved {
             let params = serde_json::json!({"uri":file["uri"]});

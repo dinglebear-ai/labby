@@ -1271,6 +1271,15 @@
       "personal_no_membership": "deny",
       "platform_admin": "allow"
     },
+    "stash:stash.folders": {
+      "required_capability": "scope.read",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
     "stash:stash.grants.create": {
       "required_capability": "scope.manage",
       "team_member": "deny",
@@ -1316,9 +1325,36 @@
       "personal_no_membership": "deny",
       "platform_admin": "allow"
     },
+    "stash:stash.move": {
+      "required_capability": "scope.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "stash:stash.read_text": {
+      "required_capability": "scope.read",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
     "stash:stash.rename": {
       "required_capability": "scope.manage",
       "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "stash:stash.save_text": {
+      "required_capability": "scope.create",
+      "team_member": "allow",
       "team_admin": "allow",
       "team_owner": "allow",
       "other_team_member": "deny",

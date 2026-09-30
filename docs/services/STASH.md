@@ -104,6 +104,10 @@ conversation. It returns file metadata and the stable MCP resource URI. Document
 are private in the caller's Personal Stash by default; an explicit Team selector
 or grant uses the same existing Stash authorization rules.
 
+The native `stash` MCP tool remains available to authenticated callers when
+CodeMode is enabled. Call it directly so Stash receives the caller's identity;
+Stash is excluded from context-free CodeMode synthetic peers.
+
 ```json
 {
   "action": "stash.save_text",
