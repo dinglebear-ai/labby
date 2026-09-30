@@ -1,0 +1,39 @@
+cwd: /Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle
+command: cargo +1.97.1 test --locked -p labby-gateway --all-features --test issue_771_server_lifecycle -- --test-threads=2
+   Compiling labby-gateway v2.3.2 (/Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle/crates/labby-gateway)
+[kache] still compiling labby_gateway — 30s elapsed (typical: 29s, ETA 1s)
+warning: unreachable `pub` item
+ --> crates/labby-gateway/tests/issue_771_server_lifecycle/snapshot.rs:4:1
+  |
+4 | pub fn capture_discovery(result: DiscoverResult, effective: ProtocolVersion) -> serde_json::Value {
+  | ---^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  | |
+  | help: consider restricting its visibility: `pub(crate)`
+  |
+  = help: or consider exporting it for use by other crates
+  = note: requested on the command line with `-W unreachable-pub`
+
+warning: `labby-gateway` (test "issue_771_server_lifecycle") generated 1 warning (run `cargo fix --test "issue_771_server_lifecycle" -p labby-gateway` to apply 1 suggestion)
+    Finished `test` profile [unoptimized] target(s) in 52.12s
+     Running tests/issue_771_server_lifecycle.rs (/Users/jmagar/workspace/labby/target/debug/deps/issue_771_server_lifecycle-410c942e2309bf7e)
+
+running 1 test
+test discovery_capture_retains_versions_and_cache_hints ... FAILED
+
+failures:
+
+---- discovery_capture_retains_versions_and_cache_hints stdout ----
+
+thread 'discovery_capture_retains_versions_and_cache_hints' (266054482) panicked at crates/labby-gateway/tests/issue_771_server_lifecycle.rs:13:5:
+assertion `left == right` failed
+  left: Null
+ right: Array [String("2026-07-28"), String("2025-11-25")]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    discovery_capture_retains_versions_and_cache_hints
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p labby-gateway --test issue_771_server_lifecycle`

@@ -1,0 +1,30 @@
+{
+  "check": "enrichment-default-isolated",
+  "started_utc": "2026-09-30T07:15:40.436460+00:00",
+  "host": "macpoo.local",
+  "cwd": "/Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle",
+  "head": "138ef902dc1842daf883a6e7710b140fbfaf53c0",
+  "branch": "codex/issue-771-server-lifecycle",
+  "command": [
+    "/Users/jmagar/workspace/labby/target/debug/deps/labby_gateway-06c8d076aa6b028d",
+    "--exact",
+    "gateway::enrichment::provider::tests::process_provider_env_is_cleared_and_home_is_isolated",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "environment": {
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_TARGET_DIR": "/Users/jmagar/workspace/labby/target"
+  },
+  "exit_code": 0,
+  "timed_out": false,
+  "elapsed_seconds": 0.221,
+  "log_sha256": "76451c02f3b0f22db2f05ec038e48013cbdfc7b0b291f39f411b093e1951baad",
+  "test_source_sha256": {
+    "crates/labby-gateway/tests/issue_771_server_lifecycle.rs": "ae86eb7e6c901e5444bdd8bf9a3fde4b899de9e4ab3cdf5a184b7d01ada1c437",
+    "crates/labby-gateway/tests/issue_771_server_lifecycle/fencing.rs": "daa2e80a10539cc20f5d1d2fd5b492be0fefd4002b3427813306b8abd18cee98",
+    "crates/labby-gateway/tests/issue_771_server_lifecycle/snapshot.rs": "7a094bc48817f61cf02badd28976de7b58360ae1a9cd032bb3b802ba1e7cafc7",
+    "crates/labby-gateway/tests/issue_771_server_lifecycle/snapshot_tests.rs": "019fe725f04278fdc01b95a2f4f99989298ff319ed4d50251852c5848fc95694",
+    "crates/labby-gateway/tests/issue_771_server_lifecycle/transport_matrix.rs": "6b42086fd1ab2911c323a846fc34fbc01de8955f7ddb5e664525a211a8c5ee79"
+  }
+}

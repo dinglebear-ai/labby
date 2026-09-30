@@ -1,0 +1,35 @@
+{
+  "check": "snapshot-green",
+  "started_utc": "2026-09-30T06:58:39.952278+00:00",
+  "host": "macpoo.local",
+  "cwd": "/Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle",
+  "head": "138ef902dc1842daf883a6e7710b140fbfaf53c0",
+  "branch": "codex/issue-771-server-lifecycle",
+  "command": [
+    "cargo",
+    "+1.97.1",
+    "test",
+    "--locked",
+    "-p",
+    "labby-gateway",
+    "--all-features",
+    "--test",
+    "issue_771_server_lifecycle",
+    "--",
+    "--test-threads=2"
+  ],
+  "environment": {
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_TARGET_DIR": "/Users/jmagar/workspace/labby/target"
+  },
+  "exit_code": 0,
+  "timed_out": false,
+  "elapsed_seconds": 3.613,
+  "log_sha256": "98374a7272db48d22949450ba1005859021a6a2ac016e5c6da8781e27c06cec6",
+  "test_source_sha256": {
+    "crates/labby-gateway/tests/issue_771_server_lifecycle.rs": "a4cb90a5c6eb3bca822b5581af7706d2ef44b0e365bc4a4a4392caf6be35aa46",
+    "crates/labby-gateway/tests/issue_771_server_lifecycle/fencing.rs": "480f1ac7f89e790562180b613e445397dc9a2444113e2772b7c3ad21cb7176b9",
+    "crates/labby-gateway/tests/issue_771_server_lifecycle/snapshot.rs": "056cee633373e8675f7bb066f7d9efdc46147b5423714af1fd11ed56d4d9aa6b",
+    "crates/labby-gateway/tests/issue_771_server_lifecycle/snapshot_tests.rs": "eb15fdf0bb170cbd8abb7db1d7b9ded61a9e116533f4805167b06928fbe82e50"
+  }
+}

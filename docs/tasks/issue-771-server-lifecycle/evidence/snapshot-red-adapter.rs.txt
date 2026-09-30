@@ -1,0 +1,7 @@
+//! Red characterization: the pinned peer-info projection loses discovery fields.
+use rmcp::model::{DiscoverResult, ProtocolVersion, ServerPeerInfo};
+
+pub fn capture_discovery(result: DiscoverResult, effective: ProtocolVersion) -> serde_json::Value {
+    serde_json::to_value(ServerPeerInfo::from_discover_result(effective, result))
+        .expect("SDK server metadata serializes")
+}

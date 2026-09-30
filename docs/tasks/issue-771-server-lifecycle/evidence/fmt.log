@@ -1,0 +1,2 @@
+cwd: /Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle
+command: cargo +1.97.1 fmt --all -- --check

@@ -1,0 +1,35 @@
+cwd: /Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle
+command: python3 -c 'import hashlib,json,pathlib,socket,subprocess
+root=pathlib.Path('"'"'/Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle'"'"')
+git=lambda p,*args: subprocess.check_output(['"'"'git'"'"','"'"'-C'"'"',str(p),*args],text=True).strip()
+base='"'"'138ef902dc1842daf883a6e7710b140fbfaf53c0'"'"'
+gate=root.parent/'"'"'issue-771-gate0'"'"'
+assert socket.gethostname()=='"'"'macpoo.local'"'"'
+assert git(root,'"'"'branch'"'"','"'"'--show-current'"'"')=='"'"'codex/issue-771-server-lifecycle'"'"'
+assert git(root,'"'"'rev-parse'"'"','"'"'HEAD'"'"')==base
+assert git(root,'"'"'rev-parse'"'"','"'"'origin/main'"'"')==base
+assert git(root,'"'"'remote'"'"','"'"'get-url'"'"','"'"'origin'"'"')=='"'"'git@github.com:dinglebear-ai/labby.git'"'"'
+assert git(gate,'"'"'rev-parse'"'"','"'"'HEAD'"'"')=='"'"'a5e3f78ca55e52c64b2013a8fae3d26a9bf5819e'"'"'
+assert git(gate,'"'"'rev-parse'"'"','"'"'HEAD:docs/adr/0007-durable-mcp-task-routing.md'"'"')=='"'"'3ad75a27b9c46a4ff211cef10365f46057fdaba2'"'"'
+assert not git(gate,'"'"'status'"'"','"'"'--porcelain'"'"')
+assert not git(root,'"'"'diff'"'"','"'"'--name-only'"'"',base)
+owned=('"'"'crates/labby-gateway/tests/issue_771_server_lifecycle'"'"','"'"'docs/tasks/issue-771-server-lifecycle/'"'"')
+files=git(root,'"'"'ls-files'"'"','"'"'--others'"'"','"'"'--exclude-standard'"'"').splitlines()
+assert files and all(name.startswith(owned) for name in files)
+rules=['"'"'AGENTS.md'"'"','"'"'crates/labby-gateway/AGENTS.md'"'"','"'"'crates/labby-gateway/src/upstream/AGENTS.md'"'"','"'"'docs/AGENTS.md'"'"']
+print(json.dumps({'"'"'host'"'"':socket.gethostname(),'"'"'base'"'"':base,'"'"'gate0_head'"'"':git(gate,'"'"'rev-parse'"'"','"'"'HEAD'"'"'),'"'"'gate0_clean'"'"':True,'"'"'production_changes'"'"':[],'"'"'owned_untracked_count'"'"':len(files),'"'"'instructions_sha256'"'"':{p:hashlib.sha256((root/p).read_bytes()).hexdigest() for p in rules}},indent=2))
+'
+{
+  "host": "macpoo.local",
+  "base": "138ef902dc1842daf883a6e7710b140fbfaf53c0",
+  "gate0_head": "a5e3f78ca55e52c64b2013a8fae3d26a9bf5819e",
+  "gate0_clean": true,
+  "production_changes": [],
+  "owned_untracked_count": 16,
+  "instructions_sha256": {
+    "AGENTS.md": "3bed64904550ae49977512d2d286b9c47195635df493143aeae4c69706bce5f7",
+    "crates/labby-gateway/AGENTS.md": "d2260d71786fe7a0e2da8ca345fac06b5b33ccb1ecff5a6bc7a817dd1ea2cc55",
+    "crates/labby-gateway/src/upstream/AGENTS.md": "c37a5155c32989c174490aaa0479f80e36bc5fe405b00d4aa29dab132e4d663b",
+    "docs/AGENTS.md": "e53f7e3eba573f0201c515e2899153ddcb1c86954d4cfaed6278e64941d13988"
+  }
+}

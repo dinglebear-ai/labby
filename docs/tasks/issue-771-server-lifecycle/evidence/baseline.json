@@ -1,0 +1,36 @@
+{
+  "check": "baseline",
+  "started_utc": "2026-09-30T06:41:18.122545+00:00",
+  "host": "macpoo.local",
+  "cwd": "/Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle",
+  "head": "138ef902dc1842daf883a6e7710b140fbfaf53c0",
+  "branch": "codex/issue-771-server-lifecycle",
+  "command": [
+    "cargo",
+    "+1.97.1",
+    "nextest",
+    "run",
+    "--locked",
+    "-p",
+    "labby-gateway",
+    "--all-features",
+    "--lib",
+    "--test-threads",
+    "2",
+    "--no-fail-fast",
+    "-E",
+    "test(upstream::pool::incarnation::tests::) | test(upstream::pool::lifecycle::tests::) | test(oauth_reprobe_rejects_catalog_from_invalidated_lifecycle_epoch) | test(upstream::pool::tasks::tests::)"
+  ],
+  "environment": {
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_TARGET_DIR": "/Users/jmagar/workspace/labby/target"
+  },
+  "exit_code": 0,
+  "timed_out": false,
+  "elapsed_seconds": 250.332,
+  "log_sha256": "053528fd6f0076ef020787789964edd64bf96c95d030660337890a0dda475baa",
+  "test_source_sha256": {
+    "crates/labby-gateway/tests/issue_771_server_lifecycle.rs": "91b0c8c0772ae4d4a6c4f41b4f3017ee9d462da39702d5f99c2dd42bc8efd773",
+    "crates/labby-gateway/tests/issue_771_server_lifecycle/snapshot.rs": "01f5107c77363725a45c46dc36524f149fcc136226e1c72fc8efd984d3d6cb17"
+  }
+}

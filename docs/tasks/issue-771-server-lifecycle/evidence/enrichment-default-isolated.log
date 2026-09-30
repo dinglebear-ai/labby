@@ -1,0 +1,8 @@
+cwd: /Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle
+command: /Users/jmagar/workspace/labby/target/debug/deps/labby_gateway-06c8d076aa6b028d --exact gateway::enrichment::provider::tests::process_provider_env_is_cleared_and_home_is_isolated --nocapture --test-threads=1
+
+running 1 test
+test gateway::enrichment::provider::tests::process_provider_env_is_cleared_and_home_is_isolated ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1487 filtered out; finished in 0.13s
+

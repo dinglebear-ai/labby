@@ -1,0 +1,10 @@
+cwd: /Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle
+command: cargo +1.97.1 clippy --locked -p labby-gateway --all-features --all-targets -- -D warnings
+    Checking labby-primitives v2.3.2 (/Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle/crates/labby-primitives)
+    Checking labby-runtime v2.3.2 (/Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle/crates/labby-runtime)
+    Checking labby-apis v2.3.2 (/Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle/crates/labby-apis)
+    Checking labby-openapi v2.3.2 (/Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle/crates/labby-openapi)
+    Checking labby-auth v2.3.2 (/Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle/crates/labby-auth)
+    Checking labby-codemode v2.3.2 (/Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle/crates/labby-codemode)
+    Checking labby-gateway v2.3.2 (/Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle/crates/labby-gateway)
+    Finished `dev` profile [unoptimized] target(s) in 36.33s

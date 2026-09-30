@@ -1,0 +1,19 @@
+cwd: /Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle
+command: /Users/jmagar/workspace/labby/target/debug/deps/labby_gateway-06c8d076aa6b028d gateway::enrichment::provider::tests:: --test-threads=1
+
+running 12 tests
+test gateway::enrichment::provider::tests::process_provider_env_is_cleared_and_home_is_isolated ... ok
+test gateway::enrichment::provider::tests::process_provider_nonzero_exit_includes_capped_stderr_context ... ok
+test gateway::enrichment::provider::tests::process_provider_rejects_nonzero_exit ... ok
+test gateway::enrichment::provider::tests::process_provider_rejects_oversized_output ... ok
+test gateway::enrichment::provider::tests::process_provider_rejects_oversized_stderr ... ok
+test gateway::enrichment::provider::tests::process_provider_timeout_is_reported_without_fallback ... ok
+test gateway::enrichment::provider::tests::provider_output_preserves_existing_hint_status ... ok
+test gateway::enrichment::provider::tests::provider_output_rejects_duplicate_upstream_proposal ... ok
+test gateway::enrichment::provider::tests::provider_output_rejects_malformed_json ... ok
+test gateway::enrichment::provider::tests::provider_output_rejects_unknown_upstream_proposal ... ok
+test gateway::enrichment::provider::tests::provider_output_rejects_unsafe_hint ... ok
+test gateway::enrichment::provider::tests::provider_output_unwraps_claude_json_result_envelope ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 1476 filtered out; finished in 1.11s
+

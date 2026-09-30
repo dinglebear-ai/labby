@@ -1,0 +1,111 @@
+cwd: /Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle
+command: just docs-check
+cargo run --package labby --bin labby --all-features -- docs check
+warning: labby-web@2.3.2: apps/web/out not found — embedding empty web assets (run `pnpm --filter gateway-admin build` to populate the bundle)
+[kache] still compiling labby — 30s elapsed (typical: 1m12s, ETA 42s)
+[kache] still compiling labby — 1m00s elapsed (typical: 1m12s, ETA 12s)
+warning: linker stderr: ld: __eh_frame section too large (max 16MB) to encode dwarf unwind offsets in compact unwind table, performance of exception handling might be affected
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `labby` (bin "labby") generated 1 warning
+    Finished `dev` profile [unoptimized] target(s) in 0.22s
+     Running `/Users/jmagar/workspace/labby/target/debug/labby docs check`
+checked 19 docs artifacts: fresh
+python3 scripts/check-doc-links.py
+documentation link check passed: 1103 local link(s) and 65 Markdown fragment(s) verified
+python3 -m unittest discover -s scripts/ci -p 'test_doc_links.py'
+.......
+----------------------------------------------------------------------
+Ran 7 tests in 0.000s
+
+OK
+python3 scripts/check-product-docs.py
+product docs check passed: 188 canonical docs, 17 maintained planning/feature docs; service indexes and instruction symlinks valid
+python3 -m unittest discover -s plugins/labby/.apm/skills/implement-in-microsandbox/tests -v
+test_artifact_kind (test_verify_handoff.ReceiptTests.test_artifact_kind) ... ok
+test_bad_name (test_verify_handoff.ReceiptTests.test_bad_name) ... ok
+test_bad_nested_type (test_verify_handoff.ReceiptTests.test_bad_nested_type) ... ok
+test_bad_port (test_verify_handoff.ReceiptTests.test_bad_port) ... ok
+test_bad_root_type (test_verify_handoff.ReceiptTests.test_bad_root_type) ... ok
+test_boolean_cpu (test_verify_handoff.ReceiptTests.test_boolean_cpu) ... ok
+test_corrupt_artifact (test_verify_handoff.ReceiptTests.test_corrupt_artifact) ... ok
+test_dirty_tree (test_verify_handoff.ReceiptTests.test_dirty_tree) ... ok
+test_duplicate_port (test_verify_handoff.ReceiptTests.test_duplicate_port) ... ok
+test_empty_command (test_verify_handoff.ReceiptTests.test_empty_command) ... ok
+test_ephemeral (test_verify_handoff.ReceiptTests.test_ephemeral) ... ok
+test_expiry (test_verify_handoff.ReceiptTests.test_expiry) ... ok
+test_failed_tests (test_verify_handoff.ReceiptTests.test_failed_tests) ... ok
+test_host_mount (test_verify_handoff.ReceiptTests.test_host_mount) ... ok
+test_idle_expiry (test_verify_handoff.ReceiptTests.test_idle_expiry) ... ok
+test_missing_artifact (test_verify_handoff.ReceiptTests.test_missing_artifact) ... ok
+test_missing_docs (test_verify_handoff.ReceiptTests.test_missing_docs) ... ok
+test_missing_lifecycle (test_verify_handoff.ReceiptTests.test_missing_lifecycle) ... ok
+test_missing_memory (test_verify_handoff.ReceiptTests.test_missing_memory) ... ok
+test_mutable_image (test_verify_handoff.ReceiptTests.test_mutable_image) ... ok
+test_parent_workdir (test_verify_handoff.ReceiptTests.test_parent_workdir) ... ok
+test_production (test_verify_handoff.ReceiptTests.test_production) ... ok
+test_public_bind (test_verify_handoff.ReceiptTests.test_public_bind) ... ok
+test_raw_secret (test_verify_handoff.ReceiptTests.test_raw_secret) ... ok
+test_real_http_identity (test_verify_handoff.ReceiptTests.test_real_http_identity) ... ok
+test_real_http_non_object (test_verify_handoff.ReceiptTests.test_real_http_non_object) ... ok
+test_real_http_redirect (test_verify_handoff.ReceiptTests.test_real_http_redirect) ... ok
+test_real_http_unhealthy (test_verify_handoff.ReceiptTests.test_real_http_unhealthy) ... ok
+test_real_http_wrong_commit (test_verify_handoff.ReceiptTests.test_real_http_wrong_commit) ... ok
+test_real_http_wrong_sandbox (test_verify_handoff.ReceiptTests.test_real_http_wrong_sandbox) ... ok
+test_relative_workdir (test_verify_handoff.ReceiptTests.test_relative_workdir) ... ok
+test_remote_health (test_verify_handoff.ReceiptTests.test_remote_health) ... ok
+test_same_sandbox (test_verify_handoff.ReceiptTests.test_same_sandbox) ... ok
+test_short_commit (test_verify_handoff.ReceiptTests.test_short_commit) ... ok
+test_snapshot_not_release (test_verify_handoff.ReceiptTests.test_snapshot_not_release) ... ok
+test_symlink_artifact (test_verify_handoff.ReceiptTests.test_symlink_artifact) ... ok
+test_unknown_dirty (test_verify_handoff.ReceiptTests.test_unknown_dirty) ... ok
+test_unknown_schema (test_verify_handoff.ReceiptTests.test_unknown_schema) ... ok
+test_unmapped_health (test_verify_handoff.ReceiptTests.test_unmapped_health) ... ok
+test_unpublished_commit (test_verify_handoff.ReceiptTests.test_unpublished_commit) ... ok
+test_url_credentials (test_verify_handoff.ReceiptTests.test_url_credentials) ... ok
+test_valid_receipt (test_verify_handoff.ReceiptTests.test_valid_receipt) ... ok
+test_zero_cpu (test_verify_handoff.ReceiptTests.test_zero_cpu) ... ok
+test_zero_tests (test_verify_handoff.ReceiptTests.test_zero_tests) ... ok
+
+----------------------------------------------------------------------
+Ran 44 tests in 3.064s
+
+OK
+python3 -m unittest discover -s scripts/ci -p "test_microsandbox_skill_paths.py"
+..
+----------------------------------------------------------------------
+Ran 2 tests in 0.001s
+
+OK
+python3 -m unittest discover -s scripts/ci -p 'test_product_docs.py'
+........................
+----------------------------------------------------------------------
+Ran 24 tests in 1.089s
+
+OK
+bash scripts/tests/bin_link_claude_mds_test.sh
+test_claude_only_legacy_scope_is_promoted (test_agent_instructions.InstructionLinkTests.test_claude_only_legacy_scope_is_promoted) ... ok
+test_concurrent_change_aborts_before_application (test_agent_instructions.InstructionLinkTests.test_concurrent_change_aborts_before_application) ... ok
+test_conflict_fails_before_any_scope_changes (test_agent_instructions.InstructionLinkTests.test_conflict_fails_before_any_scope_changes) ... ok
+test_empty_or_invalid_utf8_source_fails (test_agent_instructions.InstructionLinkTests.test_empty_or_invalid_utf8_source_fails) ... ok
+test_identical_alias_copy_can_be_replaced (test_agent_instructions.InstructionLinkTests.test_identical_alias_copy_can_be_replaced) ... ok
+test_ignored_worktree_and_private_files_are_untouched (test_agent_instructions.InstructionLinkTests.test_ignored_worktree_and_private_files_are_untouched) ... ok
+test_legacy_canonical_is_promoted_without_losing_text (test_agent_instructions.InstructionLinkTests.test_legacy_canonical_is_promoted_without_losing_text) ... ok
+test_nongit_target_fails (test_agent_instructions.InstructionLinkTests.test_nongit_target_fails) ... ok
+test_root_nested_and_idempotent (test_agent_instructions.InstructionLinkTests.test_root_nested_and_idempotent) ... ok
+test_tracked_protected_history_is_not_relinked (test_agent_instructions.InstructionLinkTests.test_tracked_protected_history_is_not_relinked) ... ok
+test_wrong_alias_is_repaired_but_wrong_source_is_not (test_agent_instructions.InstructionLinkTests.test_wrong_alias_is_repaired_but_wrong_source_is_not) ... ok
+
+----------------------------------------------------------------------
+Ran 11 tests in 1.362s
+
+OK
+python3 scripts/check-depot-control-plane-contract.py
+docs/contracts/fixtures/depot-control-plane/compatibility-v1.json
+python3 -m unittest scripts/ci/test_depot_control_plane_contract.py scripts/ci/test_product_doc_cli_options.py
+......
+----------------------------------------------------------------------
+Ran 6 tests in 0.003s
+
+OK

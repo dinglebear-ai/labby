@@ -1,0 +1,38 @@
+cwd: /Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle
+command: cargo +1.97.1 test --locked -p labby-gateway --test issue_771_server_lifecycle -- --test-threads=2
+[kache] still compiling labby_gateway — 30s elapsed (typical: 29s, ETA 1s)
+    Finished `test` profile [unoptimized] target(s) in 0.50s
+     Running tests/issue_771_server_lifecycle.rs (/Users/jmagar/workspace/labby/target/debug/deps/issue_771_server_lifecycle-3f815d6e551b04e5)
+
+running 28 tests
+test fencing::lifecycle_writer_and_publication_reader_have_a_deterministic_order ... ok
+test fencing::late_observation_after_an_await_cannot_pass_the_existing_epoch_fence ... ok
+test fencing::new_process_local_epoch_cannot_stand_in_for_durable_revocation ... ok
+test fencing::same_owner_refresh_requires_a_fresh_observation_not_a_reused_epoch ... ok
+test fencing::replacement_pools_share_credential_fencing_but_not_pool_generation ... ok
+test fencing::subject_invalidation_fences_only_the_affected_observations ... ok
+test fencing::upstream_invalidation_fences_all_its_owners_not_other_upstreams ... ok
+test snapshot_tests::detached_snapshot_retains_catalog_observation_without_a_peer ... ok
+test snapshot_tests::discovery_capture_retains_versions_and_cache_hints ... ok
+test snapshot_tests::extensions_and_unknown_metadata_are_preserved_once ... ok
+test snapshot_tests::freshness_boundary_is_not_task_retention ... ok
+test snapshot_tests::freshness_overflow_fails_closed ... ok
+test snapshot_tests::legacy_is_explicit_and_does_not_invent_discovery_hints ... ok
+test snapshot_tests::missing_identity_does_not_invent_server_authority ... ok
+test snapshot_tests::modern_initialize_and_unknown_versions_do_not_create_legacy_sessions ... ok
+test snapshot_tests::noncomplete_discovery_cannot_be_cached_as_a_server_snapshot ... ok
+test snapshot_tests::peer_info_loss_is_characterized_not_silently_fabricated ... ok
+test snapshot_tests::public_cache_hint_never_erases_observation_scope ... ok
+test snapshot_tests::spoofed_server_info_cannot_replace_configured_observation_binding ... ok
+test snapshot_tests::unadvertised_effective_version_is_rejected ... ok
+test snapshot_tests::zero_ttl_is_never_a_default_idle_ttl ... ok
+test transport_matrix::a_durable_route_database_alone_does_not_qualify_gateway_restart ... ok
+test transport_matrix::every_transport_and_loss_requires_reauthorization_and_peer_independent_tasks ... ok
+test transport_matrix::every_upstream_restart_requires_persistent_backend_task_state ... ok
+test transport_matrix::explicit_legacy_qualification_cannot_erase_modern_security_requirements ... ok
+test transport_matrix::in_process_handles_do_not_qualify_host_restart ... ok
+test transport_matrix::stdio_including_ssh_requires_proven_task_identity_across_child_reexecution ... ok
+test transport_matrix::unsupported_transport_is_not_silently_given_http_durability ... ok
+
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

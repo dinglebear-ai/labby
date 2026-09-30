@@ -1,0 +1,28 @@
+{
+  "check": "ownership-audit",
+  "started_utc": "2026-09-30T07:13:15.421945+00:00",
+  "host": "macpoo.local",
+  "cwd": "/Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle",
+  "head": "138ef902dc1842daf883a6e7710b140fbfaf53c0",
+  "branch": "codex/issue-771-server-lifecycle",
+  "command": [
+    "python3",
+    "-c",
+    "import hashlib,json,pathlib,socket,subprocess\nroot=pathlib.Path('/Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle')\ngit=lambda p,*args: subprocess.check_output(['git','-C',str(p),*args],text=True).strip()\nbase='138ef902dc1842daf883a6e7710b140fbfaf53c0'\ngate=root.parent/'issue-771-gate0'\nassert socket.gethostname()=='macpoo.local'\nassert git(root,'branch','--show-current')=='codex/issue-771-server-lifecycle'\nassert git(root,'rev-parse','HEAD')==base\nassert git(root,'rev-parse','origin/main')==base\nassert git(root,'remote','get-url','origin')=='git@github.com:dinglebear-ai/labby.git'\nassert git(gate,'rev-parse','HEAD')=='a5e3f78ca55e52c64b2013a8fae3d26a9bf5819e'\nassert git(gate,'rev-parse','HEAD:docs/adr/0007-durable-mcp-task-routing.md')=='3ad75a27b9c46a4ff211cef10365f46057fdaba2'\nassert not git(gate,'status','--porcelain')\nassert not git(root,'diff','--name-only',base)\nowned=('crates/labby-gateway/tests/issue_771_server_lifecycle','docs/tasks/issue-771-server-lifecycle/')\nfiles=git(root,'ls-files','--others','--exclude-standard').splitlines()\nassert files and all(name.startswith(owned) for name in files)\nrules=['AGENTS.md','crates/labby-gateway/AGENTS.md','crates/labby-gateway/src/upstream/AGENTS.md','docs/AGENTS.md']\nprint(json.dumps({'host':socket.gethostname(),'base':base,'gate0_head':git(gate,'rev-parse','HEAD'),'gate0_clean':True,'production_changes':[],'owned_untracked_count':len(files),'instructions_sha256':{p:hashlib.sha256((root/p).read_bytes()).hexdigest() for p in rules}},indent=2))\n"
+  ],
+  "environment": {
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_TARGET_DIR": "/Users/jmagar/workspace/labby/target"
+  },
+  "exit_code": 0,
+  "timed_out": false,
+  "elapsed_seconds": 0.513,
+  "log_sha256": "57f45506cb8cba5e244798d5b3d22f88d79aa643e2a83697dd9ff20a12dd16c2",
+  "test_source_sha256": {
+    "crates/labby-gateway/tests/issue_771_server_lifecycle.rs": "ae86eb7e6c901e5444bdd8bf9a3fde4b899de9e4ab3cdf5a184b7d01ada1c437",
+    "crates/labby-gateway/tests/issue_771_server_lifecycle/fencing.rs": "daa2e80a10539cc20f5d1d2fd5b492be0fefd4002b3427813306b8abd18cee98",
+    "crates/labby-gateway/tests/issue_771_server_lifecycle/snapshot.rs": "7a094bc48817f61cf02badd28976de7b58360ae1a9cd032bb3b802ba1e7cafc7",
+    "crates/labby-gateway/tests/issue_771_server_lifecycle/snapshot_tests.rs": "019fe725f04278fdc01b95a2f4f99989298ff319ed4d50251852c5848fc95694",
+    "crates/labby-gateway/tests/issue_771_server_lifecycle/transport_matrix.rs": "6b42086fd1ab2911c323a846fc34fbc01de8955f7ddb5e664525a211a8c5ee79"
+  }
+}

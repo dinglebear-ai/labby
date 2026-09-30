@@ -1,0 +1,33 @@
+{
+  "check": "snapshot-red",
+  "started_utc": "2026-09-30T06:47:23.294520+00:00",
+  "host": "macpoo.local",
+  "cwd": "/Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle",
+  "head": "138ef902dc1842daf883a6e7710b140fbfaf53c0",
+  "branch": "codex/issue-771-server-lifecycle",
+  "command": [
+    "cargo",
+    "+1.97.1",
+    "test",
+    "--locked",
+    "-p",
+    "labby-gateway",
+    "--all-features",
+    "--test",
+    "issue_771_server_lifecycle",
+    "--",
+    "--test-threads=2"
+  ],
+  "environment": {
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_TARGET_DIR": "/Users/jmagar/workspace/labby/target"
+  },
+  "exit_code": 101,
+  "timed_out": false,
+  "elapsed_seconds": 52.559,
+  "log_sha256": "266a8bb9d901f2d6a292161e9dba791d77069a62cefc65a04d027e4c32d53516",
+  "test_source_sha256": {
+    "crates/labby-gateway/tests/issue_771_server_lifecycle.rs": "91b0c8c0772ae4d4a6c4f41b4f3017ee9d462da39702d5f99c2dd42bc8efd773",
+    "crates/labby-gateway/tests/issue_771_server_lifecycle/snapshot.rs": "01f5107c77363725a45c46dc36524f149fcc136226e1c72fc8efd984d3d6cb17"
+  }
+}

@@ -1,0 +1,16 @@
+//! Lane C executable proposal. This does not wire production task reacquisition.
+#[path = "issue_771_server_lifecycle/snapshot.rs"]
+mod snapshot;
+
+#[test]
+fn discovery_capture_retains_versions_and_cache_hints() {
+    use rmcp::model::{CacheScope, DiscoverResult, ProtocolVersion, ServerCapabilities};
+    let result = DiscoverResult::new(
+        vec![ProtocolVersion::V_2026_07_28, ProtocolVersion::V_2025_11_25],
+        ServerCapabilities::default(),
+    ).with_ttl_ms(250).with_cache_scope(CacheScope::Public);
+    let document = snapshot::capture_discovery(result, ProtocolVersion::V_2026_07_28);
+    assert_eq!(document["supportedVersions"], serde_json::json!(["2026-07-28", "2025-11-25"]));
+    assert_eq!(document["ttlMs"], 250);
+    assert_eq!(document["cacheScope"], "public");
+}

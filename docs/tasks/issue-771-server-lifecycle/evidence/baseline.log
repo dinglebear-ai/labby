@@ -1,0 +1,42 @@
+cwd: /Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle
+command: cargo +1.97.1 nextest run --locked -p labby-gateway --all-features --lib --test-threads 2 --no-fail-fast -E 'test(upstream::pool::incarnation::tests::) | test(upstream::pool::lifecycle::tests::) | test(oauth_reprobe_rejects_catalog_from_invalidated_lifecycle_epoch) | test(upstream::pool::tasks::tests::)'
+    Blocking waiting for file lock on build directory
+   Compiling labby-primitives v2.3.2 (/Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle/crates/labby-primitives)
+   Compiling labby-runtime v2.3.2 (/Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle/crates/labby-runtime)
+   Compiling labby-apis v2.3.2 (/Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle/crates/labby-apis)
+   Compiling labby-openapi v2.3.2 (/Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle/crates/labby-openapi)
+   Compiling labby-auth v2.3.2 (/Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle/crates/labby-auth)
+   Compiling labby-codemode v2.3.2 (/Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle/crates/labby-codemode)
+   Compiling labby-gateway v2.3.2 (/Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle/crates/labby-gateway)
+warning: linker stderr: ld: __eh_frame section too large (max 16MB) to encode dwarf unwind offsets in compact unwind table, performance of exception handling might be affected
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `labby-gateway` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized] target(s) in 4m 04s
+────────────
+ Nextest run ID b7f26ce8-2aef-459d-b649-722847c52f7e with nextest profile: default
+    Starting 21 tests across 1 binary (1495 tests skipped)
+        PASS [   0.039s] ( 1/21) labby-gateway upstream::pool::incarnation::tests::cancelled_install_cannot_publish_half_a_binding
+        PASS [   0.040s] ( 2/21) labby-gateway upstream::pool::ensure::tests::oauth_reprobe_rejects_catalog_from_invalidated_lifecycle_epoch
+        PASS [   0.022s] ( 3/21) labby-gateway upstream::pool::incarnation::tests::checked_allocator_never_returns_zero_or_wraps
+        PASS [   0.024s] ( 4/21) labby-gateway upstream::pool::incarnation::tests::current_apply_survives_unrelated_catalog_mutation
+        PASS [   0.030s] ( 5/21) labby-gateway upstream::pool::incarnation::tests::production_structural_paths_use_binding_coordinator
+        PASS [   0.032s] ( 6/21) labby-gateway upstream::pool::incarnation::tests::same_connection_object_aba_rejects_stale_observation
+        PASS [   0.037s] ( 7/21) labby-gateway upstream::pool::lifecycle::tests::drain_for_swap_clears_all_pool_state
+        PASS [   0.035s] ( 8/21) labby-gateway upstream::pool::lifecycle::tests::drain_for_swap_clears_multiple_upstreams_in_parallel
+        PASS [   0.027s] ( 9/21) labby-gateway upstream::pool::lifecycle::tests::selective_reconcile_advances_config_fence_before_late_publication
+        PASS [   0.032s] (10/21) labby-gateway upstream::pool::lifecycle::tests::fresh_pool_reachable_while_old_pool_drains
+        PASS [   0.032s] (11/21) labby-gateway upstream::pool::lifecycle::tests::selective_reconcile_removes_deleted_config_fence
+        PASS [   0.035s] (12/21) labby-gateway upstream::pool::tasks::tests::global_oauth_invalidation_preserves_raw_authenticated_task
+        PASS [   0.020s] (13/21) labby-gateway upstream::pool::tasks::tests::oauth_revocation_is_not_blocked_by_inflight_network_work
+        PASS [   0.025s] (14/21) labby-gateway upstream::pool::tasks::tests::missing_relay_connection_rejects_orphan_task_response
+        PASS [   0.027s] (15/21) labby-gateway upstream::pool::tasks::tests::persistence_failure_prevents_task_acknowledgement
+        PASS [   0.025s] (16/21) labby-gateway upstream::pool::tasks::tests::protected_task_route_rejects_disjoint_route_lifecycle_operations
+        PASS [   0.068s] (17/21) labby-gateway upstream::pool::tasks::tests::routed_task_get_failure_preserves_error_format_and_records_usage
+        PASS [   0.024s] (18/21) labby-gateway upstream::pool::tasks::tests::shared_admin_oauth_task_invalidation_uses_credential_subject
+        PASS [   0.014s] (19/21) labby-gateway upstream::pool::tasks::tests::task_handles_are_opaque_and_unique
+        PASS [   0.020s] (20/21) labby-gateway upstream::pool::tasks::tests::trusted_stdio_oauth_task_without_caller_subject_is_invalidated
+        PASS [   1.038s] (21/21) labby-gateway upstream::pool::tasks::tests::routed_task_lifecycle_uses_gateway_handle_and_native_upstream_id
+────────────
+     Summary [   1.285s] 21 tests run: 21 passed, 1495 skipped
