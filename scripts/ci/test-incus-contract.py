@@ -54,14 +54,14 @@ class IncusContract(unittest.TestCase):
                 self.assertTrue((source / "web-assets/index.html").is_file())
 
     def test_incus_sources_are_https(self):
-        text = self.text("config/incus/labby-image.yaml")
+        text = self.text(".config/incus/labby-image.yaml")
         self.assertNotIn("url: http://", text)
         self.assertNotIn("mirror: http://", text)
         self.assertIn("https://snapshot.ubuntu.com/ubuntu/", text)
         self.assertNotIn('uv" python install', text)
 
     def test_image_is_substrate_only_and_smoke_installs_candidate(self):
-        image = self.text("config/incus/labby-image.yaml")
+        image = self.text(".config/incus/labby-image.yaml")
         builder = self.text("scripts/ci/build-incus-image.sh")
         smoke = self.text("scripts/ci/smoke-incus-image.sh")
         workflow = self.text(".github/workflows/release.yml")
@@ -73,7 +73,7 @@ class IncusContract(unittest.TestCase):
         self.assertNotIn("incus-candidate:", workflow)
 
     def incus_apt_repository(self):
-        image = self.text("config/incus/labby-image.yaml")
+        image = self.text(".config/incus/labby-image.yaml")
         repositories = image.split("  repositories:\n", 1)[1].split("  sets:\n", 1)[0]
         names = re.findall(r"^    - name: (.+)$", repositories, re.MULTILINE)
         self.assertEqual(names, ["sources.list"])
@@ -130,7 +130,7 @@ class IncusContract(unittest.TestCase):
             self.assertNotIn("Conflicting values", fixed.stderr)
 
     def test_every_image_action_has_valid_bash_syntax(self):
-        image = self.text("config/incus/labby-image.yaml")
+        image = self.text(".config/incus/labby-image.yaml")
         actions = image.split("\nactions:\n", 1)[1].split("\nfiles:\n", 1)[0]
         lines = actions.splitlines()
         triggers = [line for line in lines if line.startswith("  - trigger:")]
@@ -163,7 +163,7 @@ class IncusContract(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_tailscale_consumers_pass_pinned_version_to_installer(self):
-        image = self.text("config/incus/labby-image.yaml")
+        image = self.text(".config/incus/labby-image.yaml")
         install_lines = [line.strip() for line in image.splitlines()
                          if 'sh "$tmp/install.sh"' in line]
         self.assertEqual(len(install_lines), 1)
@@ -183,7 +183,7 @@ class IncusContract(unittest.TestCase):
         self.assertEqual(result.stdout.splitlines(), ["1.102.3", "/fixture/install.sh"])
 
     def test_tailscale_downloads_are_immutable(self):
-        for path in ("config/incus/labby-image.yaml", "scripts/incus-bootstrap.sh"):
+        for path in (".config/incus/labby-image.yaml", "scripts/incus-bootstrap.sh"):
             with self.subTest(path=path):
                 text = self.text(path)
                 self.assertNotIn("https://tailscale.com/install.sh", text)
@@ -197,7 +197,7 @@ class IncusContract(unittest.TestCase):
         self.assertIn(command, self.text(".github/workflows/build-incus-image.yml"))
 
     def test_mise_installer_uses_versioned_release(self):
-        image = self.text("config/incus/labby-image.yaml")
+        image = self.text(".config/incus/labby-image.yaml")
         self.assertNotIn("https://mise.run", image)
         self.assertIn("https://github.com/jdx/mise/releases/download/v2026.9.1/install.sh", image)
 
@@ -216,7 +216,7 @@ class IncusContract(unittest.TestCase):
         bootstrap_download = next(line for line in bootstrap.splitlines() if "curl -fsSL" in line)
         self.assertIn("--connect-timeout", bootstrap_download)
         self.assertIn("--max-time", bootstrap_download)
-        supply = json.loads(self.text("config/incus/provision-supply.json"))["tailscale_installer"]
+        supply = json.loads(self.text(".config/incus/provision-supply.json"))["tailscale_installer"]
         self.assertIn(supply["version"], bootstrap)
         self.assertIn(supply["sha256"], bootstrap)
         readiness = next(line for line in bootstrap.splitlines() if 'incus exec "$NAME" -- curl -fsS' in line and ">/dev/null" in line)
@@ -255,8 +255,8 @@ class IncusContract(unittest.TestCase):
             self.assertIn("--max-time", probe)
 
     def test_every_incus_supply_pin_is_bound_into_the_image_definition(self):
-        image = self.text("config/incus/labby-image.yaml")
-        supply = json.loads(self.text("config/incus/provision-supply.json"))
+        image = self.text(".config/incus/labby-image.yaml")
+        supply = json.loads(self.text(".config/incus/provision-supply.json"))
         for name, item in supply.items():
             with self.subTest(name=name):
                 self.assertIn(item["version"], image)
@@ -273,8 +273,8 @@ class IncusContract(unittest.TestCase):
         self.assertIn("--max-time", distrobuilder_download)
 
     def test_mutated_supply_classes_fail_binding(self):
-        image = self.text("config/incus/labby-image.yaml")
-        supply = json.loads(self.text("config/incus/provision-supply.json"))
+        image = self.text(".config/incus/labby-image.yaml")
+        supply = json.loads(self.text(".config/incus/provision-supply.json"))
         for name, item in supply.items():
             mutated = dict(item)
             field = "sha256" if "sha256" in item else "integrity" if "integrity" in item else "version"
@@ -288,7 +288,7 @@ class IncusContract(unittest.TestCase):
         for _ in range(2):
             with tempfile.TemporaryDirectory() as directory:
                 root = pathlib.Path(directory)
-                for path in ["config/incus/provision-supply.json", "config/incus/labby-image.yaml"]:
+                for path in [".config/incus/provision-supply.json", ".config/incus/labby-image.yaml"]:
                     destination = root / path
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(ROOT / path, destination)
@@ -299,22 +299,22 @@ class IncusContract(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
-            for path in ["config/incus/provision-supply.json", "config/incus/labby-image.yaml"]:
+            for path in [".config/incus/provision-supply.json", ".config/incus/labby-image.yaml"]:
                 destination = root / path
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(ROOT / path, destination)
-            manifest = root / "config/incus/provision-supply.json"
+            manifest = root / ".config/incus/provision-supply.json"
             manifest.write_text(manifest.read_text().replace("077e1a0777", "0000000000", 1))
             result = subprocess.run([validator, "--root", root], capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
 
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
-            for path in ["config/incus/provision-supply.json", "config/incus/labby-image.yaml"]:
+            for path in [".config/incus/provision-supply.json", ".config/incus/labby-image.yaml"]:
                 destination = root / path
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(ROOT / path, destination)
-            manifest = root / "config/incus/provision-supply.json"
+            manifest = root / ".config/incus/provision-supply.json"
             supply = json.loads(manifest.read_text())
             supply["node"]["version"] = supply["uv"]["version"]
             supply["node"]["sha256"] = supply["uv"]["sha256"]
@@ -324,11 +324,11 @@ class IncusContract(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
-            for path in ["config/incus/provision-supply.json", "config/incus/labby-image.yaml"]:
+            for path in [".config/incus/provision-supply.json", ".config/incus/labby-image.yaml"]:
                 destination = root / path
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(ROOT / path, destination)
-            manifest = root / "config/incus/provision-supply.json"
+            manifest = root / ".config/incus/provision-supply.json"
             supply = json.loads(manifest.read_text())
             supply["rust"], supply["go"] = supply["go"], supply["rust"]
             manifest.write_text(json.dumps(supply))
@@ -481,7 +481,7 @@ exit 64
             self.assertEqual(remote.read_text().strip(), "a" * 40)
 
     def test_incus_supply_downloads_have_connection_and_total_deadlines(self):
-        text = self.text("config/incus/labby-image.yaml")
+        text = self.text(".config/incus/labby-image.yaml")
         downloads = [
             line for line in text.splitlines()
             if re.search(r"(?:^|&&\s+)curl\s+-", line.strip())

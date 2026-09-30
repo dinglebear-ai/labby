@@ -9,7 +9,7 @@ class MicrosandboxSkillPaths(unittest.TestCase):
                        "scripts/bootstrap_ubuntu.sh", "tests/test_verify_handoff.py",
                        "references/ubuntu-arm64.packages.lock", "agents/openai.yaml"):
             with self.subTest(suffix=suffix):
-                result=classify("pull_request", ["plugins/labby/skills/implement-in-microsandbox/"+suffix])
+                result=classify("pull_request", ["plugins/labby/.apm/skills/implement-in-microsandbox/"+suffix])
                 self.assertIs(result["docs_check"], True)
 
     def test_task_docs_have_required_frontmatter(self):

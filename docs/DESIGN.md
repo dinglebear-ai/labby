@@ -223,10 +223,10 @@ The product is a control plane, not a marketing surface. Functional hierarchy mu
 
 Implementation mapping today:
 
-- `apps/gateway-admin/app/globals.css` maps Labby's current Aurora values into CSS and Tailwind v4 variables;
-- `apps/gateway-admin/components/aurora/tokens.ts` contains local reusable typography and surface recipes;
-- `apps/gateway-admin/components/ui/` is the pre-registry compatibility layer still used by existing pages;
-- canonical registry components install under `apps/gateway-admin/components/ui/aurora/` as they are adopted;
+- `apps/web/app/globals.css` maps Labby's current Aurora values into CSS and Tailwind v4 variables;
+- `apps/web/components/aurora/tokens.ts` contains local reusable typography and surface recipes;
+- `apps/web/components/ui/` is the pre-registry compatibility layer still used by existing pages;
+- canonical registry components install under `apps/web/components/ui/aurora/` as they are adopted;
 - `/design-system` is Labby's interactive visual reference and anti-pattern gallery;
 - `docs/design/design-system-contract.md` is the longer Labby consumer/implementation contract.
 
@@ -414,7 +414,7 @@ The source-of-truth split is:
 - **Aurora `DESIGN.md`** defines the cross-product visual and interaction system.
 - **Aurora `registry.json` and `registry/aurora/**`** define the installable component, token, theme, block, file-theme, and bundle catalog.
 - **Labby `DESIGN.md`** is a self-contained product profile for agents working in this repository. It may document Labby-specific composition rules, but shared Aurora tokens and primitives should stay aligned with the standalone system.
-- **Labby `apps/gateway-admin/components/**`** contains the source installed or synchronized into this product. Those files are editable source, but a change intended to become shared Aurora behavior belongs upstream in Aurora first and then flows back into Labby.
+- **Labby `apps/web/components/**`** contains the source installed or synchronized into this product. Those files are editable source, but a change intended to become shared Aurora behavior belongs upstream in Aurora first and then flows back into Labby.
 
 Labby's `components.json` registers `@aurora` against the generated `public/r` artifacts from the canonical `dinglebear-ai/aurora` repository. Typical installs are:
 

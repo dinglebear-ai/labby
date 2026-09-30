@@ -14,33 +14,33 @@ runs:
       with:
         node-version: 22
         cache: pnpm
-        cache-dependency-path: apps/gateway-admin/pnpm-lock.yaml
+        cache-dependency-path: apps/web/pnpm-lock.yaml
 
     - name: Install gateway-admin deps
       shell: bash
-      working-directory: apps/gateway-admin
+      working-directory: apps/web
       run: pnpm install --frozen-lockfile
 
     - name: Test installer sync
       shell: bash
-      working-directory: apps/gateway-admin
+      working-directory: apps/web
       run: pnpm run test:install-script
 
     - name: Run gateway-admin unit tests
       shell: bash
-      working-directory: apps/gateway-admin
+      working-directory: apps/web
       run: pnpm run test:unit
 
     - name: Typecheck gateway-admin
       shell: bash
-      working-directory: apps/gateway-admin
+      working-directory: apps/web
       run: pnpm exec tsc --noEmit
 
     - name: Build gateway-admin
       shell: bash
-      working-directory: apps/gateway-admin
+      working-directory: apps/web
       run: pnpm build
 
     - name: Verify synced installer is committed
       shell: bash
-      run: git diff --exit-code -- apps/gateway-admin/public/install.sh
+      run: git diff --exit-code -- apps/web/public/install.sh

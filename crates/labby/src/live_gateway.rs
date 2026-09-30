@@ -1063,6 +1063,16 @@ impl LiveGateway {
     /// connection, the same way `labby-gateway`'s own upstream pool connects
     /// to any other MCP server (see `pool/connect.rs`).
     pub async fn call_codemode_tool(&self, code: &str) -> Result<Value, ToolError> {
+        self.call_codemode_tool_scoped(code, None).await
+    }
+
+    /// Execute local snippet source on the selected daemon while preserving
+    /// its declared exact-tool restriction.
+    pub async fn call_codemode_tool_scoped(
+        &self,
+        code: &str,
+        tools: Option<&[String]>,
+    ) -> Result<Value, ToolError> {
         use rmcp::model::CallToolRequestParams;
 
         let service = self
@@ -1072,6 +1082,9 @@ impl LiveGateway {
 
         let mut arguments = serde_json::Map::new();
         arguments.insert("code".to_string(), Value::String(code.to_string()));
+        if let Some(tools) = tools {
+            arguments.insert("tools".to_string(), serde_json::json!(tools));
+        }
         let (call_result, cancel_result) = bounded_codemode_call_and_cleanup(
             peer.call_tool(CallToolRequestParams::new("codemode").with_arguments(arguments)),
             CODEMODE_EXECUTION_TIMEOUT,

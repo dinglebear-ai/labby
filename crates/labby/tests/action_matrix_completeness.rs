@@ -915,7 +915,7 @@ fn retired_products_are_absent_from_authoritative_projections() {
     let mcp_services = mcp_help["services"]
         .as_array()
         .expect("generated MCP help must contain services");
-    let web_nav = include_str!("../../../apps/gateway-admin/components/console/nav-model.ts");
+    let web_nav = include_str!("../../../apps/web/components/console/nav-model.ts");
     for name in retired {
         assert!(
             !cli_help.contains(&format!("## `labby {name}")),

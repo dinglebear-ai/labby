@@ -69,20 +69,20 @@ docs-check:
     python3 scripts/check-doc-links.py
     python3 -m unittest discover -s scripts/ci -p 'test_doc_links.py'
     python3 scripts/check-product-docs.py
-    python3 -m unittest discover -s plugins/labby/skills/implement-in-microsandbox/tests -v
+    python3 -m unittest discover -s plugins/labby/.apm/skills/implement-in-microsandbox/tests -v
     python3 -m unittest discover -s scripts/ci -p "test_microsandbox_skill_paths.py"
     python3 -m unittest discover -s scripts/ci -p 'test_product_docs.py'
-    bash tests/bin_link_claude_mds_test.sh
+    bash scripts/tests/bin_link_claude_mds_test.sh
     python3 scripts/check-depot-control-plane-contract.py
     python3 -m unittest scripts/ci/test_depot_control_plane_contract.py scripts/ci/test_product_doc_cli_options.py
 
 # Inspect an item from the canonical standalone Aurora shadcn registry.
 aurora-view item="aurora-base":
-    npx -y shadcn@latest view "@aurora/{{item}}" -c apps/gateway-admin
+    npx -y shadcn@latest view "@aurora/{{item}}" -c apps/web
 
 # Preview a canonical Aurora primitive/block without applying it to Labby.
 aurora-preview item="button":
-    npx -y shadcn@latest add "@aurora/aurora-{{item}}" --diff -c apps/gateway-admin
+    npx -y shadcn@latest add "@aurora/aurora-{{item}}" --diff -c apps/web
 
 # Validate Labby's portable DESIGN.md contract.
 design-check:
@@ -160,8 +160,6 @@ build: web-build
 # hosts install Labby via scripts/install.sh or Cargo.
 build-release: web-build
     cargo build --workspace --all-features --release
-    mkdir -p bin
-    install -m 755 target/release/labby bin/labby
     just link-bin
 
 # Copy the compiled binary into PATH.
@@ -334,20 +332,20 @@ web-watch:
         echo "install: mise install watchexec" >&2
         exit 1
     fi
-    echo "Building apps/gateway-admin once, then watching for changes..."
+    echo "Building apps/web once, then watching for changes..."
     watchexec \
       --project-origin . \
-      --watch apps/gateway-admin \
-      --ignore 'apps/gateway-admin/.next' \
-      --ignore 'apps/gateway-admin/.next/**' \
-      --ignore 'apps/gateway-admin/out' \
-      --ignore 'apps/gateway-admin/out/**' \
-      --ignore 'apps/gateway-admin/node_modules' \
-      --ignore 'apps/gateway-admin/node_modules/**' \
+      --watch apps/web \
+      --ignore 'apps/web/.next' \
+      --ignore 'apps/web/.next/**' \
+      --ignore 'apps/web/out' \
+      --ignore 'apps/web/out/**' \
+      --ignore 'apps/web/node_modules' \
+      --ignore 'apps/web/node_modules/**' \
       --debounce 1000ms \
       --on-busy-update queue \
       --wrap-process=none \
-      'cd apps/gateway-admin && pnpm build'
+      'cd apps/web && pnpm build'
 
 # Run with args
 run *ARGS: web-build
@@ -375,26 +373,33 @@ clean:
 release *ARGS:
     cargo release {{ARGS}}
 
-# Generate a secure MCP HTTP bearer token and write it to .env
+# Generate a secure MCP HTTP bearer token in the selected Labby home
 mcp-token:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [ ! -f .env ]; then
-        echo "error: .env not found — copy .env.example first" >&2
+    labby_home="${LABBY_HOME:-$HOME/.labby}"
+    if [[ "$labby_home" != /* ]]; then
+        echo "error: LABBY_HOME must be an absolute path" >&2
         exit 1
     fi
-    token=$(openssl rand -hex 32)
-    if grep -q '^LABBY_MCP_HTTP_TOKEN=' .env; then
-        # macOS/BSD sed compat: write to tmp then move
-        tmp=$(mktemp)
-        awk -v t="$token" '/^LABBY_MCP_HTTP_TOKEN=/{print "LABBY_MCP_HTTP_TOKEN=" t; next} {print}' .env > "$tmp"
-        mv "$tmp" .env
-        echo "✓ rotated LABBY_MCP_HTTP_TOKEN in .env"
-    else
-        echo "LABBY_MCP_HTTP_TOKEN=$token" >> .env
-        echo "✓ appended LABBY_MCP_HTTP_TOKEN to .env"
+    env_file="$labby_home/.env"
+    if [ ! -f "$env_file" ]; then
+        echo "error: $env_file not found — copy .config/.env.example there first" >&2
+        exit 1
     fi
-    echo "  $token"
+    chmod 600 "$env_file"
+    token=$(openssl rand -hex 32)
+    if grep -q '^LABBY_MCP_HTTP_TOKEN=' "$env_file"; then
+        # macOS/BSD sed compat: write to tmp then move
+        tmp=$(mktemp "$labby_home/.env.tmp.XXXXXX")
+        chmod 600 "$tmp"
+        awk -v t="$token" '/^LABBY_MCP_HTTP_TOKEN=/{print "LABBY_MCP_HTTP_TOKEN=" t; next} {print}' "$env_file" > "$tmp"
+        mv "$tmp" "$env_file"
+        echo "rotated LABBY_MCP_HTTP_TOKEN in $env_file"
+    else
+        echo "LABBY_MCP_HTTP_TOKEN=$token" >> "$env_file"
+        echo "appended LABBY_MCP_HTTP_TOKEN to $env_file"
+    fi
 
 # Inspect the first-run setup snapshot without onboarding or changing the
 # operator's configuration. Each invocation owns and removes its temporary home.
@@ -420,8 +425,8 @@ check-gateway-slice:
 
 # Launch the Labby desktop Control Plane shell in dev mode.
 desktop-dev:
-    cd apps/labby-desktop && pnpm tauri dev
+    cd apps/tauri && pnpm tauri dev
 
 # Build the Labby desktop Control Plane shell release bundle.
 desktop-build:
-    cd apps/labby-desktop && pnpm tauri build
+    cd apps/tauri && pnpm tauri build

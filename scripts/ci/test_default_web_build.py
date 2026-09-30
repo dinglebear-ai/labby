@@ -61,7 +61,7 @@ class WebBuildScriptTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="labby web build ")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.app = self.root / "apps" / "gateway-admin"
+        self.app = self.root / "apps" / "web"
         self.app.mkdir(parents=True)
         scripts = self.root / "scripts"
         scripts.mkdir()

@@ -19,8 +19,8 @@ parser.add_argument("--emit-identity", action="store_true")
 args = parser.parse_args()
 root = args.root.resolve()
 
-incus_path = root / "config/incus/provision-supply.json"
-incus_image = (root / "config/incus/labby-image.yaml").read_text()
+incus_path = root / ".config/incus/provision-supply.json"
+incus_image = (root / ".config/incus/labby-image.yaml").read_text()
 
 incus = json.loads(incus_path.read_text())
 if not isinstance(incus, dict) or not incus:

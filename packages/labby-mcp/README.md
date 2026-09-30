@@ -99,7 +99,7 @@ $install-labby
 
 The skill inspects the machine, asks for authentication/listener/deployment choices, drives the verified release installer plus `labby setup`, configures supported persistence and HTTPS exposure, helps register Labby in installed agents, and does not declare success until `labby doctor` plus a live MCP smoke pass. Security-sensitive durable writes remain owned by the Labby binary rather than duplicated in skill prose.
 
-See [`plugins/install-labby/skills/install-labby/SKILL.md`](./plugins/install-labby/skills/install-labby/SKILL.md) for the orchestration contract and [`docs/adr/0001-install-labby-first-class-install-orchestrator.md`](./docs/adr/0001-install-labby-first-class-install-orchestrator.md) for the architecture decision.
+See [`skills/install-labby/SKILL.md`](./skills/install-labby/SKILL.md) for the canonical APM orchestration skill and [`docs/adr/0001-install-labby-first-class-install-orchestrator.md`](./docs/adr/0001-install-labby-first-class-install-orchestrator.md) for the architecture decision.
 
 #### Install through APM
 
@@ -242,7 +242,7 @@ Prerequisites:
 - `cargo-nextest` for the main test suite.
 - Node.js 22.x and `pnpm 9.15.9` to build the Labby web UI. The repo pins these in
   [.mise.toml](./.mise.toml) and
-  [apps/gateway-admin/package.json](./apps/gateway-admin/package.json).
+  [apps/web/package.json](./apps/web/package.json).
 - `openssl` if you want to generate a bearer token manually.
 
 ```bash
@@ -637,7 +637,7 @@ The workspace has 11 members and uses Rust 2024, resolver 3, a single
 | [crates/labby](./crates/labby) | Product binary crate: CLI, MCP, HTTP API, config loading, gateway dispatch, logs, setup, snippets, filesystem access, and output rendering. |
 | [crates/labby-winjob](./crates/labby-winjob) | Windows Job Object process-tree support, isolated so the main workspace can keep `unsafe_code = "forbid"`. |
 | [crates/xtask](./crates/xtask) | Repo automation tasks; not published. |
-| [apps/gateway-admin](./apps/gateway-admin/README.md) | Labby web UI, statically exported and served by `labby serve`. |
+| [apps/web](./apps/web/README.md) | Labby web UI, statically exported and served by `labby serve`. |
 | [packages/labby-mcp](./packages/labby-mcp) | npm launcher wrapper behind `npx -y @dinglebear/labby mcp`. |
 | [plugins](./plugins) | Claude/Codex plugin assets and skills. |
 | [docs](./docs/README.md) | Topic documentation and generated inventories. |
@@ -699,7 +699,7 @@ CI uses the same posture and runs nextest with its CI profile. Use `cargo test`
 only for narrow local slices or when a tool specifically requires it.
 
 Frontend changes should also run the relevant `pnpm` scripts under
-`apps/gateway-admin`, and `just web-build` when exported assets matter.
+`apps/web`, and `just web-build` when exported assets matter.
 
 ### Host Gateway Runtime
 

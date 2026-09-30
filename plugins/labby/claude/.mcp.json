@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "labby": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@dinglebear/labby",
+        "mcp"
+      ]
+    }
+  }
+}

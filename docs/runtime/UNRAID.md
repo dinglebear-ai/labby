@@ -164,7 +164,7 @@ unraid/
     scripts/labby-preflight.sh                   read-only glibc/binary sanity check for native mode; rc.labby refuses to start if this fails
     scripts/labby-incus-env.sh                   points the Incus CLI at incus-unraid's private-prefixed daemon — incus mode only
     scripts/labby-incus-init.sh                  idempotent Incus-mode converger: storage pool, bridge, egress policy, profile, image import, container launch, in-container provisioning — incus mode only
-    incus/labby-gateway-profile.yaml             vendored copy of config/incus/labby-gateway-profile.yaml
+    incus/labby-gateway-profile.yaml             vendored copy of .config/incus/labby-gateway-profile.yaml
     event/disks_mounted                          array-start hook — calls rc.labby start, which is RUNTIME_MODE-aware
     event/unmounting_disks                       array-stop hook — calls rc.labby stop, which is RUNTIME_MODE-aware
 ```

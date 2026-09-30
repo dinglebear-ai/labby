@@ -46,9 +46,9 @@ add_json_version "mcpb/manifest.json"
 
 # The desktop shell is a separate Cargo workspace that follows the root
 # workspace release; release-please rewrites all three manifests.
-add_json_version "apps/labby-desktop/package.json"
-add_json_version "apps/labby-desktop/src-tauri/tauri.conf.json"
-add_toml_version "apps/labby-desktop/src-tauri/Cargo.toml"
+add_json_version "apps/tauri/package.json"
+add_json_version "apps/tauri/src-tauri/tauri.conf.json"
+add_toml_version "apps/tauri/src-tauri/Cargo.toml"
 
 # server.json carries the version in several places: top level, each entry in
 # packages[], the publisher-provided buildInfo, and the composite

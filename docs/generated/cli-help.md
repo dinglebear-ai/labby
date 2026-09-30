@@ -7006,7 +7006,7 @@ Options:
           Include diagnostic events on stderr. Repeat for trace-level detail
 
       --web-assets-dir <WEB_ASSETS_DIR>
-          Local static web export to sync. Defaults to LABBY_INCUS_WEB_ASSETS_DIR, then apps/gateway-admin/out
+          Local static web export to sync. Defaults to LABBY_INCUS_WEB_ASSETS_DIR, then apps/web/out
 
       --no-web-assets
           Skip syncing static web assets into the container web asset directory
@@ -7099,7 +7099,7 @@ Options:
       --config <CONFIG>
           Backup policy YAML to validate
 
-          [default: config/incus/labby-backup.yaml]
+          [default: .config/incus/labby-backup.yaml]
 
       --json
           Emit machine-readable JSON. Diagnostics never enter stdout
@@ -7155,7 +7155,7 @@ Options:
       --config <CONFIG>
           Backup policy YAML to apply
 
-          [default: config/incus/labby-backup.yaml]
+          [default: .config/incus/labby-backup.yaml]
 
       --dry-run
           Print the changes without mutating Incus

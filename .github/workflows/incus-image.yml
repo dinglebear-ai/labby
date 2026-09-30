@@ -6,7 +6,7 @@ on:
     paths:
       - '.github/workflows/incus-image.yml'
       - '.github/workflows/build-incus-image.yml'
-      - 'config/incus/**'
+      - '.config/incus/**'
       - 'scripts/incus-bootstrap.sh'
       - 'scripts/ci/build-incus-image.sh'
       - 'scripts/ci/smoke-incus-image.sh'
@@ -18,7 +18,7 @@ on:
     paths:
       - '.github/workflows/incus-image.yml'
       - '.github/workflows/build-incus-image.yml'
-      - 'config/incus/**'
+      - '.config/incus/**'
       - 'scripts/incus-bootstrap.sh'
       - 'scripts/ci/build-incus-image.sh'
       - 'scripts/ci/smoke-incus-image.sh'

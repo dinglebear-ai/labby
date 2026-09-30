@@ -122,11 +122,11 @@ mod tests {
 
     #[tokio::test]
     async fn embedded_assets_serve_when_present() {
-        // In a fresh clone `apps/gateway-admin/out` is empty, which is a valid
+        // In a fresh clone `apps/web/out` is empty, which is a valid
         // backend-only state — skip rather than fail spuriously.
         if !embedded_assets_available() {
             eprintln!(
-                "skipping: apps/gateway-admin/out/index.html missing — \
+                "skipping: apps/web/out/index.html missing — \
                  run `pnpm --filter gateway-admin build` to populate"
             );
             return;
@@ -141,7 +141,7 @@ mod tests {
     async fn embedded_install_script_is_shell_and_not_immutable_when_present() {
         if embedded_asset("install.sh").is_none() {
             eprintln!(
-                "skipping: apps/gateway-admin/out/install.sh missing — \
+                "skipping: apps/web/out/install.sh missing — \
                  run `pnpm --filter gateway-admin build` to populate"
             );
             return;

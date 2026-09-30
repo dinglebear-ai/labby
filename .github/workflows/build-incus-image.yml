@@ -72,18 +72,18 @@ jobs:
         sh -n scripts/incus-bootstrap.sh
         bash -n scripts/ci/build-incus-image.sh scripts/ci/smoke-incus-image.sh
         shellcheck scripts/incus-bootstrap.sh scripts/ci/build-incus-image.sh scripts/ci/smoke-incus-image.sh
-        sudo "$DISTROBUILDER_BIN" validate config/incus/labby-image.yaml -o image.serial=ci
+        sudo "$DISTROBUILDER_BIN" validate .config/incus/labby-image.yaml -o image.serial=ci
       build-command: |
         set -euo pipefail
         (
-          cd apps/gateway-admin
+          cd apps/web
           pnpm install --frozen-lockfile
           pnpm run test:install-script
           pnpm run test:unit
           pnpm exec tsc --noEmit
           pnpm build
         )
-        git diff --exit-code -- apps/gateway-admin/public/install.sh
+        git diff --exit-code -- apps/web/public/install.sh
         # The image is independent of the Labby version. Compile the current
         # CLI only to smoke the installation and provisioning paths.
         cargo build --package labby --bin labby --all-features --locked --release \

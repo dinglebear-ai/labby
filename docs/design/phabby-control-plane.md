@@ -10,7 +10,7 @@ updated: "2026-08-23"
 Phabby is the accepted target for one open-source Phoenix/OTP human control
 plane shared by personal Labby and hosted Depot. This is a migration target,
 not current deployed behavior. Until a route passes the parity and rollback
-gates in the migration ledger, Labby's in-tree `apps/gateway-admin` static
+gates in the migration ledger, Labby's in-tree `apps/web` static
 export and Depot's current LiveViews remain authoritative.
 
 The repository is bootstrapped privately at `dinglebear-ai/phabby` while

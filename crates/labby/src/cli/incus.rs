@@ -110,7 +110,7 @@ pub struct IncusSyncArgs {
     /// Local labby binary to install. Defaults to LABBY_INCUS_BINARY, target/debug/labby, then the current executable.
     #[arg(long)]
     pub binary: Option<PathBuf>,
-    /// Local static web export to sync. Defaults to LABBY_INCUS_WEB_ASSETS_DIR, then apps/gateway-admin/out.
+    /// Local static web export to sync. Defaults to LABBY_INCUS_WEB_ASSETS_DIR, then apps/web/out.
     #[arg(long)]
     pub web_assets_dir: Option<PathBuf>,
     /// Skip syncing static web assets into the container web asset directory.

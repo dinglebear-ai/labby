@@ -1,0 +1,10 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "labby",
+  "description": "Labby gateway skills and MCP client integration.",
+  "author": {
+    "name": "dinglebear-ai"
+  },
+  "repository": "https://github.com/dinglebear-ai/labby",
+  "license": "AGPL-3.0-only"
+}

@@ -129,7 +129,7 @@ change would lose current operator delegation and token one-time-secret behavior
 
 Finding tracked in Beads `lab-gh311`.
 
-`apps/gateway-admin/components/skills/artifact-control-plane.tsx` selects
+`apps/web/components/skills/artifact-control-plane.tsx` selects
 `artifacts.list_candidates` with `limit: 50`. The pinned Depot schema and current
 `Depot.Operations.Registry` cap this operation at 10. The shim forwards `limit`
 without clamping. This is a source-confirmed request mismatch; with the inspected
@@ -273,10 +273,10 @@ systems in Labby or to remove existing operator controls.
 - [Provider administration](../../crates/labby/src/dispatch/depot/admin.rs)
 - [Provider ActionSpecs](../../crates/labby/src/dispatch/depot/operations.rs)
 - [Service registration](../../crates/labby/src/registry.rs)
-- [Administration UI](../../apps/gateway-admin/components/depot/depot-administration-page.tsx)
-- [Source administration](../../apps/gateway-admin/components/depot/source-administration.tsx)
-- [Artifact control plane UI](../../apps/gateway-admin/components/skills/artifact-control-plane.tsx)
-- [Browser client](../../apps/gateway-admin/lib/api/depot-client.ts)
+- [Administration UI](../../apps/web/components/depot/depot-administration-page.tsx)
+- [Source administration](../../apps/web/components/depot/source-administration.tsx)
+- [Artifact control plane UI](../../apps/web/components/skills/artifact-control-plane.tsx)
+- [Browser client](../../apps/web/lib/api/depot-client.ts)
 - [Native Skill adapter](../../crates/labby/src/mcp/skills.rs)
 - [Exact acquisition provider](../../crates/labby-runtime/src/artifacts/provider.rs)
 - [Publishing shim](../../crates/labby/src/dispatch/depot_publish.rs)

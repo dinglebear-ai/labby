@@ -12,7 +12,7 @@ This document is the authoritative contract for CI, release, and artifact delive
 
 ## CI Path Routing
 
-The docs-check job also runs the pure-Python Microsandbox implementation skill receipt tests and its path-routing regression. Every file under plugins/labby/skills/implement-in-microsandbox/ routes to that job, including scripts, tests, locks, and descriptors. These checks do not claim to launch a microVM on CI.
+The docs-check job also runs the pure-Python Microsandbox implementation skill receipt tests and its path-routing regression. Every file under plugins/labby/.apm/skills/implement-in-microsandbox/ routes to that job, including scripts, tests, locks, and descriptors. These checks do not claim to launch a microVM on CI.
 
 
 The incubating verification toolkit has a separate path-triggered advisory
@@ -213,7 +213,7 @@ jobs when their changed-path category is enabled:
 | Unraid plugin checksums | `unraid` | `scripts/ci/unraid-plugin-checksums.sh` — fails if `unraid/labby.plg`'s companion-file `<MD5>` entities drift from `unraid/source/`. The `--tag`/`--tarball` form (checking `labbyVersion` and the release-tarball `<MD5>`) is a manual tool run when deliberately re-pointing `labbyVersion` at a new release — not a CI gate, since a freshly-built tarball's MD5 isn't reproducible run-to-run |
 | Protected docs guard | separate required `pull_request_target` workflow | blocks `docs/sessions/**` and `docs/superpowers/**` changes unless a maintainer applies `protected-docs-approved` |
 | Workflow lint | `workflow` | `actionlint` over `.github/workflows/` |
-| Frontend build | `rust_compile`, `docs_check`, `web`, or `release` | `./.github/actions/build-gateway-admin` (`pnpm install --frozen-lockfile && pnpm build` in `apps/gateway-admin`) |
+| Frontend build | `rust_compile`, `docs_check`, `web`, or `release` | `./.github/actions/build-gateway-admin` (`pnpm install --frozen-lockfile && pnpm build` in `apps/web`) |
 | Gateway Admin browser tests | `web` | frozen install, pinned Playwright Chromium provisioning, and `pnpm test:browser`; explicitly aggregated by `ci-gate` |
 | Browser extension | `browser_extension` | frozen npm install, Node tests, and TypeScript type-check for extension and shared Browser Bridge protocol changes; explicitly aggregated by `ci-gate` |
 | Compile | `rust_compile` | `cargo check --workspace --all-features` |
@@ -265,7 +265,7 @@ Clippy runs with `-D warnings` — zero warnings are permitted. This is enforced
 
 The frontend build is required because the Rust binary embeds the exported
 Labby assets. CI runs an explicit TypeScript check as well as the production
-build. Run `pnpm test` in `apps/gateway-admin` for the frontend unit and
+build. Run `pnpm test` in `apps/web` for the frontend unit and
 install-script test contract.
 
 The required lifecycle-analysis job parses every shipped POSIX/Bash lifecycle
@@ -302,7 +302,7 @@ land the required code/tests and the baseline update together.
   dependency/advisory visibility fresh even when no PR is active
 - **Job split:**
   - `changes` classifies paths first and exports category booleans, forcing any gated key the trusted base-branch classifier cannot emit to `true`
-  - Frontend assets build once when required, then Rust compile/lint/test jobs download the exported `apps/gateway-admin/out` artifact
+  - Frontend assets build once when required, then Rust compile/lint/test jobs download the exported `apps/web/out` artifact
   - Every artifact download uses the single reviewed `actions/download-artifact` revision enforced by `scripts/ci/check_workflow_policy.py`
   - Gateway Admin declares Node `22.x` in its package manifest; the shared build action consumes Node 22 and `scripts/ci/check_node_toolchain_sync.py` rejects drift
   - Required fast jobs run only when their category is enabled on GitHub-hosted runners; `ci-gate` is the stable required check for branch protection
@@ -583,7 +583,7 @@ then runs `pnpm build`. This is the CI gate for the embedded gateway-admin
 assets compiled into the `labby` binary. The explicit TypeScript check provides
 a distinct type-safety gate alongside the Next.js production build.
 
-`apps/gateway-admin/out/` is generated and ignored; it is never a source
+`apps/web/out/` is generated and ignored; it is never a source
 artifact. CI and release jobs build it once and pass the export to Rust jobs as
 a workflow artifact. Backend-only source builds remain valid without Node and
 embed an empty asset set; distributable builds must consume the generated
@@ -591,7 +591,7 @@ export so the binary includes the Admin UI. `just web-build` creates the local
 export for full-product source builds and Incus syncs.
 
 ```bash
-cd apps/gateway-admin
+cd apps/web
 pnpm run test:unit
 pnpm exec tsc --noEmit
 pnpm test

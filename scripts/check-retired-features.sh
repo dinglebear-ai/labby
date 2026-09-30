@@ -19,9 +19,9 @@ forbidden_paths=(
   crates/labby-apis/src/device_runtime
   crates/labby-apis/src/deploy.rs
   crates/labby-apis/src/deploy
-  apps/gateway-admin/components/registry
-  apps/gateway-admin/lib/api/mcpregistry-client.ts
-  apps/gateway-admin/lib/hooks/use-registry.ts
+  apps/web/components/registry
+  apps/web/lib/api/mcpregistry-client.ts
+  apps/web/lib/hooks/use-registry.ts
   config/acp-adapters.package.json
   config/acp-providers.docker.json
   plugins/scripts/acp-smoke-check
@@ -38,9 +38,9 @@ done
 active_roots=(
   Cargo.toml
   crates
-  apps/gateway-admin/app
-  apps/gateway-admin/components
-  apps/gateway-admin/lib
+  apps/web/app
+  apps/web/components
+  apps/web/lib
   config
   scripts
   plugins/scripts

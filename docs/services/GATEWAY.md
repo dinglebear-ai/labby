@@ -348,7 +348,7 @@ The inspector is passive observability only. It renders tool-result
 initiate tool calls, call Labby HTTP APIs, or execute app-originated operations in
 v1. The `ui://` resource body is self-contained HTML so MCP hosts do not need to
 resolve exported Next.js chunk assets from the resource body. The Next route in
-`apps/gateway-admin/app/mcp/code-mode/` remains available for browser/static
+`apps/web/app/mcp/code-mode/` remains available for browser/static
 build verification.
 
 `codemode` emits a runtime trace (`code_mode_execute_trace`) from the broker's

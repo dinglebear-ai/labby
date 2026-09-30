@@ -6,7 +6,7 @@ out_dir="${2:-target/incus-image-dist}"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 work_dir="$repo_root/target/incus-image-work"
-image_definition="$repo_root/config/incus/labby-image.yaml"
+image_definition="$repo_root/.config/incus/labby-image.yaml"
 image_name="labby-incus-x86_64-unknown-linux-gnu.tar.xz"
 distrobuilder_bin="${DISTROBUILDER_BIN:-distrobuilder}"
 secret_env_vars=(

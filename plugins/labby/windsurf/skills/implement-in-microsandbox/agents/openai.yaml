@@ -1,0 +1,4 @@
+interface:
+  display_name: "Implement in Microsandbox"
+  short_description: "Persistent development and verified, retained staging."
+  default_prompt: "Use $implement-in-microsandbox to implement the authorized task in an isolated persistent sandbox and retain a separate verified staging instance without touching production."

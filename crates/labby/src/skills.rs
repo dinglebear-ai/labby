@@ -34,78 +34,84 @@ use labby_runtime::skills::{FIRST_PARTY_ORIGIN, ResourceDigest, parse_skill_md_f
 /// Every embedded first-party file, as `(skill name, path within the skill,
 /// contents)`.
 ///
-/// The paths mirror `plugins/labby/skills/<name>/<path>` exactly, which is what
+/// The paths mirror `plugins/labby/.apm/skills/<name>/<path>` exactly, which is what
 /// makes the URIs Labby publishes match the layout an operator sees on disk.
 const EMBEDDED_FILES: &[(&str, &str, &str)] = &[
     (
         "using-labby",
         "SKILL.md",
-        include_str!("../../../plugins/labby/skills/using-labby/SKILL.md"),
+        include_str!("../../../plugins/labby/.apm/skills/using-labby/SKILL.md"),
     ),
     (
         "using-codemode",
         "SKILL.md",
-        include_str!("../../../plugins/labby/skills/using-codemode/SKILL.md"),
+        include_str!("../../../plugins/labby/.apm/skills/using-codemode/SKILL.md"),
     ),
     (
         "using-codemode",
         "references/code-mode.md",
-        include_str!("../../../plugins/labby/skills/using-codemode/references/code-mode.md"),
+        include_str!("../../../plugins/labby/.apm/skills/using-codemode/references/code-mode.md"),
     ),
     (
         "using-codemode",
         "agents/openai.yaml",
-        include_str!("../../../plugins/labby/skills/using-codemode/agents/openai.yaml"),
+        include_str!("../../../plugins/labby/.apm/skills/using-codemode/agents/openai.yaml"),
     ),
     (
         "using-labby",
         "references/service-catalog.md",
-        include_str!("../../../plugins/labby/skills/using-labby/references/service-catalog.md"),
+        include_str!(
+            "../../../plugins/labby/.apm/skills/using-labby/references/service-catalog.md"
+        ),
     ),
     (
         "using-labby",
         "references/operator-cli.md",
-        include_str!("../../../plugins/labby/skills/using-labby/references/operator-cli.md"),
+        include_str!("../../../plugins/labby/.apm/skills/using-labby/references/operator-cli.md"),
     ),
     (
         "using-labby",
         "references/gateway-operations.md",
-        include_str!("../../../plugins/labby/skills/using-labby/references/gateway-operations.md"),
+        include_str!(
+            "../../../plugins/labby/.apm/skills/using-labby/references/gateway-operations.md"
+        ),
     ),
     (
         "using-labby",
         "references/config-reference.md",
-        include_str!("../../../plugins/labby/skills/using-labby/references/config-reference.md"),
+        include_str!(
+            "../../../plugins/labby/.apm/skills/using-labby/references/config-reference.md"
+        ),
     ),
     (
         "using-labby",
         "agents/openai.yaml",
-        include_str!("../../../plugins/labby/skills/using-labby/agents/openai.yaml"),
+        include_str!("../../../plugins/labby/.apm/skills/using-labby/agents/openai.yaml"),
     ),
     (
         "using-snippets",
         "SKILL.md",
-        include_str!("../../../plugins/labby/skills/using-snippets/SKILL.md"),
+        include_str!("../../../plugins/labby/.apm/skills/using-snippets/SKILL.md"),
     ),
     (
         "using-snippets",
         "references/authoring.md",
-        include_str!("../../../plugins/labby/skills/using-snippets/references/authoring.md"),
+        include_str!("../../../plugins/labby/.apm/skills/using-snippets/references/authoring.md"),
     ),
     (
         "using-snippets",
         "README.md",
-        include_str!("../../../plugins/labby/skills/using-snippets/README.md"),
+        include_str!("../../../plugins/labby/.apm/skills/using-snippets/README.md"),
     ),
     (
         "using-snippets",
         "CHANGELOG.md",
-        include_str!("../../../plugins/labby/skills/using-snippets/CHANGELOG.md"),
+        include_str!("../../../plugins/labby/.apm/skills/using-snippets/CHANGELOG.md"),
     ),
     (
         "using-snippets",
         "agents/openai.yaml",
-        include_str!("../../../plugins/labby/skills/using-snippets/agents/openai.yaml"),
+        include_str!("../../../plugins/labby/.apm/skills/using-snippets/agents/openai.yaml"),
     ),
 ];
 

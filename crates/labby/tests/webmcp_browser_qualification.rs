@@ -98,8 +98,8 @@ async fn installed_chromium_extension_qualifies_webmcp_lifecycle() {
 
     let runner =
         repository.join("crates/labby/tests/support/webmcp_browser_qualification/runner.mjs");
-    let extension = repository.join("apps/browser-extension");
-    let gateway_admin = repository.join("apps/gateway-admin");
+    let extension = repository.join("apps/chrome");
+    let gateway_admin = repository.join("apps/web");
     let node = std::env::var_os("LABBY_NODE_BIN").unwrap_or_else(|| "node".into());
     let mut command = Command::new(node);
     command

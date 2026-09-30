@@ -1,0 +1,14 @@
+{
+  "mcp": {
+    "labby": {
+      "type": "local",
+      "enabled": true,
+      "command": [
+        "npx",
+        "-y",
+        "@dinglebear/labby",
+        "mcp"
+      ]
+    }
+  }
+}

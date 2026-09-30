@@ -53,7 +53,7 @@ fn write_private_json(path: &Path, value: &serde_json::Value) {
 
 fn app_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../apps/gateway-admin")
+        .join("../../apps/web")
         .canonicalize()
         .expect("Gateway Admin directory")
 }

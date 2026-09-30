@@ -136,20 +136,20 @@ const CLI_ACTION_BINDINGS: &[(&str, &str)] = &[
 ];
 
 const WEB_ACTION_CLIENT_SOURCES: &[&str] = &[
-    include_str!("../../../../apps/gateway-admin/lib/api/doctor-client.ts"),
-    include_str!("../../../../apps/gateway-admin/lib/api/gateway-client.ts"),
-    include_str!("../../../../apps/gateway-admin/lib/api/metrics-client.ts"),
-    include_str!("../../../../apps/gateway-admin/lib/api/server-logs-client.ts"),
-    include_str!("../../../../apps/gateway-admin/lib/api/setup-client.ts"),
-    include_str!("../../../../apps/gateway-admin/lib/api/snippets-client.ts"),
-    include_str!("../../../../apps/gateway-admin/lib/api/skill-library-client.ts"),
-    include_str!("../../../../apps/gateway-admin/lib/api/artifact-control-client.ts"),
-    include_str!("../../../../apps/gateway-admin/components/skills/artifact-control-plane.tsx"),
-    include_str!("../../../../apps/gateway-admin/lib/fs/client.ts"),
+    include_str!("../../../../apps/web/lib/api/doctor-client.ts"),
+    include_str!("../../../../apps/web/lib/api/gateway-client.ts"),
+    include_str!("../../../../apps/web/lib/api/metrics-client.ts"),
+    include_str!("../../../../apps/web/lib/api/server-logs-client.ts"),
+    include_str!("../../../../apps/web/lib/api/setup-client.ts"),
+    include_str!("../../../../apps/web/lib/api/snippets-client.ts"),
+    include_str!("../../../../apps/web/lib/api/skill-library-client.ts"),
+    include_str!("../../../../apps/web/lib/api/artifact-control-client.ts"),
+    include_str!("../../../../apps/web/components/skills/artifact-control-plane.tsx"),
+    include_str!("../../../../apps/web/lib/fs/client.ts"),
 ];
 
 /// Stash uses dedicated REST routes instead of the generic action endpoint.
-/// Keep this list aligned with `apps/gateway-admin/lib/stash/client.ts`; only
+/// Keep this list aligned with `apps/web/lib/stash/client.ts`; only
 /// registered actions that the web client invokes through those routes belong
 /// here.
 const STASH_WEB_ACTION_BINDINGS: &[(&str, &str)] = &[
@@ -164,8 +164,7 @@ const STASH_WEB_ACTION_BINDINGS: &[(&str, &str)] = &[
 ];
 
 #[cfg(test)]
-const STASH_WEB_CLIENT_SOURCE: &str =
-    include_str!("../../../../apps/gateway-admin/lib/stash/client.ts");
+const STASH_WEB_CLIENT_SOURCE: &str = include_str!("../../../../apps/web/lib/stash/client.ts");
 
 #[cfg(test)]
 const CLI_DISPATCH_SOURCES: &[&str] = &[

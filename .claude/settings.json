@@ -1,11 +1,11 @@
 {
   "worktree": {
     "symlinkDirectories": [
-      "apps/gateway-admin/node_modules",
+      "apps/web/node_modules",
       ".cache"
     ],
     "sparsePaths": [
-      "apps/gateway-admin",
+      "apps/web",
       "bin",
       "config",
       "crates",

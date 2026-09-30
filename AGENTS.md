@@ -14,7 +14,7 @@ Read applicable nested AGENTS.md files and the matching references below for the
 | MCP tools, schemas, or notifications | [MCP instructions](crates/labby/src/mcp/AGENTS.md), [Conformance](docs/surfaces/MCP_CONFORMANCE.md) |
 | Authentication, access, or configuration | [Auth instructions](crates/labby-auth/AGENTS.md), [Access](docs/services/ACCESS.md), [Configuration](docs/runtime/CONFIG.md) |
 | Errors, retries, or diagnostics | [Error mapping](docs/dev/ERRORS.md), [Observability](docs/dev/OBSERVABILITY.md) |
-| Operator UI, desktop, or extension | [Gateway Admin](apps/gateway-admin/AGENTS.md), [Desktop](apps/labby-desktop/AGENTS.md), [Browser bridge](docs/services/BROWSER.md) |
+| Operator UI, desktop, or extension | [Gateway Admin](apps/web/AGENTS.md), [Desktop](apps/tauri/AGENTS.md), [Browser bridge](docs/services/BROWSER.md) |
 | Skills, Artifacts, or packaging | [Plugin instructions](plugins/labby/AGENTS.md), [Artifacts/Skills](docs/services/SKILLS.md), [Plugin contract](docs/PLUGINS.md) |
 | Tests, documentation, or CI | [Testing](docs/dev/TESTING.md), [Documentation maintenance](docs/dev/DOCUMENTATION.md), [CI/CD](docs/runtime/CICD.md) |
 
@@ -59,9 +59,9 @@ Run package checks in the named directory:
 
 | Package | Commands in that directory |
 | --- | --- |
-| `apps/gateway-admin` | `pnpm install --frozen-lockfile`; `pnpm lint`; `pnpm test`; `pnpm test:browser`; `pnpm build` |
-| `apps/browser-extension` | `npm ci`; `npm test`; `npm run typecheck` |
-| `apps/labby-desktop` | `pnpm verify`; `cargo test --manifest-path src-tauri/Cargo.toml --locked` |
+| `apps/web` | `pnpm install --frozen-lockfile`; `pnpm lint`; `pnpm test`; `pnpm test:browser`; `pnpm build` |
+| `apps/chrome` | `npm ci`; `npm test`; `npm run typecheck` |
+| `apps/tauri` | `pnpm verify`; `cargo test --manifest-path src-tauri/Cargo.toml --locked` |
 | `packages/labby-mcp` | `npm run check`; `npm test` |
 
 Desktop and `tools/verification` have separate Cargo workspaces. For verification, use root `just verify-check`, `just verify-test`, and `just verify-lint`; keep fixtures serial as the recipe requires. See Testing for live/ignored-suite prerequisites.
