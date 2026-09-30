@@ -120,6 +120,8 @@ pub struct GatewayManagerConfig {
     /// Optional call-usage recorder, shared with every `UpstreamPool` the
     /// manager builds. `None` disables telemetry capture.
     pub usage_store: Option<Arc<crate::usage::UsageStore>>,
+    /// Durable public-to-native MCP task route metadata store.
+    pub task_route_store: Option<Arc<crate::upstream::pool::TaskRouteStore>>,
     /// Shared live state for the explicit Code Mode MCP App surface.
     pub code_mode_app_state: CodeModeAppState,
     pub execution_capability_provider:
@@ -162,6 +164,9 @@ impl GatewayManager {
         }
         if let Some(store) = cfg.usage_store {
             manager = manager.with_usage_store(store);
+        }
+        if let Some(store) = cfg.task_route_store {
+            manager = manager.with_task_route_store(store);
         }
         manager.execution_capability_provider = cfg.execution_capability_provider;
         Ok(manager)
@@ -275,6 +280,7 @@ impl GatewayManager {
             oauth_redirect_uri: None,
             resource_registry: None,
             usage_store: None,
+            task_route_store: None,
             header_recovery_metrics_store: HeaderRecoveryMetricsStore::default(),
             step_journal: None,
             step_buffers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
@@ -398,6 +404,15 @@ impl GatewayManager {
     #[must_use]
     pub fn with_usage_store(mut self, store: Arc<crate::usage::UsageStore>) -> Self {
         self.usage_store = Some(store);
+        self
+    }
+
+    #[must_use]
+    pub fn with_task_route_store(
+        mut self,
+        store: Arc<crate::upstream::pool::TaskRouteStore>,
+    ) -> Self {
+        self.task_route_store = Some(store);
         self
     }
 
@@ -810,6 +825,10 @@ impl GatewayManager {
         .with_auto_reconnect(auto_reconnect)
         .with_usage_store(self.usage_store.clone())
         .with_header_recovery_metrics_store(self.header_recovery_metrics_store.clone());
+        let pool = match &self.task_route_store {
+            Some(store) => pool.with_task_route_store(Arc::clone(store)),
+            None => pool,
+        };
         // Propagate the in-process connector so pools built on reload, lazy
         // dispatch, OAuth lifecycle, and ephemeral gateway.test can register
         // builtin service peers. Before this, the field was write-only and
