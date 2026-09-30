@@ -55,7 +55,7 @@ fn effectful_request(id: &str, version: &str) -> Value {
 }
 
 async fn start() -> TransportQualification {
-    TransportQualification::start(TransportKind::StreamableHttp, "http-contract")
+    TransportQualification::start(TransportKind::StreamableHttp, "http-contract-secret-canary")
         .await
         .expect("real Labby MCP process")
 }

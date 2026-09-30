@@ -146,3 +146,4 @@ AGENTS.md.local
 
 # Local binary artifacts
 plugins/bitwarden/bin/
+/worktrees/

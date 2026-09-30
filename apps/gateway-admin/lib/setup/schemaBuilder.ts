@@ -89,7 +89,7 @@ function isSafeRelativePath(val: string): boolean {
   if (val === '') return true
   // Absolute paths (POSIX `/foo`, Windows `C:\foo`) are not allowed in the
   // form. The Rust env_merge backend is the authoritative validator; this is
-  // defense in depth for the operator typing into the wizard.
+  // defense in depth for the operator editing settings.
   if (val.startsWith('/') || val.startsWith('\\') || /^[A-Za-z]:/.test(val)) {
     return false
   }

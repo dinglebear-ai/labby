@@ -148,6 +148,49 @@ fn parser_probe(path: &[String], spelling: &str, arg: &clap::Arg) -> Vec<String>
 }
 
 #[test]
+fn retired_legacy_setup_entrypoints_are_rejected() {
+    for args in [
+        vec!["labby", "setup", "wizard"],
+        vec!["labby", "setup", "--mode", "plugin"],
+        vec!["labby", "setup", "--mode", "full"],
+        vec!["labby", "setup", "--smoke"],
+    ] {
+        assert!(
+            Cli::try_parse_from(&args).is_err(),
+            "retired setup entrypoint still parses: {args:?}"
+        );
+    }
+}
+
+#[test]
+fn retired_legacy_setup_is_absent_from_command_graph() {
+    let root = Cli::command();
+    let setup = root
+        .find_subcommand("setup")
+        .expect("CLI onboarding remains");
+    assert!(setup.find_subcommand("wizard").is_none());
+    for name in ["mode", "smoke"] {
+        assert!(
+            setup
+                .get_arguments()
+                .all(|arg| arg.get_long() != Some(name)),
+            "retired --{name} must not survive as a hidden alias"
+        );
+    }
+    for args in [
+        vec!["labby", "setup", "--role", "server", "--dry-run"],
+        vec!["labby", "setup", "--role", "client", "--no-browser"],
+        vec!["labby", "setup", "--no-setup"],
+        vec!["labby", "setup", "state", "--json"],
+    ] {
+        assert!(
+            Cli::try_parse_from(&args).is_ok(),
+            "supported setup path rejected: {args:?}"
+        );
+    }
+}
+
+#[test]
 fn live_repository_text_does_not_teach_retired_cli_prefixes() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -413,6 +456,48 @@ fn runtime_command(home: &std::path::Path, args: &[&str]) -> Command {
         command.env("LLVM_PROFILE_FILE", profile_file);
     }
     command
+}
+
+#[test]
+fn setup_state_is_read_only_and_skip_never_suggests_the_retired_wizard() {
+    let home = tempfile::tempdir().unwrap();
+    let output = runtime_command(home.path(), &["setup", "state", "--json"])
+        .output()
+        .expect("run setup state");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let snapshot: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(snapshot["first_run"], true);
+    assert_eq!(snapshot["has_draft"], false);
+    assert!(
+        !home.path().join(".labby").exists(),
+        "state inspection wrote configuration"
+    );
+    assert_plain_output(&output, "setup state JSON");
+
+    for skip_with_env in [false, true] {
+        let args: &[&str] = if skip_with_env {
+            &["setup"]
+        } else {
+            &["setup", "--no-setup"]
+        };
+        let mut command = runtime_command(home.path(), args);
+        if skip_with_env {
+            command.env("LABBY_SKIP_SETUP", "1");
+        }
+        let output = command.output().expect("skip setup");
+        assert!(output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("run `labby setup`"));
+        assert!(!stderr.contains("wizard"));
+        assert!(
+            !home.path().join(".labby").exists(),
+            "skipping setup wrote configuration"
+        );
+    }
 }
 
 #[test]
@@ -682,7 +767,7 @@ fn leaf_plan(path: &str) -> Option<LeafPlan> {
         "doctor auth" | "doctor relay" | "doctor proxy" | "doctor system" | "logs journal" => {
             LeafPlan::Exempt("inspects host services, credentials, network routes, or system logs")
         }
-        "setup wizard"
+        "setup state"
         | "setup check"
         | "setup repair"
         | "host install"

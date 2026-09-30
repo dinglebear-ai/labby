@@ -1,0 +1,48 @@
+{
+  "calls": [
+    {
+      "tool": "linear-notification-worker::list_issues",
+      "result": {
+        "issues": [
+          {"id": "U8-10", "title": "Short identifier", "status": "In Progress"},
+          {"id": "U8-11", "title": "Exact identifier", "status": "In Progress"}
+        ]
+      }
+    },
+    {"tool": "github::get_me", "result": {"login": "fixture-user"}},
+    {
+      "tool": "github::search_pull_requests",
+      "match": {"query": "author:fixture-user org:unraid is:open"},
+      "result": {"items": []}
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {"query": "\"U8-10\" org:unraid is:open OR \"U8-11\" org:unraid is:open"},
+      "result": {
+        "items": [
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 10,
+            "state": "open",
+            "title": "Fix U8-10-foo",
+            "user": {"login": "another-user"}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 11,
+            "state": "open",
+            "title": "Fix U8-11",
+            "user": {"login": "another-user"}
+          }
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "/ok": true,
+    "/complete": true,
+    "/issues/0/matchStatus": "no_observed_pr",
+    "/issues/1/matchStatus": "matched",
+    "/summary/issuesWithOpenPRs": 1
+  }
+}

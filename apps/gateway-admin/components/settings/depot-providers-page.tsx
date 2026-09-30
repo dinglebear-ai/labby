@@ -9,6 +9,7 @@ import { getBrowserSessionEpoch } from '@/lib/auth/session-store'
 import { useBrowserSession } from '@/lib/auth/session'
 import { SettingsCard, SettingsPageHeader } from './SettingsChrome'
 import { DepotProviderDialog } from './depot-provider-dialog'
+import { DepotManagedSources } from './depot-managed-sources'
 
 export function DepotProvidersPage() {
   const session = useBrowserSession()
@@ -48,7 +49,8 @@ export function DepotProvidersPage() {
         <div className="mt-3 space-y-2 text-xs text-aurora-text-muted"><p className="break-all">{provider.endpoint}</p><p>{provider.credentialConfigured ? 'A server-held credential is configured.' : 'No credential is configured.'}</p>{provider.hostManaged ? <p>Managed in server configuration. This private connection cannot be changed in the browser.</p> : <>{provider.id === 'public' ? <p>The built-in public catalog can be tested or disabled; its endpoint and credentials cannot be edited.</p> : <p>Credential values are never returned. Replacing, clearing, or moving credentials requires fresh authentication.</p>}<Button size="sm" variant="outline" onClick={()=>setEditing(provider)}>Manage</Button></>}</div>
       </details>)}
     </SettingsCard>
-    <p className="text-xs leading-5 text-aurora-text-muted">Enabling a shared bearer provider grants eligible users of this Labby instance read discovery through that credential. Removing it deletes only Labby&apos;s active copy; it does not revoke the upstream credential or erase recovery snapshots.</p>
+    <DepotManagedSources />
+    <p className="text-xs leading-5 text-aurora-text-muted">Enabling a shared bearer provider grants eligible users of this Labby instance read discovery through that credential. Managed repository sources are separate: deleting one withdraws only skill projections still owned by that source.</p>
     {editing !== undefined && providers[0]?.configVersion ? <DepotProviderDialog provider={editing ?? undefined} baseVersion={providers[0].configVersion} onClose={()=>setEditing(undefined)} onSaved={()=>{setEditing(undefined);load()}} /> : null}
   </div>
 }

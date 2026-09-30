@@ -19,12 +19,14 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use labby_primitives::trace::{LabbyTraceCorrelation, TraceContext};
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use serde_json::{Map, Value};
 
 use crate::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
 use crate::gateway::manager::GatewayManager;
 use crate::gateway::palette::CapabilityContract;
+use crate::trace_context::{inject_outbound_tool_trace, instrument_outbound_future};
 use crate::upstream::pool::{CapabilityCallError, CheckedToolCallError};
 use crate::upstream::tool_error::mcp_error_data_kind;
 use crate::upstream::types::{UpstreamRuntimeOwner, UpstreamTool};
@@ -498,8 +500,22 @@ impl CodeModeHost for GatewayManager {
         let tool_ui = extract_tool_ui_link(&upstream_tool);
         let checked_contract_hash =
             CapabilityContract::execution_hash_from_upstream_tool(&upstream_tool)?;
+        let correlation = match (ctx.execution_id.as_deref(), ctx.call_ordinal) {
+            (Some(execution_id), Some(call_ordinal)) => Some(
+                LabbyTraceCorrelation::new(execution_id, call_ordinal).map_err(|error| {
+                    CodeModeCallError::new(
+                        "server_error",
+                        format!("host trace correlation is invalid: {error}"),
+                    )
+                    .with_tool(id.to_string())
+                    .with_origin(CodeModeErrorOrigin::CodeMode)
+                    .with_side_effects(CodeModeSideEffectRisk::NoneExpected)
+                })?,
+            ),
+            _ => None,
+        };
         let mut outcome = self
-            .execute_upstream_tool_checked(
+            .execute_upstream_tool_checked_traced(
                 upstream,
                 tool,
                 params,
@@ -512,6 +528,8 @@ impl CodeModeHost for GatewayManager {
                 &checked_contract_hash,
                 destructive_permitted(surface, caller),
                 "forbidden",
+                ctx.trace_context.as_deref(),
+                correlation.as_ref(),
             )
             .await?
             .outcome;
@@ -1390,6 +1408,39 @@ impl GatewayManager {
         destructive_allowed: bool,
         destructive_denial_kind: &'static str,
     ) -> Result<CheckedToolCallOutcome, ToolError> {
+        self.execute_upstream_tool_checked_traced(
+            upstream,
+            tool,
+            params,
+            owner,
+            oauth_subject,
+            caller_auth,
+            caller_scope,
+            expected_contract_hash,
+            destructive_allowed,
+            destructive_denial_kind,
+            None,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn execute_upstream_tool_checked_traced(
+        &self,
+        upstream: &str,
+        tool: &str,
+        params: Value,
+        owner: &UpstreamRuntimeOwner,
+        oauth_subject: Option<&str>,
+        caller_auth: Option<PropagatedCallerAuth>,
+        caller_scope: Option<PropagatedCallerUpstreamScope>,
+        expected_contract_hash: &str,
+        destructive_allowed: bool,
+        destructive_denial_kind: &'static str,
+        trace_context: Option<&TraceContext>,
+        correlation: Option<&LabbyTraceCorrelation>,
+    ) -> Result<CheckedToolCallOutcome, ToolError> {
         self.execute_upstream_tool_checked_inner(
             upstream,
             tool,
@@ -1401,6 +1452,8 @@ impl GatewayManager {
             expected_contract_hash,
             destructive_allowed,
             destructive_denial_kind,
+            trace_context,
+            correlation,
         )
         .await
         .map_err(CodeModeCallError::into_contract_tool_error)
@@ -1418,6 +1471,8 @@ impl GatewayManager {
         expected_contract_hash: &str,
         destructive_allowed: bool,
         destructive_denial_kind: &'static str,
+        trace_context: Option<&TraceContext>,
+        correlation: Option<&LabbyTraceCorrelation>,
     ) -> Result<CheckedToolCallOutcome, CodeModeCallError> {
         let id = format!("{upstream}::{tool}");
         let arguments =
@@ -1494,6 +1549,22 @@ impl GatewayManager {
         {
             upstream_params.meta = Some(caller_meta(auth, caller_scope.as_ref()));
         }
+        let outbound_trace = match trace_context {
+            Some(parent) => Some(
+                inject_outbound_tool_trace(&mut upstream_params, parent, correlation).map_err(
+                    |error| {
+                        CodeModeCallError::new(
+                            "server_error",
+                            format!("failed to generate outbound trace context: {error}"),
+                        )
+                        .with_tool(id.clone())
+                        .with_origin(CodeModeErrorOrigin::CodeMode)
+                        .with_side_effects(CodeModeSideEffectRisk::NoneExpected)
+                    },
+                )?,
+            ),
+            None => None,
+        };
         let caller_is_read_only = caller_auth.as_ref().is_some_and(|auth| {
             !auth.trusted_local
                 && !auth
@@ -1501,54 +1572,55 @@ impl GatewayManager {
                     .iter()
                     .any(|scope| matches!(scope.as_str(), "lab" | "lab:admin" | "mcp:write"))
         });
-        let checked = pool
-            .checked_call_tool(
-                &upstream_config,
-                oauth_subject,
-                upstream_params,
-                |current_tool| {
-                    let current_contract_hash =
-                        CapabilityContract::execution_hash_from_upstream_tool(current_tool)
-                            .map_err(CodeModeCallError::from)?;
-                    if current_contract_hash != expected_contract_hash {
-                        return Err(contract_changed_call_error(&id).into());
-                    }
-                    if current_tool.destructive && !destructive_allowed {
-                        return Err(CodeModeCallError::new(
-                            destructive_denial_kind,
-                            format!("Tool `{upstream}::{tool}` is destructive and not permitted."),
-                        )
-                        .with_tool(id.clone())
-                        .with_origin(CodeModeErrorOrigin::Policy)
-                        .with_side_effects(CodeModeSideEffectRisk::NoneExpected)
-                        .into());
-                    }
-                    if caller_is_read_only && !tool_is_explicitly_read_only(current_tool) {
-                        return Err(CodeModeCallError::new(
-                            "forbidden",
-                            format!(
-                                "Tool `{upstream}::{tool}` is not explicitly annotated as read-only."
-                            ),
-                        )
-                        .with_tool(id.clone())
-                        .with_origin(CodeModeErrorOrigin::Policy)
-                        .with_side_effects(CodeModeSideEffectRisk::NoneExpected)
-                        .into());
-                    }
-                    validate_code_mode_params_against_schema(
-                        &Value::Object(arguments.clone()),
-                        current_tool.input_schema.as_ref(),
+        let checked_call = pool.checked_call_tool(
+            &upstream_config,
+            oauth_subject,
+            upstream_params,
+            |current_tool| {
+                let current_contract_hash =
+                    CapabilityContract::execution_hash_from_upstream_tool(current_tool)
+                        .map_err(CodeModeCallError::from)?;
+                if current_contract_hash != expected_contract_hash {
+                    return Err(contract_changed_call_error(&id).into());
+                }
+                if current_tool.destructive && !destructive_allowed {
+                    return Err(CodeModeCallError::new(
+                        destructive_denial_kind,
+                        format!("Tool `{upstream}::{tool}` is destructive and not permitted."),
                     )
-                    .map_err(CodeModeCallError::from)
-                    .map_err(Box::new)?;
-                    Ok(CheckedDispatch {
-                        safety: upstream_tool_safety(current_tool),
-                        contract_hash: current_contract_hash,
-                    })
-                },
-            )
-            .await
-            .map_err(|error| map_checked_call_error(error, &id))?;
+                    .with_tool(id.clone())
+                    .with_origin(CodeModeErrorOrigin::Policy)
+                    .with_side_effects(CodeModeSideEffectRisk::NoneExpected)
+                    .into());
+                }
+                if caller_is_read_only && !tool_is_explicitly_read_only(current_tool) {
+                    return Err(CodeModeCallError::new(
+                        "forbidden",
+                        format!(
+                            "Tool `{upstream}::{tool}` is not explicitly annotated as read-only."
+                        ),
+                    )
+                    .with_tool(id.clone())
+                    .with_origin(CodeModeErrorOrigin::Policy)
+                    .with_side_effects(CodeModeSideEffectRisk::NoneExpected)
+                    .into());
+                }
+                validate_code_mode_params_against_schema(
+                    &Value::Object(arguments.clone()),
+                    current_tool.input_schema.as_ref(),
+                )
+                .map_err(CodeModeCallError::from)
+                .map_err(Box::new)?;
+                Ok(CheckedDispatch {
+                    safety: upstream_tool_safety(current_tool),
+                    contract_hash: current_contract_hash,
+                })
+            },
+        );
+        let checked =
+            instrument_outbound_future(checked_call, outbound_trace.as_ref(), correlation)
+                .await
+                .map_err(|error| map_checked_call_error(error, &id))?;
         let outcome = self
             .finish_dispatched_tool(
                 Arc::clone(&pool),
@@ -1793,13 +1865,17 @@ pub(super) fn runtime_owner(
 ///
 /// Admin/operator callers share the single gateway-owned upstream credential
 /// (`SHARED_GATEWAY_OAUTH_SUBJECT`); non-admin callers keep their own `sub` so a
-/// personal upstream grant is used; a `sub`-less caller falls back to the shared
-/// subject. Mirrors `oauth_upstream_subject_for_request`.
+/// personal upstream grant is used. Missing or blank subjects fail closed for
+/// every non-admin caller, including callers wrapped in host authority.
+/// Trusted-local callers are explicitly administrative; an absent subject on
+/// a scoped caller is never evidence of local trust.
 pub(super) fn oauth_subject(caller: &CodeModeCaller) -> Option<&str> {
     if caller.is_admin() {
         return Some(SHARED_GATEWAY_OAUTH_SUBJECT);
     }
-    Some(caller.subject().unwrap_or(SHARED_GATEWAY_OAUTH_SUBJECT))
+    caller
+        .subject()
+        .filter(|subject| !subject.trim().is_empty())
 }
 
 fn extract_ui_link(result: &CallToolResult) -> Option<UiLink> {
@@ -2518,6 +2594,57 @@ mod tests {
     }
 
     #[test]
+    fn trace_injection_preserves_in_process_auth_and_overwrites_forged_correlation() {
+        let auth =
+            PropagatedCallerAuth::scoped(vec!["lab:read".to_string()], Some("alice".to_string()));
+        let scope = PropagatedCallerUpstreamScope::new(Some(std::collections::BTreeSet::from([
+            "github".to_string(),
+        ])));
+        let mut meta = caller_meta(&auth, Some(&scope));
+        meta.insert(
+            labby_primitives::trace::MCP_LABBY_TRACE_META_KEY.to_string(),
+            serde_json::json!({"execution_id": "forged", "call_ordinal": 999}),
+        );
+        let mut request = CallToolRequestParams::new("echo");
+        request.meta = Some(meta);
+
+        let parent = TraceContext::fresh(1).expect("parent trace");
+        let correlation = LabbyTraceCorrelation::new("exec_real", 3).expect("correlation");
+        let child =
+            inject_outbound_tool_trace(&mut request, &parent, Some(&correlation)).expect("inject");
+        let meta = request.meta.as_ref().expect("merged metadata");
+
+        let decoded_auth: PropagatedCallerAuth = serde_json::from_value(
+            meta.get(CALLER_AUTH_META_KEY)
+                .expect("caller auth survives")
+                .clone(),
+        )
+        .expect("auth decodes");
+        let decoded_scope: PropagatedCallerUpstreamScope = serde_json::from_value(
+            meta.get(CALLER_UPSTREAM_SCOPE_META_KEY)
+                .expect("caller scope survives")
+                .clone(),
+        )
+        .expect("scope decodes");
+
+        assert_eq!(decoded_auth, auth);
+        assert_eq!(decoded_scope, scope);
+        assert_eq!(
+            meta.get(labby_primitives::trace::MCP_LABBY_TRACE_META_KEY),
+            Some(&serde_json::json!({
+                "execution_id": "exec_real",
+                "call_ordinal": 3
+            }))
+        );
+        assert_eq!(
+            meta.get_traceparent(),
+            Some(child.traceparent().to_header_value().as_str())
+        );
+        assert_eq!(child.trace_id(), parent.trace_id());
+        assert_ne!(child.span_id(), parent.span_id());
+    }
+
+    #[test]
     fn scoped_skills_token_is_never_propagated_to_upstream_auth() {
         let caller = CodeModeCaller::ScopedSkills {
             capabilities: labby_codemode::CodeModeCallerCapabilities {
@@ -2730,6 +2857,8 @@ mod tests {
         let ctx = ExecCtx {
             seq: 3,
             execution_id: Some(exec.clone()),
+            call_ordinal: None,
+            trace_context: None,
             step_ordinal: Some(0),
         };
         mgr.record_step(ctx, "fetch", &serde_json::json!({"id": 7}))
@@ -2770,6 +2899,8 @@ mod tests {
         let ctx = ExecCtx {
             seq: 1,
             execution_id: None,
+            call_ordinal: None,
+            trace_context: None,
             step_ordinal: Some(0),
         };
         mgr.record_step(ctx, "x", &serde_json::json!(1))
@@ -2784,6 +2915,8 @@ mod tests {
         let ctx = ExecCtx {
             seq: 1,
             execution_id: Some(Arc::<str>::from("exec_secret")),
+            call_ordinal: None,
+            trace_context: None,
             step_ordinal: Some(0),
         };
         mgr.record_step(
@@ -2823,6 +2956,8 @@ mod tests {
         let ctx = ExecCtx {
             seq: 1,
             execution_id: Some(Arc::<str>::from("exec_cap")),
+            call_ordinal: None,
+            trace_context: None,
             step_ordinal: Some(0),
         };
         mgr.record_step(ctx, &huge, &serde_json::json!(1))
@@ -2850,6 +2985,8 @@ mod tests {
         let ctx = ExecCtx {
             seq: 1,
             execution_id: Some(Arc::<str>::from("e")),
+            call_ordinal: None,
+            trace_context: None,
             step_ordinal: Some(0),
         };
         mgr.record_step(ctx, "s", &serde_json::json!(1))
@@ -2866,6 +3003,8 @@ mod tests {
         let ctx = ExecCtx {
             seq: 1,
             execution_id: Some(Arc::<str>::from("e")),
+            call_ordinal: None,
+            trace_context: None,
             step_ordinal: Some(0),
         };
         mgr.record_step(ctx, "s", &serde_json::json!(1))
@@ -2883,6 +3022,8 @@ mod tests {
             ExecCtx {
                 seq: 1,
                 execution_id: Some(Arc::<str>::from("exec_cancelled")),
+                call_ordinal: None,
+                trace_context: None,
                 step_ordinal: Some(0),
             },
             "first",

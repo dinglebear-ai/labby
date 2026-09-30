@@ -17,6 +17,8 @@ pub(crate) struct TaskRecord {
     pub attempt: u32,
     pub output_digest: Option<String>,
     pub error_code: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 /// A lost race on the `task_id` primary key is a typed integrity outcome
@@ -64,7 +66,7 @@ impl TaskStore {
         let (kind, owner) = owner(&intent.owner);
         if let Some(existing) = tx
             .query_row(
-                "SELECT task_id,idempotency_key,owner_kind,owner_id,project_id,creator_principal_id,agent_id,agent_version,agent_revision_digest,input_digest,catalog_generation,authority_fingerprint,state,attempt,output_digest,error_code FROM agent_tasks WHERE owner_kind=?1 AND owner_id=?2 AND idempotency_key=?3",
+                "SELECT task_id,idempotency_key,owner_kind,owner_id,project_id,creator_principal_id,agent_id,agent_version,agent_revision_digest,input_digest,catalog_generation,authority_fingerprint,state,attempt,output_digest,error_code,created_at,updated_at FROM agent_tasks WHERE owner_kind=?1 AND owner_id=?2 AND idempotency_key=?3",
                 params![kind, owner, intent.idempotency_key],
                 decode,
             )
@@ -95,7 +97,7 @@ impl TaskStore {
     pub(crate) fn get(&self, id: &str) -> AccessStoreResult<Option<TaskRecord>> {
         self.connection
             .query_row(
-                "SELECT task_id,idempotency_key,owner_kind,owner_id,project_id,creator_principal_id,agent_id,agent_version,agent_revision_digest,input_digest,catalog_generation,authority_fingerprint,state,attempt,output_digest,error_code FROM agent_tasks WHERE task_id=?1",
+                "SELECT task_id,idempotency_key,owner_kind,owner_id,project_id,creator_principal_id,agent_id,agent_version,agent_revision_digest,input_digest,catalog_generation,authority_fingerprint,state,attempt,output_digest,error_code,created_at,updated_at FROM agent_tasks WHERE task_id=?1",
                 [id],
                 decode,
             )
@@ -111,7 +113,7 @@ impl TaskStore {
         if limit == 0 || limit > 100 {
             return Err(AccessStoreError::MalformedVocabulary);
         }
-        let mut statement = self.connection.prepare("SELECT task_id,idempotency_key,owner_kind,owner_id,project_id,creator_principal_id,agent_id,agent_version,agent_revision_digest,input_digest,catalog_generation,authority_fingerprint,state,attempt,output_digest,error_code FROM agent_tasks WHERE task_id>?1 ORDER BY task_id LIMIT ?2").map_err(super::store::map_sqlite_error)?;
+        let mut statement = self.connection.prepare("SELECT task_id,idempotency_key,owner_kind,owner_id,project_id,creator_principal_id,agent_id,agent_version,agent_revision_digest,input_digest,catalog_generation,authority_fingerprint,state,attempt,output_digest,error_code,created_at,updated_at FROM agent_tasks WHERE task_id>?1 ORDER BY task_id LIMIT ?2").map_err(super::store::map_sqlite_error)?;
         statement
             .query_map(
                 params![
@@ -239,17 +241,7 @@ pub(super) fn decode(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskRecord> {
         ),
         _ => return Err(rusqlite::Error::InvalidQuery),
     };
-    let state = match row.get::<_, String>(12)?.as_str() {
-        "created" => TaskState::Created,
-        "queued" => TaskState::Queued,
-        "running" => TaskState::Running,
-        "cancelling" => TaskState::Cancelling,
-        "succeeded" => TaskState::Succeeded,
-        "failed" => TaskState::Failed,
-        "cancelled" => TaskState::Cancelled,
-        "expired" => TaskState::Expired,
-        _ => return Err(rusqlite::Error::InvalidQuery),
-    };
+    let state = decode_state(&row.get::<_, String>(12)?)?;
     Ok(TaskRecord {
         intent: TaskIntent {
             id: row.get(0)?,
@@ -274,8 +266,24 @@ pub(super) fn decode(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskRecord> {
             .map_err(|_| rusqlite::Error::InvalidQuery)?,
         output_digest: row.get(14)?,
         error_code: row.get(15)?,
+        created_at: row.get(16)?,
+        updated_at: row.get(17)?,
     })
 }
+fn decode_state(value: &str) -> rusqlite::Result<TaskState> {
+    match value {
+        "created" => Ok(TaskState::Created),
+        "queued" => Ok(TaskState::Queued),
+        "running" => Ok(TaskState::Running),
+        "cancelling" => Ok(TaskState::Cancelling),
+        "succeeded" => Ok(TaskState::Succeeded),
+        "failed" => Ok(TaskState::Failed),
+        "cancelled" => Ok(TaskState::Cancelled),
+        "expired" => Ok(TaskState::Expired),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+
 fn owner(v: &OwnerScope) -> (&'static str, &str) {
     match v {
         OwnerScope::Installation(x) => ("installation", x.as_str()),
@@ -326,7 +334,10 @@ mod tests {
                 check: "task_idempotency"
             })
         ));
-        assert_eq!(s.get("task-1").unwrap().unwrap().state, TaskState::Created);
+        let created = s.get("task-1").unwrap().unwrap();
+        assert_eq!(created.state, TaskState::Created);
+        assert_eq!(created.created_at, 1);
+        assert_eq!(created.updated_at, 1);
         assert_eq!(s.list_page("", 100).unwrap().len(), 1);
         s.transition(
             "task-1",
@@ -385,5 +396,13 @@ mod tests {
             .query_row("SELECT count(*) FROM agent_task_audit", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 4);
+        drop(s);
+        let reopened = TaskStore::open(&path).unwrap();
+        let current = reopened.get("task-1").unwrap().unwrap();
+        assert_eq!(current.created_at, 1);
+        assert_eq!(current.updated_at, 5);
+        let page = reopened.list_page("", 100).unwrap();
+        assert_eq!(page[0].created_at, current.created_at);
+        assert_eq!(page[0].updated_at, current.updated_at);
     }
 }

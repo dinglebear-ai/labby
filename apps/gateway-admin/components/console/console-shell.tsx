@@ -21,24 +21,20 @@ const ConsoleGlobalTools = dynamic(
  */
 export function ConsoleShell({
   children,
-  publicSetup = false,
 }: {
   children: React.ReactNode
-  publicSetup?: boolean
 }) {
   return (
     <ConsoleShellProvider>
-      <ConsoleShellFrame publicSetup={publicSetup}>{children}</ConsoleShellFrame>
+      <ConsoleShellFrame>{children}</ConsoleShellFrame>
     </ConsoleShellProvider>
   )
 }
 
 function ConsoleShellFrame({
   children,
-  publicSetup = false,
 }: {
   children: React.ReactNode
-  publicSetup?: boolean
 }) {
   const { phoenixDocked } = useConsoleShell()
 
@@ -56,7 +52,7 @@ function ConsoleShellFrame({
           fontSize: 14,
         }}
       >
-        <ConsoleSidebar publicSetup={publicSetup} />
+        <ConsoleSidebar />
 
         <div
           data-console-main-column="1"
@@ -70,7 +66,7 @@ function ConsoleShellFrame({
               'radial-gradient(circle at 12% -4%, rgba(41,182,246,0.09), transparent 30%), radial-gradient(circle at 88% -6%, rgba(103,203,250,0.06), transparent 24%), var(--aurora-page-bg)',
           }}
         >
-          <ConsoleTopbar publicSetup={publicSetup} />
+          <ConsoleTopbar />
 
           <main style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', minHeight: 0 }}>
             <div

@@ -96,6 +96,11 @@ jobs:
               --candidate "$GITHUB_REF_NAME" --releases "$releases" --merged-tags "$merged" \
               --asset "$archive" --asset "$archive.sha256"
           done
+          # The first ARM64 release has no published ARM64 N-1 binary. Resolve
+          # an explicit native source-build bootstrap from a published stable
+          # tag; later releases must use the exact published ARM64 archive.
+          python3 scripts/ci/resolve_arm64_n_minus_one.py \
+            --candidate "$GITHUB_REF_NAME" --releases "$releases" --merged-tags "$merged"
 
   frontend-assets:
     name: Frontend assets
@@ -132,6 +137,10 @@ jobs:
             runner: '"ubuntu-24.04"'
             binary: labby
             archive: lab-x86_64-unknown-linux-gnu.tar.gz
+          - target: aarch64-unknown-linux-gnu
+            runner: '"ubuntu-24.04-arm"'
+            binary: labby
+            archive: lab-aarch64-unknown-linux-gnu.tar.gz
           - target: aarch64-apple-darwin
             runner: '"macos-15"'
             binary: labby
@@ -195,10 +204,10 @@ jobs:
           if-no-files-found: error
 
   upgrade-qualification:
-    name: N-1 stateful upgrade and rollback qualification (${{ matrix.deployment }})
+    name: N-1 stateful upgrade and rollback qualification (${{ matrix.deployment }} / ${{ matrix.runner }})
     needs: [build]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -207,6 +216,11 @@ jobs:
             runner: ubuntu-24.04
             artifact: lab-x86_64-unknown-linux-gnu
             archive: lab-x86_64-unknown-linux-gnu.tar.gz
+            binary: labby
+          - deployment: unix
+            runner: ubuntu-24.04-arm
+            artifact: lab-aarch64-unknown-linux-gnu
+            archive: lab-aarch64-unknown-linux-gnu.tar.gz
             binary: labby
           - deployment: macos
             runner: macos-15
@@ -305,17 +319,54 @@ jobs:
           merged="$RUNNER_TEMP/labby-merged-tags.txt"
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" >"$releases"
           git tag --merged HEAD 'v*' >"$merged"
-          previous=$(python3 scripts/ci/resolve-n-minus-one-baseline.py \
-            --candidate "$GITHUB_REF_NAME" --releases "$releases" --merged-tags "$merged" \
-            --asset "$REQUIRED_ARCHIVE" --asset "$REQUIRED_ARCHIVE.sha256")
+          mode=published
+          if [[ "$REQUIRED_ARCHIVE" == lab-aarch64-unknown-linux-gnu.tar.gz ]]; then
+            selection=$(python3 scripts/ci/resolve_arm64_n_minus_one.py \
+              --candidate "$GITHUB_REF_NAME" --releases "$releases" --merged-tags "$merged")
+            read -r mode previous <<< "$selection"
+          else
+            previous=$(python3 scripts/ci/resolve-n-minus-one-baseline.py \
+              --candidate "$GITHUB_REF_NAME" --releases "$releases" --merged-tags "$merged" \
+              --asset "$REQUIRED_ARCHIVE" --asset "$REQUIRED_ARCHIVE.sha256")
+          fi
           test -n "$previous"
           echo "tag=$previous" >> "$GITHUB_OUTPUT"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/setup-rust-kache
+        if: matrix.runner == 'ubuntu-24.04-arm' && steps.previous.outputs.mode == 'bootstrap'
+        with:
+          targets: aarch64-unknown-linux-gnu
+      - name: Build first-release ARM64 N-1 source baseline
+        if: matrix.runner == 'ubuntu-24.04-arm' && steps.previous.outputs.mode == 'bootstrap'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          tag="${{ steps.previous.outputs.tag }}"
+          source_sha=$(git rev-parse "$tag^{commit}")
+          git merge-base --is-ancestor "$source_sha" "$GITHUB_SHA"
+          source_dir="$RUNNER_TEMP/labby-arm64-n-minus-one-source"
+          git worktree add --detach "$source_dir" "$source_sha"
+          (cd "$source_dir" && cargo build --package labby --bin labby --all-features --locked --release \
+            --target aarch64-unknown-linux-gnu)
+          baseline="$source_dir/target/aarch64-unknown-linux-gnu/release/labby"
+          test -x "$baseline"
+          "$baseline" --version | grep -F "${tag#v}"
+          digest=$(sha256sum "$baseline" | awk '{print $1}')
+          printf 'Bootstrap-only ARM64 baseline: published source tag %s at %s, native binary %s\n' \
+            "$tag" "$source_sha" "$digest"
+          {
+            echo "LABBY_N_MINUS_ONE_BASELINE_BINARY=$baseline"
+            echo "LABBY_N_MINUS_ONE_BASELINE_SHA256=$digest"
+            echo "LABBY_N_MINUS_ONE_BASELINE_SOURCE_SHA=$source_sha"
+          } >> "$GITHUB_ENV"
       - name: N-1 stateful upgrade and rollback qualification
         shell: bash
         env:
           # The installers and verify-and-activate-release.sh run
           # `gh attestation verify` on both the N-1 and the candidate archive.
           GH_TOKEN: ${{ github.token }}
+          LABBY_N_MINUS_ONE_BASELINE_MODE: ${{ steps.previous.outputs.mode }}
           # Each adapter is an executable deployment-path contract. Until a
           # platform adapter exists, qualification fails closed rather than
           # silently substituting a clean-install smoke.

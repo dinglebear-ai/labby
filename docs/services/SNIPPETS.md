@@ -1,7 +1,7 @@
 ---
 title: "Snippets Service"
 created: "2026-08-18"
-updated: "2026-08-18"
+updated: "2026-09-26"
 ---
 
 # Snippets Service
@@ -42,6 +42,92 @@ Built-in snippets are read-only through the user-snippet mutation surface. Expli
 ## Execution
 
 Snippet code must evaluate to an async arrow function and executes inside the same bounded Javy/QuickJS Code Mode runtime used by gateway Code Mode. Tool calls are resolved through the live gateway catalog rather than guessed or hard-coded at the host boundary.
+
+## Fixture-First Testing
+
+Testing is offline by default. A named test loads the sibling
+`<name>.test.json` file, or a fixture supplied explicitly. It never falls back to
+live execution when the fixture is missing, invalid, or incomplete. Existing
+scripts that intentionally tested real upstreams must add `--live` (or
+`live: true` through the shared action).
+
+```bash
+labby snippet validate unraid-linear-pr-triage --file docs/snippets/unraid-linear-pr-triage.md
+labby snippet test unraid-linear-pr-triage
+labby snippet test unraid-linear-pr-triage --fixture docs/snippets/unraid-linear-pr-triage.deep.test.json --param deep=true
+labby snippet test --all
+labby snippet test unraid-linear-pr-triage --live
+```
+
+The CLI reports a failing test with a nonzero exit status. With `--json`, its
+stdout remains the structured test report. Bulk tests retain diagnostics and
+metrics without multiplying full result payloads. A bulk run containing a snippet
+without a fixture fails rather than silently skipping it.
+
+The equivalent shared `snippets.test` parameters are a `name` (or `all: true`),
+an optional input object in `params`, and either a `fixture` object or
+`live: true`. Inline fixtures cannot be combined with `all` or `live`.
+Authorization still comes from the shared action catalog.
+
+### Fixture Contract
+
+Fixtures are JSON documents containing ordered exact-tool response rules,
+JSON Pointer equality assertions, optional normalized snapshots, and resource
+budgets. Rule `match` objects compare a subset of top-level parameters; nested
+values compare exactly. Each rule is consumed once unless `times` specifies
+another count. Unknown fixture properties are rejected.
+
+```json
+{
+  "calls": [
+    {
+      "tool": "github::get_me",
+      "match": {},
+      "result": { "login": "fixture-user" }
+    }
+  ],
+  "expect": { "/login": "fixture-user" },
+  "budgets": {
+    "wall_clock_ms": 20000,
+    "tool_calls": 1,
+    "output_bytes": 16000
+  }
+}
+```
+
+A rule can provide `error: {"kind":"network_error","message":"synthetic failure"}`
+instead of a result. Tests fail on unexpected calls, unconsumed rules,
+exceptions, assertion or snapshot mismatches, and budget violations. Catching an
+unexpected tool rejection inside the snippet does not make the test pass. To test
+an intentional failure result, explicitly assert `"/ok": false`.
+
+Snapshots compare the complete result. `ignore_paths` lists JSON Pointers whose
+values are replaced with null on both sides, for example
+`["/summary/elapsedMs"]`. Missing properties remain distinguishable from null.
+Fixtures must be synthetic or separately scrubbed of credentials and personal
+data; there is no automatic fixture recorder in this implementation.
+
+### Execution Boundary And Budgets
+
+Mock tests use the production snippet parser, input merger, and isolated
+QuickJS subprocess. They have no gateway host, live tool credentials, local
+providers, or resource access. The supported mock surface is `callTool()` plus
+`codemode.batch()`; discovery, generated tool helpers, nested snippets, and
+other helpers are not emulated. Mock fixtures are not a substitute for checking
+parameters against the current live catalog.
+
+Defaults are 20,000 milliseconds, 40 calls, and 16,000 raw UTF-8 output bytes.
+Maximum supported values are 30,000 milliseconds, 512 calls, and 16,000 output
+bytes. Fixture documents are capped at 512 KiB. The report records elapsed time,
+call count, raw output bytes, a bytes/4 token estimate, and peak synthetic
+concurrency. Synthetic call timings do not measure real upstream performance.
+The synthetic trace is bounded and explicitly indicates omitted entries.
+
+Live tests require explicit opt-in and retain normal caller and tool-declaration
+scope. Their report records wall time, calls grouped by tool, failed calls,
+raw output bytes, the token estimate, and output shaping/truncation. An execution
+with failed tool calls or a changed/truncated result is not a passing live test.
+Neither mode changes gateway configuration or repairs upstream failures.
 
 ## Related Docs
 

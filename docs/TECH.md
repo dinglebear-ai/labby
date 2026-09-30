@@ -18,7 +18,7 @@ The workspace metadata in the root `Cargo.toml` is authoritative:
 - Cargo resolver 3
 - workspace version shared by the Rust crates
 - AGPL-3.0-only license
-- release binary targets: Linux x86_64 GNU and macOS arm64
+- release binary targets: Linux x86_64 GNU, Linux arm64 GNU, and macOS arm64
 - Windows x86_64 MSVC is covered by required CI tests, not a published release binary target; the release matrix in `.github/workflows/release.yml` is authoritative
 
 `rust-toolchain.toml` pins the toolchain used locally and in CI. The matching

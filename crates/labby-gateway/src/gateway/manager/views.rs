@@ -70,6 +70,7 @@ impl GatewayManager {
             .into_iter()
             .map(|client| crate::gateway::types::GatewayClientView {
                 subject: client.subject_tag,
+                authorized_client_id: client.authorized_client_id,
                 client_name: client.client_name,
                 client_version: client.client_version,
                 transport: client.transport,

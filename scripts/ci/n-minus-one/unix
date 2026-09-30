@@ -47,6 +47,20 @@ verify_version() {
     "$install_dir/labby" --version | grep -Fq "$expected"
 }
 
+verify_bootstrap_baseline() {
+    [[ "${LABBY_N_MINUS_ONE_BASELINE_MODE:-published}" == bootstrap ]] || return 0
+    : "${LABBY_N_MINUS_ONE_BASELINE_BINARY:?bootstrap baseline binary is required}"
+    : "${LABBY_N_MINUS_ONE_BASELINE_SHA256:?bootstrap baseline digest is required}"
+    : "${LABBY_N_MINUS_ONE_BASELINE_SOURCE_SHA:?bootstrap source commit is required}"
+    [[ "$(git -C "$repo_root" rev-parse "${LABBY_PREVIOUS_VERSION}^{commit}")" == "$LABBY_N_MINUS_ONE_BASELINE_SOURCE_SHA" ]]
+    [[ "$(sha256sum "$LABBY_N_MINUS_ONE_BASELINE_BINARY" | awk '{print $1}')" == "$LABBY_N_MINUS_ONE_BASELINE_SHA256" ]]
+}
+
+verify_installed_bootstrap_baseline() {
+    [[ "${LABBY_N_MINUS_ONE_BASELINE_MODE:-published}" == bootstrap ]] || return 0
+    [[ "$(sha256sum "$install_dir/labby" | awk '{print $1}')" == "$LABBY_N_MINUS_ONE_BASELINE_SHA256" ]]
+}
+
 verify_provenance() {
     : "${LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE:?exact candidate archive is required}"
     : "${LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE_SHA256:?exact candidate archive SHA-256 is required}"
@@ -130,11 +144,24 @@ authenticated_action() {
 case "${1:-}" in
     install-previous)
         mkdir -p "$work_root"
-        LABBY_INSTALL_NO_SETUP=1 LABBY_INSTALL_DIR="$install_dir" LABBY_INSTALL_VERSION="$LABBY_PREVIOUS_VERSION" \
-            LABBY_ALLOW_SOURCE_FALLBACK=0 sh "$repo_root/scripts/install.sh"
+        case "${LABBY_N_MINUS_ONE_BASELINE_MODE:-published}" in
+            bootstrap)
+                verify_bootstrap_baseline
+                LABBY_INSTALL_NO_SETUP=1 LABBY_INSTALL_DIR="$install_dir" LABBY_INSTALL_VERSION="$LABBY_PREVIOUS_VERSION" \
+                    LABBY_INSTALL_LOCAL_BINARY="$LABBY_N_MINUS_ONE_BASELINE_BINARY" \
+                    LABBY_INSTALL_LOCAL_SHA256="$LABBY_N_MINUS_ONE_BASELINE_SHA256" \
+                    LABBY_ALLOW_SOURCE_FALLBACK=0 sh "$repo_root/scripts/install.sh"
+                ;;
+            published)
+                LABBY_INSTALL_NO_SETUP=1 LABBY_INSTALL_DIR="$install_dir" LABBY_INSTALL_VERSION="$LABBY_PREVIOUS_VERSION" \
+                    LABBY_ALLOW_SOURCE_FALLBACK=0 sh "$repo_root/scripts/install.sh"
+                ;;
+            *) echo "unknown N-1 baseline mode" >&2; exit 64 ;;
+        esac
+        verify_installed_bootstrap_baseline
         ;;
     seed-state) start_service; stop_service; seed_persisted_state ;;
-    verify-previous) verify_version "$LABBY_PREVIOUS_VERSION"; verify_persisted_state ;;
+    verify-previous) verify_version "$LABBY_PREVIOUS_VERSION"; verify_installed_bootstrap_baseline; verify_persisted_state ;;
     verify-provenance) verify_provenance ;;
     upgrade)
         : "${LABBY_N_MINUS_ONE_CANDIDATE_BINARY:?exact candidate binary is required}"
@@ -161,6 +188,6 @@ case "${1:-}" in
             "${LABBY_N_MINUS_ONE_CANDIDATE_BINARY:?exact candidate binary is required}" "$labby_home" "$work_root/recovery"
         LABBY_INSTALL_DIR="$install_dir" LABBY_INSTALL_ROLLBACK=1 sh "$repo_root/scripts/install.sh"
         ;;
-    verify-rollback) verify_version "$LABBY_PREVIOUS_VERSION"; verify_persisted_state ;;
+    verify-rollback) verify_version "$LABBY_PREVIOUS_VERSION"; verify_installed_bootstrap_baseline; verify_persisted_state ;;
     *) echo "unknown stage: ${1:-}" >&2; exit 64 ;;
 esac

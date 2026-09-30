@@ -466,7 +466,9 @@ mod tests {
                             .unwrap()
                             .is_empty()
                     );
-                    assert!(capture(*daemon_pid, Instant::now() + Duration::from_secs(1)).is_err());
+                    // A reaped daemon PID can remain visible briefly as a zombie,
+                    // or be reused by another process. The owned group and listener
+                    // are the resources this cleanup must release.
                     assert!(
                         TcpListener::bind(address).is_ok(),
                         "failed capture retained actual daemon listener"

@@ -24,7 +24,7 @@ test('host panel reports initial sampling without claiming measurements are unav
 })
 
 test('client rows preserve observed transport and version without displaying subject', () => {
-  const html = renderToStaticMarkup(<ConnectedClientsPanel clients={[{ subject: 'private-subject', client_name: 'Example client', client_version: '1.2', transport: 'http', connected_at: 'invalid' }]} />)
+  const html = renderToStaticMarkup(<ConnectedClientsPanel clients={[{ subject: 'private-subject', authorized_client_id: null, client_name: 'Example client', client_version: '1.2', transport: 'http', connected_at: 'invalid' }]} />)
   assert.ok(html.includes('Example client'))
   assert.ok(html.includes('v1.2 · http'))
   assert.doesNotMatch(html, /private-subject/)

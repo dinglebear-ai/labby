@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use labby_primitives::trace::TraceContext;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
@@ -80,8 +81,32 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         scope: ToolScope,
         execution_id: Option<Arc<str>>,
     ) -> Result<CodeModeExecutionResponse, CodeModeExecutionError> {
+        self.execute_with_trace_context(code, caller, surface, config, scope, execution_id, None)
+            .await
+    }
+
+    /// Execute Code Mode while carrying host-owned request trace context.
+    pub async fn execute_with_trace_context(
+        &self,
+        code: &str,
+        caller: CodeModeCaller,
+        surface: CodeModeSurface,
+        config: CodeModeConfig,
+        scope: ToolScope,
+        execution_id: Option<Arc<str>>,
+        trace_context: Option<Arc<TraceContext>>,
+    ) -> Result<CodeModeExecutionResponse, CodeModeExecutionError> {
         Ok(self
-            .execute_with_raw_response(code, caller, surface, config, scope, execution_id)
+            .execute_with_raw_response_and_trace_context(
+                code,
+                caller,
+                surface,
+                config,
+                scope,
+                execution_id,
+                trace_context,
+                MAX_SOURCE_BYTES,
+            )
             .await?
             .display_response)
     }
@@ -96,6 +121,53 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         scope: ToolScope,
         execution_id: Option<Arc<str>>,
     ) -> Result<CodeModeExecutionOutcome, CodeModeExecutionError> {
+        self.execute_with_raw_response_and_trace_context(
+            code,
+            caller,
+            surface,
+            config,
+            scope,
+            execution_id,
+            None,
+            MAX_SOURCE_BYTES,
+        )
+        .await
+    }
+
+    /// The fixture harness embeds bounded snippet and fixture data in its
+    /// isolated wrapper. Keep this larger source allowance local to that path.
+    pub(crate) async fn execute_fixture_with_raw_response(
+        &self,
+        code: &str,
+        caller: CodeModeCaller,
+        surface: CodeModeSurface,
+        config: CodeModeConfig,
+        scope: ToolScope,
+    ) -> Result<CodeModeExecutionOutcome, CodeModeExecutionError> {
+        self.execute_with_raw_response_and_trace_context(
+            code,
+            caller,
+            surface,
+            config,
+            scope,
+            None,
+            None,
+            10 * MAX_SOURCE_BYTES,
+        )
+        .await
+    }
+
+    async fn execute_with_raw_response_and_trace_context(
+        &self,
+        code: &str,
+        caller: CodeModeCaller,
+        surface: CodeModeSurface,
+        config: CodeModeConfig,
+        scope: ToolScope,
+        execution_id: Option<Arc<str>>,
+        trace_context: Option<Arc<TraceContext>>,
+        source_ceiling: usize,
+    ) -> Result<CodeModeExecutionOutcome, CodeModeExecutionError> {
         // `codemode` is exposed only when the host's Code Mode surface is
         // enabled; the surface handler gates on that before reaching here.
         if !execution_allowed(&caller, &scope) {
@@ -105,7 +177,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             }
             .into());
         }
-        let max_source_bytes = config.max_source_bytes.min(MAX_SOURCE_BYTES);
+        let max_source_bytes = config.max_source_bytes.min(source_ceiling);
         if code.len() > max_source_bytes {
             return Err(ToolError::InvalidParam {
                 message: format!("code exceeds max length {max_source_bytes} bytes"),
@@ -126,6 +198,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                 config.trace_params,
                 scope,
                 execution_id,
+                trace_context,
             )
             .await?;
         // Surface any last-wins captured mcp-ui widget link. `{ __ui: <result> }`
@@ -298,6 +371,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         trace_params: bool,
         scope: ToolScope,
         execution_id: Option<Arc<str>>,
+        trace_context: Option<Arc<TraceContext>>,
     ) -> Result<CodeModeExecutionResponse, CodeModeExecutionError> {
         // Cloudflare-parity: no typed TypeScript preamble is injected. The
         // sandbox exposes only `callTool(id, params)`; the agent uses tool ids
@@ -360,6 +434,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             scope,
             snippet_max_bytes,
             execution_id,
+            trace_context,
         )
         .await
     }

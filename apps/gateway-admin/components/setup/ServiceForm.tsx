@@ -1,8 +1,7 @@
 'use client'
 
-// ServiceForm — schema-rendered configuration form for one Bootstrap
-// service. Shared between the lab-bg3e.4 wizard and the lab-bg3e.5
-// settings rail. Navigation-agnostic: the parent shell decides what
+// ServiceForm — schema-rendered configuration form for one service in
+// Settings. Navigation-agnostic: the parent shell decides what
 // happens after `onSave` resolves.
 //
 // Key design points (see lab-bg3e.4 locked decisions):
@@ -57,7 +56,7 @@ export interface ServiceFormProps {
       thread it into the underlying fetch. */
   onProbe?: (values: Record<string, string>, signal: AbortSignal) => Promise<ProbeOutcome>
   /** Called once on unmount with the form's last-known values. Used by
-      the wizard's configuration tab so switching tabs doesn't lose
+      configuration tabs so switching tabs do not lose
       in-progress edits. The callback fires in the useEffect cleanup, so
       it sees values that were typed but not yet submitted. */
   onUnmount?: (values: Record<string, string>) => void
