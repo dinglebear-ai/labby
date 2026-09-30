@@ -263,6 +263,9 @@ class IncusContract(unittest.TestCase):
                 proof = item.get("sha256") or item.get("integrity")
                 if proof:
                     self.assertIn(proof, image)
+                if source_commit := item.get("source_commit"):
+                    self.assertRegex(source_commit, r"^[0-9a-f]{40}$")
+                    self.assertIn(source_commit, image)
         self.assertNotIn("latest-v", image)
         self.assertNotIn("?mode=json", image)
         self.assertNotRegex(image, r"curl[^\n]+\|\s*(?:ba)?sh")

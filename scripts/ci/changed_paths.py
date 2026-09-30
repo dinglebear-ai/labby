@@ -176,7 +176,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
     )
     native_plugins = any_match(
         paths,
-        lambda p: starts(p, "plugins/labby/")
+        lambda p: starts(p, "plugins/labby/", "plugins/install-labby/skills/")
         or p in {"scripts/generate-native-plugins.py", "LICENSE", "apm.yml"},
     )
     web = any_match(

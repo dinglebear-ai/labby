@@ -241,7 +241,7 @@ actions:
       tmp="$(mktemp -d)"
       trap '\''rm -rf "$tmp"'\'' EXIT
       installer="$tmp/chezmoi-install.sh"
-      curl -fsSL --connect-timeout 10 --max-time 300 -o "$installer" https://get.chezmoi.io
+      curl -fsSL --connect-timeout 10 --max-time 300 -o "$installer" https://raw.githubusercontent.com/twpayne/chezmoi/f901167e4685db90da56d6a2a19df642cb3e0247/assets/scripts/install.sh
       echo "75de125a45a82b53c16546db7057052e98c11866ded27c4b6f95a51f59432e7b  $installer" | sha256sum --check --strict
       sh "$installer" -t v2.72.1 -b "$HOME/.local/bin"
       '
