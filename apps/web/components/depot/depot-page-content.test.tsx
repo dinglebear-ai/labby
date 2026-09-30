@@ -3,8 +3,19 @@ import test from 'node:test'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
-import type { DepotArtifact } from '@/lib/api/depot-client'
-import { ArtifactResults, depotCoveragePulse, discoveryCountLabel, exactImportConnection, exactImportParams, mergeArtifactPages } from './depot-page-content'
+import { DepotClientError, type DepotArtifact } from '@/lib/api/depot-client'
+import { ArtifactResults, depotCoveragePulse, discoveryCountLabel, exactImportConnection, exactImportParams, mergeArtifactPages, discoveryFailureLabel, discoveryErrorState } from './depot-page-content'
+
+test('coverage failures expose a safe provider summary without raw failure kinds', () => {
+  assert.equal(discoveryFailureLabel({ providerId: 'catalog', kind: 'unsupported_kind' }), 'catalog: kind filter unsupported')
+  assert.equal(discoveryFailureLabel({ providerId: 'catalog', kind: 'unexpected_secret_bearing_detail' }), 'catalog: source unavailable')
+})
+
+test('catalog authentication failures remain distinct from connection failures', () => {
+  assert.equal(discoveryErrorState(new DepotClientError(401, 'unauthorized', 'secret')), 'auth')
+  assert.equal(discoveryErrorState(new DepotClientError(403, 'forbidden', 'secret')), 'auth')
+  assert.equal(discoveryErrorState(new DepotClientError(503, 'unavailable', 'secret')), 'unavailable')
+})
 
 test('unavailable catalog counts remain unknown rather than implying an empty catalog', () => {
   assert.equal(discoveryCountLabel(0, false, true), '—')
@@ -25,6 +36,10 @@ test('depotCoveragePulse never renders failed provider coverage as healthy', () 
   assert.deepEqual(depotCoveragePulse('complete'), {
     color: 'var(--aurora-success)',
     label: 'complete',
+  })
+  assert.deepEqual(depotCoveragePulse(), {
+    color: 'var(--aurora-text-muted)',
+    label: 'status unknown',
   })
 })
 

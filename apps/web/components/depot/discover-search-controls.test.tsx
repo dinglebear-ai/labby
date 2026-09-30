@@ -24,7 +24,8 @@ test('source controls preserve exact provider IDs and applied filters can be cle
     assert.deepEqual(changes, [['provider', 'all'], ['kind', 'all']])
     await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Kind and source filters"]')!.click())
     assert.equal(filtersOpen, true)
-    assert.match(view.container.querySelector<HTMLInputElement>('[aria-label="Search artifacts"]')?.placeholder ?? '', /Search 26 artifacts/)
+    assert.match(view.container.querySelector<HTMLInputElement>('[aria-label="Search artifacts"]')?.placeholder ?? '', /Search artifacts/)
+    assert.doesNotMatch(view.container.querySelector<HTMLInputElement>('[aria-label="Search artifacts"]')?.placeholder ?? '', /semantic/i)
   } finally { await view.unmount(); await window.happyDOM.close() }
 })
 

@@ -1226,3 +1226,31 @@ test('Discovery table labels align with rows and remain usable on phones', { con
   await page.reload({ waitUntil: 'networkidle' })
   assert.equal(await page.getByRole('button', { name: 'Card view', exact: true }).getAttribute('aria-pressed'), 'true')
 })
+
+
+test('Discover keeps mobile actions touch-sized beside the heading and results above the fold', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+  const browser = await chromium.launch({ headless: true })
+  t.after(async () => { await browser.close() })
+  const page = await browser.newPage()
+  for (const width of [360, 390, 430]) {
+    await page.setViewportSize({ width, height: 844 })
+    await page.goto(`${baseUrl}/depot/`, { waitUntil: 'networkidle' })
+    await page.locator('[data-discover-result]').first().waitFor()
+    const publish = await page.getByRole('link', { name: 'Publish artifact', exact: true }).boundingBox()
+    const heading = await page.getByRole('heading', { name: 'Discover', exact: true, level: 1 }).boundingBox()
+    const firstResult = await page.locator('[data-discover-result]').first().boundingBox()
+    assert.ok(publish && heading && firstResult)
+    assert.ok(publish.width >= 44 && publish.height >= 44, `Publish target at ${width}px`)
+    assert.ok(publish.y <= heading.y + 8, `Publish wraps below the heading at ${width}px`)
+    assert.ok(firstResult.y < 600, `Results are pushed below the mobile fold at ${width}px`)
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1))
+    for (const name of ['Table view', 'List view', 'Card view', 'Kind and source filters', 'Sort and density']) {
+      const target = await page.getByRole('button', { name, exact: true }).boundingBox()
+      assert.ok(target && target.width >= 44 && target.height >= 44, `${name} target at ${width}px`)
+    }
+    await page.getByRole('button', { name: 'List view', exact: true }).click()
+    assert.equal(await page.getByRole('button', { name: 'List view', exact: true }).getAttribute('aria-pressed'), 'true')
+    await page.getByRole('button', { name: 'Card view', exact: true }).click()
+  }
+})

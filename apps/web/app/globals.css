@@ -1239,6 +1239,24 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
   [data-console-hero-actions-mixed] button {
     min-width: 44px;
   }
+  /* Discover has one compact action: keep search above the results, not below a full-width action row. */
+  [data-console-hero-variant="discover"] [data-console-hero-main] {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start !important;
+    gap: var(--space-4) !important;
+    padding: var(--space-5) var(--space-5) 0 !important;
+  }
+  [data-console-hero-variant="discover"] [data-console-hero-copy],
+  [data-console-hero-variant="discover"] [data-console-hero-actions] {
+    width: auto;
+  }
+  [data-console-hero-variant="discover"] [data-console-hero-actions] :is(button, a):not([data-visible-label]) {
+    width: 44px !important;
+    height: 44px !important;
+    min-width: 44px !important;
+    min-height: 44px !important;
+  }
   [data-panel-header] {
     align-items: flex-start !important;
     flex-wrap: wrap;

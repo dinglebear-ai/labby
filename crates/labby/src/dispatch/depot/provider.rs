@@ -243,8 +243,13 @@ impl ProviderRuntime {
                 Ok(Reply { identity, result })
             });
         self.observe(&result, provenance)?;
-        if matches!(result, Err(ProviderError::Failed(Failure::SnapshotChanged))) {
-            *self.identity.lock().await = None;
+        if matches!(result, Err(ProviderError::Failed(Failure::SnapshotChanged)))
+            || matches!(&result, Ok(reply) if reply.identity.listing_epoch != expected.listing_epoch)
+        {
+            let mut cached = self.identity.lock().await;
+            if cached.as_ref() == Some(&expected) {
+                *cached = None;
+            }
         }
         result
     }
@@ -358,6 +363,70 @@ fn network_failure(error: NetworkError) -> ProviderError {
 #[cfg(test)]
 mod public_binding_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn listing_generation_change_refreshes_qualification_without_manual_probe() {
+        use super::super::scheduler::Scheduler;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let generation = Arc::new(AtomicUsize::new(1));
+        let identity = generation.clone();
+        let listing = generation.clone();
+        let app = axum::Router::new()
+            .route(
+                "/api/discovery",
+                axum::routing::get(move || {
+                    let epoch = identity.load(Ordering::SeqCst).to_string();
+                    async move { axum::Json(serde_json::json!({"contractVersion":"depot.discovery/v1","deploymentId":"catalog","deploymentEpoch":"boot","authorityEpoch":"read","listingEpoch":epoch,"snapshotContinuations":true,"maxPageSize":200})) }
+                }),
+            )
+            .route(
+                "/api/discovery/list",
+                axum::routing::post(move || {
+                    let epoch = listing.load(Ordering::SeqCst).to_string();
+                    async move { axum::Json(serde_json::json!({"contractVersion":"depot.discovery/v1","deploymentId":"catalog","deploymentEpoch":"boot","authorityEpoch":"read","listingEpoch":epoch,"snapshotContinuations":true,"maxPageSize":200,"result":{"artifacts":[],"total":0}})) }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let secret = Secret::local_bearer("catalog", &endpoint, "test-only").unwrap();
+        let client = NetworkClient::local("catalog", &endpoint, secret).unwrap();
+        let runtime = ProviderRuntime::from_test_client(client);
+        let scheduler = Scheduler::default();
+        let admission = scheduler
+            .admit("verified-actor", tokio::time::Instant::now())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            String::from(
+                runtime
+                    .qualify(&admission, false)
+                    .await
+                    .unwrap()
+                    .listing_epoch
+            ),
+            "1"
+        );
+        generation.store(2, Ordering::SeqCst);
+        let reply = runtime
+            .call(Operation::List, serde_json::json!({"limit":1}), &admission)
+            .await
+            .unwrap();
+        assert_eq!(String::from(reply.identity.listing_epoch), "2");
+        assert_eq!(
+            String::from(
+                runtime
+                    .qualify(&admission, false)
+                    .await
+                    .unwrap()
+                    .listing_epoch
+            ),
+            "2"
+        );
+        server.abort();
+    }
 
     #[tokio::test]
     async fn qualified_deployment_must_match_the_host_binding() {

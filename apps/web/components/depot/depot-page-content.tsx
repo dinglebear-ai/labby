@@ -3,34 +3,41 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
-import { ArrowLeftRight, Compass, Info, Loader2, Plus } from 'lucide-react'
+import { ArrowLeftRight, Compass, Loader2, Plus } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { useCollectionView } from '@/hooks/use-collection-view'
 import { AppHeader } from '@/components/app-header'
 import { ConsoleHero } from '@/components/console/console-hero'
-import { DashboardPanel } from '@/components/dashboard/panel'
 import { AURORA_PAGE_FRAME, AURORA_PAGE_SHELL } from '@/components/aurora/tokens'
 import { Button } from '@/components/ui/button'
-import { DiscoverResultTabs } from './discover-result-tabs'
 import { DiscoverFilterPanel, DiscoverSearchControls, type DiscoveryVisibility } from './discover-search-controls'
 import { mockDepotArtifacts, mockDepotLibraryArtifactIds, mockDepotMetricLabels, mockDepotNow, mockDepotSpecLabels } from '@/lib/api/depot-mock-data'
-import { getArtifact, listArtifacts, listProviderOptions, type DepotArtifact, type DepotProviderOption, type FederatedArtifact } from '@/lib/api/depot-client'
+import { DepotClientError, getArtifact, listArtifacts, listProviderOptions, type DepotArtifact, type DepotProviderOption, type FederatedArtifact } from '@/lib/api/depot-client'
 import { getBrowserSessionEpoch, subscribeToBrowserSession } from '@/lib/auth/session-store'
 import { artifactKey } from '@/lib/depot/provider-model'
 import { appendDiscoveryPage, createDiscoveryWindow, visibleArtifacts, type DiscoveryWindow } from './discovery-window'
 import { RequestLanes } from './request-lanes'
 import { controlPlaneAction } from '@/lib/api/artifact-control-client'
-import { artifactMatchLabel, DISCOVERY_SHELVES, selectDiscoveryResults, selectDiscoveryShelf, type DiscoveryShelf, type DiscoverySort } from './discover-model'
+import { artifactMatchLabel, selectDiscoveryResults, type DiscoverySort } from './discover-model'
 import { DiscoverArtifactCard as ArtifactCard, DiscoverTableHeader } from './discover-artifact-card'
 import { DiscoverArtifactInspection as ArtifactInspection } from './discover-artifact-inspection'
 import { DiscoverViewOptions, type DiscoveryDensity, type DiscoveryLayout } from './discover-view-options'
-import { DiscoverRails } from './discover-rails'
 import { canCompareBundles, DiscoverBundleCompare } from './discover-bundle-compare'
 
 const USE_MOCK_DATA = process.env.NEXT_PUBLIC_MOCK_DATA === 'true'
 
-type LoadState = { deferredAttempts?: number; failures?: string[]; loading: boolean; error?: string; window: DiscoveryWindow; cursor?: string; total?: number; exact: boolean; coverage?: string; scopeEpoch?: string }
+type DiscoveryFailure = { providerId: string; kind: string }
+type LoadState = { deferredAttempts?: number; failures?: DiscoveryFailure[]; loading: boolean; error?: string; window: DiscoveryWindow; cursor?: string; total?: number; exact: boolean; coverage?: string; scopeEpoch?: string }
+export function discoveryFailureLabel(failure: DiscoveryFailure): string {
+  const reason = failure.kind === 'unsupported_kind' ? 'kind filter unsupported' : 'source unavailable'
+  return `${failure.providerId}: ${reason}`
+}
+
+export function discoveryErrorState(error: unknown): 'auth' | 'unavailable' {
+  return error instanceof DepotClientError && (error.status === 401 || error.status === 403) ? 'auth' : 'unavailable'
+}
+
 export function discoveryCountLabel(count: number, exact: boolean, unavailable: boolean) {
   return unavailable ? '—' : `${exact ? '' : '≥ '}${count.toLocaleString()}`
 }
@@ -42,6 +49,7 @@ export function depotCoveragePulse(coverage?: string, error?: string) {
   if (coverage === 'partial' || coverage === 'deferred' || coverage === 'all_disabled') {
     return { color: 'var(--aurora-warn)', label: coverage }
   }
+  if (!coverage) return { color: 'var(--aurora-text-muted)', label: 'status unknown' }
   return { color: 'var(--aurora-success)', label: coverage ?? 'ready' }
 }
 
@@ -100,7 +108,6 @@ function SessionDepotPage() {
   const [importing,setImporting] = useState(false)
   const importPending = useRef(false)
   const [density, setDensity] = useState<DiscoveryDensity>('comfortable')
-  const [shelf, setShelf] = useState<DiscoveryShelf>('trending')
   const [visibility, setVisibility] = useState<DiscoveryVisibility>('all')
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [selectionMode, setSelectionMode] = useState(false)
@@ -178,8 +185,8 @@ function SessionDepotPage() {
     try {
       const listing = await listArtifacts({provider:selectedProvider,query:searchQuery,kind,limit:50,cursor},signal)
       if(!isCurrent())return
-      setState(c=>({deferredAttempts:listing.state==='deferred'?(cursor?(c.deferredAttempts??0)+1:0):0,loading:false,window:appendDiscoveryPage(cursor?c.window:createDiscoveryWindow(),listing.items),cursor:listing.nextCursor??undefined,total:listing.knownTotal??undefined,exact:listing.totalIsExact,coverage:listing.state,scopeEpoch:listing.scopeEpoch,failures:listing.failures.map(failure=>failure.kind)}))
-    } catch(error) { if(isCurrent())setState(c=>({...c,loading:false,error:error instanceof Error?error.message:String(error)})) }
+      setState(c=>({deferredAttempts:listing.state==='deferred'?(cursor?(c.deferredAttempts??0)+1:0):0,loading:false,window:appendDiscoveryPage(cursor?c.window:createDiscoveryWindow(),listing.items),cursor:listing.nextCursor??undefined,total:listing.knownTotal??undefined,exact:listing.totalIsExact,coverage:listing.state,scopeEpoch:listing.scopeEpoch,failures:listing.failures}))
+    } catch(error) { if(isCurrent())setState(c=>({...c,loading:false,error:discoveryErrorState(error)})) }
     finally { if(lanes.current.isCurrent('list',generation))inFlight.current=undefined }
   },[selectedProvider,kind])
 
@@ -218,7 +225,7 @@ function SessionDepotPage() {
   }, [activeQuery, load, state.cursor, state.error, state.loading, state.coverage, state.deferredAttempts])
 
   const artifactHref=useCallback((providerId?:string,id?:string)=>{const params=new URLSearchParams();if(activeQuery)params.set('q',activeQuery);if(kind!=='all')params.set('kind',kind);if(selectedProvider!=='all')params.set('provider',selectedProvider);if(providerId&&id){params.set('artifactProvider',providerId);params.set('artifact',id)}return `${pathname}${params.size?`?${params}`:''}`},[activeQuery,kind,pathname,selectedProvider])
-  const resetDiscovery=useCallback(()=>{window.history.replaceState(window.history.state,'',pathname);invalidateContext(JSON.stringify(['all','all','']));setQuery('');setActiveQuery('');setVisibility('all');setShelf('trending');setSort('relevance');setFiltersOpen(false);setBulkSelectedKeys([]);setSelectionMode(false);setCompareOpen(false);setCursorIndex(-1);router.replace(pathname,{scroll:false})},[invalidateContext,pathname,router])
+  const resetDiscovery=useCallback(()=>{window.history.replaceState(window.history.state,'',pathname);invalidateContext(JSON.stringify(['all','all','']));setQuery('');setActiveQuery('');setVisibility('all');setSort('relevance');setFiltersOpen(false);setBulkSelectedKeys([]);setSelectionMode(false);setCompareOpen(false);setCursorIndex(-1);router.replace(pathname,{scroll:false})},[invalidateContext,pathname,router])
   const copyValue=useCallback(async(label:string,value?:string)=>{if(!value)return;await navigator.clipboard.writeText(value);setCopied(label);toast.success(`${label} copied`);window.setTimeout(()=>setCopied(c=>c===label?undefined:c),1500)},[])
   const exportArtifact=useCallback((artifact:FederatedArtifact)=>{const label=artifact.name??artifact.descriptor?.name??artifact.kind??'artifact';const blob=new Blob([`${JSON.stringify(artifact,null,2)}\n`],{type:'application/json'}),url=URL.createObjectURL(blob),anchor=document.createElement('a');anchor.href=url;anchor.download=`${label.toLowerCase().replace(/[^a-z0-9._-]+/g,'-')}.depot.json`;anchor.click();URL.revokeObjectURL(url);toast.success('Artifact metadata exported')},[])
   const importArtifact=useCallback(async(artifact:FederatedArtifact)=>{
@@ -265,9 +272,7 @@ function SessionDepotPage() {
   const visible = visibleArtifacts(state.window)
   const [sort, setSort] = useState<DiscoverySort>('relevance')
   const visibilityResults = visibility === 'all' ? visible.items : visible.items.filter(artifact => artifact.publication?.visibility?.toLowerCase() === visibility)
-  const shelfResults = USE_MOCK_DATA ? selectDiscoveryShelf(visibilityResults, shelf) : visibilityResults
-  const results = selectDiscoveryResults(shelfResults, sort)
-  const shelfMeta = DISCOVERY_SHELVES.find(item => item.id === shelf) ?? DISCOVERY_SHELVES[0]
+  const results = selectDiscoveryResults(visibilityResults, sort)
   const selectedBulkArtifacts = results.filter(artifact => bulkSelectedKeys.includes(artifactKey(artifact.providerId, artifact.artifactId)))
   const compareEligible = canCompareBundles(selectedBulkArtifacts)
   const toggleBulkSelection = (artifact: FederatedArtifact) => {
@@ -294,7 +299,7 @@ function SessionDepotPage() {
   }
   const resultCount=state.total??state.window.rowCount
   const incomplete = Boolean(state.error) || (state.coverage !== undefined && state.coverage !== 'complete' && state.coverage !== 'empty')
-  const incompleteMessage = state.failures?.includes('unsupported_kind')
+  const incompleteMessage = state.error === 'auth' ? 'Catalog access needs a valid session or permission.' : state.error ? 'Catalog search is unavailable. Retry when the connection returns.' : state.failures?.some(failure => failure.kind === 'unsupported_kind')
     ? 'Some sources do not support this kind filter. Results cover the supported sources only.'
     : 'Some sources are still preparing search results or are unavailable. Retry to check again.'
 
@@ -331,17 +336,8 @@ function SessionDepotPage() {
   return <>
     <AppHeader icon={<Compass className="size-3.5" />} breadcrumbs={[{label:'Discover'}]}/>
     <div className={`${AURORA_PAGE_SHELL} flex-1`}><div className={AURORA_PAGE_FRAME} style={{ gap: 14 }}>
-      <ConsoleHero variant="discover" icon={<Compass className="size-[22px]" />} eyebrow="Depot · Bazaar" title="Discover" description="Every artifact Depot can reach — registries, marketplaces, catalogs and crawls — searched semantically and installable in any target format through APM." pulse={USE_MOCK_DATA && !state.error ? { color: 'var(--aurora-success)', label: `${providers.filter(provider => provider.enabled).length} sources indexed` } : depotCoveragePulse(state.coverage,state.error)} actions={<Button asChild size="icon" variant="outline" className="size-9 rounded-[10px] text-aurora-accent-strong" style={{ borderColor: 'color-mix(in srgb, var(--aurora-accent-primary) 55%, var(--aurora-border-strong))', background: 'color-mix(in srgb, var(--aurora-accent-primary) 9%, var(--aurora-panel-strong))' }}><Link href="/create" aria-label="Publish artifact" title="Publish artifact"><Plus aria-hidden="true" className="size-[15px]" /></Link></Button>}
-        stats={[
-          { label: activeQuery ? 'Matches' : 'Indexed', value: discoveryCountLabel(resultCount, state.exact, Boolean(state.error) || state.total === undefined), suffix: 'artifacts' },
-          { label: 'Sources', value: providerError && providers.length === 0 ? '—' : providers.filter(provider => provider.enabled).length, suffix: providerError ? 'provider status unavailable' : 'registries + crawls' },
-          USE_MOCK_DATA
-            ? { label: 'Last crawl', value: '4m', suffix: 'ago', tone: 'var(--aurora-accent-strong)' }
-            : { label: 'Last crawl', value: <span title="Crawl timestamps are not reported by the connected sources." className="text-sm font-normal text-aurora-text-muted">Not reported</span> },
-          USE_MOCK_DATA
-            ? { label: 'Verified', value: visible.items.filter(artifact => artifact.publisherVerified === true).length, suffix: 'publishers', tone: 'var(--aurora-success)' }
-            : { label: 'Verified', value: <span title="Publisher verification is not reported consistently by the connected sources." className="text-sm font-normal text-aurora-text-muted">Not reported</span> },
-        ]}>
+      <ConsoleHero variant="discover" icon={<Compass className="size-[22px]" />} eyebrow="Depot · Bazaar" title="Discover" description="Search artifacts available from connected sources." pulse={USE_MOCK_DATA && !state.error ? { color: 'var(--aurora-success)', label: `${providers.filter(provider => provider.enabled).length} sources indexed` } : depotCoveragePulse(state.coverage,state.error)} actions={<Button asChild size="icon" variant="outline" className="size-9 rounded-[10px] text-aurora-accent-strong" style={{ borderColor: 'color-mix(in srgb, var(--aurora-accent-primary) 55%, var(--aurora-border-strong))', background: 'color-mix(in srgb, var(--aurora-accent-primary) 9%, var(--aurora-panel-strong))' }}><Link href="/create" aria-label="Publish artifact" title="Publish artifact"><Plus aria-hidden="true" className="size-[15px]" /></Link></Button>}
+        stats={[{ label: activeQuery ? 'Matches' : 'Indexed', value: discoveryCountLabel(resultCount, state.exact, (Boolean(state.error) || state.loading || state.coverage === 'all_failed') && state.window.rowCount === 0), suffix: 'artifacts' }, { label: 'Sources', value: providers.length === 0 ? '—' : providers.filter(provider => provider.enabled).length, suffix: 'enabled' }]}>
         <DiscoverSearchControls query={query} providers={providers} artifacts={visible.items} kind={kind} selectedProvider={selectedProvider} onFilter={changeFilter} visibility={visibility} onVisibility={setVisibility} filtersOpen={filtersOpen} onFiltersOpenChange={setFiltersOpen} totalCount={USE_MOCK_DATA ? mockDepotArtifacts.length : resultCount} onClearAll={resetDiscovery} showVisibility={!USE_MOCK_DATA} onQuery={next => {
           invalidateContext(JSON.stringify([selectedProvider, kind, next.trim()]))
           setQuery(next)
@@ -354,20 +350,17 @@ function SessionDepotPage() {
       <div data-dqgrid="1" className="mt-[-4px] grid min-w-0 grid-cols-[minmax(0,1fr)] items-start gap-[14px]">
       <div className="flex min-w-0 flex-col gap-3">
       <DiscoverFilterPanel open={filtersOpen} providers={providers} artifacts={visible.items} kind={kind} selectedProvider={selectedProvider} onFilter={changeFilter} visibility={visibility} onVisibility={setVisibility} mockKinds={USE_MOCK_DATA} showVisibility={!USE_MOCK_DATA}/>
-      {providerError?<DashboardPanel title="Source filter status unavailable"><p role="status" className="text-sm text-aurora-text-muted">Artifact discovery remains usable, but the source selector may be incomplete or stale: {providerError}</p></DashboardPanel>:null}
-      {incomplete&&!state.loading?<DashboardPanel title="Search coverage incomplete"><p role="status" className="text-sm text-aurora-text-muted">{incompleteMessage}</p><Button variant="outline" onClick={()=>void load(query.trim())}>Retry search</Button></DashboardPanel>:null}
-      {!activeQuery && kind === 'all' && selectedProvider === 'all' && visibility === 'all' && !state.loading ? <DiscoverRails artifacts={USE_MOCK_DATA?visible.items:[]} artifactHref={artifactHref} unavailableReason={USE_MOCK_DATA?undefined:'Recommendation evidence is not reported by the current Depot contract.'}/> : null}
+      {providerError?<div role="status" className="rounded-aurora-1 border border-aurora-border-default bg-aurora-panel-medium p-3 text-sm text-aurora-text-muted">Source filters may be incomplete. <Button variant="outline" className="min-h-11 sm:min-h-8" onClick={() => window.location.reload()}>Reload sources</Button></div>:null}
+      {incomplete&&!state.loading?<div role="status" className="flex flex-wrap items-center gap-2 rounded-aurora-1 border border-aurora-border-default bg-aurora-panel-medium px-3 py-2 text-sm text-aurora-text-muted"><span className="min-w-0 flex-1">{incompleteMessage}</span><Button variant="outline" className="min-h-11 sm:min-h-8" onClick={()=>void load(query.trim())}>Retry search</Button>{state.failures?.length ? <details className="basis-full text-xs"><summary className="flex min-h-11 cursor-pointer items-center sm:min-h-8">Source details</summary><ul className="list-disc pl-5">{state.failures.map(failure => <li key={`${failure.providerId}:${failure.kind}`}>{discoveryFailureLabel(failure)}</li>)}</ul></details> : null}</div>:null}
       <section aria-labelledby="artifact-results-title" className="contents">
-        <div className="flex flex-wrap items-end gap-[10px] border-b border-aurora-border-default/55 px-0.5">
-          <DiscoverResultTabs shelf={shelf} setShelf={setShelf} />
-          <span className="min-w-3 flex-1" />
-          <span className="mb-[5px] inline-flex h-[22px] items-center rounded-md border border-aurora-border-default/50 bg-aurora-control-surface px-[9px] text-[10.5px] font-[650] tabular-nums text-aurora-text-muted" title={`${state.window.rowCount} retained results; sorting applies to loaded artifacts.`}>{state.loading ? 'Searching…' : incomplete && state.total === undefined ? 'Total unavailable' : `${results.length} shown · ${state.exact ? '' : '≥ '}${resultCount}`}</span>
-          <div className="pb-1"><DiscoverViewOptions sort={sort} setSort={setSort} layout={view} setLayout={selectView} density={density} setDensity={setDensity} /></div>
+        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 border-b border-aurora-border-default pb-3 sm:flex sm:flex-wrap sm:gap-3">
+          <div className="min-w-0 sm:flex-1">
+            <h2 id="artifact-results-title" className="break-words font-display text-base font-bold text-aurora-text-primary">{activeQuery ? `Results for “${activeQuery}”` : 'Artifacts'}</h2>
+            <p className="mt-1 text-xs tabular-nums text-aurora-text-muted">{state.loading ? 'Searching…' : incomplete && state.total === undefined ? 'Total unavailable' : `${results.length.toLocaleString()} shown · ${state.exact ? '' : '≥ '}${resultCount.toLocaleString()}`}</p>
+          </div>
+          <DiscoverViewOptions sort={sort} setSort={setSort} layout={view} setLayout={selectView} density={density} setDensity={setDensity} />
         </div>
-        <div className="-mt-[5px] flex h-[17px] min-w-0 items-center gap-[7px] px-[3px]"><Info aria-hidden className="size-3 shrink-0 text-[color-mix(in_srgb,var(--aurora-accent-strong)_80%,transparent)]" strokeWidth={1.7}/><span className="shrink-0 font-display text-xs font-bold leading-[17px] tracking-[-0.005em] text-[color-mix(in_srgb,var(--aurora-text-muted)_55%,var(--aurora-text-primary))]">{shelfMeta.title}</span><span aria-hidden className="h-[11px] w-px shrink-0 bg-aurora-border-default/65"/><span className="min-w-0 text-[11.5px] leading-[17px] text-aurora-text-muted">{shelfMeta.hint}</span></div>
-        {!USE_MOCK_DATA?<div data-discovery-feed-unavailable className="rounded-aurora-1 border border-dashed border-aurora-border-strong/60 bg-aurora-panel-medium px-3 py-2 text-[11.5px] leading-relaxed text-aurora-text-muted">Depot does not currently report a canonical {shelfMeta.label.toLowerCase()} feed. Results below remain the retained catalog window and are only ordered by the selected display sort.</div>:null}
         {selectedBulkArtifacts.length ? <div className="flex flex-wrap items-center gap-[9px] rounded-aurora-1 border border-[color-mix(in_srgb,var(--aurora-accent-primary)_40%,transparent)] bg-[color-mix(in_srgb,var(--aurora-accent-primary)_8%,var(--aurora-panel-strong))] px-[13px] py-[9px] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"><span className="font-display text-xs font-bold text-aurora-text-primary">{selectedBulkArtifacts.length === 1 ? '1 artifact selected' : `${selectedBulkArtifacts.length} artifacts selected`}</span><span className="min-w-2 flex-1"/>{compareEligible ? <Button variant="outline" size="icon-sm" className="size-7 rounded-lg" aria-label="Compare selected bundles" title="Compare selected bundles" onClick={()=>setCompareOpen(true)}><ArrowLeftRight className="size-3"/></Button> : null}<Button variant="ghost" size="sm" className="h-7 rounded-lg px-[11px] text-[11.5px]" onClick={clearBulkSelection}>Clear</Button><Button size="sm" className="h-7 gap-1.5 rounded-lg px-[13px] text-[11.5px] font-bold" disabled={importing} onClick={()=>void bulkAddToLibrary()}><Plus className="size-3"/>{`Add ${selectedBulkArtifacts.length} to Library`}</Button></div> : null}
-        <h2 id="artifact-results-title" className="sr-only">{activeQuery ? `Results for “${activeQuery}”` : shelfMeta.title}</h2>
         {state.window.historyExpired?<p role="status" className="text-xs text-aurora-text-muted">Earlier results left the bounded local window. Refresh this search to revisit older history.</p>:null}
         {visible.leadingRows>0?<div aria-hidden="true" style={{height:Math.min(visible.leadingRows*8,320)}} />:null}
         {query.trim().length>0&&query.trim().length<3?<p className="rounded-aurora-2 border border-dashed border-aurora-border-subtle px-5 py-10 text-center text-sm text-aurora-text-muted">Enter at least 3 characters to search.</p>:<ArtifactResults artifacts={results} activeQuery={activeQuery} loading={state.loading} incomplete={incomplete} view={view} density={density} now={now} selectedKey={selectedId&&selectedArtifactProvider?artifactKey(selectedArtifactProvider,selectedId):undefined} artifactHref={artifactHref} onReset={resetDiscovery} selectionMode={selectionMode} selectedBulkKeys={bulkSelectedKeys} cursorIndex={cursorIndex} onToggleSelected={toggleBulkSelection} onEnterSelectionMode={enterSelectionMode} onAdd={addArtifactToLibrary} onFork={USE_MOCK_DATA?previewFork:undefined} onSend={USE_MOCK_DATA?previewSend:undefined} isInLibrary={isArtifactInLibrary} actionPending={importing}/>}
