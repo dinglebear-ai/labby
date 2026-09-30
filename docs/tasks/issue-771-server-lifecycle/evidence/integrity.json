@@ -1,0 +1,28 @@
+{
+  "check": "integrity",
+  "started_utc": "2026-09-30T07:27:05.005513+00:00",
+  "host": "macpoo.local",
+  "cwd": "/Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle",
+  "head": "49056bdd72c884d38e21dc1e1d8e63b58e09fbb9",
+  "branch": "codex/issue-771-server-lifecycle",
+  "command": [
+    "python3",
+    "-c",
+    "import hashlib,json,pathlib,re,subprocess\nroot=pathlib.Path('/Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle')\nevidence=root/'docs/tasks/issue-771-server-lifecycle/evidence'\nexpected={'baseline':0,'snapshot-red':101,'snapshot-green':0,'gateway-all-features':0,'clippy':0,'gateway-default':101,'fmt':0,'module-reachability':0,'docs':0,'enrichment-default-isolated':0,'enrichment-default-serial':0,'ownership-audit':0,'gateway-default-serial':101,'lane-c-default':0,'docs-final':0,'docs-final-r2':0}\nreceipts={}\nfor name,exit_code in expected.items():\n    record=json.loads((evidence/(name+'.json')).read_text())\n    assert record['exit_code']==exit_code,(name,record['exit_code'])\n    assert record['timed_out'] is False,name\n    assert hashlib.sha256((evidence/(name+'.log')).read_bytes()).hexdigest()==record['log_sha256'],name\n    receipts[name]=record\nfor name in ('gateway-all-features','lane-c-default','clippy','fmt','module-reachability','docs-final-r2','gateway-default-serial'):\n    for path,digest in receipts[name]['test_source_sha256'].items():\n        assert hashlib.sha256((root/path).read_bytes()).hexdigest()==digest,(name,path)\nfor source,saved in [('crates/labby-gateway/tests/issue_771_server_lifecycle.rs','snapshot-red-test.rs.txt'),('crates/labby-gateway/tests/issue_771_server_lifecycle/snapshot.rs','snapshot-red-adapter.rs.txt')]:\n    assert hashlib.sha256((evidence/saved).read_bytes()).hexdigest()==receipts['snapshot-red']['test_source_sha256'][source]\nfor name in ('gateway-default','gateway-default-serial'):\n    log=(evidence/(name+'.log')).read_text()\n    assert len(re.findall(r'^test gateway::enrichment::provider::tests::.* \\.\\.\\. FAILED$',log,re.M))==5,name\n    assert '1478 passed; 5 failed; 5 ignored' in log,name\nassert '1540 tests run: 1540 passed' in (evidence/'gateway-all-features.log').read_text()\nassert '28 passed; 0 failed' in (evidence/'lane-c-default.log').read_text()\ngit=lambda p,*args: subprocess.check_output(['git','-C',str(p),*args],text=True).strip()\nchanges=git(root,'diff','--name-only','138ef902dc1842daf883a6e7710b140fbfaf53c0','HEAD').splitlines()\nassert changes and all(path.startswith(('crates/labby-gateway/tests/issue_771_server_lifecycle','docs/tasks/issue-771-server-lifecycle/')) for path in changes)\ngate=root.parent/'issue-771-gate0'\nassert git(gate,'rev-parse','HEAD')=='a5e3f78ca55e52c64b2013a8fae3d26a9bf5819e'\nassert git(gate,'rev-parse','HEAD:docs/adr/0007-durable-mcp-task-routing.md')=='3ad75a27b9c46a4ff211cef10365f46057fdaba2'\nassert not git(gate,'status','--porcelain')\nprint(json.dumps({'verified_receipts':len(receipts),'validated_source_files':len(receipts['gateway-all-features']['test_source_sha256']),'gate0_unchanged':True,'only_lane_c_paths_changed':True,'intentional_red_characterization':'snapshot-red','unresolved_baseline_runs':['gateway-default','gateway-default-serial'],'all_feature_test_passes':1540,'all_feature_skips':5,'default_lane_c_test_passes':28},indent=2))\n"
+  ],
+  "environment": {
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_TARGET_DIR": "/Users/jmagar/workspace/labby/target"
+  },
+  "exit_code": 0,
+  "timed_out": false,
+  "elapsed_seconds": 0.448,
+  "log_sha256": "f50fdc456402e59b89be5ae0d4fa1fdfa32f8fd64f27ec206789c79ef7205a68",
+  "test_source_sha256": {
+    "crates/labby-gateway/tests/issue_771_server_lifecycle.rs": "ae86eb7e6c901e5444bdd8bf9a3fde4b899de9e4ab3cdf5a184b7d01ada1c437",
+    "crates/labby-gateway/tests/issue_771_server_lifecycle/fencing.rs": "daa2e80a10539cc20f5d1d2fd5b492be0fefd4002b3427813306b8abd18cee98",
+    "crates/labby-gateway/tests/issue_771_server_lifecycle/snapshot.rs": "7a094bc48817f61cf02badd28976de7b58360ae1a9cd032bb3b802ba1e7cafc7",
+    "crates/labby-gateway/tests/issue_771_server_lifecycle/snapshot_tests.rs": "019fe725f04278fdc01b95a2f4f99989298ff319ed4d50251852c5848fc95694",
+    "crates/labby-gateway/tests/issue_771_server_lifecycle/transport_matrix.rs": "6b42086fd1ab2911c323a846fc34fbc01de8955f7ddb5e664525a211a8c5ee79"
+  }
+}

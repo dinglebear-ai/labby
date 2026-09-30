@@ -1,0 +1,46 @@
+cwd: /Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle
+command: python3 -c 'import hashlib,json,pathlib,re,subprocess
+root=pathlib.Path('"'"'/Users/jmagar/workspace/labby/.worktrees/issue-771-server-lifecycle'"'"')
+evidence=root/'"'"'docs/tasks/issue-771-server-lifecycle/evidence'"'"'
+expected={'"'"'baseline'"'"':0,'"'"'snapshot-red'"'"':101,'"'"'snapshot-green'"'"':0,'"'"'gateway-all-features'"'"':0,'"'"'clippy'"'"':0,'"'"'gateway-default'"'"':101,'"'"'fmt'"'"':0,'"'"'module-reachability'"'"':0,'"'"'docs'"'"':0,'"'"'enrichment-default-isolated'"'"':0,'"'"'enrichment-default-serial'"'"':0,'"'"'ownership-audit'"'"':0,'"'"'gateway-default-serial'"'"':101,'"'"'lane-c-default'"'"':0,'"'"'docs-final'"'"':0,'"'"'docs-final-r2'"'"':0}
+receipts={}
+for name,exit_code in expected.items():
+    record=json.loads((evidence/(name+'"'"'.json'"'"')).read_text())
+    assert record['"'"'exit_code'"'"']==exit_code,(name,record['"'"'exit_code'"'"'])
+    assert record['"'"'timed_out'"'"'] is False,name
+    assert hashlib.sha256((evidence/(name+'"'"'.log'"'"')).read_bytes()).hexdigest()==record['"'"'log_sha256'"'"'],name
+    receipts[name]=record
+for name in ('"'"'gateway-all-features'"'"','"'"'lane-c-default'"'"','"'"'clippy'"'"','"'"'fmt'"'"','"'"'module-reachability'"'"','"'"'docs-final-r2'"'"','"'"'gateway-default-serial'"'"'):
+    for path,digest in receipts[name]['"'"'test_source_sha256'"'"'].items():
+        assert hashlib.sha256((root/path).read_bytes()).hexdigest()==digest,(name,path)
+for source,saved in [('"'"'crates/labby-gateway/tests/issue_771_server_lifecycle.rs'"'"','"'"'snapshot-red-test.rs.txt'"'"'),('"'"'crates/labby-gateway/tests/issue_771_server_lifecycle/snapshot.rs'"'"','"'"'snapshot-red-adapter.rs.txt'"'"')]:
+    assert hashlib.sha256((evidence/saved).read_bytes()).hexdigest()==receipts['"'"'snapshot-red'"'"']['"'"'test_source_sha256'"'"'][source]
+for name in ('"'"'gateway-default'"'"','"'"'gateway-default-serial'"'"'):
+    log=(evidence/(name+'"'"'.log'"'"')).read_text()
+    assert len(re.findall(r'"'"'^test gateway::enrichment::provider::tests::.* \.\.\. FAILED$'"'"',log,re.M))==5,name
+    assert '"'"'1478 passed; 5 failed; 5 ignored'"'"' in log,name
+assert '"'"'1540 tests run: 1540 passed'"'"' in (evidence/'"'"'gateway-all-features.log'"'"').read_text()
+assert '"'"'28 passed; 0 failed'"'"' in (evidence/'"'"'lane-c-default.log'"'"').read_text()
+git=lambda p,*args: subprocess.check_output(['"'"'git'"'"','"'"'-C'"'"',str(p),*args],text=True).strip()
+changes=git(root,'"'"'diff'"'"','"'"'--name-only'"'"','"'"'138ef902dc1842daf883a6e7710b140fbfaf53c0'"'"','"'"'HEAD'"'"').splitlines()
+assert changes and all(path.startswith(('"'"'crates/labby-gateway/tests/issue_771_server_lifecycle'"'"','"'"'docs/tasks/issue-771-server-lifecycle/'"'"')) for path in changes)
+gate=root.parent/'"'"'issue-771-gate0'"'"'
+assert git(gate,'"'"'rev-parse'"'"','"'"'HEAD'"'"')=='"'"'a5e3f78ca55e52c64b2013a8fae3d26a9bf5819e'"'"'
+assert git(gate,'"'"'rev-parse'"'"','"'"'HEAD:docs/adr/0007-durable-mcp-task-routing.md'"'"')=='"'"'3ad75a27b9c46a4ff211cef10365f46057fdaba2'"'"'
+assert not git(gate,'"'"'status'"'"','"'"'--porcelain'"'"')
+print(json.dumps({'"'"'verified_receipts'"'"':len(receipts),'"'"'validated_source_files'"'"':len(receipts['"'"'gateway-all-features'"'"']['"'"'test_source_sha256'"'"']),'"'"'gate0_unchanged'"'"':True,'"'"'only_lane_c_paths_changed'"'"':True,'"'"'intentional_red_characterization'"'"':'"'"'snapshot-red'"'"','"'"'unresolved_baseline_runs'"'"':['"'"'gateway-default'"'"','"'"'gateway-default-serial'"'"'],'"'"'all_feature_test_passes'"'"':1540,'"'"'all_feature_skips'"'"':5,'"'"'default_lane_c_test_passes'"'"':28},indent=2))
+'
+{
+  "verified_receipts": 16,
+  "validated_source_files": 5,
+  "gate0_unchanged": true,
+  "only_lane_c_paths_changed": true,
+  "intentional_red_characterization": "snapshot-red",
+  "unresolved_baseline_runs": [
+    "gateway-default",
+    "gateway-default-serial"
+  ],
+  "all_feature_test_passes": 1540,
+  "all_feature_skips": 5,
+  "default_lane_c_test_passes": 28
+}
