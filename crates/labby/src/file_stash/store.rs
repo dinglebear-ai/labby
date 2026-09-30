@@ -432,15 +432,13 @@ impl FileStashStore {
     pub(crate) async fn cancel_upload(&self, upload_id: String) -> Result<()> {
         #[cfg(all(test, target_os = "linux"))]
         {
-            let mut injected = FAIL_CANCEL_ID
+            let mut injected = FAIL_CANCEL_IDS
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some((id, remaining)) = injected.as_mut()
-                && id == upload_id.as_str()
-            {
+            if let Some(remaining) = injected.get_mut(&upload_id) {
                 *remaining = remaining.saturating_sub(1);
                 if *remaining == 0 {
-                    *injected = None;
+                    injected.remove(&upload_id);
                 }
                 return Err(FileStashStoreError::Busy);
             }
@@ -763,17 +761,18 @@ impl FileStashStore {
 }
 
 #[cfg(all(test, target_os = "linux"))]
-static FAIL_CANCEL_ID: std::sync::LazyLock<Mutex<Option<(String, u32)>>> =
-    std::sync::LazyLock::new(|| Mutex::new(None));
+static FAIL_CANCEL_IDS: std::sync::LazyLock<Mutex<std::collections::HashMap<String, u32>>> =
+    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 
 /// Reject the next `times` cancel attempts for `upload_id` with `Busy`. The
 /// caller retries admission failures, so a test that needs the janitor
 /// fallback must exhaust every attempt.
 #[cfg(all(test, target_os = "linux"))]
 pub(super) fn inject_cancel_failure(upload_id: String, times: u32) {
-    *FAIL_CANCEL_ID
+    FAIL_CANCEL_IDS
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((upload_id, times.max(1)));
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(upload_id, times.max(1));
 }
 
 fn unix_now() -> i64 {
@@ -909,6 +908,59 @@ mod tests {
             .await
             .unwrap();
         (temp, store)
+    }
+
+    #[tokio::test]
+    async fn cancel_failure_budgets_are_independent_for_two_uploads() {
+        let (_temp, store) = store().await;
+        let first = store
+            .reserve_upload(
+                "owner".into(),
+                "a".into(),
+                "a".into(),
+                2,
+                i64::MAX,
+                16,
+                32,
+                8,
+            )
+            .await
+            .unwrap();
+        let second = store
+            .reserve_upload(
+                "owner".into(),
+                "b".into(),
+                "b".into(),
+                3,
+                i64::MAX,
+                16,
+                32,
+                8,
+            )
+            .await
+            .unwrap();
+        inject_cancel_failure(first.upload_id.clone(), 3);
+        inject_cancel_failure(second.upload_id.clone(), 1);
+        assert!(matches!(
+            store.cancel_upload(first.upload_id.clone()).await,
+            Err(FileStashStoreError::Busy)
+        ));
+        assert!(matches!(
+            store.cancel_upload(second.upload_id.clone()).await,
+            Err(FileStashStoreError::Busy)
+        ));
+        assert_eq!(store.usage("owner".into()).await.unwrap().reserved_bytes, 5);
+        store.cancel_upload(second.upload_id).await.unwrap();
+        assert_eq!(store.usage("owner".into()).await.unwrap().reserved_bytes, 2);
+        for _ in 0..2 {
+            assert!(matches!(
+                store.cancel_upload(first.upload_id.clone()).await,
+                Err(FileStashStoreError::Busy)
+            ));
+        }
+        assert_eq!(store.usage("owner".into()).await.unwrap().reserved_bytes, 2);
+        store.cancel_upload(first.upload_id).await.unwrap();
+        assert_eq!(store.usage("owner".into()).await.unwrap().reserved_bytes, 0);
     }
 
     #[tokio::test]
