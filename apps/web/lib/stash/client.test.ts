@@ -3,7 +3,7 @@ import test from 'node:test'
 
 import { __setBrowserSessionStateForTests } from '../auth/session-store.ts'
 import type { AuthoritySnapshot } from '../auth/authority.ts'
-import { STASH_WORKSPACE_UNSUPPORTED, StashError, createGrant, deleteFile, downloadFile, downloadUrl, getStats, listFiles, renameFile, searchRecipients, uploadFile } from './client.ts'
+import { STASH_WORKSPACE_UNSUPPORTED, StashError, createGrant, deleteFile, downloadFile, downloadUrl, getStats, listFiles, listFolders, moveFile, renameFile, searchRecipients, uploadFile } from './client.ts'
 import { resolveStashOwner } from './owner.ts'
 
 const originalFetch = globalThis.fetch
@@ -45,6 +45,38 @@ test('empty list requests use the canonical non-trailing-slash route', async () 
 
   assert.equal(new URL(requested?.url || '').pathname, '/v1/stash')
   assert.equal(new URL(requested?.url || '').search, '')
+})
+
+test('folder selection distinguishes all files from Unfiled and preserves a root folder cursor', async () => {
+  const requests: Request[] = []
+  globalThis.fetch = async (input, init) => {
+    requests.push(new Request(new URL(String(input), 'http://labby.test'), init))
+    return String(input).includes('/folders') ? Response.json({ folders: [], next_cursor: null }) : Response.json({ files: [], next_cursor: null })
+  }
+  await listFiles(undefined, undefined, undefined, 'dinglebear-ai/labby')
+  await listFiles(undefined, undefined, undefined, '')
+  await listFiles()
+  await listFolders('')
+  const queries = requests.map(request => new URL(request.url).searchParams)
+  assert.equal(queries[0]!.get('folder'), 'dinglebear-ai/labby')
+  assert.equal(queries[1]!.get('folder'), '')
+  assert.equal(queries[2]!.has('folder'), false)
+  assert.equal(queries[3]!.get('cursor'), '')
+})
+
+test('moving and uploading into a repo folder retain the selected Team authority', async () => {
+  authenticateWith({ ...baseAuthority, activeOwner: { kind: 'team', id: 'team-1' }, activeTeamId: 'team-1' })
+  const requests: Request[] = []
+  globalThis.fetch = async (input, init) => {
+    requests.push(new Request(new URL(String(input), 'http://labby.test'), init))
+    return Response.json({ file_id: 'file-1', uri: 'stash://me/files/file-1' })
+  }
+  await moveFile('file-1', 'org/repo')
+  await uploadFile(new File(['bytes'], 'file.txt'), undefined, 'org/repo')
+  assert.deepEqual(JSON.parse(await requests[0]!.text()), { action: 'stash.move', params: { file_id: 'file-1', folder: 'org/repo', owner_kind: 'team', owner_id: 'team-1' } })
+  assert.equal(decodeURIComponent(requests[1]!.headers.get('x-labby-stash-folder') || ''), 'org/repo')
+  assert.equal(requests[1]!.headers.get('x-labby-owner-id'), 'team-1')
+  assert.ok(requests.every(request => request.headers.get('x-csrf-token') === 'csrf-stash'))
 })
 
 test('binary upload passes the File body and csrf without JSON wrapping', async () => {

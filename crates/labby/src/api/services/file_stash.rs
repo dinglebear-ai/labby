@@ -43,8 +43,12 @@ pub fn routes(_state: AppState) -> RouteGroup {
         .fold(RouteGroup::empty(), |group, descriptor| {
             let method = match (descriptor.method, descriptor.path.as_str()) {
                 ("GET", "/") => get(list),
-                ("POST", "/") => post(action),
+                // JSON can expand each UTF-8 byte into a six-byte escape.
+                ("POST", "/") => post(action).layer(axum::extract::DefaultBodyLimit::max(
+                    6 * crate::dispatch::file_stash::MAX_DOCUMENT_BYTES + 16 * 1024,
+                )),
                 ("GET", "/stats") => get(stats),
+                ("GET", "/folders") => get(folders),
                 ("POST", "/recipients") => post(recipients),
                 ("POST", "/uploads") => post(upload),
                 ("GET", "/files/{file_id}") => get(metadata),
@@ -65,6 +69,7 @@ pub(crate) fn descriptors() -> Vec<RouteDescriptor> {
         ("GET", "/", "stash_list", "none_expected"),
         ("POST", "/", "stash_action", "action-defined"),
         ("GET", "/stats", "stash_stats", "none_expected"),
+        ("GET", "/folders", "stash_folders", "none_expected"),
         (
             "POST",
             "/recipients",
@@ -127,6 +132,7 @@ struct PageQuery {
     cursor: Option<String>,
     limit: Option<usize>,
     query: Option<String>,
+    folder: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -363,7 +369,12 @@ async fn action_impl(
 ) -> Result<Response, ApiError> {
     if matches!(
         request.action.as_str(),
-        "stash.rename" | "stash.delete" | "stash.grants.create" | "stash.grants.revoke"
+        "stash.rename"
+            | "stash.move"
+            | "stash.save_text"
+            | "stash.delete"
+            | "stash.grants.create"
+            | "stash.grants.revoke"
     ) {
         mutation_csrf(&headers, auth.as_ref(), &request.action)?;
     }
@@ -401,19 +412,65 @@ async fn action_impl(
         .validate_before_commit()
         .await
         .map_err(map_principal_error)?;
-    let response = crate::dispatch::file_stash::dispatch_for_principal(
-        &service(&state),
-        &principal,
-        "api",
+    let stash = service(&state);
+    if action == "stash.save_text" {
+        let response = tokio::spawn(async move {
+            checked_action(
+                &stash,
+                principal,
+                &action,
+                request.params,
+                validated_grantee,
+            )
+            .await
+        })
+        .await
+        .map_err(|_| stable("service_unavailable"))??;
+        return Ok(result(response));
+    }
+    let response = checked_action(
+        &stash,
+        principal,
         &action,
         request.params,
-        validated_grantee
-            .as_ref()
-            .map(|(recipient, _lease)| recipient),
+        validated_grantee,
     )
     .await
     .map_err(|error| ApiError::new(error).with_service_action("stash", &action))?;
     Ok(result(response))
+}
+
+/// Retain both authority and recipient leases inside the owned commit gate.
+async fn checked_action(
+    stash: &FileStashService,
+    principal: crate::access::FileStashOwnerAuthorization,
+    action: &str,
+    params: serde_json::Value,
+    validated_grantee: Option<(
+        crate::access::AccessPrincipalId,
+        crate::access::ActiveFileStashPrincipalLease,
+    )>,
+) -> Result<serde_json::Value, ToolError> {
+    let owner = (*principal).clone();
+    let grantee = validated_grantee
+        .as_ref()
+        .map(|(recipient, _)| recipient.clone());
+    crate::dispatch::file_stash::dispatch_with_final_check(
+        stash,
+        &owner,
+        "api",
+        action,
+        params,
+        grantee.as_ref(),
+        async move {
+            principal
+                .validate_before_commit()
+                .await
+                .map_err(crate::dispatch::file_stash::map_principal_resolution)?;
+            Ok((principal, validated_grantee))
+        },
+    )
+    .await
 }
 
 async fn principal_and_recipient(
@@ -575,7 +632,13 @@ async fn list_impl(
             None,
             None,
             false,
-            stash.search(&principal, &query, q.cursor.as_deref(), q.limit),
+            stash.list_in_folder(
+                &principal,
+                Some(&query),
+                q.cursor.as_deref(),
+                q.limit,
+                q.folder.as_deref(),
+            ),
         )
         .await?;
         crate::dispatch::file_stash::capture_observation_details(None, None, None);
@@ -589,7 +652,13 @@ async fn list_impl(
             None,
             None,
             false,
-            stash.list(&principal, q.cursor.as_deref(), q.limit),
+            stash.list_in_folder(
+                &principal,
+                None,
+                q.cursor.as_deref(),
+                q.limit,
+                q.folder.as_deref(),
+            ),
         )
         .await?;
         crate::dispatch::file_stash::capture_observation_details(None, None, None);
@@ -627,6 +696,30 @@ async fn stats_impl(
         Some(stats.owned_committed_bytes),
     );
     Ok(result(stats))
+}
+
+async fn folders(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    auth: Option<axum::Extension<AuthContext>>,
+    identity: Option<axum::Extension<VerifiedIdentity>>,
+    query: Result<Query<PageQuery>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    observe_api("stash.folders", None, None, false, async {
+        let Query(q) = query.map_err(|_| stable("invalid_param"))?;
+        let (kind, id) = selected_owner_headers(&headers);
+        let principal =
+            selected_principal(&state, identity, auth.as_ref(), kind, id, "stash.folders").await?;
+        let page = service(&state)
+            .folders(&principal, q.cursor.as_deref(), q.limit)
+            .await?;
+        principal
+            .validate_before_commit()
+            .await
+            .map_err(map_principal_error)?;
+        Ok(result(page))
+    })
+    .await
 }
 async fn recipients_impl(
     State(state): State<AppState>,
@@ -748,13 +841,19 @@ async fn rename_impl(
         None,
         None,
         false,
-        stash.rename(&principal, &file_id, &body.display_name),
+        checked_action(
+            &stash,
+            principal,
+            "stash.rename",
+            serde_json::json!({"file_id":file_id,"display_name":body.display_name}),
+            None,
+        ),
     )
     .await?;
     crate::dispatch::file_stash::capture_observation_details(
         Some(&file_id),
         None,
-        Some(file.size_bytes),
+        file.get("size_bytes").and_then(serde_json::Value::as_u64),
     );
     Ok(result(file))
 }
@@ -781,7 +880,13 @@ async fn remove_impl(
         None,
         None,
         true,
-        stash.delete(&principal, &file_id),
+        checked_action(
+            &stash,
+            principal,
+            "stash.delete",
+            serde_json::json!({"file_id":file_id}),
+            None,
+        ),
     )
     .await?;
     crate::dispatch::file_stash::capture_observation_details(Some(&file_id), None, None);
@@ -821,12 +926,18 @@ async fn create_grant_impl(
         None,
         None,
         false,
-        stash.create_grant_validated(&principal, &file_id, &grantee),
+        checked_action(
+            &stash,
+            principal,
+            "stash.grants.create",
+            serde_json::json!({"file_id":file_id}),
+            Some((grantee, _lease)),
+        ),
     )
     .await?;
     crate::dispatch::file_stash::capture_observation_details(
         Some(&file_id),
-        Some(&grant.grant_id),
+        grant.get("grant_id").and_then(serde_json::Value::as_str),
         None,
     );
     Ok((StatusCode::CREATED, result(grant)).into_response())
@@ -897,7 +1008,13 @@ async fn revoke_grant_impl(
         Some(&grant_id),
         None,
         false,
-        stash.revoke_grant(&principal, &file_id, &grant_id),
+        checked_action(
+            &stash,
+            principal,
+            "stash.grants.revoke",
+            serde_json::json!({"file_id":file_id,"grant_id":grant_id}),
+            None,
+        ),
     )
     .await?;
     crate::dispatch::file_stash::capture_observation_details(Some(&file_id), Some(&grant_id), None);
@@ -927,6 +1044,17 @@ async fn upload_impl(
         .map(|value| value.into_owned())
         .ok_or_else(|| stable("validation_failed"))?;
     let declared = exact_content_length(&headers)?;
+    let folder = headers
+        .get("x-labby-stash-folder")
+        .map(|value| {
+            let value = value.to_str().map_err(|_| stable("invalid_param"))?;
+            let decoded = percent_encoding::percent_decode_str(value)
+                .decode_utf8()
+                .map_err(|_| stable("invalid_param"))?;
+            crate::dispatch::file_stash::normalize_folder(&decoded).map_err(ApiError::from)
+        })
+        .transpose()?
+        .unwrap_or_default();
     crate::dispatch::file_stash::capture_observation_details(None, None, Some(declared));
     validate_transfer_headers(&headers)?;
     let svc = service(&state);
@@ -941,7 +1069,15 @@ async fn upload_impl(
     // the file commit can skip the revocation-at-commit check and leave a file
     // behind under authority the caller no longer holds.
     let upload = tokio::spawn(async move {
-        let (reservation, admission) = svc.reserve_upload(&owner, &display_name, declared).await?;
+        let (reservation, admission) = svc
+            .reserve_document_upload(
+                &owner,
+                &display_name,
+                declared,
+                &folder,
+                "application/octet-stream",
+            )
+            .await?;
         let file_id = svc
             .finalize_upload(reservation, admission, reader, cancel)
             .await?;
@@ -1500,7 +1636,7 @@ mod tests {
     #[test]
     fn route_inventory_is_private_authenticated_and_non_enumerating() {
         let descriptors = descriptors();
-        assert_eq!(descriptors.len(), 12);
+        assert_eq!(descriptors.len(), 13);
         assert!(descriptors.iter().all(|route| route.auth == RouteAuth::V1));
         assert!(
             descriptors
@@ -1576,6 +1712,37 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn context_save_and_move_require_cookie_csrf_before_identity_resolution() {
+        let auth = AuthContext {
+            sub: "principal".into(),
+            issuer: "https://issuer.example".into(),
+            scopes: vec!["lab".into()],
+            actor_key: None,
+            email: None,
+            via_session: true,
+            csrf_token: Some("secret".into()),
+        };
+        let router = mounted(AppState::new()).layer(axum::Extension(auth));
+        for action in ["stash.save_text", "stash.move"] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/v1/stash")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(
+                            serde_json::json!({"action":action,"params":{}}).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        }
     }
 
     #[tokio::test]
@@ -1705,6 +1872,199 @@ mod tests {
             .layer(axum::Extension(identity))
             .layer(axum::Extension(auth));
         (router, service, principal, stash, temp)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn checked_generic_move_and_dedicated_rename_delete_preserve_http_contracts() {
+        use http_body_util::BodyExt as _;
+        let (router, service, principal, runtime, _temp) = ready_router_fixture().await;
+        let saved = service
+            .save_text(&principal, "handoff.md", "context", None, Some("original"))
+            .await
+            .unwrap();
+        let moved = router.clone().oneshot(Request::builder().method("POST").uri("/v1/stash")
+            .header(header::CONTENT_TYPE,"application/json")
+            .body(Body::from(serde_json::json!({"action":"stash.move","params":{"file_id":saved.file_id,"folder":"repo"}}).to_string())).unwrap()).await.unwrap();
+        assert_eq!(moved.status(), StatusCode::OK);
+        let moved: serde_json::Value =
+            serde_json::from_slice(&moved.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(moved["folder"], "repo");
+        assert_eq!(moved["uri"], saved.uri);
+        let renamed = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/v1/stash/files/{}", saved.file_id))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"display_name":"renamed.md"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(renamed.status(), StatusCode::OK);
+        let renamed: serde_json::Value =
+            serde_json::from_slice(&renamed.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(renamed["display_name"], "renamed.md");
+        assert_eq!(renamed["folder"], "repo");
+        assert_eq!(renamed["uri"], saved.uri);
+        let removed = router
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/v1/stash/files/{}", saved.file_id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(removed.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            service
+                .metadata(&principal, &saved.file_id)
+                .await
+                .unwrap_err()
+                .kind(),
+            "not_found"
+        );
+        assert_eq!(
+            service
+                .stats(&principal)
+                .await
+                .unwrap()
+                .owned_committed_bytes,
+            0
+        );
+        runtime.shutdown().await;
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn context_document_http_round_trip_and_folder_selection() {
+        use http_body_util::BodyExt as _;
+        let (router, service, principal, runtime, _temp) = ready_router_fixture().await;
+        let content = "# Context\nDecisions and café 🦀\n";
+        let response = router.clone().oneshot(Request::builder().method("POST").uri("/v1/stash")
+            .header(header::CONTENT_TYPE,"application/json")
+            .body(Body::from(serde_json::json!({"action":"stash.save_text","params":{"filename":"handoff.md","content":content,"folder":"dinglebear-ai/labby"}}).to_string())).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let saved: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(saved["folder"], "dinglebear-ai/labby");
+        assert_eq!(saved["content_type"], "text/markdown");
+        let uri = saved["uri"].as_str().unwrap();
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/stash")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"action":"stash.read_text","params":{"uri":uri}})
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let read: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(read["content"], content);
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/stash?folder=dinglebear-ai%2Flabby")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let page: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(page["files"].as_array().unwrap().len(), 1);
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/stash/folders")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let folders: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(folders["folders"][0]["folder"], "dinglebear-ai/labby");
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/stash/uploads")
+                    .header("x-labby-stash-filename", "binary.dat")
+                    .header("x-labby-stash-folder", "dinglebear-ai%2Flabby")
+                    .header(header::CONTENT_LENGTH, "2")
+                    .body(Body::from(vec![0xff, 0]))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let files = service
+            .list_in_folder(&principal, None, None, None, Some("dinglebear-ai/labby"))
+            .await
+            .unwrap();
+        assert_eq!(files.files.len(), 2);
+        assert!(
+            files
+                .files
+                .iter()
+                .any(|file| file.display_name == "binary.dat"
+                    && file.content_type == "application/octet-stream")
+        );
+        runtime.shutdown().await;
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn context_save_accepts_the_document_byte_limit_even_when_json_expands() {
+        let (router, service, principal, runtime, _temp) = ready_router_fixture().await;
+        let content = "\u{1}".repeat(crate::dispatch::file_stash::MAX_DOCUMENT_BYTES);
+        let body = serde_json::json!({"action":"stash.save_text","params":{"filename":"escaped.txt","format":"text","content":content}}).to_string();
+        assert!(body.len() > 2 * 1024 * 1024);
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/stash")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            service
+                .stats(&principal)
+                .await
+                .unwrap()
+                .owned_committed_bytes,
+            crate::dispatch::file_stash::MAX_DOCUMENT_BYTES as u64
+        );
+        runtime.shutdown().await;
     }
 
     #[cfg(target_os = "linux")]

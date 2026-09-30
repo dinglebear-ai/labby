@@ -7384,3 +7384,237 @@ async fn codemode_call_to_disabled_upstream_reports_unavailable() {
     assert!(text.contains("unavailable"), "{text}");
     assert!(text.contains("configured but disabled"), "{text}");
 }
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn code_mode_stash_native_discovery_matches_retained_contract_and_dispatch() {
+    let mut registry = crate::registry::build_default_registry();
+    registry.set_tool_projection_mode(crate::mcp::permanent_tools::ToolProjectionMode::Both);
+    let stash = registry
+        .services()
+        .iter()
+        .find(|service| service.name == "stash")
+        .unwrap();
+    let action = stash
+        .actions
+        .iter()
+        .find(|action| action.name == "stash.list")
+        .unwrap();
+    let atomic_name = format!("{}.{}", stash.name, action.name);
+    assert!(
+        registry
+            .permanent_tools()
+            .atomic_action_tool(stash, action)
+            .is_none(),
+        "caller-bound Stash has no atomic output-schema contract"
+    );
+    assert!(
+        registry.resolve_atomic_action(&atomic_name).is_none(),
+        "caller-bound Stash is excluded from context-free atomic resolution"
+    );
+    let mut server = test_server(
+        registry,
+        Some(code_mode_manager(true).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    server.transport_label = "http";
+    let (transport, _client) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let peer = running.peer().clone();
+    let mut context = scoped_context(peer.clone(), &["lab:read"]);
+    context.extensions.insert(primary_static_bearer_identity());
+    let retained = running.service().peer_contract_for_request(&context);
+    let descriptors = retained.visible_tool_descriptors().await;
+    let listed = running
+        .service()
+        .list_tools_impl(None, context)
+        .await
+        .unwrap();
+    assert_eq!(
+        listed.tools, descriptors,
+        "live and stored descriptors must match"
+    );
+    for name in ["stash", "gateway", "server_logs", "codemode_read"] {
+        assert!(
+            listed.tools.iter().any(|tool| tool.name == name),
+            "missing {name}"
+        );
+    }
+    assert!(
+        !listed.tools.iter().any(|tool| tool.name == atomic_name),
+        "Stash atomic actions remain hidden in Code Mode"
+    );
+    let mut atomic_caller = scoped_context(peer.clone(), &["lab:read"]);
+    atomic_caller
+        .extensions
+        .insert(primary_static_bearer_identity());
+    let atomic = Box::pin(running.service().call_tool_impl(
+        CallToolRequestParams::new(atomic_name).with_arguments(Default::default()),
+        atomic_caller,
+    ))
+    .await
+    .unwrap();
+    assert_eq!(atomic.is_error, Some(true));
+    assert!(
+        atomic.content[0]
+            .as_text()
+            .unwrap()
+            .text
+            .contains("hidden while code_mode"),
+        "native exception applies only to the service router"
+    );
+    assert!(retained.audience.native_stash_caller);
+    assert_eq!(
+        descriptors,
+        retained.visible_tool_descriptors().await,
+        "notification rebuild must retain native caller visibility"
+    );
+    let mut caller = scoped_context(peer.clone(), &["lab:read"]);
+    caller.extensions.insert(primary_static_bearer_identity());
+    let result = Box::pin(
+        running.service().call_tool_impl(
+            CallToolRequestParams::new("stash").with_arguments(
+                serde_json::json!({"action":"stash.list", "params":{}})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+            caller,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        result.is_error,
+        Some(true),
+        "blocked access fixture must still fail closed"
+    );
+    let text = &result.content[0].as_text().unwrap().text;
+    assert!(
+        !text.contains("hidden while code_mode"),
+        "native call must reach caller authorization"
+    );
+    let envelope: Value = serde_json::from_str(text).unwrap();
+    assert!(
+        matches!(
+            envelope["error"]["kind"].as_str(),
+            Some("forbidden" | "service_unavailable" | "not_found")
+        ),
+        "unexpected denial: {envelope}"
+    );
+    let mut spoofed = scoped_context(peer.clone(), &["lab:read"]);
+    spoofed.meta.0.insert(
+        "verified_identity".into(),
+        serde_json::json!({"subject":"owner"}),
+    );
+    let mut insufficient = scoped_context(peer.clone(), &[]);
+    insufficient
+        .extensions
+        .insert(primary_static_bearer_identity());
+    for denied in [
+        request_context_with_peer(peer.clone()),
+        scoped_context(peer.clone(), &["lab:read"]),
+        spoofed,
+        insufficient,
+    ] {
+        let retained = running.service().peer_contract_for_request(&denied);
+        assert!(!retained.audience.native_stash_caller);
+        let result = Box::pin(
+            running.service().call_tool_impl(
+                CallToolRequestParams::new("stash").with_arguments(
+                    serde_json::json!({"action":"stash.list", "params":{}})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+                denied.clone(),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        let text = &result.content[0].as_text().unwrap().text;
+        let envelope: Value = serde_json::from_str(text).unwrap();
+        assert!(
+            matches!(
+                envelope["error"]["kind"].as_str(),
+                Some("not_found" | "forbidden")
+            ),
+            "denied caller must fail discovery or scope authorization"
+        );
+        if envelope["error"]["kind"] == "not_found" {
+            assert!(text.contains("hidden while code_mode"));
+        }
+        let listed = running
+            .service()
+            .list_tools_impl(None, denied)
+            .await
+            .unwrap();
+        assert!(!listed.tools.iter().any(|tool| tool.name == "stash"));
+        assert_eq!(listed.tools, retained.visible_tool_descriptors().await);
+    }
+    assert!(
+        !running
+            .service()
+            .peer_contract()
+            .visible_tool_descriptors()
+            .await
+            .iter()
+            .any(|tool| tool.name == "stash"),
+        "context-free catalog excludes Stash"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn code_mode_stash_exception_does_not_admit_in_process_peers() {
+    let mut server = test_server(
+        crate::registry::build_default_registry(),
+        Some(code_mode_manager(true).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    server.transport_label = "in-process";
+    let (transport, _client) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let peer = running.peer().clone();
+    // Even propagated-looking scope metadata cannot turn this into a native
+    // transport; Stash remains excluded from the context-free execution hop.
+    let mut context = scoped_context(peer.clone(), &["lab:admin"]);
+    context.extensions.insert(primary_static_bearer_identity());
+    let retained = running.service().peer_contract_for_request(&context);
+    assert!(!retained.audience.native_stash_caller);
+    let listed = running
+        .service()
+        .list_tools_impl(None, context)
+        .await
+        .unwrap();
+    assert!(!listed.tools.iter().any(|tool| tool.name == "stash"));
+    assert_eq!(listed.tools, retained.visible_tool_descriptors().await);
+    let result = Box::pin(
+        running.service().call_tool_impl(
+            CallToolRequestParams::new("stash").with_arguments(
+                serde_json::json!({"action":"stash.list", "params":{}})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+            scoped_context(peer, &["lab:admin"]),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.is_error, Some(true));
+    assert!(
+        result.content[0]
+            .as_text()
+            .unwrap()
+            .text
+            .contains("hidden while code_mode")
+    );
+}

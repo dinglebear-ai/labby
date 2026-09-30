@@ -93,7 +93,12 @@ impl ActionOutcome {
         let seed = std::env::var("LABBY_E2E_SEED").expect("seed for case evidence");
         let build_identity =
             std::env::var("LABBY_E2E_BUILD_IDENTITY").expect("build identity for case evidence");
-        let event = json!({
+        let event = self.case_event(&run_id, &seed, &build_identity);
+        write_case_event(&directory, &event);
+    }
+
+    fn case_event(&self, run_id: &str, seed: &str, build_identity: &str) -> Value {
+        json!({
             "schema_version": 1,
             "run_id": run_id,
             "seed": seed,
@@ -101,13 +106,15 @@ impl ActionOutcome {
             "case_id": format!("action::{:?}::{}", self.surface, self.key),
             "kind": "action",
             "achieved_evidence": format!("{:?}", self.evidence),
-            "handler_success": matches!(self.evidence, EvidenceLevel::LiveSuccess | EvidenceLevel::LiveStateTransition),
+            "handler_success": matches!(self.evidence,
+                EvidenceLevel::LiveSuccess | EvidenceLevel::LiveStateTransition
+                | EvidenceLevel::LiveRestartPersistence | EvidenceLevel::CrossSurfaceParity
+                | EvidenceLevel::PackagedArtifactVerified),
             "denial_only": self.evidence == EvidenceLevel::LiveErrorPath
                 && self.outcome_kind.to_ascii_lowercase().contains("den"),
             "outcome_kind": self.outcome_kind,
             "cleanup_ok": self.canary_free,
-        });
-        write_case_event(&directory, &event);
+        })
     }
 }
 
@@ -721,6 +728,63 @@ mod dedicated_contract_tests {
             let retained: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(files[0].path()).unwrap()).unwrap();
             assert_eq!(retained, transition);
+        }
+    }
+
+    #[test]
+    fn emitted_case_json_marks_all_successful_evidence_levels_as_success() {
+        use super::{ActionOutcome, Disposition, EvidenceLevel, ScenarioOwner};
+        let levels = [
+            EvidenceLevel::MetadataOnly,
+            EvidenceLevel::RouterReachable,
+            EvidenceLevel::LiveErrorPath,
+            EvidenceLevel::LiveSuccess,
+            EvidenceLevel::LiveStateTransition,
+            EvidenceLevel::LiveRestartPersistence,
+            EvidenceLevel::CrossSurfaceParity,
+            EvidenceLevel::PackagedArtifactVerified,
+        ];
+        for (index, level) in levels.into_iter().enumerate() {
+            let directory = tempfile::tempdir().unwrap();
+            let outcome = ActionOutcome {
+                key: "stash:stash.read_text".into(),
+                surface: Surface::Mcp,
+                disposition: Disposition::IsolatedWorkflow,
+                evidence: level,
+                owner: ScenarioOwner::StatefulWorkflowRunner,
+                outcome_kind: if level == EvidenceLevel::LiveErrorPath {
+                    "authorization_denial"
+                } else {
+                    "observed_fixture"
+                }
+                .into(),
+                recovery: "isolated_fixture".into(),
+                side_effects: "owned_state".into(),
+                canary_free: true,
+            };
+            let generated = outcome.case_event("fixture-run", "42", "fixture-build");
+            super::write_case_event(directory.path().as_os_str(), &generated);
+            let files = std::fs::read_dir(directory.path())
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(files.len(), 1);
+            let event: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(files[0].path()).unwrap()).unwrap();
+            assert_eq!(
+                event,
+                serde_json::json!({
+                    "schema_version":1,
+                    "run_id":"fixture-run", "seed":"42", "build_identity":"fixture-build",
+                    "case_id":"action::Mcp::stash:stash.read_text", "kind":"action",
+                    "achieved_evidence":format!("{level:?}"),
+                    "handler_success":index >= 3,
+                    "denial_only":index == 2,
+                    "outcome_kind":outcome.outcome_kind,
+                    "cleanup_ok":true,
+                }),
+                "emitted case JSON for {level:?}"
+            );
         }
     }
 

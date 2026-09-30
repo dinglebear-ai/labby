@@ -93,6 +93,8 @@ const KNOWN_SERVICES: &[&str] = &[
     "browser",
     "dev_containers",
     "doctor",
+    // Caller-bound `stash` actions are owned by the File Stash dispatcher.
+    "file_stash",
     "fs",
     "gateway",
     "lab_admin",
