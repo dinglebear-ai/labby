@@ -123,6 +123,7 @@ mod stdio_stderr;
 mod stdio_transport;
 mod subscription_schedule;
 mod task_route;
+mod task_route_store;
 mod tasks;
 #[cfg(any(test, feature = "testkit"))]
 pub(crate) mod testsupport;
@@ -172,6 +173,7 @@ pub use resources_list::{ListedUpstreamResource, ListedUpstreamResourceTemplate}
 pub(crate) use resources_read::ExactResourceReadError;
 pub(crate) use stdio_stderr::install_upstream_stderr_level_default;
 pub use task_route::TaskRouteAuthorization;
+pub use task_route_store::TaskRouteStore;
 #[cfg(test)]
 pub(crate) use tools::MAX_UPSTREAM_RESOURCES;
 pub use tools::{
@@ -414,9 +416,12 @@ pub struct UpstreamPool {
     /// Single-flight locks for the relay-connection cache, mirroring
     /// `subject_connect_locks`. Keyed identically to `relay_connections`.
     relay_connect_locks: Arc<RwLock<HashMap<relay_cache::RelayCacheKey, Arc<Mutex<()>>>>>,
-    /// Gateway-owned task handles and the relay connections that created them.
-    /// Shared across stateless HTTP requests through the pool.
+    /// Ephemeral live relay companions for tasks created by this pool generation.
+    /// Durable routing/authorization metadata lives in task_route_store.
     task_routes: Arc<RwLock<HashMap<String, tasks::TaskRoute>>>,
+    /// Durable public-to-native task routing metadata. This store never owns
+    /// live peers, relay connections, access tokens, or secrets.
+    task_route_store: Option<Arc<TaskRouteStore>>,
     /// Cancellation token for the background subject-connection sweep task.
     /// `None` until the first subject-scoped connect arms it; cancelled and
     /// cleared on `drain_for_swap` (P-H2). Mirrors the `probe_tasks` lifecycle.
@@ -677,6 +682,7 @@ impl UpstreamPool {
             relay_connections: Arc::new(RwLock::new(HashMap::new())),
             relay_connect_locks: Arc::new(RwLock::new(HashMap::new())),
             task_routes: Arc::new(RwLock::new(HashMap::new())),
+            task_route_store: None,
             subject_sweep_task: Arc::new(RwLock::new(None)),
             runtime_origin: None,
             runtime_owner: None,
@@ -889,6 +895,14 @@ impl UpstreamPool {
     #[must_use]
     pub fn with_usage_store(mut self, store: Option<Arc<crate::usage::UsageStore>>) -> Self {
         self.usage_store = store;
+        self
+    }
+
+    /// Attach the durable MCP task route store. Task creation fails closed when
+    /// no store is configured or when its write cannot commit.
+    #[must_use]
+    pub fn with_task_route_store(mut self, store: Arc<TaskRouteStore>) -> Self {
+        self.task_route_store = Some(store);
         self
     }
 

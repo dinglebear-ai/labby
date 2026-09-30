@@ -1,11 +1,8 @@
 //! Routing for task handles returned by upstream MCP servers.
 
 use std::collections::HashSet;
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rmcp::RoleServer;
 use rmcp::model::{
@@ -20,11 +17,11 @@ use super::helpers::estimate_task_response_size;
 use super::logging::{UpstreamRequestLog, log_upstream_request_start};
 use super::relay_cache::RelayCachedConnection;
 use super::task_route::TaskRouteAuthorization;
+use super::task_route_store::TaskRouteRecord;
 
 const TASK_ROUTE_IDLE_TTL: Duration = Duration::from_hours(24);
 const TASK_ROUTE_MAX_ENTRIES: usize = 4096;
 const TASK_NOTIFICATION_DELIVERY_GRACE: Duration = Duration::from_millis(500);
-static TASK_HANDLE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 pub(super) struct TaskRoute {
     upstream_name: String,
@@ -37,10 +34,15 @@ pub(super) struct TaskRoute {
 }
 
 fn mint_task_handle() -> String {
-    format!(
-        "labby-task-{:016x}",
-        TASK_HANDLE_COUNTER.fetch_add(1, Ordering::Relaxed)
-    )
+    format!("labby-task-{}", uuid::Uuid::new_v4().simple())
+}
+
+fn unix_millis_now() -> Result<i64, String> {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("system clock precedes Unix epoch: {error}"))?
+        .as_millis();
+    i64::try_from(millis).map_err(|_| "current timestamp exceeds SQLite range".to_string())
 }
 
 fn task_not_found() -> String {
@@ -152,7 +154,83 @@ impl UpstreamPool {
             return Err("upstream task registration failed".to_string());
         };
 
+        let Some(store) = self.task_route_store.as_ref().cloned() else {
+            self.relay_connections
+                .write()
+                .await
+                .insert(relay_key.clone(), connection);
+            tracing::error!(
+                upstream = %relay_key.0,
+                action = "task.registration.reject",
+                reason = "route_store_unavailable",
+                "upstream task cannot be acknowledged without durable routing"
+            );
+            return Err("upstream task registration failed".to_string());
+        };
+        let Some(config_fingerprint) = self
+            .upstream_config_fingerprints
+            .get(&relay_key.0)
+            .map(|fingerprint| fingerprint.clone())
+        else {
+            self.relay_connections
+                .write()
+                .await
+                .insert(relay_key.clone(), connection);
+            tracing::error!(
+                upstream = %relay_key.0,
+                action = "task.registration.reject",
+                reason = "config_fingerprint_unavailable",
+                "upstream task cannot be durably bound to its configuration"
+            );
+            return Err("upstream task registration failed".to_string());
+        };
+
         let gateway_task_id = mint_task_handle();
+        let now_unix_ms = match unix_millis_now() {
+            Ok(now) => now,
+            Err(error) => {
+                self.relay_connections
+                    .write()
+                    .await
+                    .insert(relay_key.clone(), connection);
+                tracing::error!(
+                    upstream = %relay_key.0,
+                    action = "task.registration.reject",
+                    reason = "route_timestamp_failed",
+                    error = %error,
+                    "upstream task route could not be timestamped durably"
+                );
+                return Err("upstream task registration failed".to_string());
+            }
+        };
+        let durable_route = TaskRouteRecord {
+            public_task_id: gateway_task_id.clone(),
+            native_task_id: native_task_id.clone(),
+            upstream_name: relay_key.0.clone(),
+            caller_subject: caller_subject.map(str::to_owned),
+            oauth_subject: relay_key.2.clone(),
+            authorization: authorization.clone(),
+            config_fingerprint,
+            created_at_unix_ms: now_unix_ms,
+            updated_at_unix_ms: now_unix_ms,
+            ttl_ms: created.task.ttl_ms,
+            poll_interval_ms: created.task.poll_interval_ms,
+        };
+        if let Err(error) = store.insert(durable_route).await {
+            self.relay_connections
+                .write()
+                .await
+                .insert(relay_key.clone(), connection);
+            tracing::error!(
+                upstream = %relay_key.0,
+                action = "task.registration.reject",
+                reason = "route_persistence_failed",
+                error = %error,
+                "upstream task route was not durable; refusing acknowledgement"
+            );
+            return Err("upstream task registration failed".to_string());
+        }
+
         created.task.task_id = gateway_task_id.clone();
         let pending = connection
             .routes
@@ -174,6 +252,34 @@ impl UpstreamPool {
             },
         );
         Ok(CallToolResponse::Task(created))
+    }
+
+    fn authorize_task_route_record(
+        route: &TaskRouteRecord,
+        caller_subject: Option<&str>,
+        authorization: &TaskRouteAuthorization,
+    ) -> Result<(), String> {
+        let subject_matches = route.caller_subject.as_deref() == caller_subject;
+        let scope_matches = route.authorization == *authorization
+            && authorization
+                .allowed_upstreams
+                .as_ref()
+                .is_none_or(|upstreams| upstreams.contains(&route.upstream_name));
+        if subject_matches && scope_matches {
+            Ok(())
+        } else {
+            tracing::warn!(
+                action = "task.route.authorize",
+                upstream = %route.upstream_name,
+                subject_matches,
+                scope_matches,
+                origin_route = %route.authorization.route_key,
+                caller_route = %authorization.route_key,
+                reason = "task_route_mismatch",
+                "durable task route authorization rejected"
+            );
+            Err(task_not_found())
+        }
     }
 
     fn authorize_task_route(
@@ -213,19 +319,44 @@ impl UpstreamPool {
     ) -> Result<GetTaskResult, String> {
         let start = Instant::now();
         let gateway_task_id = params.task_id.clone();
+        let store = self.task_route_store.as_ref().ok_or_else(task_not_found)?;
+        let durable_route = store
+            .get(&gateway_task_id)
+            .await
+            .map_err(|error| {
+                tracing::error!(
+                    action = "task.route.resolve",
+                    error = %error,
+                    "durable task route lookup failed"
+                );
+                "task routing unavailable".to_string()
+            })?
+            .ok_or_else(task_not_found)?;
+        Self::authorize_task_route_record(&durable_route, caller_subject, authorization)?;
+
         let (peer, native_task_id, upstream_name) = {
             let mut routes = self.task_routes.write().await;
             prune_task_routes(&mut routes);
             let route = routes
                 .get_mut(&gateway_task_id)
                 .ok_or_else(task_not_found)?;
-            Self::authorize_task_route(route, caller_subject, authorization)?;
+            if route.upstream_name != durable_route.upstream_name
+                || route.native_task_id != durable_route.native_task_id
+            {
+                tracing::error!(
+                    action = "task.route.resolve",
+                    upstream = %durable_route.upstream_name,
+                    reason = "live_durable_route_mismatch",
+                    "live task relay did not match durable task metadata"
+                );
+                return Err(task_not_found());
+            }
             route.connection.rebind_downstream(downstream).await;
             route.last_used = Instant::now();
             (
                 route.connection.peer.clone(),
-                route.native_task_id.clone(),
-                route.upstream_name.clone(),
+                durable_route.native_task_id.clone(),
+                durable_route.upstream_name.clone(),
             )
         };
         params.task_id = native_task_id;
@@ -253,6 +384,22 @@ impl UpstreamPool {
             format!("upstream `{upstream_name}` tasks/get timed out after {timeout_ms}ms"),
         )
         .await?;
+        if let Ok(updated_at_unix_ms) = unix_millis_now()
+            && let Err(error) = store
+                .update_hints(
+                    &gateway_task_id,
+                    updated_at_unix_ms,
+                    result.task.task.ttl_ms,
+                    result.task.task.poll_interval_ms,
+                )
+                .await
+        {
+            tracing::warn!(
+                action = "task.route.update",
+                error = %error,
+                "failed to refresh durable task retention hints"
+            );
+        }
         result.task.task.task_id = gateway_task_id;
         Ok(result)
     }
@@ -556,7 +703,18 @@ mod tests {
             None,
             capability_fingerprint(&capabilities),
         );
-        let pool = UpstreamPool::new().with_usage_store(usage_store);
+        let route_store = Arc::new(
+            super::super::TaskRouteStore::open_in_memory()
+                .await
+                .expect("task route store opens"),
+        );
+        let pool = UpstreamPool::new()
+            .with_usage_store(usage_store)
+            .with_task_route_store(route_store);
+        pool.upstream_config_fingerprints.insert(
+            "task-upstream".to_string(),
+            "test-config-fingerprint".to_string(),
+        );
         pool.relay_connections
             .write()
             .await
@@ -571,6 +729,22 @@ mod tests {
             "2026-07-31T00:00:00Z",
             "2026-07-31T00:00:00Z",
         )))
+    }
+
+    #[test]
+    fn task_handles_are_opaque_and_unique() {
+        let first = super::mint_task_handle();
+        let second = super::mint_task_handle();
+
+        assert_ne!(first, second);
+        assert!(first.starts_with("labby-task-"));
+        assert_eq!(first.len(), "labby-task-".len() + 32);
+        assert!(
+            first["labby-task-".len()..]
+                .chars()
+                .all(|character| character.is_ascii_hexdigit())
+        );
+        assert!(!first.ends_with("0000000000000001"));
     }
 
     #[tokio::test]
@@ -593,6 +767,35 @@ mod tests {
             ),
             "upstream task registration failed"
         );
+    }
+
+    #[tokio::test]
+    async fn persistence_failure_prevents_task_acknowledgement() {
+        let (pool, _server, _downstream, relay_key) = task_pool().await;
+        let store = pool
+            .task_route_store
+            .as_ref()
+            .expect("task route store configured");
+        store.set_fail_writes_for_tests(true);
+
+        let result = pool
+            .register_task_response(
+                &relay_key,
+                Some("alice"),
+                super::TaskRouteAuthorization::root(),
+                create_task_response(),
+            )
+            .await;
+
+        assert_eq!(
+            result.expect_err("failed persistence must prevent acknowledgement"),
+            "upstream task registration failed"
+        );
+        assert!(
+            pool.relay_connections.read().await.contains_key(&relay_key),
+            "relay connection is restored when durable commit fails"
+        );
+        assert!(pool.task_routes.read().await.is_empty());
     }
 
     #[tokio::test]

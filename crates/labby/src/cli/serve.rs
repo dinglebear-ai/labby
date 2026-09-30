@@ -2155,6 +2155,12 @@ async fn build_gateway_runtime(
     } else {
         None
     };
+    let task_route_store = Arc::new(
+        labby_gateway::upstream::pool::TaskRouteStore::open(crate::config::task_routes_db_path()?)
+            .await
+            .map_err(anyhow::Error::msg)
+            .context("open durable MCP task route store")?,
+    );
     let step_journal = if crate::config::codemode_journal_enabled() {
         match labby_gateway::codemode_journal::StepJournalStore::open(
             crate::config::codemode_journal_db_path()?,
@@ -2183,7 +2189,8 @@ async fn build_gateway_runtime(
         .with_request_timeout(config.upstream_request_timeout())
         .with_relay_timeout(config.upstream_relay_timeout())
         .with_in_process_connector(crate::composition::in_process_connector())
-        .with_usage_store(usage_store.clone());
+        .with_usage_store(usage_store.clone())
+        .with_task_route_store(Arc::clone(&task_route_store));
     if let Some(rt) = &upstream_oauth_runtime {
         pool_builder = pool_builder.with_oauth_client_cache(rt.cache.clone());
     }
@@ -2237,6 +2244,7 @@ async fn build_gateway_runtime(
             }),
             resource_registry,
             usage_store: usage_store.clone(),
+            task_route_store: Arc::clone(&task_route_store),
             code_mode_app_state: notifier.code_mode_app_state.clone(),
             execution_capability_provider: Some(
                 crate::dispatch::execution_catalog::CanonicalExecutionCatalogProvider::production()

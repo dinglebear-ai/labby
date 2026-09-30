@@ -33,8 +33,8 @@ use paths::resolve_usage_telemetry_enabled;
 pub(crate) use paths::{access_db_path, file_stash_root_path, home_dir};
 pub use paths::{
     codemode_journal_db_path, codemode_journal_enabled, config_toml_path, dotenv_path,
-    toml_candidates, usage_db_path, usage_telemetry_enabled, workspace_root_for_home,
-    workspace_root_path,
+    task_routes_db_path, toml_candidates, usage_db_path, usage_telemetry_enabled,
+    workspace_root_for_home, workspace_root_path,
 };
 pub use secret_files::heal_env_file_permissions;
 
