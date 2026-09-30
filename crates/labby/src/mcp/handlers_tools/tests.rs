@@ -7388,8 +7388,32 @@ async fn codemode_call_to_disabled_upstream_reports_unavailable() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn code_mode_stash_native_discovery_matches_retained_contract_and_dispatch() {
+    let mut registry = crate::registry::build_default_registry();
+    registry.set_tool_projection_mode(crate::mcp::permanent_tools::ToolProjectionMode::Both);
+    let stash = registry
+        .services()
+        .iter()
+        .find(|service| service.name == "stash")
+        .unwrap();
+    let action = stash
+        .actions
+        .iter()
+        .find(|action| action.name == "stash.list")
+        .unwrap();
+    let atomic_name = format!("{}.{}", stash.name, action.name);
+    assert!(
+        registry
+            .permanent_tools()
+            .atomic_action_tool(stash, action)
+            .is_none(),
+        "caller-bound Stash has no atomic output-schema contract"
+    );
+    assert!(
+        registry.resolve_atomic_action(&atomic_name).is_none(),
+        "caller-bound Stash is excluded from context-free atomic resolution"
+    );
     let mut server = test_server(
-        crate::registry::build_default_registry(),
+        registry,
         Some(code_mode_manager(true).await),
         crate::mcp::route_scope::McpRouteScope::Root,
         crate::mcp::logging::LoggingLevel::Emergency,
@@ -7419,6 +7443,29 @@ async fn code_mode_stash_native_discovery_matches_retained_contract_and_dispatch
             "missing {name}"
         );
     }
+    assert!(
+        !listed.tools.iter().any(|tool| tool.name == atomic_name),
+        "Stash atomic actions remain hidden in Code Mode"
+    );
+    let mut atomic_caller = scoped_context(peer.clone(), &["lab:read"]);
+    atomic_caller
+        .extensions
+        .insert(primary_static_bearer_identity());
+    let atomic = Box::pin(running.service().call_tool_impl(
+        CallToolRequestParams::new(atomic_name).with_arguments(Default::default()),
+        atomic_caller,
+    ))
+    .await
+    .unwrap();
+    assert_eq!(atomic.is_error, Some(true));
+    assert!(
+        atomic.content[0]
+            .as_text()
+            .unwrap()
+            .text
+            .contains("hidden while code_mode"),
+        "native exception applies only to the service router"
+    );
     assert!(retained.audience.native_stash_caller);
     assert_eq!(
         descriptors,
@@ -7450,7 +7497,7 @@ async fn code_mode_stash_native_discovery_matches_retained_contract_and_dispatch
         !text.contains("hidden while code_mode"),
         "native call must reach caller authorization"
     );
-    let envelope: serde_json::Value = serde_json::from_str(text).unwrap();
+    let envelope: Value = serde_json::from_str(text).unwrap();
     assert!(
         matches!(
             envelope["error"]["kind"].as_str(),
@@ -7490,7 +7537,7 @@ async fn code_mode_stash_native_discovery_matches_retained_contract_and_dispatch
         .unwrap();
         assert_eq!(result.is_error, Some(true));
         let text = &result.content[0].as_text().unwrap().text;
-        let envelope: serde_json::Value = serde_json::from_str(text).unwrap();
+        let envelope: Value = serde_json::from_str(text).unwrap();
         assert!(
             matches!(
                 envelope["error"]["kind"].as_str(),
