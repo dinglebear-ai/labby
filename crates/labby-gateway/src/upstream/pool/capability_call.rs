@@ -869,7 +869,7 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn subject_scoped_timeout_does_not_poison_global_capability_health() {
         let pool = UpstreamPool::new().with_upstream_call_concurrency(1);
         let upstream_name: Arc<str> = Arc::from("fixture");
@@ -878,9 +878,12 @@ mod tests {
             healthy_in_process_entry(Arc::clone(&upstream_name), HashMap::new()),
         );
 
+        // Test the dispatched RPC timeout, not whether a busy host can create
+        // and acquire the semaphore within one real millisecond. Paused Tokio
+        // time advances the pending RPC deadline without a wall-clock sleep.
         let result = timed_capability_call_with_timeout(
             &pool,
-            Duration::from_millis(1),
+            Duration::from_secs(30),
             "fixture",
             UpstreamCapability::Resources,
             UpstreamRequestLog::resources_list("fixture", true),

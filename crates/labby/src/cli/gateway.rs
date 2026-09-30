@@ -60,6 +60,17 @@ async fn build_manager_with_upstream_oauth_runtime(
     } else {
         None
     };
+    let task_route_store = match labby_gateway::upstream::pool::TaskRouteStore::open(
+        crate::config::task_routes_db_path()?,
+    )
+    .await
+    {
+        Ok(store) => Some(Arc::new(store)),
+        Err(error) => {
+            tracing::error!(error = %error, "task route store unavailable; MCP task creation will fail closed");
+            None
+        }
+    };
     if discover_upstreams {
         // Seed lazily (mirroring `serve`): catalog entries come from config
         // without spawning any upstream processes. Connections are made on
@@ -70,6 +81,9 @@ async fn build_manager_with_upstream_oauth_runtime(
             .with_relay_timeout(config.upstream_relay_timeout())
             .with_in_process_connector(crate::composition::in_process_connector())
             .with_usage_store(usage_store.clone());
+        if let Some(store) = &task_route_store {
+            pool_builder = pool_builder.with_task_route_store(Arc::clone(store));
+        }
         if let Some(rt) = &upstream_oauth_runtime {
             pool_builder = pool_builder.with_oauth_client_cache(rt.cache.clone());
         }
@@ -106,6 +120,7 @@ async fn build_manager_with_upstream_oauth_runtime(
             }),
             resource_registry: None,
             usage_store: usage_store.clone(),
+            task_route_store: task_route_store.clone(),
             code_mode_app_state: Default::default(),
             execution_capability_provider: Some(
                 crate::dispatch::execution_catalog::CanonicalExecutionCatalogProvider::production()

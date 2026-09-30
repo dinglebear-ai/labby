@@ -156,6 +156,9 @@ fn access_db_path_from_roots(lab_home: Option<PathBuf>, home: Option<PathBuf>) -
 pub fn usage_db_path() -> Result<PathBuf> {
     labby_db("usage.db")
 }
+pub fn task_routes_db_path() -> Result<PathBuf> {
+    labby_db("task-routes.db")
+}
 pub fn codemode_journal_db_path() -> Result<PathBuf> {
     labby_db("codemode_journal.db")
 }
