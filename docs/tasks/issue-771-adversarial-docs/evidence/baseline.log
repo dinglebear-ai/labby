@@ -1,0 +1,385 @@
+   Compiling proc-macro2 v1.0.106
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.45
+   Compiling libc v0.2.186
+   Compiling syn v2.0.117
+   Compiling cfg-if v1.0.4
+   Compiling memchr v2.8.0
+   Compiling serde_core v1.0.228
+   Compiling shlex v1.3.0
+   Compiling jobserver v0.1.35
+   Compiling find-msvc-tools v0.1.9
+   Compiling cc v1.2.61
+   Compiling itoa v1.0.18
+   Compiling getrandom v0.2.17
+   Compiling errno v0.3.14
+   Compiling typenum v1.20.0
+   Compiling pin-project-lite v0.2.17
+   Compiling bytes v1.11.1
+   Compiling equivalent v1.0.2
+   Compiling zeroize v1.8.2
+   Compiling once_cell v1.21.4
+   Compiling synstructure v0.13.2
+   Compiling futures-core v0.3.32
+   Compiling signal-hook-registry v1.4.8
+   Compiling zerofrom-derive v0.1.7
+   Compiling yoke-derive v0.8.2
+   Compiling zerofrom v0.1.7
+   Compiling mio v1.2.0
+   Compiling socket2 v0.6.3
+   Compiling tokio-macros v2.7.0
+   Compiling smallvec v1.15.1
+   Compiling bitflags v2.11.1
+   Compiling stable_deref_trait v1.2.1
+   Compiling hashbrown v0.17.0
+   Compiling futures-sink v0.3.32
+   Compiling futures-channel v0.3.32
+   Compiling indexmap v2.14.0
+   Compiling yoke v0.8.2
+   Compiling tokio v1.52.2
+   Compiling futures-macro v0.3.32
+   Compiling slab v0.4.12
+   Compiling futures-task v0.3.32
+   Compiling futures-io v0.3.32
+   Compiling version_check v0.9.5
+   Compiling generic-array v0.14.7
+   Compiling futures-util v0.3.32
+   Compiling zerovec-derive v0.11.3
+   Compiling serde v1.0.228
+   Compiling zerovec v0.11.6
+   Compiling serde_derive v1.0.228
+   Compiling displaydoc v0.2.5
+   Compiling log v0.4.29
+   Compiling http v1.4.0
+   Compiling rand_core v0.6.4
+   Compiling autocfg v1.5.0
+   Compiling zmij v1.0.21
+   Compiling num-traits v0.2.19
+   Compiling subtle v2.6.1
+   Compiling tinystr v0.8.3
+   Compiling tracing-core v0.1.36
+   Compiling ring v0.17.14
+   Compiling litemap v0.8.2
+   Compiling writeable v0.6.3
+   Compiling icu_locale_core v2.2.0
+   Compiling crypto-common v0.1.7
+   Compiling zerotrie v0.2.4
+   Compiling potential_utf v0.1.5
+   Compiling rustls-pki-types v1.14.1
+   Compiling core-foundation-sys v0.8.7
+   Compiling icu_normalizer_data v2.0.0
+   Compiling icu_properties_data v2.0.1
+   Compiling serde_json v1.0.149
+   Compiling icu_collections v2.0.0
+   Compiling icu_provider v2.2.0
+   Compiling tracing-attributes v0.1.31
+   Compiling percent-encoding v2.3.2
+   Compiling httparse v1.10.1
+   Compiling zerocopy v0.8.48
+   Compiling untrusted v0.9.0
+   Compiling tracing v0.1.44
+   Compiling http-body v1.0.1
+   Compiling rand_core v0.10.1
+   Compiling rustls v0.23.45
+   Compiling fnv v1.0.7
+   Compiling getrandom v0.4.2
+   Compiling getrandom v0.3.4
+   Compiling regex-syntax v0.8.10
+   Compiling icu_properties v2.0.2
+   Compiling rustls-webpki v0.103.15
+   Compiling icu_normalizer v2.0.1
+   Compiling tokio-util v0.7.18
+   Compiling aho-corasick v1.1.4
+   Compiling base64 v0.22.1
+   Compiling thiserror v2.0.18
+   Compiling crc32fast v1.5.0
+   Compiling ppv-lite86 v0.2.21
+   Compiling regex-automata v0.4.14
+   Compiling idna_adapter v1.2.1
+   Compiling form_urlencoded v1.2.2
+   Compiling thiserror-impl v2.0.18
+   Compiling tower-service v0.3.3
+   Compiling glob v0.3.3
+   Compiling atomic-waker v1.1.2
+   Compiling utf8_iter v1.0.4
+   Compiling adler2 v2.0.1
+   Compiling rustversion v1.0.22
+   Compiling simd-adler32 v0.3.9
+   Compiling try-lock v0.2.5
+   Compiling rustix v1.1.4
+   Compiling want v0.3.1
+   Compiling miniz_oxide v0.8.9
+   Compiling idna v1.1.0
+   Compiling h2 v0.4.16
+   Compiling clang-sys v1.8.1
+   Compiling hybrid-array v0.4.11
+   Compiling prettyplease v0.2.37
+   Compiling pkg-config v0.3.33
+   Compiling cfg_aliases v0.2.1
+   Compiling httpdate v1.0.3
+   Compiling nix v0.31.3
+   Compiling hyper v1.9.0
+   Compiling flate2 v1.1.9
+   Compiling url v2.5.8
+   Compiling http-body-util v0.1.3
+   Compiling iana-time-zone v0.1.65
+   Compiling block-buffer v0.10.4
+   Compiling futures-executor v0.3.32
+   Compiling ipnet v2.12.0
+   Compiling cmov v0.5.4
+   Compiling unicase v2.9.0
+   Compiling ref-cast v1.0.25
+   Compiling minimal-lexical v0.2.1
+   Compiling compression-core v0.4.32
+   Compiling compression-codecs v0.4.38
+   Compiling nom v7.1.3
+   Compiling mime_guess v2.0.5
+   Compiling ctutils v0.4.2
+   Compiling futures v0.3.32
+   Compiling hyper-util v0.1.20
+   Compiling digest v0.10.7
+   Compiling chrono v0.4.44
+   Compiling crypto-common v0.2.1
+   Compiling block-buffer v0.12.0
+   Compiling tokio-rustls v0.26.4
+   Compiling regex v1.12.3
+   Compiling chacha20 v0.10.2
+   Compiling security-framework-sys v2.17.0
+   Compiling core-foundation v0.10.1
+   Compiling sync_wrapper v1.0.2
+   Compiling libloading v0.8.9
+   Compiling ref-cast-impl v1.0.25
+   Compiling serde_derive_internals v0.29.1
+   Compiling const-oid v0.10.2
+   Compiling bindgen v0.72.1
+   Compiling either v1.16.0
+   Compiling scopeguard v1.2.0
+   Compiling tower-layer v0.3.3
+   Compiling tower v0.5.3
+   Compiling itertools v0.13.0
+   Compiling digest v0.11.3
+   Compiling schemars_derive v1.2.1
+   Compiling security-framework v3.7.0
+   Compiling rand v0.10.2
+   Compiling cexpr v0.6.0
+   Compiling async-compression v0.4.42
+   Compiling encoding_rs v0.8.41
+   Compiling rand_core v0.9.5
+   Compiling cpufeatures v0.2.17
+   Compiling allocator-api2 v0.2.21
+   Compiling ryu v1.0.23
+   Compiling foldhash v0.2.0
+   Compiling rustc-hash v2.1.2
+   Compiling dyn-clone v1.0.20
+   Compiling iri-string v0.7.12
+   Compiling mime v0.3.17
+   Compiling schemars v1.2.1
+   Compiling tower-http v0.6.8
+   Compiling hashbrown v0.16.1
+   Compiling serde_urlencoded v0.7.1
+   Compiling rustls-platform-verifier v0.7.0
+   Compiling hyper-rustls v0.27.9
+   Compiling cmake v0.1.58
+   Compiling cpufeatures v0.3.0
+   Compiling dunce v1.0.5
+   Compiling multiversion_no_op v1.0.0
+   Compiling base64ct v1.8.3
+   Compiling simdutf8 v0.1.5
+   Compiling fs_extra v1.3.0
+   Compiling base64 v0.23.0
+   Compiling aws-lc-sys v0.43.0
+   Compiling pem-rfc7468 v0.7.0
+   Compiling sha2 v0.11.0
+   Compiling reqwest v0.13.3
+   Compiling rquickjs-sys v0.11.0
+   Compiling rand_chacha v0.9.0
+   Compiling syn v3.0.4
+   Compiling arraydeque v0.5.1
+   Compiling tinyvec_macros v0.1.1
+   Compiling ident_case v1.0.1
+   Compiling anstyle v1.0.14
+   Compiling semver v1.0.28
+   Compiling const-oid v0.9.6
+   Compiling fastrand v2.4.1
+   Compiling unicode-width v0.2.2
+   Compiling strsim v0.11.1
+   Compiling darling_core v0.24.1
+   Compiling annotate-snippets v0.12.16
+   Compiling der v0.7.10
+   Compiling rustc_version v0.4.1
+   Compiling tinyvec v1.11.0
+   Compiling granit-parser v1.2.0
+   Compiling rand v0.9.4
+   Compiling labby-primitives v2.3.2 (/Users/jmagar/workspace/labby/.worktrees/issue-771-adversarial-docs/crates/labby-primitives)
+   Compiling encoding_rs_io v0.1.8
+   Compiling jiff v0.2.24
+   Compiling num-conv v0.2.1
+   Compiling time-core v0.1.8
+   Compiling anyhow v1.0.103
+   Compiling powerfmt v0.2.0
+   Compiling thiserror v1.0.69
+   Compiling vcpkg v0.2.15
+   Compiling libsqlite3-sys v0.37.0
+   Compiling deranged v0.5.8
+   Compiling time-macros v0.2.27
+   Compiling serde-saphyr v1.2.0
+   Compiling unicode-normalization v0.1.25
+   Compiling curve25519-dalek v4.1.3
+   Compiling spki v0.7.3
+   Compiling darling_macro v0.24.1
+   Compiling tempfile v3.27.0
+   Compiling sha2 v0.10.9
+   Compiling atomic-write-file v0.3.1
+   Compiling env_filter v1.0.1
+   Compiling rand_chacha v0.3.1
+   Compiling num-integer v0.1.46
+   Compiling inout v0.1.4
+   Compiling thiserror-impl v1.0.69
+   Compiling parking_lot_core v0.9.12
+   Compiling aws-lc-rs v1.17.3
+   Compiling signature v2.2.0
+   Compiling crossbeam-utils v0.8.21
+   Compiling lazy_static v1.5.0
+   Compiling cipher v0.4.4
+   Compiling num-bigint v0.4.6
+   Compiling rand v0.8.6
+   Compiling env_logger v0.11.10
+   Compiling labby-runtime v2.3.2 (/Users/jmagar/workspace/labby/.worktrees/issue-771-adversarial-docs/crates/labby-runtime)
+   Compiling darling v0.24.1
+   Compiling pkcs8 v0.10.2
+   Compiling rquickjs-core v0.11.0
+   Compiling time v0.3.47
+   Compiling universal-hash v0.5.1
+   Compiling serde_path_to_error v0.1.20
+   Compiling opaque-debug v0.3.1
+   Compiling untrusted v0.7.1
+   Compiling rmcp v3.3.0 (https://github.com/dinglebear-ai/rust-sdk.git?rev=b19cfc03025047153fa283c0064c651b6e2f623e#b19cfc03)
+   Compiling winnow v1.0.2
+   Compiling toml_parser v1.1.2+spec-1.1.0
+   Compiling poly1305 v0.8.0
+   Compiling oauth2 v5.0.0
+   Compiling simple_asn1 v0.6.4
+   Compiling rquickjs v0.11.0
+   Compiling rmcp-macros v3.3.0 (https://github.com/dinglebear-ai/rust-sdk.git?rev=b19cfc03025047153fa283c0064c651b6e2f623e#b19cfc03)
+   Compiling ed25519 v2.2.3
+   Compiling quickcheck v1.1.0
+   Compiling chacha20 v0.9.1
+   Compiling hashlink v0.11.0
+   Compiling sha1 v0.10.6
+   Compiling process-wrap v10.0.0
+   Compiling lock_api v0.4.14
+   Compiling sse-stream v0.2.5
+   Compiling xattr v1.6.1
+   Compiling uuid v1.23.1
+   Compiling pem v3.0.6
+   Compiling webpki-roots v1.0.7
+   Compiling aead v0.5.2
+   Compiling tokio-stream v0.1.18
+   Compiling filetime v0.2.29
+   Compiling wait-timeout v0.2.1
+   Compiling num_cpus v1.17.0
+   Compiling async-trait v0.1.89
+   Compiling pastey v0.2.2
+   Compiling fallible-streaming-iterator v0.1.9
+   Compiling quick-error v1.2.3
+   Compiling option-ext v0.2.0
+   Compiling data-encoding v2.11.0
+   Compiling bit-vec v0.8.0
+   Compiling toml_writer v1.1.1+spec-1.1.0
+   Compiling fallible-iterator v0.3.0
+   Compiling deadpool-runtime v0.1.4
+   Compiling hashbrown v0.14.5
+   Compiling dashmap v6.1.0
+   Compiling deadpool v0.12.3
+   Compiling rusqlite v0.39.0
+   Compiling bit-set v0.8.0
+   Compiling tungstenite v0.29.0
+   Compiling dirs-sys v0.4.1
+   Compiling rusty-fork v0.3.1
+   Compiling tar v0.4.46
+   Compiling chacha20poly1305 v0.10.1
+   Compiling webpki-roots v0.26.11
+   Compiling javy v7.0.0
+   Compiling ed25519-dalek v2.2.0
+   Compiling labby-openapi v2.3.2 (/Users/jmagar/workspace/labby/.worktrees/issue-771-adversarial-docs/crates/labby-openapi)
+   Compiling sharded-slab v0.1.7
+   Compiling ulid v1.2.1
+   Compiling rand_xorshift v0.4.0
+   Compiling hmac v0.13.0
+   Compiling matchers v0.2.0
+   Compiling assert-json-diff v2.0.2
+   Compiling tracing-log v0.2.0
+   Compiling tracing-serde v0.2.0
+   Compiling toml_datetime v1.1.1+spec-1.1.0
+   Compiling serde_spanned v1.1.1
+   Compiling vte v0.14.1
+   Compiling thread_local v1.1.9
+   Compiling hex v0.4.3
+   Compiling winnow v0.7.15
+   Compiling nu-ansi-term v0.50.3
+   Compiling toml_datetime v0.7.5+spec-1.1.0
+   Compiling unarray v0.1.4
+   Compiling proptest v1.11.0
+   Compiling toml_edit v0.23.10+spec-1.0.0
+   Compiling tracing-subscriber v0.3.23
+   Compiling labby-codemode v2.3.2 (/Users/jmagar/workspace/labby/.worktrees/issue-771-adversarial-docs/crates/labby-codemode)
+   Compiling strip-ansi-escapes v0.2.1
+   Compiling toml v1.1.2+spec-1.1.0
+   Compiling wiremock v0.6.5
+   Compiling tokio-tungstenite v0.29.0
+   Compiling dirs v5.0.1
+   Compiling labby-apis v2.3.2 (/Users/jmagar/workspace/labby/.worktrees/issue-771-adversarial-docs/crates/labby-apis)
+   Compiling process-wrap v9.1.0
+   Compiling arc-swap v1.9.1
+   Compiling fd-lock v4.0.4
+   Compiling dotenvy v0.15.7
+   Compiling xxhash-rust v0.8.15
+   Compiling jsonwebtoken v10.3.0
+   Compiling labby-auth v2.3.2 (/Users/jmagar/workspace/labby/.worktrees/issue-771-adversarial-docs/crates/labby-auth)
+   Compiling labby-gateway v2.3.2 (/Users/jmagar/workspace/labby/.worktrees/issue-771-adversarial-docs/crates/labby-gateway)
+warning: linker stderr: ld: __eh_frame section too large (max 16MB) to encode dwarf unwind offsets in compact unwind table, performance of exception handling might be affected
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `labby-gateway` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized] target(s) in 2m 58s
+────────────
+ Nextest run ID 6733915a-1f63-4047-b0b3-40aaabe27136 with nextest profile: default
+    Starting 35 tests across 1 binary (1481 tests skipped)
+        PASS [   0.024s] ( 1/35) labby-gateway upstream::pool::task_route_store::tests::corrupted_row_does_not_reveal_existence_to_another_owner
+        PASS [   0.024s] ( 2/35) labby-gateway upstream::pool::task_route_store::tests::concurrent_first_open_has_one_schema_version_row
+        PASS [   0.018s] ( 3/35) labby-gateway upstream::pool::task_route_store::tests::future_schema_rejection_does_not_create_or_modify_tables
+        PASS [   0.018s] ( 4/35) labby-gateway upstream::pool::task_route_store::tests::database_leaf_symlink_is_rejected
+        PASS [   0.078s] ( 5/35) labby-gateway upstream::pool::task_route_store::tests::malformed_current_schema_is_rejected_at_open
+        PASS [   0.080s] ( 6/35) labby-gateway upstream::pool::task_route_store::tests::global_quota_rejects_without_deleting_existing_routes
+        PASS [   0.018s] ( 7/35) labby-gateway upstream::pool::task_route_store::tests::operation_admission_is_bounded_and_recovers
+        PASS [   0.016s] ( 8/35) labby-gateway upstream::pool::task_route_store::tests::overflowed_ttl_and_older_observations_fail_closed
+        PASS [   0.027s] ( 9/35) labby-gateway upstream::pool::task_route_store::tests::owner_quota_rejects_without_evicting_acknowledged_routes
+        PASS [   0.039s] (10/35) labby-gateway upstream::pool::task_route_store::tests::persisted_fingerprint_does_not_persist_configuration_secrets
+        PASS [   0.011s] (11/35) labby-gateway upstream::pool::task_route_store::tests::relative_and_memory_paths_are_not_durable_stores
+        PASS [   0.039s] (12/35) labby-gateway upstream::pool::task_route_store::tests::route_survives_store_reopen
+        PASS [   0.041s] (13/35) labby-gateway upstream::pool::tasks::registration_tests::failed_commit_does_not_overwrite_a_replacement_relay
+        PASS [   0.018s] (14/35) labby-gateway upstream::pool::tasks::registration_tests::missing_store_rejects_tasks_but_preserves_synchronous_results
+        PASS [   0.033s] (15/35) labby-gateway upstream::pool::tasks::registration_tests::hints_write_failure_is_not_returned_as_successful_poll
+        PASS [   0.029s] (16/35) labby-gateway upstream::pool::tasks::registration_tests::unchanged_poll_does_not_issue_a_sqlite_update
+        PASS [   0.012s] (17/35) labby-gateway upstream::pool::tasks::review_tests::changed_configuration_rejects_every_task_operation
+        PASS [   0.013s] (18/35) labby-gateway upstream::pool::tasks::review_tests::expired_task_is_not_acknowledged
+        PASS [   0.021s] (19/35) labby-gateway upstream::pool::tasks::review_tests::opaque_handles_have_random_uuid_v4_shape_and_do_not_collide
+        PASS [   0.020s] (20/35) labby-gateway upstream::pool::tasks::review_tests::real_sqlite_write_failure_prevents_ack_and_allows_retry
+        PASS [   0.134s] (21/35) labby-gateway upstream::pool::tasks::registration_tests::public_translation_waits_for_live_route_readiness
+        PASS [   0.026s] (22/35) labby-gateway upstream::pool::tasks::review_tests::removed_durable_route_cannot_be_updated_or_cancelled_through_live_cache
+        PASS [   0.020s] (23/35) labby-gateway upstream::pool::tasks::review_tests::ttl_origin_is_the_upstream_creation_time_not_registration_time
+        PASS [   0.013s] (24/35) labby-gateway upstream::pool::tasks::review_tests::unusable_authorization_snapshot_is_not_acknowledged
+        PASS [   0.043s] (25/35) labby-gateway upstream::pool::tasks::review_tests::reopened_store_resolves_immediate_get_and_preserves_owner_binding
+        PASS [   0.013s] (26/35) labby-gateway upstream::pool::tasks::tests::global_oauth_invalidation_preserves_raw_authenticated_task
+        PASS [   0.015s] (27/35) labby-gateway upstream::pool::tasks::tests::oauth_revocation_is_not_blocked_by_inflight_network_work
+        PASS [   0.020s] (28/35) labby-gateway upstream::pool::tasks::tests::missing_relay_connection_rejects_orphan_task_response
+        PASS [   0.019s] (29/35) labby-gateway upstream::pool::tasks::tests::persistence_failure_prevents_task_acknowledgement
+        PASS [   0.017s] (30/35) labby-gateway upstream::pool::tasks::tests::protected_task_route_rejects_disjoint_route_lifecycle_operations
+        PASS [   0.025s] (31/35) labby-gateway upstream::pool::tasks::tests::routed_task_get_failure_preserves_error_format_and_records_usage
+        PASS [   0.013s] (32/35) labby-gateway upstream::pool::tasks::tests::shared_admin_oauth_task_invalidation_uses_credential_subject
+        PASS [   0.010s] (33/35) labby-gateway upstream::pool::tasks::tests::task_handles_are_opaque_and_unique
+        PASS [   0.013s] (34/35) labby-gateway upstream::pool::tasks::tests::trusted_stdio_oauth_task_without_caller_subject_is_invalidated
+        PASS [   1.027s] (35/35) labby-gateway upstream::pool::tasks::tests::routed_task_lifecycle_uses_gateway_handle_and_native_upstream_id
+────────────
+     Summary [   1.484s] 35 tests run: 35 passed, 1481 skipped

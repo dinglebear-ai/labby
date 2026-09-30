@@ -1,0 +1,21 @@
+[kache] still compiling labby_gateway — 30s elapsed
+    Finished `test` profile [unoptimized] target(s) in 0.34s
+────────────
+ Nextest run ID dc6a2e28-15a1-4f40-a173-dd258a89c4a0 with nextest profile: default
+    Starting 14 tests across 1 binary (1 test skipped)
+        PASS [   0.174s] ( 1/14) labby-gateway::issue_771_adversarial delivery::duplicate_task_notifications_are_complete_public_states_not_exactly_once_events
+        PASS [   0.038s] ( 2/14) labby-gateway::issue_771_adversarial delivery::failed_notification_delivery_keeps_the_route_and_poll_rebinds_a_new_downstream
+        PASS [   0.037s] ( 3/14) labby-gateway::issue_771_adversarial routing::concurrent_owners_cannot_cross_read_update_or_cancel
+        PASS [   0.031s] ( 4/14) labby-gateway::issue_771_adversarial routing::configuration_change_rejects_old_routes_before_network_io
+        PASS [   0.029s] ( 5/14) labby-gateway::issue_771_adversarial routing::durable_ack_is_immediately_pollable_from_a_new_downstream
+        PASS [   0.030s] ( 6/14) labby-gateway::issue_771_adversarial routing::expired_route_does_not_dispatch_any_task_method
+        PASS [   0.034s] ( 7/14) labby-gateway::issue_771_adversarial routing::guesses_wrong_owners_and_changed_routes_are_indistinguishable_without_dispatch
+        PASS [   0.042s] ( 8/14) labby-gateway::issue_771_adversarial routing::mutation_parameter_and_gateway_route_must_name_the_same_task
+        PASS [   0.040s] ( 9/14) labby-gateway::issue_771_adversarial routing::oauth_subject_invalidation_closes_only_matching_task_companions
+        PASS [   0.052s] (10/14) labby-gateway::issue_771_adversarial routing::pool_replacement_preserves_rows_but_does_not_dispatch_without_a_live_companion
+        PASS [   0.042s] (11/14) labby-gateway::issue_771_adversarial routing::retention_write_failure_is_not_reported_as_a_successful_poll
+        PASS [   0.040s] (12/14) labby-gateway::issue_771_adversarial routing::storage_failure_withholds_ack_and_early_notifications_without_replaying_creation
+        PASS [   0.045s] (13/14) labby-gateway::issue_771_adversarial routing::unreachable_upstream_does_not_delete_an_acknowledged_route_or_recreate_work
+        PASS [   1.172s] (14/14) labby-gateway::issue_771_adversarial delivery::absent_notifications_do_not_turn_mutation_ack_into_failure_or_terminal_state
+────────────
+     Summary [   1.172s] 14 tests run: 14 passed, 1 skipped

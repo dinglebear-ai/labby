@@ -1,0 +1,3 @@
+# Preserve raw compiler/nextest output, including its whitespace.
+# This applies only to Lane F captured evidence, never source or docs.
+*.log -whitespace

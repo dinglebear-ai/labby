@@ -1,0 +1,30 @@
+[kache] still compiling labby_gateway — 30s elapsed
+   Compiling labby-gateway v2.3.2 (/Users/jmagar/workspace/labby/.worktrees/issue-771-adversarial-docs/crates/labby-gateway)
+    Finished `test` profile [unoptimized] target(s) in 5.83s
+────────────
+ Nextest run ID bfc75b6f-8cbf-40c6-86d6-c607978cf400 with nextest profile: default
+    Starting 1 test across 1 binary (14 tests skipped)
+        FAIL [   0.068s] (1/1) labby-gateway::issue_771_adversarial routing::blocked_pool_replacement_must_reacquire_and_resolve_the_same_task
+  stdout ───
+
+    running 1 test
+    test routing::blocked_pool_replacement_must_reacquire_and_resolve_the_same_task ... FAILED
+
+    failures:
+
+    failures:
+        routing::blocked_pool_replacement_must_reacquire_and_resolve_the_same_task
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.06s
+
+  stderr ───
+
+    thread 'routing::blocked_pool_replacement_must_reacquire_and_resolve_the_same_task' (267884376) panicked at crates/labby-gateway/tests/issue_771_adversarial/routing.rs:272:10:
+    Gate 1 requires reacquisition from the durable route: "upstream task connection unavailable"
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+  Cancelling due to test failure: 
+────────────
+     Summary [   0.072s] 1 test run: 0 passed, 1 failed, 14 skipped
+        FAIL [   0.068s] (1/1) labby-gateway::issue_771_adversarial routing::blocked_pool_replacement_must_reacquire_and_resolve_the_same_task
+error: test run failed

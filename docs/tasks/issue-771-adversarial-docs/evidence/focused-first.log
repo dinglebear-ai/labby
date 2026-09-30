@@ -1,0 +1,55 @@
+   Compiling labby-gateway v2.3.2 (/Users/jmagar/workspace/labby/.worktrees/issue-771-adversarial-docs/crates/labby-gateway)
+[kache] still compiling labby_gateway — 30s elapsed
+error[E0061]: this method takes 5 arguments but 4 arguments were supplied
+   --> crates/labby-gateway/tests/issue_771_adversarial/routing.rs:25:14
+    |
+ 25 |             .update_task_routed(
+    |              ^^^^^^^^^^^^^^^^^^
+...
+ 29 |                 downstream.peer.clone()
+    |                 ----------------------- argument #4 of type `&str` is missing
+    |
+note: method defined here
+   --> crates/labby-gateway/src/upstream/pool/tasks.rs:242:18
+    |
+242 |     pub async fn update_task_routed(
+    |                  ^^^^^^^^^^^^^^^^^^
+help: provide the argument
+    |
+ 25 ~             .update_task_routed(
+ 26 +                 UpdateTaskParams::new(id, InputResponses::default()),
+ 27 +                 owner,
+ 28 +                 auth,
+ 29 +                 /* &str */,
+ 30 +                 downstream.peer.clone(),
+ 31 +             )
+    |
+
+error[E0061]: this method takes 5 arguments but 4 arguments were supplied
+   --> crates/labby-gateway/tests/issue_771_adversarial/routing.rs:37:14
+    |
+ 37 |             .cancel_task_routed(
+    |              ^^^^^^^^^^^^^^^^^^
+...
+ 41 |                 downstream.peer.clone()
+    |                 ----------------------- argument #4 of type `&str` is missing
+    |
+note: method defined here
+   --> crates/labby-gateway/src/upstream/pool/tasks.rs:296:18
+    |
+296 |     pub async fn cancel_task_routed(
+    |                  ^^^^^^^^^^^^^^^^^^
+help: provide the argument
+    |
+ 37 ~             .cancel_task_routed(
+ 38 +                 CancelTaskParams::new(id),
+ 39 +                 owner,
+ 40 +                 auth,
+ 41 +                 /* &str */,
+ 42 +                 downstream.peer.clone(),
+ 43 +             )
+    |
+
+For more information about this error, try `rustc --explain E0061`.
+error: could not compile `labby-gateway` (test "issue_771_adversarial") due to 2 previous errors
+error: command `/Users/jmagar/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo test --no-run --message-format json-render-diagnostics --package labby-gateway --test issue_771_adversarial --all-features --locked` exited with code 101
