@@ -1,8 +1,8 @@
 'use client'
 
 import { useSyncExternalStore } from 'react'
-import useSWR from 'swr'
-import { fetchGatewayUsageMetrics } from '@/lib/api/metrics-client'
+import useSWR, { useSWRConfig } from 'swr'
+import { fetchServerVolumeMetrics } from '@/lib/api/metrics-client'
 import { shouldRetryMetrics } from '@/lib/dashboard/dashboard-load-state'
 import { normalizeGatewayApiBase } from '@/lib/api/gateway-config'
 import { getBrowserSessionContextIdentity, getBrowserSessionEpoch, subscribeToBrowserSession } from '@/lib/auth/session-store'
@@ -37,17 +37,50 @@ export function serverVolumeKey(window: DashboardMetrics['window'] | undefined, 
   return window ? ['overview-server-volume', base, context, epoch, window] as const : null
 }
 
+/** A provider owns at most four window entries. Every automatic trigger enters
+ * here, including SWR remounts, focus, reconnect, and timer revalidation. */
+export function createServerVolumeSampler(load: (window: DashboardMetrics['window'], signal: AbortSignal) => Promise<ServerVolume>) {
+  const entries = new Map<DashboardMetrics['window'], { deadline: number; flight: Promise<ServerVolume> }>()
+  const controllers = new Set<AbortController>()
+  return {
+    clear() { for (const controller of controllers) controller.abort(); controllers.clear(); entries.clear() },
+    fetch(window: DashboardMetrics['window']) {
+      const existing = entries.get(window)
+      if (existing && Date.now() < existing.deadline) return existing.flight
+      const controller = new AbortController()
+      controllers.add(controller)
+      const flight = load(window, controller.signal).finally(() => {
+        controllers.delete(controller)
+        entry.deadline = Date.now() + SERVER_VOLUME_REFRESH_MS
+      })
+      const entry = { deadline: Infinity, flight }
+      entries.set(window, entry)
+      return flight
+    },
+  }
+}
+
+const serverSamplers = new WeakMap<object, { scope: string; sampler: ReturnType<typeof createServerVolumeSampler> }>()
+
 export function useServerVolume(metrics?: DashboardMetrics) {
   const epoch = useSyncExternalStore(subscribeToBrowserSession, getBrowserSessionEpoch, () => 0)
   const context = getBrowserSessionContextIdentity()
   const base = normalizeGatewayApiBase()
-  return useSWR(serverVolumeKey(metrics?.window, base, context, epoch), async () => {
-    const snapshot = metrics!
-    const names = [...snapshot.upstreams].sort((a, b) => b.calls - a.calls).slice(0, 4).map(row => row.name)
-    const summaries = await Promise.all(names.map(name => fetchGatewayUsageMetrics(snapshot.window, name, snapshot.until_ms, { baseUrl: base })))
-    if (epoch !== getBrowserSessionEpoch() || context !== getBrowserSessionContextIdentity() || base !== normalizeGatewayApiBase()) throw new DOMException('Authority or API target changed', 'AbortError')
-    return { ...combineServerVolume(snapshot.timeseries, names, summaries), sampledAt: snapshot.until_ms }
-  }, {
+  const { cache } = useSWRConfig()
+  const scope = JSON.stringify([base, context, epoch])
+  let owned = serverSamplers.get(cache)
+  if (!owned || owned.scope !== scope) {
+    owned?.sampler.clear()
+    owned = { scope, sampler: createServerVolumeSampler(async (window, signal) => {
+      const summary = await fetchServerVolumeMetrics(window, { baseUrl: base, signal })
+      if (signal.aborted || epoch !== getBrowserSessionEpoch() || context !== getBrowserSessionContextIdentity() || base !== normalizeGatewayApiBase()) throw new DOMException('Authority or API target changed', 'AbortError')
+      const names = summary.upstreams.map(row => row.upstream).filter(name => Object.hasOwn(summary.upstream_timeseries!, name)).slice(0, 4)
+      return { ...combineServerVolume(summary.timeseries.map(bucket => ({ ts: bucket.ts_unix * 1000, calls: bucket.calls, failed: bucket.failed })), names, names.map(name => ({ timeseries: summary.upstream_timeseries![name] }))), sampledAt: Date.now() }
+    }) }
+    serverSamplers.set(cache, owned)
+  }
+  const sampler = owned.sampler
+  return useSWR(serverVolumeKey(metrics?.window, base, context, epoch), () => sampler.fetch(metrics!.window), {
     refreshInterval: SERVER_VOLUME_REFRESH_MS,
     refreshWhenHidden: false,
     refreshWhenOffline: false,

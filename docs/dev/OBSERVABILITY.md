@@ -838,13 +838,25 @@ The page reports freshness and errors rather than claiming a continuously live
 stream. Requests and caches are scoped to the browser authority and API target.
 
 The default volume chart reuses the aggregate. The optional per-server breakdown
-is fetched only when selected, at a separate one-minute cadence, and carries its
-own sample timestamp. It must not fan out four full aggregate queries for every
-main-counter update. Host resources and retained-log enrichment also use slower
-sampling. A per-hook log sample is reused for up to one minute and bounded to
-500 rows / 2 MiB; token, surface, and Code Mode values derived from it are sampled
-observations, not complete-window totals. Unavailable token telemetry displays
-an unavailable value, not a fabricated zero.
+is fetched only when selected and carries its own sample timestamp. A single
+`gateway.usage.metrics` request with `include_upstream_timeseries: true` returns
+at most four server series and the total series from the same SQLite read
+transaction. The flag defaults to false so ordinary aggregates do not pay for
+that grouping. The chart uses those transactional totals, never an older main
+counter sample, and reports unsupported older gateways rather than combining
+inconsistent snapshots. Its authority-scoped sampler coalesces in-flight work
+and applies a one-minute settled-sample cooldown across timers, view toggles,
+focus, and reconnect triggers.
+
+Host resources and retained-log enrichment also use slower sampling. Log
+observations start alongside, rather than before, the core aggregate. A per-hook
+log sample or failed attempt is reused for up to one minute and bounded to
+500 rows / 2 MiB. Aborted or stale-authority attempts cannot populate the cache,
+and authentication or authorization failures remain typed errors. Token, surface,
+and Code Mode values derived from logs are sampled observations, not
+complete-window totals. Successful sampling provenance is informational, not a
+degradation warning. Unavailable token telemetry displays an unavailable value,
+not a fabricated zero.
 
 `gateway.clients.list` is a bounded recent-observation registry, not a count of
 active sessions. Legacy initialization and subsequent MCP requests refresh

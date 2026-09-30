@@ -113,6 +113,8 @@ export default function OverviewPage() {
           </div>
         ) : null}
 
+        {metrics?.sampleProvenance ? <p className="text-xs text-aurora-text-muted">{metrics.sampleProvenance}</p> : null}
+
         {/* Two-thirds telemetry canvas and one-third insights rail; each lane
             retains its own visible reorder sequence. */}
         <ReorderableOverview cards={[

@@ -38,9 +38,11 @@ export function useDashboardMetrics(window: MetricsWindow) {
   const applied = useRef({ authority: '', token: '' })
   const running = useRef(false)
   const retry = useRef({ failures: 0, after: 0 })
+  const permanentFailure = useRef<{ authority: string; error: unknown } | null>(null)
   const currentAuthority = useRef(authority)
   if (currentAuthority.current !== authority) {
     currentAuthority.current = authority
+    permanentFailure.current = null
     running.current = false
     retry.current = { failures: 0, after: 0 }
   }
@@ -77,15 +79,21 @@ export function useDashboardMetrics(window: MetricsWindow) {
       if (remaining > 0) metricsSubscribers.set(authority, remaining)
       else {
         metricsSubscribers.delete(authority)
-        for (const controller of metricsRequests.get(authority) ?? []) controller.abort()
-        metricsRequests.delete(authority)
-        if (!mounted.current || sampler.current?.scope !== scope) currentSampler.clear()
+        // React replays effects synchronously in StrictMode. Defer final-owner
+        // cleanup one microtask so the replay can reclaim the same request.
+        queueMicrotask(() => {
+          if (metricsSubscribers.has(authority)) return
+          for (const controller of metricsRequests.get(authority) ?? []) controller.abort()
+          metricsRequests.delete(authority)
+          if (!mounted.current || sampler.current?.scope !== scope) currentSampler.clear()
+          ownedFlights.delete(authority)
+        })
       }
-      ownedFlights.delete(authority)
     }
   }, [authority, currentSampler, scope])
 
   const loadMetrics = useCallback(() => {
+    if (permanentFailure.current?.authority === authority) return Promise.reject(permanentFailure.current.error)
     const existing = flights.current.get(authority)
     if (existing) return existing
     if (sample.current?.authority === authority && Date.now() - lastSuccess.current.at < aggregateInterval[window]) {
@@ -96,6 +104,9 @@ export function useDashboardMetrics(window: MetricsWindow) {
         lastSuccess.current = { authority, at: Date.now() }
         sample.current = { authority, value: result }
         return result
+      }).catch(error => {
+        if (currentAuthority.current === authority && !canRetryTelemetry(error) && error?.name !== 'AbortError') permanentFailure.current = { authority, error }
+        throw error
       }).finally(() => {
         if (flights.current.get(authority) === flight) flights.current.delete(authority)
       })
@@ -160,6 +171,7 @@ export function useDashboardMetrics(window: MetricsWindow) {
   }, [authority, refreshToken, signalDelay, signalError, unsupported])
 
   useEffect(() => {
+    if (permanentFailure.current?.authority === authority) return
     if (!currentToken || !data || isValidating || running.current || !isActive()) return
     if (applied.current.authority === authority && applied.current.token === currentToken) return
     const due = Math.max(
@@ -177,8 +189,8 @@ export function useDashboardMetrics(window: MetricsWindow) {
       if (currentAuthority.current !== authority) return
       applied.current = { authority, token: currentToken }
       retry.current = { failures: 0, after: 0 }
-    }).catch(() => {
-      if (currentAuthority.current !== authority) return
+    }).catch(error => {
+      if (currentAuthority.current !== authority || !canRetryTelemetry(error)) return
       const failures = Math.min(retry.current.failures + 1, 5)
       retry.current = { failures, after: Date.now() + Math.min(2_000 * 2 ** (failures - 1), 30_000) }
     }).finally(() => {
@@ -207,6 +219,8 @@ export function useDashboardMetrics(window: MetricsWindow) {
     // Explicit operator refresh bypasses the automatic aggregate throttle,
     // but still joins an existing request and preserves the bounded log cache.
     sample.current = null
+    permanentFailure.current = null
+    retry.current = { failures: 0, after: 0 }
     return mutate()
   }, [mutate])
 

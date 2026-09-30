@@ -44,6 +44,8 @@ import type {
 } from '@/lib/types/gateway'
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { loadGatewayConfiguration, loadGatewayRuntime, loadGatewayToolInventory } from '@/lib/api/gateway-progressive'
+import { getBrowserSessionContextIdentity, getBrowserSessionEpoch } from '@/lib/auth/session-store'
+import { normalizeGatewayApiBase } from '@/lib/api/gateway-config'
 import { withRequestTiming } from '@/lib/api/request-timing'
 
 // Set NEXT_PUBLIC_MOCK_DATA=true to use mock data for development
@@ -281,6 +283,24 @@ function abortableMockDelay(ms: number, signal?: AbortSignal): Promise<void> {
   })
 }
 
+// Coalesce at the fetch boundary, so SWR hydration, catalog warming, and
+// scheduler mutations all share ownership of the underlying operation.
+const gatewayFlights = new Map<string, Promise<Gateway[]>>()
+function gatewaySingleFlight(key: string, fetch: () => Promise<Gateway[]>): Promise<Gateway[]> {
+  const epoch = getBrowserSessionEpoch()
+  const context = getBrowserSessionContextIdentity()
+  const base = normalizeGatewayApiBase()
+  const identity = JSON.stringify([base, context, epoch, key])
+  const existing = gatewayFlights.get(identity)
+  if (existing) return existing
+  const flight = fetch().then(result => {
+    if (epoch !== getBrowserSessionEpoch() || context !== getBrowserSessionContextIdentity() || base !== normalizeGatewayApiBase()) throw new DOMException('Gateway authority changed', 'AbortError')
+    return result
+  }).finally(() => { if (gatewayFlights.get(identity) === flight) gatewayFlights.delete(identity) })
+  gatewayFlights.set(identity, flight)
+  return flight
+}
+
 // Fetcher functions that handle mock/real data
 const fetchGateways = async (): Promise<Gateway[]> => {
   if (USE_MOCK_DATA) {
@@ -288,15 +308,15 @@ const fetchGateways = async (): Promise<Gateway[]> => {
     return upstreamMcpGateways(getMockGatewaysFallback())
   }
 
-  return withRequestTiming('gateway.list', async () =>
+  return gatewaySingleFlight('configuration', () => withRequestTiming('gateway.list', async () =>
     upstreamMcpGateways(await loadGatewayConfiguration(gatewayApi)),
-  )
+  ))
 }
 
 const hydrateGatewayRuntime = async (gateways: Gateway[]): Promise<Gateway[]> =>
-  withRequestTiming('gateway.runtime', async () =>
+  gatewaySingleFlight(gatewayRuntimeRevision(gateways), () => withRequestTiming('gateway.runtime', async () =>
     upstreamMcpGateways(await loadGatewayRuntime(gatewayApi, gateways)),
-  )
+  ))
 
 const hydrateGatewayToolInventory = async (gateways: Gateway[]): Promise<Gateway[]> =>
   withRequestTiming('gateway.tool-inventory', async () =>

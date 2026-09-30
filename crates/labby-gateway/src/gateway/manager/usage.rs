@@ -68,6 +68,7 @@ impl GatewayManager {
                 timezone: params.timezone,
                 timezone_offset_minutes,
                 include_facets: params.include_facets.unwrap_or(false),
+                include_upstream_timeseries: params.include_upstream_timeseries,
                 allowed_upstreams,
             })
             .await?;
@@ -158,6 +159,32 @@ impl GatewayManager {
                         .collect(),
                 })
                 .collect(),
+            upstream_timeseries: metrics.upstream_timeseries.map(|series| {
+                series
+                    .into_iter()
+                    .map(|(name, buckets)| {
+                        (
+                            name,
+                            buckets
+                                .into_iter()
+                                .map(|b| GatewayUsageTimeBucket {
+                                    ts_unix: b.ts_unix,
+                                    calls: b.calls,
+                                    failed: b.failed,
+                                    outcomes: b
+                                        .outcomes
+                                        .into_iter()
+                                        .map(|o| GatewayUsageErrorCount {
+                                            kind: o.kind,
+                                            calls: o.calls,
+                                        })
+                                        .collect(),
+                                })
+                                .collect(),
+                        )
+                    })
+                    .collect()
+            }),
             facets: GatewayUsageFacets {
                 tools: metrics
                     .facets

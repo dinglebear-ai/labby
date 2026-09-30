@@ -318,3 +318,34 @@ test('overlapping reloads of one server issue a single restart request', async (
     gatewayApi.refreshStatus = original.refresh
   }
 })
+
+
+test('slow initial runtime hydration coalesces scheduler and catalog warming', async () => {
+  const { SWRConfig } = await import('swr')
+  const { useGateways } = await import('./use-gateways')
+  const { mockGateways } = await import('../api/mock-data')
+  installTestDom()
+  const original = { list: gatewayApi.list, hydrate: gatewayApi.hydrateRuntime, refresh: gatewayApi.refreshStatus, interval: window.setInterval, clear: window.clearInterval }
+  let pulse!: () => void
+  window.setInterval = ((callback: () => void) => { pulse = callback; return 42 }) as typeof window.setInterval
+  window.clearInterval = (() => {}) as typeof window.clearInterval
+  let finish!: (rows: typeof mockGateways) => void
+  let warm!: () => void
+  let calls = 0
+  gatewayApi.list = async () => [mockGateways[0]]
+  gatewayApi.hydrateRuntime = async () => { calls += 1; return new Promise(resolve => { finish = resolve }) }
+  gatewayApi.refreshStatus = () => new Promise(resolve => { warm = resolve })
+  function Harness() { useGateways(); return null }
+  const view = await renderClient(React.createElement(SWRConfig, { value: { provider: () => new Map(), dedupingInterval: 0 } }, React.createElement(Harness)))
+  try {
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+    assert.equal(calls, 1)
+    await act(async () => { pulse(); pulse(); warm(); await Promise.resolve() })
+    assert.equal(calls, 1, 'every trigger joins initial hydration')
+    await act(async () => { finish([mockGateways[0]]); await Promise.resolve() })
+  } finally {
+    await view.unmount()
+    gatewayApi.list = original.list; gatewayApi.hydrateRuntime = original.hydrate; gatewayApi.refreshStatus = original.refresh
+    window.setInterval = original.interval; window.clearInterval = original.clear
+  }
+})

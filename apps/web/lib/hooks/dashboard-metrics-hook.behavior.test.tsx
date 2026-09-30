@@ -326,3 +326,59 @@ test('unmounting a hook leaves another subscriber’s shared fetch alive', async
     globalThis.fetch = originalFetch
   }
 })
+
+
+test('StrictMode replay preserves a deferred initial request without external recovery', async () => {
+  __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  const originalFetch = globalThis.fetch
+  const pending = deferred<Response>()
+  let signal: AbortSignal | null | undefined
+  globalThis.fetch = async (_url, init) => {
+    const { action } = JSON.parse(String(init?.body))
+    if (action === 'server_logs.query') return Response.json(logs)
+    if (action === 'gateway.usage.calls') return Response.json({ latest_ingested_call_id: 1, calls: [] })
+    signal = init?.signal
+    return pending.promise
+  }
+  function Harness() {
+    const result = useDashboardMetrics('1h')
+    return <span>{result.data?.tool_calls.total ?? 'loading'}</span>
+  }
+  const view = await renderClient(<React.StrictMode><SWRConfig value={{ provider: () => new Map() }}><Harness /></SWRConfig></React.StrictMode>)
+  try {
+    pending.resolve(Response.json(aggregate(7)))
+    await settle()
+    assert.equal(signal?.aborted, false)
+    assert.equal(view.container.textContent, '7')
+  } finally { await view.unmount(); globalThis.fetch = originalFetch }
+})
+
+for (const status of [400, 403]) test(`dirty token stops automatic retries after permanent ${status}`, async (t) => {
+  const restoreClock = installClock(t)
+  __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  const originalFetch = globalThis.fetch
+  let aggregates = 0
+  let refresh!: () => Promise<unknown>
+  globalThis.fetch = async (_url, init) => {
+    const { action } = JSON.parse(String(init?.body))
+    if (action === 'server_logs.query') return Response.json(logs)
+    if (action === 'gateway.usage.calls') return Response.json({ latest_ingested_call_id: 1, calls: [] })
+    aggregates += 1
+    return aggregates === 1 ? Response.json(aggregate(7)) : Response.json({ message: 'permanent' }, { status })
+  }
+  function Harness() {
+    const result = useDashboardMetrics('1h')
+    refresh = result.refresh
+    return <span>{result.data?.tool_calls.total ?? 'loading'}</span>
+  }
+  const view = await renderClient(<SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}><Harness /></SWRConfig>)
+  try {
+    await act(async () => { t.mock.timers.tick(10_000); await Promise.resolve() })
+    assert.equal(aggregates, 2)
+    for (let i = 0; i < 6; i++) await act(async () => { t.mock.timers.tick(60_000); window.dispatchEvent(new Event('online')); await Promise.resolve() })
+    assert.equal(aggregates, 2)
+    assert.equal(view.container.textContent, '7')
+    await act(async () => { await refresh().catch(() => {}) })
+    assert.equal(aggregates, 3)
+  } finally { await view.unmount(); globalThis.fetch = originalFetch; restoreClock() }
+})

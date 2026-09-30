@@ -408,6 +408,16 @@ impl UsageStore {
         &self,
         query: super::query::UsageMetricsQuery,
     ) -> Result<super::query::UsageMetrics, ToolError> {
+        self.metrics_in_snapshot(query, || {}).await
+    }
+
+    // The observer is a deterministic test seam for writes between aggregate
+    // reads. Production supplies a zero-cost no-op; all reads still own one tx.
+    async fn metrics_in_snapshot(
+        &self,
+        query: super::query::UsageMetricsQuery,
+        after_totals: impl FnOnce() + Send + 'static,
+    ) -> Result<super::query::UsageMetrics, ToolError> {
         self.with_conn(move |conn| {
             let tx = conn.unchecked_transaction().map_err(sqlite_error)?;
             let result = (|| {
@@ -456,6 +466,8 @@ impl UsageStore {
                     },
                 )
                 .map_err(sqlite_error)?;
+
+            after_totals();
 
             if query.include_facets && has_detail_filters {
                 let bounded_window_total =
@@ -711,6 +723,7 @@ impl UsageStore {
             let mut upstreams_stmt = conn.prepare(&format!("SELECT upstream_name, COUNT(*) AS calls, SUM(CASE WHEN outcome != 'ok' THEN 1 ELSE 0 END) AS failed FROM upstream_calls {where_clause} GROUP BY upstream_name ORDER BY calls DESC, upstream_name ASC")).map_err(sqlite_error)?;
             let upstreams = upstreams_stmt.query_map(rusqlite::params_from_iter(bind.iter()), |row| Ok(super::query::UsageUpstreamCount { upstream: row.get(0)?, calls: row.get(1)?, failed: row.get(2)? })).map_err(sqlite_error)?.collect::<rusqlite::Result<Vec<_>>>().map_err(sqlite_error)?;
 
+            let mut upstream_timeseries = query.include_upstream_timeseries.then(std::collections::BTreeMap::new);
             let timeseries = if query.bucket_count > 0 {
                 if let (Some(since), Some(until)) = (query.since_unix, query.until_unix) {
                     let count = query.bucket_count.clamp(1, super::query::MAX_METRICS_BUCKETS);
@@ -749,6 +762,30 @@ impl UsageStore {
                                 bucket.outcomes.push(super::query::UsageOutcomeCount { kind, calls });
                             }
                         }
+                        if let Some(series) = upstream_timeseries.as_mut() {
+                            // One bounded grouping, inside the existing read transaction.
+                            // Reuse every route, attribution, and detail predicate.
+                            let mut selected = Vec::new();
+                            for upstream in upstreams.iter().take(4) {
+                                bucket_bind.push(rusqlite::types::Value::Text(upstream.upstream.clone()));
+                                selected.push(format!("?{}", bucket_bind.len()));
+                                series.insert(upstream.upstream.clone(), buckets.iter().map(|bucket| super::query::UsageTimeBucket {
+                                    ts_unix: bucket.ts_unix, calls: 0, failed: 0, outcomes: Vec::new(),
+                                }).collect::<Vec<_>>());
+                            }
+                            if !selected.is_empty() {
+                                let selected_where = append_usage_predicate(&where_clause, &format!("upstream_name IN ({})", selected.join(",")));
+                                let mut statement = conn.prepare(&format!("SELECT upstream_name, MIN(?{max_index_param}, ((ts_unix - ?{since_param}) / ?{width_param})) AS bucket_index, COUNT(*), SUM(CASE WHEN outcome != 'ok' THEN 1 ELSE 0 END) FROM upstream_calls {selected_where} GROUP BY upstream_name, bucket_index")).map_err(sqlite_error)?;
+                                let rows = statement.query_map(rusqlite::params_from_iter(bucket_bind.iter()), |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?))).map_err(sqlite_error)?;
+                                for row in rows {
+                                    let (name, index, calls, failed) = row.map_err(sqlite_error)?;
+                                    if let Some(bucket) = series.get_mut(&name).and_then(|buckets| usize::try_from(index).ok().and_then(|index| buckets.get_mut(index))) {
+                                        bucket.calls = calls;
+                                        bucket.failed = failed;
+                                    }
+                                }
+                            }
+                        }
                         buckets
                     } else { Vec::new() }
                 } else { Vec::new() }
@@ -779,7 +816,7 @@ impl UsageStore {
                 super::query::UsageFacets { tools, capabilities, operations, subject_scopes, actors, upstreams, outcomes }
             } else { super::query::UsageFacets::default() };
 
-            Ok(super::query::UsageMetrics { window_total_calls, total_calls, error_calls, avg_elapsed_ms, p50_elapsed_ms, p95_elapsed_ms, p99_elapsed_ms, distinct_tools, distinct_actors, actor_populations, peak_per_min, top_tools, least_tools, top_actors, slowest_tools, errors, upstreams, hourly, timeseries, facets })
+            Ok(super::query::UsageMetrics { window_total_calls, total_calls, error_calls, avg_elapsed_ms, p50_elapsed_ms, p95_elapsed_ms, p99_elapsed_ms, distinct_tools, distinct_actors, actor_populations, peak_per_min, top_tools, least_tools, top_actors, slowest_tools, errors, upstreams, hourly, timeseries, upstream_timeseries, facets })
             })();
             match result {
                 Ok(metrics) => {
@@ -1329,6 +1366,112 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn metrics_server_sample_keeps_snapshot_during_insertion_and_pruning() {
+        use super::super::query::UsageMetricsQuery;
+        for prune in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("usage.db");
+            let store = UsageStore::open(path.clone()).await.unwrap();
+            for name in ["a", "a", "a", "a", "a", "b", "c", "d", "e", "z"] {
+                let mut row = sample_record(1_000);
+                row.upstream_name = name.into();
+                store.record_call(row).await.unwrap();
+            }
+            let query = UsageMetricsQuery {
+                since_unix: Some(900),
+                until_unix: Some(1_100),
+                bucket_count: 1,
+                include_upstream_timeseries: true,
+                ..Default::default()
+            };
+            let sample = store.metrics_in_snapshot(query.clone(), move || {
+                let writer = rusqlite::Connection::open(path).unwrap();
+                if prune {
+                    writer.execute("DELETE FROM upstream_calls WHERE id = (SELECT MIN(id) FROM upstream_calls WHERE upstream_name = 'a')", []).unwrap();
+                } else {
+                    writer.execute("INSERT INTO upstream_calls (ts_unix, upstream_name, tool_name, capability, operation, subject_scoped, actor, outcome, elapsed_ms) VALUES (1000, 'a', 'test', 'tools', 'tool.call', 0, 'unattributed', 'ok', 1)", []).unwrap();
+                }
+            }).await.unwrap();
+            assert_eq!(sample.total_calls, 10);
+            let series = sample.upstream_timeseries.unwrap();
+            assert_eq!(series["a"][0].calls, 5);
+            let known: i64 = series.values().map(|buckets| buckets[0].calls).sum();
+            assert_eq!(
+                sample.timeseries[0].calls - known,
+                2,
+                "Other is pinned even when the changed known sum would fit under the old total"
+            );
+            let next = store.metrics(query).await.unwrap();
+            assert_eq!(next.total_calls, if prune { 9 } else { 11 });
+            assert_eq!(
+                next.upstream_timeseries.unwrap()["a"][0].calls,
+                if prune { 4 } else { 6 }
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn metrics_upstream_timeseries_is_opt_in_bounded_and_scoped() {
+        use super::super::query::{MAX_METRICS_BUCKETS, UsageMetricsQuery};
+        let dir = tempfile::tempdir().unwrap();
+        let store = UsageStore::open(dir.path().join("usage.db")).await.unwrap();
+        for index in 0..6 {
+            let mut row = sample_record(1_000);
+            row.upstream_name = format!("server-{index}");
+            store.record_call(row).await.unwrap();
+        }
+        let mut excluded = sample_record(1_000);
+        excluded.upstream_name = "server-5".into();
+        excluded.actor = "another-actor".into();
+        store.record_call(excluded).await.unwrap();
+        let mut outside_window = sample_record(2_000);
+        outside_window.upstream_name = "server-5".into();
+        store.record_call(outside_window).await.unwrap();
+        let query = UsageMetricsQuery {
+            since_unix: Some(900),
+            until_unix: Some(1_100),
+            bucket_count: 999,
+            ..Default::default()
+        };
+        let light = store.metrics(query.clone()).await.unwrap();
+        assert!(light.upstream_timeseries.is_none());
+        let detailed = store
+            .metrics(UsageMetricsQuery {
+                include_upstream_timeseries: true,
+                ..query.clone()
+            })
+            .await
+            .unwrap();
+        let series = detailed.upstream_timeseries.unwrap();
+        assert_eq!(series.len(), 4);
+        assert!(
+            series
+                .values()
+                .all(|buckets| buckets.len() == MAX_METRICS_BUCKETS)
+        );
+        assert_eq!(detailed.timeseries, light.timeseries);
+        let scoped = store
+            .metrics(UsageMetricsQuery {
+                include_upstream_timeseries: true,
+                allowed_upstreams: Some(vec!["server-5".into()]),
+                actor: Some("unattributed".into()),
+                ..query
+            })
+            .await
+            .unwrap();
+        let scoped_series = scoped.upstream_timeseries.unwrap();
+        assert_eq!(scoped_series.len(), 1);
+        assert_eq!(
+            scoped_series["server-5"]
+                .iter()
+                .map(|bucket| bucket.calls)
+                .sum::<i64>(),
+            1
+        );
+        assert_eq!(scoped.total_calls, 1);
     }
 
     #[tokio::test]

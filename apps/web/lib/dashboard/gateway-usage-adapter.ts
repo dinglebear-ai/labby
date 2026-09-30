@@ -108,6 +108,7 @@ export interface GatewayUsageMetrics {
     failed: number
     outcomes?: Array<{ kind: string; calls: number }>
   }>
+  upstream_timeseries?: Record<string, GatewayUsageMetrics['timeseries']>
   facets: {
     tools: Array<{ upstream: string; tool: string }>
     capabilities?: string[]

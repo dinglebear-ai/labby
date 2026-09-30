@@ -633,7 +633,8 @@ async fn gateway_usage_metrics_and_calls_expose_exact_filtered_contract() {
             "search": "timeout",
             "bucket_count": 2,
             "timezone_offset_minutes": -240,
-            "include_facets": true
+            "include_facets": true,
+            "include_upstream_timeseries": true
         }),
     )
     .await
@@ -649,6 +650,7 @@ async fn gateway_usage_metrics_and_calls_expose_exact_filtered_contract() {
         metrics["timeseries"][1]["outcomes"],
         json!([{ "kind": "timeout", "calls": 1 }])
     );
+    assert_eq!(metrics["upstream_timeseries"]["github"][1]["calls"], 1);
     assert_eq!(metrics["facets"]["actors"], json!(["alice", "bob"]));
     assert_eq!(metrics["facets"]["upstreams"], json!(["github"]));
     assert_eq!(metrics["facets"]["capabilities"], json!(["tools"]));

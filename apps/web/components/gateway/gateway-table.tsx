@@ -439,7 +439,6 @@ export function GatewayTable({
         align === 'start' ? 'justify-self-start p-0' : 'justify-self-center rounded-md px-1 py-0.5',
       )}
       aria-label={`Sort by ${label.toLowerCase()}`}
-      aria-sort={sortKey === sort ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'}
     >
       <span>{label}</span>
       {sortKey === sort ? (
@@ -573,6 +572,7 @@ export function GatewayTable({
     return (
       <Fragment key={gateway.id}>
         <div
+          role="row"
           data-gwrow="1"
           style={gridStyle}
           data-hoverrow="1"
@@ -589,7 +589,7 @@ export function GatewayTable({
           aria-hidden="true"
         />
 
-        <div className="min-w-0 pl-5">
+        <div role="cell" aria-colindex={1} className="min-w-0 pl-5">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <button
               type="button"
@@ -765,7 +765,7 @@ export function GatewayTable({
           </div>
         </div>
 
-        <div className="min-w-0 justify-self-center">
+        <div role="cell" aria-colindex={2} className="min-w-0 justify-self-center">
           <span
             className={cn(
               'inline-flex items-center gap-1.5 rounded-full border border-aurora-border-subtle px-2 py-1 text-[10px] font-semibold',
@@ -777,13 +777,13 @@ export function GatewayTable({
             {connectionTone.label}
           </span>
         </div>
-        {visibleColumns.map((column) => (
-          <Fragment key={column}>{columnCells[column]}</Fragment>
+        {visibleColumns.map((column, index) => (
+          <div key={column} role="cell" aria-colindex={index + 3} className={cn("min-w-0", column !== "endpoint" && "flex justify-center")}>{columnCells[column]}</div>
         ))}
 
         </div>
         {isExpanded ? (
-          <div className="border-t border-aurora-border-strong bg-[color-mix(in_srgb,var(--aurora-accent-primary)_4%,var(--gw-head))] px-10 py-4">
+          <div role="row"><div role="cell" aria-colspan={visibleColumns.length + 2} className="border-t border-aurora-border-strong bg-[color-mix(in_srgb,var(--aurora-accent-primary)_4%,var(--gw-head))] px-10 py-4">
             <div className="grid gap-4 text-[11px] sm:grid-cols-2 xl:grid-cols-4">
               <GatewayFact label="Transport" value={gateway.transport} />
               <GatewayFact label="Endpoint" value={endpointPreview} mono />
@@ -802,7 +802,7 @@ export function GatewayTable({
                 <Link href={gatewayDetailHref(gateway.id)}>Open server page</Link>
               </Button>
             </div>
-          </div>
+          </div></div>
         ) : null}
       </Fragment>
     )
@@ -963,8 +963,10 @@ export function GatewayTable({
           data-gwtablewrap="1"
           className="aurora-scrollbar overflow-x-auto min-[1101px]:overflow-x-visible"
         >
-          <div data-gwtable="1" className="min-w-[1010px]">
+          <GatewaySelectionToolbar gateways={gateways} selectedIds={selectedGatewayIds} onClear={() => setSelectedGatewayIds([])} onBatchSetEnabled={onBatchSetEnabled} onBatchReload={onBatchReload}/>
+          <div data-gwtable="1" role="table" aria-label="Server inventory" aria-colcount={visibleColumns.length + 2} className="min-w-[1010px]">
             <div
+              role="row"
               data-gwhead="1"
               style={gridStyle}
               className={cn(
@@ -972,12 +974,15 @@ export function GatewayTable({
                 'sticky top-0 z-[18] h-10 border-b border-aurora-border-strong bg-[var(--gw-head)] pl-5',
               )}
             >
-              <SortHeader label="Server" sort="name" align="start" />
-              <div className="justify-self-center">
+              <div role="columnheader" aria-colindex={1} aria-sort={sortKey === 'name' ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'}><SortHeader label="Server" sort="name" align="start" /></div>
+              <div role="columnheader" aria-colindex={2} aria-sort={sortKey === 'connection' ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'} className="justify-self-center">
                 <SortHeader label="Connection" sort="connection" />
               </div>
-              {visibleColumns.map((column) => (
+              {visibleColumns.map((column, index) => (
                 <div
+                  role="columnheader"
+                  aria-colindex={index + 3}
+                  aria-sort={sortKey === column ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'}
                   key={column}
                   data-gateway-column={column}
                   className="group/column flex min-w-0 items-center justify-center gap-1"
@@ -1018,9 +1023,8 @@ export function GatewayTable({
               ))}
             </div>
 
-            <GatewaySelectionToolbar gateways={gateways} selectedIds={selectedGatewayIds} onClear={() => setSelectedGatewayIds([])} onBatchSetEnabled={onBatchSetEnabled} onBatchReload={onBatchReload}/>
             {attentionCount > 0 ? (
-              <div className="flex items-center gap-2 border-b border-[color-mix(in_srgb,var(--aurora-warn)_22%,var(--aurora-border-default))] bg-[color-mix(in_srgb,var(--aurora-warn)_6%,var(--gw-head))] px-5 py-1.5 transition-colors hover:bg-[color-mix(in_srgb,var(--aurora-warn)_10%,var(--gw-head))]">
+              <div role="row"><div role="cell" aria-colspan={visibleColumns.length + 2} className="flex items-center gap-2 border-b border-[color-mix(in_srgb,var(--aurora-warn)_22%,var(--aurora-border-default))] bg-[color-mix(in_srgb,var(--aurora-warn)_6%,var(--gw-head))] px-5 py-1.5 transition-colors hover:bg-[color-mix(in_srgb,var(--aurora-warn)_10%,var(--gw-head))]">
                 <button
                   type="button"
                   onClick={() => toggleGroup('attention')}
@@ -1053,7 +1057,7 @@ export function GatewayTable({
                     <X className="size-3" aria-hidden="true" />
                   </button>
                 ) : null}
-              </div>
+              </div></div>
             ) : null}
 
             {statusGroups.map((group) => {
@@ -1061,6 +1065,7 @@ export function GatewayTable({
 
               return (
                 <Fragment key={group.id}>
+                  <div role="row"><div role="cell" aria-colspan={visibleColumns.length + 2}>
                   <button
                     type="button"
                     onClick={() => toggleGroup(group.id)}
@@ -1085,6 +1090,7 @@ export function GatewayTable({
                       className="h-px flex-1 bg-[color-mix(in_srgb,var(--aurora-border-default)_40%,var(--aurora-page-bg))]"
                     />
                   </button>
+                  </div></div>
                   {expanded ? group.rows.map((gateway) => renderDesktopRow(gateway)) : null}
                 </Fragment>
               )

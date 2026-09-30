@@ -38,6 +38,8 @@ pub struct UsageMetricsQuery {
     /// Fixed minutes east of UTC, used when no IANA zone is supplied.
     pub timezone_offset_minutes: i32,
     pub include_facets: bool,
+    /// Opt-in top-four upstream buckets from the same transaction as totals.
+    pub include_upstream_timeseries: bool,
     /// Route-scope enforcement: when `Some`, results are restricted to these
     /// upstream names regardless of `upstream`. `None` means unscoped (root
     /// caller). See `gateway/manager/usage.rs`.
@@ -172,6 +174,7 @@ pub struct UsageMetrics {
     pub upstreams: Vec<UsageUpstreamCount>,
     pub hourly: Vec<UsageHourCount>,
     pub timeseries: Vec<UsageTimeBucket>,
+    pub upstream_timeseries: Option<std::collections::BTreeMap<String, Vec<UsageTimeBucket>>>,
     pub facets: UsageFacets,
 }
 

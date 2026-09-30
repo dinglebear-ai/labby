@@ -471,6 +471,10 @@ pub struct GatewayUsageMetricsView {
     pub upstreams: Vec<GatewayUsageUpstreamCount>,
     pub hourly: Vec<GatewayUsageHourCount>,
     pub timeseries: Vec<GatewayUsageTimeBucket>,
+    /// Top-four upstream series sharing the total series read snapshot; absent unless requested.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_timeseries:
+        Option<std::collections::BTreeMap<String, Vec<GatewayUsageTimeBucket>>>,
     pub facets: GatewayUsageFacets,
 }
 

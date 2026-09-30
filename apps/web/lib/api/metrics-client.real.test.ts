@@ -86,6 +86,7 @@ test('fetchDashboardMetrics uses complete-window aggregate analytics without raw
     assert.equal(metricsParams?.bucket_count, 24)
     assert.equal(typeof metricsParams?.timezone, 'string')
     assert.equal(metricsParams?.include_facets, false)
+    assert.equal(metricsParams?.include_upstream_timeseries, undefined, 'main Overview keeps the default aggregate light')
     assert.deepEqual(serverLogParams, { limit: 500, max_scan_bytes: 2 * 1024 * 1024, stop_after_limit: true })
     assert.equal(result.tool_calls.total, 48_649)
     assert.equal(result.timeseries.length, 24)
@@ -543,7 +544,8 @@ test('standalone dashboard analytics never merge observations from the browser s
   }
 })
 
-test('failed retained-log query is retried and never cached as a success', async () => {
+test('failed retained-log query has a minute cooldown without being cached as success', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1_800_000_000_000 })
   const originalFetch = globalThis.fetch
   let logRequests = 0
   globalThis.fetch = async (_input, init) => {
@@ -560,9 +562,77 @@ test('failed retained-log query is retried and never cached as a success', async
     const first = await sampler.fetch('1h')
     assert.match(first.warnings?.[0] ?? '', /Retained observability is unavailable/)
     const second = await sampler.fetch('1h')
+    assert.equal(logRequests, 1)
+    assert.match(second.warnings?.[0] ?? '', /Retained observability is unavailable/)
+    t.mock.timers.tick(60_000)
+    const recovered = await sampler.fetch('1h')
     assert.equal(logRequests, 2)
-    assert.match(second.warnings?.at(-1) ?? '', /bounded sample/)
+    assert.match(recovered.sampleProvenance ?? '', /bounded sample/)
+    assert.equal(recovered.warnings?.length ?? 0, 0)
   } finally {
     globalThis.fetch = originalFetch
   }
+})
+
+
+test('sampler starts core aggregation while retained logs are still pending', async () => {
+  const originalFetch = globalThis.fetch
+  let release!: (response: Response) => void
+  const pending = new Promise<Response>(resolve => { release = resolve })
+  let aggregateStarted = false
+  globalThis.fetch = async (_url, init) => {
+    const { action } = JSON.parse(String(init?.body))
+    if (action === 'server_logs.query') return pending
+    aggregateStarted = true
+    return Response.json(metrics())
+  }
+  try {
+    const { createDashboardMetricsSampler } = await import('./dashboard-metrics-sampler.ts')
+    const result = createDashboardMetricsSampler().fetch('1h')
+    await new Promise(resolve => setImmediate(resolve))
+    const startedBeforeLogs = aggregateStarted
+    release(Response.json({ entries: [], truncated: false }))
+    await result
+    assert.equal(startedBeforeLogs, true)
+  } finally { globalThis.fetch = originalFetch }
+})
+
+
+test('sampler preserves authorization failures and their cooldown instead of returning degraded success', async () => {
+  const originalFetch = globalThis.fetch
+  let logs = 0
+  globalThis.fetch = async (_url, init) => {
+    const { action } = JSON.parse(String(init?.body))
+    if (action === 'server_logs.query') {
+      logs += 1
+      return Response.json({ message: 'log access forbidden' }, { status: 403 })
+    }
+    return Response.json(metrics())
+  }
+  try {
+    const { createDashboardMetricsSampler } = await import('./dashboard-metrics-sampler.ts')
+    const sampler = createDashboardMetricsSampler()
+    for (let i = 0; i < 2; i++) await assert.rejects(sampler.fetch('1h'), (error: unknown) => error instanceof Error && (error as Error & { status?: number }).status === 403)
+    assert.equal(logs, 1)
+  } finally { globalThis.fetch = originalFetch }
+})
+
+
+test('a failed core query retains flight ownership until its parallel log scan settles', async () => {
+  const originalFetch = globalThis.fetch
+  let release!: (response: Response) => void
+  let settled = false
+  globalThis.fetch = async (_url, init) => {
+    const { action } = JSON.parse(String(init?.body))
+    return action === 'server_logs.query' ? new Promise(resolve => { release = resolve }) : Response.json({ message: 'unavailable' }, { status: 503 })
+  }
+  try {
+    const { createDashboardMetricsSampler } = await import('./dashboard-metrics-sampler.ts')
+    const request = createDashboardMetricsSampler().fetch('1h').finally(() => { settled = true })
+    const rejected = assert.rejects(request, (error: unknown) => error instanceof Error && (error as Error & { status?: number }).status === 503)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(settled, false)
+    release(Response.json({ entries: [], truncated: false }))
+    await rejected
+  } finally { globalThis.fetch = originalFetch }
 })

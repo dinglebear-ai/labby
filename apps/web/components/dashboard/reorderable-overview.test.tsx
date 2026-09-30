@@ -222,3 +222,15 @@ test('lane gaps resolve to the nearest visible insertion while empty and below-e
 test('saved layout rejects unknown columns and accepts only valid card identities', () => {
   assert.deepEqual(normalizeOverviewLayout({ order: ['b', 'b'], widths: { b: true, extra: true }, lanes: { b: 'insights', a: 'bogus', extra: 'telemetry' } }, ['a', 'b']), { order: ['b', 'a'], widths: { b: true }, lanes: { b: 'insights' } })
 })
+
+
+test('skeleton replacement retains the observed content wrapper', async () => {
+  const view = await renderClient(<ReorderableOverview cards={[{ id: 'a', content: <span>Skeleton</span> }]} />)
+  try {
+    const wrapper = view.container.querySelector('[data-overview-content]')
+    assert.ok(wrapper)
+    await view.rerender(<ReorderableOverview cards={[{ id: 'a', content: <section>Loaded panel</section> }]} />)
+    assert.equal(view.container.querySelector('[data-overview-content]'), wrapper)
+    assert.equal(wrapper.textContent, 'Loaded panel')
+  } finally { await view.unmount() }
+})

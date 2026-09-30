@@ -155,7 +155,7 @@ export function ReorderableOverview({ cards }: { cards: Card[] }) {
       const gap = 12
       const cards = [...telemetry.querySelectorAll<HTMLElement>(':scope > [data-overview-card]')]
       const byId = new Map(cards.map(card => [card.dataset.overviewCard!, card]))
-      const columnCount = styles.gridTemplateColumns.split(' ').filter(Boolean).length
+      const columnCount = Number.parseInt(styles.getPropertyValue('--overview-columns'), 10) || 1
       const positions = planOverviewPacking(layoutRef.current.order.flatMap(id => {
         const card = byId.get(id)
         if (!card) return []
@@ -300,7 +300,7 @@ export function ReorderableOverview({ cards }: { cards: Card[] }) {
           data-overview-lane={lane}
           className={cn(
             lane === 'telemetry'
-              ? 'grid min-h-16 min-w-0 content-start items-start gap-x-3 gap-y-0 auto-rows-[1px] min-[700px]:grid-cols-2'
+              ? 'grid min-h-16 min-w-0 content-start items-start gap-x-3 gap-y-0 auto-rows-[1px] [--overview-columns:1] min-[700px]:[--overview-columns:2] min-[700px]:grid-cols-2'
               : 'flex min-h-16 min-w-0 flex-col gap-3',
             drag && drop?.lane === lane && drop.id === null && 'ring-2 ring-aurora-accent-primary',
           )}
@@ -332,7 +332,7 @@ export function ReorderableOverview({ cards }: { cards: Card[] }) {
               <div className="absolute right-3 top-[10px] z-10">
                 {lane === 'telemetry' && <button type="button" onPointerDown={event => event.stopPropagation()} onClick={() => commit({ ...layout, widths: { ...layout.widths, [id]: !wide } }, `${id} is now ${wide ? 'half' : 'full'} width.`, id)} aria-label="Toggle width" aria-pressed={wide} title="Toggle full-width" className={controlClass}>{wide ? <Minimize className="size-[11px]"/> : <Maximize className="size-[11px]"/>}</button>}
               </div>
-              {card.content}
+              <div data-overview-content className="flow-root min-w-0">{card.content}</div>
             </div>
           })}
         </div>

@@ -689,7 +689,7 @@ export async function fetchDashboardChangeToken(
 export async function fetchDashboardMetrics(
   window: MetricsWindow,
   options?: MetricsRequestOptions,
-  logMode?: DashboardLogMode,
+  logMode?: DashboardLogMode | Promise<DashboardLogMode>,
 ): Promise<DashboardMetrics> {
   if (USE_MOCK_DATA) {
     options?.signal?.throwIfAborted?.()
@@ -699,7 +699,7 @@ export async function fetchDashboardMetrics(
   const now = Date.now()
   const standalone = options?.standaloneBearerAuth === true
   let observabilityError: string | undefined = standalone ? 'retained logs are unavailable in standalone bearer mode' : undefined
-  const [summary, logResult] = await Promise.all([
+  const [summaryResult, logsResult, modeResult] = await Promise.allSettled([
     postGatewayUsageAction<GatewayUsageMetrics>(
       'gateway.usage.metrics',
       usageMetricsParams(window, now, undefined, { buckets: true }),
@@ -713,26 +713,33 @@ export async function fetchDashboardMetrics(
       observabilityError = error instanceof Error ? error.message : 'server log query failed'
       return null
     }),
+    logMode,
   ])
+  // Retain request ownership until both parallel operations settle. A failed
+  // aggregate must not release the hook's flight while its log scan is active.
+  options?.signal?.throwIfAborted()
+  if (modeResult.status === 'rejected') throw modeResult.reason
+  if (summaryResult.status === 'rejected') throw summaryResult.reason
+  if (logsResult.status === 'rejected') throw logsResult.reason
+  const summary = summaryResult.value
+  const logResult = logsResult.value
+  const resolvedLogMode = modeResult.value
   const metrics = aggregateGatewayUsage(window, now, summary)
-  const observation = standalone ? null : logMode?.logs ?? (logResult ? {
+  const observation = standalone ? null : resolvedLogMode?.logs ?? (logResult ? {
     observedAt: Date.now(), entries: logResult.entries, truncated: logResult.truncated,
   } : null)
   if (observation) {
     const enriched = enrichDashboardWithObservability(metrics, observation.entries, window, now)
     return {
       ...enriched,
-      warnings: [
-        ...(enriched.warnings ?? []),
-        `Retained observability dimensions are a bounded sample of up to 500 rows/2 MiB observed at ${new Date(observation.observedAt).toISOString()}${observation.truncated ? ' (truncated)' : ''}; token, surface, and Code Mode counts are not complete-window totals.`,
-      ],
+      sampleProvenance: `Retained observability dimensions are a bounded sample of up to 500 rows/2 MiB observed at ${new Date(observation.observedAt).toISOString()}${observation.truncated ? ' (truncated)' : ''}; token, surface, and Code Mode counts are not complete-window totals.`,
     }
   }
   return {
     ...metrics,
     warnings: [
       ...(metrics.warnings ?? []),
-      `Retained observability is unavailable: ${logMode?.error ?? observabilityError ?? 'server logs were skipped'}. Token, surface, and Code Mode fan-out dimensions are not available for this view.`,
+      `Retained observability is unavailable: ${resolvedLogMode?.error ?? observabilityError ?? 'server logs were skipped'}. Token, surface, and Code Mode fan-out dimensions are not available for this view.`,
     ],
   }
 }
@@ -1000,4 +1007,16 @@ export async function fetchGatewayUsageMetrics(
     usageMetricsParams(window, now, { window, upstream }, { buckets: true }),
     options,
   )
+}
+
+
+/** One transactional total/top-four sample; old gateways must disclose lack of support. */
+export async function fetchServerVolumeMetrics(window: MetricsWindow, options?: MetricsRequestOptions): Promise<GatewayUsageMetrics> {
+  const result = await postGatewayUsageAction<GatewayUsageMetrics>(
+    'gateway.usage.metrics',
+    { ...usageMetricsParams(window, Date.now(), undefined, { buckets: true }), include_upstream_timeseries: true },
+    options,
+  )
+  if (!result.upstream_timeseries) throw new MetricsApiError('This gateway does not support transactional server call history.', 409, 'server_volume_unsupported')
+  return result
 }
