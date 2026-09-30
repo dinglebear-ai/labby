@@ -123,6 +123,8 @@ mod stdio_stderr;
 mod stdio_transport;
 mod subscription_schedule;
 mod task_route;
+mod task_route_record;
+mod task_route_schema;
 mod task_route_store;
 mod tasks;
 #[cfg(any(test, feature = "testkit"))]

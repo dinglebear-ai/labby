@@ -121,7 +121,7 @@ pub struct GatewayManagerConfig {
     /// manager builds. `None` disables telemetry capture.
     pub usage_store: Option<Arc<crate::usage::UsageStore>>,
     /// Durable public-to-native MCP task route metadata store.
-    pub task_route_store: Arc<crate::upstream::pool::TaskRouteStore>,
+    pub task_route_store: Option<Arc<crate::upstream::pool::TaskRouteStore>>,
     /// Shared live state for the explicit Code Mode MCP App surface.
     pub code_mode_app_state: CodeModeAppState,
     pub execution_capability_provider:
@@ -165,7 +165,9 @@ impl GatewayManager {
         if let Some(store) = cfg.usage_store {
             manager = manager.with_usage_store(store);
         }
-        manager = manager.with_task_route_store(cfg.task_route_store);
+        if let Some(store) = cfg.task_route_store {
+            manager = manager.with_task_route_store(store);
+        }
         manager.execution_capability_provider = cfg.execution_capability_provider;
         Ok(manager)
     }

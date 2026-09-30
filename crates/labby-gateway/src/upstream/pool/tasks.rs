@@ -4,11 +4,9 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use rmcp::RoleServer;
-use rmcp::model::{
-    CallToolResponse, CancelTaskParams, GetTaskParams, GetTaskResult, UpdateTaskParams,
-};
+use rmcp::model::{CancelTaskParams, GetTaskParams, GetTaskResult, UpdateTaskParams};
 use rmcp::service::Peer;
+use rmcp::{RoleClient, RoleServer};
 
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
@@ -19,18 +17,20 @@ use super::relay_cache::RelayCachedConnection;
 use super::task_route::TaskRouteAuthorization;
 use super::task_route_store::TaskRouteRecord;
 
-const TASK_ROUTE_IDLE_TTL: Duration = Duration::from_hours(24);
-const TASK_ROUTE_MAX_ENTRIES: usize = 4096;
+#[cfg(test)]
+#[path = "task_registration_tests.rs"]
+mod registration_tests;
+#[cfg(test)]
+#[path = "tasks_review_tests.rs"]
+mod review_tests;
+
+#[path = "task_registration.rs"]
+mod registration;
 const TASK_NOTIFICATION_DELIVERY_GRACE: Duration = Duration::from_millis(500);
 
 pub(super) struct TaskRoute {
-    upstream_name: String,
-    native_task_id: String,
-    caller_subject: Option<String>,
-    oauth_subject: Option<String>,
-    authorization: TaskRouteAuthorization,
+    record: TaskRouteRecord,
     connection: RelayCachedConnection,
-    last_used: Instant,
 }
 
 fn mint_task_handle() -> String {
@@ -50,20 +50,10 @@ fn task_not_found() -> String {
 }
 
 fn prune_task_routes(routes: &mut std::collections::HashMap<String, TaskRoute>) {
+    let now = jiff::Timestamp::now().as_millisecond();
     routes.retain(|_, route| {
-        route.last_used.elapsed() < TASK_ROUTE_IDLE_TTL
-            && !route.connection.peer.is_transport_closed()
+        !route.record.expired(now) && !route.connection.peer.is_transport_closed()
     });
-    while routes.len() >= TASK_ROUTE_MAX_ENTRIES {
-        let Some(oldest) = routes
-            .iter()
-            .min_by_key(|(_, route)| route.last_used)
-            .map(|(id, _)| id.clone())
-        else {
-            break;
-        };
-        routes.remove(&oldest);
-    }
 }
 
 impl UpstreamPool {
@@ -74,13 +64,14 @@ impl UpstreamPool {
         reason: &'static str,
     ) -> usize {
         self.invalidate_oauth_task_routes(reason, |route| {
-            route.upstream_name == upstream && route.oauth_subject.as_deref() == Some(subject)
+            route.record.upstream_name == upstream
+                && route.record.oauth_subject.as_deref() == Some(subject)
         })
         .await
     }
 
     pub(super) async fn invalidate_all_oauth_task_routes(&self, reason: &'static str) -> usize {
-        self.invalidate_oauth_task_routes(reason, |route| route.oauth_subject.is_some())
+        self.invalidate_oauth_task_routes(reason, |route| route.record.oauth_subject.is_some())
             .await
     }
 
@@ -90,7 +81,8 @@ impl UpstreamPool {
         reason: &'static str,
     ) -> usize {
         self.invalidate_oauth_task_routes(reason, |route| {
-            route.oauth_subject.is_some() && upstreams.contains(route.upstream_name.as_str())
+            route.record.oauth_subject.is_some()
+                && upstreams.contains(route.record.upstream_name.as_str())
         })
         .await
     }
@@ -113,7 +105,7 @@ impl UpstreamPool {
         };
         let count = removed.len();
         futures::future::join_all(removed.into_iter().map(|route| async move {
-            let upstream_name = route.upstream_name;
+            let upstream_name = route.record.upstream_name;
             route
                 .connection
                 ._connection
@@ -130,184 +122,64 @@ impl UpstreamPool {
         count
     }
 
-    /// Convert an upstream task handle into a gateway-owned, subject-bound
-    /// handle. The relay connection that created the task is moved out of the
-    /// general relay cache and retained for the task lifecycle.
-    pub async fn register_task_response(
+    fn task_config_matches(&self, upstream: &str, fingerprint: &str) -> bool {
+        self.upstream_config_fingerprints
+            .get(upstream)
+            .is_some_and(|current| current.as_str() == fingerprint)
+    }
+
+    async fn resolve_task_route(
         &self,
-        relay_key: &super::relay_cache::RelayCacheKey,
-        caller_subject: Option<&str>,
-        authorization: TaskRouteAuthorization,
-        response: CallToolResponse,
-    ) -> Result<CallToolResponse, String> {
-        let CallToolResponse::Task(mut created) = response else {
-            return Ok(response);
-        };
-        let native_task_id = created.task.task_id.clone();
-        let Some(connection) = self.relay_connections.write().await.remove(relay_key) else {
-            tracing::warn!(
-                upstream = %relay_key.0,
-                action = "task.registration.reject",
-                reason = "relay_connection_unavailable",
-                "upstream returned a task but its relay connection was unavailable"
-            );
-            return Err("upstream task registration failed".to_string());
-        };
-
-        let Some(store) = self.task_route_store.as_ref().cloned() else {
-            self.relay_connections
-                .write()
-                .await
-                .insert(relay_key.clone(), connection);
-            tracing::error!(
-                upstream = %relay_key.0,
-                action = "task.registration.reject",
-                reason = "route_store_unavailable",
-                "upstream task cannot be acknowledged without durable routing"
-            );
-            return Err("upstream task registration failed".to_string());
-        };
-        let Some(config_fingerprint) = self
-            .upstream_config_fingerprints
-            .get(&relay_key.0)
-            .map(|fingerprint| fingerprint.clone())
-        else {
-            self.relay_connections
-                .write()
-                .await
-                .insert(relay_key.clone(), connection);
-            tracing::error!(
-                upstream = %relay_key.0,
-                action = "task.registration.reject",
-                reason = "config_fingerprint_unavailable",
-                "upstream task cannot be durably bound to its configuration"
-            );
-            return Err("upstream task registration failed".to_string());
-        };
-
-        let gateway_task_id = mint_task_handle();
-        let now_unix_ms = match unix_millis_now() {
-            Ok(now) => now,
-            Err(error) => {
-                self.relay_connections
-                    .write()
-                    .await
-                    .insert(relay_key.clone(), connection);
-                tracing::error!(
-                    upstream = %relay_key.0,
-                    action = "task.registration.reject",
-                    reason = "route_timestamp_failed",
-                    error = %error,
-                    "upstream task route could not be timestamped durably"
-                );
-                return Err("upstream task registration failed".to_string());
+        id: &str,
+        caller: Option<&str>,
+        authorization: &TaskRouteAuthorization,
+        downstream: Peer<RoleServer>,
+    ) -> Result<
+        (
+            Peer<RoleClient>,
+            TaskRouteRecord,
+            Arc<super::relay::RelayRouteState>,
+        ),
+        String,
+    > {
+        let store = self.task_route_store.as_ref().ok_or_else(task_not_found)?;
+        let record = store.get_for_caller(id, caller, authorization).await.map_err(|error| {
+            tracing::error!(action = "task.route.resolve", error = %error, "durable task route lookup failed");
+            "task routing unavailable".to_string()
+        })?.ok_or_else(task_not_found)?;
+        if !record.authorized(caller, authorization)
+            || record.expired(unix_millis_now()?)
+            || !self.task_config_matches(&record.upstream_name, &record.config_fingerprint)
+        {
+            return Err(task_not_found());
+        }
+        let (peer, relay_routes, handler) = {
+            let routes = self.task_routes.read().await;
+            let live = routes
+                .get(id)
+                .ok_or_else(|| "upstream task connection unavailable".to_string())?;
+            if !live.record.same_binding(&record) {
+                return Err(task_not_found());
             }
+            if live.connection.peer.is_transport_closed() {
+                return Err("upstream task connection unavailable".to_string());
+            }
+            (
+                live.connection.peer.clone(),
+                Arc::clone(&live.connection.routes),
+                live.connection
+                    ._connection
+                    ._client_service
+                    .service()
+                    .clone(),
+            )
         };
-        let durable_route = TaskRouteRecord {
-            public_task_id: gateway_task_id.clone(),
-            native_task_id: native_task_id.clone(),
-            upstream_name: relay_key.0.clone(),
-            caller_subject: caller_subject.map(str::to_owned),
-            oauth_subject: relay_key.2.clone(),
-            authorization: authorization.clone(),
-            config_fingerprint,
-            created_at_unix_ms: now_unix_ms,
-            updated_at_unix_ms: now_unix_ms,
-            ttl_ms: created.task.ttl_ms,
-            poll_interval_ms: created.task.poll_interval_ms,
-        };
-        if let Err(error) = store.insert(durable_route).await {
-            self.relay_connections
-                .write()
-                .await
-                .insert(relay_key.clone(), connection);
-            tracing::error!(
-                upstream = %relay_key.0,
-                action = "task.registration.reject",
-                reason = "route_persistence_failed",
-                error = %error,
-                "upstream task route was not durable; refusing acknowledgement"
-            );
-            return Err("upstream task registration failed".to_string());
+        // Downstream rebinding does not hold a fleet-wide task map write lock.
+        handler.rebind_downstream(downstream).await;
+        if !self.task_config_matches(&record.upstream_name, &record.config_fingerprint) {
+            return Err(task_not_found());
         }
-
-        created.task.task_id = gateway_task_id.clone();
-        let pending = connection
-            .routes
-            .register_task_id(&native_task_id, &gateway_task_id)
-            .await;
-        connection.flush_task_status_notifications(pending).await;
-        let mut routes = self.task_routes.write().await;
-        prune_task_routes(&mut routes);
-        routes.insert(
-            gateway_task_id,
-            TaskRoute {
-                upstream_name: relay_key.0.clone(),
-                native_task_id,
-                caller_subject: caller_subject.map(str::to_owned),
-                oauth_subject: relay_key.2.clone(),
-                authorization,
-                connection,
-                last_used: Instant::now(),
-            },
-        );
-        Ok(CallToolResponse::Task(created))
-    }
-
-    fn authorize_task_route_record(
-        route: &TaskRouteRecord,
-        caller_subject: Option<&str>,
-        authorization: &TaskRouteAuthorization,
-    ) -> Result<(), String> {
-        let subject_matches = route.caller_subject.as_deref() == caller_subject;
-        let scope_matches = route.authorization == *authorization
-            && authorization
-                .allowed_upstreams
-                .as_ref()
-                .is_none_or(|upstreams| upstreams.contains(&route.upstream_name));
-        if subject_matches && scope_matches {
-            Ok(())
-        } else {
-            tracing::warn!(
-                action = "task.route.authorize",
-                upstream = %route.upstream_name,
-                subject_matches,
-                scope_matches,
-                origin_route = %route.authorization.route_key,
-                caller_route = %authorization.route_key,
-                reason = "task_route_mismatch",
-                "durable task route authorization rejected"
-            );
-            Err(task_not_found())
-        }
-    }
-
-    fn authorize_task_route(
-        route: &TaskRoute,
-        caller_subject: Option<&str>,
-        authorization: &TaskRouteAuthorization,
-    ) -> Result<(), String> {
-        let subject_matches = route.caller_subject.as_deref() == caller_subject;
-        let scope_matches = route.authorization == *authorization
-            && authorization
-                .allowed_upstreams
-                .as_ref()
-                .is_none_or(|upstreams| upstreams.contains(&route.upstream_name));
-        if subject_matches && scope_matches {
-            Ok(())
-        } else {
-            tracing::warn!(
-                action = "task.route.authorize",
-                upstream = %route.upstream_name,
-                subject_matches,
-                scope_matches,
-                origin_route = %route.authorization.route_key,
-                caller_route = %authorization.route_key,
-                reason = "task_route_mismatch",
-                "task route authorization rejected"
-            );
-            Err(task_not_found())
-        }
+        Ok((peer, record, relay_routes))
     }
 
     pub async fn get_task_routed(
@@ -319,47 +191,11 @@ impl UpstreamPool {
     ) -> Result<GetTaskResult, String> {
         let start = Instant::now();
         let gateway_task_id = params.task_id.clone();
-        let store = self.task_route_store.as_ref().ok_or_else(task_not_found)?;
-        let durable_route = store
-            .get(&gateway_task_id)
-            .await
-            .map_err(|error| {
-                tracing::error!(
-                    action = "task.route.resolve",
-                    error = %error,
-                    "durable task route lookup failed"
-                );
-                "task routing unavailable".to_string()
-            })?
-            .ok_or_else(task_not_found)?;
-        Self::authorize_task_route_record(&durable_route, caller_subject, authorization)?;
-
-        let (peer, native_task_id, upstream_name) = {
-            let mut routes = self.task_routes.write().await;
-            prune_task_routes(&mut routes);
-            let route = routes
-                .get_mut(&gateway_task_id)
-                .ok_or_else(task_not_found)?;
-            if route.upstream_name != durable_route.upstream_name
-                || route.native_task_id != durable_route.native_task_id
-            {
-                tracing::error!(
-                    action = "task.route.resolve",
-                    upstream = %durable_route.upstream_name,
-                    reason = "live_durable_route_mismatch",
-                    "live task relay did not match durable task metadata"
-                );
-                return Err(task_not_found());
-            }
-            route.connection.rebind_downstream(downstream).await;
-            route.last_used = Instant::now();
-            (
-                route.connection.peer.clone(),
-                durable_route.native_task_id.clone(),
-                durable_route.upstream_name.clone(),
-            )
-        };
-        params.task_id = native_task_id;
+        let (peer, mut durable_route, _) = self
+            .resolve_task_route(&gateway_task_id, caller_subject, authorization, downstream)
+            .await?;
+        let upstream_name = durable_route.upstream_name.clone();
+        params.task_id = durable_route.native_task_id.clone();
         // Task RPCs ride the retained relay connection captured at task
         // creation, but they share the pooled path's per-upstream bulkhead,
         // timeout, telemetry, and circuit-breaker contract: the concurrency
@@ -384,21 +220,20 @@ impl UpstreamPool {
             format!("upstream `{upstream_name}` tasks/get timed out after {timeout_ms}ms"),
         )
         .await?;
-        if let Ok(updated_at_unix_ms) = unix_millis_now()
-            && let Err(error) = store
-                .update_hints(
-                    &gateway_task_id,
-                    updated_at_unix_ms,
-                    result.task.task.ttl_ms,
-                    result.task.task.poll_interval_ms,
-                )
-                .await
+        let previous = durable_route.clone();
+        durable_route.observe(&result.task.task)?;
+        // Stable polls need only a durable read, not a redundant FULL-sync write.
+        if durable_route != previous {
+            self.task_route_store.as_ref().ok_or_else(task_not_found)?
+                .update_hints(durable_route.clone()).await.map_err(|error| {
+                    tracing::error!(action = "task.route.update", error = %error, "task retention update was not durable");
+                    "task routing unavailable".to_string()
+                })?;
+        }
+        if let Some(live) = self.task_routes.write().await.get_mut(&gateway_task_id)
+            && live.record.updated_at_unix_ms <= durable_route.updated_at_unix_ms
         {
-            tracing::warn!(
-                action = "task.route.update",
-                error = %error,
-                "failed to refresh durable task retention hints"
-            );
+            live.record = durable_route;
         }
         result.task.task.task_id = gateway_task_id;
         Ok(result)
@@ -413,20 +248,14 @@ impl UpstreamPool {
         downstream: Peer<RoleServer>,
     ) -> Result<(), String> {
         let start = Instant::now();
-        let (peer, native_task_id, upstream_name, relay_routes) = {
-            let mut routes = self.task_routes.write().await;
-            prune_task_routes(&mut routes);
-            let route = routes.get_mut(gateway_task_id).ok_or_else(task_not_found)?;
-            Self::authorize_task_route(route, caller_subject, authorization)?;
-            route.connection.rebind_downstream(downstream).await;
-            route.last_used = Instant::now();
-            (
-                route.connection.peer.clone(),
-                route.native_task_id.clone(),
-                route.upstream_name.clone(),
-                Arc::clone(&route.connection.routes),
-            )
-        };
+        if params.task_id != gateway_task_id {
+            return Err(task_not_found());
+        }
+        let (peer, durable_route, relay_routes) = self
+            .resolve_task_route(gateway_task_id, caller_subject, authorization, downstream)
+            .await?;
+        let native_task_id = durable_route.native_task_id;
+        let upstream_name = durable_route.upstream_name;
         let notification_sequence = relay_routes.task_notification_sequence();
         params.task_id = native_task_id;
         // Bulkhead + telemetry parity with `get_task_routed` — see the comment
@@ -473,20 +302,14 @@ impl UpstreamPool {
         downstream: Peer<RoleServer>,
     ) -> Result<(), String> {
         let start = Instant::now();
-        let (peer, native_task_id, upstream_name, relay_routes) = {
-            let mut routes = self.task_routes.write().await;
-            prune_task_routes(&mut routes);
-            let route = routes.get_mut(gateway_task_id).ok_or_else(task_not_found)?;
-            Self::authorize_task_route(route, caller_subject, authorization)?;
-            route.connection.rebind_downstream(downstream).await;
-            route.last_used = Instant::now();
-            (
-                route.connection.peer.clone(),
-                route.native_task_id.clone(),
-                route.upstream_name.clone(),
-                Arc::clone(&route.connection.routes),
-            )
-        };
+        if params.task_id != gateway_task_id {
+            return Err(task_not_found());
+        }
+        let (peer, durable_route, relay_routes) = self
+            .resolve_task_route(gateway_task_id, caller_subject, authorization, downstream)
+            .await?;
+        let native_task_id = durable_route.native_task_id;
+        let upstream_name = durable_route.upstream_name;
         let notification_sequence = relay_routes.task_notification_sequence();
         params.task_id = native_task_id;
         // Bulkhead + telemetry parity with `get_task_routed` — see the comment
@@ -546,9 +369,9 @@ mod tests {
     const NATIVE_TASK_ID: &str = "native-task-1";
 
     #[derive(Clone, Default)]
-    struct TaskServer {
-        updates: Arc<Mutex<Vec<String>>>,
-        cancellations: Arc<Mutex<Vec<String>>>,
+    pub(super) struct TaskServer {
+        pub(super) updates: Arc<Mutex<Vec<String>>>,
+        pub(super) cancellations: Arc<Mutex<Vec<String>>>,
         fail_get_task: Arc<std::sync::atomic::AtomicBool>,
     }
 
@@ -603,7 +426,7 @@ mod tests {
     }
 
     #[derive(Clone)]
-    struct DownstreamServer;
+    pub(super) struct DownstreamServer;
 
     impl ServerHandler for DownstreamServer {
         fn get_info(&self) -> ServerInfo {
@@ -611,7 +434,7 @@ mod tests {
         }
     }
 
-    async fn task_pool() -> (
+    pub(super) async fn task_pool() -> (
         UpstreamPool,
         TaskServer,
         RunningService<RoleServer, DownstreamServer>,
@@ -713,7 +536,7 @@ mod tests {
             .with_task_route_store(route_store);
         pool.upstream_config_fingerprints.insert(
             "task-upstream".to_string(),
-            "test-config-fingerprint".to_string(),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
         );
         pool.relay_connections
             .write()
@@ -722,7 +545,7 @@ mod tests {
         (pool, server, downstream_server, key)
     }
 
-    fn create_task_response() -> CallToolResponse {
+    pub(super) fn create_task_response() -> CallToolResponse {
         CallToolResponse::Task(CreateTaskResult::new(Task::new(
             NATIVE_TASK_ID,
             TaskStatus::Working,
@@ -755,6 +578,7 @@ mod tests {
         let response = pool
             .register_task_response(
                 &relay_key,
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 Some("alice"),
                 super::TaskRouteAuthorization::root(),
                 create_task_response(),
@@ -781,6 +605,7 @@ mod tests {
         let result = pool
             .register_task_response(
                 &relay_key,
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 Some("alice"),
                 super::TaskRouteAuthorization::root(),
                 create_task_response(),
@@ -805,6 +630,7 @@ mod tests {
         let registered = pool
             .register_task_response(
                 &relay_key,
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 Some("alice"),
                 super::TaskRouteAuthorization::root(),
                 create_task_response(),
@@ -885,7 +711,13 @@ mod tests {
             Some(std::iter::once("other-upstream".to_string()).collect()),
         );
         let registered = pool
-            .register_task_response(&relay_key, Some("alice"), route_a, create_task_response())
+            .register_task_response(
+                &relay_key,
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                Some("alice"),
+                route_a,
+                create_task_response(),
+            )
             .await
             .expect("task route registers");
         let CallToolResponse::Task(created) = registered else {
@@ -965,6 +797,7 @@ mod tests {
         let oauth_key = rekey_relay_for_oauth_subject(&pool, &relay_key, "shared-admin").await;
         pool.register_task_response(
             &oauth_key,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             Some("alice"),
             super::TaskRouteAuthorization::root(),
             create_task_response(),
@@ -1003,6 +836,7 @@ mod tests {
         let oauth_key = rekey_relay_for_oauth_subject(&pool, &relay_key, "stdio-oauth").await;
         pool.register_task_response(
             &oauth_key,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             None,
             super::TaskRouteAuthorization::root(),
             create_task_response(),
@@ -1018,6 +852,7 @@ mod tests {
         let (pool, _server, _downstream, relay_key) = task_pool().await;
         pool.register_task_response(
             &relay_key,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             Some("alice"),
             super::TaskRouteAuthorization::root(),
             create_task_response(),
@@ -1046,6 +881,7 @@ mod tests {
         let registered = pool
             .register_task_response(
                 &relay_key,
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 Some("alice"),
                 super::TaskRouteAuthorization::root(),
                 create_task_response(),

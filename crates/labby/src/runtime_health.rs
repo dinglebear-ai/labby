@@ -27,6 +27,8 @@ pub(crate) const OAUTH_RELAY_UNAVAILABLE: &str = "oauth_relay_unavailable";
 pub(crate) const ACTOR_KEY_UNAVAILABLE: &str = "actor_key_unavailable";
 /// Usage telemetry was enabled but its durable store failed to open.
 pub(crate) const USAGE_TELEMETRY_UNAVAILABLE: &str = "usage_telemetry_unavailable";
+/// Task acknowledgement is disabled because durable routing could not open.
+pub(crate) const TASK_ROUTES_UNAVAILABLE: &str = "task_routes_unavailable";
 /// Code Mode journaling was enabled but its durable store failed to open.
 pub(crate) const CODEMODE_JOURNAL_UNAVAILABLE: &str = "codemode_journal_unavailable";
 /// Configured gateway auto-import failed during startup discovery.
