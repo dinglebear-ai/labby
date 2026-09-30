@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertCircle, Bell, Loader2, RefreshCw } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -18,17 +18,23 @@ export default function NotificationsSettingsPage(): React.ReactElement {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>()
   const [feedError, setFeedError] = useState<string>()
+  const feedRequest = useRef<AbortController | undefined>(undefined)
 
-  function loadNotifications(signal?: AbortSignal): void {
-    void listNotifications(signal)
+  const loadNotifications = useCallback((): void => {
+    feedRequest.current?.abort()
+    const controller = new AbortController()
+    feedRequest.current = controller
+    void listNotifications(controller.signal)
       .then((items) => {
+        if (controller.signal.aborted || feedRequest.current !== controller) return
         setNotifications(items)
         setFeedError(undefined)
       })
       .catch((reason: unknown) => {
-        if (!signal?.aborted) setFeedError(reason instanceof Error ? reason.message : 'notification feed unavailable')
+        if (controller.signal.aborted || feedRequest.current !== controller || isAbortError(reason)) return
+        setFeedError(reason instanceof Error ? reason.message : 'notification feed unavailable')
       })
-  }
+  }, [])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -52,12 +58,14 @@ export default function NotificationsSettingsPage(): React.ReactElement {
   }, [])
 
   useEffect(() => {
-    const controller = new AbortController()
-    loadNotifications(controller.signal)
-    return () => controller.abort()
-  }, [])
+    loadNotifications()
+    return () => {
+      feedRequest.current?.abort()
+      feedRequest.current = undefined
+    }
+  }, [loadNotifications])
 
-  const fields = schema ? fieldsForSection(schema.fields, 'notifications') : []
+  const fields = useMemo(() => schema ? fieldsForSection(schema.fields, 'notifications') : [], [schema])
 
   return (
     <div className="space-y-4">
