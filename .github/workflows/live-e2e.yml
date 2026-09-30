@@ -48,8 +48,8 @@ jobs:
         with:
           node-version: "22"
           cache: pnpm
-          cache-dependency-path: apps/gateway-admin/pnpm-lock.yaml
-      - run: pnpm --dir apps/gateway-admin install --frozen-lockfile
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+      - run: pnpm --dir apps/web install --frozen-lockfile
       - name: Install Playwright runtime libraries
         run: |
           set -euo pipefail
@@ -115,9 +115,9 @@ jobs:
         # fails, including third-party lists none of these packages come from.
         # The runtime libraries are installed above with the same guarded,
         # best-effort refresh the Gateway Admin browser job uses.
-        run: pnpm --dir apps/gateway-admin exec playwright install chromium
+        run: pnpm --dir apps/web exec playwright install chromium
       - name: Build Gateway Admin assets for this revision
-        run: pnpm --dir apps/gateway-admin build
+        run: pnpm --dir apps/web build
       - name: Select exclusive live E2E run root
         shell: bash
         run: |

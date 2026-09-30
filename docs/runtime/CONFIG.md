@@ -43,7 +43,7 @@ Keep secrets, tokens, passwords, OAuth client secrets, and upstream credential
 values in `$LABBY_HOME/.env` (normally `~/.labby/.env`). Gateway credential
 mutations write beside the selected `config.toml`; they never independently
 fall back to another home. Keep product preferences in TOML. The annotated
-example in [../../config/config.example.toml](../../config/config.example.toml)
+example in [../../.config/config.example.toml](../../.config/config.example.toml)
 is the canonical hand-written configuration sample. Generated environment
 metadata lives in [../generated/env-reference.md](../generated/env-reference.md).
 The code-owned proxy key inventory lives in
@@ -142,7 +142,7 @@ the current adapter does not restore them through `thread/resume`.
 Provision the Codex binary and authenticate the isolated `codex_home` inside
 the Incus container before setting `enabled = true`. Do not point this section
 at a mounted developer home or a remote App Server. The annotated example in
-[../../config/config.example.toml](../../config/config.example.toml) uses the
+[../../.config/config.example.toml](../../.config/config.example.toml) uses the
 Codex binary and home already provisioned by the supported Incus image.
 
 The alternative `provider = "openai_compatible"` uses the operator-configured
@@ -311,7 +311,7 @@ with the reason; credential values are never logged.
 
 For Authelia inbound OAuth, `[auth]` may contain the non-secret provider,
 issuer, client ID, exact private trust origin, and private-CA path shown in
-`config/config.example.toml`. Keep `LABBY_AUTHELIA_CLIENT_SECRET` in the
+`.config/config.example.toml`. Keep `LABBY_AUTHELIA_CLIENT_SECRET` in the
 service-owned `.env` or secret manager. Environment values override TOML as a
 complete provider selection. All Labby processes sharing `auth.db` must use the
 same effective provider configuration and be restarted together when it

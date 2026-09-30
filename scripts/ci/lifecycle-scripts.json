@@ -7,6 +7,10 @@
     "scripts/with_timeout.sh",
     "scripts/bench-labby-slimming",
     "scripts/build-web.sh",
+    "scripts/tests/bin_link_claude_mds_test.sh",
+    "scripts/tests/smoke-code-mode.sh",
+    "scripts/tests/smoke-code-mode-state-git.sh",
+    "scripts/tests/smoke-code-mode-state-git-v2.sh",
     "scripts/check-feature-slices.sh",
     "scripts/check-incus-ssh",
     "scripts/check-retired-features.sh",
@@ -46,19 +50,13 @@
     "plugins/scripts/cleanup-leaked-mcp.sh",
     "plugins/scripts/health-check",
     "plugins/scripts/link-claude-mds",
-    "plugins/scripts/protected-mcp-smoke",
-    "unraid/source/usr/local/emhttp/plugins/labby/event/disks_mounted",
-    "unraid/source/usr/local/emhttp/plugins/labby/event/unmounting_disks",
-    "unraid/source/usr/local/emhttp/plugins/labby/scripts/labby-incus-env.sh",
-    "unraid/source/usr/local/emhttp/plugins/labby/scripts/labby-incus-init.sh",
-    "unraid/source/usr/local/emhttp/plugins/labby/scripts/labby-preflight.sh",
-    "unraid/source/usr/local/emhttp/plugins/labby/scripts/rc.labby"
+    "plugins/scripts/protected-mcp-smoke"
   ],
   "powershell": [
     "scripts/install.ps1"
   ],
   "public_copies": [
-    "apps/gateway-admin/public/install.sh"
+    "apps/web/public/install.sh"
   ],
   "tests": [
     "scripts/tests/installers.sh",

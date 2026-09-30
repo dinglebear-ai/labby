@@ -355,8 +355,8 @@ fn historical_doc_work_products_skip_docs_check() {
 fn shipped_plugin_markdown_routes_to_documentation_checks() {
     for path in [
         "plugins/labby/README.md",
-        "plugins/labby/skills/using-labby/SKILL.md",
-        "plugins/labby/skills/using-labby/references/config-reference.md",
+        "plugins/labby/.apm/skills/using-labby/SKILL.md",
+        "plugins/labby/.apm/skills/using-labby/references/config-reference.md",
     ] {
         let out = classify("pull_request", &[path]);
         assert_eq!(out["docs"], "true", "{path}");
@@ -364,6 +364,46 @@ fn shipped_plugin_markdown_routes_to_documentation_checks() {
         assert_eq!(out["rust_compile"], "false", "{path}");
         assert_eq!(out["rust_test"], "false", "{path}");
     }
+}
+
+#[test]
+fn generated_client_plugin_inputs_route_to_drift_check() {
+    for path in [
+        "plugins/labby/.apm/skills/using-labby/SKILL.md",
+        "plugins/labby/codex/plugin.json",
+        "plugins/labby/copilot/mcp.json",
+        "plugins/labby/.claude-plugin/plugin.json",
+        "plugins/install-labby/skills/install-labby/SKILL.md",
+        "plugins/labby/apm.yml",
+        "scripts/generate-native-plugins.py",
+        "LICENSE",
+    ] {
+        let out = classify("pull_request", &[path]);
+        assert_eq!(out["native_plugins"], "true", "{path}");
+    }
+    let unrelated = classify("pull_request", &["docs/runtime/CONFIG.md"]);
+    assert_eq!(unrelated["native_plugins"], "false");
+}
+
+#[test]
+fn native_plugin_ci_regenerates_checkout_and_catches_new_files() {
+    let workflow: serde_json::Value =
+        serde_saphyr::from_str(include_str!("../../../.github/workflows/ci.yml"))
+            .expect("parse CI workflow");
+    let steps = workflow["jobs"]["native-plugins"]["steps"]
+        .as_array()
+        .expect("native plugin steps");
+    assert!(
+        steps.iter().any(|step| {
+            step["run"].as_str() == Some("python scripts/generate-native-plugins.py")
+        })
+    );
+    assert!(steps.iter().any(|step| {
+        step["run"].as_str().is_some_and(|run| {
+            run.contains("git status --porcelain --untracked-files=all -- plugins/labby")
+                && run.contains("exit 1")
+        })
+    }));
 }
 
 #[test]
@@ -422,8 +462,16 @@ fn nextest_policy_changes_run_the_full_rust_test_path() {
 }
 
 #[test]
+fn configuration_examples_run_docs_checks() {
+    for path in [".config/.env.example", ".config/config.example.toml"] {
+        let out = classify("pull_request", &[path]);
+        assert_eq!(out["docs_check"], "true", "{path}");
+    }
+}
+
+#[test]
 fn frontend_changes_enable_web_release_and_incus_without_rust_tests() {
-    let out = classify("pull_request", &["apps/gateway-admin/app/page.tsx"]);
+    let out = classify("pull_request", &["apps/web/app/page.tsx"]);
     assert_eq!(out["web"], "true");
     assert_eq!(out["release"], "true");
     assert_eq!(out["incus"], "true");
@@ -494,7 +542,7 @@ fn explicit_policy_files_route_to_the_right_checks() {
 
 #[test]
 fn desktop_changes_route_to_dedicated_checks() {
-    let out = classify("pull_request", &["apps/labby-desktop/src/index.js"]);
+    let out = classify("pull_request", &["apps/tauri/src/index.js"]);
     assert_eq!(out["desktop"], "true");
     assert_eq!(out["rust_compile"], "false");
     assert_eq!(out["web"], "false");
@@ -503,11 +551,11 @@ fn desktop_changes_route_to_dedicated_checks() {
 #[test]
 fn browser_extension_and_shared_protocol_changes_route_to_dedicated_checks() {
     for path in [
-        "apps/browser-extension/manifest.json",
-        "apps/browser-extension/src/service_worker.js",
-        "apps/browser-extension/test/identity.test.js",
-        "apps/browser-extension/package.json",
-        "apps/browser-extension/package-lock.json",
+        "apps/chrome/manifest.json",
+        "apps/chrome/src/service_worker.js",
+        "apps/chrome/test/identity.test.js",
+        "apps/chrome/package.json",
+        "apps/chrome/package-lock.json",
         "crates/labby-browser/src/protocol.rs",
         "crates/labby/src/dispatch/browser/runtime.rs",
         "crates/labby/src/api/browser_session.rs",
@@ -516,23 +564,21 @@ fn browser_extension_and_shared_protocol_changes_route_to_dedicated_checks() {
         assert_eq!(out["browser_extension"], "true", "{path}");
     }
 
-    let unrelated = classify("pull_request", &["apps/gateway-admin/src/app.tsx"]);
+    let unrelated = classify("pull_request", &["apps/web/src/app.tsx"]);
     assert_eq!(unrelated["browser_extension"], "false");
 }
 
 #[test]
 fn every_javascript_dependency_graph_change_routes_to_advisory_checks() {
     for path in [
-        "package.json",
-        "package-lock.json",
-        "apps/browser-extension/package.json",
-        "apps/browser-extension/package-lock.json",
-        "apps/gateway-admin/package.json",
-        "apps/gateway-admin/pnpm-lock.yaml",
-        "apps/labby-desktop/package.json",
-        "apps/labby-desktop/pnpm-lock.yaml",
-        "config/agent-clis/package.json",
-        "config/agent-clis/package-lock.json",
+        "apps/chrome/package.json",
+        "apps/chrome/package-lock.json",
+        "apps/web/package.json",
+        "apps/web/pnpm-lock.yaml",
+        "apps/tauri/package.json",
+        "apps/tauri/pnpm-lock.yaml",
+        ".config/agent-clis/package.json",
+        ".config/agent-clis/package-lock.json",
         "packages/labby-mcp/package.json",
         "packages/labby-mcp/pnpm-lock.yaml",
         "scripts/ci/js-advisory-policy.json",
@@ -1639,7 +1685,7 @@ fn classify_step_unions_the_branch_classifier_but_never_lets_it_narrow() {
                 r#"args.output.write_text("".join(f"{key}=false\n" for key in keys))"#,
                 r#"args.output.write_text("".join(f"{key}=false\n" for key in keys) + "unraid=false\nrust_test=true\n")"#,
             )
-            .replace("unraid/labby.plg", "apps/labby-desktop/index.html"),
+            .replace("unraid/labby.plg", "apps/tauri/index.html"),
     )
     .expect("write trusted classifier");
     // The branch knows a mapping the base commit does not, and also tries to
@@ -2082,10 +2128,10 @@ fn incus_bootstrap_waits_for_guest_systemd_before_systemctl_consumers() {
 #[test]
 fn microsandbox_workflow_executable_inputs_route_to_docs_check() {
     for path in [
-        "plugins/labby/skills/implement-in-microsandbox/scripts/verify_handoff.py",
-        "plugins/labby/skills/implement-in-microsandbox/tests/test_verify_handoff.py",
-        "plugins/labby/skills/implement-in-microsandbox/references/ubuntu-arm64.packages.lock",
-        "plugins/labby/skills/implement-in-microsandbox/agents/openai.yaml",
+        "plugins/labby/.apm/skills/implement-in-microsandbox/scripts/verify_handoff.py",
+        "plugins/labby/.apm/skills/implement-in-microsandbox/tests/test_verify_handoff.py",
+        "plugins/labby/.apm/skills/implement-in-microsandbox/references/ubuntu-arm64.packages.lock",
+        "plugins/labby/.apm/skills/implement-in-microsandbox/agents/openai.yaml",
     ] {
         let out = classify("pull_request", &[path]);
         assert_eq!(out["docs_check"], "true", "{path}");

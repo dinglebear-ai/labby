@@ -1,0 +1,4 @@
+interface:
+  display_name: "Using Snippets"
+  short_description: "Run and author Labby Code Mode snippets"
+  default_prompt: "Use $using-snippets to discover, run, or create a Labby snippet from live gateway tools."

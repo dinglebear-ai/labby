@@ -41,11 +41,11 @@ jobs:
         with:
           node-version: "22"
           cache: pnpm
-          cache-dependency-path: apps/gateway-admin/pnpm-lock.yaml
+          cache-dependency-path: apps/web/pnpm-lock.yaml
       - name: Build frontend assets for the instrumented binary
         run: |
-          pnpm --dir apps/gateway-admin install --frozen-lockfile
-          pnpm --dir apps/gateway-admin build
+          pnpm --dir apps/web install --frozen-lockfile
+          pnpm --dir apps/web build
       - name: Install Rust and kache
         uses: ./.github/actions/setup-rust-kache
         with:

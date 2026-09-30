@@ -288,12 +288,13 @@ fn validate_snippet(name: Option<&str>, body: Option<&str>) -> Result<Value, Too
 }
 
 fn snippet_response_passed(response: &CodeModeExecutionResponse) -> bool {
-    response
-        .result
-        .as_ref()
-        .and_then(|result| result.get("ok"))
-        .and_then(Value::as_bool)
-        .unwrap_or(true)
+    response.calls.iter().all(|call| call.ok)
+        && response
+            .result
+            .as_ref()
+            .and_then(|result| result.get("ok"))
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
 }
 
 pub(super) fn snippet_test_result(
@@ -538,5 +539,25 @@ mod tests {
             fail["response"],
             serde_json::to_value(shaped_display_response()).expect("display response serializes")
         );
+    }
+
+    #[test]
+    fn snippets_test_fails_when_a_batched_upstream_call_failed() {
+        let mut response = response(Some(json!({
+            "requested": 1,
+            "succeeded": 0,
+            "failed": 1,
+            "all_ok": false
+        })));
+        response.calls.push(labby_codemode::CodeModeExecutedCall {
+            id: "team-depot::depot.skills.search".into(),
+            ok: false,
+            elapsed_ms: 0,
+            start_ms: Some(0),
+            params: Some(json!({})),
+            error_kind: Some("unknown_upstream".into()),
+            ui: None,
+        });
+        assert!(!snippet_response_passed(&response));
     }
 }

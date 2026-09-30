@@ -99,7 +99,7 @@ when doing so preserves all prose. Distinct authored copies cause a preflight
 failure before any scope is changed. Private overlays, protected history, and
 ignored worktrees are not traversed. The helper does not stage changes and is
 not a lock against concurrent writers; review its resulting diff. Its isolated
-fixtures run through tests/bin_link_claude_mds_test.sh in just docs-check.
+fixtures run through scripts/tests/bin_link_claude_mds_test.sh in just docs-check.
 
 ## Private per-checkout instructions
 
@@ -160,6 +160,7 @@ ignored worktrees, research caches, or protected history.
 | Authored product explanations | Compare the owning topic with implementation, manifests, and tests; edit the canonical explanation and affected summaries. |
 | `docs/generated/`, including its README | Follow the [generated source-ownership index](../generated/README.md). Fix the authoritative metadata, Clap definitions, route registry, configuration descriptors, or renderer, then run `just docs-generate`. Never patch the rendered Markdown or JSON directly. |
 | Synchronized package README | Edit the root README and run `node packages/labby-mcp/scripts/sync-readme.js`; do not edit the package copy independently. |
+| Generated native-client skill packages | Edit the canonical `plugins/labby/.apm/skills/` source or owning plugin metadata, then use `scripts/generate-native-plugins.py` and its `--check` mode. Do not independently patch generated copies or the installer skill copy; see [Direct client packages](../PLUGINS.md#direct-client-packages). |
 | Machine-readable contracts and fixtures | Identify the owning schema, producer, and conformance tests. A JSON file is not automatically a generated artifact or an editable prose example. Preserve evidence unless the corresponding contract intentionally changes. |
 | Plans, decisions, archived reports, and dated task records | Preserve recorded intent and evidence. Distinguish proposals, accepted targets, and completed work from currently implemented guarantees; link maintained explanations to current contracts. |
 | Protected `docs/sessions/` and `docs/superpowers/` | Exclude from a general audit, including link audits. Changes require explicitly approved scope and the `protected-docs-approved` label. |

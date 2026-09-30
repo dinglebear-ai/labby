@@ -41,7 +41,7 @@ surface.
 
 ## Decision
 
-`plugins/install-labby/skills/install-labby` is Labby's first-class **guided**
+`skills/install-labby` is Labby's first-class **guided**
 installation orchestrator.
 
 Users may install only that skill with:
@@ -164,7 +164,7 @@ Configuration files alone are not proof of a successful deployment.
 
 ## References
 
-- `plugins/install-labby/skills/install-labby/SKILL.md`
+- `skills/install-labby/SKILL.md`
 - `plugins/labby/README.md`
 - `docs/services/SETUP.md`
 - `docs/runtime/OAUTH.md`

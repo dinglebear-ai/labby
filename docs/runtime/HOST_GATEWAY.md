@@ -57,7 +57,7 @@ Tailscale installation/join, cache cleanup, and the optional Android package
 step. User-space actions run as `labby` and install Node v24.x, `uv` plus
 Python, Rust/Go, `claude`, `codex`, `gemini`, mise, chezmoi, and crgx.
 The plan and pinned action bodies come from
-`crates/labby/src/dispatch/setup/provision.rs` and `config/incus/labby-image.yaml`.
+`crates/labby/src/dispatch/setup/provision.rs` and `.config/incus/labby-image.yaml`.
 
 Provisioning does not install or initialize Incus, install the optional Android
 SDK or `adb` by default, or expose root package/user/systemd mutation through

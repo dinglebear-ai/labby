@@ -2,4 +2,6 @@
 
 Frontend applications that live in-repo but are not part of the Rust workspace yet.
 
-- `gateway-admin/`: standalone Next.js admin UI for the `gateway` management surface
+- `web/`: Next.js operator UI embedded by the gateway (`gateway-admin` package)
+- `chrome/`: browser extension (`@dinglebear-ai/labby-browser-extension` package)
+- `tauri/`: native desktop shell (`labby-desktop` package)

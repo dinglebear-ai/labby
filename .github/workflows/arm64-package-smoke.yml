@@ -11,8 +11,8 @@ on:
       - Cargo.lock
       - rust-toolchain.toml
       - crates/**
-      - config/**
-      - apps/gateway-admin/**
+      - .config/**
+      - apps/web/**
       - docs/**
       - plugins/**
       - scripts/**

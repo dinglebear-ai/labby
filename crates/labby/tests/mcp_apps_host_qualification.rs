@@ -71,7 +71,7 @@ async fn run_emulators(
         .arg("--anthropic-html")
         .arg(anthropic_html)
         .arg("--gateway-admin-dir")
-        .arg(repository.join("apps/gateway-admin"))
+        .arg(repository.join("apps/web"))
         .arg("--mcp-endpoint")
         .arg(endpoint)
         .arg("--mcp-token")

@@ -717,7 +717,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             SettingsControl::Text,
             SettingsApplyMode::Restart,
             None,
-            Some("apps/gateway-admin/out"),
+            Some("apps/web/out"),
         ),
         editable(
             "surfaces",

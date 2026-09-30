@@ -6,8 +6,8 @@ set -eu
 NAME="labby"
 IMAGE="images:ubuntu/26.04"
 PROFILE_NAME="labby-gateway"
-PROFILE_FILE="config/incus/labby-gateway-profile.yaml"
-BACKUP_CONFIG_FILE="${LABBY_INCUS_BACKUP_CONFIG:-config/incus/labby-backup.yaml}"
+PROFILE_FILE=".config/incus/labby-gateway-profile.yaml"
+BACKUP_CONFIG_FILE="${LABBY_INCUS_BACKUP_CONFIG:-.config/incus/labby-backup.yaml}"
 STORAGE_POOL_DRIVER="${LABBY_INCUS_STORAGE_DRIVER:-zfs}"
 STORAGE_POOL_NAME="${LABBY_INCUS_STORAGE_POOL:-}"
 STORAGE_POOL_SOURCE="${LABBY_INCUS_STORAGE_SOURCE:-${LABBY_INCUS_ZFS_SOURCE:-}}"
@@ -89,8 +89,8 @@ Options:
   --name NAME                 Container name (default: labby)
   --image IMAGE               Incus image alias (default: images:ubuntu/26.04)
   --profile-name NAME          Incus profile name (default: labby-gateway)
-  --profile-file PATH          Incus profile YAML (default: config/incus/labby-gateway-profile.yaml)
-  --backup-config PATH         Incus snapshot policy YAML (default: config/incus/labby-backup.yaml)
+  --profile-file PATH          Incus profile YAML (default: .config/incus/labby-gateway-profile.yaml)
+  --backup-config PATH         Incus snapshot policy YAML (default: .config/incus/labby-backup.yaml)
   --no-backup-config           Do not apply an Incus snapshot policy
   --runtime-profile-name NAME  Rootless profile for existing containers with a different root pool
   --storage-driver DRIVER      Incus storage driver: zfs, btrfs, or dir (default: zfs)

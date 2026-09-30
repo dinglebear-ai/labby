@@ -19,8 +19,8 @@ parser.add_argument("--emit-identity", action="store_true")
 args = parser.parse_args()
 root = args.root.resolve()
 
-incus_path = root / "config/incus/provision-supply.json"
-incus_image = (root / "config/incus/labby-image.yaml").read_text()
+incus_path = root / ".config/incus/provision-supply.json"
+incus_image = (root / ".config/incus/labby-image.yaml").read_text()
 
 incus = json.loads(incus_path.read_text())
 if not isinstance(incus, dict) or not incus:
@@ -37,12 +37,22 @@ for name, item in incus.items():
     if not isinstance(item, dict) or not isinstance(item.get("version"), str):
         fail(f"invalid Incus supply entry {name}")
     proof = item.get("sha256") or item.get("integrity")
+    source_commit = item.get("source_commit")
+    if source_commit is not None and (
+        not isinstance(source_commit, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", source_commit)
+    ):
+        fail(f"invalid source commit for Incus supply entry {name}")
     if "sha256" in item and not re.fullmatch(r"[0-9a-f]{64}", item["sha256"]):
         fail(f"invalid sha256 for Incus supply entry {name}")
     if "integrity" in item and not re.fullmatch(r"sha512-[A-Za-z0-9+/]+={0,2}", item["integrity"]):
         fail(f"invalid integrity for Incus supply entry {name}")
     section = supply_chunks[name]
-    if item["version"] not in section or (proof and proof not in section):
+    if (
+        item["version"] not in section
+        or (proof and proof not in section)
+        or (source_commit and source_commit not in section)
+    ):
         fail(f"Incus image does not consume exact manifest entry {name}")
 
 canonical = json.dumps(

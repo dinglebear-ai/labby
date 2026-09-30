@@ -7,7 +7,7 @@ updated: "2026-08-18"
 # Labby Design System Contract
 
 **Status:** Active  
-**Scope:** `apps/gateway-admin` web UI  
+**Scope:** `apps/web` web UI
 **Mode:** Dark (primary) and light  
 **Primary reference sandbox:** `/design-system`
 

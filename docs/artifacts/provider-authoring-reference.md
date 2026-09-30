@@ -10,7 +10,7 @@ This is the target provider-format mapping for Labby's Creator UI. It intentiona
 
 ## Current implementation boundary
 
-`apps/gateway-admin/lib/editor/artifact-standards.ts` selects fields and paths by
+`apps/web/lib/editor/artifact-standards.ts` selects fields and paths by
 Artifact kind, not by provider. It emits Markdown for Skills, Agents, Commands,
 and Prompts; its Agent fields are Claude-oriented and its Prompt format is the
 legacy Codex Markdown format. It does not implement a provider selector, a Codex

@@ -8,7 +8,7 @@ updated: "2026-09-10"
 
 The `browser` service is Labby's Rust-native bridge to browser WebMCP tools. Labby owns durable browser identities, operator-approved pairing, authenticated live connections, sanitized catalog persistence, explicit per-document enablement, bounded invocation routing, cancellation, and stale-document protection. It does not run a separate Webby, Phoenix, LiveView, or Next.js application.
 
-An unpacked Manifest V3 extension lives in `apps/browser-extension`. JavaScript remains only at the browser boundary because Chrome executes the WebMCP probe and tool call inside the page's main world. The extension connects to Labby's `/browser/socket` WebSocket and speaks the versioned JSON protocol implemented by `labby-browser`. The server accepts protocol v1 and v2 during the rolling upgrade; the shipped extension remains v1-compatible, including fingerprint-bound pairing and pairing-status polling, while unknown versions fail closed. Loopback endpoints may use HTTP/WS; remote endpoints must use HTTPS/WSS and still pass configured Host validation. Chrome 116 or newer is required; the extension sends an acknowledged versioned heartbeat every 20 seconds so WebSocket activity keeps the Manifest V3 service worker alive during otherwise idle periods and a half-open path is forced through normal reconnect handling when the heartbeat reply times out.
+An unpacked Manifest V3 extension lives in `apps/chrome`. JavaScript remains only at the browser boundary because Chrome executes the WebMCP probe and tool call inside the page's main world. The extension connects to Labby's `/browser/socket` WebSocket and speaks the versioned JSON protocol implemented by `labby-browser`. The server accepts protocol v1 and v2 during the rolling upgrade; the shipped extension remains v1-compatible, including fingerprint-bound pairing and pairing-status polling, while unknown versions fail closed. Loopback endpoints may use HTTP/WS; remote endpoints must use HTTPS/WSS and still pass configured Host validation. Chrome 116 or newer is required; the extension sends an acknowledged versioned heartbeat every 20 seconds so WebSocket activity keeps the Manifest V3 service worker alive during otherwise idle periods and a half-open path is forced through normal reconnect handling when the heartbeat reply times out.
 
 ## Trust and consent
 
@@ -35,7 +35,7 @@ Use the generated [service catalog](../generated/service-catalog.md) and [action
 ## Extension checks
 
 ```bash
-npm ci --prefix apps/browser-extension
-npm test --prefix apps/browser-extension
-npm run typecheck --prefix apps/browser-extension
+npm ci --prefix apps/chrome
+npm test --prefix apps/chrome
+npm run typecheck --prefix apps/chrome
 ```

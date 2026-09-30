@@ -96,12 +96,59 @@ fn supports_target(command: &super::Command) -> bool {
             _ => false,
         },
         #[cfg(feature = "gateway")]
+        super::Command::Snippets(args) => {
+            matches!(&args.command, super::snippets::SnippetsCommand::Exec(_))
+                || matches!(&args.command, super::snippets::SnippetsCommand::Test(test) if test.live)
+        }
+        #[cfg(feature = "gateway")]
         super::Command::Gateway(_)
         | super::Command::Server(_)
         | super::Command::Route(_)
         | super::Command::Loadout(_)
         | super::Command::Code(_) => true,
         _ => false,
+    }
+}
+
+#[cfg(all(test, feature = "gateway"))]
+mod snippet_target_tests {
+    use super::*;
+    use crate::cli::snippets::{SnippetTestArgs, SnippetsArgs, SnippetsCommand};
+
+    #[test]
+    fn executable_snippets_select_the_cli_daemon() {
+        let command = super::super::Command::Snippets(SnippetsArgs {
+            command: SnippetsCommand::Test(SnippetTestArgs {
+                name: Some("example".into()),
+                all: false,
+                live: true,
+                fixture: None,
+                params: vec![],
+            }),
+        });
+        assert!(supports_target(&command));
+    }
+
+    #[test]
+    fn fixture_snippets_stay_on_the_local_installation() {
+        let command = super::super::Command::Snippets(SnippetsArgs {
+            command: SnippetsCommand::Test(SnippetTestArgs {
+                name: Some("example".into()),
+                all: false,
+                live: false,
+                fixture: None,
+                params: vec![],
+            }),
+        });
+        assert!(!supports_target(&command));
+    }
+
+    #[test]
+    fn listing_snippets_stays_on_the_local_installation() {
+        let command = super::super::Command::Snippets(SnippetsArgs {
+            command: SnippetsCommand::List,
+        });
+        assert!(!supports_target(&command));
     }
 }
 

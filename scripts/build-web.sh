@@ -3,10 +3,10 @@
 set -euo pipefail
 
 repo_root="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
-cd "$repo_root/apps/gateway-admin"
+cd "$repo_root/apps/web"
 
 if ! command -v pnpm >/dev/null 2>&1; then
-    printf '%s\n' 'error: pnpm is required to build Labby from source; install the toolchain pinned in .mise.toml and apps/gateway-admin/package.json' >&2
+    printf '%s\n' 'error: pnpm is required to build Labby from source; install the toolchain pinned in .mise.toml and apps/web/package.json' >&2
     exit 1
 fi
 

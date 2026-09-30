@@ -2,8 +2,8 @@
 #
 #   apm install -g dinglebear-ai/labby
 #
-# deploys the four Labby Agent Skills (skills/ links to plugins/install-labby/skills and plugins/labby/skills,
-# the checked-in plugin that Dendrite also catalogs) into ~/.claude/skills and
+# installs the nested plugins/labby APM package, whose .apm/skills directory
+# is canonical. It deploys five skills into ~/.claude/skills and
 # ~/.agents/skills, and registers the `labby` stdio MCP server (the npm
 # launcher, `npx -y @dinglebear/labby mcp`) in Claude Code and Codex. It does
 # not install the labby binary or provision a gateway host: run the
@@ -13,15 +13,11 @@ name: labby
 version: 2.3.2 # x-release-please-version
 description: Labby MCP gateway skills (guided install, operation, live Code Mode, snippets, and isolated implementation) and the labby stdio MCP server registration.
 author: dinglebear-ai
+license: AGPL-3.0-only
 targets:
   - claude
   - codex
 includes: auto
 dependencies:
-  apm: []
-  mcp:
-    - name: labby
-      registry: false
-      transport: stdio
-      command: npx
-      args: ["-y", "@dinglebear/labby", "mcp"]
+  apm:
+    - dinglebear-ai/labby/plugins/labby

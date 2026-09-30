@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "labby": {
+      "type": "local",
+      "tools": [
+        "*"
+      ],
+      "id": "",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@dinglebear/labby",
+        "mcp"
+      ]
+    }
+  }
+}

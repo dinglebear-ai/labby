@@ -442,7 +442,7 @@ pub enum IncusBackupCommand {
     /// Validate a backup policy YAML without mutating Incus.
     Validate {
         /// Backup policy YAML to validate.
-        #[arg(long, default_value = "config/incus/labby-backup.yaml")]
+        #[arg(long, default_value = ".config/incus/labby-backup.yaml")]
         config: PathBuf,
     },
     /// Apply a backup policy YAML to an Incus instance.
@@ -451,7 +451,7 @@ pub enum IncusBackupCommand {
         #[arg(long)]
         name: String,
         /// Backup policy YAML to apply.
-        #[arg(long, default_value = "config/incus/labby-backup.yaml")]
+        #[arg(long, default_value = ".config/incus/labby-backup.yaml")]
         config: PathBuf,
         /// Print the changes without mutating Incus.
         #[arg(long)]
@@ -1453,7 +1453,7 @@ mod tests {
             "--name",
             "labby",
             "--config",
-            "config/incus/labby-backup.yaml",
+            ".config/incus/labby-backup.yaml",
             "--dry-run",
         ])
         .unwrap();
@@ -1473,7 +1473,7 @@ mod tests {
             panic!("expected host incus backup apply subcommand");
         };
         assert_eq!(name, "labby");
-        assert_eq!(config, PathBuf::from("config/incus/labby-backup.yaml"));
+        assert_eq!(config, PathBuf::from(".config/incus/labby-backup.yaml"));
         assert!(dry_run);
         assert!(!yes);
     }

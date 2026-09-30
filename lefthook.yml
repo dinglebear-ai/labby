@@ -31,7 +31,7 @@ pre-commit:
         scripts/with_timeout.sh 60 -- cargo deny check bans
 
     aurora-radius:
-      glob: "{apps/gateway-admin/*.{ts,tsx,css},apps/gateway-admin/**/*.{ts,tsx,css}}"
+      glob: "{apps/web/*.{ts,tsx,css},apps/web/**/*.{ts,tsx,css}}"
       run: |
         added=$(git diff --cached --diff-filter=AM -U0 -- {staged_files} | grep -E '^\+[^+].*rounded-\[[^]]+\]' || true)
         if [ -n "$added" ]; then

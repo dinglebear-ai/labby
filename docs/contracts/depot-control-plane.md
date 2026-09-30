@@ -7,7 +7,7 @@ updated: "2026-09-29"
 
 # Depot control-plane compatibility contract
 
-`apps/gateway-admin` is the only Labby and Depot frontend. The browser calls
+`apps/web` is the only Labby and Depot frontend. The browser calls
 relative Labby URLs; only Labby holds a Depot credential. Depot remains the
 authority for Artifact visibility, mutation policy, immutable revisions, and
 audit truth.
@@ -193,7 +193,7 @@ operations and authorizing them.
 
 Source: the read-only [golden operation catalog](fixtures/depot-control-plane/operations-v1.json),
 [contract binding](../../crates/labby/src/dispatch/depot/operation_contracts.rs),
-and [managed-source UI](../../apps/gateway-admin/components/settings/depot-managed-sources.tsx).
+and [managed-source UI](../../apps/web/components/settings/depot-managed-sources.tsx).
 Failed source histories can also feed the
 [operator notification monitor](../OPERATIONS.md#operator-notifications),
 whose current environment-backed connection is separate from named-provider

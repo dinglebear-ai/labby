@@ -1,7 +1,7 @@
 //! Build script: embed the gateway-admin web bundle into this crate.
 //!
-//! The frontend (`apps/gateway-admin`) is exported by Next.js into
-//! `apps/gateway-admin/out/`. We generate `$OUT_DIR/embedded_web_assets.rs`
+//! The frontend (`apps/web`) is exported by Next.js into
+//! `apps/web/out/`. We generate `$OUT_DIR/embedded_web_assets.rs`
 //! containing one `include_bytes!` per file so the assets ship inside any
 //! binary that links this crate.
 //!
@@ -9,7 +9,7 @@
 //!
 //! - `include_dir!` walks the asset directory **at macro-expansion time**. Under
 //!   distributed/remote compilation (sccache-dist) expansion happens on a remote
-//!   that does not have `apps/gateway-admin/out`, so the build fails there.
+//!   that does not have `apps/web/out`, so the build fails there.
 //! - `include_dir!` also **panics** when the directory is absent (e.g. CI jobs
 //!   that build the backend without first building the frontend), turning a
 //!   benign "frontend not built" state into a hard compile error.
@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 fn main() -> Result<(), Box<dyn Error>> {
     let manifest_dir = env::var("CARGO_MANIFEST_DIR")?;
     let out_dir = env::var("OUT_DIR")?;
-    let assets_dir = Path::new(&manifest_dir).join("../../apps/gateway-admin/out");
+    let assets_dir = Path::new(&manifest_dir).join("../../apps/web/out");
     let dest = Path::new(&out_dir).join("embedded_web_assets.rs");
 
     // Re-run when the bundle appears/disappears or its top level changes.
@@ -51,7 +51,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         // A missing bundle is a valid backend-only state: embed nothing.
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             println!(
-                "cargo:warning=apps/gateway-admin/out not found — embedding empty web assets \
+                "cargo:warning=apps/web/out not found — embedding empty web assets \
                  (run `pnpm --filter gateway-admin build` to populate the bundle)"
             );
         }
@@ -159,7 +159,7 @@ mod tests {
             "lab-gw-web-build-rs-test-{}-{unique}",
             std::process::id()
         ));
-        let app_dir = root.join("apps/gateway-admin");
+        let app_dir = root.join("apps/web");
         std::fs::create_dir_all(&app_dir).expect("create app dir");
         let assets_dir = app_dir.join("out");
 

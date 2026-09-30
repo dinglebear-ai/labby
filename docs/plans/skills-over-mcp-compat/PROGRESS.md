@@ -123,7 +123,7 @@ High-churn adjacent areas:
 - crates/labby/src/mcp/handlers_resources.rs
 - crates/labby-gateway/src/upstream/pool/skills.rs
 - crates/labby-gateway/src/gateway configuration and projection files
-- apps/gateway-admin Skills/loadouts pages on feature/skills-ui-config
+- apps/web Skills/loadouts pages on feature/skills-ui-config
 
 Before each rebase, inspect main for changes to shared Skills types or route/loadout exposure. The remote `feature/skills-ui-config` branch was deleted by the 2026-08-19 fetch; preserve any equivalent work that has landed on main rather than resurrecting the deleted branch. Never resolve conflicts by dropping security/route checks.
 

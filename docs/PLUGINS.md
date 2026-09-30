@@ -49,17 +49,37 @@ convenience, not automatic OAuth discovery. For OAuth, register the endpoint
 through the client's native MCP configuration without that static header and
 use its OAuth login flow. The usage plugin contains no MCP registration.
 
-The [implementation workflow skill](../plugins/labby/skills/implement-in-microsandbox/SKILL.md) guides explicitly authorized tasks through persistent development and retained staging; it does not add a deployment service or mutate production.
+The [implementation workflow skill](../plugins/labby/.apm/skills/implement-in-microsandbox/SKILL.md) guides explicitly authorized tasks through persistent development and retained staging; it does not add a deployment service or mutate production.
 
 ## APM package (`apm.yml`)
 
 The repository root is also an [APM](https://microsoft.github.io/apm/) package.
-`apm install -g dinglebear-ai/labby` deploys the same five skills (the root
-`skills/` entries are symlinks into the two plugin skill trees, so there is one
-source) and registers the `labby` stdio MCP server through the npm launcher.
-`apm.yml` carries a `# x-release-please-version` marker, so Release Please keeps
+`apm install -g dinglebear-ai/labby` installs the nested `plugins/labby` APM package.
+Its `.apm/skills/` directory is the source of the five skills. Root `skills/`
+entries are symlinks to that same source for repository discovery. The nested
+package also registers the `labby` stdio MCP server through the npm launcher.
+The root `apm.yml` carries a `# x-release-please-version` marker, so Release Please keeps
 its version aligned with the workspace. The package ships no binary and no
 hooks; host provisioning stays with `install-labby` and `labby setup`.
+
+## Direct client packages
+
+`plugins/labby/<client>/` contains checked-in, self-contained packages for
+APM's stable targets and its experimental target names. Every directory has a
+portable Agent Plugins `plugin.json` and copies of the five canonical skills;
+supported clients also have APM-generated native skill and MCP paths. The
+source of truth is `plugins/labby/.apm/skills/`. Run
+`python3 scripts/generate-native-plugins.py --check` to detect drift.
+The `native-plugins` CI job runs that generator into its `plugins/labby/`
+checkout with APM 0.31.0, then fails if tracked or newly created files differ
+from the commit. It also verifies the separate installer plugin's skill copy
+against the canonical source. Run the generator locally and commit its output
+whenever canonical skills or plugin metadata change; CI's checkout is temporary.
+
+The portable manifest is useful for clients that load Agent Plugins directly.
+Other clients load the native file paths documented in each package README.
+The Claude usage plugin at `plugins/labby/` stays available for existing
+marketplace consumers; `plugins/install-labby/` owns the HTTP MCP client setup.
 
 ## Marketplace distribution
 

@@ -288,7 +288,7 @@ cargo test -p labby-gateway --features skills --locked protected_route_rejects_u
 cargo test -p labby-gateway --features skills --locked update_upstream_applies_and_clears_expose_skills
 cargo test -p labby --lib --features skills --locked route_scope
 cargo test -p labby --test cli_contract --all-features --locked
-pnpm --dir apps/gateway-admin exec tsc --noEmit
-pnpm --dir apps/gateway-admin run test:unit
-pnpm --dir apps/gateway-admin run lint
+pnpm --dir apps/web exec tsc --noEmit
+pnpm --dir apps/web run test:unit
+pnpm --dir apps/web run lint
 ~~~
