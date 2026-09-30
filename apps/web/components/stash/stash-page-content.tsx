@@ -13,11 +13,11 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import * as api from '@/lib/stash/client'
 import { STASH_WORKSPACE_UNSUPPORTED, StashError } from '@/lib/stash/client'
-import type { StashFile, StashGrant, StashStats } from '@/lib/stash/types'
+import type { StashFile, StashGrant, StashStats, StashFolder } from '@/lib/stash/types'
 import { acceptGeneration, acceptGrantPage, acceptRecipientSearch, copyUri, mergeFiles, mergeGrants, selectedRecipientId, stashFileKind, type StashFileKind } from '@/lib/stash/view-state'
 
 type ViewMode = CollectionViewMode
-type UploadState = { id: string; file: globalThis.File; status: 'pending' | 'uploading' | 'failed' | 'complete' | 'canceled'; abort?: AbortController; detail?: string }
+type UploadState = { folder?: string; id: string; file: globalThis.File; status: 'pending' | 'uploading' | 'failed' | 'complete' | 'canceled'; abort?: AbortController; detail?: string }
 const MAX_QUEUED_UPLOADS = 8
 const UPLOAD_WORKERS = 2
 
@@ -71,6 +71,12 @@ export function StashPageContent() {
   const [error, setError] = useState<unknown>()
   const [statsError, setStatsError] = useState<unknown>()
   const [query, setQuery] = useState('')
+  const [folder, setFolder] = useState<string | undefined>()
+  const [folderDraft, setFolderDraft] = useState('')
+  const [folders, setFolders] = useState<StashFolder[]>([])
+  const [folderCursor, setFolderCursor] = useState<string | null>(null)
+  const [folderError, setFolderError] = useState<unknown>()
+  const [loadingFolders, setLoadingFolders] = useState(false)
   const [nextCursor, setNextCursor] = useState<string | null>(null)
   const [loadingMore, setLoadingMore] = useState(false)
   const [view, selectView] = useCollectionView('labby.stash.layout')
@@ -90,6 +96,8 @@ export function StashPageContent() {
   const input = useRef<HTMLInputElement>(null)
   const generation = useRef(0)
   const loadAbort = useRef<AbortController | null>(null)
+  const folderGeneration = useRef(0)
+  const folderAbort = useRef<AbortController | null>(null)
   const uploadControllers = useRef(new Map<string, AbortController>())
   const downloadControllers = useRef(new Set<AbortController>())
   const uploadSequence = useRef(0)
@@ -100,6 +108,57 @@ export function StashPageContent() {
   queryRef.current = query
 
 
+  const cancelFolderLoad = useCallback(() => {
+    folderGeneration.current += 1
+    folderAbort.current?.abort()
+    folderAbort.current = null
+    if (mounted.current) setLoadingFolders(false)
+  }, [])
+
+  const loadFolders = useCallback(async (cursor?: string) => {
+    if (cursor === undefined) cancelFolderLoad()
+    else if (folderAbort.current) return
+    const current = ++folderGeneration.current
+    const controller = new AbortController()
+    folderAbort.current = controller
+    setLoadingFolders(true)
+    try {
+      const page = await api.listFolders(cursor, controller.signal)
+      if (mounted.current && folderGeneration.current === current) {
+        setFolders(previous => cursor === undefined ? page.folders : [...previous, ...page.folders.filter(item => !previous.some(existing => existing.folder === item.folder))])
+        setFolderCursor(page.next_cursor)
+        setFolderError(undefined)
+      }
+    } catch (reason) {
+      if (mounted.current && folderGeneration.current === current && !(reason instanceof DOMException && reason.name === 'AbortError')) setFolderError(reason)
+    } finally {
+      if (mounted.current && folderGeneration.current === current) {
+        folderAbort.current = null
+        setLoadingFolders(false)
+      }
+    }
+  }, [cancelFolderLoad])
+
+  const loadMoreFolders = useCallback(() => {
+    if (folderCursor !== null) void loadFolders(folderCursor)
+  }, [folderCursor, loadFolders])
+
+  const selectFolder = useCallback((next: string | undefined) => {
+    if (next === folder) return
+    generation.current += 1
+    loadAbort.current?.abort()
+    cancelFolderLoad()
+    setFiles([])
+    setNextCursor(null)
+    setLoading(true)
+    setLoadingMore(false)
+    setError(undefined)
+    setManageTarget(undefined)
+    setDeleteTarget(undefined)
+    setDeleteError(undefined)
+    setFolder(next)
+  }, [folder, cancelFolderLoad])
+
   const load = useCallback(async (search = '', cursor?: string, refreshStats = false) => {
     const current = ++generation.current
     if (cursor) setLoadingMore(true); else setLoading(true)
@@ -108,11 +167,12 @@ export function StashPageContent() {
     const controller = new AbortController()
     loadAbort.current = controller
     try {
-      const pageRequest = api.listFiles(cursor, controller.signal, search || undefined)
+      const pageRequest = api.listFiles(cursor, controller.signal, search || undefined, folder)
       const shouldLoadStats = refreshStats || !statsLoaded.current
       if (shouldLoadStats) setStatsError(undefined)
       const statsRequest = shouldLoadStats ? api.getStats(controller.signal) : Promise.resolve(undefined)
-      const [pageResult, statsResult] = await Promise.allSettled([pageRequest, statsRequest])
+      const folderRequest = shouldLoadStats ? loadFolders() : Promise.resolve()
+      const [pageResult, statsResult] = await Promise.allSettled([pageRequest, statsRequest, folderRequest])
       if (acceptGeneration(generation.current, current)) {
         if (pageResult.status === 'fulfilled') {
           setFiles(previous => mergeFiles(previous, pageResult.value.files, Boolean(cursor)))
@@ -129,7 +189,7 @@ export function StashPageContent() {
     } catch (reason) {
       if (acceptGeneration(generation.current, current) && !(reason instanceof DOMException && reason.name === 'AbortError')) setError(reason)
     } finally { if (acceptGeneration(generation.current, current)) { setLoading(false); setLoadingMore(false); loadAbort.current = null } }
-  }, [])
+  }, [folder, loadFolders])
 
   useEffect(() => { const timer = window.setTimeout(() => void load(query.trim()), 250); return () => { window.clearTimeout(timer); generation.current += 1; loadAbort.current?.abort() } }, [load, query])
 
@@ -139,16 +199,17 @@ export function StashPageContent() {
     const downloads = downloadControllers.current
     return () => {
       mounted.current = false
+      cancelFolderLoad()
       for (const controller of controllers.values()) controller.abort()
       controllers.clear()
       for (const controller of downloads) controller.abort()
       downloads.clear()
     }
-  }, [])
+  }, [cancelFolderLoad])
 
   const runUpload = useCallback(async (item: UploadState, abort: AbortController) => {
     try {
-      await api.uploadFile(item.file, abort.signal)
+      await api.uploadFile(item.file, abort.signal, item.folder)
       if (!mounted.current) return
       uploadBatchDirty.current = true
       setUploads(current => current.map(value => value.id === item.id ? { ...value, status: 'complete', abort: undefined } : value))
@@ -197,6 +258,7 @@ export function StashPageContent() {
         const invalid = !file.name.trim() || file.name.includes('/') || file.name.includes('\\')
         return {
           id: `upload-${++uploadSequence.current}`,
+          folder,
           file,
           status: invalid ? 'failed' : 'pending',
           detail: invalid ? 'Filename cannot be empty or contain path separators.' : undefined,
@@ -208,7 +270,7 @@ export function StashPageContent() {
       return [...current.filter(item => isActive(item) || retainedTerminal.has(item)), ...batch]
     })
     if (input.current) input.current.value = ''
-  }, [uploads])
+  }, [uploads, folder])
 
   const download = useCallback(async (file: StashFile) => {
     const controller = new AbortController()
@@ -253,6 +315,13 @@ export function StashPageContent() {
     {uploads.length ? <div aria-label="Upload queue" className="space-y-2 rounded-aurora-2 border border-aurora-accent-primary/30 bg-aurora-panel-low p-3">{uploads.map(item => <div key={item.id} className="flex items-center justify-between gap-3 text-sm"><span className="min-w-0 truncate text-aurora-text-primary">{item.file.name} — {item.status}{item.detail ? `: ${item.detail}` : ''}</span>{item.status === 'uploading' ? <Button variant="ghost" size="sm" onClick={() => item.abort?.abort()}><X/>Cancel</Button> : item.status === 'pending' ? <Button variant="ghost" size="sm" onClick={() => setUploads(current => current.map(value => value.id === item.id ? { ...value, status: 'canceled', detail: 'Canceled' } : value))}><X/>Cancel</Button> : item.status === 'failed' || item.status === 'canceled' ? <Button variant="outline" size="sm" onClick={() => setUploads(current => current.map(value => value.id === item.id ? { ...value, status: 'pending', detail: undefined } : value))}><RefreshCw/>Retry upload</Button> : null}</div>)}</div> : null}
     {failure ? <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-aurora-2 border border-aurora-error/35 bg-aurora-error/5 p-4"><div><strong className="text-sm text-aurora-error">{failure.title}</strong><p className="mt-1 text-xs text-aurora-text-muted">{failure.detail}</p></div><Button variant="outline" onClick={() => void load(query.trim())}><RefreshCw/>Retry</Button></div> : null}
     {statsFailure ? <div role="status" className="flex flex-wrap items-center justify-between gap-3 rounded-aurora-2 border border-aurora-warn/35 bg-aurora-warn/5 p-4"><div><strong className="text-sm text-aurora-warn">Storage statistics unavailable</strong><p className="mt-1 text-xs text-aurora-text-muted">Your files remain usable. {statsFailure.detail}</p></div><Button variant="outline" onClick={() => void load(query.trim(), undefined, true)}><RefreshCw/>Retry stats</Button></div> : null}
+    <div className="flex flex-wrap items-end gap-3 rounded-aurora-2 border border-aurora-border-default bg-aurora-panel-low p-3">
+      <label className="text-xs text-aurora-text-muted">Folder<select aria-label="Document folder" value={folder === undefined ? 'all' : `folder:${folder}`} onChange={event => selectFolder(event.target.value === 'all' ? undefined : event.target.value.slice(7))} className="ml-2 h-9 max-w-full rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface px-2 text-sm text-aurora-text-primary"><option value="all">All files</option><option value="folder:">Unfiled</option>{folders.filter(item => item.folder).map(item => <option key={item.folder} value={`folder:${item.folder}`}>{item.folder} ({item.file_count})</option>)}{folder && !folders.some(item => item.folder === folder) ? <option value={`folder:${folder}`}>{folder}</option> : null}</select></label>
+      <form className="flex flex-wrap items-end gap-2" onSubmit={event => { event.preventDefault(); selectFolder(folderDraft.trim()); setFolderDraft('') }}><label className="text-xs text-aurora-text-muted">Open a repo or folder<input value={folderDraft} onChange={event => setFolderDraft(event.target.value)} placeholder="dinglebear-ai/labby" maxLength={1024} className="ml-2 h-9 rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface px-2 text-sm text-aurora-text-primary"/></label><Button type="submit" size="sm" variant="outline" disabled={!folderDraft.trim()}>Open folder</Button></form>
+      {folderCursor !== null ? <Button variant="ghost" size="sm" disabled={loadingFolders} onClick={loadMoreFolders}>More folders</Button> : null}
+      {folderError ? <p role="status" className="text-xs text-aurora-warn">Folder catalog unavailable. <Button size="sm" variant="ghost" onClick={() => void load(query.trim(), undefined, true)}>Retry folders</Button></p> : null}
+      {folder !== undefined ? <p className="w-full text-xs text-aurora-text-muted">Uploads go to {folder || 'Unfiled'}. Folders appear in the catalog once they contain a file.</p> : null}
+    </div>
     <DashboardPanel title="Files" headerStyle={{ padding: '10px 15px', background: 'var(--gw0-0_38)' }} bodyStyle={{ padding: 0 }} action={<div className="flex flex-wrap items-center gap-2">
       <div className="flex flex-wrap gap-1" role="group" aria-label="Filter loaded files by kind">{(['All', 'Doc', 'Data', 'Code', 'Image', 'Archive'] as const).map((value) => <button key={value} type="button" aria-pressed={kind === value} title="Filter loaded files by filename extension" onClick={() => setKind(value)} className="h-[25px] rounded-full border border-aurora-border-strong px-[11px] text-[11px] font-[650] text-aurora-text-muted hover:bg-aurora-hover-bg aria-pressed:border-aurora-accent-primary aria-pressed:bg-aurora-accent-primary aria-pressed:text-aurora-page-bg">{value}</button>)}</div>
       <label className="relative hidden sm:block"><span className="sr-only">Search current files</span><Search className="absolute left-[11px] top-1/2 size-[13px] -translate-y-1/2 text-aurora-text-muted"/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search files…" className="h-7 w-[190px] rounded-full border border-aurora-border-strong bg-aurora-control-surface pl-8 pr-2 text-xs text-aurora-text-primary"/></label><CollectionViewToggle value={view} onChange={selectView} ariaLabel="File layout"/></div>}>
@@ -267,22 +336,23 @@ export function StashPageContent() {
 function FileRow({ file, view, onDelete, onManage, onDownload, onCopy }: { file: StashFile; view: ViewMode; onDelete: () => void; onManage: () => void; onDownload: () => Promise<void>; onCopy: () => Promise<void> }) {
   const added = new Date(file.created_at * 1000)
   return <article className={view === 'cards' ? 'group rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-low p-4' : view === 'table' ? 'group grid grid-cols-[minmax(0,1fr)_26px] items-center gap-3 border-b border-aurora-border-subtle px-4 py-2.5 last:border-b-0 hover:bg-aurora-hover-bg md:grid-cols-[minmax(0,1fr)_80px_120px_70px_80px_26px]' : 'group grid grid-cols-[minmax(0,1fr)_44px] items-center gap-3 border-b border-aurora-border-subtle px-4 py-3 last:border-b-0 hover:bg-aurora-hover-bg'}>
-    <div className="flex min-w-0 items-center gap-2.5"><span className="grid size-7 shrink-0 place-items-center rounded-lg border border-aurora-border-default bg-aurora-control-surface text-aurora-accent-strong [&>svg]:size-3.5">{fileIcon(file.display_name)}</span><div className="min-w-0"><strong className="block truncate text-[12.5px] font-semibold text-aurora-text-primary">{file.display_name}</strong><button type="button" aria-label={`Copy URI for ${file.display_name}`} onClick={() => void onCopy()} title="Copy canonical URI" className="flex max-w-full items-center gap-1 text-left text-[10.5px] text-aurora-text-muted hover:text-aurora-accent-primary"><code className="truncate">{file.uri}</code><Copy className="size-2.5 shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"/></button></div></div>
+    <div className="flex min-w-0 items-center gap-2.5"><span className="grid size-7 shrink-0 place-items-center rounded-lg border border-aurora-border-default bg-aurora-control-surface text-aurora-accent-strong [&>svg]:size-3.5">{fileIcon(file.display_name)}</span><div className="min-w-0"><strong className="block truncate text-[12.5px] font-semibold text-aurora-text-primary">{file.display_name}</strong>{file.folder ? <span className="block truncate text-[10.5px] text-aurora-text-muted">{file.folder}</span> : null}<button type="button" aria-label={`Copy URI for ${file.display_name}`} onClick={() => void onCopy()} title="Copy canonical URI" className="flex max-w-full items-center gap-1 text-left text-[10.5px] text-aurora-text-muted hover:text-aurora-accent-primary"><code className="truncate">{file.uri}</code><Copy className="size-2.5 shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"/></button></div></div>
     <span title="File kind inferred from filename extension" className={`${view === 'cards' ? 'mt-3 block' : view === 'table' ? 'hidden md:block' : 'hidden'} text-[10.5px] text-aurora-text-muted`}>{stashFileKind(file.display_name)}</span>
     <span className={`${view === 'cards' ? 'mt-2 block' : view === 'table' ? 'hidden md:block' : 'hidden'} text-[10.5px] font-semibold ${file.owned ? 'text-aurora-text-muted' : 'text-aurora-success'}`}>{file.owned ? 'Owner' : 'Shared with you'}</span>
     <span className={`${view === 'cards' ? 'mt-2 block' : view === 'table' ? 'hidden md:block' : 'hidden'} text-[10.5px] tabular-nums text-aurora-text-muted`}>{bytes(file.size_bytes)}</span>
     <time dateTime={added.toISOString()} title={added.toLocaleString()} className={`${view === 'cards' ? 'mt-2 block' : view === 'table' ? 'hidden md:block' : 'hidden'} text-[10.5px] tabular-nums text-aurora-text-muted`}>{added.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</time>
-    <DropdownMenu><DropdownMenuTrigger asChild><Button data-visible-label="1" size="icon-sm" variant="ghost" aria-label={`Actions for ${file.display_name}`} className="size-[26px] rounded-lg opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 max-md:opacity-100"><MoreHorizontal size={13}/></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem asChild><a aria-label={`Download ${file.display_name}`} href={api.downloadUrl(file.file_id)} download={file.display_name} onClick={(event) => { event.preventDefault(); void onDownload() }}><Download size={13}/>Download</a></DropdownMenuItem><DropdownMenuItem onClick={() => void onCopy()}><Copy size={13}/>Copy URI</DropdownMenuItem>{file.owned ? <><DropdownMenuItem onClick={onManage}><Pencil size={13}/>Rename or share</DropdownMenuItem><DropdownMenuSeparator/><DropdownMenuItem onClick={onDelete} className="text-aurora-error"><Trash2 size={13}/>Delete</DropdownMenuItem></> : null}</DropdownMenuContent></DropdownMenu>
+    <DropdownMenu><DropdownMenuTrigger asChild><Button data-visible-label="1" size="icon-sm" variant="ghost" aria-label={`Actions for ${file.display_name}`} className="size-[26px] rounded-lg opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 max-md:opacity-100"><MoreHorizontal size={13}/></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem asChild><a aria-label={`Download ${file.display_name}`} href={api.downloadUrl(file.file_id)} download={file.display_name} onClick={(event) => { event.preventDefault(); void onDownload() }}><Download size={13}/>Download</a></DropdownMenuItem><DropdownMenuItem onClick={() => void onCopy()}><Copy size={13}/>Copy URI</DropdownMenuItem>{file.owned ? <><DropdownMenuItem onClick={onManage}><Pencil size={13}/>Manage file</DropdownMenuItem><DropdownMenuSeparator/><DropdownMenuItem onClick={onDelete} className="text-aurora-error"><Trash2 size={13}/>Delete</DropdownMenuItem></> : null}</DropdownMenuContent></DropdownMenu>
   </article>
 }
 
 export function ManageDialog({ file, onClose, onChanged, onError }: { file?: StashFile; onClose: () => void; onChanged: (message: string) => Promise<void>; onError: (error: unknown) => void }) {
+  const [folder, setFolder] = useState('');
   const [name, setName] = useState(''); const [grants, setGrants] = useState<StashGrant[]>([]); const [grantCursor, setGrantCursor] = useState<string | null>(null); const [busy, setBusy] = useState(false); const [localError, setLocalError] = useState<unknown>(); const grantGeneration = useRef(0); const [recipientQuery, setRecipientQuery] = useState(''); const [recipients, setRecipients] = useState<Array<{ principal_id: string; display_name: string }>>([]); const recipientGeneration = useRef(0)
   const loadGrants = useCallback(async (target: StashFile, cursor?: string, signal?: AbortSignal) => { const current = ++grantGeneration.current; try { const page = await api.listGrants(target.file_id, signal, cursor); if (acceptGrantPage(grantGeneration.current, current, file?.file_id, target.file_id)) { setGrants(previous => mergeGrants(previous, page.grants, Boolean(cursor))); setGrantCursor(page.next_cursor) } } catch (error) { if (!(error instanceof DOMException && error.name === 'AbortError')) onError(error) } }, [file?.file_id, onError])
-  useEffect(() => { setName(file?.display_name || ''); setGrants([]); setGrantCursor(null); setRecipientQuery(''); setRecipients([]); setLocalError(undefined); recipientGeneration.current += 1; if (!file) return; const controller = new AbortController(); void loadGrants(file, undefined, controller.signal); return () => { grantGeneration.current += 1; controller.abort() } }, [file, loadGrants])
+  useEffect(() => { setFolder(file?.folder || ''); setName(file?.display_name || ''); setGrants([]); setGrantCursor(null); setRecipientQuery(''); setRecipients([]); setLocalError(undefined); recipientGeneration.current += 1; if (!file) return; const controller = new AbortController(); void loadGrants(file, undefined, controller.signal); return () => { grantGeneration.current += 1; controller.abort() } }, [file, loadGrants])
   useEffect(() => { setRecipients([]); const normalized = recipientQuery.trim(); if (normalized.length < 3 || !file) return; const responseGeneration = ++recipientGeneration.current; const responseFile = file.file_id; const controller = new AbortController(); const timer = window.setTimeout(() => { api.searchRecipients(normalized, controller.signal).then(values => { if (acceptRecipientSearch(recipientGeneration.current, responseGeneration, file.file_id, responseFile, recipientQuery, normalized)) setRecipients(values) }).catch(error => { if (!(error instanceof DOMException && error.name === 'AbortError')) onError(error) }) }, 250); return () => { window.clearTimeout(timer); recipientGeneration.current += 1; controller.abort() } }, [file, recipientQuery, onError])
   if (!file) return null
   const run = async (operation: () => Promise<unknown>, message: string) => { setBusy(true); setLocalError(undefined); try { await operation(); await onChanged(message); onClose() } catch (error) { setLocalError(error) } finally { setBusy(false) } }
   const failure = localError ? errorCopy(localError) : undefined
-  return <Dialog open onOpenChange={open => { if (!open && !busy) onClose() }}><DialogContent className="border-aurora-border-strong bg-aurora-panel-medium"><DialogTitle>Manage {file.display_name}</DialogTitle><DialogDescription>Rename this file or manage read access.</DialogDescription>{failure ? <div role="alert" className="rounded-aurora-1 border border-aurora-error/35 bg-aurora-error/5 p-3"><strong className="text-sm text-aurora-error">{failure.title}</strong><p className="mt-1 text-xs text-aurora-text-muted">{failure.detail}</p></div> : null}<label className="text-xs font-semibold text-aurora-text-muted">Filename<input autoFocus value={name} onChange={event => setName(event.target.value)} className="mt-2 h-10 w-full rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface px-3 text-sm text-aurora-text-primary"/></label><Button disabled={busy || !name.trim() || name === file.display_name} onClick={() => void run(() => api.renameFile(file.file_id, name.trim()), `${file.display_name} renamed.`)}><Pencil/>Rename</Button><div className="border-t border-aurora-border-subtle pt-4"><label className="text-xs font-semibold text-aurora-text-muted">Find a recipient<input value={recipientQuery} onChange={event => setRecipientQuery(event.target.value)} placeholder="Type at least 3 characters" className="mt-2 h-10 w-full rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface px-3 text-sm text-aurora-text-primary"/></label>{recipients.length ? <ul aria-label="Recipient results" className="mt-2 divide-y divide-aurora-border-subtle">{recipients.map(recipient => <li key={recipient.principal_id} className="flex items-center justify-between py-2"><span className="text-sm text-aurora-text-primary">{recipient.display_name}</span><Button size="sm" variant="outline" disabled={busy} onClick={() => { const selected = selectedRecipientId(recipients, recipient.principal_id); if (selected) void run(() => api.createGrant(file.file_id, selected), `Access granted to ${recipient.display_name}.`) }}>Grant access</Button></li>)}</ul> : null}</div>{grants.length ? <div><h3 className="text-xs font-semibold text-aurora-text-muted">Active grants</h3><ul className="mt-2 divide-y divide-aurora-border-subtle">{grants.map(grant => <li key={grant.grant_id} className="flex items-center justify-between gap-3 py-2"><code className="truncate text-xs text-aurora-text-primary">{grant.grantee_principal_id}</code><Button size="sm" variant="ghost" disabled={busy} onClick={() => void run(() => api.revokeGrant(file.file_id, grant.grant_id), `Access revoked for ${file.display_name}.`)}>Revoke</Button></li>)}</ul>{grantCursor ? <Button variant="outline" size="sm" disabled={busy} onClick={() => void loadGrants(file, grantCursor)}>Load more grants</Button> : null}</div> : <p className="text-xs text-aurora-text-muted">No active grants.</p>}</DialogContent></Dialog>
+  return <Dialog open onOpenChange={open => { if (!open && !busy) onClose() }}><DialogContent className="border-aurora-border-strong bg-aurora-panel-medium"><DialogTitle>Manage {file.display_name}</DialogTitle><DialogDescription>Rename, move, or manage read access.</DialogDescription>{failure ? <div role="alert" className="rounded-aurora-1 border border-aurora-error/35 bg-aurora-error/5 p-3"><strong className="text-sm text-aurora-error">{failure.title}</strong><p className="mt-1 text-xs text-aurora-text-muted">{failure.detail}</p></div> : null}<label className="text-xs font-semibold text-aurora-text-muted">Filename<input autoFocus value={name} onChange={event => setName(event.target.value)} className="mt-2 h-10 w-full rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface px-3 text-sm text-aurora-text-primary"/></label><Button disabled={busy || !name.trim() || name === file.display_name} onClick={() => void run(() => api.renameFile(file.file_id, name.trim()), `${file.display_name} renamed.`)}><Pencil/>Rename</Button><label className="text-xs font-semibold text-aurora-text-muted">Folder<input value={folder} onChange={event => setFolder(event.target.value)} placeholder="Unfiled" maxLength={1024} className="mt-2 h-10 w-full rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface px-3 text-sm text-aurora-text-primary"/></label><Button disabled={busy || folder === (file.folder || '')} variant="outline" onClick={() => void run(() => api.moveFile(file.file_id, folder), `${file.display_name} moved.`)}>Move to folder</Button><div className="border-t border-aurora-border-subtle pt-4"><label className="text-xs font-semibold text-aurora-text-muted">Find a recipient<input value={recipientQuery} onChange={event => setRecipientQuery(event.target.value)} placeholder="Type at least 3 characters" className="mt-2 h-10 w-full rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface px-3 text-sm text-aurora-text-primary"/></label>{recipients.length ? <ul aria-label="Recipient results" className="mt-2 divide-y divide-aurora-border-subtle">{recipients.map(recipient => <li key={recipient.principal_id} className="flex items-center justify-between py-2"><span className="text-sm text-aurora-text-primary">{recipient.display_name}</span><Button size="sm" variant="outline" disabled={busy} onClick={() => { const selected = selectedRecipientId(recipients, recipient.principal_id); if (selected) void run(() => api.createGrant(file.file_id, selected), `Access granted to ${recipient.display_name}.`) }}>Grant access</Button></li>)}</ul> : null}</div>{grants.length ? <div><h3 className="text-xs font-semibold text-aurora-text-muted">Active grants</h3><ul className="mt-2 divide-y divide-aurora-border-subtle">{grants.map(grant => <li key={grant.grant_id} className="flex items-center justify-between gap-3 py-2"><code className="truncate text-xs text-aurora-text-primary">{grant.grantee_principal_id}</code><Button size="sm" variant="ghost" disabled={busy} onClick={() => void run(() => api.revokeGrant(file.file_id, grant.grant_id), `Access revoked for ${file.display_name}.`)}>Revoke</Button></li>)}</ul>{grantCursor ? <Button variant="outline" size="sm" disabled={busy} onClick={() => void loadGrants(file, grantCursor)}>Load more grants</Button> : null}</div> : <p className="text-xs text-aurora-text-muted">No active grants.</p>}</DialogContent></Dialog>
 }

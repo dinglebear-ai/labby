@@ -3286,6 +3286,15 @@
             }
           },
           {
+            "name": "folder",
+            "in": "query",
+            "description": "Exact virtual folder; empty selects Unfiled, omission selects all",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "required": false,
@@ -4369,6 +4378,130 @@
         ]
       }
     },
+    "/v1/stash/folders": {
+      "get": {
+        "tags": [
+          "stash"
+        ],
+        "summary": "List caller-visible File Stash folders",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Continuation from the preceding folder page",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Folder page with visible-file counts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StashFolderPageDoc"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed File Stash request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is missing or invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "File or grant was not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Filename or grant conflicts with existing state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "File or request exceeds a configured limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "File Stash validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "File Stash capacity is busy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "File Stash is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/v1/stash/recipients": {
       "post": {
         "tags": [
@@ -4620,6 +4753,15 @@
             "name": "X-CSRF-Token",
             "in": "header",
             "description": "Required for cookie-authenticated mutations",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Labby-Stash-Folder",
+            "in": "header",
+            "description": "Percent-encoded virtual folder; omission uploads to Unfiled",
             "required": false,
             "schema": {
               "type": "string"
@@ -9907,6 +10049,10 @@
           "action": {
             "type": "string",
             "enum": [
+              "stash.save_text",
+              "stash.read_text",
+              "stash.folders",
+              "stash.move",
               "stash.list",
               "stash.search",
               "stash.stats",
@@ -9926,6 +10072,8 @@
       "StashFileDoc": {
         "type": "object",
         "required": [
+          "folder",
+          "content_type",
           "file_id",
           "uri",
           "display_name",
@@ -9935,6 +10083,9 @@
           "owned"
         ],
         "properties": {
+          "content_type": {
+            "type": "string"
+          },
           "created_at": {
             "type": "integer",
             "format": "int64"
@@ -9943,6 +10094,9 @@
             "type": "string"
           },
           "file_id": {
+            "type": "string"
+          },
+          "folder": {
             "type": "string"
           },
           "owned": {
@@ -9959,6 +10113,43 @@
           },
           "uri": {
             "type": "string"
+          }
+        }
+      },
+      "StashFolderDoc": {
+        "type": "object",
+        "required": [
+          "folder",
+          "file_count"
+        ],
+        "properties": {
+          "file_count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "folder": {
+            "type": "string"
+          }
+        }
+      },
+      "StashFolderPageDoc": {
+        "type": "object",
+        "required": [
+          "folders"
+        ],
+        "properties": {
+          "folders": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StashFolderDoc"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -10109,6 +10300,27 @@
           }
         }
       },
+      "StashStashFoldersParams": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "owner_kind": {
+            "type": "string",
+            "enum": [
+              "personal",
+              "team"
+            ]
+          }
+        }
+      },
       "StashStashGrantsCreateParams": {
         "type": "object",
         "required": [
@@ -10192,6 +10404,9 @@
           "cursor": {
             "type": "string"
           },
+          "folder": {
+            "type": "string"
+          },
           "limit": {
             "type": "integer"
           },
@@ -10228,6 +10443,55 @@
           }
         }
       },
+      "StashStashMoveParams": {
+        "type": "object",
+        "required": [
+          "file_id",
+          "folder"
+        ],
+        "properties": {
+          "file_id": {
+            "type": "string"
+          },
+          "folder": {
+            "type": "string"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "owner_kind": {
+            "type": "string",
+            "enum": [
+              "personal",
+              "team"
+            ]
+          }
+        }
+      },
+      "StashStashRead_textParams": {
+        "type": "object",
+        "required": [
+          "uri"
+        ],
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "owner_kind": {
+            "type": "string",
+            "enum": [
+              "personal",
+              "team"
+            ]
+          },
+          "uri": {
+            "type": "string"
+          }
+        }
+      },
       "StashStashRenameParams": {
         "type": "object",
         "required": [
@@ -10253,6 +10517,41 @@
           }
         }
       },
+      "StashStashSave_textParams": {
+        "type": "object",
+        "required": [
+          "filename",
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "folder": {
+            "type": "string"
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "markdown",
+              "text"
+            ]
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "owner_kind": {
+            "type": "string",
+            "enum": [
+              "personal",
+              "team"
+            ]
+          }
+        }
+      },
       "StashStashSearchParams": {
         "type": "object",
         "required": [
@@ -10260,6 +10559,9 @@
         ],
         "properties": {
           "cursor": {
+            "type": "string"
+          },
+          "folder": {
             "type": "string"
           },
           "limit": {

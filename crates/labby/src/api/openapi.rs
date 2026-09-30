@@ -156,6 +156,8 @@ pub struct LocalSessionResponseDoc {
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct StashFileDoc {
+    pub folder: String,
+    pub content_type: String,
     pub file_id: String,
     pub uri: String,
     pub display_name: String,
@@ -168,6 +170,18 @@ pub struct StashFileDoc {
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct StashPageDoc {
     pub files: Vec<StashFileDoc>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct StashFolderDoc {
+    pub folder: String,
+    pub file_count: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct StashFolderPageDoc {
+    pub folders: Vec<StashFolderDoc>,
     pub next_cursor: Option<String>,
 }
 
@@ -956,6 +970,10 @@ pub fn build_stash_paths() -> Vec<(String, PathItem)> {
         vec![
             query_parameter("cursor", "Opaque page cursor"),
             query_parameter("query", "Page-local filename substring filter"),
+            query_parameter(
+                "folder",
+                "Exact virtual folder; empty selects Unfiled, omission selects all",
+            ),
             ParameterBuilder::new()
                 .name("limit")
                 .parameter_in(ParameterIn::Query)
@@ -970,6 +988,26 @@ pub fn build_stash_paths() -> Vec<(String, PathItem)> {
     let file_path = || vec![path_parameter("file_id")];
     vec![
         ("/v1/stash".to_owned(), root),
+        (
+            "/v1/stash/folders".to_owned(),
+            operation(
+                HttpMethod::Get,
+                "List caller-visible File Stash folders",
+                "200",
+                "Folder page with visible-file counts",
+                Some("#/components/schemas/StashFolderPageDoc"),
+                vec![
+                    query_parameter("cursor", "Continuation from the preceding folder page"),
+                    ParameterBuilder::new()
+                        .name("limit")
+                        .parameter_in(ParameterIn::Query)
+                        .required(Required::False)
+                        .schema(Some(param_type_to_schema("integer")))
+                        .build(),
+                ],
+                None,
+            ),
+        ),
         (
             "/v1/stash/stats".to_owned(),
             operation(
@@ -1022,6 +1060,15 @@ pub fn build_stash_paths() -> Vec<(String, PathItem)> {
                         .parameter_in(ParameterIn::Header)
                         .required(Required::False)
                         .description(Some("Required for cookie-authenticated mutations"))
+                        .schema(Some(param_type_to_schema("string")))
+                        .build(),
+                    ParameterBuilder::new()
+                        .name("X-Labby-Stash-Folder")
+                        .parameter_in(ParameterIn::Header)
+                        .required(Required::False)
+                        .description(Some(
+                            "Percent-encoded virtual folder; omission uploads to Unfiled",
+                        ))
                         .schema(Some(param_type_to_schema("string")))
                         .build(),
                 ],
@@ -1817,6 +1864,8 @@ fn server_logs_query_parameters() -> Vec<utoipa::openapi::path::Parameter> {
         LocalSessionResponseDoc,
         StashFileDoc,
         StashPageDoc,
+        StashFolderDoc,
+        StashFolderPageDoc,
         StashStatsDoc,
         StashUploadResponseDoc,
         StashRenameRequestDoc,

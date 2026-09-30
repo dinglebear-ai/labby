@@ -1,7 +1,7 @@
 ---
 title: "File Stash"
 created: "2026-09-05"
-updated: "2026-09-07"
+updated: "2026-09-30"
 ---
 
 # File Stash
@@ -12,14 +12,14 @@ blob lifecycle, so this capability meets the built-in-service exception. Depot
 is not a dependency and an explicitly configured remote target never falls back
 to File Stash.
 
-This document is the normative v1 contract. File Stash is registered on Linux
+This document is the normative File Stash contract. File Stash is registered on Linux
 and is available through authenticated HTTP, generic service
 dispatch, MCP resources, and the web UI. Unsupported platforms omit the service
 rather than advertising handlers that cannot honor its filesystem contract.
 
 ## Boundary and non-goals
 
-File Stash stores flat, principal-owned files. It is not the retired Agent
+File Stash stores principal-owned files organized in virtual folders. It is not the retired Agent
 Artifact Manager. V1 has no components, revisions, workspaces, component kinds,
 providers, push/pull, deployment targets, Marketplace forks, drift detection,
 directory import/export, or implicit synchronization. The archived Stash docs
@@ -76,7 +76,7 @@ stash://me/files/{opaque_file_id}
 namespace embedded in the URI. The opaque ID selects one object; each read then
 authorizes the resolved caller as its owner or an active grantee. The exact same
 URI therefore works for owner and grantee. It stays bound to that one object
-until deletion; rename, deletion, and a later upload never reuse or retarget it.
+until deletion; rename and move preserve it, and a later upload never reuses or retargets it.
 Owner and shared files with equal display names remain unambiguous.
 
 MCP clients select a Team-owned resource view per request with the
@@ -92,13 +92,152 @@ filename on both `/` and `\\`, in that order before Unicode normalization; this
 turns browser values such as `C:\\fakepath\\report.pdf` into `report.pdf`.
 Normalize that component to Unicode NFC, then reject an empty value, `.`/`..`,
 controls, remaining separators, NUL, invalid UTF-8, or more than 255 UTF-8 bytes.
-A principal cannot have two live owned files with the same normalized name.
-Uploading a collision returns `conflict`; v1 never overwrites.
+An owner cannot have two live files with the same case-folded normalized name
+in the same folder. Pending uploads also reserve that name. The same filename
+may exist in different folders. A collision returns `conflict`; saves, uploads,
+renames, and moves never overwrite.
+
+## Context documents and repo folders
+
+Use `stash.save_text` to save exact UTF-8 Markdown or plain text from a ChatGPT
+conversation. It returns file metadata and the stable MCP resource URI. Documents
+are private in the caller's Personal Stash by default; an explicit Team selector
+or grant uses the same existing Stash authorization rules.
+
+```json
+{
+  "action": "stash.save_text",
+  "params": {
+    "filename": "handoff.md",
+    "folder": "dinglebear-ai/labby",
+    "format": "markdown",
+    "content": "# Handoff\nDecisions, requirements, and next steps.\n"
+  }
+}
+```
+
+Pass the returned `stash://me/files/{id}` URI to Codex or another agent using the
+same Labby identity. MCP `resources/read` returns saved Markdown as native text
+with `text/markdown`, or plain text with `text/plain`. `stash.read_text` is a tool
+fallback: it returns at most 16 KiB of UTF-8 content plus `next_cursor`; continue
+with the same URI and that cursor until it is null. Every continuation rechecks
+file access. Ordinary uploaded files retain binary MCP resources regardless of
+filename extension; saving text explicitly selects text resource behavior.
+
+Documents are capped at 512 KiB and also consume ordinary Stash quota. The save
+result contains metadata, not an echo of the content. To save a revision, choose
+a new filename or folder: Stash has no document version history or overwrite.
+Content remains untrusted passive context, not executable instructions or a
+rendered inline preview. If a request is interrupted, list/search before retrying;
+a save may have completed even when the client did not receive its result.
+
+`folder` is optional display metadata. Omit it when saving to use Unfiled (`""`).
+Use repo names such as `dinglebear-ai/labby`, or arbitrary folders such as
+`research`. Slash-separated segments support organization without creating host
+directories. Paths normalize to Unicode NFC, are case-sensitive, and reject
+controls, backslashes, empty segments, `.`/`..`, or more than 1,024 UTF-8 bytes
+(255 bytes per segment). A folder does not change ownership, grants, or the URI.
+Empty folders are not persisted; `stash.folders` lists only folders with visible
+files and their file counts, with a bounded continuation cursor.
+
+`stash.list` and `stash.search` accept an exact `folder` filter. Omission searches
+all visible folders; `""` selects only Unfiled. `stash.move` accepts `file_id` and a
+destination `folder`, including `""`. The web UI offers folder selection, uploads
+into the selected folder, and moving owned files through their Manage dialog.
+HTTP listing accepts `?folder=...`; folder enumeration is `GET /v1/stash/folders`.
+Binary HTTP uploads accept the percent-encoded `X-Labby-Stash-Folder` header.
+
+Labby does not infer a current local repository from a ChatGPT connection and
+does not write into a Git checkout. An agent that knows its checkout can identify
+the repository from its Git remote and pass that folder when saving/searching;
+ChatGPT can use a repository or folder named in the conversation. Without that
+context, use Unfiled and move the document later. Folder organization and saved
+content survive a Labby restart. The schema v3 migration retains existing files,
+reservations, quotas, and grants as Unfiled binary objects; older binaries cannot
+open the upgraded database, so rollback requires a matching backup.
+
+### Upgrading existing Stash state
+
+Before upgrading, block client traffic, let uploads finish, and stop the owning
+Labby service. Check that `pending_uploads` is empty, then copy the **entire**
+Stash root with ownership and permissions preserved: `metadata.sqlite3` and any
+WAL/SHM files, `blobs/`, `tmp/`, and `snapshot-id`. Retain the previous binary.
+Copying the database alone does not provide a restorable Stash snapshot.
+
+Start the qualified new binary while client traffic remains blocked and wait
+for Stash readiness. Run the following read-only comparison, replacing both
+absolute paths with the upgraded and preserved roots. This procedure requires
+zero pending uploads so restart recovery cannot change the baseline. Every
+difference count must be zero; version must be `3`, integrity must be `ok`, and
+the foreign-key check must return no rows.
+
+```sh
+sqlite3 -bail -readonly /absolute/stash/metadata.sqlite3 <<'SQL'
+ATTACH DATABASE 'file:/absolute/backup/metadata.sqlite3?mode=ro' AS prior;
+BEGIN;
+PRAGMA user_version;
+PRAGMA integrity_check;
+PRAGMA foreign_key_check;
+SELECT COUNT(*) AS prior_pending FROM prior.pending_uploads;
+SELECT COUNT(*) AS current_pending FROM main.pending_uploads;
+SELECT COUNT(*) AS snapshot_difference FROM main.stash_metadata m
+JOIN prior.stash_metadata p USING(singleton) WHERE m.snapshot_id <> p.snapshot_id;
+SELECT COUNT(*) AS missing_or_changed_files FROM (
+  SELECT file_id,owner_principal_id,display_name,collision_key,size_bytes,
+         blob_key,ready,created_at,updated_at FROM prior.files
+  EXCEPT
+  SELECT file_id,owner_principal_id,display_name,collision_key,size_bytes,
+         blob_key,ready,created_at,updated_at FROM main.files
+);
+SELECT (SELECT COUNT(*) FROM main.files) -
+       (SELECT COUNT(*) FROM prior.files) AS file_count_difference;
+SELECT COUNT(*) AS incorrect_legacy_defaults FROM main.files f
+JOIN prior.files p USING(file_id)
+WHERE f.folder <> '' OR f.content_type <> 'application/octet-stream';
+SELECT COUNT(*) AS missing_grants FROM (
+  SELECT * FROM prior.grants EXCEPT SELECT * FROM main.grants
+);
+SELECT COUNT(*) AS added_grants FROM (
+  SELECT * FROM main.grants EXCEPT SELECT * FROM prior.grants
+);
+SELECT COUNT(*) AS missing_claims FROM (
+  SELECT * FROM prior.name_claims EXCEPT SELECT * FROM main.name_claims
+);
+SELECT COUNT(*) AS added_claims FROM (
+  SELECT * FROM main.name_claims EXCEPT SELECT * FROM prior.name_claims
+);
+-- Compute expected counters from files: schema v1 had no usage tables.
+SELECT COUNT(*) AS missing_owner_usage FROM (
+  SELECT owner_principal_id FROM prior.files WHERE ready=1
+  EXCEPT SELECT owner_principal_id FROM main.stash_usage
+);
+SELECT COUNT(*) AS incorrect_owner_usage FROM main.stash_usage u
+WHERE u.committed_bytes <> COALESCE((SELECT SUM(f.size_bytes) FROM prior.files f
+  WHERE f.ready=1 AND f.owner_principal_id=u.owner_principal_id),0)
+OR u.live_files <> (SELECT COUNT(*) FROM prior.files f
+  WHERE f.ready=1 AND f.owner_principal_id=u.owner_principal_id)
+OR u.reserved_bytes <> 0 OR u.pending_files <> 0;
+SELECT ABS(1-COUNT(*)) AS missing_instance_usage FROM main.stash_instance_usage;
+SELECT COUNT(*) AS incorrect_instance_usage FROM main.stash_instance_usage
+WHERE committed_bytes <> COALESCE((SELECT SUM(size_bytes) FROM prior.files WHERE ready=1),0)
+OR live_files <> (SELECT COUNT(*) FROM prior.files WHERE ready=1)
+OR reserved_bytes <> 0 OR pending_files <> 0;
+ROLLBACK;
+SQL
+cmp /absolute/stash/snapshot-id /absolute/backup/snapshot-id
+```
+
+Verify authenticated listing and an existing binary resource before reopening
+client traffic. If verification fails, stop the new service, preserve the
+upgraded root separately, restore the complete matching backup, restore the
+previous binary, then start it and verify readiness. Never point an older
+binary at v3 state. Once client writes resume, restoring the pre-upgrade backup
+discards subsequent changes; preserve the upgraded state for recovery.
 
 ## Operations and metadata
 
-V1 supports upload, list/search, metadata read, download, delete, grant create,
-grant list, and grant revoke. Lists are cursor-paginated in stable
+Stash supports upload, text save/read, folder enumeration and moves, list/search,
+metadata read, download, delete, grant create, grant list, and grant revoke. Lists are cursor-paginated in stable
 `created_at DESC, file_id DESC` order. Search applies a bounded case-insensitive
 substring filter over normalized display names on each returned page; clients
 continue with the ordinary page cursor to search later pages. The stats response defines:
@@ -112,6 +251,14 @@ continue with the ordinary page cursor to search later pages. The stats response
 The mock's **Shared** summary card is `owned_shared_file_count`, not grant count
 or files shared with the caller. All stats come from one authoritative snapshot,
 not UI aggregation.
+
+Rename, move, delete, grant creation, and grant revocation stage their metadata
+inside an unpublished transaction and revalidate the caller's selected owner
+authority immediately before commit. Rejection or an authority-check timeout
+rolls back metadata, name claims, grants, and quota changes. The owned operation
+finishes that check even if its requesting transport disconnects. Authority
+validation spans separate Access and Stash stores; this is not a cross-database
+transaction.
 
 Delete is destructive and atomically removes the file metadata row and its
 cascade-owned grants in one metadata transaction. Delete and revoke prevent all new opens immediately.

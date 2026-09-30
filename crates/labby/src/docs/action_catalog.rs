@@ -148,7 +148,7 @@ const WEB_ACTION_CLIENT_SOURCES: &[&str] = &[
     include_str!("../../../../apps/web/lib/fs/client.ts"),
 ];
 
-/// Stash uses dedicated REST routes instead of the generic action endpoint.
+/// Stash uses dedicated REST routes and its caller-bound action endpoint.
 /// Keep this list aligned with `apps/web/lib/stash/client.ts`; only
 /// registered actions that the web client invokes through those routes belong
 /// here.
@@ -158,6 +158,8 @@ const STASH_WEB_ACTION_BINDINGS: &[(&str, &str)] = &[
     ("stash", "stash.grants.list"),
     ("stash", "stash.grants.revoke"),
     ("stash", "stash.list"),
+    ("stash", "stash.folders"),
+    ("stash", "stash.move"),
     ("stash", "stash.rename"),
     ("stash", "stash.search"),
     ("stash", "stash.stats"),
@@ -392,6 +394,8 @@ mod tests {
         for route_fragment in [
             "request(suffix",
             "request('/stats'",
+            "request(`/folders?${query}`",
+            "action: 'stash.move'",
             "method: 'PATCH'",
             "method: 'DELETE'",
             "/grants?${query}`",

@@ -2654,6 +2654,27 @@
     "notes": "stash grant revoke"
   },
   {
+    "method": "GET",
+    "path": "/v1/stash/folders",
+    "aliases": [],
+    "surface": "api",
+    "handler_group": "stash",
+    "handler_identity": "stash_folders",
+    "feature": null,
+    "runtime_condition": "Linux with API auth configured; operations require runtime readiness",
+    "auth_required": true,
+    "bearer_only": false,
+    "bootstrap_proof": false,
+    "session_cookie_allowed": true,
+    "csrf_required": false,
+    "host_validation": false,
+    "master_only": true,
+    "cache_posture": "private, no-store",
+    "failure_disclosure": "uniform non-enumerating denial",
+    "side_effects": "none_expected",
+    "notes": "stash folders"
+  },
+  {
     "method": "POST",
     "path": "/v1/stash/recipients",
     "aliases": [],
