@@ -3666,6 +3666,79 @@
     },
     {
       "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Register a Git repository as one refreshable source, immediately discover every Agent Skill in the repository, and refresh it on the configured cadence.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "credential": {
+            "description": "Optional runtime Git credential reference; never a secret value.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "intervalSeconds": {
+            "description": "Refresh interval in seconds; defaults to 86400 (24 hours).",
+            "maximum": 31536000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "namespace": {
+            "description": "Optional namespace override; defaults to the repository name.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "ref": {
+            "description": "Optional branch, tag, or commit.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "subdir": {
+            "description": "Optional advanced path filter. Leave blank to discover the full repository.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "url": {
+            "description": "HTTPS Git repository URL.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "name": "depot.sources.add_repo",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "source": {
+            "description": "Canonical source result field.",
+            "type": "object"
+          },
+          "status": {
+            "description": "Canonical status result field.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "status"
+        ],
+        "type": "object"
+      },
+      "requiredScope": "write",
+      "schemaFingerprint": "902b285d2b4c597cbe8690dfb9de86be3e82739c829c9267ece5868aa5816555",
+      "title": "Add repository source",
+      "transportAvailable": true
+    },
+    {
+      "annotations": {
         "destructiveHint": true,
         "idempotentHint": true,
         "openWorldHint": false,

@@ -1,7 +1,7 @@
 ---
 title: "Operations"
 created: "2026-07-30"
-updated: "2026-09-16"
+updated: "2026-09-29"
 ---
 
 # Operations
@@ -184,6 +184,44 @@ are 0 for success, 1 for warnings, and 2 for failures.
 `labby gateway status` reports authoritative daemon reachability and upstream
 runtime state. `labby server status` reports upstream discovery and process
 state through the shared gateway lifecycle operation.
+
+## Operator notifications
+
+Settings → Notifications provides a recent-event inbox and delivery settings.
+`GET /v1/notifications` requires `lab:admin` and returns the bounded inbox;
+it is separate from MCP catalog-change subscriptions. The current producer
+polls Depot source history for failed ingestion events. It does not subscribe
+to every operational log or implement the proposed task-activity timeline.
+
+`labby serve` opens `$LABBY_HOME/notifications.json` (normally
+`~/.labby/notifications.json`) for records, source cursors, and pending Apprise
+deliveries. If that store cannot be opened, it warns and uses an in-memory
+inbox, which does not survive restart. The default retention is 200 records.
+The UI loads the feed on entry and offers Refresh; it is not a live push feed.
+
+The monitor currently uses the legacy environment-backed Depot client:
+`LABBY_DEPOT_ENABLED=1`, a valid `LABBY_DEPOT_URL`, and a nonempty
+`LABBY_DEPOT_TOKEN`. Configuring a named discovery provider alone does not
+activate this monitor. Polling uses the authenticated operation catalog and
+`depot.sources.list` with read authority; it does not mutate Depot sources.
+The first poll considers the returned history, including earlier failures.
+Later polls use persisted source cursors and deduplication keys. If a cursor
+falls outside Depot's retained history, the monitor warns and resumes by
+timestamp; this cannot recover events Depot no longer returns.
+
+Optional Apprise delivery posts to the configured base URL plus `/notify`, or
+`/notify/{KEY}` when `APPRISE_TOKEN` is set. The key is a stateful configuration
+key, not an Authorization bearer header. Failed deliveries remain queued for
+later polls, with at most four attempts per poll and 2,000 pending records;
+overflow drops the oldest pending delivery and logs an error. Delivery is not
+exactly once: a remote success followed by a local persistence failure can be
+retried. Records collected without an Apprise target are not queued retroactively.
+See [notification environment settings](runtime/ENV.md#operator-notifications)
+for defaults and restart requirements.
+
+Source: [notification runtime](../crates/labby/src/notifications.rs),
+[HTTP feed](../crates/labby/src/api/services/notifications.rs), and
+[server startup](../crates/labby/src/cli/serve.rs).
 
 ## Code Mode Operations
 

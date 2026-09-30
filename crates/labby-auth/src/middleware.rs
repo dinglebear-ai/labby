@@ -38,7 +38,7 @@ use labby_primitives::product_credential::{
 use subtle::ConstantTimeEq;
 use tower::{Layer, Service};
 
-use crate::auth_context::{AuthContext, www_authenticate_value};
+use crate::auth_context::{AuthContext, AuthorizedClientId, www_authenticate_value};
 use crate::error::AuthError;
 use crate::metadata::canonical_resource_url;
 use crate::project_session::ProjectSessionState;
@@ -629,6 +629,7 @@ async fn authenticate(
                     };
                     let actor_key =
                         derive_actor_key(layer.actor_key_deriver.as_deref(), &claims.sub);
+                    let authorized_client_id = AuthorizedClientId(Arc::from(claims.azp.as_str()));
                     let auth = AuthContext {
                         actor_key,
                         sub: claims.sub,
@@ -649,6 +650,7 @@ async fn authenticate(
                     if let Some(identity) = identity {
                         request.extensions_mut().insert(identity);
                     }
+                    request.extensions_mut().insert(authorized_client_id);
                     request.extensions_mut().insert(auth);
                     return Ok(request);
                 }
@@ -1644,7 +1646,7 @@ mod tests {
             iat: crate::util::now_unix() as usize,
             jti: "j-1".to_string(),
             scope: "syslog:read syslog:admin".to_string(),
-            azp: String::new(),
+            azp: "oauth-client-123".to_string(),
             identity_issuer: Some(crate::google::GOOGLE_ISSUER.to_string()),
             identity_credential_id: None,
         };
@@ -1654,8 +1656,14 @@ mod tests {
             .route(
                 "/probe",
                 get(
-                    |axum::Extension(ctx): axum::Extension<AuthContext>| async move {
-                        format!("{}|{}", ctx.sub, ctx.scopes.join(","))
+                    |axum::Extension(ctx): axum::Extension<AuthContext>,
+                     axum::Extension(client): axum::Extension<AuthorizedClientId>| async move {
+                        format!(
+                            "{}|{}|{}",
+                            ctx.sub,
+                            ctx.scopes.join(","),
+                            client.0
+                        )
                     },
                 ),
             )
@@ -1675,7 +1683,10 @@ mod tests {
         let body = axum::body::to_bytes(response.into_body(), 1024)
             .await
             .unwrap();
-        assert_eq!(&body[..], b"user@example.com|syslog:read,syslog:admin");
+        assert_eq!(
+            &body[..],
+            b"user@example.com|syslog:read,syslog:admin|oauth-client-123"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1698,7 +1709,7 @@ mod tests {
                 iat: crate::util::now_unix() as usize,
                 jti: "missing-identity-provenance".to_string(),
                 scope: "lab:read".to_string(),
-                azp: String::new(),
+                azp: "oauth-client-123".to_string(),
                 identity_issuer: None,
                 identity_credential_id: None,
             })
@@ -1816,7 +1827,7 @@ mod tests {
                 iat: crate::util::now_unix() as usize,
                 jti: "identity-link-test".to_string(),
                 scope: "lab:read".to_string(),
-                azp: String::new(),
+                azp: "oauth-client-123".to_string(),
                 identity_issuer: Some(crate::google::GOOGLE_ISSUER.to_string()),
                 identity_credential_id: None,
             })
@@ -1897,7 +1908,7 @@ mod tests {
                     iat: crate::util::now_unix() as usize,
                     jti: jti.to_string(),
                     scope: "lab:read".to_string(),
-                    azp: String::new(),
+                    azp: "oauth-client-123".to_string(),
                     identity_issuer: Some(identity_issuer.to_string()),
                     identity_credential_id: None,
                 })
@@ -2121,7 +2132,7 @@ mod tests {
                 iat: crate::util::now_unix() as usize,
                 jti: "exact-resource".to_string(),
                 scope: "mcp:read".to_string(),
-                azp: String::new(),
+                azp: "oauth-client-123".to_string(),
                 identity_issuer: Some(crate::google::GOOGLE_ISSUER.to_string()),
                 identity_credential_id: None,
             })
@@ -2228,7 +2239,7 @@ mod tests {
                 iat: crate::util::now_unix() as usize,
                 jti: "insufficient-scope".to_string(),
                 scope: "mcp:read".to_string(),
-                azp: String::new(),
+                azp: "oauth-client-123".to_string(),
                 identity_issuer: Some(crate::google::GOOGLE_ISSUER.to_string()),
                 identity_credential_id: None,
             })

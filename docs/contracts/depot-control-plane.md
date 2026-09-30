@@ -2,7 +2,7 @@
 title: Depot control-plane compatibility contract
 status: active
 created: 2026-09-03
-updated: 2026-09-20
+updated: "2026-09-29"
 ---
 
 # Depot control-plane compatibility contract
@@ -166,6 +166,38 @@ Artifact revision through Depot's `/api/artifacts/exact` contract, verifies its
 components, and commits the result through Labby's `artifacts.import` action.
 It fails closed when the matching acquisition connection or exact revision is
 missing; it never substitutes another configured Depot.
+
+### Managed repository sources
+
+The pinned operation catalog includes `depot.sources.add_repo` (contract
+version 1). It requires `url`, described as an HTTPS Git repository URL, and
+accepts optional `namespace`, `ref`, `subdir`, `credential`, and
+`intervalSeconds`. The credential is a runtime reference, never secret bytes.
+The advertised default interval is 86,400 seconds, with a range of
+1–31,536,000 seconds. Omitting `subdir` selects repository-wide Agent Skill
+discovery. Its result requires `source` and `status`.
+
+The operation is write-scoped, non-read-only, non-destructive, and
+non-idempotent in the published annotations. It uses the existing delegated
+mutation path and pinned schema checks; never replay an uncertain registration
+as though it were an idempotent read. The contract promises immediate discovery
+and cadence-based refresh by Depot, not a second Labby ingestion scheduler.
+
+Settings → Depot Providers now also renders managed repositories, including
+registration, cadence changes, pause/resume, refresh, deletion confirmation,
+and the latest ingest delta or failure. The browser calls Labby's existing
+Depot operation adapter. After a successful mutation whose list refresh fails,
+the UI reports that distinction so operators can refresh before retrying.
+Availability still depends on the selected Depot advertising compatible
+operations and authorizing them.
+
+Source: the read-only [golden operation catalog](fixtures/depot-control-plane/operations-v1.json),
+[contract binding](../../crates/labby/src/dispatch/depot/operation_contracts.rs),
+and [managed-source UI](../../apps/gateway-admin/components/settings/depot-managed-sources.tsx).
+Failed source histories can also feed the
+[operator notification monitor](../OPERATIONS.md#operator-notifications),
+whose current environment-backed connection is separate from named-provider
+selection.
 
 ## Bounded transport
 

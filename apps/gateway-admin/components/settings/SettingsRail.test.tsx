@@ -24,8 +24,10 @@ test('settings rail offers Authentication only to a configured admin', () => {
   // allowlist reads, so the entry is not offered.
   const platformAdmin = labels(authenticated({ isAdmin: true, isConfiguredAdmin: false }))
   assert.equal(platformAdmin.includes('Authentication'), false)
-  assert.equal(platformAdmin.includes('Labby'), true)
+  assert.equal(platformAdmin.includes('Notifications'), true)
+  assert.equal(platformAdmin.includes('Depot'), true)
   const configuredAdmin = labels(authenticated({ isAdmin: true, isConfiguredAdmin: true }))
   assert.equal(configuredAdmin.includes('Authentication'), true)
-  assert.equal(configuredAdmin.includes('Labby'), true)
+  assert.equal(configuredAdmin.includes('Notifications'), true)
+  assert.equal(configuredAdmin.includes('Depot'), true)
 })

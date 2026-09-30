@@ -1,16 +1,22 @@
 ---
 title: "CI/CD"
 created: "2026-07-30"
-updated: "2026-09-05"
+updated: "2026-09-29"
 ---
 
 # CI/CD
 
-Last updated: 2026-09-05
+Last updated: 2026-09-29
 
 This document is the authoritative contract for CI, release, and artifact delivery in Labby. All pipeline implementations must conform to this spec.
 
 ## CI Path Routing
+
+The docs-check job also runs the pure-Python Microsandbox implementation skill
+receipt tests and its path-routing regression. Every file under
+`plugins/labby/skills/implement-in-microsandbox/` routes to that job, including
+scripts, tests, locks, and descriptors. These checks do not launch a microVM
+on CI.
 
 The incubating verification toolkit has a separate path-triggered advisory
 workflow, `.github/workflows/verification.yml`. It runs isolated compilation,
@@ -318,17 +324,26 @@ land the required code/tests and the baseline update together.
   - Native Windows workspace, installer, and desktop jobs require manual `run_windows=true`; enabled workspace/installer failures block `ci-gate`, while desktop Windows remains advisory
   - Heavy release work starts from an immutable stable-version tag while the
     matching GitHub release is still draft
-  - Release Linux jobs use GitHub-hosted x86_64 runners; native macOS artifacts use GitHub-hosted Apple Silicon runners
+  - Release Linux jobs use GitHub-hosted x86_64 and ARM64 runners; native macOS artifacts use GitHub-hosted Apple Silicon runners
 
 The pinned fleet policy and repository contract set `allow-arm64: true` for
 Labby. This removes the former fleet-wide ARM64 token rejection while keeping
 the shared workflows' default x86_64-only for callers that do not opt in. The
-current release matrix includes native macOS arm64 as shown below; Linux
-artifacts remain x86_64.
+release matrix builds Linux ARM64 natively on `ubuntu-24.04-arm`.
+The path-filtered `arm64-package-smoke.yml` pull-request workflow checks out
+the exact PR head on the same native runner, builds the frontend and release
+binary, verifies the archive checksum and contents, and executes the extracted
+binary's Code Mode and Skill CLI smoke. It retains the archive, checksum, and a
+source-head/digest receipt for seven days. This qualification has read-only
+repository permissions and never publishes a tag, release, or package.
+Its trigger includes Rust manifests and crates, embedded configuration,
+Gateway Admin, embedded docs and plugins, package assets, scripts, and the
+native build actions.
 
 ## GitHub-hosted runners
 
-All repository-defined Linux jobs use the GitHub-hosted `ubuntu-24.04` image.
+Repository-defined Linux jobs use GitHub-hosted `ubuntu-24.04`; native ARM64
+release builds use `ubuntu-24.04-arm`.
 Native Windows jobs use `windows-latest`. No repository-defined job selects a
 self-hosted runner or a custom runner label.
 
@@ -351,7 +366,22 @@ organization-owned implementation for the adapter to execute.
 | Platform | Target |
 |----------|--------|
 | Linux x86_64 | `x86_64-unknown-linux-gnu` |
+| Linux arm64 | `aarch64-unknown-linux-gnu` |
 | macOS arm64 | `aarch64-apple-darwin` |
+
+Linux ARM64 receives the native packaged Code Mode smoke, checksums, SBOM,
+provenance verification, and a native Unix N-1 stateful upgrade/rollback leg.
+For the first release without an older published ARM64 archive,
+`scripts/ci/resolve_arm64_n_minus_one.py` selects an older published stable
+ancestor tag with a complete Linux x86_64 archive and checksum. The workflow
+builds that source natively for ARM64 and binds its source commit and binary
+digest into the Unix adapter. This bootstrap qualifies state transitions
+against a source-built baseline, not a previously distributed ARM64 binary.
+Once an eligible published ARM64 archive exists, the resolver requires its
+checksum and uses that archive; a missing sidecar fails closed rather than
+reenabling bootstrap. The candidate archive still requires provenance
+verification in either mode. Shell and npm installers select the matching
+ARM64 archive.
 
 Official macOS artifacts are built on a native GitHub-hosted Apple Silicon
 runner. Windows has manually enabled CI tests, but is not a release
@@ -379,16 +409,19 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
 3. The immutable tag triggers candidate work; no maintainer manually publishes
    the draft. Preflight requires stable SemVer, ancestry from `origin/main`, and
    exact Cargo/npm/MCP/release-manifest version lockstep. It also checks the
-   required npm/MCP publisher credentials, verifies npm authentication, and resolves both platform N-1
-   baselines before starting frontend or native builds.
+   required npm/MCP publisher credentials, verifies npm authentication, and
+   resolves the published x86_64/macOS N-1 baselines and the ARM64 published
+   or source-bootstrap baseline before starting frontend or native builds.
    The advisory desktop bundle starts after preflight in parallel with the
    CLI builds and upgrade qualification; promotion still waits for its result
    so any successful desktop asset enters the release manifest.
 4. Each platform archive is built, smoke-tested, and attested in its build job.
    The N-1 matrix verifies that exact archive attestation before extraction,
    checks the archive sidecar, and records an archive-to-extracted-binary digest
-   binding. It then invokes a platform-owned adapter for Unix, macOS, Incus,
-   and host-service deployment. All four legs must pass. N-1 is the newest published
+   binding. It then invokes a platform-owned adapter for Unix on x86_64 and
+   ARM64, macOS, Incus, and host-service deployment. All five legs must pass.
+   Except for the explicit
+   first-release ARM64 source bootstrap above, N-1 is the newest published
    (non-draft, non-prerelease) `vX.Y.Z` release that is older than the
    candidate, merged into it, and carries the leg's archive and `.sha256`
    sidecar (`scripts/ci/resolve-n-minus-one-baseline.py`). Newer tags whose
@@ -499,7 +532,7 @@ the distinct tags described above.
 ## Artifact Distribution
 
 - **Surface:** GitHub Releases
-- **Artifacts per release:** one binary archive per supported target (Linux x86_64 and macOS arm64)
+- **Artifacts per release:** one binary archive per supported target (Linux x86_64, Linux arm64, and macOS arm64)
 - **Checksums:** every binary archive has a SHA-256 checksum file
 - **SBOMs:** one identity-bound SPDX JSON document per archive and installer
 - **Manifest:** `release-manifest.json` binds every promoted subject name, size,

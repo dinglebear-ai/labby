@@ -1,7 +1,7 @@
 ---
 title: "Gateway Management"
 created: "2026-07-30"
-updated: "2026-09-19"
+updated: "2026-09-29"
 ---
 
 # Gateway Management
@@ -41,6 +41,11 @@ definition. In particular, clearing OAuth tokens, enabling/disabling an
 upstream, and killing restartable upstream processes do not require destructive
 confirmation.
 
+Runtime views include optional `server_name`, `server_version`, and
+`protocol_version` from the connected upstream's negotiated server information.
+These are peer-reported metadata; missing values do not prove the upstream is
+absent. Runtime inspection does not start a connection just to fill them in.
+
 ### Restarting An Upstream Connection
 
 `gateway.mcp.restart` replaces one enabled upstream's live connection without
@@ -68,6 +73,13 @@ runtime `last_error`, and the action still completes with the view reporting
 failed probe. The action fails only when the transaction cannot run: the
 upstream is unknown or disabled, the gateway runtime is not initialized, the
 configuration changed under the connect gate, or the process cleanup failed.
+
+On Linux, cleanup snapshots registered runtime ownership after scanning
+processes. It excludes another live upstream's PID, process group, and
+descendants even when command fragments overlap, including aggressive cleanup.
+Persisted runtime identities also record process start ticks to fence PID reuse; older
+journal rows retain the PID/PGID fallback until rewritten. Source:
+[gateway runtime](../../crates/labby-gateway/src/gateway/runtime.rs).
 
 OAuth upstreams are projected per calling subject: `gateway.get`,
 `gateway.list`, and `gateway.mcp.list` report that subject's connection,
@@ -1235,7 +1247,9 @@ the raw authenticated subject — see [OBSERVABILITY.md](../dev/OBSERVABILITY.md
 for the `actor_key` redaction convention this reuses), the client's
 self-declared MCP client name/version from `server/discover` request metadata,
 the transport (`stdio`, `http`, `in-process`, or `test`), and a connect
-timestamp.
+timestamp. An optional `authorized_client_id` separately records the validated
+OAuth access token's `azp` (authorized-party client ID); static bearer and
+unauthenticated observations do not gain that field from MCP client metadata.
 
 ```json
 { "action": "gateway.clients.list", "params": {} }
@@ -1250,7 +1264,8 @@ Two things this is explicitly **not**:
 - **Not authenticated identity.** `client_name`/`client_version` are
   self-declared by the peer during the MCP handshake and are not verified —
   treat them as a display label, not an identity claim. The redacted subject
-  tag is the only field backed by actual auth state.
+  tag and optional `authorized_client_id` are backed by authentication state;
+  neither makes the self-declared name/version trustworthy.
 
 The registry is bounded (drop-oldest past a fixed entry cap) and truncates
 every peer-controlled string field before storage, since a client is

@@ -1,7 +1,7 @@
 ---
 title: "Error Contract"
 created: "2026-07-30"
-updated: "2026-09-22"
+updated: "2026-09-29"
 ---
 
 # Error Contract
@@ -77,6 +77,10 @@ real serialization includes the version, origin, recovery, and side-effect field
 Supported code may emit additional stable kinds, including:
 
 - auth/OAuth: `auth_failed`, `auth_required`, `permission_denied`,
+  `upstream_credential_missing` (an explicitly referenced upstream bearer
+  credential is absent or empty; `origin: policy`, `side_effects: none_expected`,
+  and `inspect_and_escalate` with `same_arguments: never`; the operator must
+  restore the secret and reload the upstream, not bypass authentication),
   `oauth_needs_reauth`, `oauth_state_invalid`, `oauth_resource_mismatch`,
   `oauth_issuer_mismatch`, `oauth_unsupported_method`,
   `oauth_scope_upgrade_required`, `oauth_account_ambiguous`,
@@ -214,7 +218,7 @@ so the `oauth_needs_reauth` refinement below is preserved.
 - payload limits: 413;
 - rate/queue limits: 429;
 - upstream gateway failure, including `protocol_error`: 502;
-- service unavailable, including `unavailable`: 503;
+- service unavailable, including `unavailable` and `upstream_credential_missing`: 503;
 - timeouts: 504;
 - unknown/internal kind: 500.
 
@@ -223,9 +227,22 @@ status code.
 
 The match in `crates/labby/src/api/error.rs` is authoritative: classification in
 the shared recovery vocabulary does not automatically add an HTTP mapping.
-For example, unmapped `permission_denied`, `auth_required`, and
-`result_too_large` currently fall through to 500. Do not infer an HTTP status
+For example, unmapped `permission_denied`, `auth_required`,
+`result_too_large`, `call_budget_exceeded`, and `runner_settlement_timeout`
+currently fall through to 500. Do not infer an HTTP status
 from a kind's wording or retry advice.
+
+### Upstream HTTP errors during lifecycle discovery
+
+The outbound HTTP adapter is a separate boundary from `ApiError`. For a failed
+`server/discover` request, HTTP 401, 403, 429, and 5xx remain transport failures
+and cannot trigger a legacy lifecycle downgrade, even if their JSON body looks
+like a method-not-found error. Other eligible JSON error responses may have
+their ID rebound to that discover request; ordinary RPC errors still require
+the matching request ID. Existing authentication and session-expiry handling
+remains ahead of this fallback. Non-protocol error bodies are reduced to
+sanitized transport diagnostics rather than echoed. See
+`crates/labby-gateway/src/upstream/http_client.rs` and `pool/lifecycle_compat.rs`.
 
 ## Logging And Redaction
 

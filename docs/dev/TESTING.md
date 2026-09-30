@@ -1,7 +1,7 @@
 ---
 title: "Testing"
 created: "2026-07-30"
-updated: "2026-09-16"
+updated: "2026-09-29"
 ---
 
 # Testing
@@ -177,6 +177,26 @@ Rules:
 - MCP and HTTP envelope shape
 - CLI parsing and machine-readable output behavior
 - contract-level serialization and error shape tests
+
+### Saved-snippet fixture tests
+
+`labby snippet test <name>` and `--all` use offline sibling `.test.json`
+fixtures by default. Missing fixtures fail; they never select live execution.
+`--fixture` supplies a local JSON fixture, while the shared `snippets.test`
+action accepts its contents as `fixture`. Real upstream execution requires
+explicit `--live` / `live: true`.
+
+The harness runs the production parser and isolated QuickJS subprocess with
+synthetic `callTool` responses and native `codemode.batch`. It has no live
+gateway or credentials. Tests check rule consumption, result assertions or
+snapshots, and wall-clock/call/raw-output budgets; the CLI exits nonzero for a
+failing report while preserving structured stdout under `--json`.
+
+Coverage lives in `crates/labby-codemode/src/snippet/harness/tests.rs` and product
+targets `snippet_fixture_runtime`, `snippet_harness`,
+`snippet_harness_regressions`, and `snippet_triage_v2_regressions`. These are
+CI-safe process-boundary checks, not proof of live schema compatibility or
+upstream health. See [Snippet development and testing](SNIPPET_TESTING.md).
 
 ### Live Verification Must Cover When Available
 

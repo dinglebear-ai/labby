@@ -80,6 +80,7 @@ pub mod doctor;
 pub mod file_stash;
 #[cfg(feature = "gateway")]
 pub mod gateway;
+pub mod notifications;
 pub mod oauth_relay;
 #[cfg(feature = "gateway")]
 pub mod palette;

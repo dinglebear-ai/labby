@@ -71,6 +71,7 @@ function HeroWindowPills({
           <button
             key={window}
             type="button"
+            data-visible-label="1"
             role="tab"
             aria-selected={active}
             onClick={() => onChange(window)}
@@ -481,6 +482,7 @@ export function OverviewHero({
 
           <Link
             href="/gateways"
+            data-visible-label="1"
             onMouseEnter={() => setManageHovered(true)}
             onMouseLeave={() => setManageHovered(false)}
             style={{

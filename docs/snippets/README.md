@@ -223,21 +223,33 @@ executing it, or pass `--file` / `--code` to validate an unsaved body:
 labby snippet validate draft --file draft-snippet.md
 ```
 
-Use `labby snippet test <name>` to execute one snippet as a smoke test, or
-`labby snippet test --all` to run every listed snippet with its declared
-defaults. MCP/API callers use `snippets.test` with `{ "all": true }` for the
-same all-snippet check.
+Use `labby snippet test <name>` for offline execution with the selected
+snippet's adjacent `<name>.test.json`, or pass `--fixture` for another fixture.
+`labby snippet test --all` tests all listed names sequentially (at most 100).
+Missing, malformed, or incomplete fixtures fail without contacting upstreams.
+MCP/API callers use `snippets.test` with `name` or `{ "all": true }`; a named
+test can supply an inline `fixture` object. A failed report produces a nonzero
+CLI exit status, with structured stdout preserved under `--json`.
 
-These are real executions against configured upstreams, not hermetic validation.
-`--all` can contact SSH hosts, registries, and research providers, and required
-inputs without defaults (such as `docker-host-inventory.alias`) can fail. Prefer
-`snippet validate` for a non-executing source check and select smoke tests only
-when their external work is intended.
+The fixture harness uses the production parser and isolated QuickJS runner,
+with synthetic `callTool()` responses and native `codemode.batch()`. Discovery,
+generated helpers, resources, artifact writes, and nested snippets are not
+mocked. Older examples using those helpers need explicit live verification or
+a separately designed fixture-compatible workflow; `--all` does not skip them
+or silently execute them live. See [Snippet development and testing](../dev/SNIPPET_TESTING.md)
+for assertions, snapshots, and budgets.
 
-When Code Mode final-result shaping is enabled, `snippets.exec` returns the
-same shaped display response as Code Mode. `snippets.test` evaluates pass/fail
-from the pre-shape result, so `{ "ok": true }` and `{ "ok": false }` remain
-reliable even when the displayed response is shaped into a bounded string.
+Real upstream smoke tests require `labby snippet test <name> --live` or
+`live: true` in the shared action. `--all --live` can contact SSH hosts,
+registries, and research providers; review each snippet and supply required
+inputs before requesting that work. `snippet validate` remains a non-executing
+source check.
+
+When final-result shaping is enabled, `snippets.exec` returns the shaped Code
+Mode response. A live `snippets.test` checks the raw result, requires a result
+and no failed tool calls, and also fails if shaping/truncation changes that
+result. Offline tests assert against raw output and fail their own output-byte
+budget; an explicit `"/ok": false` assertion can test an expected failure.
 
 `snippets.list`, `help`, and `schema` are read-only discovery actions. Actions
 that expose snippet bodies or execute/manage snippets require `lab:admin`.
@@ -496,6 +508,8 @@ A snippet is ready to reuse when:
 - [`homelab-ssh-targets.md`](./homelab-ssh-targets.md) discovers and probes SSH aliases through the configured controller.
 - [`docker-host-inventory.md`](./docker-host-inventory.md) inventories one SSH-reachable Docker host, including optional registry digest checks.
 - [`homelab-docker-inventory.md`](./homelab-docker-inventory.md) composes those primitives and writes a combined artifact.
+- [`unraid-linear-pr-triage.md`](./unraid-linear-pr-triage.md) provides bounded issue/PR matching with default and deep offline fixtures.
+- [`unraid-linear-pr-triage-v2.md`](./unraid-linear-pr-triage-v2.md) adds bounded GitHub pagination, shared PR references, coverage gaps, and a separate fixture matrix.
 
 Upstream names and schemas in these examples are deployment-specific snapshots,
 not built-in Labby capabilities. Rediscover them on the intended gateway before

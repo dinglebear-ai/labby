@@ -23,6 +23,7 @@ pub mod net;
 pub mod process;
 pub mod registry;
 pub mod security;
+pub mod trace_context;
 pub mod upstream;
 pub mod usage;
 

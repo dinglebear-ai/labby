@@ -1,0 +1,3 @@
+```js
+async () => { while (true) {} }
+```

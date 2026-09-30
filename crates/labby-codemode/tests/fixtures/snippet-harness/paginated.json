@@ -1,0 +1,1435 @@
+{
+  "calls": [
+    {
+      "tool": "linear-notification-worker::list_issues",
+      "match": {
+        "team": "U8",
+        "assignee": "me",
+        "state": "started",
+        "limit": 100
+      },
+      "result": {
+        "issues": [
+          {
+            "id": "U8-16",
+            "title": "Authorization",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-767",
+            "title": "Design",
+            "status": "In Progress"
+          }
+        ],
+        "hasNextPage": false
+      }
+    },
+    {
+      "tool": "github::get_me",
+      "result": {
+        "login": "jmagar"
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {
+        "query": "author:jmagar org:unraid is:open",
+        "page": 1
+      },
+      "result": {
+        "items": [
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 10,
+            "title": "Fix U8-16",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/10",
+            "user": {
+              "login": "jmagar"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 11,
+            "title": "Fix U8-160",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/11",
+            "user": {
+              "login": "jmagar"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/cloudflare",
+            "number": 12,
+            "title": "Worker hardening",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/cloudflare/pull/12",
+            "user": {
+              "login": "jmagar"
+            },
+            "pull_request": {}
+          }
+        ],
+        "total_count": 3,
+        "incomplete_results": false
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {
+        "query": "\"U8-16\" org:unraid is:open OR \"U8-767\" org:unraid is:open",
+        "page": 1
+      },
+      "result": {
+        "items": [
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 10,
+            "title": "Fix U8-16",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/10",
+            "user": {
+              "login": "jmagar"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 101,
+            "title": "Other 1",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/101",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 102,
+            "title": "Other 2",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/102",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 103,
+            "title": "Other 3",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/103",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 104,
+            "title": "Other 4",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/104",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 105,
+            "title": "Other 5",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/105",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 106,
+            "title": "Other 6",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/106",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 107,
+            "title": "Other 7",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/107",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 108,
+            "title": "Other 8",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/108",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 109,
+            "title": "Other 9",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/109",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 110,
+            "title": "Other 10",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/110",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 111,
+            "title": "Other 11",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/111",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 112,
+            "title": "Other 12",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/112",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 113,
+            "title": "Other 13",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/113",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 114,
+            "title": "Other 14",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/114",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 115,
+            "title": "Other 15",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/115",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 116,
+            "title": "Other 16",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/116",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 117,
+            "title": "Other 17",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/117",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 118,
+            "title": "Other 18",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/118",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 119,
+            "title": "Other 19",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/119",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 120,
+            "title": "Other 20",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/120",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 121,
+            "title": "Other 21",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/121",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 122,
+            "title": "Other 22",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/122",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 123,
+            "title": "Other 23",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/123",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 124,
+            "title": "Other 24",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/124",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 125,
+            "title": "Other 25",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/125",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 126,
+            "title": "Other 26",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/126",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 127,
+            "title": "Other 27",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/127",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 128,
+            "title": "Other 28",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/128",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 129,
+            "title": "Other 29",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/129",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 130,
+            "title": "Other 30",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/130",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 131,
+            "title": "Other 31",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/131",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 132,
+            "title": "Other 32",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/132",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 133,
+            "title": "Other 33",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/133",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 134,
+            "title": "Other 34",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/134",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 135,
+            "title": "Other 35",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/135",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 136,
+            "title": "Other 36",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/136",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 137,
+            "title": "Other 37",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/137",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 138,
+            "title": "Other 38",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/138",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 139,
+            "title": "Other 39",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/139",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 140,
+            "title": "Other 40",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/140",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 141,
+            "title": "Other 41",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/141",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 142,
+            "title": "Other 42",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/142",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 143,
+            "title": "Other 43",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/143",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 144,
+            "title": "Other 44",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/144",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 145,
+            "title": "Other 45",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/145",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 146,
+            "title": "Other 46",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/146",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 147,
+            "title": "Other 47",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/147",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 148,
+            "title": "Other 48",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/148",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 149,
+            "title": "Other 49",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/149",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 150,
+            "title": "Other 50",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/150",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 151,
+            "title": "Other 51",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/151",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 152,
+            "title": "Other 52",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/152",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 153,
+            "title": "Other 53",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/153",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 154,
+            "title": "Other 54",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/154",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 155,
+            "title": "Other 55",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/155",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 156,
+            "title": "Other 56",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/156",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 157,
+            "title": "Other 57",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/157",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 158,
+            "title": "Other 58",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/158",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 159,
+            "title": "Other 59",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/159",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 160,
+            "title": "Other 60",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/160",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 161,
+            "title": "Other 61",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/161",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 162,
+            "title": "Other 62",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/162",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 163,
+            "title": "Other 63",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/163",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 164,
+            "title": "Other 64",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/164",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 165,
+            "title": "Other 65",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/165",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 166,
+            "title": "Other 66",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/166",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 167,
+            "title": "Other 67",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/167",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 168,
+            "title": "Other 68",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/168",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 169,
+            "title": "Other 69",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/169",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 170,
+            "title": "Other 70",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/170",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 171,
+            "title": "Other 71",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/171",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 172,
+            "title": "Other 72",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/172",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 173,
+            "title": "Other 73",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/173",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 174,
+            "title": "Other 74",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/174",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 175,
+            "title": "Other 75",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/175",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 176,
+            "title": "Other 76",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/176",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 177,
+            "title": "Other 77",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/177",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 178,
+            "title": "Other 78",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/178",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 179,
+            "title": "Other 79",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/179",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 180,
+            "title": "Other 80",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/180",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 181,
+            "title": "Other 81",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/181",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 182,
+            "title": "Other 82",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/182",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 183,
+            "title": "Other 83",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/183",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 184,
+            "title": "Other 84",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/184",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 185,
+            "title": "Other 85",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/185",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 186,
+            "title": "Other 86",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/186",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 187,
+            "title": "Other 87",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/187",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 188,
+            "title": "Other 88",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/188",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 189,
+            "title": "Other 89",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/189",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 190,
+            "title": "Other 90",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/190",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 191,
+            "title": "Other 91",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/191",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 192,
+            "title": "Other 92",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/192",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 193,
+            "title": "Other 93",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/193",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 194,
+            "title": "Other 94",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/194",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 195,
+            "title": "Other 95",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/195",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 196,
+            "title": "Other 96",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/196",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 197,
+            "title": "Other 97",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/197",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 198,
+            "title": "Other 98",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/198",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          },
+          {
+            "repository_url": "https://api.github.com/repos/unraid/core",
+            "number": 199,
+            "title": "Other 99",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/core/pull/199",
+            "user": {
+              "login": "someone-else"
+            },
+            "pull_request": {}
+          }
+        ],
+        "total_count": 101
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {
+        "query": "\"U8-16\" org:unraid is:open OR \"U8-767\" org:unraid is:open",
+        "page": 2
+      },
+      "result": {
+        "items": [
+          {
+            "repository_url": "https://api.github.com/repos/unraid/cloudflare",
+            "number": 12,
+            "title": "Worker hardening",
+            "body": "",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/unraid/cloudflare/pull/12",
+            "user": {
+              "login": "jmagar"
+            },
+            "pull_request": {}
+          }
+        ],
+        "total_count": 101
+      }
+    }
+  ],
+  "expect": {
+    "/complete": true,
+    "/summary/toolCalls": 5,
+    "/myOpenPRs": [
+      "unraid/core#10",
+      "unraid/core#11",
+      "unraid/cloudflare#12"
+    ]
+  },
+  "budgets": {
+    "tool_calls": 5
+  }
+}

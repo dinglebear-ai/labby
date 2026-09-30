@@ -1,7 +1,7 @@
 ---
 title: "Runtime Configuration"
 created: "2026-07-30"
-updated: "2026-09-20"
+updated: "2026-09-29"
 ---
 
 # Runtime Configuration
@@ -106,6 +106,17 @@ over `config.toml` with mode `0600`, and restarting before running doctor again.
 
 Top-level gateway timeouts, import mode, tombstones, pending imports, and
 quarantined virtual servers are serialized alongside those sections.
+
+## Notification settings
+
+Settings → Notifications exposes environment-backed fields for the Depot
+failure monitor, local inbox retention, and optional Apprise delivery. There
+is no `[notifications]` TOML section. Changes use the shared settings validation
+and stale-write checks and are marked restart-required. Secret Apprise keys
+are write-only; settings reads return configured/opaque fingerprint markers.
+See [Environment](ENV.md#operator-notifications) for the exact fields and
+[Operations](../OPERATIONS.md#operator-notifications) for the implemented feed
+and its legacy Depot configuration requirement.
 
 ## Phoenix Assistant
 

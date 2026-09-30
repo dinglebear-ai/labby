@@ -165,13 +165,14 @@ test('snippets page renders fetched snippets and typed inputs', async () => {
   )
 
   const testButton = Array.from(view.container.querySelectorAll('button')).find(
-    (button) => button.textContent?.trim() === 'Test',
+    (button) => button.textContent?.trim() === 'Test live',
   )
-  assert.ok(testButton, 'expected Test button')
+  assert.ok(testButton, 'expected explicitly labeled live-test button')
   await act(async () => {
     testButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
   })
   await waitFor(() => assert.match(view.container.textContent ?? '', /Test failed/))
+  assert.equal(requests.find((request) => request.action === 'snippets.test')?.params?.live, true)
 
   await view.unmount()
 })

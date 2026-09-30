@@ -1,7 +1,7 @@
 ---
 title: "Agent Tasks and Schedules"
 created: "2026-09-13"
-updated: "2026-09-16"
+updated: "2026-09-27"
 ---
 
 # Agent Tasks and Schedules
@@ -53,7 +53,8 @@ settlement metadata; they do not expose a session transcript.
 
 `tasks.cancel` moves an admitted Task through `cancelling` and signals its live
 process when the attempt is owned by this runtime. `tasks.list` and `tasks.get`
-return summaries without output or error details. `tasks.result` returns those
+return summaries with `created_at` and `updated_at` Unix timestamps in milliseconds,
+without output or error details. `tasks.result` returns those
 details only after settlement and only to the principal that created the Task;
 team administration alone does not grant access to another creator's result.
 

@@ -1,7 +1,7 @@
 ---
 title: "Upstream Runtime Maintenance Notes"
 created: "2026-09-28"
-updated: "2026-09-28"
+updated: "2026-09-29"
 ---
 
 # Upstream runtime maintenance notes
@@ -103,6 +103,29 @@ follow-up splits. All new files added to `pool/` must stay under 500 LOC.
 | `STDIO_DISCOVERY_TIMEOUT` | 60 seconds | `pool/helpers.rs` |
 | `DEFAULT_MAX_RESPONSE_BYTES` | 10 MiB ordinary response | `pool/helpers.rs` |
 | `DEFAULT_MAX_SKILL_RESPONSE_BYTES` | 24 MiB Skills wire response | `pool/helpers.rs` |
+
+## Credential and lifecycle error boundaries
+
+`auth.rs::required_bearer_token` rejects an explicitly configured but missing or
+empty bearer credential before connection/spawn with
+`upstream_credential_missing`. A present empty or non-Unicode environment value
+does not fall back to a stale installation `.env` value. Omitting the credential
+reference still selects anonymous access. Preserve this typed failure through
+lazy discovery; it requires operator repair, not caller reauthentication.
+
+For HTTP `server/discover`, auth, quota, and server-failure statuses must not
+be mistaken for evidence of an older MCP lifecycle. The adapter preserves
+eligible JSON-RPC errors, rebinding a mismatched ID only for discovery; ordinary
+RPCs still require exact IDs. See [Error Contract](ERRORS.md#upstream-http-errors-during-lifecycle-discovery).
+Stdio logs now separate spawn, protocol negotiation, and initial tool-catalog
+refresh, carrying PID and generation without logging argv values.
+
+Tool-request tracing is composed by `labby-gateway::trace_context` above the
+transport: it injects a fresh child context into request metadata, preserves
+unrelated metadata, and instruments the outbound future with that same child.
+Retries reuse the prepared request context. The pool log helpers inherit these
+spans; baggage is never an authorization or routing input. See
+[Observability](OBSERVABILITY.md#mcp-request-trace-propagation).
 
 ## Rules
 

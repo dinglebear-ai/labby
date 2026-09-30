@@ -65,7 +65,7 @@ async fn run_observation_cases(root: &Path) {
 
 async fn run_setup_state(root: &Path) {
     let state_home = home(root, "setup-state");
-    let state = execute(&state_home, &["setup", "--smoke", "--json"], &[]).await;
+    let state = execute(&state_home, &["setup", "state", "--json"], &[]).await;
     record_success("setup:state", &state, EvidenceLevel::LiveSuccess);
 }
 
@@ -149,7 +149,7 @@ async fn run_snippet_workflow(root: &Path) {
         ),
         (
             "snippets:snippets.test",
-            vec!["snippet", "test", name, "--json"],
+            vec!["snippet", "test", name, "--live", "--json"],
         ),
     ] {
         let output = execute(&snippet_home, &argv, &[]).await;

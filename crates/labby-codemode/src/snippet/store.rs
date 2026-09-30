@@ -30,6 +30,32 @@ const MAX_SNIPPET_CODE_BYTES: usize = crate::config::MAX_SOURCE_BYTES;
 /// while still rejecting pathological files before parsing.
 const MAX_SNIPPET_FILE_BYTES: usize = 2 * crate::config::MAX_SOURCE_BYTES;
 
+/// Apply the same source ceiling to saved-snippet invocations on live and
+/// fixture surfaces. Parameters count because they become part of the source.
+pub fn wrap_snippet_with_input_bounded(
+    code: &str,
+    input: &Value,
+    max_source_bytes: usize,
+) -> Result<String, ToolError> {
+    let input = serde_json::to_string(input).map_err(|e| ToolError::InvalidParam {
+        message: format!("snippet params must be JSON-serializable: {e}"),
+        param: "params".to_string(),
+    })?;
+    let wrapped = format!(
+        "async () => {{\n  const __labSnippetInput = {input};\n  return await ({code})(__labSnippetInput);\n}}"
+    );
+    if wrapped.len() > max_source_bytes {
+        return Err(ToolError::InvalidParam {
+            message: format!(
+                "saved snippet invocation exceeds Code Mode source limit {max_source_bytes} bytes after serializing params ({} bytes)",
+                wrapped.len()
+            ),
+            param: "params".to_string(),
+        });
+    }
+    Ok(wrapped)
+}
+
 /// Origin of a reusable Code Mode snippet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -899,7 +925,20 @@ fn parse_inputs_block(
                 param: "body".to_string(),
             });
         };
-        validate_snippet_name(input_name)?;
+        // Input keys are JSON fields, not filesystem-backed snippet slugs.
+        // Preserve camelCase callers without relaxing artifact-name safety.
+        if input_name.is_empty()
+            || input_name.len() > 128
+            || !input_name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            || inputs.contains_key(input_name)
+        {
+            return Err(ToolError::InvalidParam {
+                message: "snippet input names must be unique, bounded alphanumeric keys".into(),
+                param: "body".into(),
+            });
+        }
         i += 1;
 
         let mut ty = None;

@@ -86,6 +86,24 @@ pub(crate) fn start(
     });
 }
 
+/// Before explicit owner setup there can be no authorized follow work. This
+/// is a waiting state, not a failed reconciliation or permission decision.
+fn reconciliation_store(
+    result: Result<crate::access::AccessStore, AccessRuntimeError>,
+) -> Result<Option<crate::access::AccessStore>, FollowReconcileError> {
+    match result {
+        Ok(store) => Ok(Some(store)),
+        Err(AccessRuntimeError::SetupRequired(_)) => {
+            tracing::debug!(
+                kind = "access_setup_required",
+                "managed Artifact follow reconciliation waits for owner setup"
+            );
+            Ok(None)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 async fn tick(
     access_runtime: &AccessRuntime,
     runtime: &ProcessSkillLibraryRuntime,
@@ -95,7 +113,9 @@ async fn tick(
         i64::try_from(RECONCILE_INTERVAL.as_secs())
             .map_err(|_| FollowReconcileError::State("follow_interval_out_of_range"))?,
     );
-    let store = access_runtime.store().await?;
+    let Some(store) = reconciliation_store(access_runtime.store().await)? else {
+        return Ok(());
+    };
 
     for mirror in store
         .managed_artifact_mirrors_for_reconciliation(checked_before, 64)
@@ -680,6 +700,37 @@ fn reconcile_error_kind(error: &FollowReconcileError) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn coco_follow_reconciliation_waits_only_for_setup() {
+        use crate::access::{AccessBlockedReason, AccessSetupReason};
+        for reason in [
+            AccessSetupReason::Missing,
+            AccessSetupReason::Uninitialized,
+            AccessSetupReason::ProofPending,
+        ] {
+            assert!(
+                reconciliation_store(Err(AccessRuntimeError::SetupRequired(reason)))
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        for reason in [
+            AccessBlockedReason::Insecure,
+            AccessBlockedReason::Corrupt,
+            AccessBlockedReason::NewerSchema,
+            AccessBlockedReason::Locked,
+            AccessBlockedReason::ReadOnly,
+            AccessBlockedReason::Unavailable,
+        ] {
+            assert!(matches!(
+                reconciliation_store(Err(AccessRuntimeError::Blocked(reason))),
+                Err(FollowReconcileError::Runtime(AccessRuntimeError::Blocked(
+                    _
+                )))
+            ));
+        }
+    }
 
     #[test]
     fn denial_restriction_distinguishes_source_withdrawal_from_access_revocation() {

@@ -90,6 +90,8 @@ registered multi-surface service.
 
 ## Developer Contracts
 
+- [Snippet testing](./dev/SNIPPET_TESTING.md): offline fixtures, explicit live mode, resource budgets, and regression checks.
+
 - [Dispatch](./dev/DISPATCH.md) — surface-neutral operation ownership and dependency direction.
 - [Service model](./dev/SERVICES.md) — service inventory and registration rules.
 - [Service onboarding](./dev/SERVICE_ONBOARDING.md) — end-to-end checklist for a new first-class capability.

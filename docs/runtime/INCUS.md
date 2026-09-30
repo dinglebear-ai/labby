@@ -1,7 +1,7 @@
 ---
 title: "Incus Gateway Deployment"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-09-29"
 ---
 
 # Incus Gateway Deployment
@@ -24,10 +24,11 @@ The supported Incus substrate is amd64 / x86_64.
 - `/dev/net/tun` passthrough when Tailscale is enabled, validated by creating
   a throwaway TUN interface during bootstrap
 
-The amd64 release-path constraint exists because the release binary includes
-Code Mode's QuickJS engine (`rquickjs-sys`), which does not cross-compile
-cleanly in the current release path. ARM hosts can build from source or push a
-local binary, but they should not expect the same prebuilt cold-start path.
+Linux ARM64 binary archives are built natively and selected by the shell/npm
+installers. That does not extend the Incus substrate contract: the prebuilt
+image, its toolchain supply, and `scripts/incus-bootstrap.sh` still require
+amd64/x86_64. Use the native Linux ARM64 binary path without assuming the
+Incus image or onboarding backend supports ARM64. See [CI/CD](CICD.md).
 
 ## Deployment Choices
 
@@ -221,7 +222,8 @@ common secret environment variables before invoking distrobuilder, and the CI
 smoke test fails if the exported image contains Labby env files, Tailscale
 state/authkey files, or common secret env vars.
 
-Release archives are published for the supported amd64 Linux substrate.
+The independent Incus image archive is published for the supported amd64 Linux
+substrate; binary releases additionally include Linux ARM64 and macOS ARM64.
 
 ## Golden Snapshots
 

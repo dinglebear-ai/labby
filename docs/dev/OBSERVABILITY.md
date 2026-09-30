@@ -1,7 +1,7 @@
 ---
 title: "Observability"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-09-29"
 ---
 
 # Observability
@@ -284,7 +284,7 @@ responses and remains null for outcomes without one.
 The operator UI deliberately separates these two retention shapes:
 
 - **Usage** reads the 30-day SQLite store for durable upstream volume, latency, outcome, actor, capability, operation, OAuth-scope, and response-size analysis.
-- **Traces** reads a bounded admin-only `server_logs.query` window with `correlated_only` and `stop_after_limit` enabled, then groups emitted `trace_id`, `request_id`, or `execution_id` fields into request timelines. The log normalizer promotes only those correlation identifiers from tracing span context into the normalized event fields, so nested upstream events inherit the outer request identity without flattening arbitrary span metadata. Root request terminal events determine success/failure; child upstream finishes or warnings cannot complete or fail the parent request. When the retained query is truncated, the oldest correlation group is discarded because it may have been cut at the sample boundary.
+- **Traces** reads a bounded admin-only `server_logs.query` window with `correlated_only` and `stop_after_limit` enabled, then groups emitted `trace_id`, `request_id`, or `execution_id` fields into request timelines. The log normalizer promotes those correlation identifiers plus `span_id` and numeric `call_ordinal` from tracing span context into the normalized event fields, so nested upstream events inherit the outer request identity without flattening arbitrary span metadata. Root request terminal events determine success/failure; child upstream finishes or warnings cannot complete or fail the parent request. When the retained query is truncated, the oldest correlation group is discarded because it may have been cut at the sample boundary.
 - **Overview** combines the durable Usage totals with a bounded retained-log sample for dispatch-by-surface, estimated tokens-by-tool, and Code Mode fan-out. Its log query stops after the retained-entry limit and uses a small scan budget; the dashboard refreshes on a slower cadence than the live trace view so observability does not become a sustained log-scanning workload. Those panels must be labeled as retained samples; token values are the `chars / 4` estimates emitted at dispatch boundaries, not provider billing totals. A successful empty log query is a collected zero, while an unavailable log query leaves only those three dimensions uncollected.
 
 Raw source IP is not a Usage or Traces metric. Do not add it merely to populate an operator card; retain the privacy-safe `actor_key` contract above unless a separately reviewed security requirement calls for network-source retention.
@@ -545,6 +545,38 @@ A client that makes only sessionless HTTP requests has no registered peer for
 server-initiated tools/list_changed or resources/list_changed delivery. In that
 case app_disabled responses and fresh list evidence are the authoritative
 signals for diagnosing a host that retained old widget metadata.
+
+## Operator notifications
+
+`crates/labby/src/notifications.rs` implements a bounded operator feed and
+Depot ingestion-failure monitor. `GET /v1/notifications` returns
+`{ "notifications": [...] }` and requires `lab:admin`. This feed is separate
+from MCP catalog notifications and the server-log stream.
+
+The monitor starts with `labby serve` when Depot is configured and
+`LABBY_NOTIFICATIONS_ENABLED` is enabled (the default). Disabling it prevents
+monitor startup; it does not remove the read route or erase retained records.
+`LABBY_DEPOT_MONITOR_INTERVAL_SECONDS` defaults to 30 and clamps to 10–3600.
+`LABBY_NOTIFICATION_RETENTION` defaults to 200 and clamps to 10–2000 records.
+Records, source cursors, and pending Apprise deliveries persist in
+`notifications.json` under the selected installation root; failure to open it
+logs a warning and falls back to an in-memory center.
+
+Optional `APPRISE_URL` delivery posts beneath the configured base path to
+`/notify`, or `/notify/{KEY}` when `APPRISE_TOKEN` supplies a configuration key.
+The token is a path key, not a bearer header. Delivery disables redirects and
+uses a 3-second connect timeout and 8-second request timeout. Pending deliveries
+are retried on later polls, with at most four attempts per poll; the queue is
+bounded to 2000 entries and logs overflow when it drops the oldest. Settings
+metadata is owned by `dispatch/setup/settings.rs`; runtime and setup documentation
+own the full configuration contract.
+
+Monitor and delivery diagnostics use `subsystem = "notifications"`, including
+`source = "depot"`, `"depot_ingest"`, or `"apprise"` where supplied. Delivery
+errors omit the endpoint URL so the configuration key cannot leak into logs.
+The retained notification body is bounded to 2000 characters, but this module
+does not redact the Depot source label or ingestion error text before storing
+and forwarding it. Do not treat the body-length cap as secret redaction.
 
 ## Required Fields
 
@@ -816,3 +848,25 @@ this surface:
 | skill excluded at ingest | `WARN` | reason code + redacted URI |
 | snapshot truncated by a budget | `WARN` | which cap engaged |
 | `skills/list`, `skills/get`, skill `resources/read` | `INFO` | one dispatch event each |
+
+### MCP request trace propagation
+
+With the gateway feature enabled, MCP tool calls continue valid version-00
+`_meta.traceparent` values or mint a fresh unsampled trace when the parent is
+missing, invalid, or unsupported. Invalid optional `tracestate` and `baggage`
+values are dropped independently; neither affects authorization. Optional fields
+without a valid parent are discarded. Tracestate is bounded to 512 bytes and
+32 members; baggage to 8192 bytes, 64 members, and 4096 bytes per member.
+
+Direct upstream calls and MCP Code Mode calls carry a fresh child span in
+SEP-414 metadata. Code Mode additionally sends host-owned
+`ai.dinglebear.labby/trace` execution IDs and zero-based call ordinals. Request
+metadata unrelated to tracing is preserved. Retries of an already-prepared
+upstream operation reuse its child context. CLI and HTTP Code Mode entrypoints
+do not currently establish this MCP trace context.
+
+Structured logs inherit the active trace and child span. Server-log normalization
+prefers the nearest host span over event fields and omits event baggage. Baggage
+is opaque propagation data and must never be logged or used as identity,
+authorization, routing, or tenant context. This supplies correlation metadata;
+it does not configure an OpenTelemetry exporter.

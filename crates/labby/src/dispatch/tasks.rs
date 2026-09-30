@@ -927,7 +927,7 @@ fn owner_wire(owner: &OwnerScope) -> (&'static str, &str) {
 /// `tasks.result` to the Task creator once the Task is terminal.
 fn render_summary(v: &crate::access::TaskRecord) -> Value {
     let (kind, id) = owner_wire(&v.intent.owner);
-    json!({"task_id":v.intent.id,"owner_kind":kind,"owner_id":id,"agent_id":v.intent.agent_id,"agent_version":v.intent.agent_version,"state":v.state.wire(),"attempt":v.attempt})
+    json!({"task_id":v.intent.id,"owner_kind":kind,"owner_id":id,"agent_id":v.intent.agent_id,"agent_version":v.intent.agent_version,"state":v.state.wire(),"attempt":v.attempt,"created_at":v.created_at,"updated_at":v.updated_at})
 }
 /// Full Task result. Only `tasks.result` may render this, and only for the
 /// creator of a terminal Task.
@@ -1151,6 +1151,8 @@ mod tests {
             "agent_version",
             "state",
             "attempt",
+            "created_at",
+            "updated_at",
         ] {
             assert!(object.contains_key(key), "missing {key}: {value}");
         }
@@ -1277,9 +1279,13 @@ mod tests {
             attempt: 1,
             output_digest: Some(digest('9')),
             error_code: Some("secret-reason".into()),
+            created_at: 10,
+            updated_at: 20,
         };
         let summary = render_summary(&record);
         assert_summary_shape(&summary);
+        assert_eq!(summary["created_at"], 10);
+        assert_eq!(summary["updated_at"], 20);
         assert!(!summary.to_string().contains("secret-reason"));
         assert!(!summary.to_string().contains(&digest('9')));
         let result = render_result(&record);

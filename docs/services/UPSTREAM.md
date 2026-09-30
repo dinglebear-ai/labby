@@ -1,7 +1,7 @@
 ---
 title: "Upstream MCP Proxy"
 created: "2026-07-30"
-updated: "2026-09-16"
+updated: "2026-09-29"
 ---
 
 # Upstream MCP Proxy
@@ -166,7 +166,7 @@ command changes.
 | `command` | string | stdio | Command to run for stdio transport. |
 | `args` | string[] | no | Arguments to pass to a stdio command. |
 | `env` | table | no | Environment variables injected into a stdio child process. |
-| `bearer_token_env` | string | no | Name of an env var holding a bearer token for HTTP or Unix-socket transport. Not the token itself. |
+| `bearer_token_env` | string | no | Required credential reference when configured: bearer auth for HTTP/WebSocket/Unix socket, or injection into a stdio child. Not the token itself. |
 | `proxy_resources` | bool | no | Whether to proxy resources from this upstream. Default: `true`. |
 | `proxy_prompts` | bool | no | Whether to proxy prompts from this upstream. Default: `true`. |
 | `proxy_skills` | bool | no | Whether to aggregate this upstream's Agent Skills (SEP-2640). Default: **`false`**, unlike the other `proxy_*` flags — see below. |
@@ -236,16 +236,46 @@ Validation runs before discovery. Invalid entries are skipped with a warning dur
 
 The `bearer_token_env` field names an environment variable; it does not contain the token directly. At connection time, the pool reads the env var and sends the token as a bearer header for HTTP and Unix-socket upstreams. For stdio upstreams, the same named variable is injected into the child process after Labby clears the ambient environment and applies its allowlist.
 
-If the named env var is not set, HTTP and Unix-socket connections proceed without bearer auth and log a warning; stdio skips the optional injection. Stdio still rejects OAuth and custom HTTP headers because those require an HTTP transport.
+An explicitly configured `bearer_token_env` is required. A missing or empty
+credential returns `upstream_credential_missing` before HTTP, WebSocket, or
+Unix-socket connection I/O, and before a stdio child is spawned. The same rule
+applies to protected-route forwarding and the HTTP/Unix cancellation side
+channel. Labby never retries these paths anonymously. Omitting the reference
+continues to select anonymous access; OAuth-configured upstreams retain their
+separate OAuth credential flow. Stdio still rejects OAuth and custom HTTP headers.
+
+Credential lookup keeps process-environment precedence over the selected
+installation's `.env`. An explicitly empty or non-Unicode environment value
+does not fall back to an older file value. Errors contain the reference name,
+not credential bytes or file paths. Restore the credential and reload the
+upstream rather than removing the reference to bypass the failure.
 
 Changing a bearer-token env var does not hot-apply by itself. Use `gateway.reload` when you want the live pool to re-read `bearer_token_env`.
+
+### Lifecycle and transport failures
+
+In `auto` lifecycle mode, compatibility fallback is bounded to one legacy
+`initialize` attempt. Discovery HTTP 401, 403, 429, and 5xx responses do not
+trigger a downgrade. An uncorrelated error or unsupported-protocol text alone
+is not sufficient legacy evidence. Network discovery can still fall back on
+plain 400, 404, 405, 415, or 422 responses and recognized lifecycle errors;
+modern protocol-contract errors retain their failure classification. Stdio
+classification uses the transport's protocol error, not arbitrary child stderr.
+
+Malformed JSON returned for an HTTP request expecting a response is a terminal,
+sanitized transport error rather than an accepted response that waits for a
+timeout. Notification responses keep their no-result semantics. See the
+[HTTP transport](../../crates/labby-gateway/src/upstream/http_client.rs) and
+[lifecycle classifier](../../crates/labby-gateway/src/upstream/pool/lifecycle_compat.rs).
 
 ## Upstream OAuth (authorization_code + PKCE)
 
 OAuth upstream credentials are selected by explicit subject. Trusted-local and
 `lab:admin` callers use the shared `gateway` subject; authenticated non-admin
 callers use their verified request subject and never fall back to that shared
-credential. Configuration shape and examples live in
+credential. Missing, empty, or whitespace-only subjects fail closed for
+non-admin callers, including Code Mode callers wrapped in host authority.
+Configuration shape and examples live in
 [CONFIG.md — Upstream OAuth](../runtime/CONFIG.md#upstream-oauth-authorization_code--pkce).
 Operator browser flow lives in [GATEWAY.md](./GATEWAY.md).
 
@@ -554,6 +584,25 @@ per capability, so failed prompt/resource discovery need not hide working tools.
   connect are not parked behind a slow listing.
 - Recovery tasks are disabled by default. Ephemeral `gateway.test` probes never
   create background tasks.
+
+## Cancellation and trace context
+
+Caller-attributed RPCs retain the pool's admission, deadline, and cancellation
+rules. An already-cancelled caller must not dispatch; cancellation is not a
+circuit-breaker failure. HTTP/Unix cancellation forwarding requires the same
+configured credential as the call and never falls back to anonymous delivery.
+Cancellation delivery is bounded and cooperative, not proof that a remote
+side effect was undone. An abandoned Code Mode Core-provider call also schedules
+a cancellation request when its guard drops; unavailable runtime or delivery
+failures are logged rather than reported as confirmed remote cancellation.
+
+Direct MCP tool proxying and Code Mode use the shared gateway trace injector.
+It derives a child `traceparent`, preserves valid optional `tracestate` and
+`baggage`, and preserves unrelated request metadata. Host-owned Code Mode
+execution/call correlation replaces caller-supplied correlation. Trace context
+is observability data, never authorization; see
+[MCP trace metadata](../surfaces/MCP.md#trace-metadata) and
+[Observability](../dev/OBSERVABILITY.md).
 
 ## Response Size Cap
 

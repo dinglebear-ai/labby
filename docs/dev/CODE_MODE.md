@@ -1,7 +1,7 @@
 ---
 title: "Code Mode"
 created: "2026-07-30"
-updated: "2026-09-19"
+updated: "2026-09-29"
 ---
 
 # Code Mode
@@ -397,6 +397,12 @@ do not echo the resolved source. An invoking model therefore pays context for th
 name, input schema/arguments, and returned result, not for the stored program on
 every run. Source enters model context only when a caller explicitly reads, edits,
 reviews, or authors it.
+
+Saved-snippet `snippet test` / `snippets.test` uses offline fixtures by default;
+real upstream execution requires `--live` / `live: true`. The fixture harness
+supports `callTool()` and `codemode.batch()` in the production QuickJS runner,
+with no live gateway access. See [Snippet development and testing](SNIPPET_TESTING.md)
+for fixture matching, budgets, and the narrower mock helper surface.
 
 A snippet can call `codemode.<upstream>.<tool>()`, `callTool()`, `writeArtifact()`,
 and other snippets, bounded by the same Code Mode timeout plus per-run snippet
@@ -886,8 +892,21 @@ enforced capability restriction, not a pause/confirm gate.
 - `lab` or `lab:admin` can use `codemode_ui` when the app surface is enabled.
 - `lab:read`, `lab`, or `lab:admin` can use `codemode_read`.
 
-OAuth callers retain their subject attribution when Code Mode calls upstream tools.
-Trusted local callers use the shared gateway subject.
+Non-admin callers retain their exact verified OAuth subject when Code Mode
+discovers or calls upstream capabilities. A missing, empty, or whitespace-only
+subject cannot inherit the shared gateway credential. This applies to every
+scoped caller variant and to host-authority wrappers. Explicit administrative
+and trusted-local callers retain the existing shared gateway subject policy;
+an absent subject alone never establishes local trust.
+
+An upstream's configured bearer credential is also mandatory at connection
+time. Direct lazy connection failures preserve `upstream_credential_missing`
+and its operator-repair guidance. An omitted credential reference remains
+explicit anonymous configuration. See [Upstream bearer tokens](../services/UPSTREAM.md#bearer-token).
+
+MCP Code Mode executions carry host-owned trace context through the broker;
+outbound tool requests include the execution ID and zero-based call ordinal. This does not grant authority or expose trace baggage in results. See
+[MCP request trace propagation](OBSERVABILITY.md#mcp-request-trace-propagation).
 
 ## Runner Architecture
 
@@ -931,13 +950,14 @@ run, so isolation holds by construction.
   surfaces a clean error without replay (`timeout` on wall-clock expiry). A
   pooled runner is also recycled after a fixed number of executions as cheap
   insurance against native-side leaks. External `callTool` operations reserve a
-  result-ack window inside the same per-execution wall-clock budget when at
-  least twice that window remains, so host work cannot consume the runner's
+  result-ack window inside the same per-execution wall-clock budget when more
+  than twice that window remains, so host work cannot consume the runner's
   acknowledgement budget without materially shortening normal calls. The window
   is 250 ms plus 2 ms per call enqueued so far, capped at 2 s: the runner has to
   drain one acknowledgement per in-flight call, so a constant window shrinks to
   microseconds per ack at high fanout and would report a completed run as a
-  timeout. The
+  timeout. Each external call gets its deadline at enqueue time; later calls
+  do not retroactively change deadlines already assigned. The
   separate hung-runner watchdog remains 5 seconds. After the final tool result is
   relayed, the runner gets up to that 5-second grace to emit `done`/`error`, capped by the
   overall execution deadline. Only expiry of the full dedicated grace is reported

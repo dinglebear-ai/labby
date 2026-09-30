@@ -1,7 +1,7 @@
 ---
 title: "Environment Variables"
 created: "2026-07-30"
-updated: "2026-09-16"
+updated: "2026-09-29"
 ---
 
 # Environment Variables
@@ -51,7 +51,11 @@ paths; move `auth.db` and `auth-jwt.pem` into the selected root, or set
 
 The upstream dotenv fallback for `bearer_token_env` reads `$LABBY_HOME/.env`
 as well; a non-absolute root is ignored there rather than read relative to the
-working directory. A standalone stdio fallback uses its own resolved state root, so
+working directory. An explicitly configured reference must resolve to a nonempty
+credential or the upstream fails with `upstream_credential_missing` before
+connection/spawn. An empty or non-Unicode process value never falls back to a
+stale dotenv value; see [Upstream authentication](../services/UPSTREAM.md#bearer-token).
+A standalone stdio fallback uses its own resolved state root, so
 configure an explicit remote daemon target when stdio must share the daemon's
 project and membership state.
 
@@ -95,6 +99,32 @@ The legacy keys are `LABBY_DEPOT_URL`, `LABBY_DEPOT_ENABLED`, and
 absent enable flag from explicit disable and requires a token for an enabled
 legacy URL. A persisted migration marker or removal tombstone takes precedence
 over legacy environment normalization. See [CONFIG.md](CONFIG.md#depot-discovery-configuration).
+
+## Operator Notifications
+
+These process settings are editable through Settings → Notifications and use
+the normal selected-installation dotenv loading. Settings changes are marked
+restart-required. They are runtime/settings fields, separate from the generated
+per-service `PluginMeta` inventory.
+
+| Variable | Default | Behavior |
+| --- | --- | --- |
+| `LABBY_NOTIFICATIONS_ENABLED` | `true` | Enables the Depot failure monitor; `0`, `false`, `no`, or `off` disables it. Existing inbox records remain readable. |
+| `LABBY_NOTIFICATION_RETENTION` | `200` | Recent inbox records; clamped to 10–2,000 when opening the persistent store. |
+| `LABBY_DEPOT_MONITOR_INTERVAL_SECONDS` | `30` | Poll interval, clamped to 10–3,600 seconds. |
+| `APPRISE_URL` | unset | Optional HTTP(S) Apprise API base URL; redirects are disabled. |
+| `APPRISE_TOKEN` | unset | Optional secret stateful configuration key appended to `/notify/{KEY}`; without it, delivery uses `/notify`. |
+
+The monitor currently requires the legacy `LABBY_DEPOT_ENABLED=1`,
+`LABBY_DEPOT_URL`, and `LABBY_DEPOT_TOKEN` configuration. It does not iterate
+named discovery providers. `APPRISE_TOKEN` values are never returned by the
+settings API: state reports a configured marker and a process-local opaque
+fingerprint for stale-write protection. Delivery has a three-second connect
+and eight-second total request timeout. See
+[Operations](../OPERATIONS.md#operator-notifications) for persistence, retries,
+and coverage limits, and the
+[settings field definitions](../../crates/labby/src/dispatch/setup/settings.rs)
+for the editable schema.
 
 ## Direct Stdio Proxy
 

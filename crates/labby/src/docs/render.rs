@@ -89,6 +89,7 @@ pub fn service_catalog(services: &[ServiceDoc]) -> String {
 
 pub fn env_reference(vars: &[EnvDoc]) -> String {
     let mut out = header("env-reference", "labby docs generate");
+    out.push_str("`Required` applies when the owning service or workflow is used, not to every Labby process. OAuth provider credentials are required only for the selected provider; configure exactly one inbound provider. Descriptions identify conditional requirements. See [Environment](../runtime/ENV.md) and [OAuth](../runtime/OAUTH.md) for configuration and admission rules.\n\n");
     out.push_str("| Service | Env Var | Required | Secret | Example | Description |\n");
     out.push_str("| --- | --- | --- | --- | --- | --- |\n");
     for var in vars {

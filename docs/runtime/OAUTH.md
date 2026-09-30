@@ -1,7 +1,7 @@
 ---
 title: "HTTP Auth Modes"
 created: "2026-07-30"
-updated: "2026-09-18"
+updated: "2026-09-29"
 ---
 
 # HTTP Auth Modes
@@ -774,6 +774,14 @@ Validation steps:
 6. Validate the `aud` claim matches the configured audience.
 7. Extract scopes from the `scope` claim (space-separated string) or the `scp` claim (JSON array).
 
+Labby-issued access JWTs also require a nonempty `azp` authorized-party client
+ID with no leading or trailing whitespace. The verified value is carried in a
+separate request extension and exposed as optional `authorized_client_id` in
+[gateway client observations](../services/GATEWAY.md#inbound-clients). It is
+not derived from the self-declared MCP client name/version. Source:
+[JWT validation](../../crates/labby-auth/src/jwt.rs) and
+[auth middleware](../../crates/labby-auth/src/middleware.rs).
+
 ### Supported Algorithms
 
 - Labby-issued access tokens: EdDSA (Ed25519)
@@ -1389,7 +1397,9 @@ browser callback confirms that flow completed; it does not prove that a particul
 MCP connector can use the grant. Admin callers (`lab:admin`) use the shared gateway
 identity. Authenticated non-admin callers use their own subject and cannot borrow
 that shared grant. Repeating the browser authorization does not populate their
-personal credential entry.
+personal credential entry. Missing, empty, or whitespace-only non-admin
+subjects fail closed, including Code Mode callers wrapped in host authority;
+that wrapper does not promote the caller to the shared operator grant.
 
 The same subject boundary applies to Code Mode OpenAPI specs configured with
 `oauth_upstream`. The OpenAPI registry stores only the upstream name. At dispatch,

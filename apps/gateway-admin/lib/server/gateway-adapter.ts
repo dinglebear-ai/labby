@@ -100,6 +100,9 @@ export interface BackendGatewayRuntimeView {
   exposed_prompt_count?: number
   exposed_skill_count?: number
   supports_skills?: boolean
+  server_name?: string | null
+  server_version?: string | null
+  protocol_version?: string | null
   last_error?: string | null
 }
 
@@ -117,6 +120,9 @@ export interface BackendGatewayMcpRuntimeView {
   discovered_skill_count?: number
   exposed_skill_count?: number
   supports_skills?: boolean
+  server_name?: string | null
+  server_version?: string | null
+  protocol_version?: string | null
   likely_stale_count?: number
   pid?: number | null
   pgid?: number | null
@@ -488,6 +494,9 @@ export function normalizeServerView(
       discovered_skill_count: view.discovered_skill_count ?? 0,
       exposed_skill_count: view.exposed_skill_count ?? 0,
       supports_skills: view.supports_skills,
+      server_name: runtime?.server_name ?? undefined,
+      server_version: runtime?.server_version ?? undefined,
+      protocol_version: runtime?.protocol_version ?? undefined,
       likely_stale_count: runtime?.likely_stale_count,
       pid: runtime?.pid ?? undefined,
       pgid: runtime?.pgid ?? undefined,
@@ -591,6 +600,9 @@ export function normalizeGateway(
       discovered_skill_count: view.runtime.skill_count ?? 0,
       exposed_skill_count: view.runtime.exposed_skill_count ?? 0,
       supports_skills: view.runtime.supports_skills,
+      server_name: runtime?.server_name ?? view.runtime.server_name ?? undefined,
+      server_version: runtime?.server_version ?? view.runtime.server_version ?? undefined,
+      protocol_version: runtime?.protocol_version ?? view.runtime.protocol_version ?? undefined,
       likely_stale_count: runtime?.likely_stale_count,
       pid: runtime?.pid ?? undefined,
       pgid: runtime?.pgid ?? undefined,

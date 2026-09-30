@@ -1,5 +1,5 @@
 //! First-run self-bootstrap: create a minimal `~/.labby/.env` so the server can
-//! start and the operator can reach `/setup`. Non-destructive — a no-op when
+//! start locally. Guided configuration uses `labby setup`. A no-op when
 //! the file already exists, so it is safe to call unconditionally at startup.
 
 use std::path::{Path, PathBuf};

@@ -1,16 +1,18 @@
 ---
 title: "GitHub Actions Hosted Runner Guide"
 created: "2026-07-30"
-updated: "2026-09-03"
+updated: "2026-09-29"
 ---
 
 # GitHub Actions Hosted Runner Guide
 
-Last updated: 2026-09-03
+Last updated: 2026-09-29
 
 ## Runner selection
 
-All repository-defined Linux jobs use GitHub-hosted `ubuntu-24.04` runners.
+Repository-defined Linux jobs use GitHub-hosted `ubuntu-24.04` runners, with
+`ubuntu-24.04-arm` for native Linux ARM64 release builds, Unix N-1
+qualification, and the separate pull-request package smoke.
 Native Windows checks use `windows-latest` and require a manual dispatch with
 `run_windows=true`. Release jobs use the native hosted
 runner for each supported target.
