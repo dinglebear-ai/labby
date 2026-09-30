@@ -48,7 +48,7 @@ export function CollectionViewToggle({
             title={label}
             aria-pressed={value === mode}
             className={cn(
-              'rounded-[7px] text-aurora-text-muted',
+              'size-11 rounded-[7px] text-aurora-text-muted sm:size-8',
               value === mode && 'bg-aurora-selected-bg text-aurora-accent-strong',
             )}
             onClick={() => onChange(mode)}

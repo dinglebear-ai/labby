@@ -15,10 +15,16 @@ const cards = [
 const lane = (name: string) => [...document.querySelectorAll(`[data-overview-lane="${name}"] [data-card]`)].map(node => node.getAttribute('data-card'))
 
 test('masonry row spans compact unequal cards without invalid measurements', () => {
-  assert.equal(overviewMasonrySpan(100, 4, 12), 7)
-  assert.equal(overviewMasonrySpan(212, 4, 12), 14)
+  assert.equal(overviewMasonrySpan(100, 4, 12), 28)
+  assert.equal(overviewMasonrySpan(212, 4, 12), 56)
   assert.equal(overviewMasonrySpan(0), 1)
   assert.equal(overviewMasonrySpan(Number.NaN), 1)
+  // With gapless 1px tracks, the reserved tail is 12..13px even for
+  // fractional rendered heights; ordinary card growth changes only its span.
+  for (const height of [100, 100.25, 211.9, 337.5]) {
+    const visibleGap = overviewMasonrySpan(height) - height
+    assert.ok(visibleGap >= 12 && visibleGap < 13)
+  }
 })
 
 test('desktop packing fills the shortest available column before flowing lower', () => {
@@ -84,7 +90,9 @@ test('desktop classes preserve the mock two-thirds telemetry lane and one-third 
     const insights = document.querySelector<HTMLElement>('[data-overview-lane="insights"]')!
     const columns = document.querySelector<HTMLElement>('[data-overview-columns]')!
     assert.ok(columns.className.includes('min-[1100px]:grid-cols-[minmax(0,2fr)_minmax(260px,1fr)]'))
-    assert.ok(telemetry.className.includes('min-[700px]:grid-cols-[repeat(auto-fit,minmax(250px,1fr))]'))
+    assert.ok(telemetry.className.includes('min-[700px]:grid-cols-2'))
+    assert.ok(telemetry.className.includes('auto-rows-[1px]'))
+    assert.ok(telemetry.className.includes('gap-y-0'))
     assert.ok(insights.className.includes('flex-col'))
     assert.ok(!columns.className.includes('grid-cols-3'))
     assert.ok(!telemetry.className.includes('contents'))

@@ -75,6 +75,8 @@ impl GatewayManager {
                 client_version: client.client_version,
                 transport: client.transport,
                 connected_at: client.connected_at,
+                last_seen_at: client.last_seen_at,
+                observation_count: client.observation_count,
             })
             .collect())
     }

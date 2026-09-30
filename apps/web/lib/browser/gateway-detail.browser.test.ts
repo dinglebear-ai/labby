@@ -681,11 +681,36 @@ test('every admin route stays overflow-free on narrow phone, phone, and tablet',
     await page.locator('[data-mobile-nav-backdrop]').click({ position: { x: viewport.width - 2, y: 2 } })
     await page.waitForFunction(() => document.querySelector('aside[data-console-sidebar]')?.getAttribute('data-mobile-open') === '0')
     await page.goto(`${baseUrl}/gateways/`, { waitUntil: 'networkidle' })
+    await page.getByRole('group', { name: 'Server view' }).getByRole('button', { name: 'Card view' }).click()
     await assert.doesNotReject(() => page.getByRole('link', { name: 'Open', exact: true }).first().waitFor())
     await page.goto(`${baseUrl}/usage/?focus=latency&percentile=p95&outcome=failed`, { waitUntil: 'networkidle' })
     await assert.doesNotReject(() => page.getByText(/Metric drill-down:/).waitFor())
     assert.equal(new URL(page.url()).searchParams.get('focus'), 'latency')
     assert.equal(new URL(page.url()).searchParams.get('outcome'), 'failed')
+    await page.close()
+  }
+})
+
+test('server list, card, and table choices persist on phone and tablet', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+  const browser = await chromium.launch({ headless: true })
+  t.after(() => browser.close())
+  for (const width of [390, 768]) {
+    const page = await browser.newPage({ viewport: { width, height: 844 } })
+    await page.goto(`${baseUrl}/gateways/`, { waitUntil: 'networkidle' })
+    for (const [label, section] of [
+      ['List view', 'Server inventory cards'],
+      ['Card view', 'Server inventory cards'],
+      ['Table view', 'Server inventory'],
+    ] as const) {
+      await page.getByRole('group', { name: 'Server view' }).getByRole('button', { name: label }).click()
+      await page.reload({ waitUntil: 'networkidle' })
+      assert.equal(await page.getByRole('button', { name: label, exact: true }).getAttribute('aria-pressed'), 'true', `${width}px ${label} did not persist`)
+      await page.getByRole('region', { name: section, exact: true }).waitFor({ state: 'visible' })
+      assert.ok(await page.getByRole('region', { name: section, exact: true }).count() > 0)
+      if (label === 'Card view') await page.getByRole('region', { name: section }).getByRole('link', { name: 'Open', exact: true }).first().waitFor()
+      if (label === 'List view') assert.equal(await page.getByRole('region', { name: section }).getByRole('link', { name: 'Open', exact: true }).count(), 0)
+    }
     await page.close()
   }
 })

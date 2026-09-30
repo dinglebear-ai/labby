@@ -18,7 +18,7 @@ const MASONRY_ROW_HEIGHT = 1
 /** CSS Grid row span used by the compact Overview masonry. */
 export function overviewMasonrySpan(height: number, rowHeight = MASONRY_ROW_HEIGHT, gap = 12): number {
   if (!Number.isFinite(height) || height <= 0) return 1
-  return Math.max(1, Math.ceil((height + gap) / (rowHeight + gap)))
+  return Math.max(1, Math.ceil((height + gap) / rowHeight))
 }
 
 /**
@@ -143,47 +143,38 @@ export function ReorderableOverview({ cards }: { cards: Card[] }) {
   }, [layout])
 
   useLayoutEffect(() => {
-    const columns = root.current?.querySelector<HTMLElement>('[data-overview-columns]')
     const telemetry = root.current?.querySelector<HTMLElement>('[data-overview-lane="telemetry"]')
-    if (!columns || !telemetry) return
+    if (!telemetry) return
     let frame: number | null = null
     const pack = () => {
       frame = null
-      const unified = false
-      const packingGrid = unified ? columns : telemetry
-      const styles = getComputedStyle(packingGrid)
+      const styles = getComputedStyle(telemetry)
       const rowHeight = Number.parseFloat(styles.gridAutoRows) || MASONRY_ROW_HEIGHT
-      const gap = Number.parseFloat(styles.rowGap) || 12
-      const allCards = [...columns.querySelectorAll<HTMLElement>('[data-overview-card]')]
-      for (const card of allCards) {
-        card.style.gridColumn = ''
-        card.style.gridRowStart = ''
-        card.style.gridRowEnd = 'auto'
-      }
-      const packingCards: HTMLElement[] = []
-      for (const card of packingCards) {
-        card.style.gridRowEnd = 'auto'
-        card.style.gridRowEnd = `span ${overviewMasonrySpan(card.getBoundingClientRect().height, rowHeight, gap)}`
-      }
-      if (unified) {
-        const byId = new Map(allCards.map(card => [card.dataset.overviewCard!, card]))
-        const positions = planOverviewPacking(layoutRef.current.order.flatMap(id => {
-          const card = byId.get(id)
-          if (!card) return []
-          return [{
-            id,
-            span: Number.parseInt(card.style.gridRowEnd.replace('span ', ''), 10) || 1,
-            wide: (layoutRef.current.widths[id] ?? Boolean(cardsRef.current.find(item => item.id === id)?.wide))
-              && (layoutRef.current.lanes[id] ?? (cardsRef.current.find(item => item.id === id)?.rail ? 'insights' : 'telemetry')) === 'telemetry',
-          }]
-        }))
-        for (const position of positions) {
-          const card = byId.get(position.id)
-          if (!card) continue
-          card.style.gridColumn = `${position.column} / span ${position.columns}`
-          card.style.gridRowStart = String(position.row)
-          card.style.gridRowEnd = `span ${position.span}`
-        }
+      // Grid row gaps apply between every 1px track, magnifying rounding to
+      // 13px. Reserve the visible 12px gap inside each card's row span instead.
+      const gap = 12
+      const cards = [...telemetry.querySelectorAll<HTMLElement>(':scope > [data-overview-card]')]
+      const byId = new Map(cards.map(card => [card.dataset.overviewCard!, card]))
+      const columnCount = styles.gridTemplateColumns.split(' ').filter(Boolean).length
+      const positions = planOverviewPacking(layoutRef.current.order.flatMap(id => {
+        const card = byId.get(id)
+        if (!card) return []
+        const content = card.lastElementChild as HTMLElement | null
+        return [{
+          id,
+          span: overviewMasonrySpan(content?.getBoundingClientRect().height ?? card.scrollHeight, rowHeight, gap),
+          wide: layoutRef.current.widths[id] ?? Boolean(cardsRef.current.find(item => item.id === id)?.wide),
+        }]
+      }), columnCount)
+      for (const position of positions) {
+        const card = byId.get(position.id)
+        if (!card) continue
+        const column = `${position.column} / span ${position.columns}`
+        const row = String(position.row)
+        const span = `span ${position.span}`
+        if (card.style.gridColumn !== column) card.style.gridColumn = column
+        if (card.style.gridRowStart !== row) card.style.gridRowStart = row
+        if (card.style.gridRowEnd !== span) card.style.gridRowEnd = span
       }
     }
     const schedule = () => {
@@ -191,9 +182,8 @@ export function ReorderableOverview({ cards }: { cards: Card[] }) {
       frame = requestAnimationFrame(pack)
     }
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(schedule)
-    observer?.observe(columns)
     observer?.observe(telemetry)
-    for (const card of columns.querySelectorAll<HTMLElement>('[data-overview-card]')) observer?.observe(card)
+    for (const card of telemetry.querySelectorAll<HTMLElement>('[data-overview-card]')) observer?.observe(card.lastElementChild ?? card)
     schedule()
     return () => {
       observer?.disconnect()
@@ -310,7 +300,7 @@ export function ReorderableOverview({ cards }: { cards: Card[] }) {
           data-overview-lane={lane}
           className={cn(
             lane === 'telemetry'
-              ? 'grid min-h-16 min-w-0 content-start items-start gap-3 min-[700px]:grid-cols-[repeat(auto-fit,minmax(250px,1fr))]'
+              ? 'grid min-h-16 min-w-0 content-start items-start gap-x-3 gap-y-0 auto-rows-[1px] min-[700px]:grid-cols-2'
               : 'flex min-h-16 min-w-0 flex-col gap-3',
             drag && drop?.lane === lane && drop.id === null && 'ring-2 ring-aurora-accent-primary',
           )}

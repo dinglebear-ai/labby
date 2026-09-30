@@ -72,6 +72,22 @@ test('gateway table uses aurora lifted surfaces and muted operational pills', ()
   assert.doesNotMatch(markup, /Reload required to apply policy changes/)
 })
 
+test('server table, list and card modes each have a distinct visible presentation', () => {
+  const render = (presentation: 'table' | 'list' | 'cards') => renderToStaticMarkup(
+    <GatewayTable gateways={[gateway]} density="comfortable" presentation={presentation} onEdit={() => {}} onTest={() => {}} onReload={() => {}} onCleanup={() => {}} onClearCleanupHistory={() => {}} onToggleEnabled={() => {}} onDelete={() => {}} />,
+  )
+  const table = render('table')
+  const list = render('list')
+  const cards = render('cards')
+  assert.match(table, /aria-label="Server inventory cards" class="[^"]*hidden/)
+  const tableSectionClass = (markup: string) => markup.match(/<section aria-label="Server inventory"[^>]*class="([^"]*)"/)?.[1]?.split(' ') ?? []
+  assert.ok(!tableSectionClass(table).includes('hidden'))
+  assert.ok(tableSectionClass(list).includes('hidden'))
+  assert.match(list, /14\/18 tools/)
+  assert.doesNotMatch(list, /data-mobile-metric="tools"/)
+  assert.match(cards, /data-mobile-metric="tools"/)
+})
+
 test('gateway table sorts servers by name and shows full stdio command line', () => {
   const stdioGateway: Gateway = {
     ...gateway,

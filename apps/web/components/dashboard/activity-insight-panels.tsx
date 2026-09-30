@@ -104,11 +104,11 @@ export function MostActivePanel({
 
   return (
     <DashboardPanel
-      title={overviewMode ? 'Most active agents' : actorKindsCollected ? `Most active ${meta.label.toLowerCase()}` : actors.unknown ? 'Most active unknown identities' : 'Most active subjects'}
+      title={actorKindsCollected ? `Most active ${meta.label.toLowerCase()}` : actors.unknown ? 'Most active unknown identities' : 'Most active subjects'}
       iconTone="pink"
       icon={<Bot className="size-4" />}
       meta={overviewMode
-        ? `top_actors · ${WINDOW_LABELS[window]}`
+        ? WINDOW_LABELS[window]
         : actorKindsCollected
           ? `${current.active} ${meta.unit}${current.active === 1 ? '' : 's'}`
           : `${current.active} subject${current.active === 1 ? '' : 's'}`}

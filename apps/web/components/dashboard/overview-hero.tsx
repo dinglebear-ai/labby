@@ -65,7 +65,7 @@ function HeroWindowPills({
 }) {
   return (
     <div role="tablist" aria-label="Activity window" style={{ display: 'inline-flex', gap: 5 }}>
-      {(['24h', '7d', '30d'] as const).map((window) => {
+      {(['1h', '24h', '7d', '30d'] as const).map((window) => {
         const active = window === value
         return (
           <button
@@ -107,13 +107,13 @@ function HeroWindowPills({
 }
 
 /** Live "updated Ns ago" ticker — the mock's refresh affordance counts up. */
-function useSecondsSince(stamp: number): number {
+function useSecondsSince(stamp: number | null): number | null {
   const [, force] = React.useReducer((n: number) => n + 1, 0)
   React.useEffect(() => {
-    const id = setInterval(force, 1000)
+    const id = setInterval(force, 15_000)
     return () => clearInterval(id)
   }, [])
-  return Math.max(0, Math.round((Date.now() - stamp) / 1000))
+  return stamp === null ? null : Math.max(0, Math.round((Date.now() - stamp) / 1000))
 }
 
 function formatAgo(seconds: number): string {
@@ -180,6 +180,7 @@ export function OverviewHero({
   onWindowChange,
   onRefresh,
   loadedAt,
+  metricsStale = false,
 }: {
   gateways: Gateway[]
   live: LiveFleetStats
@@ -188,7 +189,8 @@ export function OverviewHero({
   onWindowChange: (window: MetricsWindow) => void
   onRefresh: () => void
   /** Epoch ms of the last successful metrics load, for the "updated Ns ago" ticker. */
-  loadedAt: number
+  loadedAt: number | null
+  metricsStale?: boolean
 }) {
   const [refreshHovered, setRefreshHovered] = React.useState(false)
   const [manageHovered, setManageHovered] = React.useState(false)
@@ -269,8 +271,8 @@ export function OverviewHero({
       href: `${usageHref}&outcome=failed`,
     },
     {
-      label: 'Tokens',
-      value: metrics ? formatCompactNumber(metrics.tokens.total) : '—',
+      label: 'Tokens (sample)',
+      value: metrics?.collected.tokens ? formatCompactNumber(metrics.tokens.total) : '—',
       icon: Coins,
       href: `${usageHref}&focus=tokens`,
     },
@@ -457,7 +459,7 @@ export function OverviewHero({
             }}
           >
             <RotateCw size={12} strokeWidth={1.7} />
-            {formatAgo(secondsSinceLoad)}
+            {secondsSinceLoad === null ? 'No usage sample' : `${metricsStale || secondsSinceLoad > 90 ? 'Stale · ' : ''}${formatAgo(secondsSinceLoad)}`}
           </button>
 
           <span

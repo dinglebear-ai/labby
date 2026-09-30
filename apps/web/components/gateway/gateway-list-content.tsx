@@ -865,7 +865,7 @@ export function GatewayListView({
                 />
               ) : null}
               {isLoading ? (
-                <GatewayTableSkeleton />
+                <GatewayTableSkeleton presentation={layout} />
               ) : errorMessage ? (
                 <div className={cn(AURORA_STRONG_PANEL, 'p-8 text-center')}>
                   <p className="text-aurora-error">Failed to load servers</p>

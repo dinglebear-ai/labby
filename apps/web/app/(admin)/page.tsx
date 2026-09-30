@@ -57,24 +57,25 @@ function MetricsUnavailable({ message }: { message: string }) {
 export default function OverviewPage() {
   const router = useRouter()
   const runtime = useOverviewRuntime()
-  const [chartMode, setChartMode] = useState<'servers' | 'volume' | 'outcomes' | 'errors'>('servers')
-  const { data: gateways, isLoading: gatewaysLoading, error: gatewaysError, mutate: reloadGateways } = useGateways()
-  const [activeWindow, setActiveWindow] = useState<MetricsWindow>('24h')
+  const [chartMode, setChartMode] = useState<'servers' | 'volume' | 'outcomes' | 'errors'>('volume')
+  const { data: gateways, isLoading: gatewaysLoading, error: gatewaysError, mutate: reloadGateways } = useGateways(true, false, false)
+  const [activeWindow, setActiveWindow] = useState<MetricsWindow>('1h')
   const [drill, setDrill] = useState<DrillTarget | null>(null)
   const {
     data: metrics,
     error: metricsError,
     isLoading: isMetricsLoading,
-    mutate: reloadMetrics,
+    refresh: reloadMetrics,
   } = useDashboardMetrics(activeWindow)
 
-  const serverVolume = useServerVolume(metrics)
+  const serverVolume = useServerVolume(chartMode === 'servers' ? metrics : undefined)
   const live = buildLiveFleetStats(gateways ?? [])
   const metricsState = metricsLoadState(metrics, metricsError, isMetricsLoading)
   const metricsLoading = metricsState === 'loading'
 
   // Stamp each successful metrics load so the hero can count "updated Ns ago".
-  const [metricsLoadedAt, setMetricsLoadedAt] = useState(() => Date.now())
+  const [metricsLoadedAt, setMetricsLoadedAt] = useState<number | null>(null)
+  useEffect(() => setMetricsLoadedAt(null), [activeWindow])
   useEffect(() => {
     if (metrics) setMetricsLoadedAt(Date.now())
   }, [metrics])
@@ -94,6 +95,7 @@ export default function OverviewPage() {
           onWindowChange={setActiveWindow}
           onRefresh={() => { reloadGateways(); reloadMetrics(); runtime.clients.mutate(); runtime.health.mutate(); runtime.host.mutate(); serverVolume.mutate() }}
           loadedAt={metricsLoadedAt}
+          metricsStale={Boolean(metricsError)}
         />
 
         {metricsState === 'unavailable' ? (

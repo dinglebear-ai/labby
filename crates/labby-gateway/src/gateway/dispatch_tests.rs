@@ -5371,6 +5371,8 @@ async fn clients_list_dispatch_returns_observed_redacted_client_projection() {
             client_version: Some("1.2.3".into()),
             transport: "http".into(),
             connected_at: "2026-09-13T05:00:00Z".into(),
+            last_seen_at: None,
+            observation_count: 1,
         })
         .await;
     let manager = test_manager().with_client_registry(registry);
@@ -5385,7 +5387,9 @@ async fn clients_list_dispatch_returns_observed_redacted_client_projection() {
             "client_name": "operator-client",
             "client_version": "1.2.3",
             "transport": "http",
-            "connected_at": "2026-09-13T05:00:00Z"
+            "connected_at": "2026-09-13T05:00:00Z",
+            "last_seen_at": "2026-09-13T05:00:00Z",
+            "observation_count": 1
         }])
     );
     let action = ACTIONS

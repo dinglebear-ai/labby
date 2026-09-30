@@ -812,7 +812,8 @@ export function GatewayTable({
       <section
         aria-label="Server inventory cards"
         className={cn(
-          'space-y-2 min-[1101px]:hidden',
+          'space-y-2',
+          presentation === 'table' && 'hidden',
           presentation === 'cards' && 'min-[1101px]:grid min-[1101px]:grid-cols-2 min-[1101px]:gap-3 min-[1101px]:space-y-0 min-[1450px]:grid-cols-3',
         )}
       >
@@ -848,7 +849,7 @@ export function GatewayTable({
               )}
             >
               <span className={cn('absolute inset-y-0 left-0 w-[3px]', statusRailClass(gateway))} aria-hidden="true" />
-              <div className="space-y-3 p-3 pl-4">
+              <div className={cn('p-3 pl-4', presentation === 'cards' ? 'space-y-3' : 'space-y-1')}>
                 <div className="flex min-w-0 items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -868,7 +869,7 @@ export function GatewayTable({
                     <button
                       type="button"
                       className={cn(
-                        'mt-1.5 flex min-h-8 w-full min-w-0 items-center gap-1.5 rounded-md text-left text-[11px] text-aurora-text-muted',
+                        'mt-1.5 flex min-h-11 w-full min-w-0 items-center gap-1.5 rounded-md text-left text-[11px] text-aurora-text-muted',
                         showsCommandLine && 'hover:bg-aurora-hover-bg hover:text-aurora-text-primary',
                       )}
                       onClick={() => showsCommandLine && setExpandedMobileGatewayId((current) => current === gateway.id ? null : gateway.id)}
@@ -882,7 +883,7 @@ export function GatewayTable({
 
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button variant="outline" size="icon" className={cn(gatewayActionTone(), 'size-10 shrink-0 rounded-full')} aria-label={`More actions for ${gateway.name}`}>
+                      <Button variant="outline" size="icon" className={cn(gatewayActionTone(), 'size-11 shrink-0 rounded-full')} aria-label={`More actions for ${gateway.name}`}>
                         <MoreHorizontal className="size-4" />
                       </Button>
                     </DropdownMenuTrigger>
@@ -921,7 +922,7 @@ export function GatewayTable({
                   </div>
                 ) : null}
 
-                <div className="grid grid-cols-2 gap-2">
+                {presentation === 'list' ? <p className="text-xs tabular-nums text-aurora-text-muted">{gateway.status.exposed_tool_count}/{gateway.status.discovered_tool_count} tools · {gateway.status.exposed_resource_count}/{gateway.status.discovered_resource_count} resources · {runtimeLabel} runtime</p> : <div className="grid grid-cols-2 gap-2">
                   {counts.map(({ label, icon: Icon, exposed, discovered }) => (
                     <div key={label} data-mobile-metric={label.toLowerCase()} className="rounded-lg border border-aurora-border-subtle bg-aurora-control-surface/15 px-2.5 py-2">
                       <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.09em] text-aurora-text-muted"><Icon className="size-3.5" />{label}</div>
@@ -930,7 +931,7 @@ export function GatewayTable({
                       </div>
                     </div>
                   ))}
-                </div>
+                </div>}
 
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-aurora-border-subtle pt-2 text-[10px] text-aurora-text-muted">
                   <span data-mobile-metric="runtime">Runtime <strong className="font-semibold text-aurora-text-primary">{runtimeLabel}</strong></span>
@@ -938,11 +939,11 @@ export function GatewayTable({
                   {gateway.warnings.length > 0 ? <span className="text-aurora-warn">· {gateway.warnings.length} warning{gateway.warnings.length === 1 ? '' : 's'}</span> : null}
                 </div>
 
-                <div className="grid grid-cols-3 gap-2">
-                  <Button asChild variant="outline" size="sm" className="min-h-10"><Link href={gatewayDetailHref(gateway.id)}><Eye className="mr-1.5 size-4" />Open</Link></Button>
-                  {supportsProbeControls ? <Button variant="outline" size="sm" className="min-h-10" onClick={() => onTest(gateway)}><Play className="mr-1.5 size-4" />Test</Button> : <Button variant="outline" size="sm" className="min-h-10" onClick={() => onEdit(gateway)}><Pencil className="mr-1.5 size-4" />Edit</Button>}
-                  {supportsProbeControls ? <Button variant="outline" size="sm" className="min-h-10" onClick={() => onReload(gateway)}><RefreshCw className="mr-1.5 size-4" />Reload</Button> : <Button variant="outline" size="sm" className="min-h-10" onClick={() => requestToggleEnabled(gateway)}>{gateway.enabled ?? true ? 'Disable' : 'Enable'}</Button>}
-                </div>
+                {presentation === 'cards' ? <div className="grid grid-cols-3 gap-2">
+                  <Button asChild variant="outline" size="sm" className="min-h-11"><Link href={gatewayDetailHref(gateway.id)}><Eye className="mr-1.5 size-4" />Open</Link></Button>
+                  {supportsProbeControls ? <Button variant="outline" size="sm" className="min-h-11" onClick={() => onTest(gateway)}><Play className="mr-1.5 size-4" />Test</Button> : <Button variant="outline" size="sm" className="min-h-11" onClick={() => onEdit(gateway)}><Pencil className="mr-1.5 size-4" />Edit</Button>}
+                  {supportsProbeControls ? <Button variant="outline" size="sm" className="min-h-11" onClick={() => onReload(gateway)}><RefreshCw className="mr-1.5 size-4" />Reload</Button> : <Button variant="outline" size="sm" className="min-h-11" onClick={() => requestToggleEnabled(gateway)}>{gateway.enabled ?? true ? 'Disable' : 'Enable'}</Button>}
+                </div> : null}
               </div>
             </article>
           )
@@ -955,7 +956,7 @@ export function GatewayTable({
       <section
         aria-label="Server inventory"
         data-hovercard="1"
-        className={cn(GW_CARD, 'hidden', presentation !== 'cards' && 'min-[1101px]:block')}
+        className={cn(GW_CARD, presentation !== 'table' && 'hidden')}
         style={GW_SCRIM_ALIASES}
       >
         <div

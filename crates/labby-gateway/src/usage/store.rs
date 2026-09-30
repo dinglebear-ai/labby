@@ -803,6 +803,24 @@ impl UsageStore {
         ),
         ToolError,
     > {
+        let (rows, total, cursor, _) = self.list_calls_with_ingestion_watermark(query).await?;
+        Ok((rows, total, cursor))
+    }
+
+    /// The optional marker is present only for an unfiltered, first-row poll.
+    /// Its inner `None` means that no calls exist in the current snapshot.
+    pub async fn list_calls_with_ingestion_watermark(
+        &self,
+        query: super::query::UsageCallsQuery,
+    ) -> Result<
+        (
+            Vec<super::query::UpstreamCallRecordView>,
+            Option<i64>,
+            Option<super::query::UsageCursor>,
+            Option<Option<i64>>,
+        ),
+        ToolError,
+    > {
         self.with_conn(move |conn| {
             let tx = conn.unchecked_transaction().map_err(sqlite_error)?;
             let conn = &*tx;
@@ -822,6 +840,11 @@ impl UsageStore {
                 &query.search,
                 &query.allowed_upstreams,
             );
+            // Never attach a global marker to a filtered or route-scoped page.
+            let include_ingestion_watermark = where_clause.is_empty()
+                && query.cursor.is_none()
+                && query.limit == 1
+                && !query.include_total;
 
             let total = if query.include_total {
                 Some(
@@ -901,8 +924,20 @@ impl UsageStore {
                 }
             });
 
-            let result = (rows, total, next_cursor);
             drop(stmt);
+            // The page and marker share this read transaction's SQLite snapshot.
+            // MAX(id) uses the INTEGER PRIMARY KEY index, regardless of ts_unix.
+            // AUTOINCREMENT prevents reuse after pruning, while an empty table
+            // reports null. This is an insertion marker, not a prune revision.
+            let ingestion_watermark = if include_ingestion_watermark {
+                Some(
+                    conn.query_row("SELECT MAX(id) FROM upstream_calls", [], |row| row.get(0))
+                        .map_err(sqlite_error)?,
+                )
+            } else {
+                None
+            };
+            let result = (rows, total, next_cursor, ingestion_watermark);
             tx.commit().map_err(sqlite_error)?;
             Ok(result)
         })
@@ -2210,6 +2245,113 @@ mod tests {
             vec![2, 1]
         );
         assert!(next_cursor.is_some());
+    }
+
+    #[tokio::test]
+    async fn ingestion_watermark_tracks_insert_order_without_changing_call_pages() {
+        use super::super::query::UsageCallsQuery;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = UsageStore::open(dir.path().join("usage.db")).await.unwrap();
+        let head = || UsageCallsQuery {
+            limit: 1,
+            include_total: false,
+            ..Default::default()
+        };
+
+        let (rows, total, cursor, marker) = store
+            .list_calls_with_ingestion_watermark(head())
+            .await
+            .unwrap();
+        assert!(rows.is_empty());
+        assert_eq!(total, None);
+        assert_eq!(cursor, None);
+        assert_eq!(marker, Some(None));
+
+        store.record_call(sample_record(100)).await.unwrap();
+        let (first, _, _, first_marker) = store
+            .list_calls_with_ingestion_watermark(head())
+            .await
+            .unwrap();
+        assert_eq!(first[0].ts_unix, 100);
+        assert_eq!(first_marker, Some(Some(first[0].id)));
+
+        store.record_call(sample_record(99)).await.unwrap();
+        let (older_insert, _, _, older_marker) = store
+            .list_calls_with_ingestion_watermark(head())
+            .await
+            .unwrap();
+        assert_eq!(older_insert[0].id, first[0].id);
+        assert_eq!(older_marker, Some(Some(first[0].id + 1)));
+
+        store.record_call(sample_record(100)).await.unwrap();
+        let (same_second, _, _, same_second_marker) = store
+            .list_calls_with_ingestion_watermark(head())
+            .await
+            .unwrap();
+        assert_eq!(same_second[0].ts_unix, 100);
+        assert_eq!(
+            same_second_marker,
+            Some(Some(older_marker.unwrap().unwrap() + 1))
+        );
+        assert_eq!(same_second[0].id, same_second_marker.unwrap().unwrap());
+
+        let (page, total, cursor, marker) = store
+            .list_calls_with_ingestion_watermark(UsageCallsQuery {
+                limit: 2,
+                include_total: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            page.iter().map(|row| row.ts_unix).collect::<Vec<_>>(),
+            vec![100, 100]
+        );
+        assert_eq!(total, Some(3));
+        assert_eq!(marker, None);
+        let (tail, total, _, marker) = store
+            .list_calls_with_ingestion_watermark(UsageCallsQuery {
+                limit: 1,
+                cursor: Some(cursor.unwrap()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(tail[0].ts_unix, 99);
+        assert_eq!(total, None);
+        assert_eq!(marker, None);
+
+        let (_, _, _, marker) = store
+            .list_calls_with_ingestion_watermark(UsageCallsQuery {
+                upstream: Some("github".into()),
+                ..head()
+            })
+            .await
+            .unwrap();
+        assert_eq!(marker, None);
+        let (_, _, _, marker) = store
+            .list_calls_with_ingestion_watermark(UsageCallsQuery {
+                allowed_upstreams: Some(vec!["github".into()]),
+                ..head()
+            })
+            .await
+            .unwrap();
+        assert_eq!(marker, None);
+
+        let previous_id = same_second[0].id;
+        assert_eq!(store.prune_older_than(101).await.unwrap(), 3);
+        let (_, _, _, marker) = store
+            .list_calls_with_ingestion_watermark(head())
+            .await
+            .unwrap();
+        assert_eq!(marker, Some(None));
+        store.record_call(sample_record(101)).await.unwrap();
+        let (_, _, _, marker) = store
+            .list_calls_with_ingestion_watermark(head())
+            .await
+            .unwrap();
+        assert!(marker.unwrap().unwrap() > previous_id);
     }
 
     #[tokio::test]

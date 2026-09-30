@@ -6,6 +6,7 @@ import {
 } from './gateway-request.ts'
 import { withRequestTiming } from './request-timing.ts'
 import { queryServerLogs } from './server-logs-client.ts'
+import type { ServerLogEntry } from '../types/traces.ts'
 import { getBrowserSessionEpoch, getSessionAuthority } from '../auth/session-store.ts'
 import {
   aggregateGatewayUsage,
@@ -43,6 +44,16 @@ export type MetricsRequestOptions = {
   signal?: AbortSignal
   standaloneBearerAuth?: boolean
 }
+
+export type DashboardChangeToken = { latestCallId: number | null; tsUnix: number | null }
+
+export type DashboardLogObservation = {
+  observedAt: number
+  entries: ServerLogEntry[]
+  truncated: boolean
+}
+
+export type DashboardLogMode = { logs: DashboardLogObservation | null; error?: string }
 
 export class MetricsApiError extends Error {
   status: number
@@ -652,9 +663,33 @@ function summaryTools(summary: GatewayUsageMetrics): ToolUsageEntry[] {
 
 // ── Public fetchers ────────────────────────────────────────────────────────
 
+/** An indexed insertion-order marker, without a COUNT or retained-log scan.
+ * Polling this internal gateway action does not produce an upstream usage row. */
+export async function fetchDashboardChangeToken(
+  options?: MetricsRequestOptions,
+): Promise<DashboardChangeToken> {
+  if (USE_MOCK_DATA) {
+    options?.signal?.throwIfAborted?.()
+    const latest = buildCallStream('1h', Date.now()).at(-1)
+    return { latestCallId: latest ? Number(latest.id.split('-').at(-1)) : null, tsUnix: latest ? Math.floor(latest.ts / 1000) : null }
+  }
+  const response = await postGatewayUsageAction<GatewayUsageCalls>(
+    'gateway.usage.calls',
+    { limit: 1, include_total: false },
+    options,
+  )
+  const latest = response.calls[0]
+  const marker = response.latest_ingested_call_id
+  if (marker === undefined || (marker !== null && (!Number.isSafeInteger(marker) || marker <= 0))) {
+    throw new MetricsApiError('This gateway does not expose an ingestion-order usage marker for change detection.', 409, 'usage_change_token_unsupported')
+  }
+  return { latestCallId: marker, tsUnix: latest?.ts_unix ?? null }
+}
+
 export async function fetchDashboardMetrics(
   window: MetricsWindow,
   options?: MetricsRequestOptions,
+  logMode?: DashboardLogMode,
 ): Promise<DashboardMetrics> {
   if (USE_MOCK_DATA) {
     options?.signal?.throwIfAborted?.()
@@ -662,14 +697,15 @@ export async function fetchDashboardMetrics(
     return aggregateDashboard(buildCallStream(window, now), window, now)
   }
   const now = Date.now()
-  let observabilityError: string | undefined
+  const standalone = options?.standaloneBearerAuth === true
+  let observabilityError: string | undefined = standalone ? 'retained logs are unavailable in standalone bearer mode' : undefined
   const [summary, logResult] = await Promise.all([
     postGatewayUsageAction<GatewayUsageMetrics>(
       'gateway.usage.metrics',
       usageMetricsParams(window, now, undefined, { buckets: true }),
       options,
     ),
-    queryServerLogs(
+    logMode !== undefined || standalone ? Promise.resolve(null) : queryServerLogs(
       { limit: 500, max_scan_bytes: 2 * 1024 * 1024, stop_after_limit: true },
       { baseUrl: options?.baseUrl, signal: options?.signal },
     ).catch((error: unknown) => {
@@ -679,12 +715,24 @@ export async function fetchDashboardMetrics(
     }),
   ])
   const metrics = aggregateGatewayUsage(window, now, summary)
-  if (logResult) return enrichDashboardWithObservability(metrics, logResult.entries, window, now)
+  const observation = standalone ? null : logMode?.logs ?? (logResult ? {
+    observedAt: Date.now(), entries: logResult.entries, truncated: logResult.truncated,
+  } : null)
+  if (observation) {
+    const enriched = enrichDashboardWithObservability(metrics, observation.entries, window, now)
+    return {
+      ...enriched,
+      warnings: [
+        ...(enriched.warnings ?? []),
+        `Retained observability dimensions are a bounded sample of up to 500 rows/2 MiB observed at ${new Date(observation.observedAt).toISOString()}${observation.truncated ? ' (truncated)' : ''}; token, surface, and Code Mode counts are not complete-window totals.`,
+      ],
+    }
+  }
   return {
     ...metrics,
     warnings: [
       ...(metrics.warnings ?? []),
-      `Retained observability is unavailable: ${observabilityError ?? 'server logs could not be queried'}. Token, surface, and Code Mode fan-out dimensions are not available for this view.`,
+      `Retained observability is unavailable: ${logMode?.error ?? observabilityError ?? 'server logs were skipped'}. Token, surface, and Code Mode fan-out dimensions are not available for this view.`,
     ],
   }
 }

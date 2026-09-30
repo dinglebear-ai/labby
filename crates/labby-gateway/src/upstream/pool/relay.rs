@@ -58,8 +58,8 @@ use rmcp::model::LoggingMessageNotificationParam;
 use rmcp::model::{
     CallToolRequest, CallToolRequestParams, CallToolResponse, CancelledNotificationParam,
     ClientCapabilities, ClientInfo, ClientRequest, CustomNotification, GetPromptRequest,
-    GetPromptRequestParams, GetPromptResponse, ProgressNotificationParam, ProgressToken,
-    ReadResourceRequest, ReadResourceRequestParams, ReadResourceResponse, RequestId,
+    GetPromptRequestParams, GetPromptResponse, Implementation, ProgressNotificationParam,
+    ProgressToken, ReadResourceRequest, ReadResourceRequestParams, ReadResourceResponse, RequestId,
     RequestMetaObject, ResourceUpdatedNotificationParam, ServerNotification, ServerResult,
     TaskStatusNotification, TaskStatusNotificationParams,
 };
@@ -675,6 +675,7 @@ impl ClientHandler for RelayClientHandler {
     /// claimed on its behalf.
     fn get_info(&self) -> ClientInfo {
         let mut info = ClientInfo::default();
+        info.client_info = Implementation::new("labby-bridge", env!("CARGO_PKG_VERSION"));
         info.capabilities = self.capabilities.clone();
         info
     }
@@ -3768,6 +3769,11 @@ mod tests {
             relay_capabilities.clone(),
         );
         assert_eq!(handler.get_info().capabilities, relay_capabilities);
+        assert_eq!(handler.get_info().client_info.name, "labby-bridge");
+        assert_eq!(
+            handler.get_info().client_info.version,
+            env!("CARGO_PKG_VERSION")
+        );
         let gw_client = handler
             .serve_with_lifecycle(
                 gw_client_transport,
