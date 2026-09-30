@@ -616,6 +616,12 @@ impl CodeModeHost for GatewayManager {
             if let Some(config) = self.upstream_config(upstream).await
                 && config.oauth.is_some()
             {
+                if !config.enabled || !config.proxy_resources {
+                    return Err(ToolError::Sdk {
+                        sdk_kind: "forbidden".into(),
+                        message: format!("resource proxying is disabled for upstream `{upstream}`"),
+                    });
+                }
                 let subject = oauth_subject(caller)
                     .filter(|subject| !subject.is_empty())
                     .ok_or_else(|| ToolError::Sdk {
@@ -901,9 +907,7 @@ impl CodeModeHost for GatewayManager {
         // own arguments. `include_snippets`/`use_cache` come from
         // labby-codemode's `discovery_render_params` — the SAME function
         // `build_code_mode_proxy` calls — so the fingerprint computed here
-        // structurally cannot diverge from the one the warming path in
-        // `catalog_from_tools` already embedded for this execution's
-        // catalog. `allow_cold_connect` is hardcoded `false`
+        // structurally cannot diverge from this execution's catalog. `allow_cold_connect` is hardcoded `false`
         // (unlike `list_tools`'s `caller.can_execute()`): semantic ranking
         // must never spend wall-clock cold-connecting upstreams — by the
         // time a sandbox calls search(), the proxy build already connected
@@ -933,8 +937,8 @@ impl CodeModeHost for GatewayManager {
         if !self.semantic_search_available().await {
             return Ok(Vec::new());
         }
-        // Embeddings are cached/warmed over the FULL render (same
-        // fingerprint + entry set as `catalog_from_tools`' warming path);
+        // Semantic ranking warms embeddings on demand over the FULL render
+        // using the same fingerprint and entry set as catalog discovery;
         // ranking is then restricted to exactly the entry subset the
         // sandbox's own `__codemodeDiscovery` contains for this scope —
         // labby-codemode's `discovery_entry_visible`, the SAME function

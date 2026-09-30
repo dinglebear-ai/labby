@@ -141,6 +141,79 @@ const fn action(
 }
 
 pub(crate) const ACTIONS: &[ActionSpec] = &[
+    action(
+        "phoenix.input.respond",
+        "Answer a pending Assistant question",
+        &[
+            param("session_id", true),
+            param("request_id", true),
+            ParamSpec {
+                name: "answers",
+                ty: "object",
+                required: true,
+                description: "Question ids mapped to answer arrays",
+            },
+        ],
+    ),
+    action(
+        "phoenix.account.login.start",
+        "Start device sign-in for the shared instance Codex account",
+        &[],
+    ),
+    action(
+        "phoenix.account.login.read",
+        "Read caller-owned device sign-in progress",
+        &[],
+    ),
+    action(
+        "phoenix.account.login.cancel",
+        "Cancel caller-owned device sign-in",
+        &[],
+    ),
+    action(
+        "phoenix.session.configure",
+        "Change model and effort for subsequent turns",
+        &[
+            param("session_id", true),
+            param("model", false),
+            param("effort", false),
+        ],
+    ),
+    action(
+        "phoenix.turn.revise",
+        "Replace a user turn and subsequent conversation history",
+        &[
+            param("session_id", true),
+            ParamSpec {
+                name: "message_index",
+                ty: "integer",
+                required: true,
+                description: "User message index",
+            },
+            ParamSpec {
+                name: "expected_revision",
+                ty: "integer",
+                required: true,
+                description: "Revision from session read",
+            },
+            param("input", true),
+        ],
+    ),
+    action(
+        "phoenix.provider.configure",
+        "Set caller-specific Assistant provider until server restart",
+        &[
+            param("provider", true),
+            param("base_url", false),
+            param("api_key", false),
+            param("model", false),
+        ],
+    ),
+    action(
+        "phoenix.provider.reset",
+        "Restore the configured Assistant provider for this caller",
+        &[],
+    ),
     action("phoenix.status", "Read Phoenix availability", &[]),
     action("phoenix.models.list", "List selectable Codex models", &[]),
     action(
@@ -212,6 +285,8 @@ struct Message {
     role: &'static str,
     text: String,
     created_at_ms: u64,
+    turn_id: Option<String>,
+    revisable: bool,
 }
 
 #[derive(Clone)]
@@ -232,13 +307,23 @@ struct Session {
     turn_in_progress: bool,
     closing: bool,
     active_turn_id: Option<String>,
+    cancellation: Option<tokio::sync::oneshot::Sender<()>>,
     messages: Vec<Message>,
     events: Vec<Value>,
     next_event_sequence: u64,
+    revision: u64,
     model: Option<String>,
     effort: Option<String>,
     title: Option<String>,
     _capacity: OwnedSemaphorePermit,
+}
+
+struct AccountLogin {
+    owner: String,
+    id: String,
+    runtime: AppServerRuntime,
+    events: tokio::sync::broadcast::Receiver<crate::dispatch::phoenix_runtime::AppServerEvent>,
+    status: &'static str,
 }
 
 #[derive(Clone)]
@@ -248,6 +333,8 @@ pub(crate) struct PhoenixRuntime {
     openai: Option<OpenAiBackend>,
     sessions: Arc<Mutex<HashMap<String, Arc<Mutex<Session>>>>>,
     capacity: Arc<Semaphore>,
+    profiles: Arc<Mutex<HashMap<String, Arc<PhoenixRuntime>>>>,
+    login: Arc<Mutex<Option<AccountLogin>>>,
 }
 
 impl PhoenixRuntime {
@@ -275,6 +362,8 @@ impl PhoenixRuntime {
             openai,
             sessions: Arc::new(Mutex::new(HashMap::new())),
             capacity: Arc::new(Semaphore::new(MAX_SESSIONS)),
+            profiles: Arc::new(Mutex::new(HashMap::new())),
+            login: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -297,8 +386,97 @@ impl PhoenixRuntime {
             let action = required(&params, "action")?;
             return crate::dispatch::helpers::action_schema(ACTIONS, &action);
         }
+        if name == "phoenix.provider.configure" {
+            return self.configure_provider(owner, &params).await;
+        }
+        if name == "phoenix.provider.reset" {
+            self.profiles.lock().await.remove(owner);
+            return Ok(self.status());
+        }
+        let profile = self.profiles.lock().await.get(owner).cloned();
+        if let Some(profile) = profile {
+            return Box::pin(profile.dispatch(owner, name, params)).await;
+        }
         match name {
-            "phoenix.status" => Ok(self.status()),
+            "phoenix.status" => {
+                let mut status = self.status();
+                status["session_settings"] = json!(true);
+                status["account_login"] = json!({"available":self.config.provider==PhoenixProvider::CodexAppServer && self.available(),"scope":"shared_instance"});
+                status["provider_settings"] =
+                    json!({"persistence":"until_server_restart", "configurable":true});
+                Ok(status)
+            }
+            "phoenix.input.respond" => {
+                let session = self
+                    .session(owner, &required(&params, "session_id")?)
+                    .await?;
+                let state = session.lock().await;
+                if !state.turn_in_progress {
+                    return Err(unavailable("This turn has already finished"));
+                }
+                let runtime = match &state.backend {
+                    SessionBackend::Codex { runtime, .. } => runtime.clone(),
+                    _ => {
+                        return Err(unavailable(
+                            "This provider does not expose interactive questions",
+                        ));
+                    }
+                };
+                drop(state);
+                runtime
+                    .respond_user_input(
+                        &required(&params, "request_id")?,
+                        json!({"answers":params.get("answers").ok_or_else(protocol_error)?}),
+                    )
+                    .await?;
+                Ok(json!({"status":"answered"}))
+            }
+            "phoenix.account.login.start" => self.login_start(owner).await,
+            "phoenix.account.login.read" => self.login_read(owner).await,
+            "phoenix.account.login.cancel" => {
+                let mut login = self.login.lock().await;
+                let flow = login
+                    .as_ref()
+                    .filter(|flow| flow.owner == owner)
+                    .ok_or_else(denied)?;
+                let result = flow
+                    .runtime
+                    .request("account/login/cancel", json!({"loginId":flow.id}))
+                    .await?;
+                *login = None;
+                Ok(result)
+            }
+            "phoenix.session.configure" => {
+                let id = required(&params, "session_id")?;
+                let session = self.session(owner, &id).await?;
+                let mut state = session.lock().await;
+                if state.turn_in_progress || state.closing {
+                    return Err(unavailable("Wait for the active turn to finish"));
+                }
+                if let Some(model) = optional(&params, "model") {
+                    if model.trim().is_empty() || model.len() > 256 {
+                        return Err(invalid("model", "Choose a valid model"));
+                    }
+                }
+                if let Some(effort) = optional(&params, "effort") {
+                    if ![
+                        "", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+                    ]
+                    .contains(&effort.as_str())
+                    {
+                        return Err(invalid("effort", "Unknown reasoning effort"));
+                    }
+                    state.effort = if effort.is_empty() {
+                        None
+                    } else {
+                        Some(effort)
+                    };
+                }
+                if let Some(model) = optional(&params, "model") {
+                    state.model = Some(model);
+                }
+                Ok(render_session(&id, &state))
+            }
             "phoenix.models.list" => self.models().await,
             "phoenix.session.list" => self.list(owner).await,
             "phoenix.session.start" => {
@@ -319,6 +497,33 @@ impl PhoenixRuntime {
                 .await
             }
             "phoenix.session.close" => self.close(owner, &required(&params, "session_id")?).await,
+            "phoenix.turn.revise" => {
+                let session = self
+                    .session(owner, &required(&params, "session_id")?)
+                    .await?;
+                let id = required(&params, "session_id")?;
+                let input = required(&params, "input")?;
+                let index = params
+                    .get("message_index")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| usize::try_from(value).ok())
+                    .ok_or_else(|| invalid("message_index", "Expected a nonnegative index"))?;
+                let revision = params
+                    .get("expected_revision")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| {
+                        invalid(
+                            "expected_revision",
+                            "Read the session revision before editing",
+                        )
+                    })?;
+                if input.trim().is_empty() || input.len() > MAX_INPUT_BYTES {
+                    return Err(invalid("input", "Input must contain 1-32768 bytes"));
+                }
+                tokio::spawn(Self::run_revision(session, id, index, revision, input))
+                    .await
+                    .map_err(|_| unavailable("Revision task stopped"))?
+            }
             "phoenix.turn.send" => {
                 let session_id = required(&params, "session_id")?;
                 let input = required(&params, "input")?;
@@ -354,6 +559,52 @@ impl PhoenixRuntime {
                 hint: None,
             }),
         }
+    }
+
+    async fn configure_provider(&self, owner: &str, params: &Value) -> Result<Value, ToolError> {
+        let mut config = self.config.clone();
+        let provider = required(params, "provider")?;
+        let backend = match provider.as_str() {
+            "openai_compatible" => {
+                let endpoint = required(params, "base_url")?;
+                if endpoint.len() > 4096 {
+                    return Err(invalid("base_url", "Endpoint is too long"));
+                }
+                let key = optional(params, "api_key");
+                if key.as_ref().is_some_and(|key| key.len() > 16384) {
+                    return Err(invalid("api_key", "Key is too long"));
+                }
+                config.provider = PhoenixProvider::OpenAiCompatible;
+                Some(OpenAiBackend::standard(&endpoint, key)?)
+            }
+            "codex_app_server" => {
+                config.provider = PhoenixProvider::CodexAppServer;
+                None
+            }
+            _ => {
+                return Err(invalid(
+                    "provider",
+                    "Choose openai_compatible or codex_app_server",
+                ));
+            }
+        };
+        config.enabled = true;
+        config.model = optional(params, "model");
+        let mut profile = Self::new_with_backends(config, self.local_mcp_url.clone(), backend);
+        if !profile.available() {
+            return Err(unavailable(
+                "The operator must configure the Codex executable, home, and workspace before selecting Codex App Server",
+            ));
+        }
+        profile.login = self.login.clone();
+        profile.sessions = self.sessions.clone();
+        profile.capacity = self.capacity.clone();
+        let mut profiles = self.profiles.lock().await;
+        if !profiles.contains_key(owner) && profiles.len() >= MAX_SESSIONS {
+            return Err(unavailable("Assistant provider profile limit reached"));
+        }
+        profiles.insert(owner.to_owned(), Arc::new(profile));
+        Ok(json!({"configured":true,"provider":provider,"persistence":"until_server_restart"}))
     }
 
     fn available(&self) -> bool {
@@ -408,7 +659,7 @@ impl PhoenixRuntime {
                     "operations": ["review"],
                     "review": ["uncommitted_changes", "base_branch", "commit", "custom"],
                     "diagnostics": ["account", "rate_limits", "usage", "config", "mcp_server_status"],
-                    "server_requests": ["deterministic_decline", "audit_event"],
+                    "server_requests": ["user_input", "deterministic_decline", "audit_event"],
                     "preserved_events": [
                         "items", "agent_message", "reasoning", "plan", "diff",
                         "tool_output", "hooks", "subagents", "model_events",
@@ -417,7 +668,7 @@ impl PhoenixRuntime {
                     "inputs": ["text", "image_data_url", "text_file_data_url", "audio_data_url"],
                     "unsupported": [
                         "approvals", "elicitation_response",
-                        "realtime", "local_path_attachments", "account_mutation", "filesystem_mutation",
+                        "realtime", "local_path_attachments", "filesystem_mutation",
                         "remote_control"
                     ],
                 },
@@ -580,9 +831,11 @@ impl PhoenixRuntime {
                 turn_in_progress: false,
                 closing: false,
                 active_turn_id: None,
+                cancellation: None,
                 messages: Vec::new(),
                 events: Vec::new(),
                 next_event_sequence: 0,
+                revision: 0,
                 model: selected_model,
                 effort,
                 title: None,
@@ -620,9 +873,11 @@ impl PhoenixRuntime {
                 turn_in_progress: false,
                 closing: false,
                 active_turn_id: None,
+                cancellation: None,
                 messages: Vec::new(),
                 events: Vec::new(),
                 next_event_sequence: 0,
+                revision: 0,
                 model: Some(selected_model),
                 effort,
                 title: None,
@@ -771,6 +1026,106 @@ impl PhoenixRuntime {
         .map_err(|_| unavailable("Phoenix turn task stopped"))?
     }
 
+    async fn run_revision(
+        session: Arc<Mutex<Session>>,
+        id: String,
+        index: usize,
+        revision: u64,
+        input: String,
+    ) -> Result<Value, ToolError> {
+        let (backend, model, effort, turn_id) = {
+            let mut state = session.lock().await;
+            if state.turn_in_progress || state.closing {
+                return Err(unavailable("Wait for the active turn to finish"));
+            }
+            if state.revision != revision {
+                return Err(invalid(
+                    "expected_revision",
+                    "Conversation changed; refresh before editing",
+                ));
+            }
+            let message = state
+                .messages
+                .get(index)
+                .filter(|message| message.role == "user")
+                .ok_or_else(|| invalid("message_index", "Select a user message"))?;
+            if !message.revisable {return Err(invalid("message_index","This message includes turn inputs that cannot be revised"));}
+            let turn_id = message.turn_id.clone();
+            if let SessionBackend::OpenAi { backend, .. } = &state.backend {
+                if backend.uses_session_api() {
+                    return Err(unavailable(
+                        "The configured gateway does not expose conversation revision",
+                    ));
+                }
+            }
+            if turn_id.is_some()
+                && state.messages[..index]
+                    .iter()
+                    .any(|message| message.turn_id == turn_id)
+            {
+                return Err(invalid(
+                    "message_index",
+                    "Edit the first message in this turn",
+                ));
+            }
+            state.turn_in_progress = true;
+            (
+                state.backend.clone(),
+                state.model.clone(),
+                state.effort.clone(),
+                turn_id,
+            )
+        };
+        if let SessionBackend::Codex { thread_id, runtime } = &backend {
+            let rollback = async {
+                let read = runtime
+                    .request(
+                        "thread/read",
+                        json!({"threadId":thread_id,"includeTurns":true}),
+                    )
+                    .await?;
+                let turns = read
+                    .pointer("/thread/turns")
+                    .and_then(Value::as_array)
+                    .ok_or_else(protocol_error)?;
+                let target = turns
+                    .iter()
+                    .position(|turn| turn.get("id").and_then(Value::as_str) == turn_id.as_deref())
+                    .ok_or_else(|| unavailable("The original turn is no longer available"))?;
+                runtime
+                    .request(
+                        "thread/rollback",
+                        json!({"threadId":thread_id,"numTurns":turns.len()-target}),
+                    )
+                    .await
+            }
+            .await;
+            if let Err(error) = rollback {
+                clear_active_turn(&session).await;
+                return Err(error);
+            }
+        }
+        {
+            let mut state = session.lock().await;
+            state.messages.truncate(index);
+            state.events.clear();
+            state.revision += 1;
+        }
+        match backend {
+            SessionBackend::Codex { thread_id, runtime } => {
+                let inputs = turn_inputs(&input, None)?;
+                Self::run_codex_turn(
+                    session, id, input, inputs, runtime, thread_id, model, effort,
+                )
+                .await
+            }
+            SessionBackend::OpenAi {
+                session_id,
+                backend,
+            } => Self::run_openai_turn(session, id, session_id, input, backend, model).await,
+        }
+    }
+
     async fn run_turn(
         session: Arc<Mutex<Session>>,
         session_id: String,
@@ -834,6 +1189,7 @@ impl PhoenixRuntime {
         model: Option<String>,
         effort: Option<String>,
     ) -> Result<Value, ToolError> {
+        let revisable=protocol_inputs.len()==1 && protocol_inputs[0]["type"]=="text" && protocol_inputs[0]["text"]==input;
         let mut events = runtime.subscribe();
         let started = runtime
             .request("turn/start", {
@@ -869,6 +1225,7 @@ impl PhoenixRuntime {
             let mut state = session.lock().await;
             state.active_turn_id = Some(turn_id.clone());
             push_message(&mut state, "user", input);
+            if let Some(message)=state.messages.last_mut(){message.revisable=revisable;}
         }
         let result = tokio::time::timeout(
             TURN_TIMEOUT,
@@ -893,6 +1250,7 @@ impl PhoenixRuntime {
         let mut state = session.lock().await;
         state.turn_in_progress = false;
         state.active_turn_id = None;
+        state.cancellation = None;
         push_message(&mut state, "assistant", result.output);
         Ok(render_session(&session_id, &state))
     }
@@ -908,16 +1266,32 @@ impl PhoenixRuntime {
         let model =
             model.ok_or_else(|| unavailable("Phoenix OpenAI provider has no selected model"))?;
         let turn_id = format!("openai-{}", uuid::Uuid::new_v4());
+        let (cancel, cancelled) = tokio::sync::oneshot::channel();
         {
             let mut state = session.lock().await;
             state.active_turn_id = Some(turn_id);
+            state.cancellation = Some(cancel);
             push_message(&mut state, "user", input.clone());
         }
-        let result = tokio::time::timeout(
-            TURN_TIMEOUT,
-            backend.chat(&upstream_session_id, &model, &[ChatMessage::User(&input)]),
-        )
-        .await;
+        let history = session.lock().await.messages.clone();
+        let messages = if backend.uses_session_api() {
+            vec![ChatMessage::User(input.as_str())]
+        } else {
+            history
+                .iter()
+                .map(|message| {
+                    if message.role == "assistant" {
+                        ChatMessage::Assistant(message.text.as_str())
+                    } else {
+                        ChatMessage::User(message.text.as_str())
+                    }
+                })
+                .collect()
+        };
+        let result = tokio::select! {
+            result=tokio::time::timeout(TURN_TIMEOUT,backend.chat_with_usage(&upstream_session_id,&model,&messages))=>result,
+            _=cancelled=>{clear_active_turn(&session).await;return Ok(render_session(&session_id,&*session.lock().await));}
+        };
         let output = match result {
             Ok(Ok(output)) => output,
             Ok(Err(error)) => {
@@ -935,7 +1309,16 @@ impl PhoenixRuntime {
         let mut state = session.lock().await;
         state.turn_in_progress = false;
         state.active_turn_id = None;
-        push_message(&mut state, "assistant", output);
+        state.cancellation = None;
+        if let Some(tokens) = output.1.get("total_tokens").and_then(Value::as_u64) {
+            state.next_event_sequence += 1;
+            let sequence = state.next_event_sequence;
+            state.events.push(json!({"method":"thread/tokenUsage/updated","sequence":sequence,"received_at_ms":now_millis(),"params":{"tokenUsage":{"last":{"totalTokens":tokens}}}}));
+            if state.events.len() > MAX_EVENTS {
+                state.events.remove(0);
+            }
+        }
+        push_message(&mut state, "assistant", output.0);
         Ok(render_session(&session_id, &state))
     }
 
@@ -957,7 +1340,12 @@ impl PhoenixRuntime {
                 session_id,
                 backend,
             } => {
-                backend.cancel_session(&session_id).await?;
+                if backend.uses_session_api() {
+                    backend.cancel_session(&session_id).await?;
+                }
+                if let Some(cancel) = session.lock().await.cancellation.take() {
+                    let _ = cancel.send(());
+                }
             }
         }
         Ok(json!({"session_id":session_id,"status":"interrupting","turn_id":turn_id}))
@@ -1002,10 +1390,13 @@ impl PhoenixRuntime {
             .await?;
         {
             let mut state = session.lock().await;
+            state.revision += 1;
             state.messages.push(Message {
                 role: "user",
                 text: display_input,
                 created_at_ms: submitted_at_ms,
+                turn_id: Some(turn_id.clone()),
+                revisable: false,
             });
             if state.messages.len() > MAX_MESSAGES {
                 let excess = state.messages.len() - MAX_MESSAGES;
@@ -1097,6 +1488,7 @@ impl PhoenixRuntime {
                 let mut state = session.lock().await;
                 state.turn_in_progress = false;
                 state.active_turn_id = None;
+                state.cancellation = None;
                 return Err(error);
             }
             Err(_) => {
@@ -1104,6 +1496,7 @@ impl PhoenixRuntime {
                 let mut state = session.lock().await;
                 state.turn_in_progress = false;
                 state.active_turn_id = None;
+                state.cancellation = None;
                 return Err(unavailable(
                     "Phoenix review exceeded the five minute runtime limit",
                 ));
@@ -1112,11 +1505,15 @@ impl PhoenixRuntime {
         let mut state = session.lock().await;
         state.turn_in_progress = false;
         state.active_turn_id = None;
+        state.cancellation = None;
         if !result.output.is_empty() {
+            state.revision += 1;
             state.messages.push(Message {
                 role: "assistant",
                 text: result.output,
                 created_at_ms: now_millis(),
+                turn_id: None,
+                revisable: false,
             });
         }
         if state.messages.len() > MAX_MESSAGES {
@@ -1126,6 +1523,82 @@ impl PhoenixRuntime {
         let mut rendered = render_session(&session_id, &state);
         rendered["review"] = safe_value(&response);
         Ok(rendered)
+    }
+
+    async fn login_start(&self, owner: &str) -> Result<Value, ToolError> {
+        self.require_available()?;
+        if self.config.provider != PhoenixProvider::CodexAppServer {
+            return Err(unavailable("Select Codex App Server before signing in"));
+        }
+        let mut login = self.login.lock().await;
+        if login.as_ref().is_some_and(|flow| flow.status == "pending") {
+            return Err(unavailable("A device sign-in is already pending"));
+        }
+        let runtime = initialized_app_server(&self.config, &self.local_mcp_url).await?;
+        let events = runtime.subscribe();
+        let result = runtime
+            .request("account/login/start", json!({"type":"chatgptDeviceCode"}))
+            .await?;
+        let id = result
+            .get("loginId")
+            .and_then(Value::as_str)
+            .ok_or_else(protocol_error)?
+            .to_owned();
+        let url = result
+            .get("verificationUrl")
+            .and_then(Value::as_str)
+            .ok_or_else(protocol_error)?;
+        let parsed = url::Url::parse(url).map_err(|_| protocol_error())?;
+        if parsed.scheme() != "https"
+            || parsed.host_str() != Some("auth.openai.com")
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+        {
+            return Err(protocol_error());
+        }
+        let code = result
+            .get("userCode")
+            .and_then(Value::as_str)
+            .ok_or_else(protocol_error)?;
+        *login = Some(AccountLogin {
+            owner: owner.to_owned(),
+            id: id.clone(),
+            runtime,
+            events,
+            status: "pending",
+        });
+        let state = self.login.clone();
+        let expiry_id = id.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(15 * 60)).await;
+            let mut state = state.lock().await;
+            if state.as_ref().is_some_and(|flow| flow.id == expiry_id) {
+                *state = None;
+            }
+        });
+        Ok(
+            json!({"verification_url":url,"user_code":code,"status":"pending","scope":"shared_instance"}),
+        )
+    }
+
+    async fn login_read(&self, owner: &str) -> Result<Value, ToolError> {
+        let mut login = self.login.lock().await;
+        let flow = login
+            .as_mut()
+            .filter(|flow| flow.owner == owner)
+            .ok_or_else(denied)?;
+        while let Ok(event) = flow.events.try_recv() {
+            if event.0["method"] == "account/login/completed"
+                && event.0["params"]["loginId"] == flow.id
+            {
+                flow.status = if event.0["params"]["success"] == true {
+                    "completed"
+                } else {
+                    "failed"
+                };
+            }
+        }
+        Ok(json!({"status":flow.status,"scope":"shared_instance"}))
     }
 
     async fn diagnostics(&self) -> Result<Value, ToolError> {
@@ -1284,7 +1757,10 @@ fn push_message(session: &mut Session, role: &'static str, text: String) {
         role,
         text,
         created_at_ms: now_millis(),
+        turn_id: session.active_turn_id.clone(),
+        revisable: true,
     });
+    session.revision += 1;
     if session.messages.len() > MAX_MESSAGES {
         let excess = session.messages.len() - MAX_MESSAGES;
         session.messages.drain(..excess);
@@ -1295,16 +1771,20 @@ async fn clear_active_turn(session: &Arc<Mutex<Session>>) {
     let mut state = session.lock().await;
     state.turn_in_progress = false;
     state.active_turn_id = None;
+    state.cancellation = None;
 }
 
 fn render_session(session_id: &str, session: &Session) -> Value {
     json!({
         "session_id": session_id,
         "status": "ready",
+        "revision": session.revision,
+        "can_revise": match &session.backend {SessionBackend::Codex{..}=>true,SessionBackend::OpenAi{backend,..}=>!backend.uses_session_api()},
         "messages": session.messages.iter().map(|message| json!({
             "role": message.role,
             "text": message.text,
             "created_at_ms": message.created_at_ms,
+            "can_revise": message.revisable,
         })).collect::<Vec<_>>(),
         "events": session.events,
         "model": session.model,
@@ -1710,6 +2190,8 @@ fn sanitized_event(event: &Value) -> Option<Value> {
             | "error"
             | "warning"
             | "phoenix/serverRequestDeclined"
+            | "phoenix/userInputRequested"
+            | "phoenix/userInputResolved"
     ) {
         return None;
     }
@@ -1894,6 +2376,172 @@ mod tests {
                 .kind(),
             "executor_unavailable"
         );
+    }
+
+    #[tokio::test]
+    async fn provider_preferences_are_caller_scoped_and_never_return_secrets() {
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let runtime = PhoenixRuntime::default();
+        let configured = runtime.dispatch("owner-a", "phoenix.provider.configure", json!({
+            "provider":"openai_compatible", "base_url":"https://example.test/v1", "api_key":"test-secret"
+        })).await.unwrap();
+        assert!(!configured.to_string().contains("test-secret"));
+        let own = runtime
+            .dispatch("owner-a", "phoenix.status", json!({}))
+            .await
+            .unwrap();
+        let other = runtime
+            .dispatch("owner-b", "phoenix.status", json!({}))
+            .await
+            .unwrap();
+        assert_eq!(own["available"], true);
+        assert_eq!(other["available"], false);
+        assert_eq!(
+            own["provider_settings"]["persistence"],
+            "until_server_restart"
+        );
+        runtime
+            .dispatch("owner-a", "phoenix.provider.reset", json!({}))
+            .await
+            .unwrap();
+        assert_eq!(
+            runtime
+                .dispatch("owner-a", "phoenix.status", json!({}))
+                .await
+                .unwrap()["available"],
+            false
+        );
+    }
+
+    #[tokio::test]
+    async fn revise_standard_turn_replaces_history_and_rejects_stale_writes() {
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"data":[{"id":"test-model"}]})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"choices":[{"message":{"content":"answer"}}]})),
+            )
+            .mount(&server)
+            .await;
+        let runtime = PhoenixRuntime::default();
+        runtime
+            .dispatch(
+                "owner",
+                "phoenix.provider.configure",
+                json!({"provider":"openai_compatible","base_url":format!("{}/v1",server.uri())}),
+            )
+            .await
+            .unwrap();
+        let started = runtime
+            .dispatch("owner", "phoenix.session.start", json!({}))
+            .await
+            .unwrap();
+        let id = started["session_id"].as_str().unwrap();
+        runtime
+            .dispatch(
+                "owner",
+                "phoenix.turn.send",
+                json!({"session_id":id,"input":"original"}),
+            )
+            .await
+            .unwrap();
+        let result = runtime
+            .dispatch(
+                "owner",
+                "phoenix.turn.revise",
+                json!({"session_id":id,"message_index":0,"expected_revision":2,"input":"edited"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result["messages"][0]["text"], "edited");
+        assert_eq!(result["messages"].as_array().unwrap().len(), 2);
+        assert!(runtime.dispatch("other","phoenix.turn.revise",json!({"session_id":id,"message_index":0,"expected_revision":2,"input":"attack"})).await.is_err());
+        assert!(
+            runtime
+                .dispatch(
+                    "owner",
+                    "phoenix.turn.revise",
+                    json!({"session_id":id,"message_index":0,"expected_revision":9,"input":"stale"})
+                )
+                .await
+                .is_err()
+        );
+        let requests = server.received_requests().await.unwrap();
+        let last: Value = serde_json::from_slice(&requests.last().unwrap().body).unwrap();
+        assert_eq!(last["messages"][0]["content"], "edited");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn device_login_is_owner_scoped_and_reports_completion() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = tempfile::tempdir().unwrap();
+        let command = root.path().join("codex-login-fixture");
+        fs::write(&command,r#"#!/bin/sh
+read initialize
+printf '%s\n' '{"id":1,"result":{}}'
+read initialized
+read login
+printf '%s\n' '{"id":2,"result":{"type":"chatgptDeviceCode","loginId":"login-1","verificationUrl":"https://auth.openai.com/codex/device","userCode":"TEST-CODE"}}'
+printf '%s\n' '{"method":"account/login/completed","params":{"loginId":"login-1","success":true}}'
+while read request; do :; done
+"#).unwrap();
+        fs::set_permissions(&command, fs::Permissions::from_mode(0o700)).unwrap();
+        let runtime = PhoenixRuntime::new(PhoenixPreferences {
+            enabled: true,
+            provider: PhoenixProvider::CodexAppServer,
+            command: Some(command),
+            codex_home: Some(root.path().to_path_buf()),
+            workspace_root: Some(root.path().to_path_buf()),
+            model: None,
+        });
+        let started = runtime
+            .dispatch("owner", "phoenix.account.login.start", json!({}))
+            .await
+            .unwrap();
+        assert_eq!(started["user_code"], "TEST-CODE");
+        assert!(
+            runtime
+                .dispatch("other", "phoenix.account.login.read", json!({}))
+                .await
+                .is_err()
+        );
+        let mut complete = false;
+        for _ in 0..20 {
+            let state = runtime
+                .dispatch("owner", "phoenix.account.login.read", json!({}))
+                .await
+                .unwrap();
+            if state["status"] == "completed" {
+                complete = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(complete);
+    }
+
+    #[tokio::test]
+    async fn session_preferences_reject_unknown_session() {
+        let runtime = PhoenixRuntime::default();
+        let error = runtime
+            .dispatch(
+                "owner",
+                "phoenix.session.configure",
+                json!({"session_id":"missing","model":"model"}),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), denied().kind());
     }
 
     #[test]

@@ -253,6 +253,20 @@ impl GatewayManager {
             let mut added_names = Vec::new();
             let mut errors: Vec<(String, ToolError)> = Vec::new();
             for mut spec in specs {
+                // Discovery partitioning precedes this lease. Recheck the
+                // latest durable suppression markers before generic insertion
+                // (which deliberately clears tombstones for explicit adds).
+                if matches!(origin, Some("gateway.import" | "gateway.auto_import"))
+                    && cfg.upstream_import_tombstones.iter().any(|tombstone| {
+                        crate::gateway::config::tombstone_matches_upstream(tombstone, &spec)
+                    })
+                {
+                    errors.push((spec.name, ToolError::Sdk {
+                        sdk_kind: "import_tombstoned".into(),
+                        message: "discovered gateway was rejected while import was pending".into(),
+                    }));
+                    continue;
+                }
                 if let Some(ref env_name) = spec.bearer_token_env {
                     let trimmed = env_name.trim().to_string();
                     if let Err(e) = validate_bearer_token_env_name(&trimmed) {
@@ -268,6 +282,9 @@ impl GatewayManager {
             }
 
             if added_names.is_empty() && !errors.is_empty() {
+                if errors.iter().all(|(_, error)| error.kind() == "import_tombstoned") {
+                    return Ok(BatchAddOutcome { views: Vec::new(), errors });
+                }
                 // Every spec failed — return the first error to the caller.
                 return Err(errors.remove(0).1);
             }

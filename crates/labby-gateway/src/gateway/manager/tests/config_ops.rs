@@ -1098,3 +1098,113 @@ async fn bearer_token_credential_write_persists_through_store_seam() {
         "bearer credential must be persisted to the .env file through the store seam"
     );
 }
+
+async fn patch_observes_latest_loadout_after_waiting_for_writer(staged: bool) {
+    use crate::gateway::params::GatewayLoadoutPatch;
+    use labby_runtime::gateway_config::{GatewayLoadoutConfig, ProtectedGatewaySubsetTarget, ProtectedMcpRouteTarget};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let mut initial = GatewayConfig { loadouts: vec![GatewayLoadoutConfig { name: "ops".into(), ..Default::default() }], ..Default::default() };
+    if staged {
+        let mut route = fixture_protected_route("ops-route");
+        route.backend_url.clear();
+        route.target = Some(ProtectedMcpRouteTarget::GatewaySubset(ProtectedGatewaySubsetTarget { loadout: Some("ops".into()), ..Default::default() }));
+        initial.protected_mcp_routes.push(route);
+    }
+    crate::gateway::config::write_gateway_config(&path, &initial).unwrap();
+    let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+    manager.seed_config(initial.clone()).await;
+    let writer = manager.acquire_config_mutation().await.unwrap();
+    let waiting = crate::gateway::manager::config_transaction::test_gates::next_mutation_wait(&path);
+    let requester = manager.clone();
+    let request = tokio::spawn(async move {
+        let patch: GatewayLoadoutPatch = serde_json::from_value(serde_json::json!({"expose_tools": false})).unwrap();
+        if staged { requester.loadout_stage_patch("ops", patch).await.map(|_| ()) }
+        else { requester.loadout_patch("ops", patch).await.map(|_| ()) }
+    });
+    tokio::time::timeout(Duration::from_secs(5), waiting).await.expect("patch reaches writer lease").unwrap();
+    let mut latest = initial;
+    latest.loadouts[0].expose_resources = false;
+    crate::gateway::config::write_gateway_config(&path, &latest).unwrap();
+    drop(writer);
+    request.await.unwrap().unwrap();
+    let desired = manager.loadout_get("ops").await.unwrap();
+    assert!(!desired.expose_tools, "requested patch persists");
+    assert!(!desired.expose_resources, "independent writer patch must survive");
+}
+
+#[tokio::test]
+async fn hot_loadout_patch_merges_after_writer_lease() { patch_observes_latest_loadout_after_waiting_for_writer(false).await; }
+#[tokio::test]
+async fn staged_loadout_patch_merges_after_writer_lease() { patch_observes_latest_loadout_after_waiting_for_writer(true).await; }
+
+struct FailBearerReconcileStore {
+    inner: crate::gateway::config_store::FsGatewayConfigStore,
+    path: PathBuf,
+    fail_once: std::sync::atomic::AtomicBool,
+}
+impl GatewayConfigStore for FailBearerReconcileStore {
+    fn public_urls(&self) -> ResolvedPublicUrls { self.inner.public_urls() }
+    fn set_process_code_mode_enabled(&self, enabled: bool) { self.inner.set_process_code_mode_enabled(enabled); }
+    fn env_path(&self) -> PathBuf { self.inner.env_path() }
+    fn persist(&self, cfg: &GatewayConfig) -> Result<(), labby_runtime::error::ToolError> {
+        self.inner.persist(cfg)?;
+        if self.fail_once.swap(false, Ordering::SeqCst) {
+            // A different writer changes an unrelated key after the credential
+            // write. Compensation must restore one key, not an old whole file.
+            use std::io::Write as _;
+            std::fs::OpenOptions::new().append(true).open(self.inner.env_path()).unwrap()
+                .write_all(b"UNRELATED_NEW=survives\n").unwrap();
+            std::fs::write(&self.path, "invalid config = [").unwrap();
+        }
+        Ok(())
+    }
+    fn persist_gateway_bearer_token<'a>(&'a self, key: &'a str, value: &'a str) -> StoreFuture<'a, Result<(), labby_runtime::error::ToolError>> { self.inner.persist_gateway_bearer_token(key, value) }
+    fn persist_service_env<'a>(&'a self, service: &'a str, values: &'a BTreeMap<String, String>) -> StoreFuture<'a, Result<(), labby_runtime::error::ToolError>> { self.inner.persist_service_env(service, values) }
+}
+async fn failed_bearer_mutation_restores_one_key(previous_token: Option<&str>) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let mut upstream = fixture_http_upstream("rollback-token");
+    upstream.enabled = false;
+    upstream.bearer_token_env = Some("ROLLBACK_FIXTURE_TOKEN".into());
+    let initial = GatewayConfig { upstream: vec![upstream], ..Default::default() };
+    crate::gateway::config::write_gateway_config(&path, &initial).unwrap();
+    std::fs::write(dir.path().join(".env"), match previous_token { Some(value) => format!("UNRELATED=unchanged\nROLLBACK_FIXTURE_TOKEN={value}\n"), None => "UNRELATED=unchanged\n".into() }).unwrap();
+    let store = Arc::new(FailBearerReconcileStore { inner: crate::gateway::config_store::FsGatewayConfigStore::new(path.clone()), path: path.clone(), fail_once: std::sync::atomic::AtomicBool::new(true) });
+    let manager = GatewayManager::with_store(path.clone(), GatewayRuntimeHandle::default(), store);
+    manager.seed_config(initial.clone()).await;
+    manager.update("rollback-token", crate::gateway::params::GatewayUpdatePatch::default(), Some("replacement".into()), None, None).await.expect_err("forced reload error");
+    let env = read_env_values(&dir.path().join(".env")).unwrap();
+    assert_eq!(env.get("ROLLBACK_FIXTURE_TOKEN").map(String::as_str), previous_token, "failed config transaction must restore the previous credential key");
+    assert_eq!(env.get("UNRELATED").map(String::as_str), Some("unchanged"));
+    assert_eq!(env.get("UNRELATED_NEW").map(String::as_str), Some("survives"));
+    assert_eq!(serde_json::to_value(load_gateway_config(&path).unwrap().upstream).unwrap(), serde_json::to_value(&initial.upstream).unwrap());
+}
+#[tokio::test]
+async fn bearer_rollback_restores_existing_key_without_losing_unrelated_write() { failed_bearer_mutation_restores_one_key(Some("Bearer original")).await; }
+#[tokio::test]
+async fn bearer_rollback_removes_new_key_without_losing_unrelated_write() { failed_bearer_mutation_restores_one_key(None).await; }
+
+#[tokio::test]
+async fn token_only_update_detaches_preexisting_live_peer() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let mut upstream = fixture_http_upstream("token-rotation");
+    upstream.bearer_token_env = Some("TOKEN_ROTATION_FIXTURE_KEY".into());
+    let initial = GatewayConfig { upstream: vec![upstream], ..Default::default() };
+    crate::gateway::config::write_gateway_config(&path, &initial).unwrap();
+    let manager = GatewayManager::new(path, GatewayRuntimeHandle::default());
+    manager.seed_config(initial.clone()).await;
+    let pool = Arc::new(manager.new_base_pool(initial.upstream_request_timeout(), initial.upstream_relay_timeout(), false));
+    pool.seed_lazy_upstreams(&initial.upstream).await;
+    pool.insert_live_tool_server_for_tests("token-rotation", Arc::new(tokio::sync::RwLock::new(vec!["old-peer-tool".into()]))).await;
+    assert!(pool.refresh_tools_after_list_changed("token-rotation").await);
+    assert_eq!(pool.cached_upstream_summary("token-rotation").await.unwrap().discovered_tool_count, 1);
+    manager.runtime.swap(Some(pool.clone())).await;
+    manager.update("token-rotation", crate::gateway::params::GatewayUpdatePatch::default(), Some("replacement".into()), None, None).await.unwrap();
+    let current = manager.current_pool().await.unwrap();
+    assert_eq!(current.cached_upstream_summary("token-rotation").await.unwrap().discovered_tool_count, 0, "token-only rotation must detach the previously authenticated peer and its old catalog");
+    assert_eq!(serde_json::to_value(manager.current_config().await.upstream).unwrap(), serde_json::to_value(&initial.upstream).unwrap());
+    current.drain_for_swap("test.token_rotation").await;
+}

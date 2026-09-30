@@ -752,7 +752,9 @@ export function GatewayFormDialog({
       && oauthState.registration_strategy !== 'unknown'
       && !preserveExistingOauth
         ? { registration_strategy: oauthState.registration_strategy, scopes: oauthState.scopes }
-        : undefined
+        : isEditing && gateway?.config.oauth_enabled && (!authEnabled || authMode !== 'oauth')
+          ? null
+          : undefined
     return {
       name,
       display_name: displayName.trim() || null,

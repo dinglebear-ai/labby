@@ -534,6 +534,11 @@ impl UpstreamPool {
         subject: &str,
         mut params: ReadResourceRequestParams,
     ) -> Result<ReadResourceResult, CapabilityCallError> {
+        if !config.enabled || !config.proxy_resources {
+            return Err(CapabilityCallError::Other {
+                message: format!("resource proxying is disabled for upstream `{}`", config.name),
+            });
+        }
         let start = Instant::now();
         let gateway_uri = params.uri.clone();
         let prefix = format!("lab://upstream/{}/", config.name);
@@ -644,6 +649,61 @@ mod tests {
     use super::super::testsupport::*;
     use super::ExactResourceReadError;
     use crate::upstream::types::{CIRCUIT_BREAKER_THRESHOLD, ToolExposurePolicy, UpstreamHealth};
+
+    #[tokio::test]
+    async fn oauth_resource_read_respects_disabled_proxy_with_cached_peer() {
+        #[derive(Clone)]
+        struct CountingRead(Arc<AtomicUsize>);
+        impl ServerHandler for CountingRead {
+            fn get_info(&self) -> rmcp::model::ServerInfo {
+                rmcp::model::ServerInfo::new(rmcp::model::ServerCapabilities::builder().enable_resources().build())
+            }
+            async fn read_resource(&self, request: ExactReadParams,
+                _: ExactRequestContext<RoleServer>) -> Result<ExactReadResponse, ErrorData> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(ReadResourceResult::new(vec![ResourceContents::text("private", request.uri)]).into())
+            }
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let pool = catalog_pool_with_server("private", CountingRead(Arc::clone(&calls))).await;
+        let connection = pool.connections.write().await.remove("private").unwrap();
+        let peer = connection.peer.clone();
+        pool.subject_connections.write().await.insert(("private".into(), "alice".into()),
+            super::super::SubjectScopedConnection { optional_catalogs: Default::default(),
+                _connection: connection, peer, tools: vec![], last_used: std::time::Instant::now() });
+        let mut config = named_test_upstream_config("private");
+        config.oauth = Some(serde_json::from_value(serde_json::json!({"mode":"authorization_code_pkce","registration":{"strategy":"dynamic"}})).unwrap());
+        config.proxy_resources = false;
+        pool.register_upstream_config_for_tests(&config);
+        let mut denied = Vec::new();
+        for uri in ["lab://upstream/private/file:///secret", "ui://private/app"] {
+            let result = pool.subject_scoped_read_resource_request_typed(&config, "alice", ExactReadParams::new(uri)).await;
+            denied.push(result.is_err());
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = crate::gateway::manager::GatewayRuntimeHandle::default();
+        runtime.swap(Some(Arc::clone(&pool))).await;
+        let manager = crate::gateway::manager::GatewayManager::new(dir.path().join("config.toml"), runtime);
+        manager.seed_config_unchecked_for_tests(labby_runtime::gateway_config::GatewayConfig {
+            upstream: vec![config.clone()], ..Default::default()
+        }).await;
+        let caller = labby_codemode::CodeModeCaller::Scoped {
+            capabilities: labby_codemode::CodeModeCallerCapabilities {
+                can_read: true, can_execute: true, can_use_snippets: false, is_admin: false,
+            }, sub: Some("alice".into()),
+        };
+        let result = labby_codemode::CodeModeHost::read_resource(&manager,
+            "lab://upstream/private/file:///secret".into(), &caller,
+            labby_codemode::CodeModeSurface::Api, &labby_codemode::ToolScope::default()).await;
+        denied.push(result.is_err());
+        assert!(denied.iter().all(|value| *value), "disabled proxy reads reached the peer: {denied:?}");
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "denial must precede peer dispatch");
+        config.proxy_resources = true;
+        pool.register_upstream_config_for_tests(&config);
+        pool.subject_scoped_read_resource_request_typed(&config, "alice", ExactReadParams::new("lab://upstream/private/file:///secret"))
+            .await.expect("enabled proxy still reads the subject peer");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
 
     #[derive(Clone)]
     struct MisleadingResourceError;

@@ -820,6 +820,22 @@ impl GatewayManager {
         upstream: &str,
         subject: &str,
     ) -> Result<(), ToolError> {
+        // Once the authorized operation starts, caller cancellation must not
+        // strand a committed database delete ahead of mandatory live cleanup.
+        self.require_oauth_manager(upstream, "clear")?;
+        let manager = self.clone();
+        let upstream = upstream.to_string();
+        let subject = subject.to_string();
+        tokio::spawn(async move {
+            manager.clear_upstream_credentials_owned(&upstream, &subject).await
+        }).await.map_err(|error| ToolError::internal_message(format!("upstream OAuth clear task failed: {error}")))?
+    }
+
+    async fn clear_upstream_credentials_owned(
+        &self,
+        upstream: &str,
+        subject: &str,
+    ) -> Result<(), ToolError> {
         let started = std::time::Instant::now();
         let manager = self.require_oauth_manager(upstream, "clear")?;
         let lifecycle_guard = match &self.oauth_client_cache {

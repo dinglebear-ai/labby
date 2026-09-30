@@ -180,7 +180,7 @@ pub(crate) use domain::{Permission, ProjectRole, TeamRole};
 pub(crate) use error::AccessStoreError;
 #[cfg(feature = "gateway")]
 pub(crate) use gateway_authority::{
-    authorize_gateway_action, filter_team_gateway_projection, gateway_runtime_subject,
+    GatewayActionAuthorization, authorize_gateway_action, filter_team_gateway_projection, gateway_runtime_subject,
     gateway_transport_requires_admin, qualify_team_gateway_params,
 };
 #[cfg(feature = "gateway")]

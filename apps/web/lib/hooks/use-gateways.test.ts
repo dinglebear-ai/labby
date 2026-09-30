@@ -202,6 +202,62 @@ test('same-ID edits replace hydrated rows even when catalog polling is inactive'
   }
 })
 
+test('active catalog polling refreshes same-ID tool inventory and retries a failed inventory', async () => {
+  const { SWRConfig } = await import('swr')
+  const { useGateways } = await import('./use-gateways')
+  const { mockGateways } = await import('../api/mock-data')
+  const window = installTestDom()
+  const original = { list: gatewayApi.list, runtime: gatewayApi.hydrateRuntime,
+    inventory: gatewayApi.hydrateToolInventory, refresh: gatewayApi.refreshStatus,
+    interval: window.setInterval, clearInterval: window.clearInterval }
+  let tick: (() => void) | undefined
+  window.setInterval = ((callback: () => void) => { tick = callback; return 1 }) as typeof window.setInterval
+  window.clearInterval = (() => {}) as typeof window.clearInterval
+  const row = { ...mockGateways[0], id: 'stable-id', name: 'stable-id' }
+  let calls = 0
+  let toolName = 'alpha'
+  gatewayApi.list = async () => [row]
+  gatewayApi.hydrateRuntime = async rows => rows
+  gatewayApi.refreshStatus = async () => { throw new Error('warming unavailable') }
+  gatewayApi.hydrateToolInventory = async rows => {
+    calls++
+    return rows.map(item => ({ ...item,
+      discovery: { ...item.discovery, tools: calls === 1 ? [] : [{ name: toolName, exposed: false, matched_by: null }] },
+      warnings: calls === 1 ? [{ code: 'tool_inventory_unavailable', message: 'offline' }] : [],
+    }))
+  }
+  function Harness() {
+    const result = useGateways(true, true)
+    return React.createElement('span', null, result.data?.[0]?.discovery.tools[0]?.name ?? 'empty')
+  }
+  const view = await renderClient(React.createElement(SWRConfig,
+    { value: { provider: () => new Map(), dedupingInterval: 0, shouldRetryOnError: false } }, React.createElement(Harness)))
+  const settle = async (expected: string) => {
+    for (let attempt = 0; attempt < 50 && view.container.textContent !== expected; attempt++) {
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)) })
+    }
+    assert.equal(view.container.textContent, expected)
+  }
+  try {
+    for (let attempt = 0; attempt < 50 && calls === 0; attempt++) {
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)) })
+    }
+    assert.equal(calls, 1)
+    assert.ok(tick)
+    await act(async () => tick!())
+    await settle('alpha')
+    toolName = 'beta'
+    await act(async () => tick!())
+    await settle('beta')
+    assert.equal(calls, 3)
+  } finally {
+    await view.unmount()
+    gatewayApi.list = original.list; gatewayApi.hydrateRuntime = original.runtime
+    gatewayApi.hydrateToolInventory = original.inventory; gatewayApi.refreshStatus = original.refresh
+    window.setInterval = original.interval; window.clearInterval = original.clearInterval
+  }
+})
+
 test('a mounted gateway table observes runtime-only changes after sixty seconds', async () => {
   const { SWRConfig } = await import('swr')
   const { useGateways } = await import('./use-gateways')
@@ -298,5 +354,61 @@ test('overlapping reloads of one server issue a single restart request', async (
     gatewayApi.reload = original.reload
     gatewayApi.hydrateRuntime = original.hydrate
     gatewayApi.refreshStatus = original.refresh
+  }
+})
+
+test('a rename seeds the new detail cache without fetching the removed ID', async () => {
+  const { SWRConfig, useSWRConfig } = await import('swr')
+  const { useGateway, useGatewayMutations } = await import('./use-gateways')
+  const { __setBrowserSessionStateForTests } = await import('../auth/session-store')
+  installTestDom()
+  __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  const requests: Array<{ action: string; params: Record<string, unknown> }> = []
+  let currentId = 'old-id'
+  const viewFor = () => ({ config: { name: currentId, url: 'https://example.test/mcp', proxy_resources: true },
+    runtime: { name: currentId, connected: true, tool_count: 0, resource_count: 0, prompt_count: 0 } })
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (_input, init) => {
+    const request = JSON.parse(String(init?.body ?? '{}'))
+    requests.push(request)
+    const { action, params } = request
+    let result: unknown = []
+    if (action === 'gateway.server.get') {
+      if (params.id !== currentId) return new Response(JSON.stringify({ message: 'not found' }), { status: 404 })
+      result = { id: currentId, name: currentId, source: 'custom_gateway' }
+    } else if (action === 'gateway.get') result = viewFor()
+    else if (action === 'gateway.update') { assert.equal(params.name, currentId); currentId = params.patch.name; result = viewFor() }
+    return new Response(JSON.stringify(result), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }) as typeof fetch
+  let rename: ReturnType<typeof useGatewayMutations>['updateGateway']
+  let cache: ReturnType<typeof useSWRConfig>['cache']
+  let navigate: (id: string) => void
+  function Harness() {
+    const [id, setId] = React.useState('old-id')
+    navigate = setId
+    rename = useGatewayMutations().updateGateway
+    cache = useSWRConfig().cache
+    const row = useGateway(id)
+    return React.createElement('span', null, row.error ? 'error' : row.data?.id ?? 'loading')
+  }
+  const view = await renderClient(React.createElement(SWRConfig,
+    { value: { provider: () => new Map(), dedupingInterval: 0, shouldRetryOnError: false } }, React.createElement(Harness)))
+  try {
+    for (let attempt = 0; attempt < 50 && view.container.textContent !== 'old-id'; attempt++) {
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)) })
+    }
+    assert.equal(view.container.textContent, 'old-id')
+    requests.length = 0
+    await act(async () => { await rename('old-id', { name: 'new-id' }) })
+    assert.equal(view.container.textContent, 'new-id')
+    assert.equal(cache.get('/gateways/new-id')?.data?.id, 'new-id')
+    assert.equal(requests.some(row => row.action === 'gateway.server.get' && row.params.id === 'old-id'), false)
+    await act(async () => navigate('new-id'))
+    assert.equal(cache.get('/gateways/old-id')?.data, undefined, 'navigation retires the removed-ID cache')
+    await act(async () => { await rename('new-id', { name: 'old-id' }) })
+    assert.equal(view.container.textContent, 'old-id')
+  } finally {
+    await view.unmount()
+    globalThis.fetch = originalFetch
   }
 })

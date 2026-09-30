@@ -4062,3 +4062,35 @@ async fn code_mode_example_upstream_does_not_move_when_an_earlier_one_connects()
         .expect("example");
     assert_eq!(scoped, "alpha");
 }
+
+#[tokio::test]
+async fn admin_describe_and_lexical_search_do_not_contact_cold_tei() {
+    let tei = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/info"))
+        .respond_with(wiremock::ResponseTemplate::new(200)
+            .set_body_json(json!({"max_client_batch_size":1})))
+        .mount(&tei).await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/embed"))
+        .respond_with(wiremock::ResponseTemplate::new(200)
+            .set_body_json(json!([[1.0,0.0]]))
+            .set_delay(Duration::from_secs(5)))
+        .mount(&tei).await;
+    let (manager, pool) = code_mode_manager_with_pool(fixture_http_upstream("alpha")).await;
+    pool.insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "ping")).await;
+    let mut cfg = manager.current_config().await;
+    cfg.code_mode.semantic_search.tei_url = Some(tei.uri());
+    manager.seed_config_unchecked_for_tests(cfg).await;
+    for _ in 0..2 {
+        let described = tokio::time::timeout(Duration::from_millis(250),
+            manager.describe_admin_tool(Some("admin".into()), "alpha::ping"))
+            .await.expect("descriptor must not wait for optional TEI").unwrap();
+        assert_eq!(described.id, "alpha::ping");
+        let searched = tokio::time::timeout(Duration::from_millis(250),
+            manager.search_admin_tools(Some("admin".into()), "alpha ping", 50))
+            .await.expect("lexical search must not wait for optional TEI").unwrap();
+        assert_eq!(searched.results[0].id, "alpha::ping");
+    }
+    assert!(tei.received_requests().await.unwrap().is_empty(), "catalog reads must not warm TEI");
+}

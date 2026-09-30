@@ -523,24 +523,30 @@ export const gatewayApi = {
   async hydrateToolInventory(gateways: Gateway[], signal?: AbortSignal): Promise<Gateway[]> {
     const results = await safeFanout(
       gateways,
-      async (gateway) => gateway.source === 'in_process'
-        ? gateway.discovery.tools
-        : (await gatewayAction<Array<string | BackendGatewayToolRow>>(
-            'gateway.discovered_tools',
-            { name: gateway.id },
-            signal,
-          )).map((tool) => ({
+      async (gateway) => {
+        if (gateway.source === 'in_process') return gateway.discovery.tools
+        const tools = await gatewayAction<Array<string | BackendGatewayToolRow>>(
+          'gateway.discovered_tools', { name: gateway.id }, signal,
+        )
+        let policy = gateway.config.expose_tools
+        // Older backends return names alone. A fleet summary omits policy,
+        // so read the full config before interpreting those legacy rows.
+        if (policy === undefined && tools.some(tool => typeof tool === 'string')) {
+          policy = (await gatewayAction<BackendGatewayView>(
+            'gateway.get', { name: gateway.id }, signal,
+          )).config.expose_tools
+        }
+        return tools.map((tool) => ({
             name: typeof tool === 'string' ? tool : tool.name,
             description: typeof tool === 'string' ? undefined : tool.description ?? undefined,
-            exposed: matchTool(
-              typeof tool === 'string' ? tool : tool.name,
-              gateway.config.expose_tools,
-            ) !== null,
-            matched_by: matchTool(
-              typeof tool === 'string' ? tool : tool.name,
-              gateway.config.expose_tools,
-            ),
-          })),
+            exposed: typeof tool === 'string'
+              ? matchTool(tool, policy) !== null
+              : tool.exposed,
+            matched_by: typeof tool === 'string'
+              ? matchTool(tool, policy)
+              : tool.matched_by ?? null,
+          }))
+      },
     )
 
     return results.map((result) => {

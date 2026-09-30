@@ -54,6 +54,7 @@ pub(crate) struct AppServerRuntime {
     stdin: Arc<Mutex<ChildStdin>>,
     _child: Arc<Mutex<Child>>,
     pending: Pending,
+    inputs: Arc<Mutex<HashMap<String, Value>>>,
     events: broadcast::Sender<AppServerEvent>,
     next_id: Arc<AtomicU64>,
     _reader: Arc<JoinHandle<()>>,
@@ -78,6 +79,8 @@ impl AppServerRuntime {
         let stdout = child.stdout.take().ok_or_else(protocol_error)?;
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
+        let inputs = Arc::new(Mutex::new(HashMap::new()));
+        let reader_inputs = inputs.clone();
         let reader_pending = pending.clone();
         let reader_events = events.clone();
         let reader_stdin = stdin.clone();
@@ -118,6 +121,9 @@ impl AppServerRuntime {
                         drop(sender.send(result));
                     }
                 } else if value.get("method").is_some() && value.get("id").is_none() {
+                    if value["method"] == "turn/completed" {
+                        reader_inputs.lock().await.clear();
+                    }
                     drop(reader_events.send(AppServerEvent(value)));
                 } else if value.get("method").is_some()
                     && let Some(id) = value.get("id").cloned()
@@ -126,10 +132,25 @@ impl AppServerRuntime {
                         .get("method")
                         .and_then(Value::as_str)
                         .unwrap_or("unknown");
+                    if method == "item/tool/requestUserInput"
+                        && reader_inputs.lock().await.len() < 16
+                    {
+                        let key = uuid::Uuid::new_v4().to_string();
+                        reader_inputs
+                            .lock()
+                            .await
+                            .insert(key.clone(), value.clone());
+                        let mut params = value.get("params").cloned().unwrap_or(json!({}));
+                        params["requestId"] = json!(key);
+                        drop(reader_events.send(AppServerEvent(
+                            json!({"method":"phoenix/userInputRequested","params":params}),
+                        )));
+                        continue;
+                    }
                     let category = request_category(method);
                     drop(reader_events.send(AppServerEvent(json!({
                         "method":"phoenix/serverRequestDeclined",
-                        "params":{"requestMethod":method,"category":category,"decision":"declined"}
+                        "params":{"threadId":value.pointer("/params/threadId"),"turnId":value.pointer("/params/turnId"),"requestMethod":method,"category":category,"decision":"declined"}
                     }))));
                     let rejection = json!({
                         "id": id,
@@ -145,6 +166,7 @@ impl AppServerRuntime {
                     }
                 }
             }
+            reader_inputs.lock().await.clear();
             let waiters = std::mem::take(&mut *reader_pending.lock().await);
             for (_, sender) in waiters {
                 drop(sender.send(Err(unavailable("Container-local Codex App Server stopped"))));
@@ -154,10 +176,54 @@ impl AppServerRuntime {
             stdin,
             _child: Arc::new(Mutex::new(child)),
             pending,
+            inputs,
             events,
             next_id: Arc::new(AtomicU64::new(1)),
             _reader: Arc::new(reader),
         })
+    }
+
+    pub(crate) async fn respond_user_input(
+        &self,
+        key: &str,
+        result: Value,
+    ) -> Result<(), ToolError> {
+        let mut inputs = self.inputs.lock().await;
+        let request = inputs
+            .get(key)
+            .ok_or_else(|| unavailable("Input request is no longer pending"))?;
+        let questions = request
+            .pointer("/params/questions")
+            .and_then(Value::as_array)
+            .ok_or_else(protocol_error)?;
+        let answers = result
+            .get("answers")
+            .and_then(Value::as_object)
+            .ok_or_else(protocol_error)?;
+        if answers.len() != questions.len()
+            || serde_json::to_vec(&result).map_or(true, |bytes| bytes.len() > 32768)
+        {
+            return Err(protocol_error());
+        }
+        for question in questions {
+            let id = question
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(protocol_error)?;
+            let answer = answers
+                .get(id)
+                .and_then(|value| value.get("answers"))
+                .and_then(Value::as_array)
+                .ok_or_else(protocol_error)?;
+            if answer.len() != 1 || !answer[0].is_string() {
+                return Err(protocol_error());
+            }
+        }
+        self.write(&json!({"id":request["id"],"result":result}))
+            .await?;
+        let request = inputs.remove(key).ok_or_else(protocol_error)?;
+        drop(self.events.send(AppServerEvent(json!({"method":"phoenix/userInputResolved","params":{"threadId":request.pointer("/params/threadId"),"turnId":request.pointer("/params/turnId"),"requestId":key}}))));
+        Ok(())
     }
 
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<AppServerEvent> {
@@ -286,6 +352,9 @@ while read request; do
       printf '%s\n' '{{"method":"item/started","params":{{"turnId":"turn-1"}}}}'
       printf '{{"id":%s,"result":{{"turn":{{"id":"turn-1"}}}}}}\n' "$id" ;;
     *turn/interrupt*) printf '{{"id":%s,"result":{{}}}}\n' "$id" ;;
+    *trigger/input*)
+      printf '%s\n' '{{"id":"question-1","method":"item/tool/requestUserInput","params":{{"threadId":"thread-1","turnId":"turn-1","questions":[{{"id":"choice","question":"Choose","options":null}}]}}}}'
+      printf '{{"id":%s,"result":{{"ok":true}}}}\n' "$id" ;;
     *trigger/request*)
       printf '%s\n' '{{"id":"server-1","method":"item/commandExecution/requestApproval","params":{{"command":"rm -rf /"}}}}'
       printf '{{"id":%s,"result":{{"ok":true}}}}\n' "$id" ;;
@@ -319,10 +388,51 @@ done
         let declined = events.recv().await.unwrap().0;
         assert_eq!(declined["method"], "phoenix/serverRequestDeclined");
         assert_eq!(declined["params"]["category"], "approval");
+        runtime.request("trigger/input", json!({})).await.unwrap();
+        let input = events.recv().await.unwrap().0;
+        assert_eq!(input["method"], "phoenix/userInputRequested");
+        let key = input["params"]["requestId"].as_str().unwrap();
+        runtime
+            .respond_user_input(key, json!({"answers":{"choice":{"answers":["chosen"]}}}))
+            .await
+            .unwrap();
+        assert_eq!(
+            events.recv().await.unwrap().0["method"],
+            "phoenix/userInputResolved"
+        );
+        assert!(
+            runtime
+                .respond_user_input(key, json!({"answers":{}}))
+                .await
+                .is_err()
+        );
         drop(runtime);
         let requests = fs::read_to_string(capture).unwrap();
         assert_eq!(requests.matches("turn/start").count(), 1);
         assert_eq!(requests.matches("turn/interrupt").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn user_input_response_rejects_unknown_requests() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = tempfile::tempdir().unwrap();
+        let command = root.path().join("fixture");
+        fs::write(&command, "#!/bin/sh\nwhile read request; do :; done\n").unwrap();
+        fs::set_permissions(&command, fs::Permissions::from_mode(0o700)).unwrap();
+        let runtime = AppServerRuntime::launch(LaunchSpec {
+            command,
+            args: vec![],
+            env: vec![],
+            cwd: root.path().to_path_buf(),
+        })
+        .await
+        .unwrap();
+        assert!(
+            runtime
+                .respond_user_input("missing", json!({"answers":{}}))
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

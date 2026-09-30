@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -67,33 +67,35 @@ struct TeiInfoResponse {
 /// Batch-embed `texts` via one or more server-compliant
 /// `POST {url}/embed` calls. The per-request limit is discovered from TEI's
 /// `max_client_batch_size` field and cached per endpoint. Multiple batches run
-/// concurrently within the existing 512-input work window, and `buffered`
-/// preserves input order even when requests complete out of order.
+/// concurrently within the existing 512-input work window. A single overall
+/// deadline bounds the work; successful vectors retain input order.
 pub(crate) async fn embed_via_tei(url: &str, texts: &[String]) -> Result<Vec<Vec<f32>>, ToolError> {
     if texts.is_empty() {
         return Ok(Vec::new());
     }
-    let batch_size = resolve_tei_batch_size(url).await;
-    let parallel_batches = TEI_MAX_INPUT_WINDOW
-        .div_ceil(batch_size)
-        .clamp(1, TEI_MAX_PARALLEL_BATCHES);
-    let base_url = url.to_string();
-    let owned_batches = texts
-        .chunks(batch_size)
-        .map(<[String]>::to_vec)
-        .collect::<Vec<_>>();
-    let batch_results = futures::stream::iter(owned_batches.into_iter().map(|chunk| {
-        let base_url = base_url.clone();
-        async move { embed_batch(&base_url, &chunk).await }
-    }))
-    .buffered(parallel_batches)
-    .collect::<Vec<_>>()
-    .await;
-    let mut all_vectors = Vec::with_capacity(texts.len());
-    for result in batch_results {
-        all_vectors.extend(result?);
-    }
-    Ok(all_vectors)
+    // One deadline covers /info and every batch wave. Per-request timeouts
+    // alone would multiply the optional-search wait with corpus size.
+    tokio::time::timeout(TEI_REQUEST_TIMEOUT, async {
+        let batch_size = resolve_tei_batch_size(url).await;
+        let parallel_batches = TEI_MAX_INPUT_WINDOW
+            .div_ceil(batch_size)
+            .clamp(1, TEI_MAX_PARALLEL_BATCHES);
+        // Observe failures in completion order, then restore input order only
+        // after success. try_collect drops pending work at the first failure.
+        let owned_batches = texts.chunks(batch_size).map(<[String]>::to_vec)
+            .enumerate().collect::<Vec<_>>();
+        let mut batches: Vec<(usize, Vec<Vec<f32>>)> = futures::stream::iter(owned_batches)
+            .map(|(index, chunk)| {
+                let url = url.to_owned();
+                async move { embed_batch(&url, &chunk).await.map(|vectors| (index, vectors)) }
+            }).buffer_unordered(parallel_batches).try_collect().await?;
+        batches.sort_unstable_by_key(|(index, _)| *index);
+        Ok(batches.into_iter().flat_map(|(_, vectors)| vectors).collect())
+    }).await.map_err(|_| ToolError::Sdk {
+        sdk_kind: "timeout".to_string(),
+        message: "TEI embedding deadline exceeded".to_string(),
+    })?
+
 }
 
 async fn resolve_tei_batch_size(url: &str) -> usize {
@@ -393,6 +395,34 @@ mod tests {
         // Port 1 is a reserved/unused low port — connection refused, fast.
         let result = embed_via_tei("http://127.0.0.1:1", &["test".to_string()]).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn failed_embedding_batch_cancels_stalled_and_queued_batches() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/info"))
+            .respond_with(wiremock::ResponseTemplate::new(200)
+                .set_body_json(json!({"max_client_batch_size":1})))
+            .mount(&server).await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/embed"))
+            .respond_with(|request: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+                if body["inputs"][0] == "text-1" {
+                    wiremock::ResponseTemplate::new(500)
+                } else {
+                    wiremock::ResponseTemplate::new(200).set_body_json(json!([[1.0,0.0]]))
+                        .set_delay(Duration::from_secs(5))
+                }
+            }).mount(&server).await;
+        let texts = (0..32).map(|i| format!("text-{i}")).collect::<Vec<_>>();
+        let result = tokio::time::timeout(Duration::from_millis(250), embed_via_tei(&server.uri(), &texts))
+            .await.expect("a failed batch must not wait for earlier stalled batches");
+        assert!(result.is_err());
+        let requests = server.received_requests().await.unwrap();
+        let submitted = requests.iter().filter(|r| r.url.path() == "/embed").count();
+        assert!(submitted <= 4, "queued batches continued after failure: {submitted}");
     }
 
     #[tokio::test]

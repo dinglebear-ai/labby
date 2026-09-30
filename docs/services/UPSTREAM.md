@@ -1,7 +1,7 @@
 ---
 title: "Upstream MCP Proxy"
 created: "2026-07-30"
-updated: "2026-09-26"
+updated: "2026-09-30"
 ---
 
 # Upstream MCP Proxy
@@ -148,6 +148,12 @@ directory when it needs a writable cache. `UPSTREAM_READ_ONLY_PATHS` is a
 platform path-list of existing absolute inputs. It rejects the user/Labby home
 and overlapping credential trees such as `.ssh`, `.aws`, `.gnupg`, `.config`,
 and `.labby`. Absolute command arguments are subject to the same rejection.
+For SSH, use dedicated service-owned input files outside these protected homes,
+project the key and known-hosts file explicitly, and disable dependence on
+home-directory SSH configuration. Pass the remote executable as part of one
+fixed remote shell command rather than as a separate absolute local argument.
+See the [SSH examples](./GATEWAY.md#stdio-gateways).
+
 Grant only the narrow directory needed by that upstream; these values expand
 the child filesystem trust boundary and should be reviewed like executable or
 command changes.
@@ -302,12 +308,14 @@ query or authorization code.
 1. Operator runs `POST /v1/gateway/oauth/start { "upstream": "<name>" }`; the
    server returns a JSON `{ "authorization_url": "..." }` body.
 2. Browser navigates to that URL; the upstream AS authenticates the user.
-3. AS redirects to `/auth/upstream/callback?code=...&state=...&upstream=<name>`
+3. AS redirects to `/auth/upstream/callback?code=...&state=...`
    on the same origin as `LABBY_PUBLIC_URL`.
-4. Labby validates the authenticated session, atomically takes the pending
-   state row (`DELETE ... RETURNING`), exchanges the code for tokens, encrypts
-   the token response with chacha20poly1305, and persists it keyed by
-   `(upstream_name, "gateway")`.
+4. Labby resolves the upstream and credential owner from the expiring pending
+   state. A shared grant does not require a session cookie; a personal grant
+   requires the initiating browser identity. It atomically consumes the state
+   (`DELETE ... RETURNING`), exchanges the code for tokens, encrypts the token
+   response with chacha20poly1305, and persists it keyed by upstream and subject
+   (`gateway` for this operator flow).
 5. Subsequent `/mcp` and UI requests find the persisted credential and proxy
    through a per-`(upstream, subject)` `AuthClient` cached in the gateway. The
    default shared subject is `gateway`.
@@ -589,7 +597,9 @@ or configuration cap overrides both response ceilings.
 
 ## Resource Proxying
 
-Resource proxying is opt-in per upstream via `proxy_resources = true`.
+Resource and prompt proxying default to enabled. Set `proxy_resources = false`
+and `proxy_prompts = false` explicitly for a tools-only upstream. Agent Skills
+remain opt-in via `proxy_skills = true`.
 
 ### URI Namespacing
 

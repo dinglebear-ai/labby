@@ -435,21 +435,37 @@ impl UpstreamPool {
         drop(self.fan_out_upstream_resources_allowed(allowed).await);
     }
 
-    /// Re-list the upstreams whose snapshot is missing or stale and wait for
-    /// the fan-out to finish. Single-flight: concurrent callers queue behind
-    /// one fan-out and then find nothing left to warm. Returns what was cold
-    /// when this caller took its turn.
+    /// Warm cold snapshots once per upstream. Recheck freshness after acquiring
+    /// that upstream's flight so overlapping callers share the published result.
     pub async fn warm_cold_resource_snapshots_allowed(
         &self,
         allowed: Option<&BTreeSet<String>>,
     ) -> ResourceSnapshotColdSet {
-        let _turn = self.resource_snapshot_warmup.lock().await;
-        let cold = self.cold_resource_snapshots(allowed).await;
-        if !cold.is_empty() {
-            self.refresh_resource_snapshots_allowed(Some(&cold.names()))
-                .await;
+        let names = self.cold_resource_snapshots(allowed).await.names();
+        let mut work = futures::stream::iter(names).map(|name| async move {
+            let flight = {
+                let mut flights = self.resource_snapshot_warmup.lock().await;
+                flights.retain(|_, value| value.strong_count() > 0);
+                flights.get(&name).and_then(std::sync::Weak::upgrade).unwrap_or_else(|| {
+                    let flight = Arc::new(tokio::sync::Mutex::new(()));
+                    flights.insert(name.clone(), Arc::downgrade(&flight));
+                    flight
+                })
+            };
+            let _turn = flight.lock().await;
+            let names = BTreeSet::from([name]);
+            let cold = self.cold_resource_snapshots(Some(&names)).await;
+            if !cold.is_empty() {
+                self.refresh_resource_snapshots_allowed(Some(&names)).await;
+            }
+            cold
+        }).buffer_unordered(super::helpers::upstream_discovery_concurrency(None));
+        let mut warmed = ResourceSnapshotColdSet::default();
+        while let Some(cold) = work.next().await {
+            warmed.missing.extend(cold.missing);
+            warmed.stale.extend(cold.stale);
         }
-        cold
+        warmed
     }
 
     /// Start a warm-up for the cold snapshots in `allowed` and report what it
@@ -479,8 +495,8 @@ impl UpstreamPool {
         }
     }
 
-    /// Make the cached listing usable: wait for never-listed upstreams to be
-    /// warmed, and let stale ones refresh in the background.
+    /// Wait briefly for never-listed upstreams, then serve the current snapshot.
+    /// The detached owner continues publishing; stale rows refresh in background.
     pub async fn ensure_resource_snapshots_allowed(
         self: &Arc<Self>,
         allowed: Option<&BTreeSet<String>>,
@@ -489,7 +505,9 @@ impl UpstreamPool {
         if let Some(task) = warmup.task
             && !warmup.cold.missing.is_empty()
         {
-            drop(task.await);
+            drop(tokio::time::timeout(
+                self.request_timeout.min(Duration::from_millis(250)), task,
+            ).await);
         }
     }
 
@@ -557,6 +575,10 @@ impl UpstreamPool {
                 let peer = observed.peer.clone();
                 let request_timeout = catalog_listing_timeout(self.request_timeout);
                 async move {
+                    let _permit = match self.acquire_catalog_fanout_permit().await {
+                        Ok(permit) => permit,
+                        Err(error) => return (observed, Err(error)),
+                    };
                     let event = UpstreamRequestLog::resources_list(&name, false);
                     let result = if !peer_declares_resources(&peer) {
                         log_upstream_capability_skipped(event);
@@ -2093,6 +2115,69 @@ mod tests {
             matches!(bob, ToolError::Sdk { .. }),
             "failure should stay classified: {bob:?}"
         );
+    }
+
+    #[derive(Clone)]
+    struct HeldResourceList {
+        started: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+    impl ServerHandler for HeldResourceList {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        }
+        async fn list_resources(&self, _: Option<PaginatedRequestParams>,
+            _: RequestContext<RoleServer>) -> Result<ListResourcesResult, ErrorData> {
+            self.started.notify_one();
+            self.release.notified().await;
+            Ok(ListResourcesResult::with_all_items(vec![Resource::new("file:///alpha", "alpha")]))
+        }
+    }
+
+    #[tokio::test]
+    async fn disjoint_resource_warmups_do_not_queue_behind_slow_upstream() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let pool = catalog_pool_with_server("alpha", HeldResourceList {
+            started: Arc::clone(&started), release: Arc::clone(&release),
+        }).await;
+        let beta = catalog_pool_with_server("beta", StaticCatalogServer::default()).await;
+        let entry = beta.catalog.write().await.remove("beta").unwrap();
+        let connection = beta.connections.write().await.remove("beta").unwrap();
+        pool.install_connection_catalog_entry("beta".into(), connection, entry).await.unwrap();
+        pool.resource_upstreams.write().await.push("beta".into());
+        let alpha = {
+            let pool = Arc::clone(&pool);
+            tokio::spawn(async move { pool.warm_cold_resource_snapshots_allowed(
+                Some(&BTreeSet::from(["alpha".into()]))).await })
+        };
+        tokio::time::timeout(Duration::from_secs(1), started.notified()).await.unwrap();
+        tokio::time::timeout(Duration::from_millis(250),
+            pool.warm_cold_resource_snapshots_allowed(Some(&BTreeSet::from(["beta".into()]))))
+            .await.expect("beta must publish while alpha is held");
+        assert_eq!(pool.cached_upstream_resources_allowed(Some(&BTreeSet::from(["beta".into()]))).await.len(), 2);
+        assert!(!alpha.is_finished(), "alpha must remain stalled during beta publication");
+        release.notify_one();
+        alpha.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn metadata_resource_warmup_returns_snapshot_before_stalled_listing_finishes() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let pool = catalog_pool_with_server("alpha", HeldResourceList {
+            started: Arc::clone(&started), release: Arc::clone(&release),
+        }).await;
+        tokio::time::timeout(Duration::from_millis(500), pool.ensure_resource_snapshots_allowed(None))
+            .await.expect("metadata must return a bounded current snapshot");
+        assert!(pool.cached_upstream_resources_allowed(None).await.is_empty());
+        release.notify_one();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if !pool.cached_upstream_resources_allowed(None).await.is_empty() { break; }
+                tokio::task::yield_now().await;
+            }
+        }).await.expect("detached owner must publish after caller stops waiting");
     }
 
     #[tokio::test]

@@ -858,10 +858,8 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         );
     }
 
-    assert!(
-        gate.contains("HEAD_REPOSITORY") && gate.contains("fork safety"),
-        "ci-gate must document the narrow fork-safety exception for skipped changes"
-    );
+    // Executable event/result-matrix regressions in test_windows_ci_policy.py
+    // require classifier success even on forks and reject missing routed suites.
     let unconditional = "fleet-policy";
     assert!(
         gate.contains(&format!("require_success {unconditional} ")),
@@ -869,7 +867,7 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
     );
     assert!(
         gate.contains("require_success changes "),
-        "ci-gate must still require changes on trusted branches"
+        "ci-gate must require changes on every event"
     );
     assert!(
         gate.contains("needs.changes.outputs.gate_key_drift"),
