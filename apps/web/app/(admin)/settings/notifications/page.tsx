@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { AlertCircle, Bell, Loader2, RefreshCw } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -57,7 +57,7 @@ export default function NotificationsSettingsPage(): React.ReactElement {
     return () => controller.abort()
   }, [])
 
-  const fields = schema ? fieldsForSection(schema.fields, 'notifications') : []
+  const fields = useMemo(() => schema ? fieldsForSection(schema.fields, 'notifications') : [], [schema])
 
   return (
     <div className="space-y-4">

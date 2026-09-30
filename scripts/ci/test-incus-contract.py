@@ -338,6 +338,25 @@ class IncusContract(unittest.TestCase):
             result = subprocess.run([validator, "--root", root], capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0, "whole rust/go supply objects were cross-bound")
 
+        for source_commit, diagnostic in [
+            ("malformed", "invalid source commit"),
+            (42, "invalid source commit"),
+            ("0" * 40, "does not consume exact manifest entry chezmoi_installer"),
+        ]:
+            with self.subTest(source_commit=source_commit), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                for path in [".config/incus/provision-supply.json", ".config/incus/labby-image.yaml"]:
+                    destination = root / path
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(ROOT / path, destination)
+                manifest = root / ".config/incus/provision-supply.json"
+                supply = json.loads(manifest.read_text())
+                supply["chezmoi_installer"]["source_commit"] = source_commit
+                manifest.write_text(json.dumps(supply))
+                result = subprocess.run([validator, "--root", root], capture_output=True, text=True, timeout=10)
+                self.assertNotEqual(result.returncode, 0, "invalid or unbound source commit was accepted")
+                self.assertIn(diagnostic, result.stderr)
+
     def test_incus_pointer_uses_one_leased_generation_manifest(self):
         text = self.text("scripts/ci/promote-incus-pointer.sh")
         self.assertIn("generation.json", text)
