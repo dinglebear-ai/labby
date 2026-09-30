@@ -272,21 +272,17 @@ async fn run_on_selected_daemon(
         SnippetsCommand::Test(args) => {
             let params = crate::cli::params::parse_kv_params(args.params)?;
             if args.all {
-                let snippets = crate::dispatch::snippets::store::list_snippets(
+                let names = remote_bulk_snippet_names(
                     &crate::dispatch::helpers::lab_home(),
                     &crate::dispatch::snippets::store::builtin_snippet_dir(),
                 )?;
-                anyhow::ensure!(
-                    snippets.len() <= 100,
-                    "test --all is bounded to 100 snippets; test named subsets instead"
-                );
-                let mut results = Vec::with_capacity(snippets.len());
-                for snippet in snippets {
-                    let result = test_remote_snippet(&live, &snippet.name, params.clone()).await;
+                let mut results = Vec::with_capacity(names.len());
+                for name in names {
+                    let result = test_remote_snippet(&live, &name, params.clone()).await;
                     let mut report = match result {
                         Ok(value) => value,
                         Err(error) => {
-                            json!({"name": snippet.name, "passed": false, "error": error.to_string()})
+                            json!({"name": name, "passed": false, "error": error.to_string()})
                         }
                     };
                     compact_bulk_report(&mut report);
@@ -307,6 +303,22 @@ async fn run_on_selected_daemon(
         }
         _ => unreachable!("only executable snippet commands select a daemon"),
     }
+}
+
+fn remote_bulk_snippet_names(
+    lab_home: &std::path::Path,
+    builtin_dir: &std::path::Path,
+) -> Result<std::collections::BTreeSet<String>> {
+    let names: std::collections::BTreeSet<_> =
+        crate::dispatch::snippets::store::list_snippets(lab_home, builtin_dir)?
+            .into_iter()
+            .map(|snippet| snippet.name)
+            .collect();
+    anyhow::ensure!(
+        names.len() <= 100,
+        "test --all is bounded to 100 snippets; test named subsets instead"
+    );
+    Ok(names)
 }
 
 async fn test_remote_snippet(
@@ -377,6 +389,33 @@ fn validate_remote_team_selection(team_id: Option<&str>) -> Result<()> {
 #[cfg(test)]
 mod remote_snippet_tests {
     use super::*;
+
+    #[test]
+    fn bulk_tests_deduplicate_shadowed_names_and_bound_unique_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let builtin = dir.path().join("builtin");
+        let home = dir.path().join("home");
+        let user = labby_codemode::snippet::store::user_snippet_dir(&home);
+        std::fs::create_dir_all(&builtin).unwrap();
+        std::fs::create_dir_all(&user).unwrap();
+        for index in 0..100 {
+            let filename = format!("snippet-{index:03}.js");
+            std::fs::write(builtin.join(&filename), "async () => 'builtin'").unwrap();
+            std::fs::write(user.join(filename), "async () => 'override'").unwrap();
+        }
+        let names = remote_bulk_snippet_names(&home, &builtin).unwrap();
+        assert_eq!(names.len(), 100);
+        assert_eq!(
+            names.iter().filter(|name| *name == "snippet-000").count(),
+            1
+        );
+        let resolved =
+            labby_codemode::snippet::store::resolve_snippet(&home, &builtin, "snippet-000")
+                .unwrap();
+        assert_eq!(resolved.path, user.join("snippet-000.js"));
+        std::fs::write(user.join("extra.js"), "async () => true").unwrap();
+        assert!(remote_bulk_snippet_names(&home, &builtin).is_err());
+    }
 
     #[test]
     fn live_verdict_requires_a_result_successful_calls_and_complete_output() {
