@@ -60,7 +60,9 @@ const EMBEDDED_FILES: &[(&str, &str, &str)] = &[
     (
         "using-labby",
         "references/service-catalog.md",
-        include_str!("../../../plugins/labby/.apm/skills/using-labby/references/service-catalog.md"),
+        include_str!(
+            "../../../plugins/labby/.apm/skills/using-labby/references/service-catalog.md"
+        ),
     ),
     (
         "using-labby",
@@ -70,12 +72,16 @@ const EMBEDDED_FILES: &[(&str, &str, &str)] = &[
     (
         "using-labby",
         "references/gateway-operations.md",
-        include_str!("../../../plugins/labby/.apm/skills/using-labby/references/gateway-operations.md"),
+        include_str!(
+            "../../../plugins/labby/.apm/skills/using-labby/references/gateway-operations.md"
+        ),
     ),
     (
         "using-labby",
         "references/config-reference.md",
-        include_str!("../../../plugins/labby/.apm/skills/using-labby/references/config-reference.md"),
+        include_str!(
+            "../../../plugins/labby/.apm/skills/using-labby/references/config-reference.md"
+        ),
     ),
     (
         "using-labby",

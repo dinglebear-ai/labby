@@ -1,6 +1,5 @@
 // Single source of truth for the operator-level core config fields shown
-// on /setup/core-config and /settings/core. Both pages render the same set;
-// adding or renaming a core var must happen here only.
+// on /settings/core; adding or renaming a core var must happen here only.
 
 export interface CoreField {
   key: string

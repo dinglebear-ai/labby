@@ -146,7 +146,8 @@ target_triple() {
         Linux)
             case "$arch" in
                 x86_64) echo "x86_64-unknown-linux-gnu" ;;
-                *) fail "unsupported platform ${os}/${arch}; supported: Linux/x86_64" ;;
+                aarch64|arm64) echo "aarch64-unknown-linux-gnu" ;;
+                *) fail "unsupported platform ${os}/${arch}; supported: Linux/x86_64, Linux/arm64" ;;
             esac
             ;;
         Darwin)
@@ -155,7 +156,7 @@ target_triple() {
                 *) fail "unsupported platform ${os}/${arch}; supported: macOS/arm64" ;;
             esac
             ;;
-        *) fail "unsupported platform ${os}/${arch}; supported: Linux/x86_64 and macOS/arm64" ;;
+        *) fail "unsupported platform ${os}/${arch}; supported: Linux/x86_64, Linux/arm64 and macOS/arm64" ;;
     esac
 }
 

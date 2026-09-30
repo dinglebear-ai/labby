@@ -60,6 +60,8 @@ For command details and workflows, read:
 
 - `references/operator-cli.md` for top-level CLI, setup, docs, doctor, logs, and gateway workflows.
 - `references/gateway-operations.md` for server add/set/import/auth, route, and runtime operations.
+- `references/microsandbox-upstream.md` when the selected upstream is a
+  Microsandbox MCP server reached through SSH.
 - `$using-codemode` for `codemode`, schemas, confirmations, limits, and error recovery.
 - `references/config-reference.md` for `$LABBY_HOME/.env`, `$LABBY_HOME/config.toml`, and mutable gateway settings.
 - `references/service-catalog.md` for generated catalog sources and action-dispatch discovery.

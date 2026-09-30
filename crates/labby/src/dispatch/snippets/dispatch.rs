@@ -12,7 +12,7 @@ use super::catalog::ACTIONS;
 use super::store::{
     builtin_snippet_dir, code_for_snippet, create_promoted_user_snippet, create_user_snippet,
     list_snippets, merge_snippet_input, remove_user_snippet, resolve_snippet,
-    validate_snippet_body, validate_snippet_name,
+    validate_snippet_body, validate_snippet_name, wrap_snippet_with_input_bounded,
 };
 
 #[derive(Debug, Deserialize)]
@@ -29,8 +29,6 @@ struct ExecParams {
     name: Option<String>,
     #[serde(default)]
     params: Value,
-    #[serde(default)]
-    all: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,9 +64,9 @@ pub struct SnippetDispatchContext {
     pub execution_surface: CodeModeSurface,
 }
 
-struct SnippetExecutionOutcome {
-    raw_response: CodeModeExecutionResponse,
-    display_response: CodeModeExecutionResponse,
+pub(super) struct SnippetExecutionOutcome {
+    pub(super) raw_response: CodeModeExecutionResponse,
+    pub(super) display_response: CodeModeExecutionResponse,
 }
 
 impl SnippetDispatchContext {
@@ -88,7 +86,25 @@ impl SnippetDispatchContext {
 
 pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
     let manager = crate::dispatch::gateway::current_gateway_manager();
-    dispatch_inner(manager.as_deref(), action, params, None).await
+    dispatch_inner(manager.as_deref(), action, params, None, None).await
+}
+
+/// CLI mock tests have already loaded configuration but intentionally have no
+/// gateway manager or upstream connections. Carry its source ceiling explicitly.
+pub async fn dispatch_with_source_limit(
+    action: &str,
+    params: Value,
+    max_source_bytes: usize,
+) -> Result<Value, ToolError> {
+    let manager = crate::dispatch::gateway::current_gateway_manager();
+    dispatch_inner(
+        manager.as_deref(),
+        action,
+        params,
+        None,
+        Some(max_source_bytes),
+    )
+    .await
 }
 
 pub async fn dispatch_with_manager_and_context(
@@ -97,7 +113,7 @@ pub async fn dispatch_with_manager_and_context(
     params: Value,
     dispatch_context: Option<SnippetDispatchContext>,
 ) -> Result<Value, ToolError> {
-    dispatch_inner(Some(manager), action, params, dispatch_context).await
+    dispatch_inner(Some(manager), action, params, dispatch_context, None).await
 }
 
 async fn dispatch_inner(
@@ -105,6 +121,7 @@ async fn dispatch_inner(
     action: &str,
     params: Value,
     dispatch_context: Option<SnippetDispatchContext>,
+    source_limit_override: Option<usize>,
 ) -> Result<Value, ToolError> {
     let execution_scope = dispatch_context
         .as_ref()
@@ -175,32 +192,15 @@ async fn dispatch_inner(
             to_json(outcome.display_response)
         }
         "snippets.test" => {
-            let params: ExecParams = parse_params(params)?;
-            if params.all {
-                return test_all_snippets(
-                    manager,
-                    &execution_scope,
-                    &execution_caller,
-                    execution_surface,
-                )
-                .await;
-            }
-            let Some(name) = params.name else {
-                return Err(missing_param(
-                    "missing required parameter `name` or set `all: true`",
-                    "name",
-                ));
-            };
-            let outcome = execute_snippet_outcome(
+            super::testing::test(
                 manager,
-                &name,
-                params.params,
+                params,
                 &execution_scope,
                 &execution_caller,
                 execution_surface,
+                source_limit_override,
             )
-            .await?;
-            snippet_test_result(name, outcome)
+            .await
         }
         unknown => Err(ToolError::UnknownAction {
             message: format!("unknown action `{unknown}` for service `snippets`"),
@@ -287,54 +287,6 @@ fn validate_snippet(name: Option<&str>, body: Option<&str>) -> Result<Value, Too
     }))
 }
 
-async fn test_all_snippets(
-    manager: Option<&crate::dispatch::gateway::manager::GatewayManager>,
-    caller_scope: &ToolScope,
-    caller: &CodeModeCaller,
-    surface: CodeModeSurface,
-) -> Result<Value, ToolError> {
-    let snippets = list_snippets(&lab_home(), &builtin_snippet_dir())?;
-    let mut results = Vec::with_capacity(snippets.len());
-    for snippet in snippets {
-        match execute_snippet_outcome(
-            manager,
-            &snippet.name,
-            Value::Object(Default::default()),
-            caller_scope,
-            caller,
-            surface,
-        )
-        .await
-        {
-            Ok(outcome) => {
-                let passed = snippet_response_passed(&outcome.raw_response);
-                results.push(json!({
-                    "name": snippet.name,
-                    "passed": passed,
-                    "response": outcome.display_response,
-                }));
-            }
-            Err(error) => {
-                results.push(json!({
-                    "name": snippet.name,
-                    "passed": false,
-                    "error": error,
-                }));
-            }
-        }
-    }
-    let passed = results.iter().all(|result| {
-        result
-            .get("passed")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-    });
-    to_json(json!({
-        "passed": passed,
-        "results": results,
-    }))
-}
-
 fn snippet_response_passed(response: &CodeModeExecutionResponse) -> bool {
     response.calls.iter().all(|call| call.ok)
         && response
@@ -345,7 +297,10 @@ fn snippet_response_passed(response: &CodeModeExecutionResponse) -> bool {
             .unwrap_or(true)
 }
 
-fn snippet_test_result(name: String, outcome: SnippetExecutionOutcome) -> Result<Value, ToolError> {
+pub(super) fn snippet_test_result(
+    name: String,
+    outcome: SnippetExecutionOutcome,
+) -> Result<Value, ToolError> {
     let passed = snippet_response_passed(&outcome.raw_response);
     to_json(json!({
         "name": name,
@@ -365,7 +320,7 @@ fn snippet_execution_scope(
         .unwrap_or_else(|| caller_scope.clone())
 }
 
-async fn execute_snippet_outcome(
+pub(super) async fn execute_snippet_outcome(
     manager: Option<&crate::dispatch::gateway::manager::GatewayManager>,
     name: &str,
     input: Value,
@@ -416,30 +371,6 @@ async fn execute_snippet_outcome(
         raw_response: outcome.raw_response,
         display_response: outcome.display_response,
     })
-}
-
-pub(crate) fn wrap_snippet_with_input_bounded(
-    code: &str,
-    input: &Value,
-    max_source_bytes: usize,
-) -> Result<String, ToolError> {
-    let input = serde_json::to_string(input).map_err(|e| ToolError::InvalidParam {
-        message: format!("snippet params must be JSON-serializable: {e}"),
-        param: "params".to_string(),
-    })?;
-    let wrapped = format!(
-        "async () => {{\n  const __labSnippetInput = {input};\n  return await ({code})(__labSnippetInput);\n}}"
-    );
-    if wrapped.len() > max_source_bytes {
-        return Err(ToolError::InvalidParam {
-            message: format!(
-                "saved snippet invocation exceeds Code Mode source limit {max_source_bytes} bytes after serializing params ({} bytes)",
-                wrapped.len()
-            ),
-            param: "params".to_string(),
-        });
-    }
-    Ok(wrapped)
 }
 
 fn parse_params<T: serde::de::DeserializeOwned>(params: Value) -> Result<T, ToolError> {

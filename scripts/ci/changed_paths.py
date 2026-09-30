@@ -145,7 +145,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
     docs = any_match(
         paths,
         lambda p: starts(p, "docs/")
-        or (starts(p, "plugins/labby/") and p.endswith(".md"))
+        or (starts(p, "plugins/labby/", "plugins/install-labby/") and p.endswith(".md"))
         or p in {"README.md", "CHANGELOG.md", "CLAUDE.md", "AGENTS.md", "GEMINI.md"},
     )
     # `just docs-check` validates both generated inventories and local links in
@@ -157,7 +157,8 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             starts(p, "docs/")
             and not starts(p, "docs/archive/", "docs/sessions/", "docs/superpowers/")
         )
-        or (starts(p, "plugins/labby/") and p.endswith(".md"))
+        or (starts(p, "plugins/labby/", "plugins/install-labby/") and p.endswith(".md"))
+        or starts(p, "plugins/labby/.apm/skills/implement-in-microsandbox/")
         or p
         in {
             ".config/.env.example",

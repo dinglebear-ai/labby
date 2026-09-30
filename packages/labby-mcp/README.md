@@ -99,7 +99,7 @@ $install-labby
 
 The skill inspects the machine, asks for authentication/listener/deployment choices, drives the verified release installer plus `labby setup`, configures supported persistence and HTTPS exposure, helps register Labby in installed agents, and does not declare success until `labby doctor` plus a live MCP smoke pass. Security-sensitive durable writes remain owned by the Labby binary rather than duplicated in skill prose.
 
-See [`plugins/labby/.apm/skills/install-labby/SKILL.md`](./plugins/labby/.apm/skills/install-labby/SKILL.md) for the orchestration contract and [`docs/adr/0001-install-labby-first-class-install-orchestrator.md`](./docs/adr/0001-install-labby-first-class-install-orchestrator.md) for the architecture decision.
+See [`skills/install-labby/SKILL.md`](../../skills/install-labby/SKILL.md) for the canonical orchestration skill and [`docs/adr/0001-install-labby-first-class-install-orchestrator.md`](../../docs/adr/0001-install-labby-first-class-install-orchestrator.md) for the architecture decision.
 
 #### Install through APM
 
@@ -287,7 +287,7 @@ service is changed.
 For loopback development, `labby serve` can bootstrap a missing bearer token for
 you. If `LABBY_MCP_HTTP_TOKEN` is absent and `LABBY_AUTH_MODE` is not `oauth`, it
 generates a token, writes a minimal `~/.labby/.env`, reloads it into the running
-process, prints the setup URL, and continues. The token itself is stored in
+process, prints configuration guidance, and continues. The token itself is stored in
 `~/.labby/.env` rather than printed.
 
 Bootstrap writes these required `setup` keys if no env exists yet:
@@ -300,8 +300,8 @@ Bootstrap writes these required `setup` keys if no env exists yet:
 
 It also enforces secure file creation via Labby's `env_merge` path (`0600` perms on
 Unix). This is a minimal loopback bootstrap, not the guided onboarding flow.
-Run `labby setup` for interactive server/client configuration; it does not require
-completing a web wizard.
+Run `labby setup` for interactive server/client configuration, or
+`labby setup state --json` to inspect the snapshot without changing configuration. Ongoing configuration is available in the operator UI's Settings pages.
 
 For explicit setup with a manually generated bearer token:
 

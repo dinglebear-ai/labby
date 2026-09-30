@@ -1,7 +1,9 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::OnceLock;
 
 use crate::dispatch::error::ToolError;
 
@@ -222,6 +224,54 @@ fn editable(
     }
 }
 
+fn secret_env_editable(
+    section: &'static str,
+    key: &'static str,
+    label: &'static str,
+    description: &'static str,
+    example: Option<&'static str>,
+) -> SettingsFieldSpec {
+    let mut field = editable(
+        section,
+        key,
+        label,
+        description,
+        SettingsBackend::Env,
+        SettingsControl::Text,
+        SettingsApplyMode::Restart,
+        None,
+        example,
+    );
+    field.risk = SettingsRisk::SecuritySensitive;
+    field.secret = true;
+    field
+}
+
+fn env_number_editable(
+    section: &'static str,
+    key: &'static str,
+    label: &'static str,
+    description: &'static str,
+    min: i64,
+    max: i64,
+    example: Option<&'static str>,
+) -> SettingsFieldSpec {
+    let mut field = editable(
+        section,
+        key,
+        label,
+        description,
+        SettingsBackend::Env,
+        SettingsControl::Number,
+        SettingsApplyMode::Restart,
+        None,
+        example,
+    );
+    field.min = Some(min);
+    field.max = Some(max);
+    field
+}
+
 fn readonly(
     section: &'static str,
     key: &'static str,
@@ -383,6 +433,12 @@ pub fn schema_response() -> SettingsSchemaResponse {
                 advanced: false,
             },
             SettingsSectionSpec {
+                id: "notifications",
+                label: "Notifications",
+                description: "In-app event retention, trusted ingest, and optional Apprise delivery.",
+                advanced: false,
+            },
+            SettingsSectionSpec {
                 id: "advanced",
                 label: "Advanced",
                 description: "Redacted read-only complex config and env inventory.",
@@ -467,6 +523,53 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
                 },
             ],
             Some("json"),
+        ),
+        editable(
+            "notifications",
+            "LABBY_NOTIFICATIONS_ENABLED",
+            "Enable notifications",
+            "Record operational notifications in Labby and monitor Team Depot ingestion failures.",
+            SettingsBackend::Env,
+            SettingsControl::Bool,
+            SettingsApplyMode::Restart,
+            None,
+            Some("true"),
+        ),
+        editable(
+            "notifications",
+            "APPRISE_URL",
+            "Apprise API URL",
+            "Base URL of the Apprise API. Labby posts to /notify or /notify/{KEY}.",
+            SettingsBackend::Env,
+            SettingsControl::Url,
+            SettingsApplyMode::Restart,
+            None,
+            Some("http://apprise:8000"),
+        ),
+        secret_env_editable(
+            "notifications",
+            "APPRISE_TOKEN",
+            "Apprise configuration key",
+            "Optional stateful Apprise configuration key used at /notify/{KEY}. It is never returned by the settings API.",
+            Some("labby"),
+        ),
+        env_number_editable(
+            "notifications",
+            "LABBY_NOTIFICATION_RETENTION",
+            "Notification retention",
+            "Maximum recent notification records retained locally.",
+            10,
+            2_000,
+            Some("200"),
+        ),
+        env_number_editable(
+            "notifications",
+            "LABBY_DEPOT_MONITOR_INTERVAL_SECONDS",
+            "Depot failure check interval",
+            "How often Labby checks Team Depot source history for newly failed ingestion runs.",
+            10,
+            3_600,
+            Some("30"),
         ),
         editable(
             "surfaces",
@@ -1140,8 +1243,12 @@ fn collect_toml_value_paths(value: &toml_edit::Value, prefix: &str, paths: &mut 
 
 fn env_process_value(field: &SettingsFieldSpec) -> Value {
     match crate::dispatch::helpers::env_non_empty(field.key) {
+        Some(value) if field.secret => secret_marker(&value),
         Some(value) if field.control == SettingsControl::Number => value
             .parse::<i64>()
+            .map_or_else(|_| json!(value), |parsed| json!(parsed)),
+        Some(value) if field.control == SettingsControl::Bool => value
+            .parse::<bool>()
             .map_or_else(|_| json!(value), |parsed| json!(parsed)),
         Some(value) if field.control == SettingsControl::StringList => env_list_value(&value),
         Some(value) => json!(value),
@@ -1490,6 +1597,11 @@ pub fn env_entries_from_updates(
                 .as_i64()
                 .ok_or_else(|| invalid_field(field, "must be an integer"))?
                 .to_string(),
+            SettingsControl::Bool => entry
+                .value
+                .as_bool()
+                .ok_or_else(|| invalid_field(field, "must be a boolean"))?
+                .to_string(),
             SettingsControl::Enum | SettingsControl::Text | SettingsControl::Url => {
                 let raw = entry
                     .value
@@ -1570,6 +1682,20 @@ pub(super) fn validate_env_entry_value(key: &str, value: &str) -> Result<(), Too
     Ok(())
 }
 
+fn secret_marker(raw: &str) -> Value {
+    static SALT: OnceLock<String> = OnceLock::new();
+    let salt = SALT.get_or_init(|| uuid::Uuid::new_v4().to_string());
+    let mut hasher = Sha256::new();
+    hasher.update(salt.as_bytes());
+    hasher.update([0]);
+    hasher.update(raw.as_bytes());
+    let digest = hasher.finalize();
+    json!({
+        "configured": true,
+        "fingerprint": format!("opaque:{}", hex::encode(digest)),
+    })
+}
+
 fn env_list_value(raw: &str) -> Value {
     json!(
         raw.split(',')
@@ -1627,9 +1753,17 @@ fn env_file_value(
     let Some(raw) = env_file_value_by_name(path, field.key)? else {
         return Ok(None);
     };
+    if field.secret {
+        return Ok(Some(secret_marker(&raw)));
+    }
     if field.control == SettingsControl::Number {
         return Ok(raw
             .parse::<i64>()
+            .map_or_else(|_| Some(json!(raw)), |parsed| Some(json!(parsed))));
+    }
+    if field.control == SettingsControl::Bool {
+        return Ok(raw
+            .parse::<bool>()
             .map_or_else(|_| Some(json!(raw)), |parsed| Some(json!(parsed))));
     }
     if field.control == SettingsControl::StringList {
@@ -1891,6 +2025,22 @@ mod tests {
             assert_eq!(source.overridden_by_env, None);
             assert!(env_entries_from_updates(&update()).is_ok());
         });
+    }
+
+    #[test]
+    fn secret_marker_is_stable_and_opaque() {
+        let first = secret_marker("human-chosen-key");
+        let second = secret_marker("human-chosen-key");
+        assert_eq!(first, second);
+        assert_eq!(first["configured"], true);
+        let fingerprint = first["fingerprint"].as_str().expect("opaque fingerprint");
+        assert!(fingerprint.starts_with("opaque:"));
+        assert!(!fingerprint.contains("human-chosen-key"));
+        let unsalted = format!(
+            "sha256:{}",
+            hex::encode(Sha256::digest(b"human-chosen-key"))
+        );
+        assert_ne!(fingerprint, unsalted);
     }
 
     #[test]

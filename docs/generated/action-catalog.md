@@ -266,7 +266,7 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `snippets` | `snippets.list` | false | false | false |  | `transport` | `-` | `-` |  | `SnippetList` | cli, mcp, api |
 | `snippets` | `snippets.promote` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `execution_id*: string`<br>`name*: string`<br>`description: string`<br>`force: boolean`<br>`shadow_builtin: boolean` | `SnippetPromotionResult` | mcp, api |
 | `snippets` | `snippets.remove` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string` | `SnippetRemoveResult` | cli, mcp, api |
-| `snippets` | `snippets.test` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name: string`<br>`params: object`<br>`all: boolean` | `SnippetTestResult` | cli, mcp, api |
+| `snippets` | `snippets.test` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `fixture: object`<br>`live: boolean`<br>`name: string`<br>`params: object`<br>`all: boolean` | `SnippetTestResult` | cli, mcp, api |
 | `snippets` | `snippets.validate` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name: string`<br>`body: string` | `SnippetValidation` | cli, mcp, api |
 | `sources` | `help` | true | false | false |  | `transport` | `-` | `-` |  | `HelpPayload` | mcp, api |
 | `sources` | `schema` | true | false | false |  | `transport` | `-` | `-` | `action*: string` | `ActionSpec` | mcp, api |

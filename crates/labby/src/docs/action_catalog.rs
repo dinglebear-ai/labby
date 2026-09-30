@@ -164,8 +164,7 @@ const STASH_WEB_ACTION_BINDINGS: &[(&str, &str)] = &[
 ];
 
 #[cfg(test)]
-const STASH_WEB_CLIENT_SOURCE: &str =
-    include_str!("../../../../apps/web/lib/stash/client.ts");
+const STASH_WEB_CLIENT_SOURCE: &str = include_str!("../../../../apps/web/lib/stash/client.ts");
 
 #[cfg(test)]
 const CLI_DISPATCH_SOURCES: &[&str] = &[

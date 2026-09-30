@@ -12,6 +12,9 @@ This document is the authoritative contract for CI, release, and artifact delive
 
 ## CI Path Routing
 
+The docs-check job also runs the pure-Python Microsandbox implementation skill receipt tests and its path-routing regression. Every file under plugins/labby/.apm/skills/implement-in-microsandbox/ routes to that job, including scripts, tests, locks, and descriptors. These checks do not claim to launch a microVM on CI.
+
+
 The incubating verification toolkit has a separate path-triggered advisory
 workflow, `.github/workflows/verification.yml`. It runs isolated compilation,
 workspace boundary tests, core tests (including generated-schema freshness),
@@ -306,17 +309,26 @@ land the required code/tests and the baseline update together.
   - Native Windows workspace and Palette jobs use GitHub-hosted runners, bounded timeouts, and keyed Cargo caches; workspace tests block `ci-gate`, while Palette remains advisory
   - Heavy release work starts from an immutable stable-version tag while the
     matching GitHub release is still draft
-  - Release Linux jobs use GitHub-hosted x86_64 runners; native macOS artifacts use GitHub-hosted Apple Silicon runners
+  - Release Linux jobs use GitHub-hosted x86_64 and ARM64 runners; native macOS artifacts use GitHub-hosted Apple Silicon runners
 
 The pinned fleet policy and repository contract set `allow-arm64: true` for
 Labby. This removes the former fleet-wide ARM64 token rejection while keeping
 the shared workflows' default x86_64-only for callers that do not opt in. The
-current release matrix remains the support matrix below until ARM64 jobs and
-artifacts are added and verified.
+release matrix builds Linux ARM64 natively on `ubuntu-24.04-arm`.
+The path-filtered `arm64-package-smoke.yml` pull-request workflow checks out
+the exact PR head on the same native runner, builds the frontend and release
+binary, verifies the archive checksum and contents, and executes the extracted
+binary's Code Mode and Skill CLI smoke. It retains the archive, checksum, and a
+source-head/digest receipt for seven days. This qualification has read-only
+repository permissions and never publishes a tag, release, or package.
+Its trigger includes Rust manifests and crates, embedded configuration,
+Gateway Admin, embedded docs and plugins, package assets, scripts, and the
+native build actions.
 
 ## GitHub-hosted runners
 
-All repository-defined Linux jobs use the GitHub-hosted `ubuntu-24.04` image.
+Repository-defined Linux jobs use GitHub-hosted `ubuntu-24.04`; native ARM64
+release builds use `ubuntu-24.04-arm`.
 Native Windows jobs use `windows-latest`. No repository-defined job selects a
 self-hosted runner or a custom runner label.
 
@@ -339,7 +351,14 @@ repository and is outside this repository's local runner selection.
 | Platform | Target |
 |----------|--------|
 | Linux x86_64 | `x86_64-unknown-linux-gnu` |
+| Linux arm64 | `aarch64-unknown-linux-gnu` |
 | macOS arm64 | `aarch64-apple-darwin` |
+
+The initial Linux ARM64 artifact receives the native packaged Code Mode smoke,
+checksums, SBOM, and provenance verification. N-1 stateful qualification remains
+on the existing deployment matrix because no prior Linux ARM64 archive is
+available for the initial release; this is not an ARM64 upgrade/rollback claim.
+The shell and npm installers select the matching ARM64 archive.
 
 Official macOS artifacts are built on a native GitHub-hosted Apple Silicon
 runner. Windows remains covered by required CI tests, but is not a release
@@ -486,7 +505,7 @@ legacy manifest check.
 ## Artifact Distribution
 
 - **Surface:** GitHub Releases
-- **Artifacts per release:** one binary archive per supported target (Linux x86_64 and macOS arm64)
+- **Artifacts per release:** one binary archive per supported target (Linux x86_64, Linux arm64, and macOS arm64)
 - **Checksums:** every binary archive has a SHA-256 checksum file
 - **SBOMs:** one identity-bound SPDX JSON document per archive and installer
 - **Manifest:** `release-manifest.json` binds every promoted subject name, size,

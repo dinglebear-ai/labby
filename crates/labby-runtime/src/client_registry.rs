@@ -60,7 +60,10 @@ pub struct ConnectedClient {
     /// Redacted actor display tag, e.g. `"sub:ab12cd34ef56..."`. `None` for
     /// unauthenticated/loopback-dev sessions.
     pub subject_tag: Option<String>,
-    /// MCP `clientInfo.name` declared during the initialize handshake.
+    /// Verified OAuth authorized party from the signed access-token `azp` claim.
+    /// Never derived from MCP `clientInfo`.
+    pub authorized_client_id: Option<String>,
+    /// MCP `clientInfo.name` declared by the client. Descriptive only, not authenticated.
     pub client_name: Option<String>,
     /// MCP `clientInfo.version` declared during the initialize handshake.
     pub client_version: Option<String>,
@@ -84,6 +87,7 @@ impl ClientRegistryHandle {
     pub async fn push(&self, client: ConnectedClient) {
         let client = ConnectedClient {
             subject_tag: client.subject_tag.map(truncate_field),
+            authorized_client_id: client.authorized_client_id.map(truncate_field),
             client_name: client.client_name.map(truncate_field),
             client_version: client.client_version.map(truncate_field),
             transport: client.transport,
@@ -109,6 +113,7 @@ mod tests {
     fn sample(name: &str) -> ConnectedClient {
         ConnectedClient {
             subject_tag: Some("sub:deadbeef".to_string()),
+            authorized_client_id: Some("oauth-client".to_string()),
             client_name: Some(name.to_string()),
             client_version: Some("1.0.0".to_string()),
             transport: "mcp".to_string(),

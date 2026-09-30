@@ -22,6 +22,8 @@ use rmcp::RoleServer;
 use rmcp::model::{CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock};
 use rmcp::service::RequestContext;
 use serde_json::Value;
+#[cfg(feature = "gateway")]
+use tracing::Instrument as _;
 
 #[cfg(test)]
 const MAX_DEPOT_PUBLISH_ARCHIVE_BYTES: usize = crate::dispatch::depot_publish::MAX_ARCHIVE_BYTES;
@@ -532,7 +534,45 @@ impl LabMcpServer {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Pin<Box<dyn Future<Output = Result<CallToolResponse, ErrorData>> + Send + 'a>> {
-        Box::pin(self.call_tool_response_impl_inner(request, context))
+        #[cfg(feature = "gateway")]
+        {
+            return Box::pin(async move {
+                let mut context = context;
+                let inbound =
+                    crate::mcp::trace_context::resolve_inbound_trace(request.meta.as_ref())
+                        .map_err(|error| {
+                            tracing::error!(
+                                surface = "mcp",
+                                service = "trace_context",
+                                action = "inbound.create",
+                                error = %error,
+                                "failed to establish request trace context"
+                            );
+                            ErrorData::internal_error(
+                                "request tracing could not be initialized",
+                                None,
+                            )
+                        })?;
+                let trace_id = inbound.context.trace_id().to_hex();
+                let span_id = inbound.context.span_id().to_hex();
+                context
+                    .extensions
+                    .insert(crate::mcp::trace_context::RequestTraceContext(Arc::clone(
+                        &inbound.context,
+                    )));
+                self.call_tool_response_impl_inner(request, context)
+                    .instrument(tracing::info_span!(
+                        "mcp.request",
+                        trace_id = %trace_id,
+                        span_id = %span_id,
+                    ))
+                    .await
+            });
+        }
+        #[cfg(not(feature = "gateway"))]
+        {
+            Box::pin(self.call_tool_response_impl_inner(request, context))
+        }
     }
 
     #[cfg(feature = "gateway")]

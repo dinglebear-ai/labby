@@ -14,6 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "plugins/labby"
 SOURCE = PACKAGE / ".apm/skills"
+INSTALL_SKILL = ROOT / "plugins/install-labby/skills/install-labby"
 TARGETS = (
     "claude", "codex", "copilot", "cursor", "gemini", "antigravity",
     "opencode", "windsurf", "kiro", "hermes", "grok-build",
@@ -58,14 +59,15 @@ def build(target: str, output: Path) -> None:
     if target == "claude":
         claude = json.loads((PACKAGE / ".claude-plugin/plugin.json").read_text())
         claude["skills"] = "./skills"
+        claude["mcpServers"] = "./.mcp.json"
         write_json(output / ".claude-plugin/plugin.json", claude)
-        shutil.copy2(PACKAGE / ".mcp.json", output / ".mcp.json")
+        write_json(output / ".mcp.json", {"mcpServers": json.loads((output / "mcp.json").read_text())["mcpServers"]})
 
     (output / "README.md").write_text(
         f"# Labby for {target}\n\n"
         "This directory is a self-contained Labby Agent Plugin. Install this "
         "directory with a client that supports Agent Plugins 1.0. "
-        "It includes the four Labby skills and, where supported, a stdio MCP "
+        "It includes the five Labby skills and, where supported, a stdio MCP "
         "connection through `npx -y @dinglebear/labby mcp`.\n\n"
         "The client-native files in hidden directories are provided for "
         "clients that load skills and MCP settings directly. Copy the skill "
@@ -134,6 +136,8 @@ def main() -> int:
             actual = {name: tree_files(PACKAGE / name) for name in (*TARGETS, *EXPERIMENTAL)}
             expected = {name: tree_files(staged / name) for name in (*TARGETS, *EXPERIMENTAL)}
             stale = [name for name in expected if actual[name] != expected[name]]
+            if tree_files(INSTALL_SKILL) != tree_files(SOURCE / "install-labby"):
+                stale.append("install-labby")
             if stale:
                 print("stale native packages: " + ", ".join(stale))
                 return 1
@@ -145,6 +149,10 @@ def main() -> int:
                 shutil.rmtree(dest)
             shutil.copytree(staged / target, dest)
             print(f"generated {dest.relative_to(ROOT)}")
+        if INSTALL_SKILL.exists():
+            shutil.rmtree(INSTALL_SKILL)
+        shutil.copytree(SOURCE / "install-labby", INSTALL_SKILL)
+        print(f"generated {INSTALL_SKILL.relative_to(ROOT)}")
     return 0
 
 

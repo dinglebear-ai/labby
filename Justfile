@@ -69,6 +69,8 @@ docs-check:
     python3 scripts/check-doc-links.py
     python3 -m unittest discover -s scripts/ci -p 'test_doc_links.py'
     python3 scripts/check-product-docs.py
+    python3 -m unittest discover -s plugins/labby/.apm/skills/implement-in-microsandbox/tests -v
+    python3 -m unittest discover -s scripts/ci -p "test_microsandbox_skill_paths.py"
     python3 -m unittest discover -s scripts/ci -p 'test_product_docs.py'
     bash scripts/tests/bin_link_claude_mds_test.sh
     python3 scripts/check-depot-control-plane-contract.py
@@ -399,12 +401,14 @@ mcp-token:
         echo "appended LABBY_MCP_HTTP_TOKEN to $env_file"
     fi
 
-# Smoke-test the lab-bg3e.3 setup wizard end-to-end against a throw-away
-# LABBY_HOME. Used by CI to verify first-run detection + draft commit cycle
-# without touching the operator's real ~/.labby/.
+# Inspect the first-run setup snapshot without onboarding or changing the
+# operator's configuration. Each invocation owns and removes its temporary home.
 smoke-setup:
-    rm -rf /tmp/lab-smoke-home
-    LABBY_HOME=/tmp/lab-smoke-home cargo run --all-features -- setup --no-browser --smoke
+    #!/usr/bin/env bash
+    set -euo pipefail
+    smoke_home="$(mktemp -d "${TMPDIR:-/tmp}/labby-setup-smoke.XXXXXX")"
+    trap 'rm -rf "$smoke_home"' EXIT
+    LABBY_HOME="$smoke_home" cargo run --bin labby --all-features -- setup state --json
 
 # Validate the Labby plugin setup lifecycle against a throw-away LABBY_HOME.
 validate-plugin:

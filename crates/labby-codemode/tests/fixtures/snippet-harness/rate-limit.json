@@ -1,0 +1,53 @@
+{
+  "calls": [
+    {
+      "tool": "linear-notification-worker::list_issues",
+      "match": {
+        "team": "U8",
+        "assignee": "me",
+        "state": "started",
+        "limit": 100
+      },
+      "result": {
+        "issues": [
+          {
+            "id": "U8-16",
+            "title": "Authorization",
+            "status": "In Progress"
+          },
+          {
+            "id": "U8-767",
+            "title": "Design",
+            "status": "In Progress"
+          }
+        ],
+        "hasNextPage": false
+      }
+    },
+    {
+      "tool": "github::get_me",
+      "result": {
+        "login": "jmagar"
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "error": {
+        "kind": "tool_error",
+        "message": "{\"kind\":\"tool_error\",\"cause\":\"403 API rate limit exceeded [rate reset in 12s]\"}"
+      },
+      "times": 2
+    }
+  ],
+  "expect": {
+    "/ok": false,
+    "/complete": false,
+    "/failures/0/kind": "rate_limit",
+    "/failures/0/retryAfterSeconds": 12,
+    "/summary/toolCalls": 4,
+    "/issues/0/matchStatus": "incomplete"
+  },
+  "budgets": {
+    "tool_calls": 4
+  }
+}

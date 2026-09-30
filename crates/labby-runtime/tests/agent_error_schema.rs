@@ -41,6 +41,7 @@ const KINDS: &[&str] = &[
     "confirmation_required",
     "auth_failed",
     "auth_required",
+    "upstream_credential_missing",
     "oauth_needs_reauth",
     "route_scope_denied",
     // budget

@@ -386,16 +386,17 @@ fn generated_client_plugin_inputs_route_to_drift_check() {
 
 #[test]
 fn native_plugin_ci_regenerates_checkout_and_catches_new_files() {
-    let workflow: serde_json::Value = serde_saphyr::from_str(include_str!(
-        "../../../.github/workflows/ci.yml"
-    ))
-    .expect("parse CI workflow");
+    let workflow: serde_json::Value =
+        serde_saphyr::from_str(include_str!("../../../.github/workflows/ci.yml"))
+            .expect("parse CI workflow");
     let steps = workflow["jobs"]["native-plugins"]["steps"]
         .as_array()
         .expect("native plugin steps");
-    assert!(steps.iter().any(|step| {
-        step["run"].as_str() == Some("python scripts/generate-native-plugins.py")
-    }));
+    assert!(
+        steps.iter().any(|step| {
+            step["run"].as_str() == Some("python scripts/generate-native-plugins.py")
+        })
+    );
     assert!(steps.iter().any(|step| {
         step["run"].as_str().is_some_and(|run| {
             run.contains("git status --porcelain --untracked-files=all -- plugins/labby")
@@ -2121,4 +2122,17 @@ fn incus_bootstrap_waits_for_guest_systemd_before_systemctl_consumers() {
         script.contains("systemctl is-system-running"),
         "readiness must probe the guest system manager rather than only Incus RUNNING state"
     );
+}
+
+#[test]
+fn microsandbox_workflow_executable_inputs_route_to_docs_check() {
+    for path in [
+        "plugins/labby/.apm/skills/implement-in-microsandbox/scripts/verify_handoff.py",
+        "plugins/labby/.apm/skills/implement-in-microsandbox/tests/test_verify_handoff.py",
+        "plugins/labby/.apm/skills/implement-in-microsandbox/references/ubuntu-arm64.packages.lock",
+        "plugins/labby/.apm/skills/implement-in-microsandbox/agents/openai.yaml",
+    ] {
+        let out = classify("pull_request", &[path]);
+        assert_eq!(out["docs_check"], "true", "{path}");
+    }
 }

@@ -918,9 +918,9 @@ jobs:
       - name: Reject uncommitted generated changes
         run: |
           set -euo pipefail
-          if [[ -n "$(git status --porcelain --untracked-files=all -- plugins/labby)" ]]; then
-            git status --short --untracked-files=all -- plugins/labby
-            echo "::error::Generated client packages differ from the checked-in plugins/labby files. Run python scripts/generate-native-plugins.py and commit the result."
+          if [[ -n "$(git status --porcelain --untracked-files=all -- plugins/labby plugins/install-labby/skills)" ]]; then
+            git status --short --untracked-files=all -- plugins/labby plugins/install-labby/skills
+            echo "::error::Generated client packages differ from the checked-in plugin files. Run python scripts/generate-native-plugins.py and commit the result."
             exit 1
           fi
 

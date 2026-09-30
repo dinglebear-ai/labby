@@ -2,7 +2,11 @@
 
 ## Unreleased
 
+- Split the guided installer skill and MCP connection into the separate `install-labby` plugin; this plugin now contains usage skills only.
+
 ### Added
+
+- Added `implement-in-microsandbox`, with explicit publication and staging gates, receipt verification, real-HTTP tests, and a locked reference bootstrap.
 
 - Added the first-class `install-labby` Agent Skill with guided verified
   release installation, authentication selection, listener/deployment

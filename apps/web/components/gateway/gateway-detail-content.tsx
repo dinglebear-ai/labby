@@ -892,8 +892,15 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
           },
         ]
   const serverMetadataRows = [
-    { label: 'serverInfo.name / version', value: `${gateway.name} · ${DETAIL_NO_DATA}` },
-    { label: 'protocolVersion', value: DETAIL_NO_DATA },
+    {
+      label: 'serverInfo.name / version',
+      value: `${gateway.status.server_name ?? gateway.name} · ${gateway.status.server_version ?? DETAIL_NO_DATA}`,
+    },
+    { label: 'protocolVersion', value: gateway.status.protocol_version ?? DETAIL_NO_DATA },
+    {
+      label: 'health / reason',
+      value: `${operationalStatus.label} · ${operationalStatus.reason}`,
+    },
     { label: 'origin', value: gateway.status.origin ?? 'server-managed' },
     {
       label: 'imported_from',
@@ -1058,25 +1065,24 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                   <HeaderMetaDot />
                   <span style={{ fontWeight: 650 }}>{transportLabel}</span>
                   <HeaderMetaDot />
-                  {/*
-                    The mock prints the upstream's serverInfo version and the
-                    negotiated protocolVersion. The gateway API returns neither,
-                    so both dash rather than being invented.
-                  */}
                   <span
                     style={{ fontVariantNumeric: 'tabular-nums' }}
-                    title="Upstream server version — not reported by the gateway API"
+                    title={gateway.status.server_name
+                      ? `${gateway.status.server_name} ${gateway.status.server_version ?? ""}`.trim()
+                      : 'Upstream server version has not been reported yet'}
                   >
-                    v {DETAIL_NO_DATA}
+                    v {gateway.status.server_version ?? DETAIL_NO_DATA}
                   </span>
                   <HeaderMetaDot />
                   <span
                     className="inline-flex items-center gap-1.5"
                     style={{ fontVariantNumeric: 'tabular-nums' }}
-                    title="Negotiated Model Context Protocol version — not reported by the gateway API"
+                    title={gateway.status.protocol_version
+                      ? `Negotiated MCP ${gateway.status.protocol_version}`
+                      : 'Negotiated MCP protocol version has not been reported yet'}
                   >
                     <McpGlyph />
-                    {DETAIL_NO_DATA}
+                    {gateway.status.protocol_version ?? DETAIL_NO_DATA}
                   </span>
                   {gateway.config.oauth_enabled ? (
                     <>

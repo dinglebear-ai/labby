@@ -2,7 +2,7 @@
 #
 #   apm install -g dinglebear-ai/labby/plugins/labby
 #
-# deploys the four Labby Agent Skills (this package's .apm/skills) into ~/.claude/skills and
+# deploys the five Labby Agent Skills (this package's .apm/skills) into ~/.claude/skills and
 # ~/.agents/skills, and registers the `labby` stdio MCP server (the npm
 # launcher, `npx -y @dinglebear/labby mcp`) in Claude Code and Codex. It does
 # not install the labby binary or provision a gateway host: run the

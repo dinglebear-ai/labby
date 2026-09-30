@@ -96,10 +96,10 @@ fn supports_target(command: &super::Command) -> bool {
             _ => false,
         },
         #[cfg(feature = "gateway")]
-        super::Command::Snippets(super::snippets::SnippetsArgs {
-            command:
-                super::snippets::SnippetsCommand::Exec(_) | super::snippets::SnippetsCommand::Test(_),
-        }) => true,
+        super::Command::Snippets(args) => {
+            matches!(&args.command, super::snippets::SnippetsCommand::Exec(_))
+                || matches!(&args.command, super::snippets::SnippetsCommand::Test(test) if test.live)
+        }
         #[cfg(feature = "gateway")]
         super::Command::Gateway(_)
         | super::Command::Server(_)
@@ -121,10 +121,26 @@ mod snippet_target_tests {
             command: SnippetsCommand::Test(SnippetTestArgs {
                 name: Some("example".into()),
                 all: false,
+                live: true,
+                fixture: None,
                 params: vec![],
             }),
         });
         assert!(supports_target(&command));
+    }
+
+    #[test]
+    fn fixture_snippets_stay_on_the_local_installation() {
+        let command = super::super::Command::Snippets(SnippetsArgs {
+            command: SnippetsCommand::Test(SnippetTestArgs {
+                name: Some("example".into()),
+                all: false,
+                live: false,
+                fixture: None,
+                params: vec![],
+            }),
+        });
+        assert!(!supports_target(&command));
     }
 
     #[test]

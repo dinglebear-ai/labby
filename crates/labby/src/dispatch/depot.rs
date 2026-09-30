@@ -1996,7 +1996,7 @@ mod tests {
     fn pinned_admin_contract_inventory_matches_the_depot_fixture() {
         let fixture: Value = serde_json::from_str(DEPOT_OPERATIONS_GOLDEN).unwrap();
         let operations = fixture["operations"].as_array().unwrap();
-        assert_eq!(operations.len(), 64);
+        assert_eq!(operations.len(), 65);
         for definition in operations {
             let name = definition["name"].as_str().unwrap();
             assert_eq!(

@@ -728,13 +728,19 @@ pub(crate) fn map_principal_resolution(
     error: crate::access::FileStashPrincipalResolutionError,
 ) -> ToolError {
     use crate::access::FileStashPrincipalResolutionError as E;
-    ToolError::Sdk {
-        sdk_kind: match error {
-            E::IdentityUnavailable => "not_found",
-            E::StoreUnavailable | E::Runtime(_) => "service_unavailable",
-        }
-        .to_owned(),
-        message: "File Stash operation failed".to_owned(),
+    match error {
+        // Setup is a deterministic operator gate, not a transient outage.
+        // Reuse the shared mapping, including its safe recovery guidance.
+        E::Runtime(error) => crate::dispatch::access_errors::map_runtime_error("stash", error),
+        E::IdentityUnavailable | E::StoreUnavailable => ToolError::Sdk {
+            sdk_kind: if matches!(error, E::IdentityUnavailable) {
+                "not_found"
+            } else {
+                "service_unavailable"
+            }
+            .to_owned(),
+            message: "File Stash operation failed".to_owned(),
+        },
     }
 }
 

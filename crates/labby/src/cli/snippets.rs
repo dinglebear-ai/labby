@@ -1,3 +1,5 @@
+use std::cell::Cell;
+use std::io::Read;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -31,7 +33,7 @@ pub enum SnippetsCommand {
     Validate(SnippetValidateArgs),
     /// Remove a user snippet.
     Remove(SnippetRemoveArgs),
-    /// Execute a snippet and report pass/fail.
+    /// Test with deterministic fixtures; use --live to contact upstreams.
     Test(SnippetTestArgs),
 }
 
@@ -51,9 +53,15 @@ pub struct SnippetExecArgs {
 #[derive(Debug, Args)]
 pub struct SnippetTestArgs {
     pub name: Option<String>,
-    /// Run every listed snippet with default params.
+    /// Test every listed snippet using its sibling .test.json fixture.
     #[arg(long, conflicts_with = "name", default_value_t = false)]
     pub all: bool,
+    /// Contact real upstreams instead of using fixtures.
+    #[arg(long, conflicts_with = "fixture", default_value_t = false)]
+    pub live: bool,
+    /// Read a deterministic JSON fixture instead of the sibling .test.json file.
+    #[arg(long, conflicts_with_all = ["live", "all"])]
+    pub fixture: Option<PathBuf>,
     /// Input values passed to the snippet as key=value pairs.
     #[arg(long = "param", value_name = "KEY=VALUE")]
     pub params: Vec<String>,
@@ -108,10 +116,8 @@ pub async fn run(
     config: &LabConfig,
     team_id: Option<&str>,
 ) -> Result<ExitCode> {
-    let needs_upstreams = matches!(
-        args.command,
-        SnippetsCommand::Exec(_) | SnippetsCommand::Test(_)
-    );
+    let needs_upstreams = matches!(&args.command, SnippetsCommand::Exec(_))
+        || matches!(&args.command, SnippetsCommand::Test(test) if test.live);
     if needs_upstreams {
         if let Some(live) = crate::live_gateway::detect(config, "cli").await? {
             return run_on_selected_daemon(
@@ -180,6 +186,8 @@ pub async fn run(
             json!({
                 "name": args.name,
                 "all": args.all,
+                "live": args.live,
+                "fixture": read_fixture(args.fixture)?,
                 "params": crate::cli::params::parse_kv_params(args.params)?,
             }),
             true,
@@ -207,14 +215,50 @@ pub async fn run(
         .await;
     }
 
-    run_action_command(
+    let test_failed = Cell::new(false);
+    let failed_flag = &test_failed;
+    let source_limit = config.code_mode.max_source_bytes;
+    let exit = run_action_command(
         "snippets",
         action,
         params,
         format,
-        |action, params| async move { crate::dispatch::snippets::dispatch(&action, params).await },
+        |action, params| async move {
+            let report = if action == "snippets.test" {
+                crate::dispatch::snippets::dispatch::dispatch_with_source_limit(
+                    &action,
+                    params,
+                    source_limit,
+                )
+                .await?
+            } else {
+                crate::dispatch::snippets::dispatch(&action, params).await?
+            };
+            if action == "snippets.test" {
+                failed_flag.set(report["passed"] != true);
+            }
+            Ok(report)
+        },
     )
-    .await
+    .await?;
+    Ok(if test_failed.get() {
+        ExitCode::FAILURE
+    } else {
+        exit
+    })
+}
+
+fn read_fixture(path: Option<PathBuf>) -> Result<Option<Value>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let cap = labby_codemode::snippet::harness::MAX_FIXTURE_BYTES;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take((cap + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    anyhow::ensure!(bytes.len() <= cap, "fixture exceeds 512 KiB");
+    Ok(Some(serde_json::from_slice(&bytes)?))
 }
 
 async fn run_on_selected_daemon(
@@ -300,7 +344,7 @@ async fn execute_remote_snippet(
     )?;
     let input = merge_snippet_input(&snippet, params)?;
     let code = code_for_snippet(&snippet)?;
-    let code = crate::dispatch::snippets::dispatch::wrap_snippet_with_input_bounded(
+    let code = crate::dispatch::snippets::store::wrap_snippet_with_input_bounded(
         &code,
         &input,
         labby_codemode::MAX_SOURCE_BYTES,
