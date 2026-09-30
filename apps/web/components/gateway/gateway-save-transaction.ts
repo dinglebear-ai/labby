@@ -1,4 +1,7 @@
-export type GatewaySaveRollback = () => Promise<void>
+export type GatewaySaveRollback = (() => Promise<void>) | {
+  rollback: () => Promise<void>
+  commit?: () => void
+}
 
 export class GatewaySaveCompensationError extends Error {
   constructor(readonly rollbackError: unknown) {
@@ -16,7 +19,8 @@ export async function runGatewaySaveTransaction(
   saveGateway: () => Promise<GatewaySaveRollback | void>,
   applyProtectedRoute: () => Promise<void>,
 ): Promise<void> {
-  const rollback = await saveGateway()
+  const saved = await saveGateway()
+  const rollback = typeof saved === 'function' ? saved : saved?.rollback
   try {
     await applyProtectedRoute()
   } catch (error) {
@@ -29,4 +33,5 @@ export async function runGatewaySaveTransaction(
     }
     throw error
   }
+  if (saved && typeof saved !== 'function') saved.commit?.()
 }

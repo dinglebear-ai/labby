@@ -34,7 +34,7 @@ export interface GatewayConfigView extends GatewayConfig {
 export interface GatewayWriteConfig extends GatewayConfig {
   bearer_token_value?: string
   /** OAuth spec — write-only, never returned by the API. Set when auth mode is 'oauth'. */
-  oauth?: { registration_strategy: string; scopes?: string[] }
+  oauth?: { registration_strategy: string; scopes?: string[] } | null
 }
 
 export interface GatewayStatus {

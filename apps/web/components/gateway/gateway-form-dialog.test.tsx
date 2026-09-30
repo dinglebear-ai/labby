@@ -1127,6 +1127,41 @@ test('editing an existing OAuth HTTP server preserves OAuth config by omission',
   }
 })
 
+for (const authLabel of ['No auth', 'Bearer token']) test(`switching an existing OAuth server to ${authLabel} explicitly clears OAuth`, async () => {
+  const window = installGatewayDialogDom()
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (_input, init) => gatewayActionResponse(init, {})) as typeof fetch
+  let view: Awaited<ReturnType<typeof renderOpenGatewayDialog>> | undefined
+  try {
+    const existing = gatewayFixture('oauth-clear')
+    existing.config.oauth_enabled = true
+    existing.config.bearer_token_env = 'OAUTH_REPLACEMENT_TOKEN'
+    const inputs: Array<CreateGatewayInput | UpdateGatewayInput> = []
+    view = await renderOpenGatewayDialog(existing, async input => { inputs.push(input) })
+    const trigger = [...document.querySelectorAll('[role="combobox"]')]
+      .find(item => item.textContent?.includes('OAuth (MCP)')) as HTMLElement
+    assert.ok(trigger)
+    await act(async () => {
+      trigger.dispatchEvent(new window.PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' }) as unknown as Event)
+    })
+    const option = [...document.querySelectorAll('[role="option"]')].find(item => item.textContent?.trim() === authLabel) as HTMLElement
+    assert.ok(option)
+    await act(async () => {
+      option.dispatchEvent(new window.PointerEvent('pointerup', { bubbles: true, button: 0, pointerType: 'mouse' }) as unknown as Event)
+      option.click()
+    })
+    await clickSave()
+    await waitFor(() => {
+      assert.equal(inputs.length, 1)
+      assert.equal(inputs[0].config?.oauth, null)
+      assert.equal(inputs[0].config?.bearer_token_env, authLabel === 'No auth' ? null : 'OAUTH_REPLACEMENT_TOKEN')
+    })
+  } finally {
+    await view?.unmount()
+    globalThis.fetch = originalFetch
+  }
+})
+
 function installGatewayDialogDom() {
   const window = new Window()
   Object.defineProperty(globalThis, 'window', { configurable: true, value: window })
