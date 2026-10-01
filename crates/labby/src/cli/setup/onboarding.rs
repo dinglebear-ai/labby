@@ -1557,7 +1557,6 @@ pub(super) async fn bootstrap_static_owner_at(root: &Path) -> Result<()> {
     }
 }
 
-#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 fn resolved_server_auth(plan: &SetupPlan) -> SetupAuthArg {
     plan.server_auth.unwrap_or_else(|| {
         if plan.oauth.is_some() {
@@ -1568,7 +1567,6 @@ fn resolved_server_auth(plan: &SetupPlan) -> SetupAuthArg {
     })
 }
 
-#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 /// Resolve omitted choices from the service's actual state before installing,
 /// connecting the local client, or offering a browser handoff.
 fn resolve_existing_native_defaults(plan: &mut SetupPlan, root: &Path) -> Result<()> {

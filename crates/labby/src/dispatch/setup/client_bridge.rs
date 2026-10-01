@@ -295,6 +295,6 @@ pub async fn verify(root: PathBuf, gateway: String) -> Result<usize> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "client_bridge_tests.rs"]
 mod tests;

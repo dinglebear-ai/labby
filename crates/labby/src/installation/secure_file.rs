@@ -723,8 +723,8 @@ mod tests {
         create_private_dir(&parent).unwrap();
         let sentinel = parent.join("sentinel");
         fs::write(&sentinel, b"unchanged").unwrap();
-        let icacls = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
-            .join("System32/icacls.exe");
+        let icacls =
+            PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/icacls.exe");
         assert!(
             std::process::Command::new(&icacls)
                 .arg(&parent)
