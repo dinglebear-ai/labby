@@ -208,10 +208,16 @@ mod tests {
             .await
             .unwrap();
         store.execute_test_statement("INSERT INTO project_loadouts VALUES('bootstrap-local','bootstrap-default','team-skills','bootstrap-owner',1,1)").await.unwrap();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        // Match the validator's SQLite clock and stay inside its approval
+        // window; this fixture tests identity isolation, not the upper boundary.
+        let now: i64 = store
+            .with_connection(|connection| {
+                connection
+                    .query_row("SELECT unixepoch()", [], |row| row.get(0))
+                    .map_err(map_sqlite_error)
+            })
+            .await
+            .unwrap();
         let a = OwnerLinkApproval {
             approval_id: "consent-one".into(),
             identity_fingerprint: identity_fingerprint(&identity("google-owner")).unwrap(),
@@ -222,7 +228,7 @@ mod tests {
             loadout_id: "team-skills".into(),
             route_id: "team-depot-publish".into(),
             resource: "https://example.test/mcp/team-depot".into(),
-            expires_at: now + 600,
+            expires_at: now + 300,
         };
         (temp, store, a)
     }
