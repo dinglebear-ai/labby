@@ -525,6 +525,13 @@ fn write_atomically(
             reason: WriteFailReason::from_io(&error),
         }
     })?;
+    #[cfg(windows)]
+    labby_winjob::fs::verify_private_acl(tmp.as_file()).map_err(|error| {
+        MergeError::WriteFailed {
+            path: path.to_path_buf(),
+            reason: WriteFailReason::Other(format!("private environment temporary: {error}")),
+        }
+    })?;
     {
         let file = tmp.as_file_mut();
         for line in lines {
