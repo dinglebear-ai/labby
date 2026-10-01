@@ -388,7 +388,7 @@ async fn signed_oauth_descriptor_calls_are_observed_per_client_and_principal() {
     )
     .unwrap();
     row["expires"] = serde_json::json!(0);
-    labby_runtime::secure_atomic_file::write_secure_atomic(
+    crate::dispatch::setup::secure_file::replace_journal(
         &journal,
         &serde_json::to_vec(&row).unwrap(),
     )
