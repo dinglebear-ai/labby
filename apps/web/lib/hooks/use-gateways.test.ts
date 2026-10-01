@@ -415,3 +415,54 @@ test('a rename seeds the new detail cache without fetching the removed ID', asyn
     globalThis.fetch = originalFetch
   }
 })
+
+test('a six-second tool inventory publishes without overlapping five-second polls', async () => {
+  const { SWRConfig } = await import('swr')
+  const { useGateways } = await import('./use-gateways')
+  const { mockGateways } = await import('../api/mock-data')
+  const window = installTestDom()
+  const original = { list: gatewayApi.list, runtime: gatewayApi.hydrateRuntime,
+    inventory: gatewayApi.hydrateToolInventory, refresh: gatewayApi.refreshStatus,
+    interval: window.setInterval }
+  let tick: (() => void) | undefined
+  window.setInterval = (callback, delay, ...args) => {
+    tick = () => callback(...args)
+    return original.interval.call(window, () => {}, delay)
+  }
+  const row = { ...mockGateways[0], id: 'slow-inventory' }
+  let calls = 0
+  gatewayApi.list = async () => [row]
+  gatewayApi.hydrateRuntime = async rows => rows
+  gatewayApi.refreshStatus = async () => { throw new Error('warming unavailable') }
+  gatewayApi.hydrateToolInventory = async rows => {
+    calls++
+    await new Promise(resolve => setTimeout(resolve, 6_000))
+    return rows.map(item => ({ ...item,
+      discovery: { ...item.discovery, tools: [{ name: 'slow-tool', exposed: true, matched_by: '*' }] },
+    }))
+  }
+  function Harness() {
+    const result = useGateways(true, true)
+    return React.createElement('span', null, result.data?.[0]?.discovery.tools[0]?.name ?? 'loading')
+  }
+  const view = await renderClient(React.createElement(SWRConfig,
+    { value: { provider: () => new Map(), dedupingInterval: 0, shouldRetryOnError: false } }, React.createElement(Harness)))
+  try {
+    for (let attempt = 0; attempt < 50 && calls === 0; attempt++) {
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)) })
+    }
+    assert.equal(calls, 1)
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 5_000))
+      tick!()
+      await new Promise(resolve => setTimeout(resolve, 1_100))
+    })
+    assert.equal(view.container.textContent, 'slow-tool', 'the first slow response must publish')
+    assert.equal(calls, 1, 'polling must not supersede an outstanding inventory request')
+  } finally {
+    await view.unmount()
+    gatewayApi.list = original.list; gatewayApi.hydrateRuntime = original.runtime
+    gatewayApi.hydrateToolInventory = original.inventory; gatewayApi.refreshStatus = original.refresh
+    window.setInterval = original.interval
+  }
+})

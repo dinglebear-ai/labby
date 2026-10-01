@@ -512,13 +512,24 @@ export function useGateways(enabled = true, includeToolInventory = false) {
       }
     })
   }, [runtimeGateways, toolInventory.data])
+  // Global mutate forcibly starts a new request and invalidates the previous
+  // response. Poll only idle lanes so slow inventory can finish and publish.
+  const pollingState = useRef({ configured: false, runtime: false, inventory: false })
+  pollingState.current = { configured: configured.isValidating, runtime: runtime.isValidating, inventory: toolInventory.isValidating }
+  const pollingRequests = useRef(new Set<string>())
   useEffect(() => {
     if (!enabled || USE_MOCK_DATA) return
+    const refresh = (key: string | [string, string], validating: boolean) => {
+      const id = JSON.stringify(key)
+      if (validating || pollingRequests.current.has(id)) return
+      pollingRequests.current.add(id)
+      void mutate(key).catch(() => { /* SWR retains the lane error for recovery. */ }).finally(() => pollingRequests.current.delete(id))
+    }
     const refreshCatalogView = () => {
       if (document.visibilityState === 'hidden') return
-      void mutate(GATEWAYS_KEY)
-      if (runtimeCacheId) void mutate(['/gateways/runtime', runtimeCacheId])
-      if (includeToolInventory && toolInventoryCacheId) void mutate(['/gateways/tool-inventory', toolInventoryCacheId])
+      refresh(GATEWAYS_KEY, pollingState.current.configured)
+      if (runtimeCacheId) refresh(['/gateways/runtime', runtimeCacheId], pollingState.current.runtime)
+      if (includeToolInventory && toolInventoryCacheId) refresh(['/gateways/tool-inventory', toolInventoryCacheId], pollingState.current.inventory)
     }
     const interval = window.setInterval(refreshCatalogView, 5_000)
     document.addEventListener('visibilitychange', refreshCatalogView)
