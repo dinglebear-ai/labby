@@ -1,7 +1,7 @@
 ---
 title: "Contract: Stdio MCP Proxy"
 created: "2026-07-31"
-updated: "2026-09-16"
+updated: "2026-10-01"
 ---
 
 # Contract: Stdio MCP Proxy
@@ -15,7 +15,7 @@ This contract pins the stable CLI grammar, configuration vocabulary, output shap
 ## CLI grammar
 
 ```text
-labby proxy [OPTIONS] <PROGRAM_OR_SCRIPT> [CHILD_ARGUMENTS...]
+labby proxy [OPTIONS] [PROGRAM_OR_SCRIPT] [CHILD_ARGUMENTS...]
 ```
 
 Stable options:
@@ -27,6 +27,9 @@ Stable options:
 | `--bearer-token <secret>` | One-run static token; implies bearer. |
 | `--bearer-token-stdin` | Read one-run static token from stdin; implies bearer. |
 | `--local` | Override exposure to a local loopback URL. |
+| `--funnel` | Publish through Tailscale Funnel with OAuth. |
+| `--print-google-callback` | Preview the Funnel callback and MCP URLs without starting the proxy. |
+| `--mcp-json <path>` | Aggregate local or remote MCP servers from a selected file. |
 | `--cwd <path>` | Child working directory. |
 | `--env <NAME=VALUE>` | Explicit child environment entry; repeatable. |
 | `--inherit-env <NAME>` | Inherit one ambient environment variable; repeatable. |
@@ -34,6 +37,30 @@ Stable options:
 The global `--json` flag applies normally.
 
 After the first program or script token, all remaining tokens are child arguments. An explicit `--` before the program is accepted. Unknown Labby-looking flags after the program are not rejected by Labby.
+
+## Aggregate configuration
+
+Without a child command, discover `.mcp.json` in the selected Labby home, then
+beside the native binary. `--mcp-json` selects an explicit file. A selected
+invalid file fails without falling back. Explicit commands bypass discovery.
+
+The `mcpServers` object accepts up to 16 entries using the gateway's shared
+upstream configuration and validation. `command`/`args`/`env` selects stdio;
+`url` selects Streamable HTTP (or WebSocket for `ws://`/`wss://`). Common
+`type: "http"` and `type: "streamable-http"` aliases select HTTP explicitly.
+Native `transport` and `socket_path` support the gateway's other transports;
+legacy standalone SSE is unsupported. Conflicting transports and malformed
+URLs or headers fail before publication. Qualified tools use `name::tool`.
+
+HTTP bearer credentials may use `bearer_token_env` or a common
+`headers.Authorization` Bearer value. The adapter translates them to private
+per-upstream references in the isolated aggregate home. Credential values are
+excluded from readiness output and are not implicitly forwarded to unrelated
+stdio environments. Explicit `--env` and `--inherit-env` selections still apply
+to child processes. A missing
+configured credential fails instead of connecting anonymously. Other HTTP
+headers retain the gateway's shared validation rules. Local process environment
+selection and working directory overrides retain their existing semantics.
 
 ## Exit codes
 

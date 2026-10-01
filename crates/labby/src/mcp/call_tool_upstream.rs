@@ -545,8 +545,10 @@ impl LabMcpServer {
                 "proxying to upstream"
             );
 
-            let mut upstream_params =
-                prepare_upstream_tool_request(upstream_request.clone(), service);
+            let mut upstream_params = prepare_upstream_tool_request(
+                upstream_request.clone(),
+                resolved_tool.tool.name.as_ref(),
+            );
             let outbound_trace =
                 inject_outbound_tool_trace(&mut upstream_params, request_trace.as_ref(), None)
                     .map_err(|error| {

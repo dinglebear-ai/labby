@@ -751,6 +751,12 @@ impl LabMcpServer {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
+        if self.registry.is_proxy_aggregate() && !request.name.contains("::") {
+            return Err(ErrorData::invalid_params(
+                "proxy tools require an advertised upstream-qualified name",
+                None,
+            ));
+        }
         #[cfg(feature = "gateway")]
         match project_execution_binding(&context.extensions, SystemTime::now()) {
             ProjectExecutionBinding::Legacy => {}

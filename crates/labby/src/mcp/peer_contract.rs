@@ -699,7 +699,7 @@ impl PeerContract {
             let model_visible =
                 self.route_scope.is_root() && self.audience.code_mode_execute_allowed;
             let callback_visible = self.audience.code_mode_read_allowed;
-            if model_visible || callback_visible {
+            if !self.registry.is_proxy_aggregate() && (model_visible || callback_visible) {
                 let tool = self
                     .registry
                     .permanent_tools()
@@ -727,7 +727,8 @@ impl PeerContract {
         }
 
         #[cfg(feature = "gateway")]
-        if self.audience.admin_apps_visible
+        if !self.registry.is_proxy_aggregate()
+            && self.audience.admin_apps_visible
             && mcp_apps_config.settings
             && self.route_scope.allows_service("setup")
             && self.service_visible_on_mcp("setup").await
@@ -773,11 +774,16 @@ impl PeerContract {
                 {
                     continue;
                 }
-                let name = upstream_tool.tool.name.as_ref();
+                let descriptor = crate::mcp::permanent_tools::proxy_upstream_descriptor(
+                    &self.registry,
+                    &upstream_tool.upstream_name,
+                    upstream_tool.tool.clone(),
+                );
+                let name = descriptor.name.as_ref();
                 if matches!(project_shadow, ProjectDiscoveryShadow::Bound(_))
                     && project_shadow.allows_upstream_tool(
                         &upstream_tool.upstream_name,
-                        name,
+                        upstream_tool.tool.name.as_ref(),
                         project_started_at,
                     ) != Some(true)
                 {
@@ -789,9 +795,7 @@ impl PeerContract {
                 {
                     continue;
                 }
-                descriptors.push(crate::mcp::permanent_tools::with_labby_security(
-                    upstream_tool.tool,
-                ));
+                descriptors.push(descriptor);
                 upstream_tool_count += 1;
             }
 
