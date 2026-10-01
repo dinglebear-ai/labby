@@ -82,7 +82,11 @@ async fn q3_discovers_and_describes_the_live_fixture_before_execution() {
 
 #[tokio::test]
 async fn q3_fanout_preserves_partial_error_and_exact_effect_count() {
-    let limits = Limits::default();
+    // Allow cold-start preparation before checking partial failure and exact effects.
+    let limits = Limits {
+        timeout_ms: 5_000,
+        ..Limits::default()
+    };
     let runner = CodeModeQualification::start(limits)
         .await
         .expect("Q3 runner");
@@ -104,7 +108,11 @@ async fn q3_fanout_preserves_partial_error_and_exact_effect_count() {
         )
         .await
         .expect("fanout response");
-    assert!(!execution.is_error, "fanout top-level result must succeed");
+    assert!(
+        !execution.is_error,
+        "fanout top-level result must succeed: {}",
+        execution.structured
+    );
     assert_eq!(
         execution.structured["result"][0]["status"],
         json!("fulfilled")
@@ -145,7 +153,11 @@ async fn q3_fanout_preserves_partial_error_and_exact_effect_count() {
 
 #[tokio::test]
 async fn q3_dependent_call_consumes_actual_first_result() {
-    let limits = Limits::default();
+    // Allow cold-start preparation before checking result-dependent calls.
+    let limits = Limits {
+        timeout_ms: 5_000,
+        ..Limits::default()
+    };
     let runner = CodeModeQualification::start(limits)
         .await
         .expect("Q3 runner");
