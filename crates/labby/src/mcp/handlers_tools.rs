@@ -28,12 +28,12 @@ use crate::mcp::bound_access::{
 };
 #[cfg(feature = "gateway")]
 use crate::mcp::call_tool_codemode::CodeModeUpstreamDescription;
+use crate::mcp::catalog::ToolCatalogSnapshot;
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog::{
     ADD_SERVER_TOOL_NAME, CODE_MODE_READ_TOOL_NAME, CODE_MODE_TOOL_NAME, CODE_MODE_UI_TOOL_NAME,
     GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME, SETTINGS_TOOL_NAME,
 };
-use crate::mcp::catalog::{SERVER_LOGS_TOOL_NAME, ToolCatalogSnapshot};
 #[cfg(feature = "gateway")]
 use crate::mcp::context::oauth_upstream_subject_for_request;
 use crate::mcp::context::request_openai_session_fingerprint;
@@ -198,11 +198,11 @@ impl LabMcpServer {
         let mut upstream_tool_error_count = 0usize;
         let mut open_upstream_count = 0usize;
         // FU-2 (issue #210, lab-ecxfl): one PeerContract for the whole listing.
-        // The three consumers below (visibility, Code Mode upstream
-        // descriptions, upstream pool) are audience-independent, so hoisting
-        // is behavior-neutral. The clone cost is only real on ProtectedSubset
+        // Retain the actual request audience so native Stash visibility agrees
+        // with the subscription contract and its tools/list_changed hashes.
+        // The clone cost is only real on ProtectedSubset
         // routes — `Root` is a unit variant.
-        let peer_contract = self.peer_contract();
+        let peer_contract = self.peer_contract_for_request(&context);
         let visibility = peer_contract.code_mode_visibility().await;
         let manager_code_mode_enabled = visibility.exposes_synthetic_tools();
         let process_code_mode_enabled = crate::config::process_code_mode_enabled();
@@ -283,7 +283,11 @@ impl LabMcpServer {
                 }
                 if tool_projection_mode.includes_router() {
                     builtin_names.insert(svc.name.to_string());
-                    if hide_raw_tools && !matches!(svc.name, SERVER_LOGS_TOOL_NAME | "gateway") {
+                    if !crate::mcp::peer_contract::native_router_visible(
+                        visibility,
+                        svc.name,
+                        peer_contract.audience.native_stash_caller,
+                    ) {
                         suppressed_builtin_tool_count += 1;
                     } else {
                         advertised_names.insert(svc.name.to_string());

@@ -1,8 +1,8 @@
 use super::store::{FileStashStoreError, Result};
 use rusqlite::{Connection, TransactionBehavior, params};
 pub(super) const APPLICATION_ID: i64 = 0x4c_46_53_31;
-pub(super) const SCHEMA_VERSION: i64 = 2;
-pub(super) const SCHEMA_FINGERPRINT: &str = "labby-file-stash-v2-20260906-quota-counters";
+pub(super) const SCHEMA_VERSION: i64 = 3;
+pub(super) const SCHEMA_FINGERPRINT: &str = "labby-file-stash-v3-context-folders";
 pub(super) fn migrate(connection: &mut Connection, snapshot_id: &str) -> Result<()> {
     let found: i64 = connection
         .query_row("PRAGMA user_version", [], |r| r.get(0))
@@ -32,6 +32,8 @@ pub(super) fn migrate(connection: &mut Connection, snapshot_id: &str) -> Result<
             .map_err(FileStashStoreError::sqlite)?;
         tx.execute_batch(MIGRATE_V1_TO_V2)
             .map_err(FileStashStoreError::sqlite)?;
+        tx.execute_batch(MIGRATE_V2_TO_V3)
+            .map_err(FileStashStoreError::sqlite)?;
         tx.execute(
             "UPDATE stash_metadata SET schema_version=?1,schema_fingerprint=?2,updated_at=unixepoch() WHERE singleton=1",
             params![SCHEMA_VERSION, SCHEMA_FINGERPRINT],
@@ -41,10 +43,38 @@ pub(super) fn migrate(connection: &mut Connection, snapshot_id: &str) -> Result<
             .map_err(FileStashStoreError::sqlite)?;
         validate(&tx, snapshot_id)?;
         tx.commit().map_err(FileStashStoreError::sqlite)?;
+    } else if found == 2 {
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Exclusive)
+            .map_err(FileStashStoreError::sqlite)?;
+        validate_generation(
+            &tx,
+            snapshot_id,
+            2,
+            "labby-file-stash-v2-20260906-quota-counters",
+        )?;
+        tx.execute_batch(MIGRATE_V2_TO_V3)
+            .map_err(FileStashStoreError::sqlite)?;
+        tx.execute(
+            "UPDATE stash_metadata SET schema_version=?1,schema_fingerprint=?2,updated_at=unixepoch() WHERE singleton=1",
+            params![SCHEMA_VERSION, SCHEMA_FINGERPRINT],
+        ).map_err(FileStashStoreError::sqlite)?;
+        tx.pragma_update(None, "user_version", SCHEMA_VERSION)
+            .map_err(FileStashStoreError::sqlite)?;
+        validate(&tx, snapshot_id)?;
+        tx.commit().map_err(FileStashStoreError::sqlite)?;
     }
     validate(connection, snapshot_id)
 }
 fn validate(c: &Connection, snapshot_id: &str) -> Result<()> {
+    validate_generation(c, snapshot_id, SCHEMA_VERSION, SCHEMA_FINGERPRINT)
+}
+fn validate_generation(
+    c: &Connection,
+    snapshot_id: &str,
+    version: i64,
+    fingerprint: &str,
+) -> Result<()> {
     let app: i64 = c
         .query_row("PRAGMA application_id", [], |r| r.get(0))
         .map_err(FileStashStoreError::sqlite)?;
@@ -52,7 +82,7 @@ fn validate(c: &Connection, snapshot_id: &str) -> Result<()> {
         return Err(FileStashStoreError::Corrupt);
     }
     let m:(i64,String,String)=c.query_row("SELECT schema_version,schema_fingerprint,snapshot_id FROM stash_metadata WHERE singleton=1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(FileStashStoreError::sqlite)?;
-    if m.0 != SCHEMA_VERSION || m.1 != SCHEMA_FINGERPRINT {
+    if m.0 != version || m.1 != fingerprint {
         return Err(FileStashStoreError::Corrupt);
     }
     if m.2 != snapshot_id {
@@ -71,13 +101,13 @@ fn validate(c: &Connection, snapshot_id: &str) -> Result<()> {
     }
 }
 const SCHEMA: &str = r"
-CREATE TABLE stash_metadata(singleton INTEGER PRIMARY KEY CHECK(singleton=1),schema_version INTEGER NOT NULL CHECK(schema_version IN(1,2)),schema_fingerprint TEXT NOT NULL,snapshot_id TEXT NOT NULL CHECK(length(snapshot_id)>0),updated_at INTEGER NOT NULL) STRICT;
+CREATE TABLE stash_metadata(singleton INTEGER PRIMARY KEY CHECK(singleton=1),schema_version INTEGER NOT NULL CHECK(schema_version IN(1,2,3)),schema_fingerprint TEXT NOT NULL,snapshot_id TEXT NOT NULL CHECK(length(snapshot_id)>0),updated_at INTEGER NOT NULL) STRICT;
 CREATE TABLE name_claims(owner_principal_id TEXT NOT NULL,collision_key TEXT NOT NULL,record_kind TEXT NOT NULL CHECK(record_kind IN('pending','file')),record_id TEXT NOT NULL,PRIMARY KEY(owner_principal_id,collision_key),UNIQUE(record_kind,record_id)) STRICT;
-CREATE TABLE pending_uploads(upload_id TEXT PRIMARY KEY,owner_principal_id TEXT NOT NULL CHECK(length(trim(owner_principal_id))>0),display_name TEXT NOT NULL,collision_key TEXT NOT NULL,reserved_bytes INTEGER NOT NULL CHECK(reserved_bytes>=0),state TEXT NOT NULL CHECK(state IN('pending','blob_published')),expires_at INTEGER NOT NULL,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL) STRICT;
+CREATE TABLE pending_uploads(upload_id TEXT PRIMARY KEY,owner_principal_id TEXT NOT NULL CHECK(length(trim(owner_principal_id))>0),display_name TEXT NOT NULL,collision_key TEXT NOT NULL,reserved_bytes INTEGER NOT NULL CHECK(reserved_bytes>=0),state TEXT NOT NULL CHECK(state IN('pending','blob_published')),expires_at INTEGER NOT NULL,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,folder TEXT NOT NULL DEFAULT '',content_type TEXT NOT NULL DEFAULT 'application/octet-stream') STRICT;
 CREATE UNIQUE INDEX stash_pending_owner_name ON pending_uploads(owner_principal_id,collision_key); CREATE INDEX stash_pending_janitor ON pending_uploads(expires_at,upload_id);
 CREATE TRIGGER stash_pending_claim_insert AFTER INSERT ON pending_uploads BEGIN INSERT INTO name_claims VALUES(NEW.owner_principal_id,NEW.collision_key,'pending',NEW.upload_id); END;
 CREATE TRIGGER stash_pending_claim_delete AFTER DELETE ON pending_uploads BEGIN DELETE FROM name_claims WHERE record_kind='pending' AND record_id=OLD.upload_id; END;
-CREATE TABLE files(file_id TEXT PRIMARY KEY,owner_principal_id TEXT NOT NULL CHECK(length(trim(owner_principal_id))>0),display_name TEXT NOT NULL,collision_key TEXT NOT NULL,size_bytes INTEGER NOT NULL CHECK(size_bytes>=0),blob_key TEXT NOT NULL UNIQUE,ready INTEGER NOT NULL CHECK(ready IN(0,1)),created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL) STRICT;
+CREATE TABLE files(file_id TEXT PRIMARY KEY,owner_principal_id TEXT NOT NULL CHECK(length(trim(owner_principal_id))>0),display_name TEXT NOT NULL,collision_key TEXT NOT NULL,size_bytes INTEGER NOT NULL CHECK(size_bytes>=0),blob_key TEXT NOT NULL UNIQUE,ready INTEGER NOT NULL CHECK(ready IN(0,1)),created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,folder TEXT NOT NULL DEFAULT '',content_type TEXT NOT NULL DEFAULT 'application/octet-stream') STRICT;
 CREATE UNIQUE INDEX stash_files_owner_name ON files(owner_principal_id,collision_key); CREATE INDEX stash_files_owner_list ON files(owner_principal_id,ready,created_at DESC,file_id DESC);
 CREATE TRIGGER stash_file_claim_insert AFTER INSERT ON files BEGIN INSERT INTO name_claims VALUES(NEW.owner_principal_id,NEW.collision_key,'file',NEW.file_id); END;
 CREATE TRIGGER stash_file_claim_delete AFTER DELETE ON files BEGIN DELETE FROM name_claims WHERE record_kind='file' AND record_id=OLD.file_id; END;
@@ -119,6 +149,17 @@ CREATE TRIGGER stash_file_usage_insert AFTER INSERT ON files WHEN NEW.ready=1 BE
 CREATE TRIGGER stash_file_usage_delete AFTER DELETE ON files WHEN OLD.ready=1 BEGIN UPDATE stash_usage SET committed_bytes=committed_bytes-OLD.size_bytes,live_files=live_files-1 WHERE owner_principal_id=OLD.owner_principal_id; UPDATE stash_instance_usage SET committed_bytes=committed_bytes-OLD.size_bytes,live_files=live_files-1 WHERE singleton=1; END;
 ";
 
+const MIGRATE_V2_TO_V3: &str = r"
+ALTER TABLE stash_metadata RENAME TO stash_metadata_v2;
+CREATE TABLE stash_metadata(singleton INTEGER PRIMARY KEY CHECK(singleton=1),schema_version INTEGER NOT NULL CHECK(schema_version IN(1,2,3)),schema_fingerprint TEXT NOT NULL,snapshot_id TEXT NOT NULL CHECK(length(snapshot_id)>0),updated_at INTEGER NOT NULL) STRICT;
+INSERT INTO stash_metadata SELECT * FROM stash_metadata_v2;
+DROP TABLE stash_metadata_v2;
+ALTER TABLE files ADD COLUMN folder TEXT NOT NULL DEFAULT '';
+ALTER TABLE files ADD COLUMN content_type TEXT NOT NULL DEFAULT 'application/octet-stream';
+ALTER TABLE pending_uploads ADD COLUMN folder TEXT NOT NULL DEFAULT '';
+ALTER TABLE pending_uploads ADD COLUMN content_type TEXT NOT NULL DEFAULT 'application/octet-stream';
+";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,6 +183,99 @@ PRAGMA user_version=1;
         connection
     }
 
+    fn legacy_v2() -> Connection {
+        let connection = Connection::open_in_memory().unwrap();
+        let schema = SCHEMA
+            .replace(",folder TEXT NOT NULL DEFAULT '',content_type TEXT NOT NULL DEFAULT 'application/octet-stream'", "")
+            .replace("IN(1,2,3)", "IN(1,2)");
+        connection.execute_batch(&schema).unwrap();
+        connection.execute_batch("INSERT INTO stash_metadata VALUES(1,2,'labby-file-stash-v2-20260906-quota-counters','legacy-snapshot',1234);
+INSERT INTO files VALUES('file-one','owner-one','notes.md','notes.md',17,'blob-one',1,1,1);
+INSERT INTO pending_uploads VALUES('upload-one','owner-one','draft.md','draft.md',23,'pending',9999999999,1,1);
+PRAGMA application_id=1279677233; PRAGMA user_version=2;").unwrap();
+        connection
+    }
+
+    #[test]
+    fn v2_migration_preserves_binary_files_reservations_and_name_claims() {
+        let mut connection = legacy_v2();
+        migrate(&mut connection, "legacy-snapshot").unwrap();
+        for table in ["files", "pending_uploads"] {
+            let metadata: (String, String) = connection
+                .query_row(
+                    &format!("SELECT folder,content_type FROM {table}"),
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(metadata, (String::new(), "application/octet-stream".into()));
+        }
+        let usage: (i64, i64) = connection
+            .query_row(
+                "SELECT committed_bytes,reserved_bytes FROM stash_instance_usage",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(usage, (17, 23));
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM name_claims", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        migrate(&mut connection, "legacy-snapshot").unwrap();
+    }
+
+    #[test]
+    fn rejected_v2_snapshot_rolls_back_added_columns_and_version() {
+        let mut connection = legacy_v2();
+        assert!(matches!(
+            migrate(&mut connection, "wrong"),
+            Err(FileStashStoreError::BackupMismatch)
+        ));
+        assert_eq!(
+            connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        assert!(connection.prepare("SELECT folder FROM files").is_err());
+        assert!(
+            connection
+                .prepare("SELECT content_type FROM pending_uploads")
+                .is_err()
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT updated_at FROM stash_metadata", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1234
+        );
+        migrate(&mut connection, "legacy-snapshot").unwrap();
+    }
+
+    #[test]
+    fn corrupt_v2_fingerprint_is_rejected_without_upgrading() {
+        let mut connection = legacy_v2();
+        connection
+            .execute("UPDATE stash_metadata SET schema_fingerprint='invalid'", [])
+            .unwrap();
+        assert!(matches!(
+            migrate(&mut connection, "legacy-snapshot"),
+            Err(FileStashStoreError::Corrupt)
+        ));
+        assert_eq!(
+            connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        assert!(connection.prepare("SELECT folder FROM files").is_err());
+    }
+
     #[test]
     fn legacy_v1_constraint_migrates_and_preserves_snapshot_and_usage() {
         let mut connection = legacy();
@@ -156,8 +290,8 @@ PRAGMA user_version=1;
         assert_eq!(
             metadata,
             (
-                2,
-                "labby-file-stash-v2-20260906-quota-counters".into(),
+                SCHEMA_VERSION,
+                SCHEMA_FINGERPRINT.into(),
                 "legacy-snapshot".into()
             )
         );
@@ -170,7 +304,7 @@ PRAGMA user_version=1;
             connection
                 .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            2
+            SCHEMA_VERSION
         );
         migrate(&mut connection, "legacy-snapshot").unwrap();
         assert_eq!(

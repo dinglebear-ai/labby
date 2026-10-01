@@ -176,6 +176,10 @@ pub struct CodeModeSearchConfig {
     /// Artifact families included in subsequent searches. An empty set disables all families.
     #[serde(default = "default_code_mode_search_kinds")]
     pub kinds: std::collections::BTreeSet<CodeModeSearchKind>,
+    /// MCP Skill upstream name to Depot provider ID. When that provider is
+    /// searched through its index, Code Mode skips the duplicate MCP listing.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub depot_skill_upstreams: BTreeMap<String, String>,
 }
 
 impl Default for CodeModeSearchConfig {
@@ -183,6 +187,7 @@ impl Default for CodeModeSearchConfig {
         Self {
             sources: default_code_mode_search_sources(),
             kinds: default_code_mode_search_kinds(),
+            depot_skill_upstreams: BTreeMap::new(),
         }
     }
 }

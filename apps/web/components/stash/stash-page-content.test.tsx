@@ -17,6 +17,7 @@ test.afterEach(() => {
 const teamAuthority: AuthoritySnapshot = { schemaVersion: 1, compatibilityGeneration: 1, principalId: 'principal-1', organizationId: 'org-1', activeOwner: { kind: 'team', id: 'team-1' }, activeTeamId: 'team-1', teams: [{ id: 'team-1', role: 'member', membershipEpoch: 1, policyEpoch: 1 }], projects: [{ id: 'project-1', role: 'manager' }], capabilities: ['scope.read'], generation: 1 }
 Object.defineProperty(globalThis, 'HTMLInputElement', { configurable: true, value: window.HTMLInputElement })
 Object.defineProperty(globalThis, 'InputEvent', { configurable: true, value: window.InputEvent })
+Object.defineProperty(globalThis, 'NodeFilter', { configurable: true, value: window.NodeFilter })
 const file = (id: string) => ({ file_id: id, uri: `stash://me/files/${id}`, display_name: `${id}.txt`, size_bytes: 1, created_at: 1, updated_at: 1, owned: true })
 
 async function waitFor(assertion: () => void, timeoutMs = 2_000) {
@@ -28,6 +29,136 @@ async function waitFor(assertion: () => void, timeoutMs = 2_000) {
   }
   throw lastError
 }
+
+test('folder pagination accepts one request at a time and clears a recovered page error', async () => {
+  document.body.replaceChildren()
+  const pending: Array<(response: Response) => void> = []
+  const cursors: string[] = []
+  globalThis.fetch = async input => {
+    const url = new URL(String(input), 'http://labby.test')
+    if (url.pathname.endsWith('/stats')) return Response.json({ owned_file_count: 0, owned_shared_file_count: 0, owned_committed_bytes: 0, owned_reserved_bytes: 0 })
+    if (url.pathname.endsWith('/folders')) {
+      if (!url.searchParams.has('cursor')) return Response.json({ folders: [{ folder: 'a', file_count: 1 }], next_cursor: 'a' })
+      cursors.push(url.searchParams.get('cursor')!)
+      return new Promise<Response>(resolve => pending.push(resolve))
+    }
+    return Response.json({ files: [], next_cursor: null })
+  }
+  const view = await renderClient(<StashPageContent />)
+  try {
+    const more = () => [...view.container.querySelectorAll('button')].find(button => /More folders/.test(button.textContent || ''))
+    await waitFor(() => assert.ok(more()))
+    await act(async () => { more()!.click(); more()!.click() })
+    assert.deepEqual(cursors, ['a'], 'a synchronous guard rejects repeated pagination clicks')
+    await act(async () => pending[0]!(Response.json({ kind: 'busy', message: 'retry' }, { status: 429 })))
+    await waitFor(() => assert.match(view.container.textContent || '', /Folder catalog unavailable/))
+    await act(async () => more()!.click())
+    await act(async () => pending[1]!(Response.json({ folders: [{ folder: 'b', file_count: 1 }], next_cursor: null })))
+    await waitFor(() => assert.match(view.container.textContent || '', /b \(1\)/))
+    assert.doesNotMatch(view.container.textContent || '', /Folder catalog unavailable/)
+    assert.equal(more(), undefined)
+  } finally { await view.unmount() }
+})
+
+test('folder pagination is canceled on catalog refresh and unmount, and stale pages cannot republish', async () => {
+  document.body.replaceChildren()
+  const pending: Array<{ signal: AbortSignal; resolve: (response: Response) => void }> = []
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input), 'http://labby.test')
+    if (url.pathname.endsWith('/stats')) return Response.json({ owned_file_count: 0, owned_shared_file_count: 0, owned_committed_bytes: 0, owned_reserved_bytes: 0 })
+    if (url.pathname.endsWith('/uploads')) return Response.json(file('uploaded'))
+    if (url.pathname.endsWith('/folders')) {
+      if (!url.searchParams.has('cursor')) return Response.json({ folders: [{ folder: 'a', file_count: 1 }], next_cursor: 'a' })
+      return new Promise<Response>(resolve => pending.push({ signal: init!.signal as AbortSignal, resolve }))
+    }
+    return Response.json({ files: [], next_cursor: null })
+  }
+  const view = await renderClient(<StashPageContent />)
+  const more = () => [...view.container.querySelectorAll('button')].find(button => /More folders/.test(button.textContent || ''))!
+  try {
+    await waitFor(() => assert.ok(more()))
+    await act(async () => more().click())
+    const dropTarget = [...view.container.querySelectorAll('button')].find(button => /drop files here/i.test(button.textContent || ''))!
+    const drop = new window.Event('drop', { bubbles: true, cancelable: true })
+    Object.defineProperty(drop, 'dataTransfer', { value: { files: [new File(['x'], 'uploaded.txt')] } })
+    await act(async () => dropTarget.dispatchEvent(drop))
+    await waitFor(() => assert.equal(pending[0]!.signal.aborted, true))
+    await waitFor(() => assert.equal(more().disabled, false))
+    await act(async () => pending[0]!.resolve(Response.json({ folders: [{ folder: 'stale', file_count: 1 }], next_cursor: null })))
+    assert.doesNotMatch(view.container.textContent || '', /stale \(1\)/)
+    await act(async () => more().click())
+  } finally { await view.unmount() }
+  assert.equal(pending[1]!.signal.aborted, true)
+  await act(async () => pending[1]!.resolve(Response.json({ folders: [], next_cursor: null })))
+})
+
+test('folder selection immediately clears old files, cursors and dialogs when the next folder fails', async () => {
+  document.body.replaceChildren()
+  let failed = false
+  globalThis.fetch = async input => {
+    const url = new URL(String(input), 'http://labby.test')
+    if (url.pathname.endsWith('/stats')) return Response.json({ owned_file_count: 1, owned_shared_file_count: 0, owned_committed_bytes: 1, owned_reserved_bytes: 0 })
+    if (url.pathname.endsWith('/folders')) return Response.json({ folders: [{ folder: 'repo-A', file_count: 1 }, { folder: 'repo-B', file_count: 1 }], next_cursor: null })
+    if (url.pathname.endsWith('/grants')) return Response.json({ grants: [], next_cursor: null })
+    if (url.searchParams.get('folder') === 'repo-B') { failed = true; return Response.json({ kind: 'busy', message: 'B unavailable' }, { status: 429 }) }
+    return Response.json({ files: [{ ...file('a'), folder: 'repo-A' }], next_cursor: 'old-A-cursor' })
+  }
+  const view = await renderClient(<StashPageContent />)
+  try {
+    await waitFor(() => assert.ok(view.container.querySelector('article')))
+    await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Actions for a.txt"]')!.dispatchEvent(new window.PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' })))
+    const manage = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => /Manage file/.test(item.textContent || ''))
+    assert.ok(manage, 'the menu exposes all management operations')
+    await act(async () => manage.click())
+    await waitFor(() => assert.ok(document.querySelector('[role="dialog"]')))
+    await act(async () => {
+      const select = view.container.querySelector<HTMLSelectElement>('select[aria-label="Document folder"]')!
+      select.value = 'folder:repo-B'
+      select.dispatchEvent(new window.Event('change', { bubbles: true }))
+    })
+    assert.equal(view.container.querySelector('article'), null, 'folder selection must clear prior rows immediately')
+    assert.equal(document.querySelector('[role="dialog"]'), null)
+    assert.match(view.container.textContent || '', /Loading your files/)
+    assert.doesNotMatch(view.container.textContent || '', /Load more/)
+    await waitFor(() => assert.equal(failed, true))
+    await waitFor(() => assert.match(view.container.querySelector('[role="alert"]')?.textContent || '', /Stash is busy/))
+    assert.equal(view.container.querySelector('article'), null, 'a failed folder fetch cannot restore earlier files')
+    assert.doesNotMatch(view.container.textContent || '', /Load more/)
+  } finally { await view.unmount() }
+})
+
+test('selecting a repo folder filters files and sends new uploads into that folder', async () => {
+  document.body.replaceChildren()
+  const queriedFolders: Array<string | null> = []
+  let uploadedFolder: string | undefined
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input), 'http://labby.test')
+    if (url.pathname.endsWith('/stats')) return Response.json({ owned_file_count: 1, owned_shared_file_count: 0, owned_committed_bytes: 1, owned_reserved_bytes: 0 })
+    if (url.pathname.endsWith('/folders')) return Response.json({ folders: [{ folder: 'org/repo', file_count: 1 }], next_cursor: null })
+    if (url.pathname.endsWith('/uploads')) {
+      uploadedFolder = decodeURIComponent(new Headers(init?.headers).get('x-labby-stash-folder') || '')
+      return Response.json(file('new'))
+    }
+    queriedFolders.push(url.searchParams.get('folder'))
+    return Response.json({ files: [{ ...file('context'), folder: 'org/repo' }], next_cursor: null })
+  }
+  const view = await renderClient(<StashPageContent />)
+  await waitFor(() => assert.match(view.container.textContent || '', /org\/repo \(1\)/))
+  const select = view.container.querySelector('select[aria-label="Document folder"]') as HTMLSelectElement
+  await act(async () => { select.value = 'folder:org/repo'; select.dispatchEvent(new window.Event('change', { bubbles: true })) })
+  await waitFor(() => assert.equal(queriedFolders.at(-1), 'org/repo'))
+  assert.match(view.container.textContent || '', /Uploads go to org\/repo/)
+  const dropTarget = [...view.container.querySelectorAll('button')].find(button => /drop files here/i.test(button.textContent || ''))!
+  const event = new window.Event('drop', { bubbles: true, cancelable: true })
+  Object.defineProperty(event, 'dataTransfer', { value: { files: [new File(['x'], 'new.txt')] } })
+  await act(async () => { dropTarget.dispatchEvent(event) })
+  await waitFor(() => assert.equal(uploadedFolder, 'org/repo'))
+  await act(async () => { select.value = 'folder:'; select.dispatchEvent(new window.Event('change', { bubbles: true })) })
+  await waitFor(() => assert.equal(queriedFolders.at(-1), ''))
+  await act(async () => { select.value = 'all'; select.dispatchEvent(new window.Event('change', { bubbles: true })) })
+  await waitFor(() => assert.equal(queriedFolders.at(-1), null))
+  await view.unmount()
+})
 
 test('Stash renders live data and appends the next cursor page', async () => {
   document.body.replaceChildren()

@@ -10,10 +10,12 @@ use sha2::{Digest, Sha256};
 use super::server::LabMcpServer;
 #[cfg(feature = "gateway")]
 use crate::dispatch::upstream::pool::UpstreamPool;
+use crate::mcp::context::{
+    auth_context_from_extensions, resolve_caller_authorization, verified_identity_from_extensions,
+};
 #[cfg(feature = "gateway")]
 use crate::mcp::context::{
-    auth_context_from_extensions, code_mode_read_scope_allowed, oauth_upstream_subject_for_request,
-    tool_execute_scope_allowed,
+    code_mode_read_scope_allowed, oauth_upstream_subject_for_request, tool_execute_scope_allowed,
 };
 #[cfg(feature = "gateway")]
 use crate::mcp::handlers_resources::admin_app_resources_visible;
@@ -177,6 +179,22 @@ pub(crate) fn upstream_name_for_uri(uri: &str) -> Option<&str> {
 }
 
 impl LabMcpServer {
+    /// Retain caller-bound Stash only at the outer native transport. Request
+    /// metadata is not authority, and private broker transports never qualify.
+    pub(crate) fn native_stash_caller(&self, context: &RequestContext<RoleServer>) -> bool {
+        if !self.file_stash_caller_bound()
+            || !matches!(self.transport_label, "http" | "stdio" | "test")
+            || verified_identity_from_extensions(&context.extensions).is_none()
+        {
+            return false;
+        }
+        let auth = auth_context_from_extensions(&context.extensions);
+        if auth.is_none() && self.transport_label == "http" {
+            return false;
+        }
+        resolve_caller_authorization(auth, self.absent_auth_trust(), None).can_read()
+    }
+
     /// This session's visible-contract inputs, in the form the notification
     /// fanout can hold onto and re-evaluate later. See `peer_contract.rs`.
     pub(crate) fn peer_contract(&self) -> PeerContract {
@@ -201,6 +219,7 @@ impl LabMcpServer {
                 code_mode_read_allowed: code_mode_read_scope_allowed(auth),
                 code_mode_execute_allowed: tool_execute_scope_allowed(auth),
                 admin_apps_visible: admin_app_resources_visible(auth),
+                native_stash_caller: self.native_stash_caller(context),
                 #[cfg(feature = "skills")]
                 skill_library_management_visible: self
                     .skill_library_http_management_visible(context),
@@ -223,7 +242,10 @@ impl LabMcpServer {
             }
         };
         #[cfg(not(feature = "gateway"))]
-        let audience = PeerCatalogAudience::default();
+        let audience = PeerCatalogAudience {
+            native_stash_caller: self.native_stash_caller(context),
+            ..PeerCatalogAudience::default()
+        };
 
         PeerContract {
             registry: Arc::clone(&self.registry),
@@ -460,11 +482,12 @@ impl LabMcpServer {
             if self.code_mode_app_enabled_on_mcp().await {
                 tools.insert(CODE_MODE_UI_TOOL_NAME.to_string());
             }
-        } else {
-            for svc in self.registry.services() {
-                if !visibility.hides_raw_tools() && self.service_visible_on_mcp(svc.name).await {
-                    tools.insert(svc.name.to_string());
-                }
+        }
+        for svc in self.registry.services() {
+            if crate::mcp::peer_contract::native_router_visible(visibility, svc.name, false)
+                && self.service_visible_on_mcp(svc.name).await
+            {
+                tools.insert(svc.name.to_string());
             }
         }
 

@@ -124,10 +124,10 @@ pub(crate) const SECURITY_INVARIANTS: &[SecurityInvariant] = &[
 // four desktop handoff routes, owner-link consume, the GET/POST Depot publish
 // pair, native CLI metadata, and the handler-authenticated
 // POST /auth/bearer-session exchange, and the admin-only GET /v1/notifications
-// inbox route.
-pub(crate) const PINNED_ROUTE_COUNT: usize = 136;
+// inbox route, and the caller-authenticated GET /v1/stash/folders listing.
+pub(crate) const PINNED_ROUTE_COUNT: usize = 137;
 pub(crate) const PINNED_METHOD_PATH_SHA256: &str =
-    "76e5760d25bcc705831e5280771b2e9f038b43f973d3ab2a07b003e03a6caaa4";
+    "0b34934799812228f14acab931c806c88b0b0904b89338f1e2dd6b9aae6cfedc";
 
 impl SecurityInvariant {
     pub(crate) fn validate_descriptor(&self, route: &RouteDescriptor) -> Result<(), String> {

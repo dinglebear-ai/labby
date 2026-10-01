@@ -142,6 +142,12 @@ impl UpstreamSkills {
     }
 }
 
+/// Bounded query results retain matches even if a later page cannot be read.
+pub(super) struct UpstreamSkillSearch {
+    pub(super) skills: Vec<ValidatedSkill>,
+    pub(super) incomplete: bool,
+}
+
 /// Whether a capability failure is the upstream's structured
 /// `-32602 Invalid params` answer for `skills/get`.
 ///
@@ -290,19 +296,29 @@ impl UpstreamPool {
         query: &str,
         max_items: usize,
         exposure: &SkillExposurePolicy,
-    ) -> Result<Vec<ValidatedSkill>, UpstreamSkillsError> {
+        deadline: Instant,
+    ) -> Result<UpstreamSkillSearch, UpstreamSkillsError> {
         let query = query.trim().to_ascii_lowercase();
         let max_items = max_items.clamp(1, limits::MAX_SKILLS_PER_UPSTREAM);
-        let deadline = Instant::now() + limits::SKILLS_LIST_TIMEOUT;
+        let traversal_budget_ms = deadline
+            .saturating_duration_since(Instant::now())
+            .as_millis();
         let mut cursor: Option<String> = None;
         let mut matches = Vec::new();
 
         for _page in 0..limits::MAX_LIST_PAGES {
             if matches.len() >= max_items {
-                return Ok(matches);
+                return Ok(UpstreamSkillSearch {
+                    skills: matches,
+                    incomplete: false,
+                });
             }
             if Instant::now() >= deadline {
-                return Err(UpstreamSkillsError::SearchIncomplete);
+                tracing::warn!(upstream = %upstream_name, matches = matches.len(), reason = "deadline", "Skill search stopped before exhausting upstream pages");
+                return Ok(UpstreamSkillSearch {
+                    skills: matches,
+                    incomplete: true,
+                });
             }
             let params = cursor
                 .as_ref()
@@ -313,7 +329,7 @@ impl UpstreamPool {
             let remaining = deadline.saturating_duration_since(started);
             let event = UpstreamRequestLog::skills_list(upstream_name, false);
             log_upstream_request_start(event);
-            let result: SkillsListResult = timed_capability_call_with_timeout(
+            let result: SkillsListResult = match timed_capability_call_with_timeout(
                 self,
                 remaining,
                 upstream_name,
@@ -326,12 +342,22 @@ impl UpstreamPool {
                 |error| format!("upstream `{upstream_name}` {}", skills_list_error(error)),
                 format!(
                     "upstream `{upstream_name}` skills/list exceeded the {}ms traversal budget",
-                    limits::SKILLS_LIST_TIMEOUT.as_millis()
+                    traversal_budget_ms
                 ),
                 None,
             )
             .await
-            .map_err(UpstreamSkillsError::Capability)?;
+            {
+                Ok(result) => result,
+                Err(_error) if !matches.is_empty() => {
+                    tracing::warn!(upstream = %upstream_name, matches = matches.len(), reason = "later_page_error", "Skill search retained matches after an incomplete upstream walk");
+                    return Ok(UpstreamSkillSearch {
+                        skills: matches,
+                        incomplete: true,
+                    });
+                }
+                Err(error) => return Err(UpstreamSkillsError::Capability(error)),
+            };
 
             for entry in result.skills {
                 if matches.len() >= max_items {
@@ -355,18 +381,25 @@ impl UpstreamPool {
             }
 
             let Some(next) = result.next_cursor else {
-                return Ok(matches);
+                return Ok(UpstreamSkillSearch {
+                    skills: matches,
+                    incomplete: false,
+                });
             };
             if cursor.as_deref() == Some(next.as_str()) {
-                return Err(UpstreamSkillsError::SearchIncomplete);
+                tracing::warn!(upstream = %upstream_name, matches = matches.len(), reason = "repeated_cursor", "Skill search stopped before exhausting upstream pages");
+                return Ok(UpstreamSkillSearch {
+                    skills: matches,
+                    incomplete: true,
+                });
             }
             cursor = Some(next);
         }
-        if matches.len() >= max_items {
-            Ok(matches)
-        } else {
-            Err(UpstreamSkillsError::SearchIncomplete)
-        }
+        tracing::warn!(upstream = %upstream_name, matches = matches.len(), reason = "page_cap", "Skill search stopped before exhausting upstream pages");
+        Ok(UpstreamSkillSearch {
+            skills: matches,
+            incomplete: true,
+        })
     }
 
     /// Walk an upstream's `skills/list`, validating each page as it arrives.

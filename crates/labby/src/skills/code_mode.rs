@@ -71,6 +71,47 @@ fn tags(frontmatter: &serde_json::Map<String, Value>) -> Vec<String> {
 }
 
 impl CodeModeSkillProvider for CanonicalCodeModeSkillProvider {
+    fn bootstrap<'a>(
+        &'a self,
+        caller: &'a CodeModeCaller,
+        _scope: &'a ToolScope,
+    ) -> std::pin::Pin<
+        Box<dyn Future<Output = Result<Vec<CodeModeSkillSummary>, ToolError>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            let context = context_for(caller)?;
+            let listing = super::facade::first_party_skill_listing(&context);
+            let summaries = listing
+                .skills
+                .into_iter()
+                .take(500)
+                .map(|entry| {
+                    let name = entry
+                        .frontmatter_str("name")
+                        .unwrap_or(&entry.uri)
+                        .to_owned();
+                    let description = entry
+                        .frontmatter_str("description")
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_owned);
+                    let skill_tags = tags(&entry.frontmatter);
+                    CodeModeSkillSummary {
+                        uri: entry.uri,
+                        name,
+                        description,
+                        tags: skill_tags,
+                    }
+                })
+                .collect::<Vec<_>>();
+            tracing::debug!(
+                source = "first_party_snapshot",
+                result_count = summaries.len(),
+                "projected Code Mode Skill bootstrap hints"
+            );
+            Ok(summaries)
+        })
+    }
+
     fn list<'a>(
         &'a self,
         caller: &'a CodeModeCaller,

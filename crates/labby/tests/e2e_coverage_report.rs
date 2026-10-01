@@ -93,21 +93,23 @@ fn evidence_rank(value: &str) -> Option<u8> {
         "LiveErrorPath" => 2,
         "LiveSuccess" => 3,
         "LiveStateTransition" => 4,
+        "LiveRestartPersistence" => 5,
+        "CrossSurfaceParity" => 6,
+        "PackagedArtifactVerified" => 7,
         _ => return None,
     })
 }
 
 /// The per-case bar a single surface must clear for a declared minimum.
 ///
-/// A per-case sweep records what one surface did, so the two levels above
-/// `LiveStateTransition` cannot be a per-case rank: `LiveRestartPersistence`
-/// is proven by the restart journey and `CrossSurfaceParity` by agreement
-/// between surfaces. Both still require each surface to reach live state on
-/// its own; the level's extra meaning is checked separately below. Without
-/// this floor those declarations would be unsatisfiable, and every action
-/// carrying one would fail no matter how the product behaved. A surface that
-/// legitimately cannot reach live state in this sweep still answers its
-/// declared dedicated contract, exactly as at the lower levels.
+/// A per-case sweep records what one surface did, so a higher declaration
+/// does not require that sweep alone to prove a restart, surface agreement, or
+/// packaged artifact. Those proofs belong to their independently hashed shards.
+/// A journey may record genuinely stronger observed evidence for a case; keep
+/// that rank in the report while retaining this sweep floor and the separate
+/// shard checks below. Without this floor higher declarations would be
+/// unsatisfiable in a single-surface sweep. A surface that legitimately cannot
+/// reach live state still answers its exact declared dedicated contract.
 fn per_surface_floor(minimum: action_matrix::EvidenceLevel) -> u8 {
     let rank = minimum as u8;
     rank.min(action_matrix::EvidenceLevel::LiveStateTransition as u8)
@@ -459,5 +461,259 @@ mod tests {
             crate::action_matrix::Surface::Api,
             &accepted
         ));
+    }
+
+    #[test]
+    fn evidence_parser_accepts_every_declared_level_and_rejects_unknown_values() {
+        use crate::action_matrix::EvidenceLevel;
+        for level in [
+            EvidenceLevel::MetadataOnly,
+            EvidenceLevel::RouterReachable,
+            EvidenceLevel::LiveErrorPath,
+            EvidenceLevel::LiveSuccess,
+            EvidenceLevel::LiveStateTransition,
+            EvidenceLevel::LiveRestartPersistence,
+            EvidenceLevel::CrossSurfaceParity,
+            EvidenceLevel::PackagedArtifactVerified,
+        ] {
+            assert_eq!(
+                super::evidence_rank(&format!("{level:?}")),
+                Some(level as u8)
+            );
+        }
+        for unknown in ["", "FutureEvidence", "live_restart_persistence", "8"] {
+            assert_eq!(super::evidence_rank(unknown), None);
+        }
+        assert_eq!(
+            super::per_surface_floor(EvidenceLevel::LiveRestartPersistence),
+            4
+        );
+        assert_eq!(
+            super::per_surface_floor(EvidenceLevel::CrossSurfaceParity),
+            4
+        );
+        assert_eq!(
+            super::per_surface_floor(EvidenceLevel::PackagedArtifactVerified),
+            4
+        );
+    }
+
+    fn write_fixture_event(root: &std::path::Path, event: &CaseEvent) -> std::path::PathBuf {
+        use sha2::Digest as _;
+        let path = root.join("cases").join(format!(
+            "{}.json",
+            hex::encode(sha2::Sha256::digest(event.case_id.as_bytes()))
+        ));
+        std::fs::write(&path, serde_json::to_vec(event).unwrap()).unwrap();
+        path
+    }
+
+    /// Synthetic reporting inputs exercise the real joiner, never product
+    /// runtime evidence. Every declared case and shard is present and run-bound.
+    fn reporting_fixture() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        for directory in ["cases", "shards", "artifacts", "tmp"] {
+            std::fs::create_dir(root.path().join(directory)).unwrap();
+        }
+        let levels = [
+            "MetadataOnly",
+            "RouterReachable",
+            "LiveErrorPath",
+            "LiveSuccess",
+            "LiveStateTransition",
+        ];
+        for intent in crate::action_matrix::intents() {
+            for surface in &intent.applicable_surfaces {
+                if super::action_surface_shard(*surface).is_none() {
+                    continue;
+                }
+                let mut case = event(
+                    &format!("action::{surface:?}::{}", intent.key()),
+                    false,
+                    false,
+                );
+                case.achieved_evidence =
+                    levels[usize::from(super::per_surface_floor(intent.minimum_evidence))].into();
+                // Genuine journey observations may be stronger than the sweep
+                // floor. Include every stronger vocabulary value in this replay.
+                case.achieved_evidence = match intent.action.as_str() {
+                    "stash.save_text" => "LiveRestartPersistence",
+                    "stash.read_text" => "CrossSurfaceParity",
+                    "stash.move" => "PackagedArtifactVerified",
+                    _ => &case.achieved_evidence,
+                }
+                .to_owned();
+                case.outcome_kind = "synthetic_report_fixture".into();
+                write_fixture_event(root.path(), &case);
+            }
+        }
+        for route in crate::route_matrix::route_cases().unwrap() {
+            let mut case = event(&format!("route::{}", route.key()), false, false);
+            case.kind = "route".into();
+            write_fixture_event(root.path(), &case);
+        }
+        for shard in [
+            "live-http-cli-api",
+            "live-mcp-parity",
+            "live-identity-protected-restart",
+        ] {
+            use sha2::Digest as _;
+            let bytes = format!("synthetic reporting shard {shard}\n");
+            std::fs::write(root.path().join(format!("{shard}.log")), &bytes).unwrap();
+            let completion = serde_json::json!({
+                "schema_version":1, "run_id":"run", "seed":"1", "build_identity":"build",
+                "shard":shard, "status":"passed",
+                "sha256":hex::encode(sha2::Sha256::digest(bytes.as_bytes())),
+            });
+            std::fs::write(
+                root.path().join("shards").join(format!("{shard}.json")),
+                serde_json::to_vec(&completion).unwrap(),
+            )
+            .unwrap();
+        }
+        root
+    }
+
+    async fn replay_report(
+        root: &std::path::Path,
+        overrides: &[(&str, &str)],
+    ) -> std::process::Output {
+        let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .env_clear()
+            .env("HOME", root)
+            .env("LABBY_HOME", root.join(".labby"))
+            .env("TMPDIR", root.join("tmp"));
+        for name in ["PATH", "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "SYSTEMROOT"] {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
+            }
+        }
+        command
+            .kill_on_drop(true)
+            .arg("--exact")
+            .arg("exact_catalog_join_emits_versioned_coverage_report")
+            .arg("--nocapture")
+            .env("LABBY_E2E_REPORT", root.join("artifacts/coverage.json"))
+            .env("LABBY_E2E_CASE_DIR", root.join("cases"))
+            .env("LABBY_E2E_SHARD_DIR", root.join("shards"))
+            .env(
+                "LABBY_E2E_DECLARED_SHARDS",
+                "live-http-cli-api,live-mcp-parity,live-identity-protected-restart",
+            )
+            .env("LABBY_E2E_RUN_ID", "run")
+            .env("LABBY_E2E_SEED", "1")
+            .env("LABBY_E2E_BUILD_IDENTITY", "build")
+            .env("LABBY_E2E_CLEANUP_STATUS", "passed")
+            .env("LABBY_E2E_EVIDENCE_STATUS", "passed")
+            .envs(overrides.iter().copied());
+        tokio::time::timeout(std::time::Duration::from_secs(30), command.output())
+            .await
+            .expect("report replay deadline")
+            .expect("report replay process")
+    }
+
+    fn assert_report_rejected(output: &std::process::Output, reason: &str) {
+        assert!(
+            !output.status.success(),
+            "invalid reporting fixture was accepted"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains(reason)
+                || String::from_utf8_lossy(&output.stderr).contains(reason),
+            "unexpected report rejection: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[tokio::test]
+    async fn report_mode_replay_accepts_stronger_evidence_and_keeps_join_guards() {
+        let fixture = reporting_fixture();
+        let root = fixture.path();
+        let output = replay_report(root, &[]).await;
+        assert!(
+            output.status.success(),
+            "report replay failed: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("artifacts/coverage.json")).unwrap())
+                .unwrap();
+        assert_eq!(report["schema_version"], 1);
+        assert_eq!(
+            report["actions"].as_array().unwrap().len(),
+            crate::action_matrix::EXPECTED_ACTIONS
+        );
+        assert_eq!(
+            report["routes"].as_array().unwrap().len(),
+            crate::route_matrix::PINNED_ROUTE_COUNT
+        );
+        assert_eq!(report["cleanup_status"], "passed");
+        assert_eq!(report["evidence_status"], "passed");
+        assert_eq!(report["shards"].as_object().unwrap().len(), 3);
+        for (action, level) in [
+            ("stash.save_text", "LiveRestartPersistence"),
+            ("stash.read_text", "CrossSurfaceParity"),
+            ("stash.move", "PackagedArtifactVerified"),
+        ] {
+            let row = report["actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["key"] == format!("stash:{action}"))
+                .unwrap();
+            assert!(
+                row["execution_outcomes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|event| event["achieved_evidence"] == level)
+            );
+        }
+        let mut case = event("action::Api::stash:stash.move", false, false);
+        case.achieved_evidence = "FutureEvidence".into();
+        let path = write_fixture_event(root, &case);
+        let original = std::fs::read(root.join("artifacts/coverage.json")).unwrap();
+        assert_report_rejected(
+            &replay_report(root, &[]).await,
+            "unknown evidence FutureEvidence",
+        );
+        case.achieved_evidence = "LiveSuccess".into();
+        write_fixture_event(root, &case);
+        assert_report_rejected(
+            &replay_report(root, &[]).await,
+            "below LiveRestartPersistence",
+        );
+        std::fs::remove_file(path).unwrap();
+        assert_report_rejected(
+            &replay_report(root, &[]).await,
+            "missing required per-case event",
+        );
+        case.achieved_evidence = "PackagedArtifactVerified".into();
+        write_fixture_event(root, &case);
+        case.case_id = "action::Api::stash:stash.unregistered".into();
+        let extra = write_fixture_event(root, &case);
+        assert_report_rejected(&replay_report(root, &[]).await, "unjoined case evidence");
+        std::fs::remove_file(extra).unwrap();
+        let log = root.join("live-identity-protected-restart.log");
+        let original_log = std::fs::read(&log).unwrap();
+        std::fs::write(&log, "modified after shard completion").unwrap();
+        assert_report_rejected(&replay_report(root, &[]).await, "shard log hash mismatch");
+        std::fs::write(log, original_log).unwrap();
+        assert_report_rejected(
+            &replay_report(root, &[("LABBY_E2E_CLEANUP_STATUS", "failed")]).await,
+            "cleanup did not pass",
+        );
+        assert_report_rejected(
+            &replay_report(root, &[("LABBY_E2E_EVIDENCE_STATUS", "failed")]).await,
+            "evidence audit did not pass",
+        );
+        assert_eq!(
+            std::fs::read(root.join("artifacts/coverage.json")).unwrap(),
+            original,
+            "rejected replay must not replace the successful report"
+        );
     }
 }

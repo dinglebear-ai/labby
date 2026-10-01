@@ -564,7 +564,8 @@ async fn evaluate_peers(
 ) -> Vec<EvaluatedPeer> {
     let mut evaluated = Vec::with_capacity(peer_snapshot.len());
     for registered in peer_snapshot {
-        let next_contract = if changes.tools_changed {
+        let next_contract = if changes.tools_changed && registered.target.wants_tool_list_changed()
+        {
             Some(registered.contract.visible_contract().await)
         } else {
             None
@@ -618,6 +619,99 @@ mod tests {
         crate::test_support::CATALOG_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[tokio::test]
+    async fn resource_only_subscription_skips_tool_contract_rebuild() {
+        let _catalog_lock = serial_catalog();
+        use rmcp::ClientServiceExt as _;
+        #[derive(Clone)]
+        struct SubscriptionServer(PeerRegistry);
+        impl ServerHandler for SubscriptionServer {
+            fn get_info(&self) -> rmcp::model::ServerInfo {
+                rmcp::model::ServerInfo::new(
+                    rmcp::model::ServerCapabilities::builder()
+                        .enable_tools()
+                        .enable_tool_list_changed()
+                        .enable_resources()
+                        .enable_resources_list_changed()
+                        .build(),
+                )
+                .with_protocol_version(rmcp::model::ProtocolVersion::V_2026_07_28)
+            }
+            fn accepted_subscription_filter(
+                &self,
+                requested: &rmcp::model::SubscriptionFilter,
+            ) -> Option<rmcp::model::SubscriptionFilter> {
+                Some(requested.clone())
+            }
+            async fn listen(
+                &self,
+                context: rmcp::service::SubscriptionContext,
+            ) -> Result<(), rmcp::ErrorData> {
+                let peer = RegisteredPeer::stale_for_test(context.request_context().peer.clone());
+                self.0.write().await.push(RegisteredPeer::from_subscription(
+                    context.sink().clone(),
+                    peer.contract,
+                    None,
+                ));
+                context.cancelled().await;
+                Ok(())
+            }
+        }
+        let peers: PeerRegistry = Default::default();
+        let server = SubscriptionServer(Arc::clone(&peers));
+        let (left, right) = tokio::io::duplex(65536);
+        let task = tokio::spawn(async move { server.serve(left).await.unwrap().waiting().await });
+        let client = ()
+            .serve_with_lifecycle(
+                right,
+                rmcp::service::ClientLifecycleMode::Discover {
+                    preferred_versions: vec![rmcp::model::ProtocolVersion::V_2026_07_28],
+                },
+            )
+            .await
+            .unwrap();
+        let mut subscription = client
+            .peer()
+            .listen(
+                rmcp::model::SubscriptionFilter::builder()
+                    .resources_list_changed()
+                    .build(),
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while peers.read().await.is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let snapshot = peers.read().await.clone();
+        let evaluated =
+            super::evaluate_peers(snapshot, CatalogNotificationChanges::new(true, true, false))
+                .await;
+        assert!(
+            evaluated[0].next_contract.is_none(),
+            "resource-only subscriber must not rebuild the tool contract"
+        );
+        assert!(evaluated[0].changes.resources_changed);
+        notify_catalog_peers(
+            &peers,
+            CatalogNotificationChanges::new(true, true, false),
+            labby_runtime::catalog_notify::SOURCE_MCP_CALL_UPSTREAM,
+        )
+        .await;
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), subscription.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .is_some()
+        );
+        client.cancel().await.unwrap();
+        task.abort();
     }
 
     #[test]

@@ -1590,12 +1590,20 @@ mod tests {
             .reserve_upload(
                 "owner".into(),
                 "a".into(),
-                "a".into(),
+                "repo/a".into(),
                 3,
                 i64::MAX,
                 16,
                 32,
                 10,
+            )
+            .await
+            .unwrap();
+        store
+            .set_upload_metadata(
+                published.upload_id.clone(),
+                "repo".into(),
+                "text/markdown".into(),
             )
             .await
             .unwrap();
@@ -1654,6 +1662,15 @@ mod tests {
                 owned_shared_file_count: 0,
             }
         );
+        let metadata = restarted
+            .store()
+            .await
+            .unwrap()
+            .authorized_file("owner".into(), published.upload_id.clone())
+            .await
+            .unwrap();
+        assert_eq!(metadata.folder, "repo");
+        assert_eq!(metadata.content_type, "text/markdown");
         let restarted_blobs = restarted.blob_store().await.unwrap();
         assert_eq!(
             regular_size(&restarted_blobs.blobs, &rolled_back.upload_id).unwrap(),
