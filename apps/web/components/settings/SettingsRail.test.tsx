@@ -37,5 +37,5 @@ test('settings rail selects one section for overview and nested pages', () => {
   assert.equal(activeSettingsHref('/settings/', entries), '/settings/')
   assert.equal(activeSettingsHref('/settings/agents', entries), '/settings/agents/')
   assert.equal(activeSettingsHref('/settings/agents/', entries), '/settings/agents/')
-  assert.equal(activeSettingsHref('/settings/services/apprise/', entries), '/settings/services/')
+  assert.equal(activeSettingsHref('/settings/services/', entries), '/settings/services/')
 })

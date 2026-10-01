@@ -28,8 +28,7 @@ export function draftEntriesToMap(entries: ReadonlyArray<DraftEntry>): Record<st
 
 /** Build the FieldView list and default-values map for a service form, given
  * the schema env list and the draft snapshot. Centralizes the secret-masking
- * contract that was previously duplicated across configuration/page.tsx and
- * settings/services/[service]/service-client.tsx. */
+ * contract for any form consuming a service schema and draft snapshot. */
 export function buildServiceFormDefaults(
   envVars: ReadonlyArray<ServiceEnvVar>,
   draftMap: Record<string, string>,

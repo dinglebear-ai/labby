@@ -30,7 +30,7 @@ const ENTRIES: RailEntry[] = [
   { href: '/settings/', label: 'Overview', icon: ListChecks },
   { href: '/settings/core/', label: 'Core', icon: Cog },
   { href: '/settings/agents/', label: 'Agent provider', icon: Bot },
-  { href: '/settings/services/', label: 'Services', icon: Server },
+  { href: '/settings/services/', label: 'MCP servers', icon: Server },
   { href: '/settings/surfaces/', label: 'Surfaces', icon: PlugZap },
   { href: '/settings/features/', label: 'Features', icon: Layers },
   { href: '/settings/doctor/', label: 'Doctor', icon: Activity },
