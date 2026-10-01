@@ -67,40 +67,7 @@ pub enum PrepareJournalState {
     ManualFileCleanupRequired,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct PrepareFileIdentity {
-    pub path: PathBuf,
-    pub digest_hex: String,
-    #[cfg(unix)]
-    pub device: u64,
-    #[cfg(unix)]
-    pub inode: u64,
-    #[cfg(unix)]
-    pub parent_device: u64,
-    #[cfg(unix)]
-    pub parent_inode: u64,
-    #[cfg(unix)]
-    pub owner: u32,
-    #[cfg(unix)]
-    pub mode: u32,
-    #[cfg(unix)]
-    pub links: u64,
-    #[cfg(windows)]
-    #[serde(default)]
-    pub volume: u64,
-    #[cfg(windows)]
-    #[serde(default)]
-    pub file_id: [u8; 16],
-    #[cfg(windows)]
-    #[serde(default)]
-    pub parent_volume: u64,
-    #[cfg(windows)]
-    #[serde(default)]
-    pub parent_file_id: [u8; 16],
-    #[cfg(windows)]
-    #[serde(default)]
-    pub links: u32,
-}
+pub use crate::installation::secure_file::PrepareFileIdentity;
 
 /// Secret-free, installation-owned crash recovery authority.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

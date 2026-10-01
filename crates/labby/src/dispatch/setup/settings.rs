@@ -2192,7 +2192,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_configuration_resolves_protocol_with_connection() {
-        let (_root, store, _) = crate::dispatch::agents::test_support::fixture().await;
+        let (_root, store, _) = crate::access::test_support::fixture().await;
         let path = store.storage_dir().join(".env");
         super::super::secure_file::replace_journal(&path, b"LABBY_PHOENIX_OPENAI_BASE_URL=https://standard.example/v1\nLABBY_AGENT_PROVIDER_PROTOCOL=openai\n").unwrap();
         crate::dispatch::helpers::with_env_keys_set_outside_dotenv(BTreeSet::new(), || {
@@ -2205,7 +2205,7 @@ mod tests {
 
     #[tokio::test]
     async fn new_agent_connections_follow_saved_values_and_preserve_service_overrides() {
-        let (_root, store, _) = crate::dispatch::agents::test_support::fixture().await;
+        let (_root, store, _) = crate::access::test_support::fixture().await;
         let path = store.storage_dir().join(".env");
         super::super::secure_file::replace_journal(&path, b"LABBY_PHOENIX_OPENAI_BASE_URL=https://saved.example/v1\nLABBY_PHOENIX_OPENAI_API_KEY=saved-secret\n").unwrap();
         let empty = BTreeSet::new();

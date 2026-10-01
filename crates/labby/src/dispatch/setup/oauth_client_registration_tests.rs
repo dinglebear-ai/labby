@@ -56,7 +56,7 @@ fn protected_header_rotation_preserves_unrelated_entries_and_rejects_custom_auth
 
 #[test]
 fn observed_registration_output_redacts_proof_and_keeps_private_backup() {
-    let home = crate::dispatch::agents::test_support::secure_tempdir();
+    let home = crate::access::test_support::secure_tempdir();
     let gateway = "https://lab.example/mcp";
     for client in [ExternalClient::Codex, ExternalClient::ClaudeCode] {
         let original = match client {
@@ -111,9 +111,9 @@ async fn signed_oauth_descriptor_calls_are_observed_per_client_and_principal() {
     use rmcp::{RoleServer, ServerHandler};
     use std::sync::Arc;
     drop(rustls::crypto::ring::default_provider().install_default());
-    let directory = crate::dispatch::agents::test_support::secure_tempdir();
-    let home = crate::dispatch::agents::test_support::secure_tempdir();
-    let local = crate::dispatch::agents::test_support::secure_tempdir();
+    let directory = crate::access::test_support::secure_tempdir();
+    let home = crate::access::test_support::secure_tempdir();
+    let local = crate::access::test_support::secure_tempdir();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let base = format!("http://{address}");

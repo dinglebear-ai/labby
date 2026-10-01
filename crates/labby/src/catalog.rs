@@ -86,6 +86,12 @@ pub struct ParamEntry {
     pub description: String,
 }
 
+/// Actions implemented only by authenticated HTTP adapters, never MCP discovery.
+pub(crate) fn http_only_action(service: &str, action: &str) -> bool {
+    (service == "setup" && matches!(action, "clients.session.start" | "clients.session.revoke"))
+        || (service == "fs" && action == "fs.preview")
+}
+
 /// Build a [`Catalog`] from the current tool registry.
 #[must_use]
 pub fn build_catalog(registry: &ToolRegistry) -> Catalog {
@@ -103,6 +109,7 @@ pub fn build_catalog(registry: &ToolRegistry) -> Catalog {
             actions: svc
                 .actions
                 .iter()
+                .filter(|action| !http_only_action(svc.name, action.name))
                 .map(|a| ActionEntry {
                     name: a.name.into(),
                     description: a.description.into(),

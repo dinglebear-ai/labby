@@ -201,7 +201,7 @@ test_root_installer_is_self_contained_when_piped_from_arbitrary_cwd() {
 make_path_without_gh() {
     local sysbin=$1 dir entry
     mkdir -p "$sysbin"
-    for name in awk basename cat chmod cp curl date dirname env find grep head id install kill ln mkdir mktemp mv ps readlink rm sed shasum sha256sum sleep sort stat sync tail tar tr uname unzip wc; do
+    for name in awk basename cat chmod cp curl date dirname env find grep gzip head id install kill ln mkdir mktemp mv ps readlink rm sed shasum sha256sum sleep sort stat sync tail tar tr uname unzip wc; do
         for dir in /usr/bin /bin /usr/sbin /sbin; do
             if [ -x "$dir/$name" ]; then ln -s "$dir/$name" "$sysbin/$name"; break; fi
         done

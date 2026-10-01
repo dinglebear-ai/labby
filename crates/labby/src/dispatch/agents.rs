@@ -229,7 +229,7 @@ pub(crate) async fn dispatch(
             let readiness_fingerprint = invalidate_agent_readiness_required(
                 &context.store,
                 &principal,
-                crate::dispatch::setup::readiness::Check::AgentProvider,
+                crate::installation::readiness::Check::AgentProvider,
             )
             .await?;
             let backend = OpenAiBackend::for_access_store(&context.store)?.ok_or_else(|| ToolError::Sdk {
@@ -251,7 +251,7 @@ pub(crate) async fn dispatch(
                 record_verified_agent_readiness(
                     &context.store,
                     &principal,
-                    crate::dispatch::setup::readiness::Check::AgentProvider,
+                    crate::installation::readiness::Check::AgentProvider,
                     model,
                     readiness_fingerprint,
                 )
@@ -387,7 +387,7 @@ pub(crate) async fn dispatch(
             update_agent_readiness(
                 &context.store,
                 lease.binding().principal_id(),
-                crate::dispatch::setup::readiness::Check::AgentRun,
+                crate::installation::readiness::Check::AgentRun,
                 None,
             )
             .await;
@@ -436,7 +436,7 @@ pub(crate) async fn dispatch(
             update_agent_readiness(
                 &context.store,
                 lease.binding().principal_id(),
-                crate::dispatch::setup::readiness::Check::AgentRun,
+                crate::installation::readiness::Check::AgentRun,
                 None,
             )
             .await;
@@ -599,7 +599,7 @@ async fn run_agent_session(
             invalidate_agent_readiness_required(
                 &run_context.store,
                 &readiness_principal,
-                crate::dispatch::setup::readiness::Check::AgentRun,
+                crate::installation::readiness::Check::AgentRun,
             )
             .await?,
         )
@@ -710,7 +710,7 @@ async fn record_completed_agent_readiness(
     principal: &str,
     definition: &AgentDefinition,
     session_id: &str,
-    expected: crate::dispatch::setup::readiness::CheckFingerprint,
+    expected: crate::installation::readiness::CheckFingerprint,
 ) {
     let store = store.clone();
     let principal = principal.to_owned();
@@ -718,7 +718,7 @@ async fn record_completed_agent_readiness(
     let version = definition.revision.version;
     let session_id = session_id.to_owned();
     match tokio::task::spawn_blocking(move || {
-        crate::dispatch::setup::readiness::record_agent_run_if_unchanged_for_store(
+        crate::installation::readiness::record_agent_run_if_unchanged_for_store(
             &store,
             &principal,
             &agent_id,
@@ -743,15 +743,13 @@ async fn record_completed_agent_readiness(
 async fn invalidate_agent_readiness_required(
     store: &crate::access::AccessStore,
     principal: &str,
-    check: crate::dispatch::setup::readiness::Check,
-) -> Result<crate::dispatch::setup::readiness::CheckFingerprint, ToolError> {
+    check: crate::installation::readiness::Check,
+) -> Result<crate::installation::readiness::CheckFingerprint, ToolError> {
     let store = store.clone();
     let principal = principal.to_owned();
     tokio::task::spawn_blocking(move || {
-        crate::dispatch::setup::readiness::invalidate_verified_for_store(
-            &store, &principal, check,
-        )?;
-        crate::dispatch::setup::readiness::capture_configuration_for_store(&store, check)
+        crate::installation::readiness::invalidate_verified_for_store(&store, &principal, check)?;
+        crate::installation::readiness::capture_configuration_for_store(&store, check)
     })
     .await
     .map_err(|_| internal())?
@@ -760,15 +758,15 @@ async fn invalidate_agent_readiness_required(
 async fn record_verified_agent_readiness(
     store: &crate::access::AccessStore,
     principal: &str,
-    check: crate::dispatch::setup::readiness::Check,
+    check: crate::installation::readiness::Check,
     resource: &str,
-    expected: crate::dispatch::setup::readiness::CheckFingerprint,
+    expected: crate::installation::readiness::CheckFingerprint,
 ) {
     let store = store.clone();
     let principal = principal.to_owned();
     let resource = resource.to_owned();
     match tokio::task::spawn_blocking(move || {
-        crate::dispatch::setup::readiness::record_verified_if_unchanged_for_store(
+        crate::installation::readiness::record_verified_if_unchanged_for_store(
             &store, &principal, check, &resource, expected,
         )
     })
@@ -786,19 +784,19 @@ async fn record_verified_agent_readiness(
 async fn update_agent_readiness(
     store: &crate::access::AccessStore,
     principal: &str,
-    check: crate::dispatch::setup::readiness::Check,
+    check: crate::installation::readiness::Check,
     resource: Option<&str>,
 ) {
     let store = store.clone();
     let principal = principal.to_owned();
     let resource = resource.map(str::to_owned);
     let result = tokio::task::spawn_blocking(move || match resource {
-        Some(resource) => crate::dispatch::setup::readiness::record_verified_for_store(
+        Some(resource) => crate::installation::readiness::record_verified_for_store(
             &store, &principal, check, &resource,
         ),
-        None => crate::dispatch::setup::readiness::invalidate_verified_for_store(
-            &store, &principal, check,
-        ),
+        None => {
+            crate::installation::readiness::invalidate_verified_for_store(&store, &principal, check)
+        }
     })
     .await;
     match result {
@@ -1434,54 +1432,14 @@ pub async fn dispatch_unbound(name: &str, params: Value) -> Result<Value, ToolEr
 pub(crate) mod test_support {
     //! Store-backed fixtures shared by the Agent and Agent Task dispatch tests.
     use super::AgentDispatchContext;
-    use crate::access::{AccessStore, AuthorityCeiling, BootstrapOwnerInput};
-    use labby_auth::{Authenticator, VerifiedIdentity};
+    use crate::access::{AccessStore, AuthorityCeiling};
+    use labby_auth::VerifiedIdentity;
     use serde_json::{Value, json};
 
     /// Principal id the bootstrap flow assigns to the first (platform admin) owner.
     pub(crate) const BOOTSTRAP_PRINCIPAL: &str = "bootstrap-owner";
 
-    pub(crate) fn secure_tempdir() -> tempfile::TempDir {
-        let base = std::env::current_dir().expect("resolve the test working directory");
-        let directory = tempfile::Builder::new()
-            .prefix("labby-agent-dispatch-test-")
-            .tempdir_in(base)
-            .expect("create a fixture outside the symlinked macOS temporary directory");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
-                .expect("restrict fixture permissions");
-        }
-        directory
-    }
-
-    pub(crate) fn browser(subject: &str) -> VerifiedIdentity {
-        VerifiedIdentity::external(
-            Authenticator::BrowserSession,
-            "https://accounts.google.com",
-            subject,
-        )
-        .unwrap()
-    }
-
-    /// Open a fresh access store with one bootstrapped owner (a platform admin
-    /// whose personal owner scope is `personal/bootstrap-owner`).
-    pub(crate) async fn fixture() -> (tempfile::TempDir, AccessStore, VerifiedIdentity) {
-        // The harness digest is derived from the provider URL at create time;
-        // no test connects to this address unless it drives execution.
-        crate::dispatch::phoenix_openai::install_test_base_url("http://127.0.0.1:9/v1");
-        let directory = secure_tempdir();
-        let store = AccessStore::open(directory.path().join("access.db"))
-            .await
-            .unwrap();
-        let owner = browser("owner-subject");
-        store
-            .bootstrap_owner(BootstrapOwnerInput::new(owner.clone(), "Local", "Default").unwrap())
-            .await
-            .unwrap();
-        (directory, store, owner)
-    }
+    pub(crate) use crate::access::test_support::{browser, fixture};
 
     pub(crate) fn agent_context(
         store: &AccessStore,
@@ -1575,7 +1533,7 @@ mod tests {
 
     #[tokio::test]
     async fn readiness_proof_survives_denied_updates_and_clears_after_authorized_change() {
-        use crate::dispatch::setup::readiness::{record_agent_run_for_store, state_for_identity};
+        use crate::installation::readiness::{record_agent_run_for_store, state_for_identity};
         let (_dir, store, identity) = fixture().await;
         let context = agent_context(&store, &identity);
         dispatch(

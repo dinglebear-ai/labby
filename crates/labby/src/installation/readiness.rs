@@ -118,7 +118,7 @@ fn subject_key(subject: &str) -> Result<String, ToolError> {
 
 fn configuration_digest(root: &Path, check: Check) -> Result<String, ToolError> {
     let mut digest = Sha256::new();
-    let config_path = if root == super::client::lab_home() {
+    let config_path = if root == crate::dispatch::helpers::lab_home() {
         crate::config::config_toml_path().map_err(failure)?
     } else {
         root.join("config.toml")
@@ -613,7 +613,7 @@ fn identity_required() -> ToolError {
     }
 }
 
-pub(super) fn state_action(_params: &Value) -> Result<Value, ToolError> {
+pub(crate) fn state_action(_params: &Value) -> Result<Value, ToolError> {
     Err(ToolError::Forbidden {
         message: "First-use evidence requires a host-established identity".into(),
         required_scopes: vec![],

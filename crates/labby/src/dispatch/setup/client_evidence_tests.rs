@@ -1,5 +1,5 @@
 use super::*;
-use crate::dispatch::agents::test_support::{browser, fixture};
+use crate::access::test_support::{browser, fixture};
 use serde_json::json;
 
 #[tokio::test]
@@ -130,7 +130,7 @@ async fn actual_http_tool_completion_records_client_use_but_listing_and_errors_d
     use rmcp::{RoleServer, ServerHandler};
     use std::sync::Arc;
     drop(rustls::crypto::ring::default_provider().install_default());
-    let directory = crate::dispatch::agents::test_support::secure_tempdir();
+    let directory = crate::access::test_support::secure_tempdir();
     let store = AccessStore::open(directory.path().join("access.db"))
         .await
         .unwrap();

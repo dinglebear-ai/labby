@@ -226,21 +226,9 @@ where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    use rmcp::ServiceExt as _;
     let live = connect(&root, &gateway).await?;
-    let service = tokio::time::timeout(
-        std::time::Duration::from_secs(20),
-        live.connect_service_with_evidence(
-            crate::mcp::bridge::BridgeClientHandler::new(),
-            evidence.as_deref(),
-        ),
-    )
-    .await
-    .context("Client bridge initialization timed out")??;
-    let handler = crate::mcp::bridge::BridgeServerHandler::new(service);
-    let running = handler.serve((read, write)).await?;
-    running.waiting().await?;
-    Ok(())
+    live.serve_client_bridge(read, write, evidence.as_deref())
+        .await
 }
 
 pub async fn run_stdio(

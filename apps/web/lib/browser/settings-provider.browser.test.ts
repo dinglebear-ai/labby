@@ -2,10 +2,20 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import { once } from 'node:events'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { readFile } from 'node:fs/promises'
 import { chromium } from 'playwright'
 
 test('built provider settings validate edits and fit desktop/mobile with mocked APIs', { timeout: 120000 }, async t => {
+  // Other browser fixtures build with static mock data. This suite exercises
+  // real API adapters against intercepted responses and needs its own export.
+  await promisify(execFile)('pnpm', ['run', 'build'], {
+    cwd: new URL('../../', import.meta.url),
+    env: { ...process.env, NEXT_PUBLIC_MOCK_DATA: 'false', NEXT_PUBLIC_API_TOKEN: '' },
+    timeout: 90_000,
+    maxBuffer: 4 * 1024 * 1024,
+  })
   const root = new URL('../../out/', import.meta.url)
   const server = http.createServer(async (request, response) => {
     const path = new URL(request.url!, 'http://localhost').pathname

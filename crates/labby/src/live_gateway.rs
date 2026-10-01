@@ -1153,6 +1153,35 @@ impl LiveGateway {
         codemode_result_value(call_result?)
     }
 
+    /// Forward a byte-stream client to this authenticated gateway without
+    /// constructing a second gateway or owning local OAuth state.
+    pub(crate) async fn serve_client_bridge<R, W>(
+        &self,
+        read: R,
+        write: W,
+        evidence: Option<&str>,
+    ) -> anyhow::Result<()>
+    where
+        R: tokio::io::AsyncRead + Unpin + Send + 'static,
+        W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        use anyhow::Context as _;
+        use rmcp::ServiceExt as _;
+        let service = tokio::time::timeout(
+            Duration::from_secs(20),
+            self.connect_service_with_evidence(
+                crate::mcp::bridge::BridgeClientHandler::new(),
+                evidence,
+            ),
+        )
+        .await
+        .context("Client bridge initialization timed out")??;
+        let handler = crate::mcp::bridge::BridgeServerHandler::new(service);
+        let running = handler.serve((read, write)).await?;
+        running.waiting().await?;
+        Ok(())
+    }
+
     /// Open a long-lived MCP streamable-HTTP connection to the daemon's
     /// `/mcp` endpoint and return the running client service. Callers own the
     /// resulting `Peer<RoleClient>` for as long as they need it (e.g. the

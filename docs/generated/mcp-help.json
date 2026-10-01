@@ -3927,31 +3927,6 @@
           "returns": "McpVerificationResult"
         },
         {
-          "name": "clients.session.start",
-          "description": "Issue expiring client-specific observation proofs for the authenticated user's selected applications; does not verify client use or grant authority",
-          "destructive": false,
-          "requires_admin": false,
-          "required_scopes": [],
-          "params": [
-            {
-              "name": "clients",
-              "ty": "array",
-              "required": true,
-              "description": "Selected supported applications: codex and claude-code"
-            }
-          ],
-          "returns": "ClientObservationSessions"
-        },
-        {
-          "name": "clients.session.revoke",
-          "description": "Revoke the authenticated user's current client observation sessions and clear their client readiness evidence",
-          "destructive": false,
-          "requires_admin": false,
-          "required_scopes": [],
-          "params": [],
-          "returns": "ClientObservationRevocation"
-        },
-        {
           "name": "readiness.clients.defer",
           "description": "Choose to use Labby without external applications for now; records an optional deferred step, never a verified client connection",
           "destructive": false,

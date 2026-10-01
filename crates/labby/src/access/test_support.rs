@@ -1,3 +1,8 @@
+//! Protected store-backed caller fixtures shared by product domain tests.
+
+use crate::access::{AccessStore, BootstrapOwnerInput};
+use labby_auth::{Authenticator, VerifiedIdentity};
+
 pub(crate) fn secure_tempdir() -> tempfile::TempDir {
     let base = std::env::current_dir().expect("resolve the test working directory");
     let directory = tempfile::Builder::new()
@@ -11,4 +16,31 @@ pub(crate) fn secure_tempdir() -> tempfile::TempDir {
             .expect("restrict access fixture permissions");
     }
     directory
+}
+
+pub(crate) fn browser(subject: &str) -> VerifiedIdentity {
+    VerifiedIdentity::external(
+        Authenticator::BrowserSession,
+        "https://accounts.google.com",
+        subject,
+    )
+    .unwrap()
+}
+
+/// Open a fresh access store with one bootstrapped owner (a platform admin
+/// whose personal owner scope is `personal/bootstrap-owner`).
+pub(crate) async fn fixture() -> (tempfile::TempDir, AccessStore, VerifiedIdentity) {
+    // The harness digest is derived from the provider URL at create time;
+    // no test connects to this address unless it drives execution.
+    crate::dispatch::phoenix_openai::install_test_base_url("http://127.0.0.1:9/v1");
+    let directory = secure_tempdir();
+    let store = AccessStore::open(directory.path().join("access.db"))
+        .await
+        .unwrap();
+    let owner = browser("owner-subject");
+    store
+        .bootstrap_owner(BootstrapOwnerInput::new(owner.clone(), "Local", "Default").unwrap())
+        .await
+        .unwrap();
+    (directory, store, owner)
 }

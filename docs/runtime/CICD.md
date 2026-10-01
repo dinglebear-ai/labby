@@ -1,12 +1,12 @@
 ---
 title: "CI/CD"
 created: "2026-07-30"
-updated: "2026-09-05"
+updated: "2026-09-30"
 ---
 
 # CI/CD
 
-Last updated: 2026-09-05
+Last updated: 2026-09-30
 
 This document is the authoritative contract for CI, release, and artifact delivery in Labby. All pipeline implementations must conform to this spec.
 
@@ -589,6 +589,12 @@ a workflow artifact. Backend-only source builds remain valid without Node and
 embed an empty asset set; distributable builds must consume the generated
 export so the binary includes the Admin UI. `just web-build` creates the local
 export for full-product source builds and Incus syncs.
+
+The Settings browser test builds a fresh static export with static mock data
+disabled before serving it locally and intercepting API responses. Other
+browser fixtures build with mock data enabled, so their ignored `out/` cannot
+be reused for this adapter test. These checks do not qualify a live gateway or
+provider.
 
 ```bash
 cd apps/web

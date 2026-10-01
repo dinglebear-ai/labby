@@ -229,9 +229,8 @@ pub(super) fn build_action_catalog(services: &[RegisteredService]) -> Vec<Action
                     .collect(),
                 returns: action.returns.to_string(),
                 surface_availability: action_surfaces,
-                requires_http_subject: (service.name == "fs" && action.name == "fs.preview")
-                    || (service.name == "gateway" && action.name == "gateway.oauth.authorize")
-                    || client_observation_action(service.name, action.name),
+                requires_http_subject: crate::catalog::http_only_action(service.name, action.name)
+                    || (service.name == "gateway" && action.name == "gateway.oauth.authorize"),
                 auth_posture: auth_posture(service.name, action.name, action.requires_admin),
                 inventory_scope: "global_inventory_not_active_runtime_exposure".to_string(),
                 builtin: false,
@@ -254,10 +253,6 @@ fn canonical_actions_for_service<'a>(
     service.actions
 }
 
-fn client_observation_action(service: &str, action: &str) -> bool {
-    service == "setup" && matches!(action, "clients.session.start" | "clients.session.revoke")
-}
-
 fn action_surfaces(
     service: &str,
     action: &str,
@@ -271,7 +266,7 @@ fn action_surfaces(
         surfaces.api = true;
         surfaces.web_ui = true;
     }
-    if client_observation_action(service, action) {
+    if crate::catalog::http_only_action(service, action) {
         surfaces.mcp = false;
         surfaces.api = true;
     }
@@ -562,7 +557,7 @@ mod tests {
 }
 
 fn auth_posture(service: &str, action: &str, requires_admin: bool) -> String {
-    if client_observation_action(service, action) {
+    if service == "setup" && crate::catalog::http_only_action(service, action) {
         "HTTP-only authenticated personal identity; browser sessions require CSRF, observation proof grants no access".to_string()
     } else if service == "fs" && action == "fs.preview" {
         "HTTP-only admin/browser session path; intentionally unavailable on MCP".to_string()
