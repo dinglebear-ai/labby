@@ -3955,57 +3955,38 @@ future = "keep"
     /// moves them, so it must at least say so.
     #[test]
     fn legacy_auth_store_is_reported_when_the_resolved_store_is_absent() {
-        let vars = |labby_home: Option<&str>, home: &str| {
-            let labby_home = labby_home.map(|path| {
-                if cfg!(windows) && path.starts_with('/') {
-                    format!("C:{path}")
-                } else {
-                    path.to_owned()
-                }
-            });
-            let home = if cfg!(windows) && home.starts_with('/') {
-                format!("C:{home}")
-            } else {
-                home.to_owned()
-            };
+        let fixture_directory = tempfile::tempdir().expect("temporary legacy fixture parent");
+        let raw_installation_root = fixture_directory
+            .path()
+            .join("unused")
+            .join("..")
+            .join("relocated");
+        let installation_root =
+            crate::installation::InstallationPaths::from_root(&raw_installation_root)
+                .expect("native canonical installation root")
+                .root()
+                .to_path_buf();
+        let home = fixture_directory.path().join("operator");
+        let vars = |labby_home: Option<&Path>, home: &Path| {
+            let labby_home = labby_home.map(|path| path.as_os_str().to_owned());
+            let home = home.as_os_str().to_owned();
             move |name: &str| match name {
-                "LABBY_HOME" => labby_home.clone().map(std::ffi::OsString::from),
-                "HOME" => Some(std::ffi::OsString::from(home.clone())),
+                "LABBY_HOME" => labby_home.clone(),
+                "HOME" => Some(home.clone()),
                 _ => None,
             }
         };
-        let legacy = PathBuf::from(if cfg!(windows) {
-            "C:/home/operator"
-        } else {
-            "/home/operator"
-        })
-        .join(".labby")
-        .join("auth.db");
-        let legacy_key = PathBuf::from(if cfg!(windows) {
-            "C:/home/operator"
-        } else {
-            "/home/operator"
-        })
-        .join(".labby")
-        .join("auth-jwt.pem");
-        let resolved = PathBuf::from(if cfg!(windows) {
-            "C:/srv/labby"
-        } else {
-            "/srv/labby"
-        })
-        .join("auth.db");
-        let resolved_key = PathBuf::from(if cfg!(windows) {
-            "C:/srv/labby"
-        } else {
-            "/srv/labby"
-        })
-        .join("auth-jwt.pem");
+        let legacy = home.join(".labby").join("auth.db");
+        let legacy_key = home.join(".labby").join("auth-jwt.pem");
+        // Auth defaults use the resolver's canonical root, including native Windows prefixes.
+        let resolved = installation_root.join("auth.db");
+        let resolved_key = installation_root.join("auth-jwt.pem");
         let legacy_files = |path: &Path| path == legacy || path == legacy_key;
 
         let notice = legacy_auth_store_with(
             &resolved,
             &resolved_key,
-            vars(Some("/srv/labby"), "/home/operator"),
+            vars(Some(&raw_installation_root), &home),
             legacy_files,
         )
         .expect("a legacy store this installation no longer reads");
@@ -4015,9 +3996,12 @@ future = "keep"
         assert_eq!(notice.resolved_key, resolved_key);
         assert!(notice.legacy_key_exists);
         let message = notice.message().replace('\\', "/");
-        assert!(message.contains("/srv/labby/auth.db"), "{message}");
         assert!(
-            message.contains("/home/operator/.labby/auth.db"),
+            message.contains(&resolved.display().to_string().replace('\\', "/")),
+            "{message}"
+        );
+        assert!(
+            message.contains(&legacy.display().to_string().replace('\\', "/")),
             "{message}"
         );
         assert!(message.contains("LABBY_AUTH_SQLITE_PATH"), "{message}");
@@ -4025,31 +4009,14 @@ future = "keep"
         // Nothing to report: no explicit root, an already-populated resolved
         // store, or no legacy store at all.
         assert_eq!(
-            legacy_auth_store_with(
-                &PathBuf::from(if cfg!(windows) {
-                    "C:/home/operator"
-                } else {
-                    "/home/operator"
-                })
-                .join(".labby")
-                .join("auth.db"),
-                &PathBuf::from(if cfg!(windows) {
-                    "C:/home/operator"
-                } else {
-                    "/home/operator"
-                })
-                .join(".labby")
-                .join("auth-jwt.pem"),
-                vars(None, "/home/operator"),
-                legacy_files
-            ),
+            legacy_auth_store_with(&legacy, &legacy_key, vars(None, &home), legacy_files),
             None
         );
         assert_eq!(
             legacy_auth_store_with(
                 &resolved,
                 &resolved_key,
-                vars(Some("/srv/labby"), "/home/operator"),
+                vars(Some(&raw_installation_root), &home),
                 |_| true
             ),
             None
@@ -4058,7 +4025,7 @@ future = "keep"
             legacy_auth_store_with(
                 &resolved,
                 &resolved_key,
-                vars(Some("/srv/labby"), "/home/operator"),
+                vars(Some(&raw_installation_root), &home),
                 |_| false
             ),
             None
@@ -4068,9 +4035,9 @@ future = "keep"
         // installation root stranded the legacy defaults.
         assert_eq!(
             legacy_auth_store_with(
-                &PathBuf::from("/srv/custom/auth.sqlite"),
+                &fixture_directory.path().join("custom").join("auth.sqlite"),
                 &resolved_key,
-                vars(Some("/srv/labby"), "/home/operator"),
+                vars(Some(&raw_installation_root), &home),
                 legacy_files,
             ),
             None
@@ -4078,8 +4045,8 @@ future = "keep"
         assert_eq!(
             legacy_auth_store_with(
                 &resolved,
-                &PathBuf::from("/srv/custom/signing.pem"),
-                vars(Some("/srv/labby"), "/home/operator"),
+                &fixture_directory.path().join("custom").join("signing.pem"),
+                vars(Some(&raw_installation_root), &home),
                 legacy_files,
             ),
             None
@@ -4088,7 +4055,7 @@ future = "keep"
         let missing_key_notice = legacy_auth_store_with(
             &resolved,
             &resolved_key,
-            vars(Some("/srv/labby"), "/home/operator"),
+            vars(Some(&raw_installation_root), &home),
             |path| path == legacy,
         )
         .expect("the legacy database is still actionable without a key");
@@ -4096,7 +4063,7 @@ future = "keep"
         let message = missing_key_notice.message();
         assert!(message.contains("was not found"), "{message}");
         assert!(
-            !message.contains("Move /home/operator/.labby/auth.db and"),
+            !message.contains(&format!("Move {} and", legacy.display())),
             "{message}"
         );
 
@@ -4109,7 +4076,7 @@ future = "keep"
         let normalized_notice = legacy_auth_store_with(
             &canonical_root.join("auth.db"),
             &canonical_root.join("auth-jwt.pem"),
-            vars(raw_root.to_str(), "/home/operator"),
+            vars(Some(&raw_root), &home),
             legacy_files,
         );
         assert!(
