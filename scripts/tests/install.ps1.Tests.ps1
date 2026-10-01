@@ -52,17 +52,17 @@ Describe 'Labby Windows installer contracts' {
 
     It 'extracts only the hash verified executable when gh is missing or outdated' {
         Add-Type -AssemblyName System.IO.Compression.FileSystem
-        $archive = Join-Path $TestDrive 'verifier-fixture.zip'
-        $zip = [IO.Compression.ZipFile]::Open($archive, [IO.Compression.ZipArchiveMode]::Create)
+        $verifierFixtureArchive = Join-Path $TestDrive 'verifier-fixture.zip'
+        $verifierFixtureZip = [IO.Compression.ZipFile]::Open($verifierFixtureArchive, [IO.Compression.ZipArchiveMode]::Create)
         try {
             foreach ($name in @('bin/gh.exe','unselected.txt')) {
-                $writer = [IO.StreamWriter]::new($zip.CreateEntry($name).Open())
+                $writer = [IO.StreamWriter]::new($verifierFixtureZip.CreateEntry($name).Open())
                 try { $writer.Write('fixture executable bytes') } finally { $writer.Dispose() }
             }
-        } finally { $zip.Dispose() }
-        $digest = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-        Mock Get-LabbyPinnedGitHubVerifier { @{ Url = 'https://fixture.invalid/gh.zip'; Sha256 = $digest } }
-        Mock Get-LabbyHttpsFile { param($Uri, $OutFile) Copy-Item -LiteralPath $archive -Destination $OutFile }
+        } finally { $verifierFixtureZip.Dispose() }
+        $verifierFixtureDigest = (Get-FileHash $verifierFixtureArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+        Mock Get-LabbyPinnedGitHubVerifier { @{ Url = 'https://fixture.invalid/gh.zip'; Sha256 = $verifierFixtureDigest } }
+        Mock Get-LabbyHttpsFile { param($Uri, $OutFile) Copy-Item -LiteralPath $verifierFixtureArchive -Destination $OutFile }
         Mock Test-LabbyGitHubVerifierVersion { param($Executable) $Executable -ne 'outdated.exe' }
         Mock Test-LabbyGitHubCliCommand { $true }
         foreach ($existing in @($null, [pscustomobject]@{ Source = 'outdated.exe' })) {
