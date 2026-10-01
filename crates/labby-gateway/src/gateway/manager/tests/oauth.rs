@@ -243,3 +243,233 @@ async fn cancelled_oauth_clear_finishes_client_and_status_invalidation() {
     );
     drop(settled);
 }
+
+async fn google_revoke_invalidates_shared_clients_and_status(
+    cancel_caller: bool,
+    dedicated_request: bool,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, key, redirect_uri) = fixture_oauth_resources(&dir).await;
+    let sqlite = SqliteStore::open_with_key(
+        dir.path().join("google.sqlite"),
+        Some(
+            labby_auth::at_rest::TokenEncryptionKey::from_encoded(
+                "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+            )
+            .unwrap(),
+        ),
+    )
+    .await
+    .unwrap();
+    let upstream = fixture_oauth_upstream("cancelled-google", "https://fixture.example.com/mcp");
+    let subject = "google-subject";
+    sqlite
+        .upsert_google_provider_token_bundle(labby_auth::types::GoogleProviderCredentialUpdate {
+            subject: subject.into(),
+            email: None,
+            client_id: "fixture-client".into(),
+            granted_scopes: vec!["openid".into()],
+            access_token: "fixture-access".into(),
+            refresh_token: "fixture-refresh".into(),
+            token_received_at: 1,
+            access_token_expires_at: i64::MAX,
+            issuer: None,
+            refreshed: false,
+            scope_upgraded: false,
+        })
+        .await
+        .unwrap();
+    let mut upstream = upstream;
+    upstream.oauth.as_mut().unwrap().credential =
+        labby_runtime::gateway_config::UpstreamOauthCredentialSource::GoogleProvider {
+            account: Some(subject.into()),
+        };
+    upstream.oauth.as_mut().unwrap().registration = UpstreamOauthRegistration::Preregistered {
+        client_id: "fixture-client".into(),
+        client_secret_env: None,
+    };
+    let mut peer = upstream.clone();
+    peer.name = "google-peer".into();
+    if dedicated_request {
+        upstream.oauth.as_mut().unwrap().credential = Default::default();
+    }
+    let managers = Arc::new(dashmap::DashMap::new());
+    managers.insert(
+        upstream.name.clone(),
+        UpstreamOauthManager::new(
+            sqlite.clone(),
+            key.clone(),
+            upstream.clone(),
+            redirect_uri.clone(),
+        ),
+    );
+    let cache = OauthClientCache::new(managers.clone());
+    cache
+        .publish_prebuilt(&upstream, subject, dummy_auth_client().await)
+        .unwrap();
+    cache
+        .publish_prebuilt(&peer, subject, dummy_auth_client().await)
+        .unwrap();
+    let (pool, retained_peers) = crate::upstream::pool::testsupport::retained_oauth_peers(
+        &upstream.name,
+        &peer.name,
+        subject,
+        cache.clone(),
+    )
+    .await;
+    let runtime = GatewayRuntimeHandle::default();
+    runtime.swap(Some(pool)).await;
+    let manager = GatewayManager::new(dir.path().join("config.toml"), runtime)
+        .with_upstream_oauth_managers(managers)
+        .with_oauth_client_cache(cache.clone())
+        .with_oauth_resources(sqlite.clone(), key, redirect_uri);
+    manager
+        .seed_config_unchecked_for_tests(GatewayConfig {
+            upstream: vec![upstream.clone(), peer.clone()],
+            ..GatewayConfig::default()
+        })
+        .await;
+    let mut status_guard = manager.oauth_status_discovery_cache.lock().await;
+    let cache_key = (upstream.name.clone(), subject.to_string());
+    status_guard.insert(
+        cache_key.clone(),
+        super::super::OauthStatusDiscoverySnapshot {
+            completed_at: tokio::time::Instant::now(),
+            summary: None,
+            tool_error: None,
+            error: None,
+        },
+    );
+    let peer_key = (peer.name.clone(), subject.to_string());
+    status_guard.insert(
+        peer_key.clone(),
+        super::super::OauthStatusDiscoverySnapshot {
+            completed_at: tokio::time::Instant::now(),
+            summary: None,
+            tool_error: None,
+            error: None,
+        },
+    );
+    let clearing = manager.clone();
+    let clear = tokio::spawn(async move {
+        clearing
+            .revoke_google_provider_credential("cancelled-google")
+            .await
+    });
+    if dedicated_request {
+        drop(status_guard);
+        let error = tokio::time::timeout(Duration::from_secs(5), clear)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.kind(), "oauth_shared_credential_protected");
+        assert!(
+            sqlite
+                .find_google_provider_credential(subject)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            cache.contains_ready_client("cancelled-google", subject),
+            "protected dedicated request must preserve its live client"
+        );
+        assert!(
+            cache.contains_ready_client("google-peer", subject),
+            "protected dedicated request must preserve unrelated shared Google live client"
+        );
+        let statuses = manager.oauth_status_discovery_cache.lock().await;
+        assert!(
+            statuses.contains_key(&cache_key),
+            "dedicated status must survive admission rejection"
+        );
+        assert!(
+            statuses.contains_key(&peer_key),
+            "shared Google status must survive admission rejection"
+        );
+        assert!(
+            retained_peers
+                .iter()
+                .all(|peer| !peer.is_transport_closed()),
+            "source validation must not close existing generic/subject transports"
+        );
+        return;
+    }
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if sqlite
+                .find_google_provider_credential(subject)
+                .await
+                .unwrap()
+                .is_none()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("clear committed identity deletion");
+    if cancel_caller {
+        clear.abort();
+        assert!(clear.await.unwrap_err().is_cancelled());
+        drop(status_guard);
+    } else {
+        drop(status_guard);
+        clear.await.unwrap().unwrap();
+    }
+    let barrier = cache.invalidation_barrier();
+    let settled = tokio::time::timeout(Duration::from_secs(5), barrier.read())
+        .await
+        .expect("Google revoke lifecycle settles");
+    assert!(
+        !cache.contains_ready_client("cancelled-google", subject),
+        "durable delete must also evict live client after caller cancellation"
+    );
+    assert!(
+        !manager
+            .oauth_status_discovery_cache
+            .lock()
+            .await
+            .contains_key(&cache_key)
+    );
+    assert!(
+        !cache.contains_ready_client("google-peer", subject),
+        "shared provider revocation must evict the peer upstream's client"
+    );
+    assert!(
+        !manager
+            .oauth_status_discovery_cache
+            .lock()
+            .await
+            .contains_key(&peer_key),
+        "shared provider revocation must invalidate the peer's status snapshot"
+    );
+    drop(settled);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while retained_peers
+            .iter()
+            .any(|peer| !peer.is_transport_closed())
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("retained generic and subject transports close after the lifecycle writer releases");
+}
+
+#[tokio::test]
+async fn cancelled_google_revoke_finishes_shared_client_and_status_invalidation() {
+    google_revoke_invalidates_shared_clients_and_status(true, false).await;
+}
+
+#[tokio::test]
+async fn successful_google_revoke_invalidates_peer_status_snapshot() {
+    google_revoke_invalidates_shared_clients_and_status(false, false).await;
+}
+
+#[tokio::test]
+async fn dedicated_google_revoke_rejection_preserves_all_clients_and_status() {
+    google_revoke_invalidates_shared_clients_and_status(false, true).await;
+}

@@ -62,6 +62,23 @@ pub(super) fn should_use_dynamic_registration(
     }
 }
 
+fn validate_google_credential_source(manager: &UpstreamOauthManager) -> Result<(), ToolError> {
+    if manager
+        .upstream_config()
+        .oauth
+        .as_ref()
+        .is_some_and(|oauth| oauth.credential.is_google_provider())
+    {
+        Ok(())
+    } else {
+        Err(tool_error_from_oauth(
+            OauthError::SharedCredentialProtected(
+                "upstream does not use the central Google provider credential".into(),
+            ),
+        ))
+    }
+}
+
 impl GatewayManager {
     /// Supply provider metadata while exercising the real transient registration path.
     #[cfg(feature = "testkit")]
@@ -781,8 +798,33 @@ impl GatewayManager {
         &self,
         upstream: &str,
     ) -> Result<labby_auth::types::GoogleProviderInvalidation, ToolError> {
+        let admitted_manager = self.require_oauth_manager(upstream, "google_revoke")?;
+        validate_google_credential_source(&admitted_manager)?;
+        let manager = self.clone();
+        let upstream = upstream.to_string();
+        // Authorized deletion and mandatory cleanup outlive the caller future.
+        tokio::spawn(async move {
+            manager
+                .revoke_google_provider_credential_owned(&upstream)
+                .await
+        })
+        .await
+        .map_err(|error| {
+            ToolError::internal_message(format!(
+                "Google provider credential revoke task failed: {error}"
+            ))
+        })?
+    }
+
+    async fn revoke_google_provider_credential_owned(
+        &self,
+        upstream: &str,
+    ) -> Result<labby_auth::types::GoogleProviderInvalidation, ToolError> {
         let started = std::time::Instant::now();
         let manager = self.require_oauth_manager(upstream, "google_revoke")?;
+        // Reconciliation can replace the manager after outer admission. Check
+        // this immutable manager config again before crossing the writer.
+        validate_google_credential_source(&manager)?;
         let shared_upstreams = Self::google_provider_upstream_names(&*self.config.read().await);
         let lifecycle_guard = match &self.oauth_client_cache {
             Some(cache) => {
@@ -794,7 +836,7 @@ impl GatewayManager {
             }
             None => None,
         };
-        let invalidation = manager
+        let revoke_result = manager
             .revoke_shared_google_credential()
             .await
             .map_err(|error| {
@@ -807,12 +849,22 @@ impl GatewayManager {
                     "Google provider credential revoke failed"
                 );
                 tool_error_from_oauth(error)
-            })?;
+            });
+        // SQLite revocation is atomic, but the caller cannot safely infer the
+        // durable outcome of an error after entering the lifecycle barrier.
+        // Match clear's conservative cleanup boundary even on a failed attempt.
         self.invalidate_oauth_status_discovery(upstream, None).await;
+        for shared_upstream in &shared_upstreams {
+            if shared_upstream != upstream {
+                self.invalidate_oauth_status_discovery(shared_upstream, None)
+                    .await;
+            }
+        }
         let sessions = self
             .invalidate_shared_oauth_runtime(upstream, "oauth.google_provider.revoke", true)
             .await;
         drop(lifecycle_guard);
+        let invalidation = revoke_result?;
         tracing::info!(
             service = "upstream_oauth",
             action = "google_revoke",
