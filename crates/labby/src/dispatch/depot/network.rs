@@ -208,6 +208,8 @@ pub struct NetworkClient {
     test_addresses: Option<Vec<IpAddr>>,
     #[cfg(test)]
     test_tls: Option<rustls::ClientConfig>,
+    #[cfg(test)]
+    test_tls_hook: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl NetworkClient {
@@ -227,6 +229,17 @@ impl NetworkClient {
         self.test_addresses = Some(addresses);
         self.test_tls = Some(tls);
         self
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_test_tls_hook(mut self, hook: Arc<dyn Fn() + Send + Sync>) -> Self {
+        self.test_tls_hook = Some(hook);
+        self
+    }
+
+    #[cfg(test)]
+    pub(super) async fn test_client_setup(&self) -> Result<(), NetworkError> {
+        self.client().await.map(|_| ())
     }
 
     /// Pure construction: no DNS, sockets, certificate reads, or requests.
@@ -277,6 +290,8 @@ impl NetworkClient {
             test_addresses: None,
             #[cfg(test)]
             test_tls: None,
+            #[cfg(test)]
+            test_tls_hook: None,
         })
     }
 
@@ -416,7 +431,14 @@ impl NetworkClient {
         let mut connector = HttpConnector::new_with_resolver(resolver);
         connector.enforce_http(false);
         connector.set_connect_timeout(Some(IO_TIMEOUT));
-        let tls = self.tls()?;
+        let tls = super::network_tls::connector_tls(
+            self.local,
+            #[cfg(test)]
+            self.test_tls.clone(),
+            #[cfg(test)]
+            self.test_tls_hook.clone(),
+        )
+        .await?;
         let schemes = if self.local {
             tls.https_or_http()
         } else {
@@ -453,21 +475,6 @@ impl NetworkClient {
             .await
             .map_err(|_| NetworkError::Unavailable)?;
         Ok(addresses.take(33).map(|address| address.ip()).collect())
-    }
-
-    fn tls(
-        &self,
-    ) -> Result<
-        hyper_rustls::HttpsConnectorBuilder<hyper_rustls::builderstates::WantsSchemes>,
-        NetworkError,
-    > {
-        #[cfg(test)]
-        if let Some(tls) = &self.test_tls {
-            return Ok(hyper_rustls::HttpsConnectorBuilder::new().with_tls_config(tls.clone()));
-        }
-        hyper_rustls::HttpsConnectorBuilder::new()
-            .with_provider_and_native_roots(Arc::new(rustls::crypto::ring::default_provider()))
-            .map_err(|_| NetworkError::Unavailable)
     }
 }
 

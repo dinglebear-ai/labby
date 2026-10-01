@@ -92,8 +92,8 @@ pub use error_contract::{
 };
 pub use execute::{discovery_entry_visible, discovery_render_params, local_providers_allowed};
 pub use host::{
-    CodeModeHost, ExecCtx, ResolvedSnippet, StepDecision, ToolCallOutcome, ToolsRender,
-    WithheldTools,
+    ArtifactSearchResult, CodeModeHost, ExecCtx, ResolvedSnippet, StepDecision, ToolCallOutcome,
+    ToolsRender, WithheldTools,
 };
 /// Re-export so hosts can name the config type from one crate path.
 pub use labby_runtime::CodeModeConfig;

@@ -11,6 +11,33 @@ use tokio_tungstenite::tungstenite::{self};
 
 const DEFAULT_MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024;
 const DEFAULT_MAX_FRAME_SIZE: usize = 128 * 1024;
+const WEBSOCKET_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+#[derive(Debug, thiserror::Error)]
+enum FrameWriteFailure {
+    #[error("websocket write cancelled")]
+    Cancelled,
+    #[error(transparent)]
+    Failed(WebSocketTransportError),
+}
+
+async fn send_frame<S>(
+    writer: &mut S,
+    frame: Message,
+    cancellation: &tokio_util::sync::CancellationToken,
+) -> Result<(), FrameWriteFailure>
+where
+    S: futures::Sink<Message, Error = tungstenite::Error> + Unpin,
+{
+    tokio::select! {
+        biased;
+        () = cancellation.cancelled() => Err(FrameWriteFailure::Cancelled),
+        result = tokio::time::timeout(WEBSOCKET_WRITE_TIMEOUT, writer.send(frame)) => {
+            result.map_err(|_| FrameWriteFailure::Failed(WebSocketTransportError::new("websocket write timed out")))?
+                .map_err(|error| FrameWriteFailure::Failed(WebSocketTransportError::new(format!("websocket write failed: {error}"))))
+        }
+    }
+}
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum WebSocketTransportError {
@@ -142,8 +169,10 @@ impl Worker for WebSocketClientWorker {
 
         loop {
             tokio::select! {
+                biased;
                 _ = cancellation.cancelled() => {
-                    drop(writer.send(Message::Close(None)).await);
+                    // Drop the socket: even a best-effort Close may block when
+                    // the peer has stopped reading its outgoing frames.
                     return Err(WorkerQuitReason::Cancelled);
                 }
                 inbound = reader.next() => {
@@ -152,7 +181,11 @@ impl Worker for WebSocketClientWorker {
                             let message = decode_server_message(text.as_str()).map_err(|error| {
                                 WorkerQuitReason::fatal(error, "decode websocket frame")
                             })?;
-                            context.send_to_handler(message).await?;
+                            tokio::select! {
+                                biased;
+                                () = cancellation.cancelled() => return Err(WorkerQuitReason::Cancelled),
+                                result = context.send_to_handler(message) => result?,
+                            }
                         }
                         Some(Ok(Message::Binary(_))) => {
                             return Err(WorkerQuitReason::fatal(
@@ -161,11 +194,11 @@ impl Worker for WebSocketClientWorker {
                             ));
                         }
                         Some(Ok(Message::Ping(payload))) => {
-                            writer.send(Message::Pong(payload)).await.map_err(|error| {
-                                WorkerQuitReason::fatal(
-                                    WebSocketTransportError::new(format!("websocket pong failed: {error}")),
-                                    "send websocket pong",
-                                )
+                            send_frame(&mut writer, Message::Pong(payload), &cancellation).await.map_err(|error| {
+                                match error {
+                                    FrameWriteFailure::Cancelled => WorkerQuitReason::Cancelled,
+                                    FrameWriteFailure::Failed(error) => WorkerQuitReason::fatal(error, "send websocket pong"),
+                                }
                             })?;
                         }
                         Some(Ok(Message::Pong(_))) => {}
@@ -184,15 +217,17 @@ impl Worker for WebSocketClientWorker {
                     let payload = encode_client_message(&outbound.message).map_err(|error| {
                         WorkerQuitReason::fatal(error, "encode websocket frame")
                     })?;
-                    match writer.send(Message::Text(payload.into())).await {
+                    match send_frame(&mut writer, Message::Text(payload.into()), &cancellation).await {
                         Ok(()) => {
                             drop(outbound.responder.send(Ok(())));
                         }
-                        Err(error) => {
-                            let send_error = WebSocketTransportError::new(format!("websocket send failed: {error}"));
-                            let cloned = send_error.clone();
-                            drop(outbound.responder.send(Err(cloned)));
-                            return Err(WorkerQuitReason::fatal(send_error, "send websocket frame"));
+                        Err(FrameWriteFailure::Cancelled) => {
+                            drop(outbound.responder.send(Err(WebSocketTransportError::new("websocket write cancelled"))));
+                            return Err(WorkerQuitReason::Cancelled);
+                        }
+                        Err(FrameWriteFailure::Failed(error)) => {
+                            drop(outbound.responder.send(Err(error.clone())));
+                            return Err(WorkerQuitReason::fatal(error, "send websocket frame"));
                         }
                     }
                 }
@@ -335,5 +370,112 @@ mod tests {
             decoded_error,
             RawRxJsonRpcMessage::<RoleClient>::Error(_)
         ));
+    }
+    #[tokio::test]
+    async fn nonreading_peer_does_not_block_worker_cancellation() {
+        use rmcp::transport::Transport;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (writing, ready) = tokio::sync::oneshot::channel();
+        let (release, wait) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let mut byte = [0];
+            socket.get_ref().peek(&mut byte).await.unwrap();
+            writing.send(()).unwrap();
+            drop(wait.await);
+            drop(socket);
+        });
+        let mut transport = connect(WebSocketTransportConfig::new(format!("ws://{address}")));
+        let message = serde_json::from_value::<TxJsonRpcMessage<RoleClient>>(serde_json::json!({
+            "jsonrpc":"2.0", "id":1, "method":"test/backpressure",
+            "params":{"payload":"x".repeat(16 * 1024 * 1024)}
+        }))
+        .unwrap();
+        let sent = tokio::spawn(transport.send(message));
+        ready.await.unwrap();
+        // Keep the remote socket alive without consuming its buffered frame.
+        let closed =
+            tokio::time::timeout(std::time::Duration::from_millis(300), transport.close()).await;
+        let _ = release.send(());
+        server.await.unwrap();
+        drop(sent.await.unwrap());
+        assert!(
+            closed.is_ok(),
+            "worker must cancel while socket send is backpressured"
+        );
+    }
+    #[tokio::test(start_paused = true)]
+    async fn stalled_text_and_pong_writes_have_a_finite_deadline() {
+        for frame in [
+            Message::Text("payload".into()),
+            Message::Pong(vec![1].into()),
+        ] {
+            let cancellation = tokio_util::sync::CancellationToken::new();
+            let mut sink = Box::pin(futures::sink::unfold((), |(), _: Message| {
+                futures::future::pending::<Result<(), tungstenite::Error>>()
+            }));
+            let before = tokio::time::Instant::now();
+            let result = send_frame(&mut sink, frame, &cancellation).await;
+            assert!(result.unwrap_err().to_string().contains("timed out"));
+            assert_eq!(before.elapsed(), WEBSOCKET_WRITE_TIMEOUT);
+        }
+    }
+
+    #[tokio::test]
+    #[allow(
+        clippy::panic,
+        reason = "fixture fails if cancelled work reaches the sink"
+    )]
+    async fn already_cancelled_write_never_dispatches_a_frame() {
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        cancellation.cancel();
+        let mut sink = Box::pin(futures::sink::unfold((), |(), _: Message| async {
+            panic!("cancelled write must not enter sink");
+            #[allow(unreachable_code)]
+            Ok::<(), tungstenite::Error>(())
+        }));
+        let result = send_frame(&mut sink, Message::Pong(vec![1].into()), &cancellation).await;
+        assert!(result.unwrap_err().to_string().contains("cancelled"));
+    }
+    #[tokio::test]
+    async fn unread_handler_queue_does_not_block_worker_cancellation() {
+        use rmcp::transport::Transport;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (filled, ready) = tokio::sync::oneshot::channel();
+        let (release, wait) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            // Exceed the worker's32-message inbound queue. Keep the connection
+            // alive after filling it so peer closure cannot release the worker.
+            for id in 0..128 {
+                socket
+                    .send(Message::Text(
+                        format!(r#"{{"jsonrpc":"2.0","id":{id},"result":{{}}}}"#).into(),
+                    ))
+                    .await
+                    .unwrap();
+            }
+            filled.send(()).unwrap();
+            drop(wait.await);
+        });
+        let mut transport = connect(WebSocketTransportConfig::new(format!("ws://{address}")));
+        ready.await.unwrap();
+        // Observe inbound delivery, then let the worker exhaust its local queue.
+        assert!(transport.receive_raw().await.is_some());
+        for _ in 0..128 {
+            tokio::task::yield_now().await;
+        }
+        let closed =
+            tokio::time::timeout(std::time::Duration::from_millis(300), transport.close()).await;
+        let _ = release.send(());
+        server.await.unwrap();
+        assert!(
+            closed.is_ok(),
+            "worker must cancel while handler queue is full"
+        );
     }
 }

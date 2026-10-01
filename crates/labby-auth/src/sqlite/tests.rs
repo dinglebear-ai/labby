@@ -3431,3 +3431,110 @@ fn _assert_allowed_user_row_type() -> AllowedUserRow {
         role: AllowedUserRole::Member,
     }
 }
+
+#[test]
+fn queued_sqlite_calls_do_not_occupy_blocking_workers() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(5)
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open(directory.path().join("auth.db"))
+            .await
+            .unwrap();
+        let baseline = store.next_conn.load(std::sync::atomic::Ordering::Relaxed);
+        let mut releases = Vec::new();
+        let mut holders = Vec::new();
+        for _ in 0..4 {
+            let (release, wait) = std::sync::mpsc::channel();
+            let (entered, ready) = tokio::sync::oneshot::channel();
+            let copy = store.clone();
+            holders.push(tokio::spawn(async move {
+                copy.with_conn(move |_| {
+                    entered.send(()).unwrap();
+                    wait.recv().unwrap();
+                    Ok(())
+                })
+                .await
+                .unwrap();
+            }));
+            ready.await.unwrap();
+            releases.push(release);
+        }
+        let copy = store.clone();
+        let queued = tokio::spawn(async move { copy.with_conn(|_| Ok(())).await });
+        // Observe that the queued operation selected a connection before probing
+        // the blocking executor. This current-thread runtime resumes us only
+        // after that task parks; all connections are held, so no DB work can run.
+        while store.next_conn.load(std::sync::atomic::Ordering::Relaxed) < baseline + 5 {
+            tokio::task::yield_now().await;
+        }
+        let probe = tokio::task::spawn_blocking(|| ());
+        let result = tokio::time::timeout(std::time::Duration::from_millis(200), probe).await;
+        for release in releases {
+            release.send(()).unwrap();
+        }
+        for holder in holders {
+            holder.await.unwrap();
+        }
+        queued.await.unwrap().unwrap();
+        assert!(
+            result.is_ok(),
+            "queued SQLite lock must not consume the fifth blocking worker"
+        );
+    });
+}
+
+#[tokio::test]
+async fn cancelled_sqlite_caller_retains_running_connection_and_admission() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(directory.path().join("auth.db"))
+        .await
+        .unwrap();
+    let selected = store.next_conn.load(std::sync::atomic::Ordering::Relaxed);
+    let (release, wait) = std::sync::mpsc::channel();
+    let (entered, ready) = tokio::sync::oneshot::channel();
+    let copy = store.clone();
+    let caller = tokio::spawn(async move {
+        copy.with_conn(move |_| {
+            entered.send(()).unwrap();
+            wait.recv().unwrap();
+            Ok(())
+        })
+        .await
+    });
+    ready.await.unwrap();
+    caller.abort();
+    drop(caller.await);
+    assert_eq!(
+        store.admission.available_permits(),
+        super::SQLITE_PENDING_LIMIT - 1
+    );
+    let connection = store.conns[selected % store.conns.len()].clone();
+    assert!(connection.clone().try_lock_owned().is_err());
+    release.send(()).unwrap();
+    drop(connection.lock_owned().await);
+    assert_eq!(
+        store.admission.available_permits(),
+        super::SQLITE_PENDING_LIMIT
+    );
+}
+
+#[tokio::test]
+async fn sqlite_admission_rejects_saturation_and_recovers() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(directory.path().join("auth.db"))
+        .await
+        .unwrap();
+    let held = store
+        .admission
+        .clone()
+        .acquire_many_owned(super::SQLITE_PENDING_LIMIT as u32)
+        .await
+        .unwrap();
+    assert!(store.with_conn(|_| Ok(())).await.is_err());
+    drop(held);
+    store.with_conn(|_| Ok(())).await.unwrap();
+}
