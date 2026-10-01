@@ -9,6 +9,21 @@
 
 use std::path::PathBuf;
 
+/// Match captured environment names using the host's environment semantics.
+#[must_use]
+pub fn environment_keys_contain(keys: &std::collections::BTreeSet<String>, name: &str) -> bool {
+    environment_keys_contain_with_case(keys, name, cfg!(windows))
+}
+
+fn environment_keys_contain_with_case(
+    keys: &std::collections::BTreeSet<String>,
+    name: &str,
+    case_insensitive: bool,
+) -> bool {
+    keys.contains(name)
+        || (case_insensitive && keys.iter().any(|key| key.eq_ignore_ascii_case(name)))
+}
+
 /// Resolve the lab home directory: `$LABBY_HOME` if set and non-empty, else
 /// `$HOME/.labby/` (`USERPROFILE` is the Windows fallback).
 ///
@@ -44,4 +59,38 @@ pub fn home_dir() -> Option<PathBuf> {
 #[must_use]
 pub fn env_non_empty(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
+}
+
+#[cfg(test)]
+mod environment_tests {
+    use super::*;
+
+    #[test]
+    fn windows_environment_provenance_keeps_mixed_case_external_overrides() {
+        let keys = std::collections::BTreeSet::from(["Labby_Token".into()]);
+        assert!(environment_keys_contain_with_case(
+            &keys,
+            "LABBY_TOKEN",
+            true
+        ));
+        assert!(!environment_keys_contain_with_case(
+            &keys,
+            "LABBY_TOKEN",
+            false
+        ));
+        assert!(environment_keys_contain_with_case(
+            &keys,
+            "Labby_Token",
+            false
+        ));
+        assert!(!environment_keys_contain_with_case(
+            &keys,
+            "OTHER_TOKEN",
+            true
+        ));
+        assert_eq!(
+            environment_keys_contain(&keys, "LABBY_TOKEN"),
+            cfg!(windows)
+        );
+    }
 }

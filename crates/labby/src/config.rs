@@ -2861,7 +2861,7 @@ static PROCESS_ENV_KEYS_BEFORE_DOTENV: OnceLock<std::collections::BTreeSet<Strin
 pub fn env_key_set_outside_dotenv(key: &str) -> bool {
     PROCESS_ENV_KEYS_BEFORE_DOTENV
         .get()
-        .is_some_and(|keys| keys.contains(key))
+        .is_some_and(|keys| labby_runtime::helpers::environment_keys_contain(keys, key))
 }
 
 /// Load `.env` files into the process environment.
@@ -5966,6 +5966,11 @@ mod gateway_bearer_reload_tests {
         std::fs::write(&path, "LABBY_DOTENV_RELOAD_MANAGED=original-file\nLABBY_DOTENV_RELOAD_EXTERNAL=ignored-file\n").unwrap();
         // A subprocess exercises the real startup loader without modifying the
         // environment of ordinary cargo-test threads or other test managers.
+        let external_name = if cfg!(windows) {
+            "Labby_Dotenv_Reload_External"
+        } else {
+            "LABBY_DOTENV_RELOAD_EXTERNAL"
+        };
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -5974,7 +5979,7 @@ mod gateway_bearer_reload_tests {
                 "--nocapture",
             ])
             .env("LABBY_HOME", dir.path())
-            .env("LABBY_DOTENV_RELOAD_EXTERNAL", "external-authority")
+            .env(external_name, "external-authority")
             .env_remove("LABBY_DOTENV_RELOAD_MANAGED")
             .output()
             .unwrap();
@@ -5994,6 +5999,12 @@ mod gateway_bearer_reload_tests {
     #[ignore = "subprocess fixture for dotenv_bearer_reload_preserves_external_env_authority"]
     fn startup_dotenv_reload_child() {
         super::load_dotenv().unwrap();
+        assert!(super::env_key_set_outside_dotenv(
+            "LABBY_DOTENV_RELOAD_EXTERNAL"
+        ));
+        assert!(!super::env_key_set_outside_dotenv(
+            "LABBY_DOTENV_RELOAD_MANAGED"
+        ));
         assert_eq!(
             labby_gateway::upstream::auth::configured_bearer_token("LABBY_DOTENV_RELOAD_MANAGED")
                 .as_deref(),

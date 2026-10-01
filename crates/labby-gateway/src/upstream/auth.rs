@@ -96,7 +96,7 @@ fn configured_bearer_token_with_dotenv(
 ) -> Option<String> {
     if EXTERNAL_ENVIRONMENT_KEYS
         .get()
-        .is_some_and(|keys| !keys.contains(env_name))
+        .is_some_and(|keys| !labby_runtime::helpers::environment_keys_contain(keys, env_name))
     {
         return dotenv_path
             .and_then(|path| configured_bearer_token_from_dotenv_path(env_name, path));
