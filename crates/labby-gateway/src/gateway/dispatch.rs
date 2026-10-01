@@ -73,6 +73,8 @@ pub async fn dispatch_with_manager_scoped(
     if let Some(result) = handle_builtin(action, &params_value, "gateway", ACTIONS) {
         return result;
     }
+    // Own only the selected async family on the heap. This keeps both the
+    // caller future and the shared routing poll frame small on serving stacks.
     match action {
         "gateway.ssh_hosts.list" => {
             let home = super::discovery::home_dir().ok_or_else(|| ToolError::Sdk {
@@ -87,50 +89,40 @@ pub async fn dispatch_with_manager_scoped(
             to_json(ssh_host_aliases(&contents))
         }
         "gateway.host.metrics" => to_json(
-            super::host_metrics::sample(
+            Box::pin(super::host_metrics::sample(
                 manager
                     .path
                     .parent()
                     .unwrap_or_else(|| std::path::Path::new(".")),
-            )
+            ))
             .await,
         ),
-        "gateway.skills.list" => handle_skills_list(manager, params_value, enrichment_scope).await,
-        "gateway.code_mode.get" | "gateway.code_mode.set" => {
-            handle_tool_actions(manager, action, params_value).await
+        "gateway.skills.list" => {
+            Box::pin(handle_skills_list(manager, params_value, enrichment_scope)).await
         }
-        "gateway.discover" => handle_discover(manager, params_value).await,
+        "gateway.code_mode.get" | "gateway.code_mode.set" => {
+            Box::pin(handle_tool_actions(manager, action, params_value)).await
+        }
+        "gateway.discover" => Box::pin(handle_discover(manager, params_value)).await,
         "gateway.enrich.preview" => {
             let params: GatewayEnrichPreviewParams = parse_params(params_value)?;
-            to_json(
-                manager
-                    .preview_enrichment_scoped(params, enrichment_scope)
-                    .await?,
-            )
+            to_json(Box::pin(manager.preview_enrichment_scoped(params, enrichment_scope)).await?)
         }
         "gateway.enrich.apply" => {
             let params: GatewayEnrichApplyParams = parse_params(params_value)?;
-            to_json(
-                manager
-                    .apply_enrichment_scoped(params, enrichment_scope)
-                    .await?,
-            )
+            to_json(Box::pin(manager.apply_enrichment_scoped(params, enrichment_scope)).await?)
         }
         "gateway.usage.metrics" => {
             let params: GatewayUsageMetricsParams = parse_params(params_value)?;
-            to_json(
-                manager
-                    .usage_metrics_scoped(params, enrichment_scope)
-                    .await?,
-            )
+            to_json(Box::pin(manager.usage_metrics_scoped(params, enrichment_scope)).await?)
         }
         "gateway.usage.calls" => {
             let params: GatewayUsageCallsParams = parse_params(params_value)?;
-            to_json(manager.usage_calls_scoped(params, enrichment_scope).await?)
+            to_json(Box::pin(manager.usage_calls_scoped(params, enrichment_scope)).await?)
         }
-        "gateway.import" => handle_import(manager, params_value, enrichment_scope).await,
+        "gateway.import" => Box::pin(handle_import(manager, params_value, enrichment_scope)).await,
         "gateway.import_pending.list" => {
-            let mut pending = manager.list_pending_imports().await;
+            let mut pending = Box::pin(manager.list_pending_imports()).await;
             if let Some(visible) = enrichment_scope.route_visible_upstreams.as_ref() {
                 pending.retain(|candidate| visible.contains(&candidate.name));
             }
@@ -151,27 +143,27 @@ pub async fn dispatch_with_manager_scoped(
             // enforced boundary; `docs/runtime/OAUTH.md` says so explicitly. The
             // scope is still threaded through so `approve_pending_import_scoped`
             // suppresses an enrichment suggestion naming a route-hidden upstream.
-            to_json(
-                manager
-                    .approve_pending_import_scoped(name, enrichment_scope)
-                    .await?,
-            )
+            to_json(Box::pin(manager.approve_pending_import_scoped(name, enrichment_scope)).await?)
         }
         "gateway.import_pending.reject" => {
             let name = require_str(&params_value, "name")?;
             enrichment_scope.ensure_visible(name)?;
-            to_json(manager.reject_pending_import(name).await?)
+            to_json(Box::pin(manager.reject_pending_import(name)).await?)
         }
         "gateway.import_tombstones.list"
         | "gateway.import_tombstones.clear"
         | "gateway.import_tombstones.restore" => {
-            handle_import_tombstone_actions(manager, action, params_value, enrichment_scope).await
+            Box::pin(handle_import_tombstone_actions(
+                manager,
+                action,
+                params_value,
+                enrichment_scope,
+            ))
+            .await
         }
-        "gateway.servers" => to_json(
-            manager
-                .gateway_servers_doc_scoped(&enrichment_scope)
-                .await?,
-        ),
+        "gateway.servers" => {
+            to_json(Box::pin(manager.gateway_servers_doc_scoped(&enrichment_scope)).await?)
+        }
         "gateway.schema" => {
             // Keep the established missing-parameter envelope stable before
             // typed deserialization; `GatewayNameParams` alone reports a
@@ -179,8 +171,7 @@ pub async fn dispatch_with_manager_scoped(
             require_str(&params_value, "name")?;
             let params: GatewayNameParams = parse_params(params_value)?;
             to_json(
-                manager
-                    .gateway_server_schema_scoped(&params.name, &enrichment_scope)
+                Box::pin(manager.gateway_server_schema_scoped(&params.name, &enrichment_scope))
                     .await?,
             )
         }
@@ -199,25 +190,48 @@ pub async fn dispatch_with_manager_scoped(
         | "gateway.discovered_resources"
         | "gateway.discovered_prompts"
         | "gateway.public_urls.get" => {
-            handle_gateway_actions(manager, action, params_value, enrichment_scope).await
+            Box::pin(handle_gateway_actions(
+                manager,
+                action,
+                params_value,
+                enrichment_scope,
+            ))
+            .await
         }
         action if action.starts_with("gateway.loadout.") => {
-            handle_loadout_actions(manager, action, params_value).await
+            Box::pin(handle_loadout_actions(manager, action, params_value)).await
         }
         action if action.starts_with("gateway.protected_route.") => {
-            handle_protected_route_actions(manager, action, params_value).await
+            Box::pin(handle_protected_route_actions(
+                manager,
+                action,
+                params_value,
+            ))
+            .await
         }
         action if action.starts_with("gateway.virtual_server.") => {
-            handle_virtual_server_actions(manager, action, params_value).await
+            Box::pin(handle_virtual_server_actions(manager, action, params_value)).await
         }
         action if action.starts_with("gateway.service_") => {
-            handle_service_actions(manager, action, params_value).await
+            Box::pin(handle_service_actions(manager, action, params_value)).await
         }
         action if action.starts_with("gateway.oauth.") => {
-            handle_oauth_actions(manager, action, params_value, enrichment_scope).await
+            Box::pin(handle_oauth_actions(
+                manager,
+                action,
+                params_value,
+                enrichment_scope,
+            ))
+            .await
         }
         action if action == "gateway.clients.list" || action.starts_with("gateway.mcp.") => {
-            handle_mcp_actions(manager, action, params_value, enrichment_scope).await
+            Box::pin(handle_mcp_actions(
+                manager,
+                action,
+                params_value,
+                enrichment_scope,
+            ))
+            .await
         }
         unknown => unknown_action(unknown),
     }
@@ -885,16 +899,14 @@ async fn handle_gateway_actions(
     params_value: Value,
     enrichment_scope: GatewayEnrichmentScope,
 ) -> Result<Value, ToolError> {
+    // Keep the family poll frame bounded by owning only the selected manager
+    // operation, after its parameter and scope checks have completed.
     match action {
-        "gateway.list" => to_json(manager.list_scoped(&enrichment_scope).await?),
+        "gateway.list" => to_json(Box::pin(manager.list_scoped(&enrichment_scope)).await?),
         "gateway.server.get" => {
             let params: VirtualServerNameParams = parse_params(params_value)?;
             enrichment_scope.ensure_visible(&params.id)?;
-            to_json(
-                manager
-                    .get_server_scoped(&params.id, &enrichment_scope)
-                    .await?,
-            )
+            to_json(Box::pin(manager.get_server_scoped(&params.id, &enrichment_scope)).await?)
         }
         "gateway.supported_services" => {
             let registry = manager.builtin_service_registry();
@@ -904,7 +916,7 @@ async fn handle_gateway_actions(
         }
         "gateway.get" => {
             let params: GatewayNameParams = parse_params(params_value)?;
-            to_json(manager.get_scoped(&params.name, &enrichment_scope).await?)
+            to_json(Box::pin(manager.get_scoped(&params.name, &enrichment_scope)).await?)
         }
         "gateway.test" => {
             // SECURITY NOTE: When called with a `spec` (unsaved config) for a
@@ -922,7 +934,7 @@ async fn handle_gateway_actions(
             match (params.name.as_deref(), params.spec.as_ref()) {
                 (Some(name), None) => {
                     enrichment_scope.ensure_visible(name)?;
-                    to_json(manager.test(Err(name)).await?)
+                    to_json(Box::pin(manager.test(Err(name))).await?)
                 }
                 (None, Some(spec)) => {
                     if enrichment_scope.route_visible_upstreams.is_some() {
@@ -931,7 +943,7 @@ async fn handle_gateway_actions(
                             message: "testing an unsaved gateway spec is unavailable on a protected subset route".to_string(),
                         });
                     }
-                    to_json(manager.test(Ok(spec)).await?)
+                    to_json(Box::pin(manager.test(Ok(spec))).await?)
                 }
                 (Some(_), Some(_)) => Err(ToolError::InvalidParam {
                     message: "gateway.test accepts either `name` or `spec`, not both".to_string(),
@@ -946,45 +958,42 @@ async fn handle_gateway_actions(
         "gateway.add" => {
             let params: GatewayAddParams = parse_params(params_value)?;
             to_json(
-                manager
-                    .add_scoped_with_route(
-                        params.spec,
-                        params.bearer_token_value,
-                        params.origin.as_deref(),
-                        params.owner.map(Into::into),
-                        enrichment_scope,
-                        params.protected_route,
-                    )
-                    .await?,
+                Box::pin(manager.add_scoped_with_route(
+                    params.spec,
+                    params.bearer_token_value,
+                    params.origin.as_deref(),
+                    params.owner.map(Into::into),
+                    enrichment_scope,
+                    params.protected_route,
+                ))
+                .await?,
             )
         }
         "gateway.update" => {
             let params: GatewayUpdateParams = parse_params(params_value)?;
             enrichment_scope.ensure_visible(&params.name)?;
             to_json(
-                manager
-                    .update_with_route(
-                        &params.name,
-                        params.patch,
-                        params.bearer_token_value,
-                        params.origin.as_deref(),
-                        params.owner.map(Into::into),
-                        params.protected_route,
-                    )
-                    .await?,
+                Box::pin(manager.update_with_route(
+                    &params.name,
+                    params.patch,
+                    params.bearer_token_value,
+                    params.origin.as_deref(),
+                    params.owner.map(Into::into),
+                    params.protected_route,
+                ))
+                .await?,
             )
         }
         "gateway.remove" => {
             let params: GatewayNameParams = parse_params(params_value)?;
             enrichment_scope.ensure_visible(&params.name)?;
             to_json(
-                manager
-                    .remove(
-                        &params.name,
-                        params.origin.as_deref(),
-                        params.owner.map(Into::into),
-                    )
-                    .await?,
+                Box::pin(manager.remove(
+                    &params.name,
+                    params.origin.as_deref(),
+                    params.owner.map(Into::into),
+                ))
+                .await?,
             )
         }
         "gateway.reload" => {
@@ -993,30 +1002,28 @@ async fn handle_gateway_actions(
             // rebuild reports "still reconciling" instead of the middleware
             // cancelling the reload mid-flight and discarding the config.
             to_json(
-                manager
-                    .reload_with_origin_detached(
-                        params.origin.as_deref(),
-                        params.owner.map(Into::into),
-                        std::time::Duration::from_secs(20),
-                    )
-                    .await?,
+                Box::pin(manager.reload_with_origin_detached(
+                    params.origin.as_deref(),
+                    params.owner.map(Into::into),
+                    std::time::Duration::from_secs(20),
+                ))
+                .await?,
             )
         }
         "gateway.status" => {
             let params: GatewayStatusParams = parse_params(params_value)?;
-            manager
-                .refresh_gateway_status_catalog(&enrichment_scope, params.name.as_deref())
-                .await?;
+            Box::pin(
+                manager.refresh_gateway_status_catalog(&enrichment_scope, params.name.as_deref()),
+            )
+            .await?;
             to_json(
-                manager
-                    .status_scoped(params.name.as_deref(), &enrichment_scope)
-                    .await?,
+                Box::pin(manager.status_scoped(params.name.as_deref(), &enrichment_scope)).await?,
             )
         }
         "gateway.client_config.get" => {
             let params: GatewayClientConfigParams = parse_params(params_value)?;
             enrichment_scope.ensure_visible(&params.name)?;
-            to_json(manager.client_config(&params.name).await?)
+            to_json(Box::pin(manager.client_config(&params.name)).await?)
         }
         "gateway.public_urls.get" => {
             let urls = manager.public_urls();
@@ -1031,17 +1038,14 @@ async fn handle_gateway_actions(
             let params: GatewayNameParams = parse_params(params_value)?;
             enrichment_scope.ensure_visible(&params.name)?;
             to_json(
-                manager
-                    .discovered_tools_scoped(&params.name, &enrichment_scope)
-                    .await?,
+                Box::pin(manager.discovered_tools_scoped(&params.name, &enrichment_scope)).await?,
             )
         }
         "gateway.discovered_resources" => {
             let params: GatewayNameParams = parse_params(params_value)?;
             enrichment_scope.ensure_visible(&params.name)?;
             to_json(
-                manager
-                    .discovered_resources_scoped(&params.name, &enrichment_scope)
+                Box::pin(manager.discovered_resources_scoped(&params.name, &enrichment_scope))
                     .await?,
             )
         }
@@ -1049,8 +1053,7 @@ async fn handle_gateway_actions(
             let params: GatewayNameParams = parse_params(params_value)?;
             enrichment_scope.ensure_visible(&params.name)?;
             to_json(
-                manager
-                    .discovered_prompts_scoped(&params.name, &enrichment_scope)
+                Box::pin(manager.discovered_prompts_scoped(&params.name, &enrichment_scope))
                     .await?,
             )
         }
@@ -1692,3 +1695,7 @@ async fn handle_skills_list(
         message: "this build of Labby was compiled without the `skills` feature; install a release build (which includes Skills) or rebuild with `--features skills`, then retry".to_string(),
     })
 }
+
+#[cfg(test)]
+#[path = "dispatch_frame_tests.rs"]
+mod frame_tests;
