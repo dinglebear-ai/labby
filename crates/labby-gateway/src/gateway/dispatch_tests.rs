@@ -5027,7 +5027,7 @@ async fn gateway_import_result_has_correct_shape() {
 async fn gateway_discover_explain_reports_scan_without_changing_default_shape() {
     let manager = test_manager();
     let home = tempfile::tempdir().expect("tempdir");
-    let config_path = home.path().join(".cursor/mcp.json");
+    let config_path = home.path().join(".cursor").join("mcp.json");
     std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
     std::fs::write(
         &config_path,
@@ -5068,7 +5068,7 @@ async fn gateway_discover_explain_reports_scan_without_changing_default_shape() 
 async fn gateway_import_dry_run_returns_plan_without_mutating_config() {
     let manager = test_manager();
     let home = tempfile::tempdir().expect("tempdir");
-    let config_path = home.path().join(".cursor/mcp.json");
+    let config_path = home.path().join(".cursor").join("mcp.json");
     std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
     std::fs::write(
         &config_path,

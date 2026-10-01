@@ -516,7 +516,9 @@ fn every_public_help_path_runs_offline_and_has_qualified_usage() {
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(
-            String::from_utf8_lossy(&output.stdout).contains(&format!("Usage: {path}")),
+            String::from_utf8_lossy(&output.stdout)
+                .replace("labby.exe", "labby")
+                .contains(&format!("Usage: {path}")),
             "unqualified usage at {path}"
         );
     }

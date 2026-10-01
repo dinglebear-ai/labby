@@ -74,6 +74,14 @@ pub fn discover_all(home: &Path) -> Vec<DiscoveredServer> {
 }
 
 pub fn discover_with_report(home: &Path, selected_clients: &[String]) -> DiscoveryReport {
+    discover_with_report_roots(home, selected_clients, None)
+}
+
+fn discover_with_report_roots(
+    home: &Path,
+    selected_clients: &[String],
+    appdata_override: Option<&Path>,
+) -> DiscoveryReport {
     let mut seen: HashMap<String, DiscoveredServer> = HashMap::new();
     let mut ordered: Vec<String> = Vec::new();
     let client_selected = |client: &str| {
@@ -96,10 +104,24 @@ pub fn discover_with_report(home: &Path, selected_clients: &[String]) -> Discove
         scans.push(("windsurf", windsurf::discover(home)));
     }
     if client_selected("opencode") {
-        scans.push(("opencode", opencode::discover(home)));
+        scans.push((
+            "opencode",
+            if let Some(appdata) = appdata_override {
+                opencode::discover_with_roots(home, Some(&home.join(".config")), Some(appdata))
+            } else {
+                opencode::discover(home)
+            },
+        ));
     }
     if client_selected("vscode") {
-        scans.push(("vscode", vscode::discover(home)));
+        scans.push((
+            "vscode",
+            if let Some(appdata) = appdata_override {
+                vscode::discover_with_appdata(home, Some(appdata))
+            } else {
+                vscode::discover(home)
+            },
+        ));
     }
     if client_selected("gemini") {
         scans.push(("gemini", gemini::discover(home)));
@@ -780,7 +802,8 @@ mod tests {
             r#"{"mcp":{"opencode-fixture":{"command":"opencode"}}}"#,
         );
 
-        let report = super::discover_with_report(home, &[]);
+        let report =
+            super::discover_with_report_roots(home, &[], Some(&home.join("AppData/Roaming")));
         assert_eq!(report.scanned_clients.len(), 8);
         assert!(
             report
