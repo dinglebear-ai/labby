@@ -5,9 +5,9 @@ use rmcp::model::{CallToolRequestParams, NumberOrString};
 use rmcp::service::{RequestContext, serve_directly};
 use serde_json::json;
 
-use crate::api::oauth::AuthContext;
 use crate::mcp::logging::{LoggingLevel, logging_level_rank};
 use crate::mcp::server::LabMcpServer;
+use labby_auth::auth_context::AuthContext;
 
 #[tokio::test]
 async fn atomic_gateway_save_mcp_rejects_selected_team_before_effects() {
