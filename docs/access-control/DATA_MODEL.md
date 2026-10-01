@@ -1,7 +1,7 @@
 ---
 title: "Access Control Data Model"
 created: "2026-08-22"
-updated: "2026-09-16"
+updated: "2026-09-30"
 status: "mixed-current-and-design"
 ---
 
@@ -115,6 +115,9 @@ The current `access.db` contains these tables (source file in parentheses when n
 | Agents and tasks | `agent_definitions`, `agent_definition_audit`, `agent_sessions`, `agent_tasks`, `agent_task_audit` |
 | Bootstrap and product credentials (`credential_schema.rs`) | `access_installations`, `access_tombstones`, `bootstrap_proofs`, `project_credentials`, `credential_idempotency` |
 | Dev containers (`dev_container.rs`) | `dev_container_templates`, `dev_container_instances`, `dev_container_ledger`, `dev_container_owner_quotas` |
+| Recurring tasks | `agent_task_schedules`, `agent_task_schedule_occurrences`, `agent_task_schedule_attempts` |
+| Container image state | `dev_container_template_drafts`, `dev_container_template_environment`, `dev_container_image_builds`, `dev_container_published_images`, `dev_container_launch_manifests` |
+| Artifact distribution (`artifact_distribution.rs`) | `artifact_authorities`, `artifact_publisher_policies`, `artifact_source_policies`, `artifact_assignment_distributions`, `artifact_mirrors`, `artifact_subscriptions` |
 | Audit | `access_audit` |
 | Task schedules (v8, `migrations.rs`) | `agent_task_schedules`, `agent_task_schedule_occurrences`, `agent_task_schedule_attempts` |
 | Container images (v8, `migrations.rs`) | `dev_container_template_drafts`, `dev_container_template_environment`, `dev_container_image_builds`, `dev_container_published_images`, `dev_container_launch_manifests` |

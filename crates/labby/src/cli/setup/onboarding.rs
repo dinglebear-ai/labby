@@ -1312,6 +1312,7 @@ pub(super) async fn bootstrap_static_owner_at(root: &Path) -> Result<()> {
     }
 }
 
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 fn resolved_server_auth(plan: &SetupPlan) -> SetupAuthArg {
     plan.server_auth.unwrap_or_else(|| {
         if plan.oauth.is_some() {

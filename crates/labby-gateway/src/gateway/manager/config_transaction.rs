@@ -15,6 +15,29 @@ use crate::upstream::types::UpstreamRuntimeOwner;
 
 use super::{ConfigMutationGuard, GatewayManager};
 
+fn credential_changed_upstreams(
+    previous: &GatewayConfig,
+    candidate: &GatewayConfig,
+    env_name: &str,
+    case_insensitive: bool,
+) -> Vec<String> {
+    candidate
+        .upstream
+        .iter()
+        .chain(previous.upstream.iter())
+        .filter(|upstream| {
+            upstream.bearer_token_env.as_deref().is_some_and(|name| {
+                labby_runtime::helpers::environment_names_equal_with_case(
+                    name,
+                    env_name,
+                    case_insensitive,
+                )
+            })
+        })
+        .map(|upstream| upstream.name.clone())
+        .collect()
+}
+
 /// Longest a caller waits for the gateway configuration-mutation lease before
 /// failing as `service_unavailable`. The longest legitimate holder observed is
 /// `gateway.add` of a stdio upstream whose child never answers the handshake:
@@ -229,6 +252,8 @@ impl GatewayManager {
         &self,
         started: Instant,
     ) -> Result<ConfigMutationGuard, ToolError> {
+        #[cfg(test)]
+        test_gates::signal_mutation_wait(&self.path);
         let local = Arc::clone(&self.config_mutation).lock_owned().await;
         let path = mutation_lock_path(&self.path);
         let (ready_tx, ready_rx) = oneshot::channel();
@@ -313,6 +338,26 @@ impl GatewayManager {
         origin: Option<&str>,
         owner: Option<UpstreamRuntimeOwner>,
     ) -> Result<crate::gateway::types::GatewayCatalogDiff, ToolError> {
+        self.commit_config_and_reload_with_credential(
+            mutation_guard,
+            previous,
+            candidate,
+            origin,
+            owner,
+            None,
+        )
+        .await
+    }
+
+    pub(super) async fn commit_config_and_reload_with_credential(
+        &self,
+        mutation_guard: ConfigMutationGuard,
+        previous: GatewayConfig,
+        candidate: GatewayConfig,
+        origin: Option<&str>,
+        owner: Option<UpstreamRuntimeOwner>,
+        credential: Option<(String, String)>,
+    ) -> Result<crate::gateway::types::GatewayCatalogDiff, ToolError> {
         let manager = self.clone();
         let origin = origin.map(str::to_owned);
         tokio::spawn(async move {
@@ -322,7 +367,7 @@ impl GatewayManager {
             // acquire either the process-local or cross-process lease.
             let _mutation_guard = mutation_guard;
             manager
-                .commit_config_and_reload_owned(previous, candidate, origin, owner)
+                .commit_config_and_reload_owned(previous, candidate, origin, owner, credential)
                 .await
         })
         .await
@@ -337,15 +382,33 @@ impl GatewayManager {
         candidate: GatewayConfig,
         origin: Option<String>,
         owner: Option<UpstreamRuntimeOwner>,
+        credential: Option<(String, String)>,
     ) -> Result<crate::gateway::types::GatewayCatalogDiff, ToolError> {
         let previous_revision = config_revision(&previous)?;
         let candidate_revision = config_revision(&candidate)?;
         self.backup_config_before_commit(&previous_revision).await?;
-        self.write_config_file(&candidate).await?;
-        match self
-            .reload_with_origin_unlocked_transactional(origin.as_deref(), owner.clone())
+        let previous_token = match credential.as_ref() {
+            Some((env_name, _)) => self.snapshot_gateway_bearer_token(env_name).await?,
+            None => None,
+        };
+        let credentials_changed = credential.as_ref().map_or_else(Vec::new, |(env_name, _)| {
+            credential_changed_upstreams(&previous, &candidate, env_name, cfg!(windows))
+        });
+        let commit_result = async {
+            if let Some((env_name, token_value)) = credential.as_ref() {
+                self.persist_gateway_bearer_token(env_name, token_value)
+                    .await?;
+            }
+            self.write_config_file(&candidate).await?;
+            self.reload_with_credentials_changed(
+                origin.as_deref(),
+                owner.clone(),
+                &credentials_changed,
+            )
             .await
-        {
+        }
+        .await;
+        match commit_result {
             Ok(diff) => {
                 tracing::info!(
                     surface = "dispatch",
@@ -371,6 +434,18 @@ impl GatewayManager {
                     rollback_outcome = "pending",
                     "gateway config reconcile failed; rolling back"
                 );
+                // Restore only this credential key, preserving unrelated host
+                // writes, before rebuilding any peer from the prior config.
+                if let Some((env_name, _)) = credential.as_ref()
+                    && let Err(rollback_error) = self
+                        .store
+                        .restore_gateway_bearer_token(env_name, previous_token.as_deref())
+                        .await
+                {
+                    return Err(ToolError::internal_message(format!(
+                        "gateway reconcile failed ({commit_error}); credential rollback failed ({rollback_error})"
+                    )));
+                }
                 if let Err(rollback_error) = self.write_config_file(&previous).await {
                     tracing::error!(
                         surface = "dispatch",
@@ -389,7 +464,7 @@ impl GatewayManager {
                     )));
                 }
                 if let Err(rollback_error) = self
-                    .reload_with_origin_unlocked_transactional(origin.as_deref(), owner)
+                    .reload_with_credentials_changed(origin.as_deref(), owner, &credentials_changed)
                     .await
                 {
                     tracing::error!(
@@ -443,6 +518,37 @@ impl GatewayManager {
             "gateway config backup completed"
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_gates {
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, OnceLock};
+    use tokio::sync::oneshot;
+
+    fn waits() -> &'static Mutex<HashMap<PathBuf, oneshot::Sender<()>>> {
+        static WAITS: OnceLock<Mutex<HashMap<PathBuf, oneshot::Sender<()>>>> = OnceLock::new();
+        WAITS.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    pub(crate) fn next_mutation_wait(path: &Path) -> oneshot::Receiver<()> {
+        let (sender, receiver) = oneshot::channel();
+        assert!(
+            waits()
+                .lock()
+                .unwrap()
+                .insert(path.to_path_buf(), sender)
+                .is_none()
+        );
+        receiver
+    }
+
+    pub(super) fn signal_mutation_wait(path: &Path) {
+        if let Some(sender) = waits().lock().unwrap().remove(path) {
+            let _ = sender.send(());
+        }
     }
 }
 
@@ -615,5 +721,32 @@ mod mutation_lock_tests {
         let path = dir.path().join("config.toml.mutation.lock");
         let file = open_config_mutation_lock(&path).unwrap();
         assert_eq!(file.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+    }
+}
+
+#[cfg(test)]
+mod credential_name_tests {
+    use super::*;
+
+    #[test]
+    fn credential_reload_marks_all_windows_alias_upstreams_changed() {
+        let candidate: GatewayConfig = serde_json::from_value(serde_json::json!({"upstream":[
+            {"name":"selected","url":"https://fixture.invalid/mcp","bearer_token_env":"LABBY_TOKEN"},
+            {"name":"sibling","url":"https://fixture.invalid/mcp","bearer_token_env":"Labby_Token"},
+            {"name":"unrelated","url":"https://fixture.invalid/mcp","bearer_token_env":"OTHER_TOKEN"}
+        ]})).unwrap();
+        let previous: GatewayConfig = serde_json::from_value(serde_json::json!({"upstream":[
+            {"name":"removed-alias","url":"https://fixture.invalid/mcp","bearer_token_env":"labby_token"}
+        ]})).unwrap();
+        assert_eq!(
+            credential_changed_upstreams(&previous, &candidate, "LABBY_TOKEN", true),
+            vec!["selected", "sibling", "removed-alias"],
+            "new, sibling, and prior aliases must rebuild peers after a Windows credential change"
+        );
+        assert_eq!(
+            credential_changed_upstreams(&previous, &candidate, "LABBY_TOKEN", false),
+            vec!["selected"],
+            "Unix credential changes remain case-sensitive"
+        );
     }
 }

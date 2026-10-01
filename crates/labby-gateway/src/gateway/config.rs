@@ -379,7 +379,7 @@ pub fn tombstone_removed_import(cfg: &mut GatewayConfig, removed: &UpstreamConfi
         .push(UpstreamImportTombstone::now(&removed.name, imported_from));
 }
 
-fn tombstone_matches_upstream(
+pub(crate) fn tombstone_matches_upstream(
     tombstone: &UpstreamImportTombstone,
     upstream: &UpstreamConfig,
 ) -> bool {

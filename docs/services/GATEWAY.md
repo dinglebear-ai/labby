@@ -1,7 +1,7 @@
 ---
 title: "Gateway Management"
 created: "2026-07-30"
-updated: "2026-09-29"
+updated: "2026-09-30"
 ---
 
 # Gateway Management
@@ -45,6 +45,29 @@ Runtime views include optional `server_name`, `server_version`, and
 `protocol_version` from the connected upstream's negotiated server information.
 These are peer-reported metadata; missing values do not prove the upstream is
 absent. Runtime inspection does not start a connection just to fill them in.
+
+### Saving An Upstream And Protected Route
+
+`gateway.add` and `gateway.update` accept an optional `protected_route` mutation
+alongside the upstream `spec` or `patch`. The backend validates both drafts,
+then commits configuration, credentials, and runtime reconciliation under one
+configuration lease. A validation failure changes neither resource. A failed
+reconciliation restores the previous configuration, including private OAuth
+registration and scopes; browser read responses still expose only
+`oauth_enabled`.
+
+Use `{ "operation": "upsert", "route": { ... } }` to add a route or update an
+existing route of that name. Include `name` to address an existing route with a
+different replacement name. Use `{ "operation": "remove", "name": "route" }`
+to remove one. Omitting `protected_route` leaves route policy unchanged; upstream
+renames still update existing upstream references.
+
+Combined saves currently support installation routes only. A selected Team or
+a Team-qualified route returns `invalid_param` before any write; use the
+separately scoped `gateway.protected_route.*` workflow for Team route changes.
+Ordinary gateway edits with an unchanged route omit the nested mutation and
+remain available with a Team selected. Startup-mounted `gateway_subset` routes
+continue to require staged route actions and a restart.
 
 ### Restarting An Upstream Connection
 
@@ -129,7 +152,17 @@ browser's filesystem. Missing SSH config yields an empty device list.
 name = "remote-mcp"
 transport = "stdio"
 command = "/usr/bin/ssh"
-args = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "user@example.test", "/usr/local/bin/remote-mcp", "mcp"]
+args = [
+  "-F", "/dev/null",
+  "-i", "/var/lib/labby-upstreams/remote-ssh/identity",
+  "-o", "UserKnownHostsFile=/var/lib/labby-upstreams/remote-ssh/known-hosts",
+  "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
+  "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+  "user@example.test", "exec /usr/local/bin/remote-mcp mcp",
+]
+
+[upstream.env]
+UPSTREAM_READ_ONLY_PATHS = "/var/lib/labby-upstreams/remote-ssh/identity:/var/lib/labby-upstreams/remote-ssh/known-hosts"
 ```
 
 ```toml
@@ -181,9 +214,10 @@ name = "claude-remote"
 enabled = true
 command = "/usr/bin/ssh"
 args = [
-  "-i", "/home/labby/.ssh/labby-claude-remote",
+  "-F", "/dev/null",
+  "-i", "/var/lib/labby-upstreams/claude-ssh/identity",
   "-o", "IdentitiesOnly=yes",
-  "-o", "UserKnownHostsFile=/home/labby/.ssh/known_hosts.claude-remote",
+  "-o", "UserKnownHostsFile=/var/lib/labby-upstreams/claude-ssh/known-hosts",
   "-T", "-S", "none",
   "-o", "ControlMaster=no",
   "-o", "BatchMode=yes",
@@ -192,12 +226,27 @@ args = [
   "-o", "ServerAliveCountMax=3",
   "-o", "StrictHostKeyChecking=yes",
   "user@remote-host",
-  "/absolute/path/to/claude", "mcp", "serve",
+  "exec /absolute/path/to/claude mcp serve",
 ]
 proxy_resources = true
 proxy_prompts = true
 proxy_skills = false
+
+[upstream.env]
+UPSTREAM_READ_ONLY_PATHS = "/var/lib/labby-upstreams/claude-ssh/identity:/var/lib/labby-upstreams/claude-ssh/known-hosts"
 ```
+
+On the Linux host service, stdio children also run in the required filesystem
+sandbox. Create the selected key and known-hosts files before testing, owned by
+and readable only as needed by the service account. They must be outside both
+the service user's home and `LABBY_HOME`, including after resolving symlinks.
+Project only these files through `UPSTREAM_READ_ONLY_PATHS`; the sandbox cannot
+use credentials from `~/.ssh` or SSH aliases in that directory. `/dev/null`
+disables local SSH configuration for these examples. The remote command is one
+fixed shell command beginning with `exec`, so its remote absolute executable is
+not interpreted as a local filesystem input. Adjust that literal only to a
+trusted, shell-quoted remote executable; do not interpolate untrusted values.
+See [Upstream configuration](./UPSTREAM.md#configuration) for the filesystem contract.
 
 The same definition can be created with `labby server add --command /usr/bin/ssh`
 and repeated `--arg` options. Validate the raw non-interactive SSH command as
@@ -1160,7 +1209,7 @@ For upstreams configured with `[upstream.oauth]` (see
 [UPSTREAM.md](./UPSTREAM.md#upstream-oauth-authorization_code--pkce)), the
 hosted HTTP gateway mounts admin-gated routes under `/v1/gateway/oauth`
 (`upstreams`, `probe`, `start`, `status`, `clear`, and `google/revoke`). They
-use ordinary `/v1` authentication and require `lab:admin`; cookie-authenticated
+use ordinary `/v1` authentication and require verified durable platform management authority plus `lab:admin`; cookie-authenticated
 mutations also require CSRF. The callback and result page are public browser
 routes with the state and subject checks below. There is no master-node gate.
 
@@ -1175,7 +1224,7 @@ ephemeral port. Stdio OAuth always uses the trusted shared subject `gateway`.
 | Method | Path | Purpose |
 |--------|------|---------|
 | `POST` | `/v1/gateway/oauth/start` | Begin authorization for the shared gateway subject `gateway`. Body `{ "upstream": "<name>" }`. Returns `{ "authorization_url": "..." }` (JSON only — no browser-redirect mode). |
-| `GET` | `/auth/upstream/callback` | Recovers upstream and credential subject from expiring server-stored state; personal grants additionally require the matching browser subject. Consumes state, exchanges the code, persists encrypted credentials, and redirects to `/gateway/oauth/result?upstream=<name>&status=<ok\|fail>`. |
+| `GET` | `/auth/upstream/callback` | Authorization-code callback. Resolves `(upstream, subject)` from the expiring `state`; shared grants need no session cookie, while personal grants require the initiating browser identity. Atomically consumes pending state, exchanges the code, persists encrypted credentials, redirects to `/gateway/oauth/result?upstream=<name>&status=<ok\|fail>`. |
 | `GET` | `/v1/gateway/oauth/status?upstream=<name>` | Returns `{ "authenticated": bool, "upstream": "<name>", "expires_within_5m": bool }`. Deliberately omits subject and raw expiry timestamp to avoid enumeration and fingerprinting. |
 | `POST` | `/v1/gateway/oauth/clear?upstream=<name>` | Requires `upstream` (the upstream name). Deletes persisted credentials and evicts the cached `AuthClient`. Matching cached clients and live peers are invalidated. Peer cleanup runs asynchronously; active calls may fail and callers must check side effects before retrying. |
 
@@ -1210,17 +1259,28 @@ after authorization.
 
 Callback security invariants (enforced in code, spec-required):
 
-- The callback recovers `(upstream, subject)` from the unexpired server-stored
-  state token. It does not require an `upstream` query parameter.
-- Personal grants require a browser subject matching the initiating subject;
-  missing or mismatched identity returns `auth_failed`. Shared `gateway` state
-  does not require a browser session at callback time.
+- The callback accepts the provider's `code` and `state`; it does not require
+  an `upstream` query parameter. The expiring server-stored state identifies
+  both the upstream and credential owner; caller-supplied identity cannot
+  select a different owner.
+- Shared `gateway` grants can complete without a browser session cookie.
+  Personal grants require a browser identity matching the subject stored
+  when that authorization began.
 - `state` is matched via a single `DELETE ... RETURNING` to prevent replay
   across connection-pool races.
 - The result page HTML-escapes the operator-controlled `upstream` name.
 
 ### Reload And Credential Lifecycle
 
+- Bearer-token values supplied with gateway add/update are committed with the
+  configuration transaction. A failed commit restores that credential key
+  without replacing unrelated `.env` entries. A successful change reconnects
+  upstreams referencing the key, even when their TOML configuration is unchanged.
+- `gateway.reload` reconnects bearer upstreams and reads current file-managed
+  credentials from the selected installation's `.env`. Values provided by the
+  external process environment before startup dotenv loading remain authoritative
+  for that process; replacing those requires changing the service environment
+  and restarting it.
 - `gateway.reload` eagerly evicts all cached `AuthClient` entries for every
   OAuth upstream in the current config, then rebuilds a fresh upstream pool.
   OAuth upstreams are rediscovered with the shared `gateway` subject when the
@@ -1274,9 +1334,9 @@ peer must not be able to grow this list, or any one field in it, unbounded.
 
 ## Limitations
 
-- `gateway.reload` is the only action that promises to pick up changed bearer-token env vars.
+- Bearer-token changes in an externally supplied process environment require a new process. Gateway credential updates and reload refresh file-managed values; they do not replace external environment overrides.
 - The HTTP API exposes `/v1/gateway` for management and `/v1/palette/execute`
   for authenticated, contract-checked upstream execution; it is not a generic
   URL-selectable upstream proxy.
 - Runtime counts depend on current discovery state; an unreachable upstream can remain configured while reporting zero discovered items.
-- Gateway mutations rewrite `config.toml` by serializing the full `LabConfig` struct. TOML comments and unknown keys not represented in the struct are dropped on write. A migration to `toml_edit` for comment-preserving round-trips is deferred.
+- Gateway mutations replace gateway-owned TOML sections using `toml_edit` and preserve supported foreign top-level tables. Formatting or comments inside replaced owned sections may change. Unknown owned fields and foreign top-level scalars are rejected; see [configuration ownership](../runtime/CONFIG.md).

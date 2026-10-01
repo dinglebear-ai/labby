@@ -391,13 +391,14 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
   ): Promise<GatewaySaveRollback | void> => {
     if (!gateway) return
     const previous = gateway
-    await updateGateway(gateway.id, input as UpdateGatewayInput)
-    return async () => {
-      await updateGateway(previous.id, {
-        name: previous.name,
-        transport: previous.transport,
-        config: previous.config,
-      })
+    const saved = await updateGateway(gateway.id, input as UpdateGatewayInput)
+    return {
+      commit: () => {
+        if (saved.id === previous.id) return
+        const params = new URLSearchParams(searchParams.toString())
+        params.set('id', saved.id)
+        router.replace(`/gateway/?${params.toString()}`, { scroll: false })
+      },
     }
   }
 
@@ -1336,6 +1337,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
 
               {inventoryFilter === 'resources' ? (
                 <PrimitiveExposureTable
+                  key={`${gateway.id}:resources`}
                   title="Discovered MCP Resources"
                   description="Search and manage which upstream resources are exposed through this server."
                   searchPlaceholder="Search resources"
@@ -1369,6 +1371,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
 
               {inventoryFilter === 'prompts' ? (
                 <PrimitiveExposureTable
+                  key={`${gateway.id}:prompts`}
                   title="Discovered MCP Prompts"
                   description="Search and manage which upstream prompts are exposed through this server."
                   searchPlaceholder="Search prompts"

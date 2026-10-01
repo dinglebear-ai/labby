@@ -1,7 +1,7 @@
 ---
 title: "Runtime Configuration"
 created: "2026-07-30"
-updated: "2026-09-29"
+updated: "2026-09-30"
 ---
 
 # Runtime Configuration
@@ -56,6 +56,14 @@ offending field path. Unknown top-level scalar keys (for example `mcpp = 1` or
 `config_verzion = 1`) are also errors. Foreign extensions must be explicitly
 namespaced as TOML tables (for example `[vendor.example]`); those sections
 remain accepted and are preserved by supported gateway/settings mutations.
+
+Gateway bearer-token mutations commit the selected `.env` key with their
+configuration transaction and restore that key on failure, preserving unrelated
+entries. They reconnect upstreams referencing the changed key. A manual
+`gateway.reload` also reconnects bearer upstreams and observes changed
+file-managed credentials. A key supplied by the external process environment
+before startup dotenv loading remains authoritative until process restart;
+gateway mutations do not overwrite that environment authority.
 
 Supported settings mutations create a mode-`0600` recovery copy beside
 `config.toml` before replacing it. Labby retains at most 10 copies, 30 days,

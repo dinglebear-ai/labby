@@ -14,6 +14,66 @@ use std::collections::BTreeSet;
 use super::GatewayManager;
 
 impl GatewayManager {
+    /// Validate and apply to the transaction's private candidate. No persistence
+    /// or live publication occurs until the upstream and route both validate.
+    pub(super) async fn apply_protected_route_save(
+        &self,
+        candidate: &mut GatewayConfig,
+        change: &crate::gateway::params::GatewayProtectedRouteMutation,
+    ) -> Result<(), ToolError> {
+        use crate::gateway::params::GatewayProtectedRouteMutation;
+        let runtime = self.config.read().await.clone();
+        reject_pending_route_restart(&runtime, candidate, "save")?;
+        let name = match change {
+            GatewayProtectedRouteMutation::Upsert { name, route } => {
+                name.as_deref().unwrap_or(&route.name)
+            }
+            GatewayProtectedRouteMutation::Remove { name } => name,
+        };
+        // Route validation canonicalizes names by trimming them. Apply the
+        // namespace fence to that same spelling before candidate mutation.
+        if name.trim().starts_with("team:")
+            || matches!(change, GatewayProtectedRouteMutation::Upsert { route, .. } if route.name.trim().starts_with("team:"))
+        {
+            return Err(ToolError::InvalidParam {
+                param: "protected_route".into(),
+                message: "Combined upstream and protected-route saves require installation scope. Use the separately scoped protected-route workflow for Team routes.".into(),
+            });
+        }
+        for config in [&*candidate, &runtime] {
+            if let Some(existing) = config
+                .protected_mcp_routes
+                .iter()
+                .find(|route| route.name == name)
+            {
+                reject_hot_gateway_subset_mutation(existing, "save")?;
+            }
+        }
+        match change {
+            GatewayProtectedRouteMutation::Upsert {
+                name: existing_name,
+                route,
+            } => {
+                reject_hot_gateway_subset_mutation(route, "save")?;
+                let route = *route.clone();
+                if existing_name.is_some()
+                    || candidate
+                        .protected_mcp_routes
+                        .iter()
+                        .any(|existing| existing.name == name)
+                {
+                    update_protected_mcp_route(candidate, name, route)?;
+                } else {
+                    insert_protected_mcp_route(candidate, route)?;
+                }
+            }
+            GatewayProtectedRouteMutation::Remove { name } => {
+                remove_protected_mcp_route(candidate, name)?;
+            }
+        }
+        Ok(())
+    }
+
     pub async fn resolve_protected_route(
         &self,
         host: &str,
