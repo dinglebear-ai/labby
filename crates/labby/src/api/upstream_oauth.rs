@@ -365,7 +365,9 @@ async fn probe(
         oauth_discovered = result.oauth_discovered,
         "upstream oauth probe completed"
     );
-    authority.validate_before_external_effect().await?;
+    #[cfg(all(test, feature = "proxy-testkit"))]
+    authority_races::after_operation(&manager, "probe", None).await;
+    authority.validate_after_external_effect().await?;
     Ok(Json(result))
 }
 
@@ -427,7 +429,10 @@ async fn start(
         upstream = %body.upstream,
         "upstream oauth authorization started"
     );
-    authority.validate_before_external_effect().await?;
+    #[cfg(all(test, feature = "proxy-testkit"))]
+    authority_races::after_operation(&manager, "start", Some(begin.authorization_url.clone()))
+        .await;
+    authority.validate_after_external_effect().await?;
     Ok(Json(StartResponse {
         authorization_url: begin.authorization_url,
     }))
@@ -482,7 +487,9 @@ async fn status(
         upstream = %query.upstream,
         "upstream oauth status retrieved"
     );
-    authority.validate_before_external_effect().await?;
+    #[cfg(all(test, feature = "proxy-testkit"))]
+    authority_races::after_operation(&manager, "status", None).await;
+    authority.validate_after_external_effect().await?;
     Ok(Json(status))
 }
 

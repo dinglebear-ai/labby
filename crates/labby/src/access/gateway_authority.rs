@@ -70,7 +70,7 @@ impl GatewayActionAuthorization {
                 Some(AgentRecoveryAdvice {
                     action: AgentRecoveryAction::InspectAndEscalate,
                     same_arguments: AgentSameArgumentsRetry::Discouraged,
-                    guidance: "Inspect current credential and connection state through an authorized operator before retrying; credential removal and runtime cleanup may already have committed. Confirm current caller authority before starting another operation.".into(),
+                    guidance: "Inspect current operation, credential, authorization, and connection state through an authorized operator before retrying; changes may already have committed. Confirm current caller authority before starting another operation.".into(),
                     retry_after_ms: None,
                 }),
                 Some(AgentSideEffectRisk::Possible),
