@@ -311,11 +311,11 @@ impl LiveLabbyBuilder {
                 // Match the private installation directory used by real setup.
                 let handle = labby_winjob::fs::open_directory(&labby_home)
                     .map_err(|error| error.to_string())?;
-                labby_auth::util::harden_secret_file(&labby_home)
+                labby_winjob::fs::harden_private_directory_dacl(&labby_home, &handle)
                     .map_err(|error| error.to_string())?;
                 labby_winjob::fs::set_created_owner(&labby_home, &handle, true)
                     .map_err(|error| error.to_string())?;
-                labby_winjob::fs::verify_directory_acl(&handle)
+                labby_winjob::fs::verify_private_directory_dacl(&handle)
                     .map_err(|error| error.to_string())?;
             }
             if let Some(config) = &self.config {

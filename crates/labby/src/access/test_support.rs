@@ -21,11 +21,11 @@ pub(crate) fn secure_tempdir() -> tempfile::TempDir {
         // ACL. A workspace TempDir otherwise inherits the runner's broad ACL.
         let handle = labby_winjob::fs::open_directory(directory.path())
             .expect("open the owned access fixture directory");
-        labby_auth::util::harden_secret_file(directory.path())
+        labby_winjob::fs::harden_private_directory_dacl(directory.path(), &handle)
             .expect("restrict access fixture ACL");
         labby_winjob::fs::set_created_owner(directory.path(), &handle, true)
             .expect("set the access fixture owner to the current SID");
-        labby_winjob::fs::verify_directory_acl(&handle)
+        labby_winjob::fs::verify_private_directory_dacl(&handle)
             .expect("verify the access fixture directory is private");
     }
     directory

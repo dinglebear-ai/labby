@@ -854,6 +854,13 @@ fn installation_command(root: &Path) -> Command {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
     }
+    #[cfg(windows)]
+    {
+        let handle = labby_winjob::fs::open_directory(&labby_home).unwrap();
+        labby_winjob::fs::harden_private_directory_dacl(&labby_home, &handle).unwrap();
+        labby_winjob::fs::set_created_owner(&labby_home, &handle, true).unwrap();
+        labby_winjob::fs::verify_private_directory_dacl(&handle).unwrap();
+    }
     let mut command = isolated_command(&home);
     command
         .env("LABBY_HOME", labby_home)
